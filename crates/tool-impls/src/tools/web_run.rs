@@ -32,6 +32,10 @@ const DEFAULT_OPEN_TIMEOUT_MS: u64 = 20_000;
 /// Redirect hops the service fetch will follow for page opens; every hop is
 /// re-checked against the network policy inside the service.
 const MAX_REDIRECT_HOPS: usize = 10;
+/// Response-body cap for fetched pages, matching `fetch_url`'s hard ceiling:
+/// the page is parsed into lines/links in memory, so an uncapped body is an
+/// uncapped allocation.
+const WEB_RUN_MAX_PAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_WEB_RUN_SESSIONS: usize = 64;
 const MAX_PAGES_PER_SESSION: usize = 256;
 const WEB_RUN_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
@@ -1080,6 +1084,7 @@ async fn fetch_page(
         .fetch(
             FetchRequest::new(url)
                 .with_timeout(Duration::from_millis(timeout_ms))
+                .with_max_bytes(WEB_RUN_MAX_PAGE_BYTES)
                 .with_max_redirects(MAX_REDIRECT_HOPS)
                 .with_policy(context.network_policy.clone())
                 .with_cancel(context.cancel_token.clone())

@@ -36,6 +36,11 @@ use crate::config::ToolOverride;
 /// Timeout for plugin script execution (120 seconds).
 const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Cap on plugin child output per stream: stdout is expected to be a
+/// parseable `ToolResult` JSON (KBs in practice); anything past this is a
+/// runaway script, and buffering it whole (`.output()`) would pin memory.
+const PLUGIN_OUTPUT_CAP_BYTES: usize = 4 * 1024 * 1024;
+
 /// Metadata extracted from a plugin script's frontmatter header.
 #[derive(Debug, Clone)]
 pub struct PluginMetadata {
@@ -289,7 +294,18 @@ async fn run_plugin_child_raw(
         })
     });
 
-    let output = tokio::time::timeout(PLUGIN_EXECUTION_TIMEOUT, child.wait_with_output())
+    // Stream both pipes with a byte cap instead of `wait_with_output()`:
+    // memory stays bounded no matter how much the script prints.
+    let mut stdout = child.stdout.take().expect("stdout piped above");
+    let mut stderr = child.stderr.take().expect("stderr piped above");
+    let stdout_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped(&mut stdout, PLUGIN_OUTPUT_CAP_BYTES).await
+    });
+    let stderr_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped(&mut stderr, PLUGIN_OUTPUT_CAP_BYTES).await
+    });
+
+    let status = tokio::time::timeout(PLUGIN_EXECUTION_TIMEOUT, child.wait())
         .await
         .map_err(|_| ToolError::Timeout {
             seconds: PLUGIN_EXECUTION_TIMEOUT.as_secs(),
@@ -299,24 +315,33 @@ async fn run_plugin_child_raw(
     if let Some(stdin_writer) = stdin_writer {
         let _ = stdin_writer.await;
     }
+    let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
+    let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
+    let dropped = stdout_dropped + stderr_dropped;
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if status.success() {
+        let mut stdout = String::from_utf8_lossy(&stdout_kept).to_string();
+        if dropped > 0 {
+            stdout.push_str(&format!("\n… [{dropped} more bytes of output not captured]"));
+        }
         if let Ok(parsed) = serde_json::from_str::<ToolResult>(&stdout) {
             Ok(parsed)
         } else {
             Ok(ToolResult::success(stdout))
         }
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let combined = if stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&stderr_kept).to_string();
+        let stdout = String::from_utf8_lossy(&stdout_kept).to_string();
+        let mut combined = if stderr.is_empty() {
             stdout
         } else if stdout.is_empty() {
             stderr
         } else {
             format!("{stdout}\n{stderr}")
         };
+        if dropped > 0 {
+            combined.push_str(&format!("\n… [{dropped} more bytes of output not captured]"));
+        }
         Err(ToolError::execution_failed(combined))
     }
 }

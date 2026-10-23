@@ -59,29 +59,60 @@ fn shell() -> String {
 pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String), String> {
     let shell = shell();
     let flag = if cfg!(windows) { "/C" } else { "-c" };
-    let output = tokio::process::Command::new(&shell)
+    let mut child = tokio::process::Command::new(&shell)
         .arg(flag)
         .arg(command)
         .current_dir(cwd)
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|err| format!("{shell} could not be started: {err}"))?;
 
-    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Stream both pipes with a byte cap instead of `.output()`: a command
+    // that prints gigabytes must not pin that much memory before the char
+    // cap runs. Bytes beyond the cap are drained-and-counted so the child
+    // never blocks on a full pipe.
+    let mut stdout = child.stdout.take().expect("stdout piped above");
+    let mut stderr = child.stderr.take().expect("stderr piped above");
+    let stdout_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped(&mut stdout, MAX_OUTPUT_BYTES).await
+    });
+    let stderr_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped(&mut stderr, MAX_OUTPUT_BYTES).await
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|err| format!("{shell} failed to report its exit status: {err}"))?;
+    let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
+    let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
+
+    let mut combined = String::from_utf8_lossy(&stdout_kept).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_kept);
     if !stderr.is_empty() {
         if !combined.is_empty() && !combined.ends_with('\n') {
             combined.push('\n');
         }
         combined.push_str(&stderr);
     }
-    let status = match output.status.code() {
+    let dropped = stdout_dropped + stderr_dropped;
+    if dropped > 0 {
+        combined.push_str(&format!("\n… [{dropped} more bytes of output not captured]\n"));
+    }
+    let status = match status.code() {
         Some(0) => "exit 0".to_string(),
         Some(code) => format!("exit {code}"),
         None => "terminated by a signal".to_string(),
     };
     Ok((status, cap(combined, MAX_OUTPUT_CHARS)))
 }
+
+/// Byte ceiling for captured child output: 4 bytes per kept char covers the
+/// worst-case UTF-8 expansion, so the later char-level cap is never
+/// loosened by the byte cap.
+const MAX_OUTPUT_BYTES: usize = MAX_OUTPUT_CHARS * 4;
+
 
 /// Truncate to `max` chars, saying how much was dropped.
 #[must_use]

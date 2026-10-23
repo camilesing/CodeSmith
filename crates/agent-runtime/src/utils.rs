@@ -13,6 +13,31 @@ use sha2::{Digest, Sha256};
 
 // === Home Directory Resolution ===
 
+/// Read up to `max` bytes from an async reader into memory, then drain and
+/// count the rest. Beyond-the-cap bytes are still consumed so the writing
+/// child never blocks on a full pipe, but memory stays bounded at `max`.
+/// Returns `(kept, dropped)`.
+pub async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> (Vec<u8>, usize) {
+    use tokio::io::AsyncReadExt;
+    let mut kept = Vec::new();
+    let mut dropped = 0usize;
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let take = max.saturating_sub(kept.len()).min(n);
+                kept.extend_from_slice(&buf[..take]);
+                dropped += n - take;
+            }
+        }
+    }
+    (kept, dropped)
+}
+
 /// Resolve the effective user home directory.
 ///
 /// Checks `HOME` (Unix), `USERPROFILE` (Windows), and the

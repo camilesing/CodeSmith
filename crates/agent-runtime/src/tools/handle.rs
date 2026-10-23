@@ -231,6 +231,14 @@ impl HandleStore {
             sha256: sha256_hex(&stable_bytes),
         };
         let approx_bytes = stable_bytes.len();
+        if approx_bytes > MAX_HANDLE_TOTAL_BYTES {
+            // A single payload larger than the whole budget would park (and
+            // pin) memory until the *next* insert evicts it. Behave like an
+            // immediately-evicted handle instead: issue the descriptor but
+            // store nothing — `handle_read` resolves it to the same clear
+            // not-found error as any evicted handle.
+            return handle;
+        }
         let key = HandleKey { session_id, name };
         if let Some(prev) = self.records.insert(
             key.clone(),

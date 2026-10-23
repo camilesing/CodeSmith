@@ -45,6 +45,11 @@ const MAX_SESSIONS_SCANNED: usize = 200;
 /// Per-session read cap: files larger than this are skipped (and counted).
 /// A saved session is pretty-printed JSON; healthy sessions are far below.
 const MAX_SESSION_FILE_BYTES: u64 = 10 * 1024 * 1024;
+/// Aggregate cap on retained message text: sessions are read newest-first,
+/// so once this much text is in memory the remaining (older) sessions
+/// cannot beat what is already collected. Without it, 200 × 10 MiB of
+/// oversized-but-legal files would materialize ~2 GiB in one call.
+const MAX_TOTAL_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct SessionSearchTool;
 
@@ -247,7 +252,8 @@ fn scan_saved_sessions(sessions_dir: &Path, workspace: &Path) -> (Vec<SessionDoc
     }
 
     let workspace_key = comparable(workspace);
-    for (_mtime, path) in &candidates {
+    let mut retained_text_bytes = 0usize;
+    'sessions: for (_mtime, path) in &candidates {
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > MAX_SESSION_FILE_BYTES => {
                 stats.skipped_oversize += 1;
@@ -282,6 +288,7 @@ fn scan_saved_sessions(sessions_dir: &Path, workspace: &Path) -> (Vec<SessionDoc
             if tokens.is_empty() {
                 continue;
             }
+            retained_text_bytes += text.len();
             docs.push(SessionDoc {
                 session_id: session.metadata.id.clone(),
                 title: session.metadata.title.clone(),
@@ -291,6 +298,12 @@ fn scan_saved_sessions(sessions_dir: &Path, workspace: &Path) -> (Vec<SessionDoc
                 text,
                 tokens,
             });
+            if retained_text_bytes >= MAX_TOTAL_TEXT_BYTES {
+                // Sessions are scanned newest-first; older material cannot
+                // outrank what is already collected.
+                stats.scan_truncated = true;
+                break 'sessions;
+            }
         }
     }
     (docs, stats)

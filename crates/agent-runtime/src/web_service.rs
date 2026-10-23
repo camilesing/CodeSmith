@@ -211,8 +211,10 @@ impl SearchRequest {
 }
 
 /// An anonymous HTTP GET request. `new` supplies the shared defaults
-/// (15 s timeout, no byte cap, no redirects followed beyond what the
-/// provider policy loop allows).
+/// (15 s timeout, a 10 MiB byte cap, no redirects followed beyond what the
+/// provider policy loop allows). The byte cap is a backstop for callers
+/// that forget `with_max_bytes` — an unbounded fetch lets any URL pin the
+/// process's memory.
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
     pub url: String,
@@ -226,13 +228,18 @@ pub struct FetchRequest {
     pub tool: &'static str,
 }
 
+/// Default response-body cap: the largest limit any caller tool offers
+/// (`fetch_url`'s hard ceiling). Tools with tighter needs set their own
+/// via [`FetchRequest::with_max_bytes`].
+pub const DEFAULT_FETCH_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
 impl FetchRequest {
     #[must_use]
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             timeout: DEFAULT_WEB_TIMEOUT,
-            max_bytes: u64::MAX,
+            max_bytes: DEFAULT_FETCH_MAX_BYTES,
             max_redirects: 0,
             cancel: None,
             policy: None,
@@ -430,9 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn fetch_request_defaults_are_unbounded() {
+    fn fetch_request_defaults_cap_body_bytes() {
         let req = FetchRequest::new("https://example.com");
-        assert_eq!(req.max_bytes, u64::MAX);
+        assert_eq!(req.max_bytes, DEFAULT_FETCH_MAX_BYTES);
         assert_eq!(req.max_redirects, 0);
     }
 }

@@ -430,24 +430,52 @@ fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Resul
         .context("no beta release found in GitHub releases")
 }
 
+/// Hard sanity ceiling for downloads: the updater fetches checksum manifests
+/// (KBs) and release binaries (tens of MB); anything past this is a
+/// misdirected URL or a hostile mirror, not a real asset.
+const MAX_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024;
+
 /// Download a URL to bytes.
+///
+/// Status is checked *before* the body is read (an error response no longer
+/// lands whole in memory), and the success body is capped at
+/// [`MAX_DOWNLOAD_BYTES`] — declared up front via `Content-Length` when the
+/// server sends one.
 fn download_url(url: &str, proxy: Option<&Proxy>) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+
     let client = update_http_client(proxy)?;
-    let response = client
+    let mut response = client
         .get(url)
         .send()
         .with_context(|| format!("failed to download {url}"))?;
     let status = response.status();
-    let bytes = response
-        .bytes()
-        .with_context(|| format!("failed to read response body from {url}"))?;
-
     if !status.is_success() {
-        let body = String::from_utf8_lossy(&bytes);
-        bail!("download failed with HTTP {status}: {body}");
+        // A short snippet for the error message; never the full body of an
+        // error response.
+        let mut snippet = Vec::new();
+        let _ = response.take(4096).read_to_end(&mut snippet);
+        bail!(
+            "download failed with HTTP {status}: {}",
+            String::from_utf8_lossy(&snippet)
+        );
     }
-
-    Ok(bytes.to_vec())
+    if let Some(len) = response.content_length()
+        && len > MAX_DOWNLOAD_BYTES as u64
+    {
+        bail!(
+            "download from {url} declares {len} bytes, over the {MAX_DOWNLOAD_BYTES}-byte cap; refusing"
+        );
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_DOWNLOAD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read response body from {url}"))?;
+    if bytes.len() > MAX_DOWNLOAD_BYTES {
+        bail!("download from {url} exceeded the {MAX_DOWNLOAD_BYTES}-byte cap");
+    }
+    Ok(bytes)
 }
 
 /// Compute the SHA256 hex digest of data.
