@@ -177,9 +177,18 @@ const H2_FAILURE_MARKERS: &[&str] = &["http2", "http/2", "h2 protocol", "goaway"
 /// whole `source()` chain — the h2 error is typically nested two levels below
 /// the reqwest wrapper. Takes `&dyn Error` so tests can exercise it with
 /// synthetic chains (reqwest errors have no public constructor).
-fn looks_like_h2_failure(err: &dyn std::error::Error) -> bool {
-    let mut cursor: Option<&dyn std::error::Error> = Some(err);
+fn looks_like_h2_failure(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cursor: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(e) = cursor {
+        // The reqwest wrapper's Display embeds the full request URL
+        // ("error sending request for url (…)"), so a host-configured
+        // gateway path such as `/http2-route` or `/goaway-proxy` would
+        // match a marker, permanently downgrading the process to HTTP/1.1.
+        // Match only the underlying hyper/h2 sources.
+        if e.is::<reqwest::Error>() {
+            cursor = e.source();
+            continue;
+        }
         let rendered = e.to_string().to_lowercase();
         if H2_FAILURE_MARKERS
             .iter()
@@ -560,7 +569,16 @@ async fn execute_with_fallback(
             }
             Err(err) if looks_like_h2_failure(&err) => {
                 degraded.store(true, Ordering::Relaxed);
-                return execute(&http1, spec).await;
+                // Replay only when the request provably never left the
+                // client (connection/ALPN phase). `send()` failing after
+                // transmission (GOAWAY-family failures typically do) means
+                // the server may already have processed this non-idempotent,
+                // billable chat POST — surfacing the error lets the engine's
+                // own retry policy decide instead of executing it twice.
+                if err.is_connect() {
+                    return execute(&http1, spec).await;
+                }
+                return Err(instance_error(err));
             }
             Err(err) => return Err(instance_error(err)),
         }

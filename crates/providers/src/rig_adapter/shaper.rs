@@ -100,6 +100,36 @@ pub(crate) struct GenericShaper {
     /// `CODESMITH_REASONING_PASSTHROUGH` opt-in, resolved once here so the
     /// per-request shaping path stays deterministic (no env lock, testable).
     passthrough: bool,
+    /// Which wire key carries `max_tokens`, decided once at construction so
+    /// the per-request path matches an enum rather than the provider tag
+    /// string (a renamed tag would otherwise silently fall back to
+    /// `max_tokens` — the exact field Xiaomi's API rejects).
+    max_tokens_key: MaxTokensKey,
+}
+
+/// Which wire key a provider expects for the output-token cap.
+#[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaxTokensKey {
+    /// Standard OpenAI `max_tokens`.
+    MaxTokens,
+    /// OpenAI "responses"-style `max_completion_tokens` (Xiaomi rejects
+    /// `max_tokens`; same value, different field name — not a clamp).
+    MaxCompletionTokens,
+}
+
+#[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
+impl MaxTokensKey {
+    /// The wire key for a provider tag — the one place the tag is matched,
+    /// at construction, so a renamed tag fails a unit test here instead of
+    /// a provider 400 in production.
+    fn for_provider(name: &str) -> Self {
+        if name == "xiaomi-mimo" {
+            Self::MaxCompletionTokens
+        } else {
+            Self::MaxTokens
+        }
+    }
 }
 
 #[cfg(any(feature = "openai", feature = "deepseek", feature = "openai-compat"))]
@@ -112,6 +142,7 @@ impl GenericShaper {
                     .ok()
                     .as_deref(),
             ),
+            max_tokens_key: MaxTokensKey::for_provider(name),
         }
     }
 }
@@ -232,13 +263,11 @@ impl RequestShaper for GenericShaper {
     }
 
     fn shape_max_tokens(&self, req: &MessageRequest) -> MaxTokensSpec {
-        // Xiaomi's API expects the OpenAI "responses"-style
-        // `max_completion_tokens` key and rejects `max_tokens` (same value,
-        // different field name — not a clamp).
-        if self.name == "xiaomi-mimo" {
-            MaxTokensSpec::MaxCompletionTokens(u64::from(req.max_tokens))
-        } else {
-            MaxTokensSpec::MaxTokens(u64::from(req.max_tokens))
+        match self.max_tokens_key {
+            MaxTokensKey::MaxCompletionTokens => {
+                MaxTokensSpec::MaxCompletionTokens(u64::from(req.max_tokens))
+            }
+            MaxTokensKey::MaxTokens => MaxTokensSpec::MaxTokens(u64::from(req.max_tokens)),
         }
     }
 }
@@ -284,8 +313,30 @@ impl RequestShaper for AnthropicShaper {
             // `SystemPrompt` is `#[serde(untagged)]`: `Text(String)` serializes
             // to a plain string (Anthropic accepts that), `Blocks(_)` to the
             // `[{type, text, cache_control?}]` array with breakpoints intact.
-            if let Ok(value) = serde_json::to_value(system) {
-                map.insert("system".to_string(), value);
+            match serde_json::to_value(system) {
+                Ok(value) => {
+                    map.insert("system".to_string(), value);
+                }
+                Err(err) => {
+                    // A swallowed failure here sent the request with no
+                    // system prompt at all and nothing observable. Degrade
+                    // to the plain-text form (as `GenericShaper` does) so the
+                    // prompt is never silently lost; only the per-block
+                    // cache_control breakpoints are given up.
+                    tracing::warn!(
+                        %err,
+                        "failed to serialize structured system prompt; falling back to plain text"
+                    );
+                    let text = match system {
+                        SystemPrompt::Text(s) => s.clone(),
+                        SystemPrompt::Blocks(blocks) => blocks
+                            .iter()
+                            .map(|b| b.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                    };
+                    map.insert("system".to_string(), serde_json::Value::String(text));
+                }
             }
         }
         if let Some(thinking) = req.thinking.clone() {
@@ -507,6 +558,64 @@ mod tests {
             shaper.shape_max_tokens(&req_for("deepseek/deepseek-chat", None)),
             1024,
             false,
+        );
+    }
+
+    /// The wire key is resolved once at construction; the per-request path
+    /// matches the enum, never the tag string.
+    #[test]
+    fn max_tokens_key_resolves_at_construction() {
+        assert_eq!(
+            MaxTokensKey::for_provider("xiaomi-mimo"),
+            MaxTokensKey::MaxCompletionTokens
+        );
+        assert_eq!(
+            MaxTokensKey::for_provider("openrouter"),
+            MaxTokensKey::MaxTokens
+        );
+        assert_eq!(
+            GenericShaper::new("xiaomi-mimo").max_tokens_key,
+            MaxTokensKey::MaxCompletionTokens
+        );
+    }
+
+    /// The structured system prompt rides `additional_params` as exactly one
+    /// `system` key with its per-block `cache_control` intact — the half of
+    /// the single-`system`-key invariant this crate owns (rig's side is that
+    /// its empty named `system` is skipped; see the `AnthropicShaper` docs).
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn anthropic_system_blocks_ride_additional_params_with_cache_control() {
+        use codesmith_agent::models::{CacheControl, SystemBlock};
+        let mut req = req_for("claude", None);
+        req.system = Some(SystemPrompt::Blocks(vec![
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "stable prefix".to_string(),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                }),
+            },
+            SystemBlock {
+                block_type: "text".to_string(),
+                text: "tail".to_string(),
+                cache_control: None,
+            },
+        ]));
+        let params = AnthropicShaper
+            .additional_params(&req)
+            .expect("system produces params");
+        let map = params.as_object().expect("object");
+        assert_eq!(map.keys().filter(|k| *k == "system").count(), 1);
+        let blocks = map["system"].as_array().expect("blocks array");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+        assert!(blocks[1].get("cache_control").is_none());
+        // And the preamble path stays empty so rig's named `system` is skipped.
+        assert!(
+            AnthropicShaper
+                .system_message(req.system.as_ref().unwrap())
+                .is_none()
         );
     }
 }

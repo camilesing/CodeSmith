@@ -396,20 +396,31 @@ fn object_or_empty(value: &serde_json::Value) -> serde_json::Value {
 
 /// Enforce invariant 4: merge adjacent same-role messages.
 fn merge_adjacent_same_role(messages: &mut Vec<RigMessage>) -> bool {
+    // Single-pass rebuild into a fresh Vec: the previous remove+insert per
+    // declined pair was two O(n) shifts of the (large) RigMessage enum and
+    // a net no-op — ~2·n² element moves per request on an alternating
+    // tool-loop history, re-paid on every call since the sanitizer is
+    // stateless. Take-and-restore is preserved (no payload deep-copies).
     let mut changed = false;
-    let mut idx = 1;
-    while idx < messages.len() {
-        // Take `next` out first so the pair can be folded under one borrow; a
-        // pair the fold declines is handed back and goes where it was.
-        let next = messages.remove(idx);
-        if let Some(declined) = merge_pair(&mut messages[idx - 1], next) {
-            messages.insert(idx, declined);
-            idx += 1;
-        } else {
-            changed = true;
-            // Stay on idx: the next message may merge with the combined one too.
+    let old = std::mem::take(messages);
+    let mut out = Vec::with_capacity(old.len());
+    let mut iter = old.into_iter();
+    let Some(mut prev) = iter.next() else {
+        *messages = out;
+        return changed;
+    };
+    for next in iter {
+        match merge_pair(&mut prev, next) {
+            // Declined: `prev` is final; the declined message becomes the
+            // accumulator, since it may merge with what follows.
+            Some(declined) => out.push(std::mem::replace(&mut prev, declined)),
+            // Folded: keep accumulating into `prev` — the next message may
+            // merge with the combined one too.
+            None => changed = true,
         }
     }
+    out.push(prev);
+    *messages = out;
     changed
 }
 
