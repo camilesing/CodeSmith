@@ -65,7 +65,17 @@ fn upsert_and_resume_thread_metadata() {
             limit: Some(10),
         })
         .expect("list threads");
-    assert!(!listed.is_empty());
+    assert_eq!(listed.len(), 1);
+
+    // The production default excludes archived threads; a regression that
+    // leaks them into normal listings (or hides everything) must fail here.
+    let default_listed = store
+        .list_threads(ThreadListFilters::default())
+        .expect("list threads with default filters");
+    assert!(
+        default_listed.iter().all(|t| t.id != "thread-test-1"),
+        "archived thread leaked into the default listing"
+    );
 }
 
 #[test]

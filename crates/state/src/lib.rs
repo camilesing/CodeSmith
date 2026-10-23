@@ -1213,10 +1213,14 @@ fn default_state_db_path() -> PathBuf {
 /// Resolve `~/.codesmith/state.db`, falling back to a relative path when the
 /// home directory cannot be determined.
 fn resolve_state_db_path(home: Option<PathBuf>) -> PathBuf {
+    // `home` is `codesmith_home()`'s output — already `~/.codesmith` — so
+    // joining ".codesmith" again double-nested to
+    // `~/.codesmith/.codesmith/state.db`, silently ignoring any pre-existing
+    // state file (persisted thread history appeared lost).
     let Some(home) = home else {
         return PathBuf::from(".codesmith").join("state.db");
     };
-    home.join(".codesmith").join("state.db")
+    home.join("state.db")
 }
 
 fn bool_to_i64(value: bool) -> i64 {
@@ -1454,20 +1458,25 @@ mod tests {
 
     #[test]
     fn resolve_prefers_modern_codesmith_path() {
-        let home = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(home.path().join(".codesmith")).expect("mkdir modern");
-        std::fs::write(home.path().join(".codesmith/state.db"), b"").expect("touch db");
+        // The helper receives `codesmith_home()` output (`~/.codesmith`),
+        // not a raw home dir — feeding a raw home masked the old
+        // double-nesting bug.
+        let raw = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = raw.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir modern");
+        std::fs::write(codesmith_home.join("state.db"), b"").expect("touch db");
 
-        let resolved = resolve_state_db_path(Some(home.path().to_path_buf()));
-        assert_eq!(resolved, home.path().join(".codesmith/state.db"));
+        let resolved = resolve_state_db_path(Some(codesmith_home.clone()));
+        assert_eq!(resolved, codesmith_home.join("state.db"));
     }
 
     #[test]
     fn resolve_returns_primary_for_fresh_install() {
-        let home = tempfile::tempdir().expect("tempdir");
+        let raw = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = raw.path().join(".codesmith");
 
-        let resolved = resolve_state_db_path(Some(home.path().to_path_buf()));
-        assert_eq!(resolved, home.path().join(".codesmith/state.db"));
+        let resolved = resolve_state_db_path(Some(codesmith_home.clone()));
+        assert_eq!(resolved, codesmith_home.join("state.db"));
     }
 
     #[test]

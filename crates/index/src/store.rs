@@ -119,8 +119,10 @@ impl IndexStore {
     pub fn open_default(workspace_root: &Path) -> Result<Self> {
         let home = codesmith_config::codesmith_home()
             .context("cannot resolve CodeSmith home for index storage")?;
+        // `codesmith_home()` already resolves to `~/.codesmith` — joining
+        // ".codesmith" again double-nested to
+        // `~/.codesmith/.codesmith/index/…`.
         let db_path = home
-            .join(".codesmith")
             .join("index")
             .join(workspace_hash(workspace_root))
             .join("index.db");
@@ -268,19 +270,25 @@ impl IndexStore {
     /// Delete inventory rows whose path is not in `live`; cascades to
     /// symbols and occurrences. Returns how many files were purged.
     pub fn delete_missing(&self, live: &HashSet<String>) -> Result<usize> {
-        let conn = self.conn.lock().expect("index store mutex poisoned");
-        let mut stmt = conn.prepare("SELECT id, path FROM files")?;
-        let stale: Vec<(i64, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .filter(|(_, path)| !live.contains(path))
-            .collect();
-        drop(stmt);
+        // One transaction (mirroring `replace_file`): per-id DELETEs
+        // outside a transaction left the store half-purged on mid-loop
+        // failure, and `filter_map(Result::ok)` made a transient read
+        // error silently spare every stale row.
+        let mut conn = self.conn.lock().expect("index store mutex poisoned");
+        let tx = conn.transaction()?;
+        let stale: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare("SELECT id, path FROM files")?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
         let mut purged = 0;
-        for (id, _) in &stale {
-            conn.execute("DELETE FROM files WHERE id = ?1", params![id])?;
+        for (id, _) in stale.iter().filter(|(_, path)| !live.contains(path)) {
+            tx.execute("DELETE FROM files WHERE id = ?1", params![id])?;
             purged += 1;
         }
+        tx.commit()?;
         Ok(purged)
     }
 

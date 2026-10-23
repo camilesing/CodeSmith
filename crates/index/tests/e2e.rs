@@ -130,7 +130,7 @@ async fn fixture_repo_symbol_navigation_end_to_end() {
     assert!(files.iter().any(|f| f.path == "src/lib.rs"), "{files:?}");
     let stats = service.stats();
     assert_eq!(stats.backend, "tree-sitter");
-    assert!(stats.files >= 2, "{stats:?}");
+    assert_eq!(stats.files, 2, "gitignore/hide semantics: {stats:?}");
     assert!(
         stats.stale_files == 0,
         "refresh should have caught up: {stats:?}"

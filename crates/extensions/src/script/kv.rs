@@ -20,6 +20,12 @@ struct KvInner {
     path: Option<PathBuf>,
     /// `None` until first access (lazy load); `Some` thereafter.
     map: Option<BTreeMap<String, serde_json::Value>>,
+    /// Set when the backing file existed but could not be read: `persist`
+    /// refuses to overwrite on-disk state with a map built from a read
+    /// that never succeeded (a transient EACCES/NFS blip would otherwise
+    /// atomically rename a near-empty map over the real file — permanent
+    /// key loss).
+    load_failed: bool,
 }
 
 impl std::fmt::Debug for ModKvStore {
@@ -48,6 +54,7 @@ impl ModKvStore {
         Self(Arc::new(Mutex::new(KvInner {
             path: Some(path),
             map: None,
+            load_failed: false,
         })))
     }
 
@@ -59,6 +66,7 @@ impl ModKvStore {
         Self(Arc::new(Mutex::new(KvInner {
             path: None,
             map: None,
+            load_failed: false,
         })))
     }
 
@@ -124,18 +132,26 @@ impl KvInner {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => {
                 // An unreadable-but-present file is NOT the same as an empty
-                // store — warn, otherwise the next `set` would silently
-                // persist the empty map over keys this process never read.
+                // store. Reads see empty so the mod keeps working, but the
+                // failure is recorded: `persist` must refuse to overwrite
+                // on-disk state with a map built from a read that never
+                // succeeded.
                 tracing::warn!(
-                    "mod kv file {} unreadable ({e}); treating as empty",
+                    "mod kv file {} unreadable ({e}); reads return empty and                      writes are refused until reload",
                     path.display()
                 );
+                self.load_failed = true;
                 BTreeMap::new()
             }
         });
     }
 
     fn persist(&self) -> std::io::Result<()> {
+        if self.load_failed {
+            return Err(std::io::Error::other(
+                "kv file was unreadable; refusing to overwrite on-disk state",
+            ));
+        }
         let Some(map) = &self.map else {
             return Ok(());
         };
@@ -159,11 +175,20 @@ impl KvInner {
 /// leaves an empty file behind the (atomic) rename point.
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::other(format!("kv path {} has no parent", path.display()))
     })?;
     std::fs::create_dir_all(parent)?;
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    // pid alone does not disambiguate two stores in the same process
+    // sharing a backing path (a reloaded global mod): the sequence number
+    // keeps concurrent temp files distinct.
+    let tmp = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut file = std::fs::File::create(&tmp)?;
     file.write_all(bytes)?;
     file.flush()?;
@@ -182,6 +207,29 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let kv = ModKvStore::new(dir.path().join("global-x.json"));
         assert!(kv.get("anything").is_none());
+    }
+
+    #[test]
+    fn unreadable_file_refuses_destructive_persist() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("global-x.json");
+            std::fs::write(&path, r#"{"keep":1}"#).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root (some CI) reads through mode 0 — the guard is
+            // unobservable there, so skip rather than fail.
+            if std::fs::read_to_string(&path).is_ok() {
+                return;
+            }
+            let kv = ModKvStore::new(path.clone());
+            kv.set("new", json!(2));
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let on_disk =
+                std::fs::read_to_string(&path).expect("original file still present");
+            assert_eq!(on_disk, r#"{"keep":1}"#);
+        }
     }
 
     #[test]
