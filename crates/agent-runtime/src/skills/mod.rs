@@ -520,9 +520,12 @@ impl SkillRegistry {
         }
 
         // Graceful degradation: no frontmatter fence found.
-        // Extract the first `# Heading` as the skill name.
-        let heading_re = regex::Regex::new(r"(?m)^#\s+(.+)$").expect("static regex is valid");
-        let name = heading_re
+        // Extract the first `# Heading` as the skill name. The regex is
+        // static — compile it once, not per parsed skill.
+        static HEADING_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?m)^#\s+(.+)$").expect("static regex is valid")
+        });
+        let name = HEADING_RE
             .captures(content)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string())

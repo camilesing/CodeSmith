@@ -97,7 +97,9 @@ pub fn filter_tool_call_delta(delta: &str, in_tool_call: &mut bool) -> String {
         return String::new();
     }
 
-    let mut output = String::new();
+    // Worst case the output is the whole delta; preallocate instead of
+    // growing through repeated reallocation on every stream chunk.
+    let mut output = String::with_capacity(delta.len());
     let mut rest = delta;
 
     loop {

@@ -557,12 +557,16 @@ pub fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeS
 #[must_use]
 pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
     let mut calls: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut answered: std::collections::HashSet<String> = std::collections::HashSet::new();
     for message in messages {
         for block in &message.content {
             match block {
                 ContentBlock::ToolUse { id, .. } => {
-                    if !calls.iter().any(|c| c == id) && !answered.contains(id) {
+                    // Set membership on the dedup side: transcripts carry
+                    // thousands of tool ids, and a linear scan per call made
+                    // this O(n²).
+                    if seen.insert(id.clone()) {
                         calls.push(id.clone());
                     }
                 }

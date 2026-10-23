@@ -121,37 +121,35 @@ impl PrefixStabilityManager {
         self.current = Some(frozen.clone());
         self.check_count += 1;
 
-        let Some(pinned) = self.pinned.clone() else {
-            // First check: pin now.
+        // First check: pin now. `is_none` first so the stable path below
+        // borrows `pinned` instead of cloning the whole fingerprint on
+        // every check.
+        if self.pinned.is_none() {
             self.pinned = Some(frozen.clone());
             self.last_change = None;
             return Ok(true);
-        };
+        }
 
+        let pinned = self.pinned.as_ref().expect("is_none handled above");
         if frozen.combined_sha256 == pinned.combined_sha256 {
             // Stable — no change.
-            Ok(true)
-        } else {
-            // Change detected. Compare components for the diagnosis.
-            let system_changed = frozen.system_text != pinned.system_text;
-            let tools_changed = frozen.tool_catalog != pinned.tool_catalog;
-
-            let change = PrefixChange {
-                old_sha256: pinned.combined_sha256,
-                new_sha256: frozen.combined_sha256.clone(),
-                system_changed,
-                tools_changed,
-            };
-
-            self.last_change = Some(change.clone());
-            self.change_count += 1;
-
-            // Re-pin to the new prefix so subsequent checks are
-            // against the latest baseline.
-            self.pinned = Some(frozen.clone());
-
-            Err(Box::new(change))
+            return Ok(true);
         }
+        // Change detected. Compare components for the diagnosis.
+        let system_changed = frozen.system_text != pinned.system_text;
+        let tools_changed = frozen.tool_catalog != pinned.tool_catalog;
+        let change = PrefixChange {
+            old_sha256: pinned.combined_sha256.clone(),
+            new_sha256: frozen.combined_sha256.clone(),
+            system_changed,
+            tools_changed,
+        };
+        self.last_change = Some(change.clone());
+        self.change_count += 1;
+        // Re-pin to the new prefix so subsequent checks are against the
+        // latest baseline.
+        self.pinned = Some(frozen.clone());
+        Err(Box::new(change))
     }
 
     /// Returns the most recent prefix change, if any.
