@@ -38,6 +38,41 @@ pub async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
     (kept, dropped)
 }
 
+/// Like [`read_capped`], but keeps the **last** `max` bytes — for log-style
+/// output whose actionable detail sits at the end (compiler/test failures).
+/// Memory peaks at 2×`max` (double-buffer swap), and each byte is copied at
+/// most twice. Returns `(kept_tail, dropped)`.
+pub async fn read_capped_tail<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> (Vec<u8>, usize) {
+    use tokio::io::AsyncReadExt;
+    let mut previous: Vec<u8> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
+    let mut dropped = 0usize;
+    let mut buf = vec![0u8; 8192];
+    loop {
+        let n = reader.read(&mut buf).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        if current.len() + n > max {
+            dropped += previous.len();
+            previous = std::mem::take(&mut current);
+        }
+        let take = n.min(max - current.len());
+        current.extend_from_slice(&buf[..take]);
+        dropped += n - take;
+    }
+    let mut kept = std::mem::take(&mut previous);
+    kept.extend_from_slice(&current);
+    if kept.len() > max {
+        dropped += kept.len() - max;
+        kept = kept[kept.len() - max..].to_vec();
+    }
+    (kept, dropped)
+}
+
 /// Resolve the effective user home directory.
 ///
 /// Checks `HOME` (Unix), `USERPROFILE` (Windows), and the

@@ -81,7 +81,7 @@ impl ToolSpec for GitStatusTool {
         }
 
         let command_str = format_command(&git_ctx.working_dir, &args);
-        let output = run_git_command(&git_ctx.working_dir, &args)?;
+        let output = run_git_command(&git_ctx.working_dir, &args).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -179,7 +179,7 @@ impl ToolSpec for GitDiffTool {
         }
 
         let command_str = format_command(&git_ctx.working_dir, &args);
-        let output = run_git_command(&git_ctx.working_dir, &args)?;
+        let output = run_git_command(&git_ctx.working_dir, &args).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -266,20 +266,44 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
     }
 }
 
-fn run_git_command(working_dir: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
-    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::command() else {
+/// Per-stream capture cap for git output: a pathological diff (minified
+/// churn) must not buffer whole into memory before the display truncation
+/// runs. Bounds memory; the head of the stream is what display keeps.
+const GIT_OUTPUT_CAP_BYTES: usize = 32 * 1024 * 1024;
+
+async fn run_git_command(working_dir: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::tokio_command() else {
         return Err(ToolError::not_available(
             "git is not installed or not in PATH",
         ));
     };
-    cmd.args(args).current_dir(working_dir);
-    cmd.output().map_err(|e| {
+    cmd.args(args)
+        .current_dir(working_dir)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ToolError::not_available("git is not installed or not in PATH")
         } else {
             ToolError::execution_failed(format!("Failed to run git: {e}"))
         }
-    })
+    })?;
+    let mut stdout = child.stdout.take().expect("stdout piped above");
+    let mut stderr = child.stderr.take().expect("stderr piped above");
+    let stdout_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped(&mut stdout, GIT_OUTPUT_CAP_BYTES).await
+    });
+    let stderr_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped(&mut stderr, GIT_OUTPUT_CAP_BYTES).await
+    });
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Failed to run git: {e}")))?;
+    let (stdout, _dropped_out) = stdout_task.await.unwrap_or_default();
+    let (stderr, _dropped_err) = stderr_task.await.unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
 }
 
 fn format_command(working_dir: &Path, args: &[String]) -> String {

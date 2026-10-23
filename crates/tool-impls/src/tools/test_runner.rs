@@ -151,25 +151,60 @@ impl ToolSpec for RunTestsTool {
 
 // === Helpers ===
 
+/// Per-stream capture cap for cargo output: builds can spray compiler
+/// chatter; the actionable failure detail lives at the END, so the tail is
+/// what gets kept. Bounds memory instead of buffering the whole stream.
+const CARGO_OUTPUT_CAP_BYTES: usize = 32 * 1024 * 1024;
+
 async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Output, ToolError> {
     let Some(mut cmd) = codesmith_agent_runtime::dependencies::Cargo::tokio_command() else {
         return Err(ToolError::not_available(
             "cargo is not installed or not in PATH",
         ));
     };
-    cmd.args(args).current_dir(workspace).kill_on_drop(true);
-    match tokio::time::timeout(CARGO_TEST_TIMEOUT, cmd.output()).await {
-        Ok(result) => result.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                ToolError::not_available("cargo is not installed or not in PATH")
-            } else {
-                ToolError::execution_failed(format!("Failed to run cargo: {e}"))
-            }
-        }),
-        Err(_) => Err(ToolError::Timeout {
-            seconds: CARGO_TEST_TIMEOUT.as_secs(),
-        }),
+    cmd.args(args)
+        .current_dir(workspace)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ToolError::not_available("cargo is not installed or not in PATH")
+        } else {
+            ToolError::execution_failed(format!("Failed to run cargo: {e}"))
+        }
+    })?;
+    let mut stdout = child.stdout.take().expect("stdout piped above");
+    let mut stderr = child.stderr.take().expect("stderr piped above");
+    let stdout_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped_tail(&mut stdout, CARGO_OUTPUT_CAP_BYTES).await
+    });
+    let stderr_task = tokio::spawn(async move {
+        codesmith_agent_runtime::utils::read_capped_tail(&mut stderr, CARGO_OUTPUT_CAP_BYTES).await
+    });
+    let status = match tokio::time::timeout(CARGO_TEST_TIMEOUT, child.wait()).await {
+        Ok(result) => result.map_err(|e| ToolError::execution_failed(format!(
+            "Failed to run cargo: {e}"
+        )))?,
+        Err(_) => {
+            return Err(ToolError::Timeout {
+                seconds: CARGO_TEST_TIMEOUT.as_secs(),
+            });
+        }
+    };
+    let (stdout, stdout_dropped) = stdout_task.await.unwrap_or_default();
+    let (stderr, stderr_dropped) = stderr_task.await.unwrap_or_default();
+    let mut stdout = stdout;
+    if stdout_dropped > 0 {
+        let note = format!("[… {stdout_dropped} earlier bytes of output not captured]\n");
+        stdout.splice(..0, note.into_bytes());
     }
+    let mut stderr = stderr;
+    if stderr_dropped > 0 {
+        let note = format!("[… {stderr_dropped} earlier bytes of output not captured]\n");
+        stderr.splice(..0, note.into_bytes());
+    }
+    Ok(std::process::Output { status, stdout, stderr })
 }
 
 fn format_command(workspace: &Path, args: &[String]) -> String {
