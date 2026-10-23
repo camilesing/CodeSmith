@@ -26,6 +26,20 @@ use std::sync::Mutex;
 
 static LOG_MUTEX: Mutex<()> = Mutex::new(());
 
+/// Mask credential-shaped runs (`API_KEY=…`, `--token …`, `Bearer …`) before
+/// a command line reaches the dispatcher log. Over-masking is the safe
+/// direction; a false negative persists for the file's lifetime.
+fn redact_command_credentials(command: &str) -> String {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?i)\b(?:api[\s_-]?keys?|access[\s_-]?tokens?|refresh[\s_-]?tokens?|client[\s_-]?secrets?|auth|tokens?|secrets?|passwords?|passwd|pwd)["']?\s*[=:]\s*\S+|\bbearer\s+\S+"#,
+        )
+        .expect("credential redaction regex compiles")
+    });
+    re.replace_all(command, "<redacted>").to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Shell kind
 // ---------------------------------------------------------------------------
@@ -132,9 +146,14 @@ impl ShellDispatcher {
     }
 
     /// Log a shell execution line when `SHELL_DISPATCHER_LOG` is set.
+    ///
+    /// The command line is scrubbed by [`redact_command_credentials`] first:
+    /// the log path is operator-chosen and the file outlives the process, so
+    /// a raw `curl -H "Authorization: Bearer …"`-style line would persist a
+    /// live credential in plaintext.
     pub fn log_exec(command: &str) {
         if let Ok(path) = std::env::var("SHELL_DISPATCHER_LOG") {
-            let _ = Self::append_log_static(&path, command);
+            let _ = Self::append_log_static(&path, &redact_command_credentials(command));
         }
     }
 
@@ -152,6 +171,19 @@ impl ShellDispatcher {
     }
 
     fn append_log(path: &str, line: &str) -> std::io::Result<()> {
+        // Owner-only on Unix: the log sits wherever the operator pointed it
+        // (possibly a world-readable scratch dir) and carries command lines.
+        // Mode applies at creation only.
+        #[cfg(unix)]
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(Path::new(path))?
+        };
+        #[cfg(not(unix))]
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -361,6 +393,19 @@ mod tests {
     fn detect_returns_some_shell() {
         let dispatcher = global_dispatcher();
         let _kind = dispatcher.kind();
+    }
+
+    #[test]
+    fn log_redaction_masks_credential_shapes() {
+        let line = redact_command_credentials(
+            r#"curl -H "Authorization: Bearer sk-live-abc" https://x/?api_key=sekrit -d password=hunter2"#,
+        );
+        assert!(!line.contains("sk-live-abc"), "bearer token leaked: {line}");
+        assert!(!line.contains("sekrit"), "api_key leaked: {line}");
+        assert!(!line.contains("hunter2"), "password leaked: {line}");
+        assert!(line.contains("curl"), "non-credential parts must survive: {line}");
+        // Plain commands pass through untouched.
+        assert_eq!(redact_command_credentials("cargo build --release"), "cargo build --release");
     }
 
     #[test]

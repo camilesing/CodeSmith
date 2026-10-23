@@ -424,6 +424,27 @@ fn gh_bin() -> String {
     crate::dependencies::Gh::resolve().unwrap_or_else(|| "gh".to_string())
 }
 
+/// Render gh args for an error line without echoing payload values: the arg
+/// after `--body` (a full comment/PR body) is replaced with a placeholder and
+/// credential-shaped runs are scrubbed. Error strings reach the transcript
+/// and the user's terminal verbatim.
+fn error_args_label(args: &[&str]) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(args.len());
+    let mut elide_next = false;
+    for arg in args {
+        if elide_next {
+            parts.push("<body>".to_string());
+            elide_next = false;
+        } else if *arg == "--body" {
+            parts.push((*arg).to_string());
+            elide_next = true;
+        } else {
+            parts.push(crate::doctor_llm::redact_credentials(arg));
+        }
+    }
+    parts.join(" ")
+}
+
 async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
     let out = tokio::time::timeout(
         GH_TIMEOUT,
@@ -437,7 +458,7 @@ async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, Too
     .map_err(|_| {
         ToolError::execution_failed(format!(
             "gh {} timed out after {}s",
-            args.join(" "),
+            error_args_label(args),
             GH_TIMEOUT.as_secs()
         ))
     })?
@@ -451,7 +472,7 @@ async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, Too
     if !out.status.success() {
         return Err(ToolError::execution_failed(format!(
             "gh {} failed: {}",
-            args.join(" "),
+            error_args_label(args),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }

@@ -95,6 +95,11 @@ fn redact_sensitive_keys(value: Value) -> Value {
                 .collect(),
         ),
         Value::Array(arr) => Value::Array(arr.into_iter().map(redact_sensitive_keys).collect()),
+        // Key-name redaction alone misses tokens that ride *inside* an
+        // innocuous string value — a URL query credential or an embedded
+        // `Bearer …` header. Scrub credential-shaped runs in string values
+        // too; over-masking stays the safe direction.
+        Value::String(text) => Value::String(crate::doctor_llm::redact_credentials(&text)),
         other => other,
     }
 }
@@ -131,5 +136,20 @@ mod tests {
         assert_eq!(out["provider"], "deepseek");
         assert_eq!(out["nested"]["model"], "deepseek-chat");
         assert_eq!(out["items"][0]["name"], "ok");
+    }
+
+    #[test]
+    fn redacts_tokens_inside_string_values() {
+        let input = json!({
+            "url": "https://example.com/v1?api_key=sk-live-xyz",
+            "header_line": "Authorization: Bearer abc.def.ghi",
+            "plain": "nothing to mask"
+        });
+        let out = redact_sensitive_keys(input);
+        let url = out["url"].as_str().unwrap();
+        assert!(!url.contains("sk-live-xyz"), "query credential leaked: {url}");
+        let header = out["header_line"].as_str().unwrap();
+        assert!(!header.contains("abc.def.ghi"), "bearer token leaked: {header}");
+        assert_eq!(out["plain"], "nothing to mask");
     }
 }

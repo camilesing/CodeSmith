@@ -213,7 +213,7 @@ fn redact_home(text: &str) -> String {
 /// (`api_keys=`) are covered by the `keys?`/`sig`/`signature` members —
 /// a `key=`/`sig=` param IS a credential, so masking it is the declared
 /// safe direction, not collateral.
-fn redact_credentials(text: &str) -> String {
+pub(crate) fn redact_credentials(text: &str) -> String {
     static CREDENTIAL_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = CREDENTIAL_RUN.get_or_init(|| {
         regex::Regex::new(

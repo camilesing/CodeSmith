@@ -378,11 +378,49 @@ fn resolve_auth_token(options: &AppServerOptions) -> Result<Option<String>> {
     if options.auth_token.is_some() {
         eprintln!("app-server auth: bearer token required for HTTP routes.");
     } else {
+        // The generated token never goes to stderr: service managers and
+        // containers persist stderr verbatim, which outlives the process.
+        // It is written to a 0600 file instead; failing to persist it is a
+        // hard error (the operator would have no way to learn it otherwise
+        // — pass --auth-token or CODESMITH_APP_SERVER_TOKEN to choose one).
+        let token_path = write_generated_token_file(&token)?;
         eprintln!("app-server auth: generated bearer token for this process.");
-        eprintln!("  Authorization: Bearer {token}");
+        eprintln!("  Token written to {} (mode 0600); use it as `Authorization: Bearer <token>`.", token_path.display());
         eprintln!("  Pass --auth-token or set CODESMITH_APP_SERVER_TOKEN for a stable token.");
     }
     Ok(Some(token))
+}
+
+/// Persist a generated app-server token to `~/.codesmith/app-server.token`
+/// (0600, owner-only) and return the path.
+fn write_generated_token_file(token: &str) -> Result<PathBuf> {
+    let home = codesmith_config::codesmith_home()
+        .map_err(|err| anyhow::anyhow!("cannot locate codesmith home for token file: {err}"))?;
+    std::fs::create_dir_all(&home)
+        .map_err(|err| anyhow::anyhow!("cannot create {}: {err}", home.display()))?;
+    let path = home.join("app-server.token");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|err| anyhow::anyhow!("cannot create {}: {err}", path.display()))?;
+        // Newline makes `cat`/`$(<file)` reads convenient; consumers trim.
+        file.write_all(token.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .map_err(|err| anyhow::anyhow!("cannot write {}: {err}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, format!("{token}\n"))
+            .map_err(|err| anyhow::anyhow!("cannot write {}: {err}", path.display()))?;
+    }
+    Ok(path)
 }
 
 fn cors_layer(extra_origins: &[String]) -> CorsLayer {

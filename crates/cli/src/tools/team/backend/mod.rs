@@ -302,9 +302,15 @@ pub fn selected_pane_backend() -> Option<Box<dyn TeammateBackend>> {
 /// pane backend writes into the new pane (tmux runs it via `sh -c`; iTerm2
 /// types it into an interactive shell). The prompt is taken from
 /// `prompt_file` rather than inlined, so arbitrarily long / hostile prompts
-/// never touch the command line.
+/// never touch the command line. Likewise, `env_file` (see
+/// [`write_env_file`]) is sourced-and-unlinked by the wrapper prefix instead
+/// of putting `KEY=VALUE` pairs on any argv.
 #[must_use]
-pub(crate) fn build_team_teammate_command(spec: &TeammateSpawnSpec, prompt_file: &Path) -> String {
+pub(crate) fn build_team_teammate_command(
+    spec: &TeammateSpawnSpec,
+    prompt_file: &Path,
+    env_file: Option<&Path>,
+) -> String {
     let bin = shell_quote(&spec.codesmith_bin.to_string_lossy());
     let mut parts = vec![
         bin,
@@ -334,7 +340,18 @@ pub(crate) fn build_team_teammate_command(spec: &TeammateSpawnSpec, prompt_file:
         parts.push("--allowed-tools".to_string());
         parts.push(shell_quote(&allowed.join(",")));
     }
-    parts.join(" ")
+    let command = parts.join(" ");
+    match env_file {
+        // `set -a` exports every assignment sourced from the env file; the
+        // `rm -f` right after keeps the 0600 file from outliving its use
+        // even when the teammate binary fails to start.
+        Some(path) => format!(
+            "set -a; . {}; set +a; rm -f {}; {command}",
+            shell_quote(&path.to_string_lossy()),
+            shell_quote(&path.to_string_lossy())
+        ),
+        None => command,
+    }
 }
 
 /// POSIX single-quote shell quoting: wrap in `'…'` and escape any embedded
@@ -391,6 +408,67 @@ pub(crate) fn write_prompt_file(
         message: format!("failed to persist prompt file for {agent_id}: {e}"),
     })?;
     Ok(path)
+}
+
+/// Write the teammate's extra env vars to a 0600 temp file (one
+/// `KEY='value'` shell assignment per line) and return its path, or `None`
+/// when there is nothing to propagate. Sibling of [`write_prompt_file`]:
+/// pane commands source-and-unlink the file on startup, so values (API keys,
+/// proxy credentials) never ride an argv or a typed command line where
+/// `ps`/shoulder-surfing can read them.
+///
+/// Keys must be plain shell identifiers and values must be newline-free —
+/// anything else is skipped (a dropped var fails loudly at use time, a
+/// malformed assignment line could inject shell code).
+pub(crate) fn write_env_file(
+    backend: &'static str,
+    agent_id: &str,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<Option<PathBuf>, BackendError> {
+    if env.is_empty() {
+        return Ok(None);
+    }
+    let mut body = String::new();
+    for (key, value) in env {
+        if !is_shell_identifier(key) || value.contains('\n') || value.contains('\0') {
+            continue;
+        }
+        body.push_str(key);
+        body.push('=');
+        body.push_str(&shell_quote(value));
+        body.push('\n');
+    }
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("codesmith-team-env-{agent_id}-"))
+        .suffix(".env")
+        .tempfile_in(std::env::temp_dir())
+        .map_err(|e| BackendError::SpawnFailed {
+            backend,
+            message: format!("failed to create env file for {agent_id}: {e}"),
+        })?;
+    std::io::Write::write_all(&mut file, body.as_bytes()).map_err(|e| BackendError::SpawnFailed {
+        backend,
+        message: format!("failed to write env file for {agent_id}: {e}"),
+    })?;
+    let (_, path) = file.keep().map_err(|e| BackendError::SpawnFailed {
+        backend,
+        message: format!("failed to persist env file for {agent_id}: {e}"),
+    })?;
+    Ok(Some(path))
+}
+
+/// True when `ident` is usable as a shell variable name (letters, digits,
+/// underscore, not starting with a digit).
+#[must_use]
+pub(crate) fn is_shell_identifier(ident: &str) -> bool {
+    !ident.is_empty()
+        && !ident.starts_with(|c: char| c.is_ascii_digit())
+        && ident
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]

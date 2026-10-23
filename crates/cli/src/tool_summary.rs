@@ -11,6 +11,23 @@
 
 use serde_json::Value;
 
+/// Keys whose values are credentials by definition and never render in a
+/// summary line (the fallback path iterates arbitrary tool keys).
+const SENSITIVE_ARG_KEYS: &[&str] = &[
+    "token",
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "authorization",
+    "credential",
+];
+
+fn is_sensitive_arg_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    SENSITIVE_ARG_KEYS.iter().any(|marker| lower.contains(marker))
+}
+
 /// Summarize tool-call arguments as `key: value` pairs for one line.
 pub fn summarize_tool_args(input: &Value) -> Option<String> {
     let obj = input.as_object()?;
@@ -27,8 +44,12 @@ pub fn summarize_tool_args(input: &Value) -> Option<String> {
     }
     if parts.is_empty() {
         // Fall back to the first few keys so unknown tools still show
-        // something recognizable.
-        for (key, value) in obj.iter().take(3) {
+        // something recognizable — but never a credential-shaped key.
+        for (key, value) in obj
+            .iter()
+            .filter(|(key, _)| !is_sensitive_arg_key(key))
+            .take(3)
+        {
             parts.push(format!("{key}: {}", summarize_inline_value(value, 60)));
         }
     }
@@ -40,7 +61,10 @@ fn summarize_inline_value(value: &Value, max_columns: usize) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    truncate_columns(&text, max_columns)
+    // Commands and URLs can carry inline credentials (`Bearer …`,
+    // `?api_key=…`); a summary line lands on the terminal verbatim.
+    let scrubbed = crate::doctor_llm::redact_credentials(&text);
+    truncate_columns(&scrubbed, max_columns)
 }
 
 /// Summarize a tool output for one line: the first informative line,
@@ -186,5 +210,21 @@ mod tests {
         let mut rec = record(Some("ok"), None);
         rec.args_summary = None;
         assert!(tool_detail_block(&rec, 10).starts_with("#3 read_file\n"));
+    }
+
+    #[test]
+    fn summaries_redact_inline_credentials() {
+        let args = serde_json::json!({
+            "command": "curl -H 'Authorization: Bearer sk-live-abc' https://x/?api_key=sekrit"
+        });
+        let summary = summarize_tool_args(&args).unwrap();
+        assert!(!summary.contains("sk-live-abc"), "bearer leaked: {summary}");
+        assert!(!summary.contains("sekrit"), "api_key leaked: {summary}");
+
+        // Credential-shaped keys never render in the fallback path either.
+        let fallback = serde_json::json!({ "token": "sk-live-abc", "label": "upload" });
+        let summary = summarize_tool_args(&fallback).unwrap();
+        assert!(!summary.contains("sk-live-abc"), "token leaked: {summary}");
+        assert!(summary.contains("label"), "non-sensitive fallback lost: {summary}");
     }
 }

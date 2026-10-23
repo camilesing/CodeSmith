@@ -387,6 +387,41 @@ fn wire_summary(request_body: &serde_json::Value) -> serde_json::Value {
 /// The dump holds the full serialized request rig was about to send plus the
 /// provider's error body — the evidence needed to diagnose strict-provider
 /// 400s (e.g. GLM 1214 "messages 参数非法") that only surface mid-session.
+/// Mask credentials a request URI can carry — `user:pass@` userinfo and
+/// credential-looking query parameters (`?key=…`, Gemini-style) — before the
+/// URI reaches the forensic dump or a log line. Both outlive the request.
+fn redact_uri_for_diagnostics(uri: &str) -> String {
+    let no_userinfo = match uri.find("://") {
+        Some(scheme_end) => {
+            let rest = &uri[scheme_end + 3..];
+            match rest.find('@') {
+                Some(at) => format!("{}://***@{}", &uri[..scheme_end], &rest[at + 1..]),
+                None => uri.to_string(),
+            }
+        }
+        None => uri.to_string(),
+    };
+    let Some((base, query)) = no_userinfo.split_once('?') else {
+        return no_userinfo;
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split('=').next().unwrap_or("");
+            !matches!(
+                key.to_ascii_lowercase().as_str(),
+                "key" | "api_key" | "apikey" | "token" | "access_token" | "signature" | "sig"
+                    | "secret"
+            )
+        })
+        .collect();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    }
+}
+
 fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_body: &str) {
     if !env_flag_enabled(std::env::var("CODESMITH_DUMP_400_PAYLOAD").ok().as_deref()) {
         return;
@@ -403,7 +438,7 @@ fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_
     let request_body: serde_json::Value = serde_json::from_slice(&spec.body)
         .unwrap_or_else(|error| serde_json::json!({ "parse_error": error.to_string() }));
     let dump = serde_json::json!({
-        "uri": spec.uri,
+        "uri": redact_uri_for_diagnostics(&spec.uri),
         "status": status.as_u16(),
         "response_body": response_body,
         "request_body": request_body,
@@ -445,7 +480,7 @@ fn dump_failed_request(spec: &ReplaySpec, status: reqwest::StatusCode, response_
     }
     let summary = wire_summary(&request_body);
     tracing::error!(
-        uri = %spec.uri,
+        uri = %redact_uri_for_diagnostics(&spec.uri),
         status = status.as_u16(),
         message_count = summary["message_count"].as_u64().unwrap_or(0),
         tool_call_count = summary["tool_call_count"].as_u64().unwrap_or(0),

@@ -16,7 +16,7 @@ use tokio::process::Command;
 
 use super::{
     BackendError, BackendKind, SpawnedTeammate, TeammateBackend, TeammateHandle, TeammateSpawnSpec,
-    build_team_teammate_command, shell_quote, write_prompt_file,
+    build_team_teammate_command, shell_quote, write_env_file, write_prompt_file,
 };
 
 /// Stateless iTerm2 tab backend.
@@ -42,17 +42,24 @@ impl TeammateBackend for ITermBackend {
 
     async fn spawn(&self, spec: &TeammateSpawnSpec) -> Result<SpawnedTeammate, BackendError> {
         spec.validate()?;
-        // Sync temp-file write, offloaded off the async executor.
+        // Sync temp-file writes, offloaded off the async executor. The env
+        // file keeps API keys off the AppleScript text (visible in the
+        // terminal and on osascript's argv).
         let agent_id = spec.agent_id.clone();
         let prompt = spec.prompt.clone();
-        let prompt_file =
-            tokio::task::spawn_blocking(move || write_prompt_file("iterm", &agent_id, &prompt))
-                .await
-                .map_err(|e| BackendError::SpawnFailed {
-                    backend: "iterm",
-                    message: format!("prompt-file task failed: {e}"),
-                })??;
-        let script = build_applescript(spec, &prompt_file);
+        let agent_env = spec.env.clone();
+        let (prompt_file, env_file) =
+            tokio::task::spawn_blocking(move || {
+                let prompt_file = write_prompt_file("iterm", &agent_id, &prompt)?;
+                let env_file = write_env_file("iterm", &agent_id, &agent_env)?;
+                Ok::<_, BackendError>((prompt_file, env_file))
+            })
+            .await
+            .map_err(|e| BackendError::SpawnFailed {
+                backend: "iterm",
+                message: format!("prompt-file task failed: {e}"),
+            })??;
+        let script = build_applescript(spec, &prompt_file, env_file.as_deref());
 
         // Bound the osascript call: a first-run Automation-permission dialog
         // (or a hung iTerm2) used to block indefinitely with no cancellation
@@ -71,9 +78,13 @@ impl TeammateBackend for ITermBackend {
             Ok(result) => match result {
                 Ok(output) => output,
                 Err(e) => {
-                    // osascript never ran, so nothing will unlink the prompt
-                    // file — remove it here rather than leaking content.
+                    // osascript never ran, so nothing will unlink the
+                    // prompt/env files — remove them here rather than
+                    // leaking content.
                     let _ = tokio::fs::remove_file(&prompt_file).await;
+                    if let Some(env_file) = &env_file {
+                        let _ = tokio::fs::remove_file(env_file).await;
+                    }
                     return Err(BackendError::Unavailable {
                         backend: "iterm",
                         message: format!("failed to invoke osascript: {e}"),
@@ -82,6 +93,9 @@ impl TeammateBackend for ITermBackend {
             },
             Err(_) => {
                 let _ = tokio::fs::remove_file(&prompt_file).await;
+                if let Some(env_file) = &env_file {
+                    let _ = tokio::fs::remove_file(env_file).await;
+                }
                 return Err(BackendError::SpawnFailed {
                     backend: "iterm",
                     message: "osascript timed out after 30s (Automation permission prompt \
@@ -93,9 +107,13 @@ impl TeammateBackend for ITermBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // The pane never started, so nothing will unlink the prompt
-            // file — remove it here rather than leaking prompt content.
+            // The pane never started, so nothing will unlink the
+            // prompt/env files — remove them here rather than leaking
+            // content.
             let _ = tokio::fs::remove_file(&prompt_file).await;
+            if let Some(env_file) = &env_file {
+                let _ = tokio::fs::remove_file(env_file).await;
+            }
             return Err(BackendError::SpawnFailed {
                 backend: "iterm",
                 message: format!("osascript exited {}: {stderr}", output.status),
@@ -105,6 +123,9 @@ impl TeammateBackend for ITermBackend {
         let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if session_id.is_empty() {
             let _ = tokio::fs::remove_file(&prompt_file).await;
+            if let Some(env_file) = &env_file {
+                let _ = tokio::fs::remove_file(env_file).await;
+            }
             return Err(BackendError::SpawnFailed {
                 backend: "iterm",
                 message: "osascript did not return a session id".to_string(),
@@ -124,32 +145,24 @@ impl TeammateBackend for ITermBackend {
 /// Build the AppleScript that opens a new iTerm2 tab (or window when none
 /// exists), types the teammate command into it, and returns the new
 /// session's id.
+///
+/// Env vars are propagated via the 0600 `env_file` (sourced by the typed
+/// command's wrapper), not as `KEY='value'` prefix words: the typed command
+/// is echoed to the terminal and the whole AppleScript rides `osascript`'s
+/// argv, both readable by anyone looking.
 #[must_use]
-pub fn build_applescript(spec: &TeammateSpawnSpec, prompt_file: &Path) -> String {
-    // Propagate spec.env the way the tmux backend does (`split-window -e`):
-    // the new tab's login shell otherwise inherits only the user's login
-    // environment, not the leader's, so env-var configuration (e.g. proxy
-    // or API-key settings) would silently never reach iTerm teammates.
-    // Keys must be plain shell identifiers — quoting a key would produce an
-    // invalid assignment word — so anything else is skipped.
-    let mut env_prefix = String::new();
-    for (k, v) in &spec.env {
-        if !is_shell_identifier(k) {
-            continue;
-        }
-        env_prefix.push_str(k);
-        env_prefix.push('=');
-        env_prefix.push_str(&shell_quote(v));
-        env_prefix.push(' ');
-    }
+pub fn build_applescript(
+    spec: &TeammateSpawnSpec,
+    prompt_file: &Path,
+    env_file: Option<&Path>,
+) -> String {
     // The shell command typed into the new tab: cd into the teammate cwd,
     // then run the codesmith team-teammate subcommand. `write text` sends
     // this to the interactive shell, so the user can watch / interrupt it.
     let shell_cmd = format!(
-        "cd {} && {}{}",
+        "cd {} && {}",
         shell_quote(&spec.cwd.to_string_lossy()),
-        env_prefix,
-        build_team_teammate_command(spec, prompt_file)
+        build_team_teammate_command(spec, prompt_file, env_file)
     );
     let escaped = applescript_escape(&shell_cmd);
     format!(
@@ -163,21 +176,12 @@ pub fn build_applescript(spec: &TeammateSpawnSpec, prompt_file: &Path) -> String
          \t\tset theSession to current session of (create tab with default profile)\n\
          \tend if\n\
          \trepeat until (length of (contents of theSession)) > 0\n\
-         \t\tdelay 0.05\n\
+         \t\t\tdelay 0.05\n\
          \tend repeat\n\
          \twrite theSession text \"{escaped}\"\n\
          \treturn id of theSession\n\
          end tell"
     )
-}
-
-/// A conservative shell-identifier check (`[A-Za-z_][A-Za-z0-9_]*`), used
-/// to decide which env keys can safely become `KEY=value` assignment words
-/// in the typed command.
-fn is_shell_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Escape a string for safe embedding inside an AppleScript double-quoted
@@ -223,7 +227,7 @@ mod tests {
     #[test]
     fn script_creates_tab_when_window_exists() {
         let spec = sample_spec();
-        let script = build_applescript(&spec, Path::new("/tmp/p.txt"));
+        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), None);
         assert!(script.contains("tell application \"iTerm\""));
         assert!(script.contains("if (count of windows) is 0 then"));
         assert!(script.contains("create window with default profile"));
@@ -236,28 +240,36 @@ mod tests {
     }
 
     #[test]
-    fn script_prefixes_env_assignments_for_valid_identifiers_only() {
+    fn script_never_embeds_env_values() {
+        // Env values ride the 0600 env file (passed at spawn), never the
+        // typed/echoed AppleScript text.
         let mut spec = sample_spec();
         spec.env = std::collections::HashMap::from([
             ("DEEPSEEK_API_KEY".to_string(), "sk-test x".to_string()),
             ("9BAD".to_string(), "leading digit".to_string()),
-            ("A=B".to_string(), "splitter".to_string()),
-            ("with space".to_string(), "space".to_string()),
         ]);
-        let script = build_applescript(&spec, Path::new("/tmp/p.txt"));
+        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), None);
         assert!(
-            script.contains("cd '/repo' && DEEPSEEK_API_KEY='sk-test x' "),
-            "script = {script}"
+            !script.contains("sk-test") && !script.contains("DEEPSEEK_API_KEY"),
+            "env leaked into script: {script}"
         );
-        assert!(!script.contains("9BAD"));
-        assert!(!script.contains("A=B"));
-        assert!(!script.contains("with space"));
+        assert!(script.contains("cd '/repo' && 'codesmith' team-teammate"));
+    }
+
+    #[test]
+    fn script_sources_env_file_when_provided() {
+        let spec = sample_spec();
+        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), Some(Path::new("/tmp/t.env")));
+        assert!(
+            script.contains("set -a; . '/tmp/t.env'; set +a; rm -f '/tmp/t.env'"),
+            "env wrapper missing: {script}"
+        );
     }
 
     #[test]
     fn script_embeds_cd_and_team_teammate_command() {
         let spec = sample_spec();
-        let script = build_applescript(&spec, Path::new("/tmp/p.txt"));
+        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), None);
         // The embedded shell command cd's into the cwd then runs the subcommand.
         assert!(script.contains("cd '/repo'"));
         assert!(script.contains("codesmith' team-teammate"));
@@ -275,7 +287,7 @@ mod tests {
         // must be escaped.
         let mut spec = sample_spec();
         spec.cwd = PathBuf::from("/repo/\"weird\"");
-        let script = build_applescript(&spec, Path::new("/tmp/p.txt"));
+        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), None);
         assert!(script.contains("\\\"weird\\\""));
         assert!(!script.contains("text \"/repo/\"weird\""));
     }

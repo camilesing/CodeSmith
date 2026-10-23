@@ -402,10 +402,22 @@ impl ProviderAlias {
 /// host matching rejected loopback spellings real clients accept
 /// (`127.0.0.2`, `::ffff:127.0.0.1`, expanded `0:0:0:0:0:0:0:1`).
 pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
+    // The rejection message must not echo the credential it rejects: mask
+    // any `user:pass@` before the URL reaches the error string.
+    let shown = match url.find("://") {
+        Some(scheme_end) => {
+            let rest = &url[scheme_end + 3..];
+            match rest.find('@') {
+                Some(at) => format!("{}://***@{}", &url[..scheme_end], &rest[at + 1..]),
+                None => url.to_string(),
+            }
+        }
+        None => url.to_string(),
+    };
     let reject = |reason: &str| {
         Err(format!(
             "base_url must be https:// (or an http:// loopback address for \
-             local gateways) — got {url:?}{reason}; the alias sends the \
+             local gateways) — got {shown:?}{reason}; the alias sends the \
              user's api_key and full prompts to this URL"
         ))
     };
