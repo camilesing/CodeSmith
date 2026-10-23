@@ -5600,7 +5600,7 @@ pub(crate) async fn resolve_cli_auto_route(
             model: model.to_string(),
             reasoning_effort: config
                 .reasoning_effort()
-                .map(crate::app_state::ReasoningEffort::from_setting),
+                .and_then(crate::app_state::ReasoningEffort::from_setting),
             auto_model: false,
         }
     }

@@ -327,7 +327,12 @@ impl ReplState {
             ReasoningEffort::Auto
         } else {
             configured_reasoning_effort.map_or_else(ReasoningEffort::default, |s| {
-                ReasoningEffort::from_setting(s)
+                ReasoningEffort::from_setting(s).unwrap_or_else(|| {
+                    crate::logging::warn(format!(
+                        "unknown reasoning_effort {s:?}; falling back to max"
+                    ));
+                    ReasoningEffort::default()
+                })
             })
         };
 
@@ -342,7 +347,15 @@ impl ReplState {
         {
             AppMode::Coordinator
         } else {
-            AppMode::from_setting(&settings.default_mode)
+            AppMode::from_setting(&settings.default_mode).unwrap_or_else(|| {
+                if !settings.default_mode.trim().is_empty() {
+                    crate::logging::warn(format!(
+                        "unknown default_mode {:?}; falling back to agent",
+                        settings.default_mode
+                    ));
+                }
+                AppMode::Agent
+            })
         };
 
         let allow_shell = allow_shell || initial_mode == AppMode::Yolo;
@@ -691,7 +704,12 @@ impl ReplState {
         };
         let definition = &loaded.definition;
         if let Some(app_mode) = &definition.app_mode {
-            self.set_mode(AppMode::from_setting(app_mode));
+            self.set_mode(AppMode::from_setting(app_mode).unwrap_or_else(|| {
+                crate::logging::warn(format!(
+                    "preset {name:?} has unknown app_mode {app_mode:?}; staying on agent"
+                ));
+                AppMode::Agent
+            }));
         }
         match &definition.tools {
             Some(tools) => {

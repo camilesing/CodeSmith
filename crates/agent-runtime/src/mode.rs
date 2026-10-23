@@ -23,13 +23,17 @@ pub enum AppMode {
 }
 
 impl AppMode {
+    /// Parse a config/UI string. `None` for unrecognized spellings — a typo
+    /// must be reported by the caller, not silently mapped to `Agent` (full
+    /// tool access).
     #[must_use]
-    pub fn from_setting(value: &str) -> Self {
+    pub fn from_setting(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "yolo" => Self::Yolo,
-            "coordinator" | "coordinator_mode" => Self::Coordinator,
-            _ => Self::Agent,
+            "agent" => Some(Self::Agent),
+            "plan" => Some(Self::Plan),
+            "yolo" => Some(Self::Yolo),
+            "coordinator" | "coordinator_mode" => Some(Self::Coordinator),
+            _ => None,
         }
     }
 
@@ -131,18 +135,19 @@ pub enum ReasoningEffort {
 }
 
 impl ReasoningEffort {
-    /// Parse a config-file string into an effort tier. Unknown values fall
-    /// back to the default (`Max`) rather than erroring out.
+    /// Parse a config-file string into an effort tier. `None` for
+    /// unrecognized spellings — callers warn and fall back to the default
+    /// (`Max`) instead of the parse silently choosing a tier.
     #[must_use]
-    pub fn from_setting(value: &str) -> Self {
+    pub fn from_setting(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "off" | "disabled" | "none" | "false" => Self::Off,
-            "low" | "minimal" => Self::Low,
-            "medium" | "mid" => Self::Medium,
-            "high" => Self::High,
-            "auto" | "automatic" => Self::Auto,
-            "max" | "maximum" | "xhigh" => Self::Max,
-            _ => Self::default(),
+            "off" | "disabled" | "none" | "false" => Some(Self::Off),
+            "low" | "minimal" => Some(Self::Low),
+            "medium" | "mid" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "auto" | "automatic" => Some(Self::Auto),
+            "max" | "maximum" | "xhigh" => Some(Self::Max),
+            _ => None,
         }
     }
 
@@ -194,7 +199,7 @@ impl ReasoningEffort {
 
 #[cfg(test)]
 mod tests {
-    use super::AppMode;
+    use super::{AppMode, ReasoningEffort};
 
     #[test]
     fn cycle_next_walks_the_repl_ring() {
@@ -207,5 +212,17 @@ mod tests {
         assert_eq!(AppMode::Coordinator.cycle_next(true), AppMode::Agent);
         // Sitting in coordinator with the feature off still exits the ring.
         assert_eq!(AppMode::Coordinator.cycle_next(false), AppMode::Agent);
+    }
+
+    #[test]
+    fn from_setting_rejects_typos_instead_of_defaulting() {
+        assert_eq!(AppMode::from_setting("agent"), Some(AppMode::Agent));
+        assert_eq!(AppMode::from_setting("PLAN"), Some(AppMode::Plan));
+        assert_eq!(AppMode::from_setting("yolo"), Some(AppMode::Yolo));
+        // A typo must not land the session in full-access Agent silently.
+        assert_eq!(AppMode::from_setting("yoloo"), None);
+        assert_eq!(AppMode::from_setting("agentic"), None);
+        assert_eq!(ReasoningEffort::from_setting("hgh"), None);
+        assert_eq!(ReasoningEffort::from_setting("max "), Some(ReasoningEffort::Max));
     }
 }

@@ -219,7 +219,13 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
             );
         }
         "reasoning_effort" | "effort" => {
-            let effort = ReasoningEffort::from_setting(value);
+            let Some(effort) = ReasoningEffort::from_setting(value) else {
+                println!(
+                    "{} unknown effort {value:?} — usage: /config reasoning_effort off|low|medium|high|auto|max",
+                    "✗".red(),
+                );
+                return;
+            };
             state.reasoning_effort = effort;
             state.update_model_compaction_budget();
             if persist {
@@ -457,7 +463,8 @@ pub fn effort(state: &mut ReplState, arg: Option<&str>) {
         );
         return;
     }
-    let effort = ReasoningEffort::from_setting(&value);
+    let effort = ReasoningEffort::from_setting(&value)
+        .expect("value validated against `accepted` above");
     state.reasoning_effort = effort;
     state.update_model_compaction_budget();
     if effort == ReasoningEffort::Max {
