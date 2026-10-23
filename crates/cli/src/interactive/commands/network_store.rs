@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use toml::Value;
 
-use codesmith_agent_runtime::network_policy::host_from_url;
+use codesmith_agent_runtime::network_policy::{host_from_url, normalize_host};
 
 pub(crate) fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
     let raw = arg.map(str::trim).unwrap_or("");
@@ -166,16 +166,13 @@ fn network_table_mut(doc: &mut Value) -> anyhow::Result<&mut toml::value::Table>
     let entry = root
         .entry("network".to_string())
         .or_insert_with(|| Value::Table(toml::value::Table::new()));
-    let table = entry
+    // No default/audit keys are inserted here: the runtime's deserialization
+    // applies those defaults when the keys are absent, and writing them
+    // unconditionally mutated keys the user never asked to change on every
+    // `/network allow <host>` edit.
+    entry
         .as_table_mut()
-        .context("`network` section in config.toml must be a table")?;
-    table
-        .entry("default".to_string())
-        .or_insert_with(|| Value::String("prompt".to_string()));
-    table
-        .entry("audit".to_string())
-        .or_insert_with(|| Value::Boolean(true));
-    Ok(table)
+        .context("`network` section in config.toml must be a table")
 }
 
 fn string_array(table: &toml::value::Table, key: &str) -> Vec<String> {
@@ -206,7 +203,7 @@ fn add_host(table: &mut toml::value::Table, key: &str, host: &str) -> anyhow::Re
     if !list
         .iter()
         .filter_map(Value::as_str)
-        .any(|existing| normalize_host_for_compare(existing) == host)
+        .any(|existing| normalize_host(existing) == host)
     {
         list.push(Value::String(host.to_string()));
     }
@@ -218,14 +215,18 @@ fn remove_host(table: &mut toml::value::Table, key: &str, host: &str) -> anyhow:
     list.retain(|value| {
         value
             .as_str()
-            .is_none_or(|existing| normalize_host_for_compare(existing) != host)
+            .is_none_or(|existing| normalize_host(existing) != host)
     });
     Ok(())
 }
 
 fn normalize_host_arg(input: &str) -> anyhow::Result<String> {
     let trimmed = input.trim();
-    let host = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    // Scheme detection is case-insensitive (RFC 3986 schemes): `HTTPS://…`
+    // used to fall through to the "not a URL path" bail even though the
+    // URL parser behind it accepts uppercase schemes.
+    let lower = trimmed.to_ascii_lowercase();
+    let host = if lower.starts_with("http://") || lower.starts_with("https://") {
         host_from_url(trimmed).context("URL must include a host")?
     } else {
         if trimmed.contains("://") || trimmed.contains('/') {
@@ -234,20 +235,11 @@ fn normalize_host_arg(input: &str) -> anyhow::Result<String> {
         trimmed.to_string()
     };
 
-    let normalized = normalize_host_for_compare(&host);
+    let normalized = normalize_host(&host);
     if normalized.is_empty() {
         bail!("host cannot be empty");
     }
     Ok(normalized)
-}
-
-fn normalize_host_for_compare(host: &str) -> String {
-    let trimmed = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if let Some(rest) = trimmed.strip_prefix("*.") {
-        format!(".{rest}")
-    } else {
-        trimmed
-    }
 }
 
 fn display_list(values: &[String]) -> String {

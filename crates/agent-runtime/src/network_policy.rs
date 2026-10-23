@@ -308,7 +308,11 @@ impl NetworkPolicy {
 /// are written that way in config (we treat both as subdomain wildcards on
 /// the *match* side, but on input normalization we keep the leading dot so
 /// `host_matches` can detect the wildcard intent).
-fn normalize_host(host: &str) -> String {
+/// Normalize a host for comparison and storage: trim, drop the FQDN dot,
+/// lowercase, and turn a `*.` wildcard prefix into the leading-dot form the
+/// matcher keys on. Shared with the CLI's `/network` store so what it
+/// writes is exactly what this module matches.
+pub fn normalize_host(host: &str) -> String {
     let trimmed = host.trim().trim_end_matches('.').to_ascii_lowercase();
     if let Some(rest) = trimmed.strip_prefix("*.") {
         format!(".{rest}")

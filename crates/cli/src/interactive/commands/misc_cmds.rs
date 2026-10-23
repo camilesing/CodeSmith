@@ -102,30 +102,33 @@ pub async fn mcp(state: &mut ReplState, args: &str) {
             },
             "add" => {
                 // Accept both the slash form (`/mcp add stdio name cmd…`)
-                // and the flag form the CLI subcommand uses.
+                // and the flag form the CLI subcommand uses. The transport
+                // word is validated against the known set: without it, any
+                // 3+-token non-stdio invocation (a typo, extra argument)
+                // silently wrote `transport: "htpp"` into the config.
                 if rest.len() >= 3 && matches!(rest[0], "stdio") {
                     McpCommand::Add {
                         name: rest[1].to_string(),
                         command: Some(rest[2].to_string()),
                         url: None,
                         transport: None,
-                        args: rest[3..].iter().map(|s| s.to_string()).collect(),
+                        args: rest[3..].iter().map(|s| (*s).to_string()).collect(),
                     }
-                } else if rest.len() >= 3 {
+                } else if rest.len() >= 3 && is_known_transport(rest[0]) {
                     McpCommand::Add {
                         name: rest[1].to_string(),
                         command: None,
                         url: Some(rest[2].to_string()),
-                        transport: if rest[0] == "http" {
+                        transport: if rest[0].eq_ignore_ascii_case("http") {
                             None
                         } else {
-                            Some(rest[0].to_string())
+                            Some(rest[0].to_ascii_lowercase())
                         },
                         args: Vec::new(),
                     }
                 } else {
                     println!(
-                        "{} usage: /mcp add stdio <name> <command> [args…] | /mcp add <http|sse|ws…> <name> <url>",
+                        "{} usage: /mcp add stdio <name> <command> [args…] | /mcp add <http|sse|ws|streamable-http> <name> <url>",
                         "✗".red()
                     );
                     return;
@@ -169,12 +172,21 @@ pub async fn mcp(state: &mut ReplState, args: &str) {
             }
         }
     };
-    if let Err(err) = crate::main_root::run_mcp_command(&state.config.clone(), command).await {
+    if let Err(err) = crate::main_root::run_mcp_command(&state.config, command).await {
         println!("{} {err}", "✗".red());
     }
     state.mcp_configured_count = codesmith_agent_runtime::mcp::load_config(&state.mcp_config_path)
         .map(|cfg| cfg.servers.len())
         .unwrap_or(0);
+}
+
+/// The transport words `/mcp add` accepts — the same set the runtime's
+/// MCP transport parser supports (crates/agent-runtime/src/mcp.rs).
+fn is_known_transport(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "http" | "streamable-http" | "sse" | "sse-ide" | "ws" | "ws-ide" | "websocket-ide"
+    )
 }
 
 /// `/network [list|allow|host>|deny <host>|remove <host>|default <policy>]`
@@ -196,20 +208,32 @@ pub async fn goal(state: &mut ReplState, arg: Option<&str>) {
             println!("hunt cleared.");
         }
         Some("done") | Some("complete") | Some("hunted") => {
+            if state.hunt.quarry.is_none() {
+                println!("{} no active hunt to close", "✗".red());
+                return;
+            }
             state.hunt.verdict = HuntVerdict::Hunted;
             println!("{}", "hunt closed: HUNTED".green());
         }
         Some("wound") | Some("wounded") => {
+            if state.hunt.quarry.is_none() {
+                println!("{} no active hunt to close", "✗".red());
+                return;
+            }
             state.hunt.verdict = HuntVerdict::Wounded;
-            println!("hunt closed: WOUNDED");
+            println!("{}", "hunt closed: WOUNDED".green());
         }
         Some("escape") | Some("escaped") => {
+            if state.hunt.quarry.is_none() {
+                println!("{} no active hunt to close", "✗".red());
+                return;
+            }
             state.hunt.verdict = HuntVerdict::Escaped;
-            println!("hunt closed: ESCAPED");
+            println!("{}", "hunt closed: ESCAPED".green());
         }
         Some(text) if !text.is_empty() => {
             let (objective, budget) = parse_hunt_budget(text);
-            if objective.is_empty() || objective.chars().all(|c| c == '|') {
+            if objective.is_empty() {
                 println!("{} usage: /hunt <quarry> [budget: N]", "✗".red());
                 return;
             }
@@ -221,7 +245,11 @@ pub async fn goal(state: &mut ReplState, arg: Option<&str>) {
                 .map(|b| format!(" (budget: {b} tokens)"))
                 .unwrap_or_default();
             println!("hunt set: \"{objective}\"{budget_str} — tracking progress.");
-            let _ = super::super::submit(state, objective).await;
+            // A failed submission is a real failure, not silence after the
+            // "hunt set" line.
+            if let Err(err) = super::super::submit(state, objective).await {
+                println!("{} hunt turn failed: {err}", "✗".red());
+            }
         }
         _ => {
             if let Some(quarry) = state.hunt.quarry.as_ref() {
@@ -253,15 +281,26 @@ pub async fn goal(state: &mut ReplState, arg: Option<&str>) {
 }
 
 /// `[budget: N]` suffix parser (port of commands/goal.rs).
+///
+/// The marker only matches at a word boundary (`overbudget: 5` is not a
+/// budget marker), and a marker whose number fails to parse is rejected
+/// rather than left embedded in the quarry text the model receives.
 fn parse_hunt_budget(text: &str) -> (String, Option<u32>) {
     const MARKER: &str = "budget:";
-    if let Some(index) = text.to_ascii_lowercase().rfind(MARKER) {
+    if let Some(index) = text
+        .to_ascii_lowercase()
+        .rfind(MARKER)
+        .filter(|index| *index == 0 || text[..*index].ends_with(char::is_whitespace))
+    {
         let head = text[..index].trim_end();
-        let tail = &text[index + MARKER.len()..];
+        let tail = text[index + MARKER.len()..].trim_start();
         let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
         if let Ok(budget) = digits.parse::<u32>() {
             return (head.trim().to_string(), Some(budget));
         }
+        // Marker present but unparseable: surface the usage instead of
+        // sending `fix auth budget: ten` to the model as a quarry.
+        return (String::new(), None);
     }
     (text.trim().to_string(), None)
 }
@@ -399,14 +438,80 @@ pub fn verify(arg: Option<&str>) {
     }
 }
 
-/// `/links` — provider dashboard/docs links.
-pub fn links() {
-    println!(
-        "DeepSeek\n\
-─────────────────────────────\n\
-Dashboard https://platform.deepseek.com\n\
-Docs      https://platform.deepseek.com/docs"
-    );
+/// `/links` — the session provider's dashboard/docs links.
+///
+/// DeepSeek-only output was misleading for every other provider (an
+/// OpenRouter user got a DeepSeek dashboard and nothing for their own).
+pub fn links(state: &ReplState) {
+    // (label, dashboard, docs) for the providers with stable public
+    // endpoints; anything else falls through to the generic line.
+    let known = match state.api_provider {
+        crate::config::ApiProvider::Deepseek => Some((
+            "DeepSeek",
+            "https://platform.deepseek.com",
+            "https://platform.deepseek.com/docs",
+        )),
+        crate::config::ApiProvider::Openai => Some((
+            "OpenAI",
+            "https://platform.openai.com",
+            "https://platform.openai.com/docs",
+        )),
+        crate::config::ApiProvider::Anthropic => Some((
+            "Anthropic",
+            "https://console.anthropic.com",
+            "https://docs.anthropic.com",
+        )),
+        crate::config::ApiProvider::Moonshot => Some((
+            "Moonshot",
+            "https://platform.moonshot.cn",
+            "https://platform.moonshot.cn/docs",
+        )),
+        crate::config::ApiProvider::Openrouter => Some((
+            "OpenRouter",
+            "https://openrouter.ai",
+            "https://openrouter.ai/docs",
+        )),
+        crate::config::ApiProvider::Novita => {
+            Some(("Novita", "https://novita.ai", "https://novita.ai/docs"))
+        }
+        crate::config::ApiProvider::Siliconflow => Some((
+            "SiliconFlow",
+            "https://cloud.siliconflow.cn",
+            "https://docs.siliconflow.cn",
+        )),
+        crate::config::ApiProvider::Fireworks => Some((
+            "Fireworks",
+            "https://fireworks.ai",
+            "https://docs.fireworks.ai",
+        )),
+        crate::config::ApiProvider::Vllm => {
+            Some(("vLLM", "http://localhost:8000", "https://docs.vllm.ai"))
+        }
+        crate::config::ApiProvider::Sglang => {
+            Some(("SGLang", "http://localhost:30000", "https://docs.sglang.ai"))
+        }
+        crate::config::ApiProvider::Ollama => {
+            Some(("Ollama", "http://localhost:11434", "https://ollama.com"))
+        }
+        crate::config::ApiProvider::NvidiaNim => Some((
+            "NVIDIA NIM",
+            "https://build.nvidia.com",
+            "https://docs.nvidia.com/nim",
+        )),
+        _ => None,
+    };
+    match known {
+        Some((label, dashboard, docs)) => println!(
+            "{label}\n\
+             ─────────────────────────────\n\
+             Dashboard {dashboard}\n\
+             Docs      {docs}"
+        ),
+        None => println!(
+            "{} has no built-in dashboard link — see the provider's own site (local/gateway providers serve at the configured base URL)",
+            state.api_provider.as_str()
+        ),
+    }
 }
 
 /// `/home` — session overview (the TUI's home dashboard, line-mode).
@@ -498,6 +603,21 @@ pub fn translate(state: &mut ReplState) {
     );
 }
 
+/// Read an anchors/notes store: only a missing file reads as empty.
+///
+/// Any other IO error (permissions, transient failure, unreadable file)
+/// aborts the caller — `unwrap_or_default` plus the following write
+/// replaced the whole store with just the new entry.
+fn read_store(path: &std::path::Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path).or_else(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Ok(String::new())
+        } else {
+            Err(err)
+        }
+    })
+}
+
 /// `/anchor <text>|list|remove <n>`
 pub fn anchor(state: &ReplState, content: Option<&str>) {
     let path = state.workspace.join(".codesmith").join("anchors.md");
@@ -506,7 +626,13 @@ pub fn anchor(state: &ReplState, content: Option<&str>) {
         return;
     };
     if input.eq_ignore_ascii_case("list") {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = match read_store(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                println!("{} could not read {}: {err}", "✗".red(), path.display());
+                return;
+            }
+        };
         let anchors: Vec<&str> = content
             .split("\n---\n")
             .filter(|s| !s.trim().is_empty())
@@ -529,7 +655,13 @@ pub fn anchor(state: &ReplState, content: Option<&str>) {
             println!("{} usage: /anchor remove <n>", "✗".red());
             return;
         };
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = match read_store(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                println!("{} could not read {}: {err}", "✗".red(), path.display());
+                return;
+            }
+        };
         let mut anchors: Vec<String> = content
             .split("\n---\n")
             .map(str::to_string)
@@ -552,7 +684,13 @@ pub fn anchor(state: &ReplState, content: Option<&str>) {
     }
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
     let entry = format!("[{timestamp}] {input}");
-    let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut content = match read_store(&path) {
+        Ok(content) => content,
+        Err(err) => {
+            println!("{} could not read {}: {err}", "✗".red(), path.display());
+            return;
+        }
+    };
     if !content.is_empty() {
         content.push_str("\n---\n");
     }
@@ -580,7 +718,13 @@ pub fn note(state: &ReplState, content: Option<&str>) {
     };
     match command.to_ascii_lowercase().as_str() {
         "list" => {
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let content = match read_store(&path) {
+                Ok(content) => content,
+                Err(err) => {
+                    println!("{} could not read {}: {err}", "✗".red(), path.display());
+                    return;
+                }
+            };
             let notes: Vec<&str> = content
                 .split("\n---\n")
                 .filter(|s| !s.trim().is_empty())
@@ -599,7 +743,13 @@ pub fn note(state: &ReplState, content: Option<&str>) {
                 println!("{} usage: /note show <n>", "✗".red());
                 return;
             };
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let content = match read_store(&path) {
+                Ok(content) => content,
+                Err(err) => {
+                    println!("{} could not read {}: {err}", "✗".red(), path.display());
+                    return;
+                }
+            };
             let notes: Vec<&str> = content
                 .split("\n---\n")
                 .filter(|s| !s.trim().is_empty())
@@ -614,7 +764,13 @@ pub fn note(state: &ReplState, content: Option<&str>) {
                 println!("{} usage: /note remove <n>", "✗".red());
                 return;
             };
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let content = match read_store(&path) {
+                Ok(content) => content,
+                Err(err) => {
+                    println!("{} could not read {}: {err}", "✗".red(), path.display());
+                    return;
+                }
+            };
             let mut notes: Vec<String> = content
                 .split("\n---\n")
                 .map(str::to_string)
@@ -626,22 +782,32 @@ pub fn note(state: &ReplState, content: Option<&str>) {
             }
             notes.remove(index - 1);
             let _ = std::fs::create_dir_all(path.parent().unwrap_or(&state.workspace));
-            let _ = codesmith_agent_runtime::utils::write_atomic(
+            // Success is only announced when the write landed: a dropped
+            // error said "removed note #N" while the file still held it.
+            match codesmith_agent_runtime::utils::write_atomic(
                 &path,
                 notes.join("\n---\n").as_bytes(),
-            );
-            println!("removed note #{index}");
+            ) {
+                Ok(()) => println!("removed note #{index}"),
+                Err(err) => println!("{} failed to write notes: {err}", "✗".red()),
+            }
         }
-        "clear" => {
-            let _ = codesmith_agent_runtime::utils::write_atomic(&path, b"");
-            println!("notes cleared: {}", path.display());
-        }
+        "clear" => match codesmith_agent_runtime::utils::write_atomic(&path, b"") {
+            Ok(()) => println!("notes cleared: {}", path.display()),
+            Err(err) => println!("{} failed to clear notes: {err}", "✗".red()),
+        },
         "path" => println!("notes path: {}", path.display()),
         "help" => println!("usage: /note <text> | list | show <n> | remove <n> | clear | path"),
         _ => {
             let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
             let entry = format!("[{timestamp}] {input}");
-            let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut content = match read_store(&path) {
+                Ok(content) => content,
+                Err(err) => {
+                    println!("{} could not read {}: {err}", "✗".red(), path.display());
+                    return;
+                }
+            };
             if !content.is_empty() {
                 content.push_str("\n---\n");
             }
@@ -735,9 +901,37 @@ checks it (see [verification] result_claims in config.example.toml)."
     )
 }
 
-/// `/share` — upload conversation to a paste service.
-pub async fn share(state: &mut ReplState) {
-    let history_json = serde_json::to_string(&state.api_messages).unwrap_or_default();
+/// `/share [--yes]` — upload conversation to a paste service.
+///
+/// The full transcript (which may contain secrets or PII pasted during the
+/// session) leaves the machine, so a bare `/share` is a preview: the upload
+/// only runs with an explicit `--yes`.
+pub async fn share(state: &mut ReplState, arg: Option<&str>) {
+    let confirmed = arg
+        .map(str::split_whitespace)
+        .is_some_and(|mut words| words.any(|word| word == "--yes" || word == "-y"));
+    let history_json = match serde_json::to_string(&state.api_messages) {
+        // `unwrap_or_default` here would upload an empty document and still
+        // print a share URL — a misleading success.
+        Ok(json) => json,
+        Err(err) => {
+            println!("{} could not serialize the conversation: {err}", "✗".red());
+            return;
+        }
+    };
+    if !confirmed {
+        println!(
+            "{}",
+            format!(
+                "/share uploads the full transcript ({} messages, {} bytes) to a secret \
+                 GitHub gist — re-run `/share --yes` to proceed",
+                state.api_messages.len(),
+                history_json.len()
+            )
+            .yellow()
+        );
+        return;
+    }
     match super::share::perform_share(&history_json, &state.model, state.mode.label()).await {
         Ok(url) => println!("shared: {url}"),
         Err(err) => println!("{} share failed: {err}", "✗".red()),
@@ -1073,7 +1267,20 @@ pub async fn stop(state: &mut ReplState) {
     let engine = match state.engine.as_ref() {
         Some(engine) => engine.clone(),
         None => {
-            println!("{}", "✗ no engine in this session".red());
+            // The durable tasks above were already cancelled — report them
+            // instead of implying nothing happened.
+            println!(
+                "{}",
+                format!(
+                    "✗ no engine in this session ({stopped_tasks} durable task(s) cancelled{})",
+                    if failed_tasks > 0 {
+                        format!("; {failed_tasks} could not be cancelled")
+                    } else {
+                        String::new()
+                    }
+                )
+                .red()
+            );
             return;
         }
     };

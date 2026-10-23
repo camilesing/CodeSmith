@@ -135,13 +135,19 @@ pub async fn run_skill(state: &mut ReplState, name: Option<&str>) {
         return;
     }
     let body = codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(skill);
-    let body = expand_skill_variables(skill, &body, args);
+    let body = super::user_cmd_store::expand_template(&body, args, Some(&skill.name));
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
         skill.name, body
     );
     println!("{}", format!("activating skill {}…", skill.name).dimmed());
-    let _ = super::super::submit(state, instruction).await;
+    if let Err(err) = super::super::submit(state, instruction).await {
+        println!(
+            "{} activating skill {} failed: {err}",
+            "✗".red(),
+            skill.name
+        );
+    }
 }
 
 /// `/review <target>` — activate the `review` skill (port of
@@ -160,12 +166,26 @@ pub async fn review(state: &mut ReplState, args: Option<&str>) {
         );
         return;
     };
+    if !skill.user_invocable {
+        println!(
+            "{} skill '{}' is not user-invocable (loaded internally when relevant)",
+            "✗".red(),
+            skill.name
+        );
+        return;
+    }
     let body = codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(skill);
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
         skill.name, body
     );
-    let _ = super::super::submit(state, format!("{instruction}\n\nReview target: {target}")).await;
+    // A failed submission is a real failure: "activating…" followed by
+    // silence is indistinguishable from a slow model.
+    if let Err(err) =
+        super::super::submit(state, format!("{instruction}\n\nReview target: {target}")).await
+    {
+        println!("{} review failed to start: {err}", "✗".red());
+    }
 }
 
 /// Activate one of the bundled review/verify skills with a target.
@@ -182,6 +202,17 @@ pub async fn activate(state: &mut ReplState, name: &str, target: &str) {
         );
         return;
     };
+    // The same gate `/skill <name>` enforces for this registry: a
+    // discovered (on-disk) skill shadowing a bundled name must not become
+    // user-invocable through the bundled command aliases.
+    if !skill.user_invocable {
+        println!(
+            "{} skill '{}' is not user-invocable (loaded internally when relevant)",
+            "✗".red(),
+            skill.name
+        );
+        return;
+    }
     let body = codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(skill);
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
@@ -192,7 +223,9 @@ pub async fn activate(state: &mut ReplState, name: &str, target: &str) {
     } else {
         format!("{instruction}\n\nTarget: {}", target.trim())
     };
-    let _ = super::super::submit(state, request).await;
+    if let Err(err) = super::super::submit(state, request).await {
+        println!("{} starting the {name} skill failed: {err}", "✗".red());
+    }
 }
 
 /// Parse `/code-review [low|medium|high|xhigh|max] [--fix] [target]`.
@@ -503,10 +536,17 @@ async fn install_skill(state: &ReplState, source: &str) {
         Ok(InstallOutcome::NetworkDenied(host)) => {
             println!("{} network policy denies {host}", "✗".red());
         }
-        Err(err) if err.to_string().contains("already installed") => println!(
-            "{} skill already installed — /skill update <name> refreshes it",
-            "✗".red()
-        ),
+        Err(err)
+            if matches!(
+                err.downcast_ref::<install::InstallError>(),
+                Some(install::InstallError::AlreadyInstalled(_))
+            ) =>
+        {
+            println!(
+                "{} skill already installed — /skill update <name> refreshes it",
+                "✗".red()
+            )
+        }
         Err(err) => println!("{} install failed: {err}", "✗".red()),
     }
 }
@@ -590,16 +630,6 @@ fn resolve_invocation<'a>(
     matches.into_iter().next()
 }
 
-/// `$ARGUMENTS` / `$1..` substitution in skill bodies (port of
-/// commands/skills.rs::expand_skill_variables, minus TUI-only variables).
-fn expand_skill_variables(skill: &Skill, body: &str, args: &str) -> String {
-    let mut expanded = body.replace("$ARGUMENTS", args);
-    for (index, arg) in args.split_whitespace().enumerate() {
-        expanded = expanded.replace(&format!("${}", index + 1), arg);
-    }
-    expanded.replace("$SKILL_NAME", &skill.name)
-}
-
 /// User-defined commands (`~/.codesmith/commands/*.md`) — the highest
 /// precedence command layer before the static table (port of
 /// commands/user_commands.rs). Returns `Some(true)` when handled.
@@ -607,7 +637,7 @@ pub async fn try_user_command(state: &mut ReplState, command: &str, args: &str) 
     let parts: Vec<&str> = command.trim().splitn(2, ' ').collect();
     let name = parts[0].trim_start_matches('/').to_lowercase();
     let user_commands = super::user_cmd_store::load_user_commands(Some(&state.workspace));
-    for (user_name, content) in &user_commands {
+    for (user_name, content, from_user_global) in &user_commands {
         if user_name != &name {
             continue;
         }
@@ -624,15 +654,34 @@ pub async fn try_user_command(state: &mut ReplState, command: &str, args: &str) 
                     state.hunt.quarry = Some(value.clone());
                     state.hunt.started_at = Some(std::time::Instant::now());
                 }
-                "allowed-tools" => {
+                // `allowed-tools` widens the session's tool permissions, so
+                // it is honored only from the user's own global commands
+                // directory. Workspace command files ship with a possibly
+                // freshly cloned, untrusted repository — applying their
+                // grants would let a hostile repo re-enable shell/file-write
+                // tools the moment one of its slash commands runs. Normal
+                // permission gating still applies to the command body.
+                "allowed-tools" if *from_user_global => {
                     state.active_allowed_tools =
                         Some(super::user_cmd_store::parse_allowed_tools(value));
+                }
+                "allowed-tools" => {
+                    println!(
+                        "{}",
+                        format!(
+                            "note: ignoring `allowed-tools` in /{name} — it ships with the \
+                             workspace; put the command in ~/.codesmith/commands to grant tools"
+                        )
+                        .yellow()
+                    );
                 }
                 _ => {}
             }
         }
         let message = super::user_cmd_store::apply_template(body, args);
-        let _ = super::super::submit(state, message).await;
+        if let Err(err) = super::super::submit(state, message).await {
+            println!("{} running /{name} failed: {err}", "✗".red());
+        }
         return Some(true);
     }
     None
