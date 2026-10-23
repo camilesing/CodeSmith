@@ -122,3 +122,129 @@ pub fn filter_tool_call_delta(delta: &str, in_tool_call: &mut bool) -> String {
 
     output
 }
+
+/// Stateful, stream-safe form of [`filter_tool_call_delta`].
+///
+/// The free function scans one chunk at a time, so a marker split across a
+/// chunk boundary (`"[TOOL"` + `"_CALL]"`) matched neither chunk and the
+/// forged wrapper sailed through to the user. This filter carries the
+/// trailing partial-marker suffix between chunks; call [`Self::push`] per
+/// delta and [`Self::flush`] at stream end to release any held-back tail.
+#[derive(Debug, Default)]
+pub struct ToolCallDeltaFilter {
+    in_tool_call: bool,
+    carry: String,
+}
+
+impl ToolCallDeltaFilter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Filter one streamed delta; returns the visible text for it. A
+    /// suffix that could still complete a marker is held back (returned by
+    /// the next `push` or by `flush`).
+    pub fn push(&mut self, delta: &str) -> String {
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.push_str(delta);
+
+        let mut output = String::with_capacity(buf.len());
+        let mut rest = buf.as_str();
+        loop {
+            let markers = if self.in_tool_call {
+                &TOOL_CALL_END_MARKERS
+            } else {
+                &TOOL_CALL_START_MARKERS
+            };
+            match find_first_marker(rest, markers) {
+                Some((idx, len)) => {
+                    if !self.in_tool_call {
+                        output.push_str(&rest[..idx]);
+                    }
+                    rest = &rest[idx + len..];
+                    self.in_tool_call = !self.in_tool_call;
+                }
+                None => {
+                    if self.in_tool_call {
+                        // Inside a wrapper: everything is suppressed, but a
+                        // partial END marker must carry for the next chunk.
+                        let keep = marker_prefix_suffix_len(rest, &TOOL_CALL_END_MARKERS);
+                        let split = rest.len().saturating_sub(keep);
+                        let (suppressed, tail) = rest.split_at(split);
+                        self.carry = tail.to_string();
+                        let _ = suppressed;
+                    } else {
+                        let keep = marker_prefix_suffix_len(rest, &TOOL_CALL_START_MARKERS);
+                        let split = rest.len().saturating_sub(keep);
+                        let (emit, tail) = rest.split_at(split);
+                        output.push_str(emit);
+                        self.carry = tail.to_string();
+                    }
+                    break;
+                }
+            }
+        }
+        output
+    }
+
+    /// Release any held-back partial-marker tail (call at stream end).
+    pub fn flush(&mut self) -> String {
+        std::mem::take(&mut self.carry)
+    }
+}
+
+/// Longest suffix of `text` (shorter than `text`) that is a proper prefix
+/// of any marker — the bytes that must carry to the next chunk because
+/// they might complete a marker.
+fn marker_prefix_suffix_len(text: &str, markers: &[&str]) -> usize {
+    let max_marker = markers.iter().map(|m| m.len()).max().unwrap_or(0);
+    let max_keep = max_marker.saturating_sub(1).min(text.len());
+    (1..=max_keep)
+        .rev()
+        .find(|keep| {
+            let suffix = &text[text.len() - keep..];
+            markers.iter().any(|m| m.len() > *keep && m.starts_with(suffix))
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod split_marker_tests {
+    use super::ToolCallDeltaFilter;
+
+    #[test]
+    fn start_marker_split_across_chunks_is_still_scrubbed() {
+        // The per-chunk free function let "[TOOL" + "_CALL]" through; the
+        // stateful filter must not.
+        let mut filter = ToolCallDeltaFilter::new();
+        let a = filter.push("hello [TOOL");
+        let b = filter.push("_CALL] pwned [/TOOL_CALL] tail");
+        let visible = format!("{a}{}{}", b, filter.flush());
+        assert!(visible.contains("hello"), "prefix lost: {visible:?}");
+        assert!(
+            !visible.contains("pwned"),
+            "split-marker wrapper leaked: {visible:?}"
+        );
+        assert!(visible.contains("tail"), "post-marker text lost: {visible:?}");
+    }
+
+    #[test]
+    fn end_marker_split_across_chunks_completes_the_suppression() {
+        let mut filter = ToolCallDeltaFilter::new();
+        let _ = filter.push("[TOOL_CALL] hidden [/TOOL");
+        let visible = filter.push("_CALL] after");
+        assert!(!visible.contains("hidden"));
+        assert!(visible.contains("after"), "{visible:?}");
+    }
+
+    #[test]
+    fn clean_text_passes_through_and_flush_releases_carry() {
+        let mut filter = ToolCallDeltaFilter::new();
+        let out = filter.push("plain text with [ bracket");
+        assert!(out.contains("plain text"));
+        let rest = filter.flush();
+        let all = format!("{out}{rest}");
+        assert!(all.contains("[ bracket"), "held-back tail lost: {all:?}");
+    }
+}

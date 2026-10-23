@@ -1782,7 +1782,12 @@ impl ShellManager {
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
 
         if block && shell.status == ShellStatus::Running {
-            let timeout = Duration::from_millis(timeout_ms.clamp(1000, 600_000));
+            // Cap the blocking wait: this runs with `&mut self` (callers
+            // hold the shared manager lock), so a 600 s wedge here freezes
+            // every other shell operation. A caller that needs to wait
+            // longer re-polls; the return is the same still-running
+            // snapshot either way.
+            let timeout = Duration::from_millis(timeout_ms.clamp(1000, 30_000));
             let deadline = Instant::now() + timeout;
 
             while shell.status == ShellStatus::Running && Instant::now() < deadline {
@@ -1826,7 +1831,9 @@ impl ShellManager {
             .ok_or_else(|| anyhow!("Task {task_id} not found"))?;
 
         if wait && shell.status == ShellStatus::Running {
-            let timeout = Duration::from_millis(timeout_ms.clamp(1000, 600_000));
+            // Same 30 s cap as `get_output`: the shared manager lock must
+            // not be wedged for the old 600 s ceiling.
+            let timeout = Duration::from_millis(timeout_ms.clamp(1000, 30_000));
             let deadline = Instant::now() + timeout;
 
             while shell.status == ShellStatus::Running && Instant::now() < deadline {

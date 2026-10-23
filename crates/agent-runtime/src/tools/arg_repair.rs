@@ -29,6 +29,12 @@ pub enum ArgRepairError {
 ///
 /// Runs the deterministic ladder; on success returns the parsed value.
 /// The final fallback is an empty object `{}` so dispatch always proceeds.
+///
+/// Every MUTATING stage that succeeds logs a warning naming the stage (the
+/// raw arguments themselves are never logged — they may be sensitive): a
+/// repaired argument differs from what the model believes it sent, and an
+/// unlogged mutation is exactly how a silent mid-value change goes
+/// unnoticed. Length only, never content.
 pub fn repair(raw: &str) -> Result<Value, ArgRepairError> {
     if raw.len() > MAX_ARG_LEN {
         return Err(ArgRepairError::TooLarge(raw.len()));
@@ -40,31 +46,46 @@ pub fn repair(raw: &str) -> Result<Value, ArgRepairError> {
     // Stage 2: strip control chars inside strings
     let mut s = strip_control_chars_in_strings(raw);
     if let Ok(v) = serde_json::from_str(&s) {
+        warn_mutated("strip-control-chars", raw.len());
         return Ok(v);
     }
     // Stage 3: strip trailing commas
     s = strip_trailing_commas(&s);
     if let Ok(v) = serde_json::from_str(&s) {
+        warn_mutated("strip-trailing-commas", raw.len());
         return Ok(v);
     }
     // Stage 4: balance braces
     s = balance_braces(&s, 50);
     if let Ok(v) = serde_json::from_str(&s) {
+        warn_mutated("balance-braces", raw.len());
         return Ok(v);
     }
     // Stage 5: strip excess closers
     s = strip_excess_closers(&s);
     if let Ok(v) = serde_json::from_str(&s) {
+        warn_mutated("strip-excess-closers", raw.len());
         return Ok(v);
     }
-    // Fallback: empty object. Log only the length — the raw model tool
-    // arguments may be sensitive and must never reach the logs.
-    tracing::debug!(
+    // Fallback: empty object. The arguments the model intended are lost
+    // entirely here — this is the loudest case of the ladder.
+    tracing::warn!(
         target: "codesmith_agent_runtime::arg_repair",
-        "arg repair ladder exhausted after {} chars; falling back to empty object",
+        "arg repair ladder exhausted after {} chars; falling back to EMPTY OBJECT — the tool will run without the model's arguments",
         raw.len()
     );
     Ok(Value::Object(Map::new()))
+}
+
+/// A mutating repair stage won: name the stage so the silent-mutation class
+/// stays observable. Content is never logged.
+fn warn_mutated(stage: &str, len: usize) {
+    tracing::warn!(
+        target: "codesmith_agent_runtime::arg_repair",
+        stage,
+        len,
+        "tool arguments were mutated during JSON repair; the tool sees different arguments than the model sent"
+    );
 }
 
 /// Strip ASCII control characters (0x00–0x1F except \t, \n, \r) that appear

@@ -264,6 +264,11 @@ pub async fn accumulate_stream(
 
     let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
     let mut stop_reason: Option<String> = None;
+    // A stream that ends without `MessageStop` is a truncated transport
+    // (connection dropped mid-turn), not a complete assistant message.
+    // Treating it as complete fabricated turns whose tail content simply
+    // went missing.
+    let mut saw_message_stop = false;
 
     while let Some(item) = stream.next().await {
         let event = item?;
@@ -325,9 +330,17 @@ pub async fn accumulate_stream(
                     stop_reason = sr;
                 }
             }
-            StreamEvent::MessageStop => break,
+            StreamEvent::MessageStop => {
+                saw_message_stop = true;
+                break;
+            }
             StreamEvent::Ping => {}
         }
+    }
+    if !saw_message_stop {
+        return Err(anyhow::anyhow!(
+            "stream ended without MessageStop — truncated response; treating as a failed request, not a complete turn"
+        ));
     }
 
     let content = blocks
@@ -346,7 +359,27 @@ pub async fn accumulate_stream(
                 caller,
             } => {
                 let input = if !input_buf.is_empty() {
-                    serde_json::from_str(&input_buf).unwrap_or(serde_json::Value::Null)
+                    match serde_json::from_str(&input_buf) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            // Never silently pass `Value::Null`: the tool
+                            // would run on default/null arguments and the
+                            // corruption stays invisible. A marker object
+                            // fails every real input schema loudly, and the
+                            // tool's error travels back to the model.
+                            tracing::warn!(
+                                tool = %name,
+                                error = %err,
+                                "tool arguments did not parse as JSON; refusing null substitution"
+                            );
+                            let raw_head: String =
+                                input_buf.chars().take(512).collect();
+                            serde_json::json!({
+                                "__malformed_arguments__": raw_head,
+                                "__parse_error__": err.to_string(),
+                            })
+                        }
+                    }
                 } else if !start_input.is_null() {
                     start_input
                 } else {
