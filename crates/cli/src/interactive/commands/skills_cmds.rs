@@ -6,11 +6,11 @@
 use colored::Colorize;
 
 use super::ReplState;
-use crate::skills::install::{
+use codesmith_agent_runtime::network_policy::{DecisionToml, NetworkPolicy};
+use codesmith_agent_runtime::skills::install::{
     self, InstallOutcome, RegistryFetchResult, SkillSyncOutcome, SyncResult, UpdateResult,
 };
-use crate::skills::{Skill, SkillRegistry};
-use codesmith_agent_runtime::network_policy::{DecisionToml, NetworkPolicy};
+use codesmith_agent_runtime::skills::{Skill, SkillRegistry};
 
 /// Resolved `[skills]` knobs (defaults when the table is absent).
 fn skills_config(config: &crate::config::Config) -> crate::config::SkillsConfig {
@@ -29,8 +29,10 @@ fn user_initiated_policy(config: &crate::config::Config) -> NetworkPolicy {
 }
 
 fn discover(state: &ReplState) -> SkillRegistry {
-    let mut registry =
-        crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir);
+    let mut registry = codesmith_agent_runtime::skills::discover_for_workspace_and_dir(
+        &state.workspace,
+        &state.skills_dir,
+    );
     // The bundled review/verify skills live beside the discovered ones so
     // `/skills`, `/skill <name>`, and the commands below share one registry.
     // A skill of the same name on disk wins (`merge_registered` skips the
@@ -132,7 +134,7 @@ pub async fn run_skill(state: &mut ReplState, name: Option<&str>) {
         );
         return;
     }
-    let body = crate::skills::preprocess_skill_body_for_activation(skill);
+    let body = codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(skill);
     let body = expand_skill_variables(skill, &body, args);
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
@@ -158,7 +160,7 @@ pub async fn review(state: &mut ReplState, args: Option<&str>) {
         );
         return;
     };
-    let body = crate::skills::preprocess_skill_body_for_activation(skill);
+    let body = codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(skill);
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
         skill.name, body
@@ -180,7 +182,7 @@ pub async fn activate(state: &mut ReplState, name: &str, target: &str) {
         );
         return;
     };
-    let body = crate::skills::preprocess_skill_body_for_activation(skill);
+    let body = codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(skill);
     let instruction = format!(
         "You are now using a skill. Follow these instructions:\n\n# Skill: {}\n\n{}\n\n---\n\nNow respond to the user's request following the above skill instructions.",
         skill.name, body

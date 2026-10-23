@@ -21,7 +21,6 @@ use crate::core::capacity::{
     CapacityControllerConfig, CapacityDecision, CapacitySnapshot, DynamicSlackProfile,
     GuardrailAction, ReplayOutcome, RiskBand, TargetedRefreshOutcome,
 };
-use crate::core::turn::{TurnContext, TurnToolCall};
 use crate::llm_client::LlmClientHandle;
 use crate::llm_client::mock::{MockLlmClient, canned};
 use crate::tools::spec::ToolContext;
@@ -30,6 +29,7 @@ use codesmith_agent_runtime::capacity_memory::load_last_k_capacity_records;
 use codesmith_agent_runtime::engine::compact_tool_result_for_context;
 use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_agent_runtime::telemetry::TelemetrySink;
+use codesmith_agent_runtime::turn::{TurnContext, TurnToolCall};
 
 use super::*;
 

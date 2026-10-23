@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use colored::Colorize;
 
 use super::{ReplState, permission_cmds, usage_scan};
-use crate::command_safety::{SafetyLevel, analyze_command};
+use codesmith_agent_runtime::command_safety::{SafetyLevel, analyze_command};
 
 /// How many session files to read.
 const SESSION_LIMIT: usize = 200;

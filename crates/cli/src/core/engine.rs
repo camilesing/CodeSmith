@@ -1375,11 +1375,12 @@ pub fn build_engine(
         show_thinking: config.show_thinking,
         is_simple: config.is_simple,
         personality: config.personality,
-        skills_block: crate::skills::render_available_skills_context_with_registered(
-            &config.workspace,
-            Some(config.skills_dir.as_path()),
-            &extension_runner.registered_skills(),
-        ),
+        skills_block:
+            codesmith_agent_runtime::skills::render_available_skills_context_with_registered(
+                &config.workspace,
+                Some(config.skills_dir.as_path()),
+                &extension_runner.registered_skills(),
+            ),
     }
     .runtime();
     let system_prompt =

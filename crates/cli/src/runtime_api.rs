@@ -2042,7 +2042,7 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
 }
 
 fn skills_search_directories(workspace: &FsPath, skills_dir: &FsPath) -> Vec<PathBuf> {
-    let mut directories = crate::skills::skills_directories(workspace);
+    let mut directories = codesmith_agent_runtime::skills::skills_directories(workspace);
     if skills_dir.is_dir() && !directories.iter().any(|path| path == skills_dir) {
         directories.push(skills_dir.to_path_buf());
     }
@@ -2055,7 +2055,14 @@ fn skills_search_directories(workspace: &FsPath, skills_dir: &FsPath) -> Vec<Pat
 /// as 2 workers).
 async fn discover_skills_blocking(
     state: &RuntimeApiState,
-) -> Result<(crate::skills::SkillRegistry, Vec<PathBuf>, PathBuf), ApiError> {
+) -> Result<
+    (
+        codesmith_agent_runtime::skills::SkillRegistry,
+        Vec<PathBuf>,
+        PathBuf,
+    ),
+    ApiError,
+> {
     let config = state.config.clone();
     let workspace = state.workspace.clone();
     tokio::task::spawn_blocking(move || {
@@ -2070,14 +2077,17 @@ async fn discover_skills_blocking(
 fn discover_skills_for_runtime_api(
     workspace: &FsPath,
     skills_dir: &FsPath,
-) -> (crate::skills::SkillRegistry, Vec<PathBuf>) {
+) -> (codesmith_agent_runtime::skills::SkillRegistry, Vec<PathBuf>) {
     let directories = skills_search_directories(workspace, skills_dir);
-    let registry = crate::skills::discover_from_directories(directories.clone());
+    let registry = codesmith_agent_runtime::skills::discover_from_directories(directories.clone());
     (registry, directories)
 }
 
-fn skill_entry_is_bundled(skill: &crate::skills::Skill, skills_dir: &FsPath) -> bool {
-    if !crate::skills::is_bundled_skill_name(&skill.name) {
+fn skill_entry_is_bundled(
+    skill: &codesmith_agent_runtime::skills::Skill,
+    skills_dir: &FsPath,
+) -> bool {
+    if !codesmith_agent_runtime::skills::is_bundled_skill_name(&skill.name) {
         return false;
     }
 
@@ -4484,13 +4494,13 @@ mod tests {
         )
         .expect("write override skill");
 
-        let mut bundled_skill = crate::skills::Skill::with_defaults(
+        let mut bundled_skill = codesmith_agent_runtime::skills::Skill::with_defaults(
             "delegate".to_string(),
             String::new(),
             String::new(),
         );
         bundled_skill.path = bundled_skill_path;
-        let mut override_skill = crate::skills::Skill::with_defaults(
+        let mut override_skill = codesmith_agent_runtime::skills::Skill::with_defaults(
             "delegate".to_string(),
             String::new(),
             String::new(),

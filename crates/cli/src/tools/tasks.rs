@@ -13,7 +13,6 @@ use codesmith_agent_runtime::tools::tool_catalog::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::command_safety::{SafetyLevel, analyze_command};
 use crate::task_manager::{
     NewTaskRequest, TaskArtifactRef, TaskAttemptRecord, TaskGateRecord, TaskRecord,
 };
@@ -22,6 +21,7 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
+use codesmith_agent_runtime::command_safety::{SafetyLevel, analyze_command};
 use codesmith_agent_runtime::dependencies::ExternalTool;
 
 const MAX_SUMMARY_CHARS: usize = 900;

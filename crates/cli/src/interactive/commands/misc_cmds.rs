@@ -934,8 +934,10 @@ fn changelog_sections(text: &str) -> Vec<(String, String)> {
 /// pins as its cache prefix — so this reports what is on disk now and says
 /// plainly that the model sees it on the next prompt rebuild.
 pub fn reload_skills(state: &mut ReplState) {
-    let registry =
-        crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir);
+    let registry = codesmith_agent_runtime::skills::discover_for_workspace_and_dir(
+        &state.workspace,
+        &state.skills_dir,
+    );
     let names: Vec<String> = registry
         .list()
         .iter()
@@ -979,8 +981,10 @@ pub async fn reload_plugins(state: &ReplState, force: bool) {
     println!("{}", "reloading mods, extensions, and skills".bold());
     super::mods_cmds::mods_command(state, "reload").await;
     super::extension_cmds::extension_command(state, "reload").await;
-    let registry =
-        crate::skills::discover_for_workspace_and_dir(&state.workspace, &state.skills_dir);
+    let registry = codesmith_agent_runtime::skills::discover_for_workspace_and_dir(
+        &state.workspace,
+        &state.skills_dir,
+    );
     println!("skills: {} available", registry.list().len());
     if !force {
         println!(

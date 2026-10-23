@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use crate::command_safety::SafetyLevel;
+use codesmith_agent_runtime::command_safety::SafetyLevel;
 
 pub use codesmith_agent_runtime::sandbox::SandboxPolicy;
 // Only the test module below consumes this re-export today; the cfg gate

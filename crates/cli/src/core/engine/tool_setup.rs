@@ -103,9 +103,9 @@ pub(super) fn build_tool_context_for(
     // the workspace set is empty, and `load_skill` must resolve what the
     // catalogue lists.
     if let Some(runner) = host.extension_runner.as_ref() {
-        ctx = ctx.with_registered_skills(crate::skills::skills_from_registrations(
-            &runner.registered_skills(),
-        ));
+        ctx = ctx.with_registered_skills(
+            codesmith_agent_runtime::skills::skills_from_registrations(&runner.registered_skills()),
+        );
     }
     ctx = ctx.with_skills_dir(Some(config.skills_dir.clone()));
 

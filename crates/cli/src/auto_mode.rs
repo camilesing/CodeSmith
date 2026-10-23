@@ -19,8 +19,8 @@
 //! `DangerFullAccess` (no sandbox at all), conflating approval-bypass with
 //! sandbox-bypass.
 
-use crate::command_safety::{self, SafetyLevel};
 use crate::sandbox::SandboxPolicy;
+use codesmith_agent_runtime::command_safety::{self, SafetyLevel};
 
 /// Detect catastrophic commands that must be stripped from auto-approve.
 ///

@@ -4,7 +4,7 @@
 //! ## Why a tool when skills already surface in the system prompt?
 //!
 //! The system prompt's skills block (rendered by
-//! `crate::skills::render_available_skills_context_for_workspace` and fed
+//! `codesmith_agent_runtime::skills::render_available_skills_context_for_workspace` and fed
 //! into the runtime prompt builder) injects
 //! a one-line listing of every available skill (name + description +
 //! file path) so the model knows what's in the catalogue at the start
@@ -29,7 +29,7 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::skills::{
+use codesmith_agent_runtime::skills::{
     Skill, discover_for_workspace_and_dir, discover_in_workspace, skills_directories,
 };
 
@@ -144,7 +144,9 @@ impl ToolSpec for LoadSkillTool {
         let skill_for_io = skill.clone();
         let (gated_body, companions) = tokio::task::spawn_blocking(move || {
             (
-                crate::skills::preprocess_skill_body_for_activation(&skill_for_io),
+                codesmith_agent_runtime::skills::preprocess_skill_body_for_activation(
+                    &skill_for_io,
+                ),
                 collect_companion_files(&skill_for_io),
             )
         })
@@ -281,7 +283,7 @@ fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::SkillRegistry;
+    use codesmith_agent_runtime::skills::SkillRegistry;
     use std::fs;
     use tempfile::tempdir;
 
@@ -318,7 +320,7 @@ mod tests {
         // A mod registration colliding with the filesystem name: the disk
         // skill must win (same merge the system-prompt catalogue applies).
         let ctx = ToolContext::new(tmp.path()).with_registered_skills(
-            crate::skills::skills_from_registrations(&[
+            codesmith_agent_runtime::skills::skills_from_registrations(&[
                 mod_registration("alpha", "mod-skill", "mod body with steps"),
                 mod_registration("beta", "fs-skill", "should lose"),
             ]),
@@ -367,7 +369,7 @@ mod tests {
         // snippets are "disabled until the skill is trusted" on every load
         // path, this tool included.
         let ctx = ToolContext::new(tmp.path()).with_registered_skills(
-            crate::skills::skills_from_registrations(&[mod_registration(
+            codesmith_agent_runtime::skills::skills_from_registrations(&[mod_registration(
                 "alpha",
                 "snippy",
                 "Before:\n```!\necho pwned\n```\nAfter",
@@ -397,11 +399,12 @@ mod tests {
 
     #[test]
     fn format_skill_body_attributes_mod_source() {
-        let skills = crate::skills::skills_from_registrations(&[mod_registration(
-            "alpha",
-            "mod-skill",
-            "body",
-        )]);
+        let skills =
+            codesmith_agent_runtime::skills::skills_from_registrations(&[mod_registration(
+                "alpha",
+                "mod-skill",
+                "body",
+            )]);
         let body = format_skill_body(&skills[0]);
         assert!(body.contains("Source: `mod: alpha`"), "{body}");
         assert!(

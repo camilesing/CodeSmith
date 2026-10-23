@@ -60,9 +60,10 @@ mod tests {
                 show_thinking: true,
                 is_simple: false,
                 personality: Personality::Calm,
-                skills_block: crate::skills::render_available_skills_context_for_workspace(
-                    workspace,
-                ),
+                skills_block:
+                    codesmith_agent_runtime::skills::render_available_skills_context_for_workspace(
+                        workspace,
+                    ),
             },
         )
     }

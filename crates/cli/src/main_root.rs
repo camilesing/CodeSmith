@@ -39,8 +39,7 @@ use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tool_summary::{summarize_tool_args, summarize_tool_output};
 use crate::{
-    acp_server, child_env, doctor_llm, execpolicy, logging, mcp_server, memory_consolidate,
-    runtime_api, session_manager,
+    acp_server, doctor_llm, logging, mcp_server, memory_consolidate, runtime_api, session_manager,
 };
 use codesmith_agent_runtime::features::{Feature, render_feature_table};
 use codesmith_agent_runtime::mcp::{McpConfig, McpPool, McpServerConfig};
@@ -856,7 +855,7 @@ pub(crate) struct ExecpolicyCommand {
 #[derive(Subcommand, Debug, Clone)]
 pub(crate) enum ExecpolicySubcommand {
     /// Check execpolicy files against a command
-    Check(execpolicy::ExecPolicyCheckCommand),
+    Check(codesmith_agent_runtime::execpolicy::ExecPolicyCheckCommand),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -2131,7 +2130,7 @@ pub(crate) fn skills_count_for(dir: &Path) -> usize {
     if !dir.exists() {
         return 0;
     }
-    crate::skills::SkillRegistry::discover(dir).len()
+    codesmith_agent_runtime::skills::SkillRegistry::discover(dir).len()
 }
 
 pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
@@ -2863,7 +2862,7 @@ pub(crate) async fn run_doctor(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codesmith_agent_runtime::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
     // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
@@ -3426,7 +3425,7 @@ pub(crate) fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codesmith_agent_runtime::skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
     // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
@@ -5051,7 +5050,10 @@ pub(crate) fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::sandbox::install_sandbox_preexec(&exec_env, &mut cmd);
-    child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
+    codesmith_agent_runtime::child_env::apply_to_command(
+        &mut cmd,
+        codesmith_agent_runtime::child_env::string_map_env(&exec_env.env),
+    );
 
     let mut child = cmd
         .spawn()
@@ -5503,7 +5505,7 @@ pub(crate) async fn run_interactive(
     // Auto-install bundled system skills (e.g. skill-creator) on first launch.
     // Errors are non-fatal: log a warning and continue.
     let skills_dir = config.skills_dir();
-    if let Err(e) = crate::skills::install_system_skills(&skills_dir) {
+    if let Err(e) = codesmith_agent_runtime::skills::install_system_skills(&skills_dir) {
         logging::warn(format!("Failed to install system skills: {e}"));
     }
 

@@ -768,7 +768,7 @@ pub(crate) fn resolve_skills_dir(
         return local_skills_dir;
     }
     if config.skills_dir.is_none()
-        && let Some(global_agents) = crate::skills::agents_global_skills_dir()
+        && let Some(global_agents) = codesmith_agent_runtime::skills::agents_global_skills_dir()
         && global_agents.exists()
     {
         return global_agents;
