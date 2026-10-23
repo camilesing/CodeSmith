@@ -22,9 +22,11 @@
 //!
 //! ## Known limitations
 //!
-//! The flag deny-list is not exhaustive; exec-by-positioning vectors such as
-//! `xargs <cmd>` fall back to the ordinary approval path rather than being
-//! matched here.
+//! The flag deny-list is not exhaustive. Exec-by-positioning vectors
+//! (`xargs <cmd>`, `ssh host cmd`, `docker run <img> <cmd>`,
+//! `kubectl exec`, `go/cargo/bun run`, `npx <pkg>`, `python -m <module>`)
+//! are denied outright by [`is_exec_by_positioning`] — an allow rule never
+//! covers them; they fall back to the ordinary approval path.
 //!
 //! ## Coverage
 //!
@@ -213,8 +215,11 @@ pub static BASH_ARITY_TABLE: &[(&str, u8)] = &[
     ("pip3 uninstall", 2),
     ("pip3 list", 2),
     ("pip3 show", 2),
-    ("python -m", 3),
-    ("python3 -m", 3),
+    // NOTE: no "python -m"/"python3 -m" entries — `classify` strips flag
+    // tokens before building candidates, so they were unreachable dead
+    // weight, and a positional `<python> -m <module>` payload executes the
+    // module: rules must name the module explicitly and route through
+    // `is_exec_by_positioning` instead.
     // ── make / cmake ─────────────────────────────────────────────────────────
     ("make", 1),
     ("cmake", 1),
@@ -444,11 +449,18 @@ impl Default for BashArityDict {
 /// `ssh -oProxyCommand=<cmd>` runs it locally). An allow rule never
 /// authorizes a command carrying one of these.
 fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
-    const EXEC_FLAG_NAMES: &[&str] = &["--receive-pack", "--upload-pack", "--exec", "-exec"];
+    // Exact names plus their flag families: `find -execdir` must die with
+    // `-exec`, and `git --exec-path=<dir>` redirects git's subcommand
+    // lookup — an exact-name list let both through.
+    const EXEC_FLAG_NAMES: &[&str] = &["--receive-pack", "--upload-pack"];
     tokens.iter().enumerate().any(|(idx, token)| {
         let lower = token.to_ascii_lowercase();
         let flag_name = lower.split('=').next().unwrap_or("");
-        if EXEC_FLAG_NAMES.contains(&flag_name) {
+        if EXEC_FLAG_NAMES.contains(&flag_name)
+            || flag_name == "--exec"
+            || flag_name.starts_with("--exec-")
+            || flag_name.starts_with("-exec")
+        {
             return true;
         }
         // ssh `-oProxyCommand=…` (attached) or `-o ProxyCommand=…` (split).
@@ -462,31 +474,91 @@ fn contains_exec_capable_flag(tokens: &[&str]) -> bool {
         {
             return true;
         }
-        // git `-c core.sshCommand=<cmd>` / `-c core.editor=<cmd>` /
-        // `-c core.pager=<cmd>` execute their value.
-        lower.contains("core.sshcommand=")
-            || lower.contains("core.editor=")
-            || lower.contains("core.pager=")
+        // git `-c core.sshCommand=<cmd>` and friends execute their value
+        // (`credential.helper=!<cmd>`, `diff.external=<cmd>` included).
+        is_exec_capable_git_key(&lower)
+    }) || git_config_carries_exec_key(tokens) || has_executing_transport(tokens)
+}
+
+/// git configuration keys whose persisted value is executed by a later git
+/// invocation (ssh command, editor, pager, credential helper, diff tool).
+fn is_exec_capable_git_key(token: &str) -> bool {
+    const EXEC_KEYS: &[&str] = &[
+        "core.sshcommand=",
+        "core.editor=",
+        "core.pager=",
+        "credential.helper=",
+        "diff.external=",
+        "core.fsmonitor=",
+    ];
+    EXEC_KEYS.iter().any(|key| token.contains(key))
+}
+
+/// `git config --global core.sshCommand /tmp/evil` — the split form carries
+/// no `=`, so the attached-form `contains` checks miss it, yet the persisted
+/// value is executed by the next auto-allowed `git fetch`/`git push`.
+fn git_config_carries_exec_key(tokens: &[&str]) -> bool {
+    if tokens.len() < 3 {
+        return false;
+    }
+    let base = tokens[0].to_ascii_lowercase();
+    if base != "git" || !tokens[1].eq_ignore_ascii_case("config") {
+        return false;
+    }
+    const EXEC_KEYS: &[&str] = &[
+        "core.sshcommand",
+        "core.editor",
+        "core.pager",
+        "credential.helper",
+        "diff.external",
+        "core.fsmonitor",
+    ];
+    tokens[2..].iter().any(|token| {
+        let lower = token.to_ascii_lowercase();
+        // `--global core.sshCommand` and the attached `key=value` form both
+        // land here; section prefixes like `--global` never match.
+        let key = lower.split('=').next().unwrap_or("").trim_matches('-');
+        EXEC_KEYS.contains(&key) || is_exec_capable_git_key(&lower)
     })
+}
+
+/// `git clone ext::sh -c '…'` executes the transport helper's command — a
+/// positional token, so no flag check ever sees it.
+fn has_executing_transport(tokens: &[&str]) -> bool {
+    tokens
+        .iter()
+        .any(|token| token.starts_with("ext::") || token.starts_with("transport::"))
 }
 
 /// Commands whose *positional* tail (often after a `--` separator) executes
 /// an arbitrary payload: `kubectl exec pod -- sh -c …`, `docker exec …`,
-/// `ssh host cmd`, `xargs cmd`, `sudo cmd`. An allow rule never covers
-/// them whatever the arity table says — the same contract as
-/// [`contains_exec_capable_flag`].
+/// `docker run <image> <cmd>`, `go run ./pkg`, `npx <registry-pkg>`,
+/// `python -m <module>`, `ssh host cmd`, `xargs cmd`, `sudo cmd`. An allow
+/// rule never covers them whatever the arity table says — the same contract
+/// as [`contains_exec_capable_flag`]. Without this, the arity collapse
+/// (`docker run -v /:/host alpine sh` → `docker run`) let an allow rule
+/// naming the prefix authorize the payload itself.
 fn is_exec_by_positioning(tokens: &[&str]) -> bool {
     const CONTAINER_CARRIERS: &[&str] = &["kubectl", "docker", "podman", "nerdctl"];
+    let base = tokens.first().copied().unwrap_or_default().to_ascii_lowercase();
     if tokens.len() >= 2
-        && CONTAINER_CARRIERS.contains(&tokens[0].to_ascii_lowercase().as_str())
-        && tokens[1].eq_ignore_ascii_case("exec")
+        && CONTAINER_CARRIERS.contains(&base.as_str())
+        && (tokens[1].eq_ignore_ascii_case("exec") || tokens[1].eq_ignore_ascii_case("run"))
     {
         return true;
     }
-    matches!(
-        tokens.first().copied(),
-        Some("ssh") | Some("xargs") | Some("sudo")
-    )
+    if tokens.len() >= 2 && matches!(base.as_str(), "go" | "cargo" | "bun" | "python" | "python3")
+    {
+        let sub = tokens[1].to_ascii_lowercase();
+        let base_execs = match base.as_str() {
+            "python" | "python3" => sub == "-m",
+            _ => sub == "run",
+        };
+        if base_execs {
+            return true;
+        }
+    }
+    matches!(base.as_str(), "ssh" | "xargs" | "sudo" | "npx")
 }
 
 #[cfg(test)]
@@ -706,5 +778,66 @@ mod tests {
             "expected at least 30 entries, got {}",
             BashArityDict::new().len()
         );
+    }
+
+    // ── exec-by-positioning denial (security) ───────────────────────────────
+
+    #[test]
+    fn exec_by_positioning_vectors_never_match_allow_rules() {
+        // Positional payloads: the arity collapse must not let an allow
+        // rule naming the prefix authorize the payload itself.
+        for (pattern, command) in [
+            ("docker run", "docker run -v /:/host alpine sh"),
+            ("kubectl exec", "kubectl exec pod -- rm -rf /"),
+            ("go run", "go run ./exploit"),
+            ("cargo run", "cargo run --bin evil"),
+            ("bun run", "bun run evil.ts"),
+            ("npx", "npx some-registry-pkg"),
+            ("python -m", "python -m http.server"),
+            ("ssh", "ssh host 'rm -rf /'"),
+            ("xargs", "xargs rm -rf /"),
+            ("sudo", "sudo rm -rf /"),
+        ] {
+            assert!(
+                !dict().allow_rule_matches(pattern, command),
+                "exec-by-positioning `{command}` must not match `{pattern}`"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_flag_families_and_git_c_keys_are_denied() {
+        for command in [
+            "find . -execdir rm {} +",
+            "find . -exec rm {} ;",
+            "git log --exec-path=/tmp/evil",
+            "git push --receive-pack=/tmp/evil origin",
+            "git -c core.sshCommand=/tmp/evil fetch",
+            "git -c credential.helper='!sh -c /tmp/evil' push",
+            "git -c diff.external=/tmp/evil diff",
+            "git config --global core.sshCommand /tmp/evil",
+            "git config credential.helper '!/tmp/evil'",
+            "git clone ext::sh -c 'touch /tmp/pwned'",
+            "ssh -oProxyCommand=/tmp/evil host",
+        ] {
+            assert!(
+                !dict().allow_rule_matches("git", command)
+                    && !dict().allow_rule_matches("git push", command)
+                    && !dict().allow_rule_matches("git clone", command)
+                    && !dict().allow_rule_matches("git config", command)
+                    && !dict().allow_rule_matches("git log", command)
+                    && !dict().allow_rule_matches("find", command)
+                    && !dict().allow_rule_matches("ssh", command),
+                "exec-capable `{command}` must never match an allow rule"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_git_config_still_matches() {
+        assert!(dict().allow_rule_matches(
+            "git config",
+            "git config --global user.name Someone"
+        ));
     }
 }

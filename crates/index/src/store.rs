@@ -292,7 +292,9 @@ impl IndexStore {
             bail!("symbol search query must not be empty");
         }
         let needle = query.query.to_lowercase();
-        let fetch_cap = query.limit.saturating_mul(4).clamp(query.limit, 500);
+        // `clamp` panics when limit > 500 (min > max); min/max cannot
+        // invert.
+        let fetch_cap = query.limit.saturating_mul(4).min(500).max(query.limit);
         let conn = self.conn.lock().expect("index store mutex poisoned");
         let base_sql = "SELECT s.name, s.kind, s.container, f.path, s.line, s.col, s.end_line, s.end_col, s.signature
                         FROM symbols s JOIN files f ON f.id = s.file_id
@@ -603,6 +605,26 @@ mod tests {
                 .iter()
                 .any(|o| o.role == OccurrenceRole::Reference)
         );
+    }
+
+    #[test]
+    fn search_symbols_large_limit_does_not_panic() {
+        // `Ord::clamp` panicked when caller limit > 500 (min > max); a
+        // large — not malformed — limit must not crash the search API.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = store_in(&tmp);
+        store
+            .replace_file(&file_entry("src/a.rs"), &extraction_fixture())
+            .expect("insert");
+        let hits = store
+            .search_symbols(&SymbolQuery {
+                query: "registry".into(),
+                kind: None,
+                file_glob: None,
+                limit: 100_000,
+            })
+            .expect("search with a large limit");
+        assert!(!hits.is_empty());
     }
 
     #[test]

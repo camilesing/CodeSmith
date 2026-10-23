@@ -414,17 +414,19 @@ impl McpServer {
                 message: "Missing required argument: prompt".to_string(),
             })?;
 
+        // Resolve config/client once and reuse across calls (see
+        // [`LlmBackend`]). Runs BEFORE the model fallback reads
+        // `default_model` — on the first call `self.llm` is still `None`
+        // there, and a client-controlled request without an explicit
+        // `model` used to panic the whole server.
+        if self.llm.is_none() {
+            self.llm = Some(resolve_llm_backend()?);
+        }
         let model = arguments
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| {
-                self.llm
-                    .as_ref()
-                    .expect("backend resolved above")
-                    .default_model
-                    .clone()
-            });
+            .unwrap_or_else(|| self.llm.as_ref().expect("just resolved").default_model.clone());
 
         // Resolve thread_id
         let thread_id = if internal_name == "codesmith" {
@@ -441,11 +443,6 @@ impl McpServer {
                 .to_string()
         };
 
-        // Resolve config/client once and reuse across calls (see
-        // [`LlmBackend`]).
-        if self.llm.is_none() {
-            self.llm = Some(resolve_llm_backend()?);
-        }
         let client = self
             .llm
             .as_ref()
