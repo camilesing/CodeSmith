@@ -27,7 +27,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
 use crate::automation_manager::{
     AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
@@ -2005,7 +2005,7 @@ fn collect_workspace_status(workspace: &std::path::Path) -> WorkspaceStatusRespo
 }
 
 fn run_git(workspace: &std::path::Path, args: &[&str]) -> Option<String> {
-    let output = crate::dependencies::Git::output(args, workspace).ok()?;
+    let output = codesmith_agent_runtime::dependencies::Git::output(args, workspace).ok()?;
     if !output.status.success() {
         return None;
     }

@@ -281,7 +281,7 @@ impl ToolRegistryBuilder {
     /// sees a binary it can't actually use.
     #[must_use]
     pub fn with_pandoc_tools(self) -> Self {
-        if crate::dependencies::resolve_pandoc().is_some() {
+        if codesmith_agent_runtime::dependencies::resolve_pandoc().is_some() {
             use super::pandoc::PandocConvertTool;
             self.with_tool(Arc::new(PandocConvertTool))
         } else {

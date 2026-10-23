@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 
-use crate::dependencies::ExternalTool;
 use async_trait::async_trait;
 use chrono::Utc;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -421,7 +421,7 @@ fn gh_bin() -> String {
     if let Some(bin) = codesmith_config::codesmith_env("GH_BIN") {
         return bin;
     }
-    crate::dependencies::Gh::resolve().unwrap_or_else(|| "gh".to_string())
+    codesmith_agent_runtime::dependencies::Gh::resolve().unwrap_or_else(|| "gh".to_string())
 }
 
 /// Render gh args for an error line without echoing payload values: the arg
@@ -485,7 +485,7 @@ async fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, Tool
 }
 
 fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
-    let out = crate::dependencies::Git::output(
+    let out = codesmith_agent_runtime::dependencies::Git::output(
         &["rev-parse", "--is-inside-work-tree"],
         &context.workspace,
     )
@@ -500,8 +500,11 @@ fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
 }
 
 fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
-    let out = crate::dependencies::Git::output(&["status", "--porcelain"], &context.workspace)
-        .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
+    let out = codesmith_agent_runtime::dependencies::Git::output(
+        &["status", "--porcelain"],
+        &context.workspace,
+    )
+    .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 

@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::command_safety::{SafetyLevel, analyze_command};
-use crate::dependencies::ExternalTool;
 use crate::task_manager::{
     NewTaskRequest, TaskArtifactRef, TaskAttemptRecord, TaskGateRecord, TaskRecord,
 };
@@ -23,6 +22,7 @@ use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
 const MAX_SUMMARY_CHARS: usize = 900;
 const DEFAULT_GATE_TIMEOUT_MS: u64 = 120_000;
@@ -1052,7 +1052,7 @@ impl ToolSpec for PrAttemptPreflightTool {
         })?;
         let workspace = context.workspace.clone();
         let out = tokio::task::spawn_blocking(move || {
-            crate::dependencies::Git::command()
+            codesmith_agent_runtime::dependencies::Git::command()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "git not found"))?
                 .args(["apply", "--check"])
                 .arg(&patch_path)
@@ -1217,7 +1217,7 @@ fn task_id_schema() -> Value {
 }
 
 fn git_output(workspace: &Path, args: &[&str]) -> Result<String, ToolError> {
-    let out = crate::dependencies::Git::output(args, workspace)
+    let out = codesmith_agent_runtime::dependencies::Git::output(args, workspace)
         .map_err(|e| ToolError::execution_failed(format!("failed to run git: {e}")))?;
     if !out.status.success() {
         return Err(ToolError::execution_failed(format!(

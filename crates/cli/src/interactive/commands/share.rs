@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
 /// How long `gh gist create` may run before the upload is aborted.
 const GH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -124,7 +124,7 @@ fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, ShareError> {
 async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, ShareError> {
     let path_owned = tmp.path().to_path_buf();
     let _keep_alive = tmp;
-    let Some(mut cmd) = crate::dependencies::Gh::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Gh::command() else {
         return Err(ShareError::GhSpawn(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "gh not found",

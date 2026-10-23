@@ -14,7 +14,7 @@ use codesmith_agent_runtime::telemetry::TelemetrySink;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
-use crate::dependencies::ExternalTool;
+use codesmith_agent_runtime::dependencies::ExternalTool;
 
 /// Best-effort terminal restore on crash paths: leave any raw/alt-screen
 /// mode a subprocess may have left enabled (the REPL itself never enters
@@ -3054,7 +3054,7 @@ pub(crate) async fn run_doctor(
     println!();
     println!("{}", "Tool Dependencies:".bold());
 
-    match crate::dependencies::resolve_python_interpreter() {
+    match codesmith_agent_runtime::dependencies::resolve_python_interpreter() {
         Some(name) => println!(
             "  {} Python: {} → code_execution tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3064,14 +3064,14 @@ pub(crate) async fn run_doctor(
             println!(
                 "  {} Python: not found (tried {:?})",
                 "✗".truecolor(red_r, red_g, red_b),
-                crate::dependencies::PYTHON_CANDIDATES,
+                codesmith_agent_runtime::dependencies::PYTHON_CANDIDATES,
             );
             println!("    code_execution tool is NOT advertised to the model on this install.");
             findings.error(
                 "Tool Dependencies",
                 format!(
                     "Python not found (tried {:?}); code_execution tool not advertised",
-                    crate::dependencies::PYTHON_CANDIDATES
+                    codesmith_agent_runtime::dependencies::PYTHON_CANDIDATES
                 ),
             );
             println!("    Install Python 3 and ensure one of those names is on PATH:");
@@ -3090,7 +3090,7 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    match crate::dependencies::resolve_node() {
+    match codesmith_agent_runtime::dependencies::resolve_node() {
         Some(_) => println!(
             "  {} Node.js: present → js_execution tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3119,7 +3119,7 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    match crate::dependencies::resolve_pandoc() {
+    match codesmith_agent_runtime::dependencies::resolve_pandoc() {
         Some(_) => println!(
             "  {} pandoc: present → pandoc_convert tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3142,7 +3142,7 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    match crate::dependencies::resolve_tesseract() {
+    match codesmith_agent_runtime::dependencies::resolve_tesseract() {
         Some(_) => {
             if cfg!(target_os = "macos") {
                 println!(
@@ -3193,7 +3193,7 @@ pub(crate) async fn run_doctor(
     let prefer_external = crate::settings::Settings::load()
         .map(|s| s.prefer_external_pdftotext)
         .unwrap_or(false);
-    match crate::dependencies::resolve_pdftotext() {
+    match codesmith_agent_runtime::dependencies::resolve_pdftotext() {
         Some(_) => {
             if prefer_external {
                 println!(
@@ -3876,7 +3876,7 @@ pub(crate) async fn test_api_connectivity(config: &Config) -> Result<()> {
 }
 
 pub(crate) fn rustc_version() -> String {
-    let Some(mut cmd) = crate::dependencies::RustC::command() else {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::RustC::command() else {
         return "unknown".to_string();
     };
     let Ok(output) = cmd.arg("--version").output() else {
@@ -4393,7 +4393,7 @@ pub(crate) struct GhPullRequest {
 }
 
 pub(crate) fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codesmith_agent_runtime::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("view").arg(number.to_string());
     if let Some(r) = repo {
@@ -4428,7 +4428,7 @@ pub(crate) fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRe
 }
 
 pub(crate) fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codesmith_agent_runtime::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("diff").arg(number.to_string());
     if let Some(r) = repo {
@@ -4445,7 +4445,7 @@ pub(crate) fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> 
 }
 
 pub(crate) fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
-    let mut cmd = crate::dependencies::Gh::command()
+    let mut cmd = codesmith_agent_runtime::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("checkout").arg(number.to_string());
     if let Some(r) = repo {
@@ -4520,7 +4520,7 @@ pub(crate) fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) ->
 }
 
 pub(crate) fn collect_diff(args: &ReviewArgs) -> Result<String> {
-    let mut cmd = crate::dependencies::Git::command()
+    let mut cmd = codesmith_agent_runtime::dependencies::Git::command()
         .ok_or_else(|| anyhow::anyhow!("git not found on PATH"))?;
     cmd.arg("diff");
     if args.staged {
@@ -4562,7 +4562,7 @@ pub(crate) fn run_apply(args: ApplyArgs) -> Result<()> {
     tmp.write_all(patch.as_bytes())?;
     let tmp_path = tmp.path().to_path_buf();
 
-    let output = crate::dependencies::Git::command()
+    let output = codesmith_agent_runtime::dependencies::Git::command()
         .ok_or_else(|| anyhow::anyhow!("git not found on PATH"))?
         .arg("apply")
         .arg("--whitespace=nowarn")

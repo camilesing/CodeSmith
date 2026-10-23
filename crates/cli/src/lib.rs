@@ -22,7 +22,6 @@ mod compaction;
 mod config;
 mod core;
 mod cycle_manager;
-mod dependencies;
 mod doctor_llm;
 mod eval;
 mod execpolicy;
