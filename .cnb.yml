@@ -127,16 +127,11 @@ main:
 
             mkdir -p target/cnb-release
             cp target/release/codesmith target/cnb-release/codesmith-linux-x64
-            cp target/release/codesmith target/cnb-release/codesmith-linux-x64
-            strip \
-              target/cnb-release/codesmith-linux-x64 \
-              target/cnb-release/codesmith-linux-x64 \
-              || true
+            strip target/cnb-release/codesmith-linux-x64
 
             (
               cd target/cnb-release
               sha256sum \
-                codesmith-linux-x64 \
                 codesmith-linux-x64 \
                 > codesmith-artifacts-sha256.txt
             )
@@ -160,7 +155,6 @@ main:
               echo
               echo "Assets:"
               echo "- codesmith-linux-x64"
-              echo "- codesmith-linux-x64"
               echo "- codesmith-artifacts-sha256.txt"
             } > target/cnb-release/CNB_RELEASE.md
 
@@ -174,6 +168,5 @@ main:
           image: cnbcool/attachments:latest
           settings:
             attachments:
-              - target/cnb-release/codesmith-linux-x64
               - target/cnb-release/codesmith-linux-x64
               - target/cnb-release/codesmith-artifacts-sha256.txt

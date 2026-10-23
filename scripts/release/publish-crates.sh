@@ -125,7 +125,17 @@ package_has_workspace_deps() {
 crate_version_exists() {
   local crate_name="$1"
   local crate_version="$2"
-  curl -fsSL --max-time 10 "https://crates.io/api/v1/crates/${crate_name}/${crate_version}" >/dev/null 2>&1
+  case "$(crate_version_status "${crate_name}" "${crate_version}")" in
+    published) return 0 ;;
+    absent) return 1 ;;
+    *)
+      # Unknown means the registry could not be queried (network/5xx). Treat
+      # it as fatal: guessing "absent" here is what triggers a duplicate
+      # `cargo publish` attempt.
+      echo "Could not query crates.io for ${crate_name} ${crate_version} (network or server error); refusing to guess published/absent." >&2
+      exit 1
+      ;;
+  esac
 }
 
 wait_for_crate_version() {
@@ -134,9 +144,11 @@ wait_for_crate_version() {
   local attempts=30
 
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
-    if crate_version_exists "${crate_name}" "${crate_version}"; then
-      return 0
-    fi
+    case "$(crate_version_status "${crate_name}" "${crate_version}")" in
+      published) return 0 ;;
+      # "unknown" (transient network/5xx) keeps retrying inside the wait;
+      # only a confirmed 404 counts as still-absent.
+    esac
     echo "Waiting for ${crate_name} ${crate_version} to appear on crates.io (${attempt}/${attempts})..."
     sleep 10
   done

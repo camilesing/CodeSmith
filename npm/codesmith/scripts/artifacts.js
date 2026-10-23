@@ -85,7 +85,12 @@ function isCnbMirrorEnabled() {
   return flag !== "" && flag !== "0" && flag !== "false";
 }
 
-function releaseBaseUrl(version, repo = DEFAULT_REPO) {
+// The CNB mirror only builds and hosts the linux-x64 binary (and its own
+// checksum manifest). Every other asset must fall back to GitHub even when
+// the mirror is enabled, or installs on macOS/Windows point at 404s.
+const CNB_MIRROR_ASSETS = new Set(["codesmith-linux-x64"]);
+
+function resolveBaseUrl(version, repo, useMirror) {
   // CODESMITH_RELEASE_BASE_URL is the canonical override.
   const override = String(process.env.CODESMITH_RELEASE_BASE_URL || "").trim();
   if (override) {
@@ -99,20 +104,27 @@ function releaseBaseUrl(version, repo = DEFAULT_REPO) {
     }
     return base;
   }
-  // When CODESMITH_USE_CNB_MIRROR is enabled, use the CNB (China-friendly)
-  // mirror that already builds and publishes binary release assets.
-  if (isCnbMirrorEnabled()) {
+  if (useMirror && isCnbMirrorEnabled()) {
     return `https://cnb.cool/${repo}/-/releases/v${version}/`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;
 }
 
-function releaseAssetUrl(baseName, version, repo = DEFAULT_REPO) {
-  return new URL(baseName, releaseBaseUrl(version, repo)).toString();
+function releaseBaseUrl(version, repo = DEFAULT_REPO) {
+  return resolveBaseUrl(version, repo, false);
 }
 
-function checksumManifestUrl(version, repo = DEFAULT_REPO) {
-  return releaseAssetUrl(CHECKSUM_MANIFEST, version, repo);
+function releaseAssetUrl(baseName, version, repo = DEFAULT_REPO) {
+  return new URL(baseName, resolveBaseUrl(version, repo, CNB_MIRROR_ASSETS.has(baseName))).toString();
+}
+
+// The manifest must come from the same source as the binary it verifies:
+// `forAsset` names the binary being installed, so a mirrored linux-x64
+// download is checked against the mirror's own manifest (the two builds'
+// bytes differ).
+function checksumManifestUrl(version, repo = DEFAULT_REPO, forAsset = null) {
+  const useMirror = forAsset !== null && CNB_MIRROR_ASSETS.has(forAsset);
+  return new URL(CHECKSUM_MANIFEST, resolveBaseUrl(version, repo, useMirror)).toString();
 }
 
 function releaseBinaryDirectory() {

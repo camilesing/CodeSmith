@@ -77,9 +77,13 @@ jobs:
       - name: Resolve release source
         id: release
         shell: bash
+        env:
+          # Never interpolate dispatch inputs into the shell body — the value
+          # is operator-controlled and `${{ }}` in `run:` is script injection.
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            tag="v${{ inputs.version }}"
+            tag="v${INPUT_VERSION}"
             if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
               sha="$(git rev-list -n 1 "${tag}")"
               source_ref="${tag}"

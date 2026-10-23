@@ -81,5 +81,6 @@ jobs:
         if: steps.check.outputs.exists == 'false' && env.HAS_PAT != 'true'
         env:
           HAS_PAT: ${{ secrets.RELEASE_TAG_PAT != '' }}
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
-          echo "::warning::RELEASE_TAG_PAT secret is not set. The tag was pushed using GITHUB_TOKEN, which does NOT trigger release.yml. Manually re-push the tag from a developer machine, or run 'gh workflow run release.yml --ref ${{ steps.ver.outputs.tag }}'."
+          echo "::warning::RELEASE_TAG_PAT secret is not set. The tag was pushed using GITHUB_TOKEN, which does NOT trigger release.yml. Manually re-push the tag from a developer machine, or run 'gh workflow run release.yml --ref ${TAG}'."

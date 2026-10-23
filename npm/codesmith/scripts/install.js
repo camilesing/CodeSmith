@@ -998,8 +998,8 @@ async function checksumMatches(filePath, assetName, checksums) {
   return actual === expected;
 }
 
-async function loadChecksums(version, repo, options = {}) {
-  return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo), options));
+async function loadChecksums(version, repo, forAsset = null, options = {}) {
+  return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo, forAsset), options));
 }
 
 function existingBinaryCandidates(targetPath, assetName) {
@@ -1108,7 +1108,9 @@ async function run(options = {}) {
   let checksumsPromise;
   const getChecksums = () => {
     if (!checksumsPromise) {
-      checksumsPromise = loadChecksums(version, repo, { context });
+      // The manifest is fetched from the same source as the binary so a
+      // mirrored download is verified against the mirror's own checksums.
+      checksumsPromise = loadChecksums(version, repo, paths.codesmith.asset, { context });
     }
     return checksumsPromise;
   };

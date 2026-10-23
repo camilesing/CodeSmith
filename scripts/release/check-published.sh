@@ -93,12 +93,22 @@ else
 fi
 
 for crate in "${release_crates[@]}"; do
-  if curl -fsSL --max-time 30 "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
-    echo "crates.io ${crate}@${version} is published."
-  else
-    echo "crates.io ${crate}@${version} is not published." >&2
-    fail=1
-  fi
+  status="$(crate_version_status "${crate}" "${version}")"
+  case "${status}" in
+    published)
+      echo "crates.io ${crate}@${version} is published."
+      ;;
+    absent)
+      echo "crates.io ${crate}@${version} is not published." >&2
+      fail=1
+      ;;
+    *)
+      # Transient network/server failure: distinct message so an operator
+      # re-checks instead of re-publishing.
+      echo "crates.io ${crate}@${version} could not be queried (network or server error); not concluding it is unpublished." >&2
+      fail=1
+      ;;
+  esac
 done
 
 if [[ "${fail}" == "0" ]]; then
