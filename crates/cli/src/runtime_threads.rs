@@ -1071,8 +1071,11 @@ impl RuntimeThreadManager {
                 let reasoning = usage.reasoning_tokens.unwrap_or(0) as u64;
                 let input = usage.input_tokens as u64;
                 let output = usage.output_tokens as u64;
-                let cost = crate::pricing::calculate_turn_cost_from_usage(&thread.model, usage)
-                    .unwrap_or(0.0);
+                let cost = codesmith_agent_runtime::pricing::calculate_turn_cost_from_usage(
+                    &thread.model,
+                    usage,
+                )
+                .unwrap_or(0.0);
 
                 totals.input_tokens += input;
                 totals.output_tokens += output;

@@ -1606,9 +1606,10 @@ fn apply_turn_accounting(
     } else {
         state.model.clone()
     };
-    if let Some(cost) =
-        crate::pricing::calculate_turn_cost_estimate_from_usage(&pricing_model, &usage)
-    {
+    if let Some(cost) = codesmith_agent_runtime::pricing::calculate_turn_cost_estimate_from_usage(
+        &pricing_model,
+        &usage,
+    ) {
         state.session.session_cost += cost.usd;
         state.session.session_cost_cny += cost.cny;
     }

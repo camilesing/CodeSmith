@@ -52,7 +52,6 @@ mod notifications;
 mod onboarding;
 mod prefix_cache;
 mod presets;
-mod pricing;
 mod project_context;
 mod prompts;
 mod purge;
