@@ -193,7 +193,7 @@ impl Settings {
         let _lock = codesmith_agent_runtime::settings_file::SettingsFileLock::acquire(&path)?;
 
         let content = toml::to_string_pretty(self).context("Failed to serialize settings")?;
-        crate::utils::write_atomic(&path, content.as_bytes())
+        codesmith_agent_runtime::utils::write_atomic(&path, content.as_bytes())
             .with_context(|| format!("Failed to write settings to {}", path.display()))?;
         Ok(())
     }

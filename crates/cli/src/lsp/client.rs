@@ -41,7 +41,7 @@ use tokio::time::timeout;
 
 use super::diagnostics::{Diagnostic, Severity};
 use super::registry::Language;
-use crate::utils::spawn_supervised;
+use codesmith_agent_runtime::utils::spawn_supervised;
 
 /// How long [`StdioLspTransport::spawn`] waits for the server's `initialize`
 /// response before falling back to sending `initialized` anyway. Generous

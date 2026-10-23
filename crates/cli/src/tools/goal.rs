@@ -11,7 +11,10 @@ use serde_json::{Value, json};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
-pub use codesmith_agent_runtime::tool_state::goal::*;
+use codesmith_agent_runtime::tool_state::goal::{
+    GoalSnapshot, GoalState, SharedGoalState, new_shared_goal_state,
+    new_shared_goal_state_from_host,
+};
 
 fn lock_goal_state(
     state: &SharedGoalState,

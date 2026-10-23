@@ -45,8 +45,8 @@ use crate::tools::subagent::{
     SubAgentRuntime, SubAgentType, resolve_subagent_assignment_route,
 };
 use crate::tools::team::run_leader_inbox_poller;
-use crate::utils::spawn_supervised;
 use codesmith_agent_runtime::features::Feature;
+use codesmith_agent_runtime::utils::spawn_supervised;
 
 /// Zero-sized runtime-UI bridge: resolves the clipboard-image directory the
 /// sandbox trusts. Constructed where the engine needs `Arc<dyn RuntimeUi>`.

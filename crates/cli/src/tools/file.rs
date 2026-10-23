@@ -613,7 +613,7 @@ impl ToolSpec for WriteFileTool {
         let write_path = file_path.clone();
         let content_bytes = final_content.as_bytes().to_vec();
         tokio::task::spawn_blocking(move || {
-            crate::utils::write_atomic(&write_path, &content_bytes)
+            codesmith_agent_runtime::utils::write_atomic(&write_path, &content_bytes)
         })
         .await
         .map_err(|e| ToolError::execution_failed(format!("write task failed: {e}")))?
@@ -961,7 +961,7 @@ impl ToolSpec for EditFileTool {
         let write_path = file_path.clone();
         let content_bytes = final_updated.as_bytes().to_vec();
         tokio::task::spawn_blocking(move || {
-            crate::utils::write_atomic(&write_path, &content_bytes)
+            codesmith_agent_runtime::utils::write_atomic(&write_path, &content_bytes)
         })
         .await
         .map_err(|e| ToolError::execution_failed(format!("write task failed: {e}")))?

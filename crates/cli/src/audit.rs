@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use serde_json::{Value, json};
 
-use crate::utils::open_append;
+use codesmith_agent_runtime::utils::open_append;
 
 /// Append an audit event to `~/.codesmith/audit.log`.
 ///

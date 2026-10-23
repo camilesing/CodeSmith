@@ -821,7 +821,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         plan_state: state.plan_state.clone(),
         plan_mode_state: state.plan_mode_state.clone(),
         task_v2_manager: None,
-        goal_state: crate::tools::goal::new_shared_goal_state_from_host(
+        goal_state: codesmith_agent_runtime::tool_state::goal::new_shared_goal_state_from_host(
             state.hunt.quarry.clone(),
             state.hunt.token_budget,
             state.hunt.verdict == crate::app_state::HuntVerdict::Hunted,

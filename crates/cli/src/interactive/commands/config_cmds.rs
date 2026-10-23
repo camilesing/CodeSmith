@@ -646,7 +646,7 @@ pub(crate) fn persist_section_bool(
         .with_context(|| format!("[{section}] in config.toml must be a table"))?;
     table.insert(key.to_string(), toml::Value::Boolean(value));
     let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    crate::utils::write_atomic(&path, body.as_bytes())
+    codesmith_agent_runtime::utils::write_atomic(&path, body.as_bytes())
         .with_context(|| format!("failed to write config at {}", path.display()))?;
     Ok(path)
 }

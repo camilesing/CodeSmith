@@ -70,7 +70,7 @@ impl SkillStateStore {
                 // Quarantine before defaulting: the next save would
                 // overwrite the malformed file and destroy the only copy
                 // of the user's enable/disable choices.
-                crate::utils::preserve_corrupt_state_file(&path);
+                codesmith_agent_runtime::utils::preserve_corrupt_state_file(&path);
                 OnDiskState::default()
             }
         };
@@ -137,7 +137,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create parent dir for {}", path.display()))?;
     }
-    crate::utils::write_atomic(path, bytes).with_context(|| format!("write {}", path.display()))
+    codesmith_agent_runtime::utils::write_atomic(path, bytes)
+        .with_context(|| format!("write {}", path.display()))
 }
 
 #[cfg(test)]

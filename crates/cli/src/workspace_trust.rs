@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::write_atomic;
+use codesmith_agent_runtime::utils::write_atomic;
 
 const TRUST_FILE_NAME: &str = "workspace-trust.json";
 
@@ -182,7 +182,7 @@ fn read_trust_file_at(path: &Path) -> Result<TrustFile> {
                 "trust file {} failed to parse ({err}); quarantined a copy and continuing empty",
                 path.display()
             );
-            crate::utils::preserve_corrupt_state_file(path);
+            codesmith_agent_runtime::utils::preserve_corrupt_state_file(path);
             Ok(TrustFile::default())
         }
     }

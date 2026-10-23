@@ -70,7 +70,7 @@ use crate::tools::team::{
     run_teammate_loop, write_team_config,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
-use crate::utils::spawn_supervised;
+use codesmith_agent_runtime::utils::spawn_supervised;
 
 pub mod acp;
 pub mod headless;

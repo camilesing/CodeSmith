@@ -107,9 +107,9 @@ use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::{SharedSubAgentManager, new_shared_subagent_manager};
 use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
-use crate::utils::spawn_supervised;
 use codesmith_agent::provider::{ProviderConfig, ProviderId, SharedProviderRegistry};
 use codesmith_agent_runtime::features::Feature;
+use codesmith_agent_runtime::utils::spawn_supervised;
 
 use super::capacity::CapacityController;
 use super::events::Event;
@@ -1804,7 +1804,7 @@ pub(crate) fn headless_engine_config(
         plan_state: new_shared_plan_state(),
         plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
         task_v2_manager: None,
-        goal_state: crate::tools::goal::new_shared_goal_state(),
+        goal_state: codesmith_agent_runtime::tool_state::goal::new_shared_goal_state(),
         worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
         // A headless child inherits its parent's remaining spawn budget via
         // the environment (see `tools::subagent::headless`); a top-level run

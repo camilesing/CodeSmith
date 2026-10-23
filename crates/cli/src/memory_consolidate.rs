@@ -150,7 +150,7 @@ pub(crate) async fn run_memory_consolidate(
         println!(
             "  · no memory directory at {} — nothing to consolidate \
 (enable [memory] kod_enabled or create the directory)",
-            crate::utils::display_path(&memory_dir)
+            codesmith_agent_runtime::utils::display_path(&memory_dir)
         );
         return Ok(());
     }
@@ -160,7 +160,7 @@ pub(crate) async fn run_memory_consolidate(
     if report.index_missing {
         println!(
             "  · no MEMORY.md at {} — nothing to consolidate",
-            crate::utils::display_path(&report.index_path)
+            codesmith_agent_runtime::utils::display_path(&report.index_path)
         );
         return Ok(());
     }
@@ -331,7 +331,7 @@ pub(crate) async fn run_memory_consolidate(
     println!();
     println!(
         "  ✓ index written — backup at {}",
-        crate::utils::display_path(&backup)
+        codesmith_agent_runtime::utils::display_path(&backup)
     );
     println!(
         "  · prompt-cache note: the next session's system prompt refresh picks the new index up automatically"

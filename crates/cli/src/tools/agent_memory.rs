@@ -155,12 +155,14 @@ impl ToolSpec for AgentMemoryWriteTool {
         // disk I/O that belongs on the blocking pool, not the async worker.
         let write_path = path.clone();
         let bytes = content.as_bytes().to_vec();
-        tokio::task::spawn_blocking(move || crate::utils::write_atomic(&write_path, &bytes))
-            .await
-            .map_err(|err| ToolError::execution_failed(format!("write task failed: {err}")))?
-            .map_err(|err| {
-                ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
-            })?;
+        tokio::task::spawn_blocking(move || {
+            codesmith_agent_runtime::utils::write_atomic(&write_path, &bytes)
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("write task failed: {err}")))?
+        .map_err(|err| {
+            ToolError::execution_failed(format!("failed to write {}: {err}", path.display()))
+        })?;
         let diff = make_unified_diff(&path.display().to_string(), &prior, content);
         let summary = format!(
             "Wrote {} bytes to agent memory file {}",
@@ -236,7 +238,7 @@ impl ToolSpec for AgentMemoryEditTool {
         let write_path = path.clone();
         let updated_bytes = updated.as_bytes().to_vec();
         tokio::task::spawn_blocking(move || {
-            crate::utils::write_atomic(&write_path, &updated_bytes)
+            codesmith_agent_runtime::utils::write_atomic(&write_path, &updated_bytes)
         })
         .await
         .map_err(|err| ToolError::execution_failed(format!("write task failed: {err}")))?

@@ -42,7 +42,7 @@ pub fn persist_root_string_key(
         .context("config.toml root must be a table")?;
     table.insert(key.to_string(), toml::Value::String(value.to_string()));
     let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    crate::utils::write_atomic(&path, body.as_bytes())
+    codesmith_agent_runtime::utils::write_atomic(&path, body.as_bytes())
         .with_context(|| format!("failed to write config at {}", path.display()))?;
     Ok(path)
 }

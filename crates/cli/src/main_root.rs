@@ -1974,7 +1974,10 @@ pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> R
         "DeepSeek Setup".truecolor(aqua_r, aqua_g, aqua_b).bold()
     );
     println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
-    println!("Workspace: {}", crate::utils::display_path(workspace));
+    println!(
+        "Workspace: {}",
+        codesmith_agent_runtime::utils::display_path(workspace)
+    );
 
     if run_mcp {
         let mcp_path = config.mcp_config_path();
@@ -2019,12 +2022,12 @@ pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> R
         if args.local {
             println!(
                 "    Local skills dir enabled for this workspace: {}",
-                crate::utils::display_path(&skills_dir)
+                codesmith_agent_runtime::utils::display_path(&skills_dir)
             );
         } else {
             println!(
                 "    Skills dir: {}",
-                crate::utils::display_path(&skills_dir)
+                codesmith_agent_runtime::utils::display_path(&skills_dir)
             );
         }
         println!("    Next: run the REPL and use `/skills` then `/skill getting-started`.");
@@ -2035,7 +2038,10 @@ pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> R
         let (dir, readme_status, example_status) = init_tools_dir(&tools_dir, args.force)?;
         report_write_status("Tools README", &dir.join("README.md"), readme_status);
         report_write_status("Example tool", &dir.join("example.sh"), example_status);
-        println!("    Tools dir: {}", crate::utils::display_path(&dir));
+        println!(
+            "    Tools dir: {}",
+            codesmith_agent_runtime::utils::display_path(&dir)
+        );
         println!("    Next: drop scripts here; surface them via skills/MCP when ready.");
     }
 
@@ -2047,7 +2053,7 @@ pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> R
         report_write_status("Example plugin", &example_path, example_status);
         println!(
             "    Plugins dir: {}",
-            crate::utils::display_path(&plugins_dir)
+            codesmith_agent_runtime::utils::display_path(&plugins_dir)
         );
         println!("    Next: copy the example dir, edit PLUGIN.md, wire via skill/MCP.");
     }
@@ -2266,7 +2272,7 @@ pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> 
     println!(
         "  · skills: {} at {}",
         skills_count_for(&skills_dir),
-        crate::utils::display_path(&skills_dir)
+        codesmith_agent_runtime::utils::display_path(&skills_dir)
     );
 
     let tools_dir = default_tools_dir();
@@ -2282,7 +2288,7 @@ pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> 
         } else {
             0
         },
-        crate::utils::display_path(&tools_dir)
+        codesmith_agent_runtime::utils::display_path(&tools_dir)
     );
 
     let plugins_dir = default_plugins_dir();
@@ -2298,7 +2304,7 @@ pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> 
         } else {
             0
         },
-        crate::utils::display_path(&plugins_dir)
+        codesmith_agent_runtime::utils::display_path(&plugins_dir)
     );
 
     let sandbox = crate::sandbox::get_platform_sandbox();
@@ -2471,23 +2477,26 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} config.toml found at {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&config_path)
+            codesmith_agent_runtime::utils::display_path(&config_path)
         );
     } else {
         println!(
             "  {} config.toml not found at {} (using defaults/env)",
             "!".truecolor(sky_r, sky_g, sky_b),
-            crate::utils::display_path(&config_path)
+            codesmith_agent_runtime::utils::display_path(&config_path)
         );
         findings.warn(
             "Configuration",
             format!(
                 "config.toml not found at {} (using defaults/env)",
-                crate::utils::display_path(&config_path)
+                codesmith_agent_runtime::utils::display_path(&config_path)
             ),
         );
     }
-    println!("  workspace: {}", crate::utils::display_path(workspace));
+    println!(
+        "  workspace: {}",
+        codesmith_agent_runtime::utils::display_path(workspace)
+    );
     println!("  {}", doctor_search_provider_line(config));
 
     // State root (v0.8.44)
@@ -2495,7 +2504,10 @@ pub(crate) async fn run_doctor(
     println!("{}", "State Root:".bold());
     let code_home =
         codesmith_config::codesmith_home().unwrap_or_else(|_| PathBuf::from("~/.codesmith"));
-    println!("  active: {}", crate::utils::display_path(&code_home));
+    println!(
+        "  active: {}",
+        codesmith_agent_runtime::utils::display_path(&code_home)
+    );
 
     // Check API keys
     println!();
@@ -2775,7 +2787,7 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} MCP config found at {}",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&mcp_config_path)
+            codesmith_agent_runtime::utils::display_path(&mcp_config_path)
         );
         match load_mcp_config(&mcp_config_path) {
             Ok(cfg) if cfg.servers.is_empty() => {
@@ -2840,7 +2852,7 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} MCP config not found at {}",
             "·".dimmed(),
-            crate::utils::display_path(&mcp_config_path)
+            codesmith_agent_runtime::utils::display_path(&mcp_config_path)
         );
         println!("    Run `codesmith mcp init` or `codesmith setup --mcp`.");
     }
@@ -2882,14 +2894,14 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} local skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&local_skills_dir),
+            codesmith_agent_runtime::utils::display_path(&local_skills_dir),
             describe_dir(&local_skills_dir)
         );
     } else {
         println!(
             "  {} local skills dir not found at {}",
             "·".dimmed(),
-            crate::utils::display_path(&local_skills_dir)
+            codesmith_agent_runtime::utils::display_path(&local_skills_dir)
         );
     }
 
@@ -2897,14 +2909,14 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} .agents skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&agents_skills_dir),
+            codesmith_agent_runtime::utils::display_path(&agents_skills_dir),
             describe_dir(&agents_skills_dir)
         );
     } else {
         println!(
             "  {} .agents skills dir not found at {}",
             "·".dimmed(),
-            crate::utils::display_path(&agents_skills_dir)
+            codesmith_agent_runtime::utils::display_path(&agents_skills_dir)
         );
     }
 
@@ -2913,14 +2925,14 @@ pub(crate) async fn run_doctor(
             println!(
                 "  {} global .agents skills dir found at {} ({} items)",
                 "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::utils::display_path(agents_global_skills_dir),
+                codesmith_agent_runtime::utils::display_path(agents_global_skills_dir),
                 describe_dir(agents_global_skills_dir)
             );
         } else {
             println!(
                 "  {} global .agents skills dir not found at {}",
                 "·".dimmed(),
-                crate::utils::display_path(agents_global_skills_dir)
+                codesmith_agent_runtime::utils::display_path(agents_global_skills_dir)
             );
         }
     }
@@ -2929,14 +2941,14 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} global skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&global_skills_dir),
+            codesmith_agent_runtime::utils::display_path(&global_skills_dir),
             describe_dir(&global_skills_dir)
         );
     } else {
         println!(
             "  {} global skills dir not found at {}",
             "·".dimmed(),
-            crate::utils::display_path(&global_skills_dir)
+            codesmith_agent_runtime::utils::display_path(&global_skills_dir)
         );
     }
 
@@ -2947,7 +2959,7 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} .opencode skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&opencode_skills_dir),
+            codesmith_agent_runtime::utils::display_path(&opencode_skills_dir),
             describe_dir(&opencode_skills_dir)
         );
     }
@@ -2955,7 +2967,7 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} .claude skills dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&claude_skills_dir),
+            codesmith_agent_runtime::utils::display_path(&claude_skills_dir),
             describe_dir(&claude_skills_dir)
         );
     }
@@ -2963,7 +2975,7 @@ pub(crate) async fn run_doctor(
     println!(
         "  {} selected skills dir: {}",
         "·".dimmed(),
-        crate::utils::display_path(&selected_skills_dir)
+        codesmith_agent_runtime::utils::display_path(&selected_skills_dir)
     );
     if !agents_skills_dir.exists()
         && !local_skills_dir.exists()
@@ -2988,14 +3000,14 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} tools dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&tools_dir),
+            codesmith_agent_runtime::utils::display_path(&tools_dir),
             count
         );
     } else {
         println!(
             "  {} tools dir not found at {}",
             "·".dimmed(),
-            crate::utils::display_path(&tools_dir)
+            codesmith_agent_runtime::utils::display_path(&tools_dir)
         );
         println!("    Run `codesmith setup --tools` to scaffold a starter dir.");
     }
@@ -3009,14 +3021,14 @@ pub(crate) async fn run_doctor(
         println!(
             "  {} plugins dir found at {} ({} items)",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&plugins_dir),
+            codesmith_agent_runtime::utils::display_path(&plugins_dir),
             count
         );
     } else {
         println!(
             "  {} plugins dir not found at {}",
             "·".dimmed(),
-            crate::utils::display_path(&plugins_dir)
+            codesmith_agent_runtime::utils::display_path(&plugins_dir)
         );
         println!("    Run `codesmith setup --plugins` to scaffold a starter dir.");
     }
@@ -3034,7 +3046,7 @@ pub(crate) async fn run_doctor(
             println!(
                 "  {} tool-output spillover at {} ({} file{})",
                 "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::utils::display_path(&spillover_root),
+                codesmith_agent_runtime::utils::display_path(&spillover_root),
                 count,
                 if count == 1 { "" } else { "s" }
             );
@@ -3042,7 +3054,7 @@ pub(crate) async fn run_doctor(
             println!(
                 "  {} tool-output spillover dir not yet created at {}",
                 "·".dimmed(),
-                crate::utils::display_path(&spillover_root)
+                codesmith_agent_runtime::utils::display_path(&spillover_root)
             );
         }
     }
@@ -4542,7 +4554,11 @@ pub(crate) fn collect_diff(args: &ReviewArgs) -> Result<String> {
     }
     let mut diff = String::from_utf8_lossy(&output.stdout).to_string();
     if diff.len() > args.max_chars {
-        diff = crate::utils::truncate_with_ellipsis(&diff, args.max_chars, "\n...[truncated]\n");
+        diff = codesmith_agent_runtime::utils::truncate_with_ellipsis(
+            &diff,
+            args.max_chars,
+            "\n...[truncated]\n",
+        );
     }
     Ok(diff)
 }
@@ -4940,7 +4956,7 @@ pub(crate) fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
     }
     let rendered = serde_json::to_string_pretty(cfg)
         .map_err(|e| anyhow!("Failed to serialize MCP config: {e}"))?;
-    crate::utils::write_atomic(path, rendered.as_bytes())
+    codesmith_agent_runtime::utils::write_atomic(path, rendered.as_bytes())
         .map_err(|e| anyhow!("Failed to write MCP config {}: {}", path.display(), e))?;
     Ok(())
 }

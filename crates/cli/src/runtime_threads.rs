@@ -1481,7 +1481,11 @@ impl RuntimeThreadManager {
 
         for (user_text, assistant_text) in pending_pairs {
             let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-            let summary = crate::utils::truncate_with_ellipsis(&user_text, SUMMARY_LIMIT, "...");
+            let summary = codesmith_agent_runtime::utils::truncate_with_ellipsis(
+                &user_text,
+                SUMMARY_LIMIT,
+                "...",
+            );
             let mut item_ids = Vec::new();
 
             if !user_text.is_empty() {
@@ -1504,7 +1508,11 @@ impl RuntimeThreadManager {
 
             if let Some(assistant_text) = assistant_text {
                 let asst_summary = if assistant_text.len() > SUMMARY_LIMIT {
-                    crate::utils::truncate_with_ellipsis(&assistant_text, SUMMARY_LIMIT, "...")
+                    codesmith_agent_runtime::utils::truncate_with_ellipsis(
+                        &assistant_text,
+                        SUMMARY_LIMIT,
+                        "...",
+                    )
                 } else {
                     assistant_text.clone()
                 };
@@ -2094,7 +2102,7 @@ impl RuntimeThreadManager {
             plan_state: new_shared_plan_state(),
             plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
             task_v2_manager: None,
-            goal_state: crate::tools::goal::new_shared_goal_state(),
+            goal_state: codesmith_agent_runtime::tool_state::goal::new_shared_goal_state(),
             worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
             max_spawn_depth: self.config.max_spawn_depth(),
             network_policy,
@@ -3472,7 +3480,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
     let payload = serde_json::to_string_pretty(value)?;
-    crate::utils::write_atomic(path, payload.as_bytes())
+    codesmith_agent_runtime::utils::write_atomic(path, payload.as_bytes())
         .with_context(|| format!("Failed to write {}", path.display()))
 }
 

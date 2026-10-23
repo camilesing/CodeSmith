@@ -164,7 +164,7 @@ impl ApprovalGrants {
         // The module doc promises atomic saves; a plain `fs::write` torn by
         // a crash produced exactly the corrupt file the loader then
         // silently defaults away.
-        crate::utils::write_atomic(path, encoded.as_bytes())
+        codesmith_agent_runtime::utils::write_atomic(path, encoded.as_bytes())
     }
 }
 
@@ -185,7 +185,7 @@ fn load_doc(path: &Path) -> GrantsDoc {
         // Quarantine before defaulting: the next save would otherwise
         // overwrite the corrupt file and destroy the only copy of the
         // user's grant history.
-        crate::utils::preserve_corrupt_state_file(path);
+        codesmith_agent_runtime::utils::preserve_corrupt_state_file(path);
         GrantsDoc::default()
     })
 }

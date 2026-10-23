@@ -541,7 +541,10 @@ pub fn anchor(state: &ReplState, content: Option<&str>) {
         }
         anchors.remove(index - 1);
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(&state.workspace));
-        match crate::utils::write_atomic(&path, anchors.join("\n---\n").as_bytes()) {
+        match codesmith_agent_runtime::utils::write_atomic(
+            &path,
+            anchors.join("\n---\n").as_bytes(),
+        ) {
             Ok(()) => println!("removed anchor #{index}"),
             Err(err) => println!("{} failed to write anchors: {err}", "✗".red()),
         }
@@ -555,7 +558,7 @@ pub fn anchor(state: &ReplState, content: Option<&str>) {
     }
     content.push_str(&entry);
     let _ = std::fs::create_dir_all(path.parent().unwrap_or(&state.workspace));
-    match crate::utils::write_atomic(&path, content.as_bytes()) {
+    match codesmith_agent_runtime::utils::write_atomic(&path, content.as_bytes()) {
         Ok(()) => println!("anchor added: {entry}"),
         Err(err) => println!("{} failed to write anchors: {err}", "✗".red()),
     }
@@ -623,11 +626,14 @@ pub fn note(state: &ReplState, content: Option<&str>) {
             }
             notes.remove(index - 1);
             let _ = std::fs::create_dir_all(path.parent().unwrap_or(&state.workspace));
-            let _ = crate::utils::write_atomic(&path, notes.join("\n---\n").as_bytes());
+            let _ = codesmith_agent_runtime::utils::write_atomic(
+                &path,
+                notes.join("\n---\n").as_bytes(),
+            );
             println!("removed note #{index}");
         }
         "clear" => {
-            let _ = crate::utils::write_atomic(&path, b"");
+            let _ = codesmith_agent_runtime::utils::write_atomic(&path, b"");
             println!("notes cleared: {}", path.display());
         }
         "path" => println!("notes path: {}", path.display()),
@@ -641,7 +647,7 @@ pub fn note(state: &ReplState, content: Option<&str>) {
             }
             content.push_str(&entry);
             let _ = std::fs::create_dir_all(path.parent().unwrap_or(&state.workspace));
-            match crate::utils::write_atomic(&path, content.as_bytes()) {
+            match codesmith_agent_runtime::utils::write_atomic(&path, content.as_bytes()) {
                 Ok(()) => println!("note added"),
                 Err(err) => println!("{} failed to write notes: {err}", "✗".red()),
             }
@@ -719,13 +725,13 @@ checks it (see [verification] result_claims in config.example.toml)."
     if records.is_empty() {
         return format!(
             "claim-check log at {} contains no readable records",
-            crate::utils::display_path(path)
+            codesmith_agent_runtime::utils::display_path(path)
         );
     }
     format!(
         "{}\nlog: {}",
         codesmith_agent_runtime::evolution_log::summarize(&records).render(),
-        crate::utils::display_path(path)
+        codesmith_agent_runtime::utils::display_path(path)
     )
 }
 
@@ -1254,7 +1260,7 @@ pub fn memory(state: &ReplState, arg: Option<&str>) {
                 println!("{} clear failed: {err}", "✗".red());
                 return;
             }
-            match crate::utils::write_atomic(&path, b"") {
+            match codesmith_agent_runtime::utils::write_atomic(&path, b"") {
                 Ok(()) => println!("cleared {}", path.display()),
                 Err(err) => println!("{} clear failed: {err}", "✗".red()),
             }

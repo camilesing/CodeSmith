@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus, wrap_task_manager};
-use crate::utils::spawn_supervised;
+use codesmith_agent_runtime::utils::spawn_supervised;
 
 pub use codesmith_agent_runtime::host_services::{AutomationManagerHost, TaskManagerHost};
 pub use codesmith_agent_runtime::tools::automation_types::*;
@@ -780,7 +780,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     // pid-suffixed name would still collide between concurrent writes from
     // this process), auto-cleaned when an error propagates, and fsynced
     // before the persist-rename — same convention as the rest of the crate.
-    crate::utils::write_atomic(path, content.as_bytes())
+    codesmith_agent_runtime::utils::write_atomic(path, content.as_bytes())
         .with_context(|| format!("Failed to write {}", path.display()))
 }
 

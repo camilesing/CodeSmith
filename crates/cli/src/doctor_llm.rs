@@ -101,7 +101,8 @@ impl DoctorFindings {
 
     fn push(&mut self, status: FindingStatus, section: &'static str, detail: impl Into<String>) {
         let detail: String = detail.into();
-        let detail = crate::utils::truncate_with_ellipsis(&detail, DETAIL_CHAR_CAP, "…");
+        let detail =
+            codesmith_agent_runtime::utils::truncate_with_ellipsis(&detail, DETAIL_CHAR_CAP, "…");
         self.entries.push(DoctorFinding {
             section,
             status,

@@ -795,7 +795,10 @@ impl ToolRegistryBuilder {
 
     /// Include runtime goal tools (`create_goal`, `get_goal`, `update_goal`).
     #[must_use]
-    pub fn with_goal_tools(self, goal_state: super::goal::SharedGoalState) -> Self {
+    pub fn with_goal_tools(
+        self,
+        goal_state: codesmith_agent_runtime::tool_state::goal::SharedGoalState,
+    ) -> Self {
         use super::goal::{CreateGoalTool, GetGoalTool, UpdateGoalTool};
         self.with_tool(Arc::new(CreateGoalTool::new(goal_state.clone())))
             .with_tool(Arc::new(GetGoalTool::new(goal_state.clone())))

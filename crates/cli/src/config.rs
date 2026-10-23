@@ -2556,7 +2556,10 @@ impl Config {
     /// directory containing frontmatter-parsed `.md` memory files.
     #[must_use]
     pub fn memory_dir(&self) -> PathBuf {
-        crate::knowledge::paths::resolve_memory_dir(&self.memory_path(), self.memory_dir_override())
+        codesmith_agent_runtime::knowledge::paths::resolve_memory_dir(
+            &self.memory_path(),
+            self.memory_dir_override(),
+        )
     }
 
     /// Return the configured vision model config, inheriting api_key from main config.
@@ -4667,7 +4670,7 @@ fn kimi_cli_oauth_credentials_path() -> Result<PathBuf> {
 fn write_kimi_oauth_credential(path: &Path, credential: &KimiOAuthCredential) -> Result<()> {
     let serialized = serde_json::to_vec_pretty(credential)
         .context("Failed to serialize Kimi OAuth credentials")?;
-    crate::utils::write_atomic(path, &serialized).with_context(|| {
+    codesmith_agent_runtime::utils::write_atomic(path, &serialized).with_context(|| {
         format!(
             "Failed to write Kimi OAuth credentials to {}",
             path.display()

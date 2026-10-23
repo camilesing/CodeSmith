@@ -215,7 +215,7 @@ pub trait SchemaMigration {
 
 /// Create a `.bak` copy of `path` before mutation. Returns the backup
 /// path. Errors are logged at warn level and ignored — the migration
-/// proceeds because [`crate::utils::write_atomic`] is itself crash-safe.
+/// proceeds because [`codesmith_agent_runtime::utils::write_atomic`] is itself crash-safe.
 ///
 /// The `.bak` file is left on disk after a successful migration so a
 /// user who notices a regression can manually restore it. No automatic
