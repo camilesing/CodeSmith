@@ -617,19 +617,6 @@ impl Engine {
                     self.cancel_token.cancel();
                     self.reset_cancel_token();
                 }
-                Op::ApproveToolCall { id } => {
-                    // Tool approval handling will be implemented in tools module
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!("Approved tool call: {id}")))
-                        .await;
-                }
-                Op::DenyToolCall { id } => {
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!("Denied tool call: {id}")))
-                        .await;
-                }
                 Op::SpawnSubAgent { prompt } => {
                     let Some(client) = self.llm_client.clone() else {
                         let message = self
@@ -748,7 +735,20 @@ impl Engine {
                             (true, None) | (false, _) => workspace.clone(),
                         };
                     }
-                    let ctx = crate::project_context::load_project_context_with_parents(&workspace);
+                    // Directory walk up the parents — keep it off the
+                    // engine loop (WSL2 /mnt/c stalls documented above).
+                    let ctx = tokio::task::spawn_blocking({
+                        let workspace = workspace.clone();
+                        move || {
+                            crate::project_context::load_project_context_with_parents(&workspace)
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|join_err| {
+                        // JoinFailure only: the load itself is infallible.
+                        tracing::warn!("project-context load task failed: {join_err}");
+                        crate::project_context::load_project_context_with_parents(&workspace)
+                    });
                     self.session.project_context = if ctx.has_instructions() {
                         Some(ctx)
                     } else {
@@ -787,12 +787,7 @@ impl Engine {
                     }
                     if let Some(idx) = cut {
                         let kept = self.session.messages.as_slice()[..idx].to_vec();
-                        self.session
-                            .rebuild_transcript(RebuildReason::EditRollback, kept);
-                        // Direct rebuild (engine wrapper not used here —
-                        // the op handler emits its own events); projections
-                        // still refold.
-                        self.refold_message_projections();
+                        self.rebuild_transcript(RebuildReason::EditRollback, kept);
                     }
                     // Now dispatch the new message as a normal send under
                     // the mode the edited turn ran in. `Agent` is only the
@@ -906,11 +901,19 @@ impl Engine {
     }
 
     pub async fn add_session_message(&mut self, message: Message) {
+        self.push_session_message(message);
+        self.emit_session_updated().await;
+    }
+
+    /// Sync fold+append shared by [`Self::add_session_message`] and the
+    /// re-inject loop: every message entering the AppendLog must also fold
+    /// into the extension message-projection hub, or projections silently
+    /// diverge from the log until the next wholesale `refold_all`.
+    fn push_session_message(&mut self, message: Message) {
         if let Some(hub) = self.message_projection_hub() {
             hub.fold_message(&message);
         }
         self.session.add_message(message);
-        self.emit_session_updated().await;
     }
 
     /// The runner's message-projection hub, when an extension runtime is
@@ -2373,8 +2376,7 @@ impl Engine {
                         &mut self.session.micro_compact_state,
                     );
                     if bytes > 0 {
-                        self.session
-                            .rebuild_transcript(RebuildReason::MicroCompaction, messages);
+                        self.rebuild_transcript(RebuildReason::MicroCompaction, messages);
                         if self.estimated_input_tokens() <= target_budget {
                             crate::compaction::post_compact_cleanup::post_compact_cleanup(
                                 &mut self.session,
@@ -2517,8 +2519,7 @@ impl Engine {
         }
 
         if !compacted_messages.is_empty() || self.session.messages.is_empty() {
-            self.session
-                .rebuild_transcript(RebuildReason::ContextOverflowRecovery, compacted_messages);
+            self.rebuild_transcript(RebuildReason::ContextOverflowRecovery, compacted_messages);
         }
         self.merge_compaction_summary(summary_prompt);
         self.reinject_compaction_attachments(Some(target_budget))
@@ -2979,17 +2980,84 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// Refresh the system prompt based on current mode and context.
-    pub fn refresh_system_prompt(&mut self, mode: AppMode) {
-        let (user_memory_block, knowledge_prompt_block) = if self.config.kod_enabled {
+    /// Blocking gather, for the sync [`Self::refresh_system_prompt`] used
+    /// by embeds/tests.
+    fn gather_prompt_fs_inputs_blocking(&mut self) -> PromptFsInputs {
+        let (user_memory_block, knowledge_prompt_block) = self.memory_blocks();
+        let skills_block = crate::skills::render_available_skills_context_with_registered(
+            &self.config.workspace,
+            Some(self.config.skills_dir.as_path()),
+            &self.registered_skills_snapshot(),
+        );
+        let slop_gate_block = self.slop_ledger_gate_refresh();
+        PromptFsInputs {
+            user_memory_block,
+            knowledge_prompt_block,
+            skills_block,
+            slop_gate_block,
+        }
+    }
+
+    /// Offloaded gather for the engine loop: memory/skills/slop I/O runs
+    /// on the blocking pool instead of stalling op/event processing
+    /// (30 s+ stalls are documented for WSL2 `/mnt/c`).
+    async fn gather_prompt_fs_inputs(&mut self) -> PromptFsInputs {
+        let memory_dir = self.config.memory_dir.clone();
+        let memory_enabled = self.config.memory_enabled;
+        let memory_path = self.config.memory_path.clone();
+        let kod_enabled = self.config.kod_enabled;
+        let workspace = self.config.workspace.clone();
+        let skills_dir = self.config.skills_dir.clone();
+        let registered = self.registered_skills_snapshot();
+        let slop_cache = self.slop_ledger_gate_cache.clone();
+        let memory_blocks = tokio::task::spawn_blocking(move || {
+            if kod_enabled {
+                let kod_block = crate::memory::compose_kod_block(&memory_dir);
+                match kod_block {
+                    Some(block) => (None, Some(block)),
+                    None => (
+                        crate::memory::compose_block(memory_enabled, &memory_path),
+                        None,
+                    ),
+                }
+            } else {
+                (
+                    crate::memory::compose_block(memory_enabled, &memory_path),
+                    None,
+                )
+            }
+        })
+        .await
+        .unwrap_or((None, None));
+        let skills_block = tokio::task::spawn_blocking(move || {
+            crate::skills::render_available_skills_context_with_registered(
+                &workspace,
+                Some(skills_dir.as_path()),
+                &registered,
+            )
+        })
+        .await
+        .unwrap_or_default();
+        let (slop_modified, slop_gate_block) =
+            tokio::task::spawn_blocking(move || slop_ledger_gate(slop_cache))
+                .await
+                .unwrap_or((None, None));
+        self.slop_ledger_gate_cache = Some((slop_modified, slop_gate_block.clone()));
+        PromptFsInputs {
+            user_memory_block: memory_blocks.0,
+            knowledge_prompt_block: memory_blocks.1,
+            skills_block,
+            slop_gate_block,
+        }
+    }
+
+    fn memory_blocks(&self) -> (Option<String>, Option<String>) {
+        if self.config.kod_enabled {
             let kod_block = crate::memory::compose_kod_block(&self.config.memory_dir);
             match kod_block {
                 Some(block) => (None, Some(block)),
                 None => (
-                    crate::memory::compose_block(
-                        self.config.memory_enabled,
-                        &self.config.memory_path,
-                    ),
+                    crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path),
                     None,
                 ),
             }
@@ -2998,7 +3066,40 @@ impl Engine {
                 crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path),
                 None,
             )
-        };
+        }
+    }
+
+    /// SlopLedger completion-gate stat + (cache-miss) load, updating the
+    /// engine cache with what the probe observed.
+    fn slop_ledger_gate_refresh(&mut self) -> Option<String> {
+        let (modified, block) = slop_ledger_gate(self.slop_ledger_gate_cache.clone());
+        self.slop_ledger_gate_cache = Some((modified, block.clone()));
+        block
+    }
+
+    /// Refresh the system prompt based on current mode and context.
+    ///
+    /// Sync variant (embeds/tests; I/O runs inline). Engine-loop callers
+    /// use [`Self::refresh_system_prompt_offloaded`].
+    pub fn refresh_system_prompt(&mut self, mode: AppMode) {
+        let inputs = self.gather_prompt_fs_inputs_blocking();
+        self.apply_system_prompt_refresh(mode, inputs);
+    }
+
+    /// Async variant of [`Self::refresh_system_prompt`] whose I/O gather
+    /// runs on the blocking pool.
+    pub async fn refresh_system_prompt_offloaded(&mut self, mode: AppMode) {
+        let inputs = self.gather_prompt_fs_inputs().await;
+        self.apply_system_prompt_refresh(mode, inputs);
+    }
+
+    fn apply_system_prompt_refresh(&mut self, mode: AppMode, inputs: PromptFsInputs) {
+        let PromptFsInputs {
+            user_memory_block,
+            knowledge_prompt_block,
+            skills_block,
+            slop_gate_block: gate_block,
+        } = inputs;
         let prompt_goal_objective = goal_objective_for_prompt(
             self.config.goal_objective.as_deref(),
             &self.config.goal_state,
@@ -3014,11 +3115,7 @@ impl Engine {
             show_thinking: self.config.show_thinking,
             is_simple: self.config.is_simple,
             personality: self.config.personality,
-            skills_block: crate::skills::render_available_skills_context_with_registered(
-                &self.config.workspace,
-                Some(self.config.skills_dir.as_path()),
-                &self.registered_skills_snapshot(),
-            ),
+            skills_block,
         }
         .runtime();
         let base = prompts::effective_prompt_bundle_for_mode_with_runtime_context_and_approval(
@@ -3044,8 +3141,8 @@ impl Engine {
 
         // SlopLedger completion-gate: inject unresolved slop entries into the
         // system prompt so the agent can autonomously review them before
-        // claiming the task is done (#2127).
-        let gate_block = self.slop_ledger_gate_block();
+        // claiming the task is done (#2127). The block itself was gathered
+        // with the other fs inputs.
         if let Some(ref block) = gate_block
             && let Some(SystemPrompt::Text(prompt_text)) = &mut stable_prompt
         {
@@ -3062,31 +3159,6 @@ impl Engine {
             self.session.system_prompt = stable_prompt;
             self.session.last_system_prompt_hash = Some(stable_hash);
         }
-    }
-
-    fn slop_ledger_gate_block(&mut self) -> Option<String> {
-        let modified = crate::slop_ledger::SlopLedger::default_path()
-            .ok()
-            .and_then(|path| std::fs::metadata(path).ok())
-            .and_then(|metadata| metadata.modified().ok());
-
-        if let Some((cached_modified, cached_block)) = &self.slop_ledger_gate_cache
-            && *cached_modified == modified
-        {
-            return cached_block.clone();
-        }
-
-        let loaded = crate::slop_ledger::SlopLedger::load()
-            .ok()
-            .and_then(|ledger| {
-                if ledger.has_open_entries() {
-                    ledger.completion_gate_summary()
-                } else {
-                    None
-                }
-            });
-        self.slop_ledger_gate_cache = Some((modified, loaded.clone()));
-        loaded
     }
 
     /// Merge a compaction summary into the system prompt.
@@ -3220,7 +3292,7 @@ impl Engine {
                 }
                 current_estimate = Some(current.saturating_add(candidate_cost));
             }
-            self.session.messages.push(candidate);
+            self.push_session_message(candidate);
             injected = injected.saturating_add(1);
         }
         injected
@@ -3337,6 +3409,46 @@ fn append_image_blocks(message: &mut Message, image_paths: &[PathBuf]) {
                 media_type: None,
             },
         }));
+}
+
+/// SlopLedger completion-gate stat + (on an mtime cache miss) load.
+/// Free fn taking the cache by value so the offloaded prompt gather can
+/// run it under `spawn_blocking`; callers store the returned pair back
+/// into the engine cache.
+fn slop_ledger_gate(
+    cache: Option<(Option<SystemTime>, Option<String>)>,
+) -> (Option<SystemTime>, Option<String>) {
+    let modified = crate::slop_ledger::SlopLedger::default_path()
+        .ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok());
+
+    if let Some((cached_modified, cached_block)) = &cache
+        && *cached_modified == modified
+    {
+        return (modified, cached_block.clone());
+    }
+
+    let loaded = crate::slop_ledger::SlopLedger::load()
+        .ok()
+        .and_then(|ledger| {
+            if ledger.has_open_entries() {
+                ledger.completion_gate_summary()
+            } else {
+                None
+            }
+        });
+    (modified, loaded)
+}
+
+/// Filesystem-derived inputs to the system prompt. Gathering them is
+/// pure I/O (memory files, skills scan, slop-ledger stat/load), so the
+/// async refresh path offloads it via `spawn_blocking`.
+struct PromptFsInputs {
+    user_memory_block: Option<String>,
+    knowledge_prompt_block: Option<String>,
+    skills_block: Option<String>,
+    slop_gate_block: Option<String>,
 }
 
 pub fn system_prompt_hash(prompt: Option<&SystemPrompt>) -> u64 {

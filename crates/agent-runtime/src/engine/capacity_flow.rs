@@ -1423,7 +1423,7 @@ impl Engine {
             GuardrailAction::TargetedContextRefresh,
             None,
         )));
-        self.refresh_system_prompt(mode);
+        self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
         let after_tokens = self.estimated_input_tokens();
@@ -1625,7 +1625,7 @@ impl Engine {
             GuardrailAction::VerifyWithToolReplay,
             Some(&verification_note),
         )));
-        self.refresh_system_prompt(mode);
+        self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
         let after_tokens = self.estimated_input_tokens();
@@ -1690,7 +1690,7 @@ impl Engine {
             GuardrailAction::VerifyAndReplan,
             Some("Replan now from canonical state. Keep steps minimal and verifiable."),
         )));
-        self.refresh_system_prompt(mode);
+        self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
         let _ = self
