@@ -262,7 +262,7 @@ impl ToolSpec for FinanceTool {
         let type_hint = optional_str(&input, "type").map(str::trim);
         let _market_hint = optional_str(&input, "market").map(str::trim);
         let timeout_ms =
-            optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).clamp(100, MAX_TIMEOUT_MS);
+            optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS)?.clamp(100, MAX_TIMEOUT_MS);
 
         let request = normalize_request(raw_ticker, type_hint);
         let timeout = Duration::from_millis(timeout_ms);

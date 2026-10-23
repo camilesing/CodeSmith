@@ -3763,9 +3763,9 @@ impl ToolSpec for AgentEvalTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ToolError::missing_field("name"))?;
         let message = parse_optional_text_or_items(&input, &["message", "input"], "items")?;
-        let interrupt = optional_bool(&input, "interrupt", false);
-        let block = optional_bool(&input, "block", true);
-        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)
+        let interrupt = optional_bool(&input, "interrupt", false)?;
+        let block = optional_bool(&input, "block", true)?;
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)?
             .clamp(1000, MAX_RESULT_TIMEOUT_MS);
 
         let agent_id = {
@@ -3893,8 +3893,8 @@ impl ToolSpec for AgentResultTool {
             .or_else(|| input.get("id"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("agent_id"))?;
-        let block = optional_bool(&input, "block", false);
-        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)
+        let block = optional_bool(&input, "block", false)?;
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)?
             .clamp(1000, MAX_RESULT_TIMEOUT_MS);
 
         let (result, timed_out) = if block {
@@ -4275,7 +4275,7 @@ impl ToolSpec for AgentSendInputTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let message = parse_text_or_items(&input, &["message", "input"], "items", "message")?;
-        let interrupt = optional_bool(&input, "interrupt", false);
+        let interrupt = optional_bool(&input, "interrupt", false)?;
 
         let mut manager = self.manager.write().await;
         manager
@@ -4464,7 +4464,7 @@ impl ToolSpec for AgentWaitTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)?
             .clamp(MIN_WAIT_TIMEOUT_MS, MAX_RESULT_TIMEOUT_MS);
         let mut ids = parse_wait_ids(&input);
         if ids.is_empty() {
@@ -6755,7 +6755,7 @@ fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
         .transpose()?
         .map(str::to_string);
     let message = parse_optional_text_or_items(input, &["message", "input"], "items")?;
-    let interrupt = optional_bool(input, "interrupt", true);
+    let interrupt = optional_bool(input, "interrupt", true)?;
 
     if objective.is_none() && role.is_none() && message.is_none() {
         return Err(ToolError::invalid_input(

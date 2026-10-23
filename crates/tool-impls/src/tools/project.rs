@@ -52,7 +52,7 @@ impl ToolSpec for ProjectMapTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let max_depth = usize::try_from(optional_u64(&input, "max_depth", 3))
+        let max_depth = usize::try_from(optional_u64(&input, "max_depth", 3)?)
             .map(|d| d.clamp(1, 10))
             .map_err(|_| ToolError::invalid_input("max_depth out of range"))?;
         let root = context.workspace.clone();

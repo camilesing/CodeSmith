@@ -568,7 +568,10 @@ impl ToolSpec for ExecShellTool {
     }
 
     fn is_interactive(&self, input: &serde_json::Value) -> bool {
-        optional_bool(input, "interactive", false)
+        // A classification hint, not the validation point: a wrong-typed
+        // `interactive` reads as the default here and is rejected by the
+        // execute path's own read of the field.
+        optional_bool(input, "interactive", false).unwrap_or(false)
     }
 
     async fn execute(
@@ -579,11 +582,11 @@ impl ToolSpec for ExecShellTool {
         let command = required_str(&input, "command")?;
         // Clamp at the parse site so the enforced timeout, the TimedOut
         // message, and every downstream consumer report the same value.
-        let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).clamp(1000, 600_000);
-        let background = optional_bool(&input, "background", false);
-        let interactive = optional_bool(&input, "interactive", false);
-        let combined_output = optional_bool(&input, "combined_output", false);
-        let tty = optional_bool(&input, "tty", false) || (combined_output && background);
+        let timeout_ms = optional_u64(&input, "timeout_ms", 120_000)?.clamp(1000, 600_000);
+        let background = optional_bool(&input, "background", false)?;
+        let interactive = optional_bool(&input, "interactive", false)?;
+        let combined_output = optional_bool(&input, "combined_output", false)?;
+        let tty = optional_bool(&input, "tty", false)? || (combined_output && background);
         let stdin_data = input
             .get("stdin")
             .or_else(|| input.get("input"))
@@ -1507,7 +1510,7 @@ impl ToolSpec for ShellCancelTool {
         input: serde_json::Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let cancel_all = optional_bool(&input, "all", false);
+        let cancel_all = optional_bool(&input, "all", false)?;
         let manager = &context.shell_manager;
 
         if cancel_all {
@@ -1615,8 +1618,8 @@ impl ToolSpec for ShellWaitTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let task_id = required_task_id(&input)?;
-        let wait = optional_bool(&input, "wait", true);
-        let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
+        let wait = optional_bool(&input, "wait", true)?;
+        let timeout_ms = optional_u64(&input, "timeout_ms", 30_000)?;
 
         let (delta, wait_canceled) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms, self.name).await?
@@ -1705,8 +1708,8 @@ impl ToolSpec for ShellInteractTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let task_id = required_task_id(&input)?;
-        let close_stdin = optional_bool(&input, "close_stdin", false);
-        let timeout_ms = optional_u64(&input, "timeout_ms", 1_000);
+        let close_stdin = optional_bool(&input, "close_stdin", false)?;
+        let timeout_ms = optional_u64(&input, "timeout_ms", 1_000)?;
         let interaction_input = input
             .get("input")
             .or_else(|| input.get("stdin"))

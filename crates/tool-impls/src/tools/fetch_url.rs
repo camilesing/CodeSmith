@@ -182,9 +182,9 @@ impl ToolSpec for FetchUrlTool {
         }
 
         let format = Format::parse(input.get("format").and_then(Value::as_str))?;
-        let max_bytes = optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES).min(HARD_MAX_BYTES);
+        let max_bytes = optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES)?.min(HARD_MAX_BYTES);
         let timeout_ms =
-            optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(HARD_MAX_TIMEOUT_MS);
+            optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS)?.min(HARD_MAX_TIMEOUT_MS);
         let requested_fields = parse_fields(&input)?;
 
         let service = context.web_service.as_ref().ok_or_else(|| {

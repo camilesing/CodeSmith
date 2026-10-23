@@ -95,8 +95,8 @@ impl ToolSpec for SymbolSearchTool {
             })?),
             None => None,
         };
-        let limit =
-            optional_u64(&input, "limit", DEFAULT_SYMBOL_LIMIT).clamp(1, MAX_SYMBOL_LIMIT) as usize;
+        let limit = optional_u64(&input, "limit", DEFAULT_SYMBOL_LIMIT)?.clamp(1, MAX_SYMBOL_LIMIT)
+            as usize;
         // The glob is model input passed through unvalidated; the matcher's
         // DP cost scales with pattern size, so bound it (1024 chars is far
         // beyond any real path filter) instead of letting adversarial
@@ -191,7 +191,7 @@ impl ToolSpec for FindReferencesTool {
         if name.is_empty() {
             return Err(ToolError::invalid_input("name must not be empty"));
         }
-        let limit = optional_u64(&input, "limit", DEFAULT_REFERENCE_LIMIT)
+        let limit = optional_u64(&input, "limit", DEFAULT_REFERENCE_LIMIT)?
             .clamp(1, MAX_REFERENCE_LIMIT) as usize;
 
         let service = context

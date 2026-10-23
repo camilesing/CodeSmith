@@ -127,7 +127,7 @@ impl ToolSpec for LspNavigateTool {
                 )));
             }
         };
-        let limit = optional_u64(&input, "limit", DEFAULT_LOCATION_LIMIT)
+        let limit = optional_u64(&input, "limit", DEFAULT_LOCATION_LIMIT)?
             .clamp(1, MAX_LOCATION_LIMIT) as usize;
 
         let manager = context

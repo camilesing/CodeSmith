@@ -69,7 +69,7 @@ impl ToolSpec for RevertTurnTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let offset = optional_u64(&input, "turn_offset", DEFAULT_OFFSET);
+        let offset = optional_u64(&input, "turn_offset", DEFAULT_OFFSET)?;
         if offset == 0 || offset > MAX_OFFSET {
             return Err(ToolError::invalid_input(format!(
                 "turn_offset must be between 1 and {MAX_OFFSET}; got {offset}",

@@ -134,7 +134,7 @@ impl ToolSpec for AutomationListTool {
             .list_automations()
             .await
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        automations.truncate(optional_u64(&input, "limit", 50).clamp(1, 100) as usize);
+        automations.truncate(optional_u64(&input, "limit", 50)?.clamp(1, 100) as usize);
         ToolResult::json(&automations).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }

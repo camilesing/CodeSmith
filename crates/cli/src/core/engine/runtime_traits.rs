@@ -657,9 +657,14 @@ impl HostServices for super::EngineHost {
         // Best-effort: a parse failure must never block the agent — return an
         // empty vec so the post-edit LSP hook simply skips diagnostics.
         match crate::tools::apply_patch::preflight_apply_patch(input) {
+            // A deleted file has nothing to diagnose: `+++ /dev/null`
+            // sections are excluded (they used to drop out only because the
+            // parser swallowed the section — now that it parses correctly,
+            // the exclusion is explicit).
             Ok(preflight) => preflight
                 .touched_files
                 .into_iter()
+                .filter(|path| !preflight.deletes.contains(path))
                 .map(PathBuf::from)
                 .collect(),
             Err(_) => Vec::new(),

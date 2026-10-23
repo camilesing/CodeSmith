@@ -137,7 +137,7 @@ impl ToolSpec for WebSearchTool {
         let max_results =
             usize::try_from(optional_search_max_results(&input)).unwrap_or(DEFAULT_MAX_RESULTS);
         let max_results = max_results.clamp(1, MAX_RESULTS);
-        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS)?.min(60_000);
 
         let service = context.web_service.as_ref().ok_or_else(|| {
             ToolError::not_available(

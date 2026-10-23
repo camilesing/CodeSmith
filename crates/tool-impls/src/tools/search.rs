@@ -122,11 +122,11 @@ impl ToolSpec for GrepFilesTool {
         // saturate to usize::MAX and overflow `line_idx + context_lines`
         // inside collect_context (panic in debug, wrapped range in release).
         let context_lines =
-            usize::try_from(optional_u64(&input, "context_lines", 2).min(MAX_CONTEXT_LINES))
+            usize::try_from(optional_u64(&input, "context_lines", 2)?.min(MAX_CONTEXT_LINES))
                 .unwrap_or(2);
-        let case_insensitive = optional_bool(&input, "case_insensitive", false);
-        let multiline = optional_bool(&input, "multiline", false);
-        let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64))
+        let case_insensitive = optional_bool(&input, "case_insensitive", false)?;
+        let multiline = optional_bool(&input, "multiline", false)?;
+        let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
             .unwrap_or(MAX_RESULTS);
 
         // Parse include patterns

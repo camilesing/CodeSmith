@@ -906,7 +906,7 @@ pub fn execute_tool_search(
         input,
         "max_results",
         TOOL_SEARCH_DEFAULT_MAX_RESULTS as u64,
-    ))
+    )?)
     .unwrap_or(TOOL_SEARCH_DEFAULT_MAX_RESULTS)
     .clamp(1, TOOL_SEARCH_MAX_RESULTS_LIMIT);
     let discovered = if let Some(select) = query.strip_prefix("select:") {

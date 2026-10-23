@@ -727,7 +727,7 @@ impl ToolSpec for EditFileTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let path_str = required_str(&input, "path")?;
         let replace = required_str(&input, "replace")?;
-        let _fuzz = optional_bool(&input, "fuzz", false);
+        let _fuzz = optional_bool(&input, "fuzz", false)?;
 
         // P2-7 anchor mode: `search_start` + `search_end` replace `search`
         // for spans too long to quote in full. Exactly-one-of validation.
@@ -760,7 +760,7 @@ impl ToolSpec for EditFileTool {
             ));
         }
 
-        let replace_all = optional_bool(&input, "replace_all", false);
+        let replace_all = optional_bool(&input, "replace_all", false)?;
         let occurrence = match input.get("occurrence") {
             None => None,
             Some(v) => match v.as_u64() {

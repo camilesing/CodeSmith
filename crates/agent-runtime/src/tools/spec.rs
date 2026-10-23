@@ -1294,15 +1294,15 @@ mod tests {
     #[test]
     fn test_optional_u64() {
         let input = json!({"count": 42});
-        assert_eq!(optional_u64(&input, "count", 0), 42);
-        assert_eq!(optional_u64(&input, "missing", 100), 100);
+        assert_eq!(optional_u64(&input, "count", 0).expect("count"), 42);
+        assert_eq!(optional_u64(&input, "missing", 100).expect("absent"), 100);
     }
 
     #[test]
     fn test_optional_bool() {
         let input = json!({"flag": true});
-        assert!(optional_bool(&input, "flag", false));
-        assert!(!optional_bool(&input, "missing", false));
+        assert!(optional_bool(&input, "flag", false).expect("flag"));
+        assert!(!optional_bool(&input, "missing", false).expect("absent"));
     }
 
     #[test]

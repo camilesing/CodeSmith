@@ -117,7 +117,7 @@ impl ToolSpec for FimEditTool {
         let path = required_str(&input, "path")?;
         let prefix_anchor = required_str(&input, "prefix_anchor")?;
         let suffix_anchor = required_str(&input, "suffix_anchor")?;
-        let max_tokens = optional_u64(&input, "max_tokens", 1024);
+        let max_tokens = optional_u64(&input, "max_tokens", 1024)?;
 
         // 1. Read the file
         let resolved = context.resolve_path(path)?;

@@ -294,15 +294,41 @@ pub fn required_u64(input: &Value, field: &str) -> std::result::Result<u64, Tool
 }
 
 /// Helper to extract an optional u64 field with default.
-#[must_use]
-pub fn optional_u64(input: &Value, field: &str, default: u64) -> u64 {
-    input.get(field).and_then(Value::as_u64).unwrap_or(default)
+///
+/// Three states, not two: absent (or JSON `null`) is the default, a
+/// present value of the wrong type is an error. Folding `"10"`, `7.5`, or
+/// `-5` into the default made an explicitly invalid request
+/// indistinguishable from an omitted one — a `limit` that never reached
+/// its clamp, a flag silently flipped — with no diagnostic for the model
+/// to correct.
+pub fn optional_u64(
+    input: &Value,
+    field: &str,
+    default: u64,
+) -> std::result::Result<u64, ToolError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(default),
+        Some(v) => v.as_u64().ok_or_else(|| {
+            ToolError::invalid_input(format!(
+                "field '{field}' must be a non-negative integer, got: {v}"
+            ))
+        }),
+    }
 }
 
-/// Helper to extract an optional bool field with default.
-#[must_use]
-pub fn optional_bool(input: &Value, field: &str, default: bool) -> bool {
-    input.get(field).and_then(Value::as_bool).unwrap_or(default)
+/// Helper to extract an optional bool field with default. Same three-state
+/// contract as [`optional_u64`].
+pub fn optional_bool(
+    input: &Value,
+    field: &str,
+    default: bool,
+) -> std::result::Result<bool, ToolError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(default),
+        Some(v) => v.as_bool().ok_or_else(|| {
+            ToolError::invalid_input(format!("field '{field}' must be a boolean, got: {v}"))
+        }),
+    }
 }
 
 /// Specification that describes a tool available in the registry.
@@ -706,8 +732,33 @@ mod tests {
     fn helper_extractors_validate_shape() {
         let input = json!({"name": "demo", "count": 7, "enabled": true});
         assert_eq!(required_str(&input, "name").expect("name"), "demo");
-        assert_eq!(optional_u64(&input, "count", 0), 7);
-        assert!(optional_bool(&input, "enabled", false));
+        assert_eq!(optional_u64(&input, "count", 0).expect("count"), 7);
+        assert!(optional_bool(&input, "enabled", false).expect("enabled"));
+        // Optional fields distinguish absent (default) from present-but-wrong
+        // -type (error): `"10"`, `7.5`, and `-5` used to read as the default,
+        // so an invalid request was indistinguishable from an omitted field.
+        assert_eq!(optional_u64(&json!({}), "count", 50).expect("absent"), 50);
+        assert_eq!(
+            optional_u64(&json!({"count": null}), "count", 50).expect("null"),
+            50
+        );
+        for wrong in [
+            json!({"count": "10"}),
+            json!({"count": 7.5}),
+            json!({"count": -5}),
+        ] {
+            assert!(
+                matches!(
+                    optional_u64(&wrong, "count", 50),
+                    Err(ToolError::InvalidInput { .. })
+                ),
+                "{wrong}"
+            );
+        }
+        assert!(matches!(
+            optional_bool(&json!({"enabled": "yes"}), "enabled", false),
+            Err(ToolError::InvalidInput { .. })
+        ));
         // Present-but-wrong-type is a distinct error from absent: the
         // provided-fields hint must not list the field it claims is missing.
         assert!(matches!(

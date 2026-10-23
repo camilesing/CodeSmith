@@ -108,7 +108,7 @@ impl ToolSpec for RetrieveToolResultTool {
             .trim()
             .to_ascii_lowercase();
         let max_bytes = clamp_u64(
-            optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES as u64),
+            optional_u64(&input, "max_bytes", DEFAULT_MAX_BYTES as u64)?,
             1,
             HARD_MAX_BYTES,
         );
@@ -120,10 +120,10 @@ impl ToolSpec for RetrieveToolResultTool {
         let lines: Vec<&str> = content.lines().collect();
         let payload = match mode.as_str() {
             "summary" => {
-                build_summary_payload(reference, &path, &content, &lines, &input, max_bytes)
+                build_summary_payload(reference, &path, &content, &lines, &input, max_bytes)?
             }
-            "head" => build_head_tail_payload(reference, &path, "head", &lines, &input, max_bytes),
-            "tail" => build_head_tail_payload(reference, &path, "tail", &lines, &input, max_bytes),
+            "head" => build_head_tail_payload(reference, &path, "head", &lines, &input, max_bytes)?,
+            "tail" => build_head_tail_payload(reference, &path, "tail", &lines, &input, max_bytes)?,
             "lines" => build_lines_payload(reference, &path, &lines, &input, max_bytes)?,
             "query" => build_query_payload(reference, &path, &lines, &input, max_bytes)?,
             other => {
@@ -367,9 +367,9 @@ fn build_summary_payload(
     lines: &[&str],
     input: &Value,
     max_bytes: usize,
-) -> Value {
+) -> Result<Value, ToolError> {
     let max_matches = clamp_u64(
-        optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64),
+        optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64)?,
         1,
         HARD_MAX_MATCHES,
     );
@@ -394,7 +394,7 @@ fn build_summary_payload(
         max_bytes / 2,
     );
 
-    json!({
+    Ok(json!({
         "ref": reference,
         "path": path.display().to_string(),
         "mode": "summary",
@@ -405,7 +405,7 @@ fn build_summary_payload(
         "head": head,
         "tail": tail,
         "hint": "Use mode=head, tail, lines, or query to retrieve a narrower slice."
-    })
+    }))
 }
 
 fn build_head_tail_payload(
@@ -415,9 +415,9 @@ fn build_head_tail_payload(
     lines: &[&str],
     input: &Value,
     max_bytes: usize,
-) -> Value {
+) -> Result<Value, ToolError> {
     let count = clamp_u64(
-        optional_u64(input, "line_count", DEFAULT_LINE_COUNT as u64),
+        optional_u64(input, "line_count", DEFAULT_LINE_COUNT as u64)?,
         1,
         HARD_LINE_COUNT,
     );
@@ -439,14 +439,14 @@ fn build_head_tail_payload(
     };
     let excerpt = render_numbered_lines(selected.iter().copied(), max_bytes);
 
-    json!({
+    Ok(json!({
         "ref": reference,
         "path": path.display().to_string(),
         "mode": mode,
         "total_lines": lines.len(),
         "line_count": count,
         "excerpt": excerpt,
-    })
+    }))
 }
 
 fn build_lines_payload(
@@ -496,12 +496,12 @@ fn build_query_payload(
         .ok_or_else(|| ToolError::invalid_input("query is required when mode=query"))?;
     let query_lower = query.to_lowercase();
     let max_matches = clamp_u64(
-        optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64),
+        optional_u64(input, "max_matches", DEFAULT_MAX_MATCHES as u64)?,
         1,
         HARD_MAX_MATCHES,
     );
     let context_lines = clamp_u64(
-        optional_u64(input, "context_lines", DEFAULT_CONTEXT_LINES as u64),
+        optional_u64(input, "context_lines", DEFAULT_CONTEXT_LINES as u64)?,
         0,
         HARD_CONTEXT_LINES,
     );

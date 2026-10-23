@@ -76,7 +76,7 @@ impl ToolSpec for ExitWorktreeTool {
             )));
         }
         let discard_changes =
-            codesmith_agent_runtime::tools::spec::optional_bool(&input, "discard_changes", false);
+            codesmith_agent_runtime::tools::spec::optional_bool(&input, "discard_changes", false)?;
 
         // 1. Check if worktree session is active
         let (worktree_path, worktree_branch, original_cwd, original_head_commit) = {

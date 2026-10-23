@@ -94,7 +94,7 @@ impl ToolSpec for FileSearchTool {
             return Err(ToolError::invalid_input("query cannot be empty"));
         }
 
-        let limit = optional_u64(&input, "limit", 20).clamp(1, 200) as usize;
+        let limit = optional_u64(&input, "limit", 20)?.clamp(1, 200) as usize;
         let base_path = match optional_str(&input, "path") {
             Some(path) if !path.trim().is_empty() => context.resolve_path(path)?,
             _ => context.workspace.clone(),

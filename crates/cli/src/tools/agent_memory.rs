@@ -57,8 +57,8 @@ impl ToolSpec for AgentMemoryReadTool {
         let contents = tokio::fs::read_to_string(&path).await.map_err(|err| {
             ToolError::execution_failed(format!("failed to read {}: {err}", path.display()))
         })?;
-        let start_line = optional_u64(&input, "start_line", 1).max(1) as usize;
-        let max_lines = optional_u64(&input, "max_lines", 200).clamp(1, 500) as usize;
+        let start_line = optional_u64(&input, "start_line", 1)?.max(1) as usize;
+        let max_lines = optional_u64(&input, "max_lines", 200)?.clamp(1, 500) as usize;
         let total_lines = contents.lines().count();
         let selected = contents
             .lines()

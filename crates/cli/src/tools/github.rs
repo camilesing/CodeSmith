@@ -62,7 +62,7 @@ impl ToolSpec for GithubIssueContextTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         ensure_github_repo(context)?;
         let number = required_u64(&input, "number")?;
-        let include_comments = optional_bool(&input, "include_comments", true);
+        let include_comments = optional_bool(&input, "include_comments", true)?;
         let fields = if include_comments {
             "number,title,state,author,labels,assignees,milestone,body,comments,url,createdAt,updatedAt"
         } else {
@@ -134,7 +134,7 @@ impl ToolSpec for GithubPrContextTool {
         )
         .await?;
         let mut shaped = shape_large_text(context, raw, "pr_body", BODY_ARTIFACT_THRESHOLD).await?;
-        if optional_bool(&input, "include_diff", false) {
+        if optional_bool(&input, "include_diff", false)? {
             let diff = run_gh_text(context, &["pr", "diff", &number_s, "--patch"]).await?;
             let diff_ref =
                 write_artifact_if_needed(context, "pr_diff", &diff, DIFF_ARTIFACT_THRESHOLD)
@@ -201,7 +201,7 @@ impl ToolSpec for GithubCommentTool {
         let target = required_str(&input, "target")?;
         let number = required_u64(&input, "number")?;
         let body = required_str(&input, "body")?;
-        if optional_bool(&input, "dry_run", false) {
+        if optional_bool(&input, "dry_run", false)? {
             return Ok(ToolResult::success(format!(
                 "Dry run: would comment on {target} #{number}."
             )));
@@ -354,7 +354,7 @@ async fn close_github_thread(
     target: GithubCloseTarget,
 ) -> Result<ToolResult, ToolError> {
     validate_evidence(&input, true)?;
-    if !optional_bool(&input, "allow_dirty", false) {
+    if !optional_bool(&input, "allow_dirty", false)? {
         let status = git_status_porcelain(context)?;
         if !status.trim().is_empty() {
             return Ok(ToolResult::error(format!(
@@ -365,7 +365,7 @@ async fn close_github_thread(
         }
     }
     let number = required_u64(&input, "number")?;
-    if optional_bool(&input, "dry_run", false) {
+    if optional_bool(&input, "dry_run", false)? {
         return Ok(ToolResult::success(format!(
             "Dry run: would close {} #{number}.",
             target.display()

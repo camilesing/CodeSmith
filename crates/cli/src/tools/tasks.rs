@@ -136,7 +136,7 @@ impl ToolSpec for TaskListTool {
             .task_manager
             .as_ref()
             .ok_or_else(|| ToolError::not_available("TaskManager is not attached"))?;
-        let limit = optional_u64(&input, "limit", 20).clamp(1, 100) as usize;
+        let limit = optional_u64(&input, "limit", 20)?.clamp(1, 100) as usize;
         let tasks = manager.list_tasks(Some(limit)).await;
         ToolResult::json(&json!({
             "summary": format!("{} durable task(s)", tasks.len()),
@@ -457,7 +457,7 @@ impl ToolSpec for TaskGateRunTool {
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let gate = required_str(&input, "gate")?.to_string();
         let command = required_str(&input, "command")?.to_string();
-        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_GATE_TIMEOUT_MS)
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_GATE_TIMEOUT_MS)?
             .clamp(1_000, MAX_GATE_TIMEOUT_MS);
         let cwd = resolve_cwd(context, optional_str(&input, "cwd"))?;
 
@@ -651,7 +651,7 @@ impl ToolSpec for TaskShellStartTool {
         let mut shell_input = json!({
             "command": required_str(&input, "command")?,
             "background": true,
-            "timeout_ms": optional_u64(&input, "timeout_ms", DEFAULT_GATE_TIMEOUT_MS)
+            "timeout_ms": optional_u64(&input, "timeout_ms", DEFAULT_GATE_TIMEOUT_MS)?
                 .clamp(1_000, MAX_GATE_TIMEOUT_MS),
         });
         if let Some(cwd) = optional_str(&input, "cwd") {
@@ -661,7 +661,7 @@ impl ToolSpec for TaskShellStartTool {
         if let Some(stdin) = optional_str(&input, "stdin") {
             shell_input["stdin"] = json!(stdin);
         }
-        if optional_bool(&input, "tty", false) {
+        if optional_bool(&input, "tty", false)? {
             shell_input["tty"] = json!(true);
         }
         let mut result = ExecShellTool.execute(shell_input, context).await?;
@@ -885,8 +885,8 @@ impl ToolSpec for PrAttemptRecordTool {
             attempt_group_id: optional_str(&input, "attempt_group_id")
                 .map(ToString::to_string)
                 .unwrap_or_else(|| format!("attempt_group_{}", &Uuid::new_v4().to_string()[..8])),
-            attempt_index: optional_u64(&input, "attempt_index", 1).max(1) as u32,
-            attempt_count: optional_u64(&input, "attempt_count", 1).max(1) as u32,
+            attempt_index: optional_u64(&input, "attempt_index", 1)?.max(1) as u32,
+            attempt_count: optional_u64(&input, "attempt_count", 1)?.max(1) as u32,
             base_ref: branch.clone(),
             base_sha,
             head_ref: branch,

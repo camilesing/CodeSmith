@@ -240,9 +240,9 @@ impl ToolSpec for ApplyPatchTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let fuzz = optional_u64(&input, "fuzz", MAX_FUZZ as u64).min(MAX_FUZZ as u64);
+        let fuzz = optional_u64(&input, "fuzz", MAX_FUZZ as u64)?.min(MAX_FUZZ as u64);
         let fuzz = usize::try_from(fuzz).unwrap_or(MAX_FUZZ);
-        let create_if_missing = optional_bool(&input, "create_if_missing", false);
+        let create_if_missing = optional_bool(&input, "create_if_missing", false)?;
         let preflight = preflight_apply_patch_plan(&input)?;
 
         if let Some(changes_value) = input.get("changes") {
@@ -341,7 +341,7 @@ pub fn preflight_apply_patch(input: &Value) -> Result<ApplyPatchPreflight, ToolE
 }
 
 fn preflight_apply_patch_plan(input: &Value) -> Result<ApplyPatchPreflightPlan, ToolError> {
-    let create_if_missing = optional_bool(input, "create_if_missing", false);
+    let create_if_missing = optional_bool(input, "create_if_missing", false)?;
 
     if let Some(changes_value) = input.get("changes") {
         return Ok(ApplyPatchPreflightPlan {
@@ -615,6 +615,18 @@ where
         // Allow for more lines than expected
         match lines.peek() {
             Some(line) if line.starts_with("@@") => break,
+            // Start of a new file section — checked BEFORE the `-`/`+` arms,
+            // which would otherwise eat `--- a/x` / `+++ b/x` headers as
+            // Remove/Add hunk lines (they fit the line budget), attributing
+            // the next file's hunks to this section in a concatenated
+            // `diff -u` without `diff --git` separators.
+            Some(line)
+                if line.starts_with("diff ")
+                    || line.starts_with("--- ")
+                    || line.starts_with("+++ ") =>
+            {
+                break;
+            }
             Some(line) if line.starts_with('-') => {
                 hunk_lines.push(HunkLine::Remove(line[1..].to_string()));
                 lines.next();
@@ -627,14 +639,6 @@ where
                 let content = if line.is_empty() { "" } else { &line[1..] };
                 hunk_lines.push(HunkLine::Context(content.to_string()));
                 lines.next();
-            }
-            Some(line)
-                if line.starts_with("diff ")
-                    || line.starts_with("--- ")
-                    || line.starts_with("+++ ") =>
-            {
-                // Start of a new file patch - don't consume, let outer loop handle it
-                break;
             }
             Some(line) if !line.starts_with('\\') => {
                 // Treat as context line without leading space
@@ -859,7 +863,19 @@ fn build_pending_writes_from_patches(
     let mut stats = PatchStatsExt::default();
     stats.stats.files_total = file_patches.len();
 
+    // Each section applies to its own in-memory copy of the on-disk
+    // original, so two sections for one path would both be written and the
+    // later one would silently discard the earlier one's hunks — while the
+    // stats still reported every hunk applied.
+    let mut seen_paths: HashSet<String> = HashSet::new();
     for file_patch in file_patches {
+        if !seen_paths.insert(file_patch.path.clone()) {
+            return Err(ToolError::invalid_input(format!(
+                "Patch contains multiple sections for `{}`; merge their hunks into one section — \
+                 applying both as-is would silently drop the earlier section's changes.",
+                file_patch.path
+            )));
+        }
         if file_patch.hunks.is_empty() {
             return Err(ToolError::invalid_input(format!(
                 "Patch section for `{}` has no hunks (`@@ ... @@`).",
@@ -891,6 +907,17 @@ fn build_pending_writes_from_patches(
         }
 
         let base_content = original.clone().unwrap_or_default();
+        // `str::lines()` drops the final `\n` and strips `\r`, so the
+        // rebuild below restores the file's own terminator style and its
+        // trailing newline: bytes the hunks never touched must not change
+        // (spurious "No newline at end of file" diffs, CRLF files silently
+        // normalized to LF).
+        let eol = if base_content.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let had_trailing_newline = base_content.ends_with('\n');
         let mut lines: Vec<String> = if base_content.is_empty() {
             Vec::new()
         } else {
@@ -922,7 +949,10 @@ fn build_pending_writes_from_patches(
                 original,
             });
         } else {
-            let new_content = lines.join("\n");
+            let mut new_content = lines.join(eol);
+            if had_trailing_newline && !new_content.is_empty() {
+                new_content.push_str(eol);
+            }
             pending.push(PendingWrite {
                 path: resolved,
                 content: Some(new_content),
@@ -1947,5 +1977,77 @@ diff --git a/b.txt b/b.txt
         assert_eq!(fuzz2, 0);
         assert!(lines.contains(&"modified5".to_string()));
         assert!(!lines.contains(&"line5".to_string()));
+    }
+
+    /// A concatenated `diff -u` has no `diff --git` separators: the second
+    /// file's `--- `/`+++ ` headers follow the first hunk directly. The
+    /// `-`/`+` arms used to eat them as Remove/Add hunk lines (they fit the
+    /// line budget), so the second file never got a section.
+    #[test]
+    fn concatenated_diff_without_git_separators_yields_both_sections() {
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n a1\n-a2\n+A2\n a3\n\
+                     --- a/b.txt\n+++ b/b.txt\n@@ -1,1 +1,1 @@\n-b1\n+B1\n";
+        let files = parse_unified_diff_files(patch, false).expect("parse");
+        assert_eq!(files.len(), 2, "both files get a section");
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[0].hunks.len(), 1);
+        // 2 context + 1 remove + 1 add; the buggy order yielded 6 by
+        // swallowing `--- a/b.txt` and `+++ b/b.txt` as hunk lines.
+        assert_eq!(
+            files[0].hunks[0].lines.len(),
+            4,
+            "the first hunk must not swallow the next file's headers"
+        );
+        assert_eq!(files[1].path, "b.txt");
+        assert_eq!(files[1].hunks.len(), 1);
+    }
+
+    /// Two sections for one path each applied to their own copy of the
+    /// original, and the later write silently discarded the earlier hunks
+    /// while the stats reported every hunk applied.
+    #[tokio::test]
+    async fn duplicate_file_sections_are_rejected() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(tmp.path().join("t.txt"), "l1\nl2\nl3\n").expect("write");
+        let patch = "--- a/t.txt\n+++ b/t.txt\n@@ -1,1 +1,1 @@\n-l1\n+L1\n\
+                     --- a/t.txt\n+++ b/t.txt\n@@ -3,1 +3,1 @@\n-l3\n+L3\n";
+        let err = ApplyPatchTool
+            .execute(json!({"patch": patch}), &ctx)
+            .await
+            .expect_err("duplicate sections must be rejected");
+        assert!(err.to_string().contains("multiple sections"), "{err}");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("t.txt")).expect("read"),
+            "l1\nl2\nl3\n",
+            "nothing is written"
+        );
+    }
+
+    /// The rebuild must not touch bytes the hunks never named: the final
+    /// newline and the CRLF terminator style of the original are kept.
+    #[tokio::test]
+    async fn trailing_newline_and_crlf_are_preserved() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(tmp.path().join("lf.txt"), "a\nb\nc\n").expect("write");
+        fs::write(tmp.path().join("crlf.txt"), "a\r\nb\r\nc\r\n").expect("write");
+        let patch = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n";
+        ApplyPatchTool
+            .execute(json!({"path": "lf.txt", "patch": patch}), &ctx)
+            .await
+            .expect("lf");
+        ApplyPatchTool
+            .execute(json!({"path": "crlf.txt", "patch": patch}), &ctx)
+            .await
+            .expect("crlf");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("lf.txt")).expect("read"),
+            "a\nB\nc\n"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("crlf.txt")).expect("read"),
+            "a\r\nB\r\nc\r\n"
+        );
     }
 }
