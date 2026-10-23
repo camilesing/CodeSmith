@@ -41,13 +41,16 @@ use crate::workspace_trust::WorkspaceTrust;
 /// Expand `~`, resolve relative paths against the workspace, and require the
 /// result to be an existing directory.
 ///
+/// `usage` names the command in the empty-argument diagnostic, so `/add-dir`
+/// does not tell the user to run `/cd`.
+///
 /// # Errors
 /// Names what is wrong (missing path, not a directory) so the caller prints
 /// a reason rather than a stack of path components.
-pub fn resolve_target(workspace: &Path, argument: &str) -> Result<PathBuf, String> {
+pub fn resolve_target(workspace: &Path, argument: &str, usage: &str) -> Result<PathBuf, String> {
     let raw = argument.trim();
     if raw.is_empty() {
-        return Err("usage: /cd <path>".to_string());
+        return Err(format!("usage: {usage}"));
     }
     let expanded = if let Some(rest) = raw.strip_prefix("~/") {
         dirs::home_dir()
@@ -75,15 +78,21 @@ pub fn resolve_target(workspace: &Path, argument: &str) -> Result<PathBuf, Strin
 /// covered by the workspace trust record.
 #[must_use]
 pub fn cd_allowed(workspace: &Path, target: &Path) -> bool {
-    if target.starts_with(workspace) {
+    // Both sides are canonicalized for the comparison: the workspace may be
+    // a symlinked or non-normalized starting cwd (on macOS `/tmp` vs
+    // `/private/tmp`), which would make every `starts_with` check fail and
+    // refuse the workspace's own subdirectories.
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let (workspace, target) = (canonical(workspace), canonical(target));
+    if target.starts_with(&workspace) {
         return true;
     }
-    WorkspaceTrust::load_for(workspace).permits(target)
+    WorkspaceTrust::load_for(&workspace).permits(&target)
 }
 
 /// `/cd <path>`.
 pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
-    let target = match resolve_target(&state.workspace, argument) {
+    let target = match resolve_target(&state.workspace, argument, "/cd <path>") {
         Ok(target) => target,
         Err(err) => {
             println!("{} {err}", "✗".red());
@@ -122,16 +131,20 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
         }
     }
 
-    state.workspace = target.clone();
-    // Re-root the engine with the conversation intact: the same sync
-    // `/resume` uses, which is what makes relative tool paths resolve from
-    // the new directory.
-    let messages = std::mem::take(&mut state.api_messages);
+    // Re-root the engine with the conversation intact *before* committing the
+    // REPL-side move: the same sync `/resume` uses, which is what makes
+    // relative tool paths resolve from the new directory. Committing
+    // `state.workspace` first left a half-moved session when the sync failed.
+    // The message is a plain clone (never `mem::take`): an emptied
+    // `api_messages` that a cancelled future never restores loses the whole
+    // conversation. "No engine attached" is not a sync failure — the move
+    // proceeds (see the `cd_is_vetoable_by_a_mod` control case).
+    let messages = state.api_messages.clone();
     let synced = match state.engine() {
         Ok(engine) => engine
             .send(codesmith_agent_runtime::ops::Op::SyncSession {
                 session_id: state.current_session_id.clone(),
-                messages: messages.clone(),
+                messages,
                 system_prompt: state.system_prompt.clone(),
                 system_prompt_override: false,
                 model: state.model.clone(),
@@ -139,25 +152,22 @@ pub async fn cd(state: &mut ReplState, argument: &str) -> anyhow::Result<()> {
             })
             .await
             .is_ok(),
-        Err(_) => false,
+        Err(_) => true,
     };
-    state.api_messages = messages;
+    if !synced {
+        println!(
+            "{} could not re-root the engine — staying in {} (restart in {} to move)",
+            "✗".red(),
+            previous.display(),
+            target.display()
+        );
+        return Ok(());
+    }
+    state.workspace = target.clone();
+    println!("{}", format!("moved to {}", target.display()).green());
     println!(
         "{}",
-        format!(
-            "moved to {}{}",
-            target.display(),
-            if synced {
-                ""
-            } else {
-                " — the engine could not be re-synced; restart in the new directory"
-            }
-        )
-        .green()
-    );
-    println!(
-        "{}",
-        "project config and AGENTS.md were loaded at startup: restart here for the new directory's to apply"
+        "project config and AGENTS.md were loaded at startup: restart here for the new directory's config to apply"
             .dimmed()
     );
     Ok(())
@@ -168,7 +178,7 @@ pub fn add_dir(state: &ReplState, argument: &str) -> anyhow::Result<()> {
     // Unlike `/cd`, the directory need not exist as a cwd target — but a
     // path that does not exist cannot be canonicalized, so it is refused
     // with the same message the resolver produces.
-    let target = match resolve_target(&state.workspace, argument) {
+    let target = match resolve_target(&state.workspace, argument, "/add-dir <path>") {
         Ok(target) => target,
         Err(err) => {
             println!("{} {err}", "✗".red());
@@ -205,21 +215,22 @@ mod tests {
         let nested = dir.path().join("child");
         std::fs::create_dir(&nested).expect("mkdir");
 
-        let resolved = resolve_target(dir.path(), "child").expect("relative resolves");
-        assert_eq!(resolved, nested.canonicalize().expect("canonical"));
         let resolved =
-            resolve_target(dir.path(), nested.to_str().expect("utf8")).expect("absolute");
+            resolve_target(dir.path(), "child", "/cd <path>").expect("relative resolves");
+        assert_eq!(resolved, nested.canonicalize().expect("canonical"));
+        let resolved = resolve_target(dir.path(), nested.to_str().expect("utf8"), "/cd <path>")
+            .expect("absolute");
         assert_eq!(resolved, nested.canonicalize().expect("canonical"));
 
         assert!(
-            resolve_target(dir.path(), "").is_err(),
+            resolve_target(dir.path(), "", "/cd <path>").is_err(),
             "empty is a usage error"
         );
-        assert!(resolve_target(dir.path(), "missing-dir").is_err());
+        assert!(resolve_target(dir.path(), "missing-dir", "/cd <path>").is_err());
         let file = dir.path().join("file.txt");
         std::fs::write(&file, "x").expect("write");
         assert!(
-            resolve_target(dir.path(), "file.txt")
+            resolve_target(dir.path(), "file.txt", "/cd <path>")
                 .expect_err("a file is not a cwd")
                 .contains("not a directory")
         );

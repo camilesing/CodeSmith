@@ -153,6 +153,10 @@ pub fn allow(state: &mut ReplState, command: &str) {
     let key = workspace_key(state);
     let grant = shell_grant_key(&rule);
     state.approval_grants.grant(&key, &grant);
+    // A session deny outranks every grant at the approval gate — an explicit
+    // `allow` must lift it, or the grant is dead for the rest of the session
+    // while this command reports it saved.
+    state.approval_session_denied.remove(&grant);
     // The approval path reads the in-memory store, so this session is
     // covered immediately; the file is what later sessions read.
     match approvals_toml_path() {
@@ -245,12 +249,23 @@ fn auto_allow_rules(state: &ReplState) -> Vec<String> {
 /// Merge `[sandbox] auto_allow` into the grant set at startup.
 ///
 /// Config rules are the user's standing decision, so they are grants for
-/// every session — merged in memory rather than written to the grant file,
-/// so removing a config rule does not leave a stale grant behind.
+/// every session. They are kept in the session-scoped set on purpose:
+/// merging them into `approval_grants` would let the next `allow`/`remove`
+/// `save()` persist them into approvals.toml, leaving stale grants behind
+/// after the config rule is removed (the in-memory store union-merges into
+/// the on-disk file on every save). Session scope is re-applied at each
+/// startup, so the config rules still cover every session.
 pub fn apply_config_rules(state: &mut ReplState) {
-    let key = workspace_key(state);
     for rule in auto_allow_rules(state) {
-        state.approval_grants.grant(&key, &shell_grant_key(&rule));
+        let trimmed = rule.trim();
+        if trimmed.is_empty() {
+            // An empty entry would grant the synthetic `shell:<empty>` key,
+            // which the engine's classifier really can produce.
+            continue;
+        }
+        state
+            .approval_session_approved
+            .insert(shell_grant_key(trimmed));
     }
 }
 

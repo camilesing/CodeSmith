@@ -15,6 +15,23 @@ use codesmith_agent_runtime::ops::Op;
 
 const MAX_TITLE_LEN: usize = 100;
 
+/// Send a session op to the engine, warning when the op is rejected: a
+/// dropped sync leaves the engine serving the previous session (id,
+/// messages, model, workspace) while the REPL has already switched.
+///
+/// No engine attached is not a failure (engine-less REPL runs are a real
+/// mode) and stays silent — only a failed send diverges.
+async fn send_session_op(state: &ReplState, op: Op) {
+    if let Ok(engine) = state.engine()
+        && let Err(err) = engine.send(op).await
+    {
+        println!(
+            "{}",
+            format!("warning: the engine did not accept the session sync: {err}").yellow()
+        );
+    }
+}
+
 fn sync_cost_to_metadata(
     state: &ReplState,
     metadata: &mut crate::session_manager::SessionMetadata,
@@ -72,9 +89,15 @@ pub fn save(state: &mut ReplState, path: Option<&str>) {
             return;
         }
     };
-    match std::fs::write(&save_path, json) {
+    match codesmith_agent_runtime::utils::write_atomic(&save_path, json.as_bytes()) {
         Ok(()) => {
-            state.current_session_id = Some(session.metadata.id.clone());
+            // Only a save into the managed store produces a resolvable id:
+            // `load_session` resolves ids inside the sessions dir, so
+            // adopting the fresh UUID for a caller-supplied path left
+            // `/rename`, `/sessions`, and prefix resume pointing at nothing.
+            if path.is_none() {
+                state.current_session_id = Some(session.metadata.id.clone());
+            }
             println!(
                 "session saved to {} (ID: {})",
                 save_path.display(),
@@ -188,18 +211,18 @@ pub async fn branch(state: &mut ReplState, name: Option<&str>) {
             truncate_id(&fork_id)
         ),
     }
-    if let Ok(engine) = state.engine() {
-        let _ = engine
-            .send(Op::SyncSession {
-                session_id: Some(fork_id),
-                messages: state.api_messages.clone(),
-                system_prompt: state.system_prompt.clone(),
-                system_prompt_override: false,
-                model: state.model.clone(),
-                workspace: state.workspace.clone(),
-            })
-            .await;
-    }
+    send_session_op(
+        state,
+        Op::SyncSession {
+            session_id: Some(fork_id),
+            messages: state.api_messages.clone(),
+            system_prompt: state.system_prompt.clone(),
+            system_prompt_override: false,
+            model: state.model.clone(),
+            workspace: state.workspace.clone(),
+        },
+    )
+    .await;
 }
 
 /// `/new [--force]` — start a fresh session.
@@ -237,19 +260,24 @@ pub async fn new_session(state: &mut ReplState, arg: Option<&str>) {
     // The on-screen transcript (and thus `/expand` replay) belongs to the
     // old session; the new session starts with an empty tool log.
     state.tool_log.clear();
+    // Per-session bookkeeping that the next save would otherwise re-persist
+    // into the fresh session's record: failed-attempt history and the
+    // accumulated turn duration belong to the session that earned them.
+    state.failed_attempts.clear();
+    state.cumulative_turn_duration = Default::default();
     state.current_session_id = Some(new_id.clone());
-    if let Ok(engine) = state.engine() {
-        let _ = engine
-            .send(Op::SyncSession {
-                session_id: Some(new_id.clone()),
-                messages: Vec::new(),
-                system_prompt: None,
-                system_prompt_override: false,
-                model: state.model.clone(),
-                workspace: state.workspace.clone(),
-            })
-            .await;
-    }
+    send_session_op(
+        state,
+        Op::SyncSession {
+            session_id: Some(new_id.clone()),
+            messages: Vec::new(),
+            system_prompt: None,
+            system_prompt_override: false,
+            model: state.model.clone(),
+            workspace: state.workspace.clone(),
+        },
+    )
+    .await;
     println!(
         "started new session {} — previous sessions remain available via /resume",
         truncate_id(&new_id)
@@ -362,7 +390,19 @@ async fn adopt_loaded_session(
 ) {
     state.api_messages = session.messages.clone();
     state.set_model_selection(session.metadata.model.clone());
-    state.workspace = session.metadata.workspace.clone();
+    // A tampered or hand-edited session file must not silently redirect all
+    // relative-path resolution to an arbitrary directory: adopt the stored
+    // workspace only when it exists.
+    if session.metadata.workspace.is_dir() {
+        state.workspace = session.metadata.workspace.clone();
+    } else {
+        println!(
+            "{} session workspace {} does not exist — keeping the current workspace ({})",
+            "✗".red(),
+            session.metadata.workspace.display(),
+            state.workspace.display()
+        );
+    }
     state.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     state.session.total_conversation_tokens = state.session.total_tokens;
     // Accumulated token breakdown is per-runtime-session; zero on load.
@@ -383,21 +423,29 @@ async fn adopt_loaded_session(
     state.session.last_reasoning_replay_tokens = None;
     state.current_session_id = Some(session.metadata.id.clone());
     state.system_prompt = session.system_prompt.map(SystemPrompt::Text);
+    // The same per-session runtime state `/new` resets: after `/load`, the
+    // previous session's on-screen transcript, agent progress, subagent
+    // cache, and accumulated turn duration would otherwise ride along with
+    // the loaded session's messages (and be re-persisted by the next save).
+    state.tool_log.clear();
+    state.agent_progress.clear();
+    state.subagent_cache.clear();
+    state.cumulative_turn_duration = Default::default();
     // Round-3 TODO-42 — adopted sessions keep their failed-attempt records,
     // so a `/load` + save cycle does not silently drop them.
     state.failed_attempts = session.failed_attempts.clone();
-    if let Ok(engine) = state.engine() {
-        let _ = engine
-            .send(Op::SyncSession {
-                session_id: Some(session.metadata.id.clone()),
-                messages: session.messages,
-                system_prompt: state.system_prompt.clone(),
-                system_prompt_override: false,
-                model: state.model.clone(),
-                workspace: state.workspace.clone(),
-            })
-            .await;
-    }
+    send_session_op(
+        state,
+        Op::SyncSession {
+            session_id: Some(session.metadata.id.clone()),
+            messages: session.messages,
+            system_prompt: state.system_prompt.clone(),
+            system_prompt_override: false,
+            model: state.model.clone(),
+            workspace: state.workspace.clone(),
+        },
+    )
+    .await;
 }
 
 /// `/compact [memory|from=N|up_to=N]`
@@ -445,16 +493,28 @@ pub async fn compact(state: &mut ReplState, arg: Option<&str>) {
             CompactMode::Full => Op::CompactContext,
             other => Op::CompactContextWithMode { mode: other },
         };
-        let _ = engine.send(op).await;
-        println!("context compaction ({label}) triggered…");
+        if let Err(err) = engine.send(op).await {
+            println!(
+                "{}",
+                format!("warning: the engine did not accept the compaction: {err}").yellow()
+            );
+        } else {
+            println!("context compaction ({label}) triggered…");
+        }
     }
 }
 
 /// `/purge`
 pub async fn purge(state: &mut ReplState) {
     if let Ok(engine) = state.engine() {
-        let _ = engine.send(Op::PurgeContext).await;
-        println!("agent context purge triggered…");
+        if let Err(err) = engine.send(Op::PurgeContext).await {
+            println!(
+                "{}",
+                format!("warning: the engine did not accept the purge: {err}").yellow()
+            );
+        } else {
+            println!("agent context purge triggered…");
+        }
     }
 }
 
@@ -566,13 +626,25 @@ pub fn sessions(state: &ReplState, arg: Option<&str>) {
 }
 
 fn prune(days_arg: Option<&str>) {
-    let Some(days_str) = days_arg else {
+    let mut words = days_arg
+        .map(str::split_whitespace)
+        .map_or_else(Vec::new, Iterator::collect::<Vec<&str>>);
+    let confirmed = words.iter().any(|w| *w == "--yes" || *w == "-y");
+    words.retain(|w| !matches!(*w, "--yes" | "-y"));
+    let Some(days_str) = words.first().copied() else {
         println!(
-            "{} usage: /sessions prune <days> (e.g. /sessions prune 30)",
+            "{} usage: /sessions prune <days> [--yes] (e.g. /sessions prune 30 --yes)",
             "✗".red()
         );
         return;
     };
+    if words.len() > 1 {
+        println!(
+            "{} usage: /sessions prune <days> [--yes] (e.g. /sessions prune 30 --yes)",
+            "✗".red()
+        );
+        return;
+    }
     let Ok(days) = days_str.parse::<u64>() else {
         println!("{} expected a positive integer number of days", "✗".red());
         return;
@@ -586,6 +658,35 @@ fn prune(days_arg: Option<&str>) {
         return;
     };
     let max_age = std::time::Duration::from_secs(days.saturating_mul(24 * 60 * 60));
+    // Pruning is a permanent delete driven by age alone, so it previews
+    // first: without `--yes` the command counts what the age window matches
+    // (a typo'd large `days` would otherwise wipe the whole store) and the
+    // user re-runs it to delete.
+    if !confirmed {
+        let candidates = manager
+            .list_sessions()
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter(|meta| {
+                        meta.updated_at
+                            < chrono::Utc::now()
+                                - chrono::Duration::from_std(max_age)
+                                    .unwrap_or(chrono::Duration::days(365 * 10))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        println!(
+            "{}",
+            format!(
+                "dry run: {candidates} session(s) older than {days}d would be pruned — \
+                 re-run `/sessions prune {days} --yes` to delete them"
+            )
+            .dimmed()
+        );
+        return;
+    }
     match manager.prune_sessions_older_than(max_age) {
         Ok(0) => println!("no sessions older than {days}d to prune"),
         Ok(n) => println!("pruned {n} session(s) older than {days}d"),
