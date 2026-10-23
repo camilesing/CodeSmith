@@ -851,56 +851,46 @@ async fn sync_one_skill(
         let is_tarball =
             url.ends_with(".tar.gz") || url.ends_with(".tgz") || bytes.starts_with(&[0x1f, 0x8b]);
 
-        let final_path: PathBuf = if is_tarball {
-            // Extract into a temp staging dir, then rename atomically.
-            let staged = match stage_tarball(&bytes, cache_dir, max_size) {
-                Ok(s) => s,
-                Err(err) => {
-                    return SkillSyncOutcome::Failed {
-                        name: name.to_string(),
-                        reason: format!("tarball extraction failed: {err:#}"),
-                    };
-                }
-            };
-            // Move staged dir into its final location, replacing any prior cache.
-            let dest = cache_dir.join(name);
-            if dest.exists() {
-                let _ = fs::remove_dir_all(&dest);
-            }
-            if let Err(err) = fs::rename(&staged.staged_path, &dest) {
-                let _ = fs::remove_dir_all(&staged.staged_path);
+        // The blocking tail of the sync (gzip decode + fs writes/renames)
+        // rides the blocking pool, mirroring `install_with_registry`'s own
+        // convention — a large registry index must not stall the async
+        // runtime's workers once per skill.
+        let staged_name = name.to_string();
+        let staged_url = url.clone();
+        let staged_cache_dir = cache_dir.to_path_buf();
+        let staged_skill_cache_dir = skill_cache_dir.clone();
+        let staged_etag = etag.clone();
+        let staged_sha256 = sha256.clone();
+        let staged_bytes = bytes;
+        let stage_result = tokio::task::spawn_blocking(move || {
+            stage_skill_cache(
+                is_tarball,
+                staged_bytes,
+                &staged_name,
+                &staged_url,
+                &staged_cache_dir,
+                &staged_skill_cache_dir,
+                max_size,
+                staged_etag,
+                staged_sha256,
+            )
+        })
+        .await;
+        let final_path = match stage_result {
+            Ok(Ok(path)) => path,
+            Ok(Err(reason)) => {
                 return SkillSyncOutcome::Failed {
                     name: name.to_string(),
-                    reason: format!("failed to move staged skill into cache: {err:#}"),
+                    reason,
                 };
             }
-            dest
-        } else {
-            // Plain SKILL.md (or other companion text file). Write directly.
-            if let Err(err) = fs::create_dir_all(&skill_cache_dir) {
+            Err(err) => {
                 return SkillSyncOutcome::Failed {
                     name: name.to_string(),
-                    reason: format!("failed to create cache dir: {err:#}"),
+                    reason: format!("skill staging task failed: {err}"),
                 };
             }
-            let skill_md_path = skill_cache_dir.join("SKILL.md");
-            if let Err(err) = fs::write(&skill_md_path, &bytes) {
-                return SkillSyncOutcome::Failed {
-                    name: name.to_string(),
-                    reason: format!("failed to write SKILL.md to cache: {err:#}"),
-                };
-            }
-            skill_cache_dir.clone()
         };
-
-        // Write the updated freshness metadata.
-        let meta = CacheMeta {
-            etag,
-            sha256,
-            url: url.clone(),
-        };
-        let meta_json = serde_json::to_string(&meta).unwrap_or_default();
-        let _ = fs::write(final_path.join(".cache-meta.json"), meta_json);
 
         return SkillSyncOutcome::Downloaded {
             name: name.to_string(),
@@ -916,6 +906,56 @@ async fn sync_one_skill(
             entry.source
         ),
     }
+}
+
+/// Blocking half of [`sync_one_skill`]: extracts/creates the skill's cache
+/// entry and writes its freshness metadata. Runs only on the blocking pool.
+#[allow(clippy::too_many_arguments)] // one-shot staging bundle; a struct would just mirror these fields
+fn stage_skill_cache(
+    is_tarball: bool,
+    bytes: Vec<u8>,
+    name: &str,
+    url: &str,
+    cache_dir: &Path,
+    skill_cache_dir: &Path,
+    max_size: u64,
+    etag: Option<String>,
+    sha256: String,
+) -> Result<PathBuf, String> {
+    let final_path: PathBuf = if is_tarball {
+        // Extract into a temp staging dir, then rename atomically.
+        let staged = stage_tarball(&bytes, cache_dir, max_size)
+            .map_err(|err| format!("tarball extraction failed: {err:#}"))?;
+        // Move staged dir into its final location, replacing any prior cache.
+        let dest = cache_dir.join(name);
+        if dest.exists() {
+            let _ = fs::remove_dir_all(&dest);
+        }
+        if let Err(err) = fs::rename(&staged.staged_path, &dest) {
+            let _ = fs::remove_dir_all(&staged.staged_path);
+            return Err(format!("failed to move staged skill into cache: {err:#}"));
+        }
+        dest
+    } else {
+        // Plain SKILL.md (or other companion text file). Write directly.
+        fs::create_dir_all(skill_cache_dir)
+            .map_err(|err| format!("failed to create cache dir: {err:#}"))?;
+        let skill_md_path = skill_cache_dir.join("SKILL.md");
+        fs::write(&skill_md_path, &bytes)
+            .map_err(|err| format!("failed to write SKILL.md to cache: {err:#}"))?;
+        skill_cache_dir.to_path_buf()
+    };
+
+    // Write the updated freshness metadata.
+    let meta = CacheMeta {
+        etag,
+        sha256,
+        url: url.to_string(),
+    };
+    let meta_json = serde_json::to_string(&meta).unwrap_or_default();
+    let _ = fs::write(final_path.join(".cache-meta.json"), meta_json);
+
+    Ok(final_path)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

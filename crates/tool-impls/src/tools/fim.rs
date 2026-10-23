@@ -121,9 +121,13 @@ impl ToolSpec for FimEditTool {
 
         // 1. Read the file
         let resolved = context.resolve_path(path)?;
-        let content = fs::read_to_string(&resolved).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to read {}: {}", resolved.display(), e))
-        })?;
+        let read_path = resolved.clone();
+        let content = tokio::task::spawn_blocking(move || fs::read_to_string(&read_path))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("FIM read task failed: {e}")))?
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to read {}: {}", resolved.display(), e))
+            })?;
 
         // 2. Find prefix anchor
         let prefix_pos = content.find(prefix_anchor).ok_or_else(|| {
@@ -190,9 +194,18 @@ impl ToolSpec for FimEditTool {
         let final_content = gated
             .as_ref()
             .map_or(new_content.as_str(), |o| o.content.as_str());
-        fs::write(&resolved, final_content).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to write {}: {}", resolved.display(), e))
-        })?;
+        let write_path = resolved.clone();
+        let write_content = final_content.to_string();
+        tokio::task::spawn_blocking(move || fs::write(&write_path, write_content))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("FIM write task failed: {e}")))?
+            .map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "Failed to write {}: {}",
+                    resolved.display(),
+                    e
+                ))
+            })?;
 
         let mut message = format!(
             "FIM edit applied to `{path}`. Generated {generated_len} chars between prefix_anchor end (byte {prefix_end}) and suffix_anchor start (byte {suffix_start}).",

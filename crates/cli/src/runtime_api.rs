@@ -1194,8 +1194,7 @@ async fn workspace_status(
 async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
-    let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let (registry, directories) = discover_skills_for_runtime_api(&state.workspace, &skills_dir);
+    let (registry, directories, skills_dir) = discover_skills_blocking(&state).await?;
     let skill_state = state.skill_state.lock().await;
     let skills = registry
         .list()
@@ -1227,8 +1226,7 @@ async fn set_skill_enabled(
     Path(name): Path<String>,
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
-    let skills_dir = resolve_skills_dir(&state.config, &state.workspace);
-    let (registry, directories) = discover_skills_for_runtime_api(&state.workspace, &skills_dir);
+    let (registry, directories, _skills_dir) = discover_skills_blocking(&state).await?;
     let exists = registry.list().iter().any(|skill| skill.name == name);
     if !exists {
         return Err(ApiError::not_found(format!(
@@ -2047,6 +2045,24 @@ fn skills_search_directories(workspace: &FsPath, skills_dir: &FsPath) -> Vec<Pat
         directories.push(skills_dir.to_path_buf());
     }
     directories
+}
+
+/// Skills discovery walks every skills directory and parses SKILL.md
+/// frontmatter — synchronous filesystem work, so it rides the blocking pool
+/// (same convention as `workspace_status`; the server may run with as few
+/// as 2 workers).
+async fn discover_skills_blocking(
+    state: &RuntimeApiState,
+) -> Result<(crate::skills::SkillRegistry, Vec<PathBuf>, PathBuf), ApiError> {
+    let config = state.config.clone();
+    let workspace = state.workspace.clone();
+    tokio::task::spawn_blocking(move || {
+        let skills_dir = resolve_skills_dir(&config, &workspace);
+        let (registry, directories) = discover_skills_for_runtime_api(&workspace, &skills_dir);
+        (registry, directories, skills_dir)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("skills discovery task failed: {e}")))
 }
 
 fn discover_skills_for_runtime_api(

@@ -1344,7 +1344,7 @@ impl Engine {
                     Some(&compaction_paths),
                 );
             if should_run_summary_compaction && let Some(client) = client {
-                let enhancements = self.build_compaction_enhancements();
+                let enhancements = self.build_compaction_enhancements().await;
                 match compact_messages_safe(
                     client,
                     &self.session.messages,

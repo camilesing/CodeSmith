@@ -248,7 +248,7 @@ impl ToolSpec for ApplyPatchTool {
         if let Some(changes_value) = input.get("changes") {
             let (mut pending, stats) = build_pending_writes_from_changes(changes_value, context)?;
             let gate_notes = gate_pending_writes(&mut pending, context)?;
-            apply_pending_writes(&pending)?;
+            apply_pending_writes(&pending).await?;
             // Resolve absolute paths for LSP diagnostics query.
             let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
             let diag_block = lsp_diagnostics_for_paths(context, &abs_paths).await;
@@ -296,7 +296,7 @@ impl ToolSpec for ApplyPatchTool {
             build_pending_writes_from_patches(file_patches, context, fuzz)?;
         stats.header_path_mismatch = preflight.summary.header_path_mismatch.clone();
         let gate_notes = gate_pending_writes(&mut pending, context)?;
-        apply_pending_writes(&pending)?;
+        apply_pending_writes(&pending).await?;
         // Resolve absolute paths for LSP diagnostics query.
         let abs_paths: Vec<PathBuf> = pending
             .iter()
@@ -961,7 +961,16 @@ fn gate_pending_writes(
     Ok(notes)
 }
 
-fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
+/// Applies the gated batch on the blocking pool — each write is a real
+/// fs operation (create-dir, write, remove), not worker-safe work.
+async fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
+    let writes = pending.to_vec();
+    tokio::task::spawn_blocking(move || apply_pending_writes_blocking(&writes))
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("apply-patch write task failed: {e}")))?
+}
+
+fn apply_pending_writes_blocking(pending: &[PendingWrite]) -> Result<(), ToolError> {
     let mut applied = Vec::new();
 
     for entry in pending {

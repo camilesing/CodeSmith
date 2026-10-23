@@ -123,12 +123,16 @@ impl ToolSpec for AgentMemoryWriteTool {
         // tools: `agent_memory_read` advertises ReadOnly and must resolve
         // without side effects (a failed probe read used to leave a newly
         // created dir/entrypoint behind).
-        ensure_agent_memory_dir(memory_dir).map_err(|err| {
-            ToolError::execution_failed(format!(
-                "failed to create agent memory dir {}: {err}",
-                memory_dir.display()
-            ))
-        })?;
+        let ensure_dir = memory_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || ensure_agent_memory_dir(&ensure_dir))
+            .await
+            .map_err(|err| ToolError::execution_failed(format!("dir task failed: {err}")))?
+            .map_err(|err| {
+                ToolError::execution_failed(format!(
+                    "failed to create agent memory dir {}: {err}",
+                    memory_dir.display()
+                ))
+            })?;
         // Only a missing file counts as "no prior content": swallowing
         // permission/IO/UTF-8 errors here would render a misleading
         // whole-file-added diff and hide the real failure.

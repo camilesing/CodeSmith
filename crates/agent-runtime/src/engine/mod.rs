@@ -1895,7 +1895,7 @@ impl Engine {
         let mut turn_status = TurnOutcomeStatus::Completed;
         let mut turn_error = None;
 
-        let enhancements = self.build_compaction_enhancements();
+        let enhancements = self.build_compaction_enhancements().await;
         match compact_messages_safe(
             &*client,
             &self.session.messages,
@@ -1984,7 +1984,7 @@ impl Engine {
         )
         .await;
 
-        let (memory_source, memory_content) = match self.session_memory_compaction_content() {
+        let (memory_source, memory_content) = match self.session_memory_compaction_content().await {
             Ok(Some(content)) => content,
             Ok(None) => {
                 let message = "Session-memory compaction skipped: no enabled MEMORY.md or user memory content found".to_string();
@@ -2109,10 +2109,33 @@ impl Engine {
             .await;
     }
 
-    fn session_memory_compaction_content(&self) -> std::io::Result<Option<(String, String)>> {
-        if self.config.kod_enabled {
-            let entrypoint =
-                crate::knowledge::paths::resolve_memory_entrypoint(&self.config.memory_dir);
+    /// Reads the session-memory source file on the blocking pool — a
+    /// real fs read, not worker-safe work.
+    async fn session_memory_compaction_content(&self) -> std::io::Result<Option<(String, String)>> {
+        let kod_enabled = self.config.kod_enabled;
+        let memory_dir = self.config.memory_dir.clone();
+        let memory_enabled = self.config.memory_enabled;
+        let memory_path = self.config.memory_path.clone();
+        tokio::task::spawn_blocking(move || {
+            Self::session_memory_compaction_content_blocking(
+                kod_enabled,
+                &memory_dir,
+                memory_enabled,
+                &memory_path,
+            )
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("memory read task failed: {e}")))?
+    }
+
+    fn session_memory_compaction_content_blocking(
+        kod_enabled: bool,
+        memory_dir: &std::path::Path,
+        memory_enabled: bool,
+        memory_path: &std::path::Path,
+    ) -> std::io::Result<Option<(String, String)>> {
+        if kod_enabled {
+            let entrypoint = crate::knowledge::paths::resolve_memory_entrypoint(memory_dir);
             match std::fs::read_to_string(&entrypoint) {
                 Ok(content) if !content.trim().is_empty() => {
                     return Ok(Some((entrypoint.display().to_string(), content)));
@@ -2123,13 +2146,10 @@ impl Engine {
             }
         }
 
-        if self.config.memory_enabled {
-            match std::fs::read_to_string(&self.config.memory_path) {
+        if memory_enabled {
+            match std::fs::read_to_string(memory_path) {
                 Ok(content) if !content.trim().is_empty() => {
-                    return Ok(Some((
-                        self.config.memory_path.display().to_string(),
-                        content,
-                    )));
+                    return Ok(Some((memory_path.display().to_string(), content)));
                 }
                 Ok(_) => return Ok(None),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -2158,7 +2178,7 @@ impl Engine {
     /// Always returns `Some`: the session fact ledger is unconditionally
     /// attached (compaction drops feed it, and it renders into the summary),
     /// with hooks / session-memory added when available.
-    fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
+    async fn build_compaction_enhancements(&self) -> Option<CompactionEnhancements> {
         let hooks = self.host.hooks().map(|executor| {
             let context = self
                 .build_compaction_hook_context()
@@ -2167,7 +2187,7 @@ impl Engine {
             (executor, context)
         });
 
-        let session_memory = match self.session_memory_compaction_content() {
+        let session_memory = match self.session_memory_compaction_content().await {
             Ok(Some((_source, content))) => Some(SessionMemorySidecar {
                 memory_content: content,
                 config: self.session.session_memory_compact_config.clone(),
@@ -2460,7 +2480,7 @@ impl Engine {
         // of cache cost.
         forced_config.auto_floor_tokens = 0;
 
-        let enhancements = self.build_compaction_enhancements();
+        let enhancements = self.build_compaction_enhancements().await;
         match compact_messages_safe(
             client,
             &self.session.messages,

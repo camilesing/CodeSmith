@@ -85,7 +85,7 @@ impl ToolSpec for DiagnosticsTool {
         // binary was started.
         let (current_dir, current_dir_error) = (Some(context.cwd.display().to_string()), None);
 
-        let git = probe_git(&context.workspace);
+        let git = probe_git(&context.workspace).await;
         let sandbox_type =
             codesmith_agent_runtime::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
@@ -112,8 +112,8 @@ impl ToolSpec for DiagnosticsTool {
             sandbox_type,
             bwrap_available,
             cgroup_version,
-            rustc_version: probe_version("rustc", &["--version"], &context.workspace),
-            cargo_version: probe_version("cargo", &["--version"], &context.workspace),
+            rustc_version: probe_version("rustc", &["--version"], &context.workspace).await,
+            cargo_version: probe_version("cargo", &["--version"], &context.workspace).await,
             trusted_external_paths,
         };
 
@@ -123,8 +123,8 @@ impl ToolSpec for DiagnosticsTool {
 
 // === Helpers ===
 
-fn probe_git(workspace: &Path) -> GitProbe {
-    let rev_parse = run_command("git", &["rev-parse", "--is-inside-work-tree"], workspace);
+async fn probe_git(workspace: &Path) -> GitProbe {
+    let rev_parse = run_command("git", &["rev-parse", "--is-inside-work-tree"], workspace).await;
     match rev_parse {
         CommandProbe::Success(out) => {
             if out.trim() != "true" {
@@ -135,6 +135,7 @@ fn probe_git(workspace: &Path) -> GitProbe {
                 };
             }
             let branch = run_command("git", &["rev-parse", "--abbrev-ref", "HEAD"], workspace)
+                .await
                 .into_success();
             GitProbe {
                 detected: true,
@@ -185,8 +186,8 @@ fn probe_cgroup_version() -> Option<u8> {
     }
 }
 
-fn probe_version(program: &str, args: &[&str], cwd: &Path) -> Option<String> {
-    run_command(program, args, cwd).into_success()
+async fn probe_version(program: &str, args: &[&str], cwd: &Path) -> Option<String> {
+    run_command(program, args, cwd).await.into_success()
 }
 
 enum CommandProbe {
@@ -204,7 +205,18 @@ impl CommandProbe {
     }
 }
 
-fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
+/// Runs a probe subprocess on the blocking pool — `std::process::Command`
+/// blocks the calling thread for the child's full lifetime.
+async fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || run_command_blocking(&program, &args, &cwd))
+        .await
+        .unwrap_or(CommandProbe::Failed { stderr: None })
+}
+
+fn run_command_blocking(program: &str, args: &[String], cwd: &Path) -> CommandProbe {
     let output = Command::new(program).args(args).current_dir(cwd).output();
     let output = match output {
         Ok(output) => output,

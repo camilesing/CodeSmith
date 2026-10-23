@@ -138,10 +138,18 @@ impl ToolSpec for LoadSkillTool {
         // "community skill snippets are disabled until trusted" promise
         // holds on the tool path too. Fail-closed for mod skills: the
         // empty in-memory path never carries a `.trusted` marker.
-        let gated_body = crate::skills::preprocess_skill_body_for_activation(skill);
-        // One `read_dir` pass feeds both the rendered body and the metadata
-        // (it used to be scanned twice per invocation).
-        let companions = collect_companion_files(skill);
+        // Trust gating (a `.trusted` stat) and the companion listing (a
+        // `read_dir` walk) are the same class of synchronous filesystem
+        // work as the discovery above — keep them on the blocking pool.
+        let skill_for_io = skill.clone();
+        let (gated_body, companions) = tokio::task::spawn_blocking(move || {
+            (
+                crate::skills::preprocess_skill_body_for_activation(&skill_for_io),
+                collect_companion_files(&skill_for_io),
+            )
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("skill body task failed: {e}")))?;
         let body = format_skill_body_with_body(skill, &gated_body, &companions);
         let source = skill.loaded_from.label(&skill.path);
         // `skill_path` stays a real filesystem path (empty for file-less
