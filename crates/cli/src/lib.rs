@@ -27,7 +27,6 @@ mod doctor_llm;
 mod eval;
 mod execpolicy;
 mod extension_state;
-mod features;
 mod handoff;
 mod hooks;
 mod index;

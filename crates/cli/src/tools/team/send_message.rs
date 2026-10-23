@@ -6,7 +6,6 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
@@ -19,6 +18,7 @@ use crate::tools::team::{
     SharedTeamContext, StructuredProtocolMessage, TeammateMessage, find_member_by_name,
     read_team_file, team_lead_name, write_to_mailbox,
 };
+use codesmith_agent_runtime::features::Feature;
 
 /// Attribution used when a calling context has no runtime-injected team
 /// identity. Such contexts must never be treated as the lead.

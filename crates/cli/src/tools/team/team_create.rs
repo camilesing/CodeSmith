@@ -4,7 +4,6 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
@@ -13,6 +12,7 @@ use crate::tools::team::{
     SharedTeamContext, TeamContext, TeamFile, TeamMember, create_team_file_exclusive,
     format_lead_agent_id, sanitize_name, team_lead_name,
 };
+use codesmith_agent_runtime::features::Feature;
 
 pub struct TeamCreateTool {
     team_context: SharedTeamContext,

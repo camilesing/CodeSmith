@@ -343,7 +343,7 @@ impl ReplState {
         } else if std::env::var("CODESMITH_COORDINATOR_MODE").is_ok()
             && config
                 .features()
-                .enabled(crate::features::Feature::CoordinatorMode)
+                .enabled(codesmith_agent_runtime::features::Feature::CoordinatorMode)
         {
             AppMode::Coordinator
         } else {
@@ -481,7 +481,7 @@ impl ReplState {
     pub fn coordinator_in_ring(&self) -> bool {
         self.config
             .features()
-            .enabled(crate::features::Feature::CoordinatorMode)
+            .enabled(codesmith_agent_runtime::features::Feature::CoordinatorMode)
     }
 
     /// Advance the Shift+Tab ring by one mode ([`AppMode::cycle_next`]).

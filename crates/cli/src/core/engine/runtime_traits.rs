@@ -38,7 +38,6 @@ use super::{
 use crate::app_state::AppMode;
 use crate::background_task::SharedBackgroundTaskRegistry;
 use crate::cycle_manager::StructuredState;
-use crate::features::Feature;
 use crate::lsp::LspManager;
 use crate::seam_manager::SeamManager;
 use crate::tools::subagent::{
@@ -47,6 +46,7 @@ use crate::tools::subagent::{
 };
 use crate::tools::team::run_leader_inbox_poller;
 use crate::utils::spawn_supervised;
+use codesmith_agent_runtime::features::Feature;
 
 /// Zero-sized runtime-UI bridge: resolves the clipboard-image directory the
 /// sandbox trusts. Constructed where the engine needs `Arc<dyn RuntimeUi>`.

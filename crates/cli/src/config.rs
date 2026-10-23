@@ -14,11 +14,11 @@ use serde_json::json;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::audit::log_sensitive_event;
-use crate::features::{Features, FeaturesToml, is_known_feature_key};
 use crate::hooks::HooksConfig;
 use crate::sandbox::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
 };
+use codesmith_agent_runtime::features::{Features, FeaturesToml, is_known_feature_key};
 
 /// Hard cap on concurrent sub-agents. Re-exported from
 /// `codesmith_agent_runtime::config_types::MAX_SUBAGENTS` so the runtime,

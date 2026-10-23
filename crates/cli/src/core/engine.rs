@@ -97,7 +97,6 @@ pub use codesmith_agent_runtime::engine::{
 
 use crate::app_state::AppMode;
 use crate::config::{ApiProvider, Config};
-use crate::features::Feature;
 use crate::llm_client::LlmClientHandle;
 use crate::prompts;
 use crate::seam_manager::{SeamConfig, SeamManager};
@@ -110,6 +109,7 @@ use crate::tools::todo::SharedTodoList;
 use crate::tools::{ToolContext, ToolRegistryBuilder, ToolRegistryPluginExt};
 use crate::utils::spawn_supervised;
 use codesmith_agent::provider::{ProviderConfig, ProviderId, SharedProviderRegistry};
+use codesmith_agent_runtime::features::Feature;
 
 use super::capacity::CapacityController;
 use super::events::Event;

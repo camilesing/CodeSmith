@@ -4,7 +4,6 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::features::Feature;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
@@ -13,6 +12,7 @@ use crate::tools::team::{
     SharedTeamContext, active_teammate_count, active_teammates, delete_team_directories,
     read_team_file, sanitize_name, team_lead_name,
 };
+use codesmith_agent_runtime::features::Feature;
 
 pub struct TeamDeleteTool {
     team_context: SharedTeamContext,

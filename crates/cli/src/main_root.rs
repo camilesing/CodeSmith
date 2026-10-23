@@ -35,7 +35,6 @@ const CODESMITH_BLUE_RGB: (u8, u8, u8) = (47, 134, 255);
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
-use crate::features::{Feature, render_feature_table};
 use crate::mcp::{McpConfig, McpPool, McpServerConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
@@ -44,6 +43,7 @@ use crate::{
     acp_server, child_env, doctor_llm, execpolicy, logging, mcp_server, memory_consolidate,
     project_context, runtime_api, session_manager,
 };
+use codesmith_agent_runtime::features::{Feature, render_feature_table};
 
 #[derive(Parser, Debug)]
 #[command(
