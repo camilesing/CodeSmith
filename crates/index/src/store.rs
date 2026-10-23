@@ -278,10 +278,8 @@ impl IndexStore {
         let tx = conn.transaction()?;
         let stale: Vec<(i64, String)> = {
             let mut stmt = tx.prepare("SELECT id, path FROM files")?;
-            let rows = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            rows
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
         };
         let mut purged = 0;
         for (id, _) in stale.iter().filter(|(_, path)| !live.contains(path)) {
