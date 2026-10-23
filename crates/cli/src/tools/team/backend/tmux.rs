@@ -164,7 +164,6 @@ pub fn build_tmux_argv(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn sample_spec() -> TeammateSpawnSpec {
         let mut spec = TeammateSpawnSpec::new(

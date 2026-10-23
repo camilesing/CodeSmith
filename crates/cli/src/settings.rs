@@ -186,6 +186,12 @@ impl Settings {
             })?;
         }
 
+        // Same advisory lock `write_settings_locale` takes: an unlocked
+        // full-file save racing the runtime's key-preserving merge would
+        // have both write from the same baseline and the last rename would
+        // silently drop the other's keys.
+        let _lock = codesmith_agent_runtime::settings_file::SettingsFileLock::acquire(&path)?;
+
         let content = toml::to_string_pretty(self).context("Failed to serialize settings")?;
         crate::utils::write_atomic(&path, content.as_bytes())
             .with_context(|| format!("Failed to write settings to {}", path.display()))?;

@@ -130,8 +130,20 @@ impl InboxJournal {
         }
         let tmp = self.path.with_extension("tmp");
         std::fs::write(&tmp, body.as_bytes())?;
+        // fsync the temp before the rename (a crash must not publish a
+        // torn journal), then fsync the parent so the rename is durable.
+        if let Ok(file) = std::fs::File::open(&tmp) {
+            let _ = file.sync_all();
+        }
         match std::fs::rename(&tmp, &self.path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(parent) = self.path.parent()
+                    && let Ok(dir) = std::fs::File::open(parent)
+                {
+                    let _ = dir.sync_all();
+                }
+                Ok(())
+            }
             Err(err) => {
                 let _ = std::fs::remove_file(&tmp);
                 Err(err)

@@ -173,7 +173,19 @@ fn read_trust_file_at(path: &Path) -> Result<TrustFile> {
         return Ok(TrustFile::default());
     }
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
+    match serde_json::from_str(&raw) {
+        Ok(file) => Ok(file),
+        Err(err) => {
+            // Quarantine the unparsable file before the caller's
+            // default-and-rewrite destroys it for good.
+            tracing::warn!(
+                "trust file {} failed to parse ({err}); quarantined a copy and continuing empty",
+                path.display()
+            );
+            crate::utils::preserve_corrupt_state_file(path);
+            Ok(TrustFile::default())
+        }
+    }
 }
 
 fn write_trust_file_at(file: &TrustFile, path: &Path) -> Result<()> {

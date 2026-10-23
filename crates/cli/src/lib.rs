@@ -1132,6 +1132,18 @@ fn load_mcp_server_definitions(store: &ConfigStore) -> Vec<McpServerDefinition> 
             eprintln!(
                 "warning: failed to parse persisted MCP server definitions ({MCP_SERVER_DEFINITIONS_KEY}): {err}"
             );
+            // The parse already failed once and the fallback would have the
+            // next save overwrite the store with an empty list — quarantine
+            // the raw value so the definitions stay recoverable.
+            eprintln!(
+                "warning: quarantined the raw value to mcp-server-definitions.corrupt.txt in the config directory"
+            );
+            let _ = std::fs::write(
+                codesmith_config::codesmith_home()
+                    .map(|home| home.join("mcp-server-definitions.corrupt.txt"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("mcp-server-definitions.corrupt.txt")),
+                &raw,
+            );
             Vec::new()
         }
     }

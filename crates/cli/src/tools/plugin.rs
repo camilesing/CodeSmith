@@ -51,9 +51,6 @@ pub struct PluginMetadata {
     /// JSON Schema for the tool's input (from `# schema:`).
     /// Defaults to a permissive `{"type": "object"}` when absent.
     pub input_schema: Value,
-    /// Approval requirement (from `# approval:`).
-    /// Defaults to `Suggest`.
-    pub approval: ApprovalRequirement,
 }
 
 /// A tool backed by an external script or executable dropped into the
@@ -380,7 +377,6 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
     let mut name = String::new();
     let mut description = String::new();
     let mut schema_str = String::new();
-    let mut approval_str = String::new();
 
     for line in content.lines().take(20) {
         let line = line.trim();
@@ -397,7 +393,6 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
                 "name" => name = value.to_string(),
                 "description" => description = value.to_string(),
                 "schema" => schema_str = value.to_string(),
-                "approval" => approval_str = value.to_string(),
                 _ => {}
             }
         }
@@ -408,12 +403,6 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
         serde_json::json!({"type": "object"})
     } else {
         serde_json::from_str(&schema_str).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
-    };
-
-    let approval = match approval_str.to_lowercase().as_str() {
-        "auto" => ApprovalRequirement::Auto,
-        "required" => ApprovalRequirement::Required,
-        _ => ApprovalRequirement::Suggest,
     };
 
     PluginMetadata {
@@ -428,7 +417,6 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
             description
         },
         input_schema,
-        approval,
     }
 }
 
@@ -546,7 +534,6 @@ pub fn tool_from_override(
                 name: tool_name.to_string(),
                 description: format!("Override for built-in tool '{tool_name}'"),
                 input_schema: serde_json::json!({"type": "object"}),
-                approval: ApprovalRequirement::Suggest,
             });
 
             Some(Arc::new(ScriptPluginTool {
@@ -566,6 +553,9 @@ pub fn tool_from_override(
                 input_schema: serde_json::json!({"type": "object"}),
                 command: command.clone(),
                 args: cmd_args,
+                // User-authored config overrides keep the gate the config
+                // asks for (the user is the trust principal here, unlike a
+                // script's own frontmatter).
                 approval: ApprovalRequirement::Suggest,
             }) as Arc<dyn ToolSpec>)
         }
@@ -596,7 +586,6 @@ echo hello
         let meta = parse_frontmatter(content);
         assert_eq!(meta.name, "my-tool");
         assert_eq!(meta.description, "A useful custom tool");
-        assert_eq!(meta.approval, ApprovalRequirement::Required);
         assert_eq!(
             meta.input_schema,
             serde_json::json!({"type":"object","properties":{"input":{"type":"string"}}})
@@ -617,7 +606,6 @@ echo hello
 
         assert_eq!(meta.name, "compact-name");
         assert_eq!(meta.description, "spaced description");
-        assert_eq!(meta.approval, ApprovalRequirement::Auto);
         assert_eq!(
             meta.input_schema,
             serde_json::json!({"type":"object","properties":{"ok":{"type":"boolean"}}})
@@ -630,7 +618,6 @@ echo hello
         let meta = parse_frontmatter(content);
         assert_eq!(meta.name, "mini");
         assert_eq!(meta.description, "User-provided plugin tool");
-        assert_eq!(meta.approval, ApprovalRequirement::Suggest);
     }
 
     #[test]
@@ -883,24 +870,15 @@ echo hello
     }
 
     #[test]
-    fn test_approval_variants() {
-        let check = |content: &str, expected: ApprovalRequirement| {
-            assert_eq!(parse_frontmatter(content).approval, expected);
+    fn frontmatter_approval_never_downgrades_the_gate() {
+        // `# approval: auto` in the script's own frontmatter is ignored:
+        // a ScriptPluginTool always requires approval.
+        let meta = parse_frontmatter("# name: x\n# approval: auto");
+        let tool = ScriptPluginTool {
+            metadata: meta,
+            script_path: PathBuf::from("/nonexistent/x.sh"),
+            args: Vec::new(),
         };
-
-        check("# name: x\n# approval: auto", ApprovalRequirement::Auto);
-        check(
-            "# name: x\n# approval: required",
-            ApprovalRequirement::Required,
-        );
-        check(
-            "# name: x\n# approval: suggest",
-            ApprovalRequirement::Suggest,
-        );
-        check(
-            "# name: x\n# approval: unknown",
-            ApprovalRequirement::Suggest,
-        );
-        check("# name: x", ApprovalRequirement::Suggest);
+        assert_eq!(tool.approval_requirement(), ApprovalRequirement::Required);
     }
 }

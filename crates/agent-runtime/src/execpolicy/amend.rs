@@ -143,6 +143,13 @@ fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> 
             path: policy_path.to_path_buf(),
             source,
         })?;
+    // Durability: without the fsync a crash can silently lose the appended
+    // rule the user just approved into the policy.
+    file.sync_all()
+        .map_err(|source| AmendError::WritePolicyFile {
+            path: policy_path.to_path_buf(),
+            source,
+        })?;
 
     Ok(())
 }

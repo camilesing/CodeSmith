@@ -388,6 +388,13 @@ impl FileKeyringStore {
             file.sync_all()?;
             drop(file);
             fs::rename(&tmp, &self.path)?;
+            // Durable rename: without the parent-dir fsync a crash can
+            // leave the rename itself unrecorded.
+            if let Some(parent) = self.path.parent()
+                && let Ok(dir) = fs::File::open(parent)
+            {
+                let _ = dir.sync_all();
+            }
             Ok(())
         })();
         if write_res.is_err() {

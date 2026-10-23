@@ -2,7 +2,6 @@
 //!
 //! Utility functions for bridging SubAgentManager into the unified registry.
 
-use super::BackgroundTaskStatus;
 use crate::tools::subagent::SubAgentStatus;
 
 /// Extract error message from SubAgentStatus if present.

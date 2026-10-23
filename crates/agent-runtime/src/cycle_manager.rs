@@ -445,6 +445,12 @@ fn write_archive_file(
         buf.get_ref().sync_all()?;
     }
     std::fs::rename(&tmp_path, path)?;
+    // Durable rename: fsync the parent so a crash cannot lose it.
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 

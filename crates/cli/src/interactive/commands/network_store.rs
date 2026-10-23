@@ -155,7 +155,8 @@ fn save_config_doc(path: &Path, doc: &Value) -> anyhow::Result<()> {
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
     let body = toml::to_string_pretty(doc).context("failed to serialize config.toml")?;
-    fs::write(path, body).with_context(|| format!("failed to write config at {}", path.display()))
+    crate::utils::write_atomic(path, body.as_bytes())
+        .with_context(|| format!("failed to write config at {}", path.display()))
 }
 
 fn network_table_mut(doc: &mut Value) -> anyhow::Result<&mut toml::value::Table> {

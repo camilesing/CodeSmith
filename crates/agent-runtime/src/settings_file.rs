@@ -50,12 +50,14 @@ const SETTINGS_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 /// otherwise merge from the same baseline and the last rename would
 /// silently drop the other's keys. Acquired with `create_new`
 /// (`O_EXCL`); dropped (and removed) when the guard goes out of scope.
-struct SettingsFileLock {
+/// Public so the CLI's whole-file `Settings::save` takes the same lock —
+/// an unlocked save racing this read-merge-write loses one side's keys.
+pub struct SettingsFileLock {
     path: PathBuf,
 }
 
 impl SettingsFileLock {
-    fn acquire(settings: &Path) -> Result<Self> {
+    pub fn acquire(settings: &Path) -> Result<Self> {
         let path = settings.with_extension("toml.lock");
         let deadline = Instant::now() + SETTINGS_LOCK_TIMEOUT;
         loop {
@@ -123,7 +125,18 @@ pub fn write_settings_locale(tag: &str) -> Result<PathBuf> {
     let tmp = path.with_extension("toml.tmp");
     fs::write(&tmp, &content)
         .with_context(|| format!("Failed to write settings to {}", tmp.display()))?;
+    // fsync the temp before the rename so a crash cannot publish an empty
+    // or torn settings file, and the parent dir after so the rename itself
+    // is durable.
+    if let Ok(file) = fs::File::open(&tmp) {
+        let _ = file.sync_all();
+    }
     fs::rename(&tmp, &path)
         .with_context(|| format!("Failed to replace settings at {}", path.display()))?;
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
     Ok(path)
 }

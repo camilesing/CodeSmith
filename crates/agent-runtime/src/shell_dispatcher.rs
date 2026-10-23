@@ -16,6 +16,7 @@
 //! stays in the `codesmith-cli` binary crate; this module is terminal-agnostic
 //! so it can live in the execution core.
 
+#[cfg(not(unix))]
 use std::fs::OpenOptions;
 use std::io::Write;
 #[cfg(windows)]

@@ -445,7 +445,7 @@ fn download_url(url: &str, proxy: Option<&Proxy>) -> Result<Vec<u8>> {
     use std::io::Read as _;
 
     let client = update_http_client(proxy)?;
-    let mut response = client
+    let response = client
         .get(url)
         .send()
         .with_context(|| format!("failed to download {url}"))?;

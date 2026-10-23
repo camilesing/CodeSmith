@@ -266,6 +266,23 @@ pub fn project_tree(root: &Path, max_depth: usize) -> String {
 /// user-agent strings); the web app mirrors this in `web/lib/constants.ts`.
 pub const GITHUB_REPO: &str = "camilesing/CodeSmith";
 
+/// Quarantine a state file that failed to parse: best-effort copy to
+/// `<name>.corrupt-<unix-millis>` before the caller substitutes a default.
+/// The default-then-rewrite pattern otherwise permanently destroys the
+/// prior state — the only copy of the user's data. Failures are ignored
+/// (preservation must never block the degradation path).
+pub fn preserve_corrupt_state_file(path: &Path) {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let backup = path.with_file_name(format!("{name}.corrupt-{ts}"));
+    let _ = std::fs::copy(path, &backup);
+}
+
 /// Atomically write `contents` to `path` using a temporary file + fsync + rename.
 ///
 /// 1. Creates a `NamedTempFile` in the same directory as `path` (same filesystem).

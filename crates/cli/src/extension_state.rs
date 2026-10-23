@@ -74,6 +74,10 @@ impl ExtensionStateStore {
                     path.display(),
                     err
                 );
+                // Quarantine before defaulting: the next save would
+                // overwrite the malformed file and destroy the only copy
+                // of the user's enable/disable choices.
+                crate::utils::preserve_corrupt_state_file(&path);
                 OnDiskState::default()
             }
         };

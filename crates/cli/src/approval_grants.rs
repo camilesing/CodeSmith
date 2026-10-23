@@ -161,7 +161,10 @@ impl ApprovalGrants {
         }
         let encoded = toml::to_string_pretty(&doc)
             .map_err(|err| std::io::Error::other(format!("encode grants: {err}")))?;
-        std::fs::write(path, encoded)
+        // The module doc promises atomic saves; a plain `fs::write` torn by
+        // a crash produced exactly the corrupt file the loader then
+        // silently defaults away.
+        crate::utils::write_atomic(path, encoded.as_bytes())
     }
 }
 
@@ -177,8 +180,12 @@ fn load_doc(path: &Path) -> GrantsDoc {
             target: "codesmith::approvals",
             path = %path.display(),
             error = %err,
-            "approvals.toml is corrupt; starting with no persistent grants"
+            "approvals.toml is corrupt; quarantined a copy and starting with no persistent grants"
         );
+        // Quarantine before defaulting: the next save would otherwise
+        // overwrite the corrupt file and destroy the only copy of the
+        // user's grant history.
+        crate::utils::preserve_corrupt_state_file(path);
         GrantsDoc::default()
     })
 }
