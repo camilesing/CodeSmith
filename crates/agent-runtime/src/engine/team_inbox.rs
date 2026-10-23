@@ -52,25 +52,61 @@ impl Engine {
                 backend_type: _,
             } => {
                 // Find and cancel the teammate's CancellationToken.
-                // Remove from team file and unassign tasks.
+                // Remove from team file and unassign tasks. The hook's
+                // inputs are snapshotted and the guard dropped before the
+                // blocking file I/O, so other team operations are not
+                // stalled for the hook's duration.
+                let mut hook_snapshot = None;
                 if let Some(shared_tc) = self.config.team_context.as_ref() {
-                    let mut team_ctx = shared_tc.lock().await;
-                    if let Some(ctx) = team_ctx.as_mut() {
-                        let hook_request_id = request_id.clone();
-                        let hook_from = from.clone();
-                        let team_name = ctx.team_name.clone();
-                        let cancel_tokens = ctx.teammate_cancel_tokens.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            handle_shutdown_approval(
-                                &hook_request_id,
-                                &hook_from,
-                                &team_name,
-                                &cancel_tokens,
-                            )
-                        })
-                        .await;
-                        ctx.teammate_cancel_tokens.remove(&from);
-                        ctx.teammates.retain(|_, info| info.name != from);
+                    let team_ctx = shared_tc.lock().await;
+                    if let Some(ctx) = team_ctx.as_ref() {
+                        hook_snapshot = Some((
+                            ctx.team_name.clone(),
+                            ctx.teammate_cancel_tokens.clone(),
+                        ));
+                    }
+                }
+                if let Some((team_name, cancel_tokens)) = hook_snapshot {
+                    let hook_request_id = request_id.clone();
+                    let hook_from = from.clone();
+                    let hook_result = tokio::task::spawn_blocking(move || {
+                        handle_shutdown_approval(
+                            &hook_request_id,
+                            &hook_from,
+                            &team_name,
+                            &cancel_tokens,
+                        )
+                    })
+                    .await;
+                    match hook_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            // The team-file write failed: on disk the
+                            // member still reads as active while in-memory
+                            // state says they are gone — surface it instead
+                            // of reporting success ("resurrects" on reload).
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Shutdown approval for {from} (request {request_id})                                      failed after token cancel; the team file may still                                      list them active: {err:#}"
+                                )))
+                                .await;
+                        }
+                        Err(join_err) => {
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Shutdown approval hook for {from} (request {request_id})                                      panicked: {join_err}"
+                                )))
+                                .await;
+                        }
+                    }
+                    if let Some(shared_tc) = self.config.team_context.as_ref() {
+                        let mut team_ctx = shared_tc.lock().await;
+                        if let Some(ctx) = team_ctx.as_mut() {
+                            ctx.teammate_cancel_tokens.remove(&from);
+                            ctx.teammates.retain(|_, info| info.name != from);
+                        }
                     }
                 }
                 let msg = format!("Teammate {} has shut down (request {}).", from, request_id);

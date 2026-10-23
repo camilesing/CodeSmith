@@ -324,13 +324,33 @@ fn reconstruct_run_tests_command(input: &serde_json::Value) -> Option<String> {
     match input.get("args") {
         Some(serde_json::Value::String(args)) => {
             let args = args.trim();
-            if !args.is_empty() {
+            if args.is_empty() {
+                // fall through: no args to append
+            } else if args.chars().any(|c| {
+                matches!(c, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\\' | '\'' | '"' | '\n')
+            }) {
+                // The original `run_tests` shlex-parses args without a
+                // shell; this replay goes through one (exec_shell). Shell
+                // metacharacters are inert in the original run but would
+                // execute here — the verdict would measure a different
+                // operation than the turn ran, and could smuggle commands
+                // past a prefix-style auto-allow. Skip: no command, the
+                // honest unsubstantiated path.
+                return None;
+            } else {
                 command.push(' ');
                 command.push_str(args);
             }
         }
         Some(serde_json::Value::Array(args)) => {
             for arg in args.iter().filter_map(serde_json::Value::as_str) {
+                // Same metacharacter guard as the string form: array
+                // elements are appended verbatim into the shell replay.
+                if arg.chars().any(|c| {
+                    matches!(c, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\\' | '\'' | '"' | '\n')
+                }) {
+                    return None;
+                }
                 command.push(' ');
                 command.push_str(arg);
             }
@@ -692,6 +712,44 @@ asks to debug engine internals.\n\n\
             ),
             cache_control: None,
         }],
+    }
+}
+
+#[cfg(test)]
+mod run_tests_reconstruction_tests {
+    use super::reconstruct_run_tests_command;
+    use serde_json::json;
+
+    #[test]
+    fn plain_args_are_replayed_verbatim() {
+        let command = reconstruct_run_tests_command(&json!({"args": "--lib parser"}))
+            .expect("plain args reconstruct");
+        assert_eq!(command, "cargo test --lib parser");
+    }
+
+    #[test]
+    fn shell_metacharacter_args_are_rejected_not_replayed() {
+        // The original run_tests shlex-parses args without a shell; the
+        // replay goes through one. Metacharacters must skip verification
+        // (None) instead of executing under the shell.
+        for args in [
+            "lib; rm -rf /",
+            "lib && echo pwned",
+            "lib $(whoami)",
+            "lib `whoami`",
+            "lib > /tmp/out",
+            "a'b'",
+        ] {
+            assert!(
+                reconstruct_run_tests_command(&json!({"args": args})).is_none(),
+                "metacharacter args `{args}` must not be replayed"
+            );
+        }
+    }
+
+    #[test]
+    fn metacharacter_array_elements_are_rejected_too() {
+        assert!(reconstruct_run_tests_command(&json!({"args": ["lib", "x;y"]})).is_none());
     }
 }
 

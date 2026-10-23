@@ -335,33 +335,46 @@ impl HostAgentExecutor {
         // answer is about that directory, and the host persists it (or not)
         // through `workspace_trust` rather than through an approval
         // fingerprint.
+        // `event_tx == None` is the embed/test shape: decisions arrive
+        // programmatically through the router. But a *send failure* means
+        // the host dropped the event receiver (UI shutdown, panic) while
+        // the approval channel stays open — nobody will ever answer, and
+        // the unbounded `router.wait` below would hang the turn until
+        // cancellation. Fail closed instead of hanging.
         if let Some(tx) = &self.event_tx {
-            if let Some(path) = escaped.as_ref() {
-                let _ = tx
-                    .send(Event::PathAccessRequired {
-                        id: tool_id.to_string(),
-                        tool_name: name.to_string(),
-                        path: path.clone(),
-                    })
-                    .await;
+            let send_result = if let Some(path) = escaped.as_ref() {
+                tx.send(Event::PathAccessRequired {
+                    id: tool_id.to_string(),
+                    tool_name: name.to_string(),
+                    path: path.clone(),
+                })
+                .await
             } else {
                 let approval_key = build_approval_key(name, input).0;
                 let approval_grouping_key = build_approval_grouping_key(name, input).0;
-                let _ = tx
-                    .send(Event::ApprovalRequired {
-                        id: tool_id.to_string(),
-                        tool_name: name.to_string(),
-                        description: tool.description().to_string(),
-                        input: input.clone(),
-                        approval_key,
-                        approval_grouping_key,
-                        intent_summary: if is_read_only {
-                            None
-                        } else {
-                            intent_summary.clone()
-                        },
-                    })
-                    .await;
+                tx.send(Event::ApprovalRequired {
+                    id: tool_id.to_string(),
+                    tool_name: name.to_string(),
+                    description: tool.description().to_string(),
+                    input: input.clone(),
+                    approval_key,
+                    approval_grouping_key,
+                    intent_summary: if is_read_only {
+                        None
+                    } else {
+                        intent_summary.clone()
+                    },
+                })
+                .await
+            };
+            if send_result.is_err() {
+                tracing::warn!(
+                    target: "codesmith_agent_runtime::engine",
+                    "tool '{name}' approval prompt could not be delivered (UI event channel                      closed); denied fail-closed"
+                );
+                return Err(format!(
+                    "Tool '{name}' requires approval but the UI event channel closed before                      the prompt was delivered — the call was denied (fail-closed)."
+                ));
             }
         }
         // Block on the decision for this tool-call id. `ApprovalRouter` parks

@@ -155,9 +155,14 @@ fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<
     let obj = metadata?.as_object()?;
     for key in ["summary", "stdout_summary", "stderr_summary", "message"] {
         if let Some(text) = obj.get(key).and_then(serde_json::Value::as_str) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(summarize_text(trimmed, TOOL_RESULT_METADATA_SUMMARY_CHARS));
+            // Metadata is attacker-influenceable input (command output
+            // echoed into `stdout_summary`): it must go through the same
+            // hidden-character scrub (HackerOne #3086545) as
+            // `output.content` — `summarize_text` only strips control
+            // characters, not zero-width/format characters.
+            let sanitized = crate::sanitization::partially_sanitize_unicode(text.trim());
+            if !sanitized.is_empty() {
+                return Some(summarize_text(&sanitized, TOOL_RESULT_METADATA_SUMMARY_CHARS));
             }
         }
     }
@@ -444,11 +449,19 @@ fn input_budget_from_window_and_output(window_tokens: u32, reserved_output: u32)
 }
 
 fn reserved_output_for_input_budget(window_tokens: u32, fallback_output: u32) -> u32 {
-    if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
+    let reserved = if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
         TURN_MAX_OUTPUT_TOKENS
     } else {
         fallback_output
-    }
+    };
+    // An env override (`CODESMITH_MAX_OUTPUT_TOKENS=65536` against an 8K
+    // Ollama window) larger than the window makes the input budget
+    // `checked_sub` to `None` — silently disabling every preflight and
+    // emergency-recovery path. Degrade the budget instead: reserve at most
+    // window-minus-headroom.
+    let headroom = u32::try_from(context_headroom_for_window(window_tokens)).unwrap_or(0);
+    let ceiling = window_tokens.saturating_sub(headroom);
+    reserved.min(ceiling)
 }
 
 pub fn context_input_budget(model: &str) -> Option<usize> {
