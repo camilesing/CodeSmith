@@ -208,6 +208,15 @@ impl StructuredProtocolMessage {
 /// `from`, and sender-less leader responses delivered by anyone other than
 /// the lead.
 ///
+/// **This is not an authentication boundary.** The envelope `from` is
+/// itself written by whoever delivered the message, and the inbox file can
+/// be written directly by any local process — the cross-check catches
+/// accidental payload/envelope mismatch, not adversarial forgery. A
+/// teammate that embeds `from: "team-lead"` in its own envelope sails
+/// through; consumers must not treat a passing parse as proof the lead
+/// sent it. Real sender authentication needs a capability the writer
+/// cannot forge (per-agent signing keys), which this store does not have.
+///
 /// Mailbox consumers MUST use this variant; the content-only parser remains
 /// for wire construction and tests.
 pub fn parse_structured_protocol_from(
@@ -222,7 +231,23 @@ pub fn parse_structured_protocol_from(
     }
 }
 
+/// How many messages an inbox keeps once they have all been read.
+///
+/// Bounded on purpose: deliveries rewrite the whole array, so unbounded
+/// retention made each message cost O(total messages) to deliver.
+const INBOX_RETENTION_LIMIT: usize = 1000;
+
 /// Path to a teammate's inbox file.
+///
+/// Known limitation: the file name goes through `sanitize_name`, which
+/// folds every non-ASCII-alphanumeric character to `-`, so distinct
+/// teammates ("code reviewer", "code-reviewer", "code_reviewer") share one
+/// inbox file and one lock — their messages cross-deliver and one agent's
+/// read-marking clears the other's unread state. Exclusive filename
+/// registration (as team dirs do with `create_team_file_exclusive`) or
+/// keying on a unique component would surface the collision; changing the
+/// naming scheme needs a migration for existing inboxes, so the limit is
+/// recorded here instead.
 fn inbox_path(agent_name: &str, team_name: &str) -> anyhow::Result<PathBuf> {
     let dir = team_dir(team_name)?;
     Ok(dir
@@ -239,6 +264,10 @@ fn inbox_lock_path(agent_name: &str, team_name: &str) -> anyhow::Result<PathBuf>
 /// duration of the operation (same pattern as TaskV2). The handle is opened
 /// read-write because an exclusive (`write`) flock on Windows requires write
 /// access through the handle.
+///
+/// Side effect: `create(true)` means reading an agent that was never
+/// messaged leaves an empty `.lock` file behind — pollers probing teammate
+/// names litter `inboxes/` with them. Stray lock files are not state.
 fn acquire_inbox_lock(agent_name: &str, team_name: &str) -> anyhow::Result<RwLock<fs::File>> {
     let lock_path = inbox_lock_path(agent_name, team_name)?;
     let file = fs::OpenOptions::new()
@@ -325,13 +354,22 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
         return Ok(());
     }
 
-    let updated: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)?
+    let mut updated: Vec<TeammateMessage> = read_inbox_or_quarantine(&path)?
         .into_iter()
         .map(|mut m| {
             m.read = true;
             m
         })
         .collect();
+    // Retention cap: nothing else ever removes messages, so a long-running
+    // team's inbox grew without bound while every delivery re-serialized
+    // the whole array (O(n²) cumulative). Read messages are not fully
+    // pruned because read history is still consulted (the shutdown-approval
+    // binding check scans for the outstanding request).
+    if updated.len() > INBOX_RETENTION_LIMIT {
+        let drop = updated.len() - INBOX_RETENTION_LIMIT;
+        updated.drain(..drop);
+    }
     let json = serde_json::to_string(&updated)?;
     write_inbox_atomic(&path, &json)?;
 
@@ -382,13 +420,19 @@ fn read_inbox_or_quarantine(path: &Path) -> anyhow::Result<Vec<TeammateMessage>>
                 n += 1;
                 quarantined = path.with_extension(format!("corrupt-{ts}-{n}.json"));
             }
-            let quarantine_result = fs::rename(path, &quarantined);
+            // A failed quarantine must PROPAGATE: returning an empty Vec
+            // here sends the caller straight to the atomic overwrite, which
+            // replaces the corrupt original and destroys the only copy of
+            // the evidence this function promises to preserve.
+            if let Err(rename_err) = fs::rename(path, &quarantined) {
+                return Err(anyhow::Error::new(rename_err).context(format!(
+                    "inbox corrupt and quarantine failed; refusing to overwrite {}",
+                    path.display()
+                )));
+            }
             crate::logging::warn(format!(
-                "teammate inbox corrupt ({err}); {} — continuing with an empty inbox at {}",
-                match &quarantine_result {
-                    Ok(()) => format!("quarantined to {}", quarantined.display()),
-                    Err(rename_err) => format!("quarantine failed: {rename_err}"),
-                },
+                "teammate inbox corrupt ({err}); quarantined to {} — continuing with an empty inbox at {}",
+                quarantined.display(),
                 path.display()
             ));
             Ok(Vec::new())

@@ -160,6 +160,25 @@ impl TeammateSpawnSpec {
                 )));
             }
         }
+        // Existence, not just shape: both pane backends treat "pane
+        // created" as spawn success, so a missing binary or cwd died
+        // asynchronously inside the pane while `spawn()` reported
+        // `Ok(SpawnedTeammate)` — and the 0600 prompt temp file was never
+        // unlinked. TOCTOU remains, but the common stale-path/typo case
+        // fails here, at the typed-error boundary. Shape checks run first so
+        // their more precise diagnostics win.
+        if !self.codesmith_bin.is_file() {
+            return Err(BackendError::InvalidSpec(format!(
+                "codesmith binary does not exist at {:?}; the pane would die at exec",
+                self.codesmith_bin
+            )));
+        }
+        if !self.cwd.is_dir() {
+            return Err(BackendError::InvalidSpec(format!(
+                "teammate cwd does not exist: {:?}",
+                self.cwd
+            )));
+        }
         Ok(())
     }
 }
@@ -193,6 +212,11 @@ pub enum TeammateHandle {
 pub enum BackendKind {
     InProcess,
     Tmux,
+    // Serde form agrees with `as_str()` ("iterm") and the env spellings
+    // (`iterm`/`iterm2`): the snake_case default ("iter") made three
+    // spellings of one variant across the public surface, so a persisted
+    // serde form silently mismatched `as_str()` comparisons.
+    #[serde(rename = "iterm")]
     Iter,
 }
 
@@ -407,6 +431,16 @@ pub(crate) fn write_prompt_file(
         backend,
         message: format!("failed to persist prompt file for {agent_id}: {e}"),
     })?;
+    // The path is interpolated into the pane's `sh -c` string; a non-UTF-8
+    // temp dir (TMPDIR is env-controlled) would be lossy-corrupted into a
+    // quoted-but-nonexistent path that fails asynchronously inside the
+    // pane, far from the cause. Fail here, at the mint, instead.
+    if path.to_str().is_none() {
+        let _ = std::fs::remove_file(&path);
+        return Err(BackendError::InvalidSpec(format!(
+            "prompt file path is not valid UTF-8: {path:?}"
+        )));
+    }
     Ok(path)
 }
 
@@ -552,8 +586,21 @@ mod tests {
             assert!(err.to_string().contains("UTF-8"), "got: {err}");
         }
 
+        // Existence is checked too: a missing binary or cwd used to report
+        // spawn success with a pane that died at exec.
         spec.cwd = PathBuf::from("/repo");
-        spec.validate().expect("absolute UTF-8 paths are valid");
+        let err = spec
+            .validate()
+            .expect_err("missing binary must be rejected");
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
+        spec.codesmith_bin = std::env::current_exe().expect("test binary path");
+        let err = spec.validate().expect_err("missing cwd must be rejected");
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        spec.cwd = dir.path().to_path_buf();
+        spec.validate()
+            .expect("existing absolute UTF-8 paths are valid");
     }
 
     #[test]

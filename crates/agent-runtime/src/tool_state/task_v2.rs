@@ -486,8 +486,32 @@ impl TaskV2Manager {
         Ok(record)
     }
 
-    /// Unassign all tasks owned by the given agent (set owner to None).
-    /// Used for swarm cleanup when a teammate departs.
+    /// Release one task: clear its owner and, if it was left `InProgress`,
+    /// reset it to `Pending` so another teammate can claim it.
+    ///
+    /// Targeted counterpart to [`Self::unassign_teammate_tasks`]: the
+    /// blanket unassign strips ownership from every task this agent owns —
+    /// including unrelated `InProgress` tasks, which would become
+    /// `InProgress` with no owner and then never be claimable
+    /// (`claim_task` only takes ownerless tasks).
+    pub fn release_task(&mut self, id: &str) -> anyhow::Result<()> {
+        let mut lock = self.acquire_write_lock()?;
+        let _guard = lock.write()?;
+
+        let mut record = self.read_task_file(id)?;
+        if record.status == TaskV2Status::InProgress {
+            record.status = TaskV2Status::Pending;
+        }
+        record.owner = None;
+        self.write_task_file(&record)?;
+        Ok(())
+    }
+
+    /// Unassign all tasks owned by the given agent (set owner to None, and
+    /// return still-`InProgress` work to `Pending`).
+    /// Used for swarm cleanup when a teammate departs: an ownerless
+    /// `InProgress` task would be permanently stranded, because claiming
+    /// only accepts `Pending` tasks without an owner.
     pub fn unassign_teammate_tasks(&mut self, agent_name: &str) -> anyhow::Result<usize> {
         let mut lock = self.acquire_write_lock()?;
         let _guard = lock.write()?;
@@ -496,6 +520,9 @@ impl TaskV2Manager {
         let mut count = 0;
         for task in &mut tasks {
             if task.owner.as_deref() == Some(agent_name) {
+                if task.status == TaskV2Status::InProgress {
+                    task.status = TaskV2Status::Pending;
+                }
                 task.owner = None;
                 self.write_task_file(task)?;
                 count += 1;
@@ -887,6 +914,114 @@ mod tests {
         assert!(x_task.owner.is_none());
         let y_task = tasks.iter().find(|t| t.subject == "Task 2").unwrap();
         assert_eq!(y_task.owner.as_deref(), Some("agent_y"));
+    }
+
+    /// A departed owner's `InProgress` work must come back as claimable
+    /// `Pending`: an ownerless `InProgress` task is never matched by
+    /// `claim_task` and used to be stranded forever.
+    #[test]
+    fn unassign_returns_in_progress_work_to_pending() {
+        let mut mgr = temp_manager();
+        let id = mgr
+            .create_task(
+                "Owned".into(),
+                "desc".into(),
+                None,
+                None,
+                Some("agent_x".into()),
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        mgr.update_task(
+            &id,
+            Some(TaskV2Status::InProgress),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        mgr.unassign_teammate_tasks("agent_x").unwrap();
+
+        let task = &mgr.list_tasks().unwrap()[0];
+        assert!(task.owner.is_none());
+        assert_eq!(task.status, TaskV2Status::Pending);
+        // And the returned task is claimable again.
+        assert!(mgr.claim_task(&id, "agent_b").is_ok());
+    }
+
+    /// `release_task` is the targeted form: it must not touch a sibling
+    /// task the same agent still owns.
+    #[test]
+    fn release_task_targets_one_task() {
+        let mut mgr = temp_manager();
+        let a = mgr
+            .create_task(
+                "A".into(),
+                "d".into(),
+                None,
+                None,
+                Some("agent_x".into()),
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        let b = mgr
+            .create_task(
+                "B".into(),
+                "d".into(),
+                None,
+                None,
+                Some("agent_x".into()),
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        mgr.update_task(
+            &a,
+            Some(TaskV2Status::InProgress),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        mgr.update_task(
+            &b,
+            Some(TaskV2Status::InProgress),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        mgr.release_task(&a).unwrap();
+
+        let tasks = mgr.list_tasks().unwrap();
+        let a_task = tasks.iter().find(|t| t.subject == "A").unwrap();
+        let b_task = tasks.iter().find(|t| t.subject == "B").unwrap();
+        assert!(a_task.owner.is_none());
+        assert_eq!(a_task.status, TaskV2Status::Pending);
+        assert_eq!(
+            b_task.owner.as_deref(),
+            Some("agent_x"),
+            "sibling untouched"
+        );
     }
 
     #[test]

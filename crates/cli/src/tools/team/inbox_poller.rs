@@ -2,7 +2,6 @@
 //! 1 second, classifies incoming messages, and dispatches actions through a
 //! channel to the engine.
 #![allow(dead_code)]
-#![allow(unreachable_patterns)]
 
 use std::time::Duration;
 
@@ -305,6 +304,23 @@ pub fn classify_inbox_messages(
 // Leader Inbox Poller
 // ---------------------------------------------------------------------------
 
+/// Dispatch one op, reporting whether the poller should keep running.
+///
+/// Every send used to be a `let _ =`: once the engine drops the receiver,
+/// `process_inbox_messages` has already consumed the mailbox's messages, so
+/// continuing to tick drained and permanently destroyed every remaining
+/// message while the task looped forever as a zombie. A closed channel ends
+/// the poller instead.
+async fn dispatch(tx_op: &TeamInboxTx, op: Op, team_name: &str) -> bool {
+    if let Err(err) = tx_op.send(op).await {
+        tracing::warn!(
+            "engine dispatch channel closed ({err}); stopping the inbox poller for team {team_name}"
+        );
+        return false;
+    }
+    true
+}
+
 /// Run the leader inbox poller as a background tokio task.
 /// Polls every 1 second, classifies messages, and dispatches actions
 /// through the TeamInboxTx channel.
@@ -320,15 +336,34 @@ pub async fn run_leader_inbox_poller(
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
     loop {
-        interval.tick().await;
-        if cancel_token.is_cancelled() {
-            break;
+        // The tick wait races cancellation so shutdown does not hang on a
+        // slow tick; the sends below share the same cancellation token so a
+        // full channel (a wedged engine) cannot block shutdown either.
+        tokio::select! {
+            _ = cancel_token.cancelled() => break,
+            _ = interval.tick() => {}
         }
 
-        let (protocol_msgs, text_msgs) = match process_inbox_messages(team_lead_name(), &team_name)
-        {
-            Ok((p, t)) => (p, t),
-            Err(_) => continue,
+        // Mailbox reads and writes are synchronous std::fs work; keep them
+        // off the runtime worker thread.
+        let inbox = {
+            let lead = team_lead_name();
+            let team = team_name.clone();
+            tokio::task::spawn_blocking(move || process_inbox_messages(lead, &team)).await
+        };
+        let (protocol_msgs, text_msgs) = match inbox {
+            Ok(Ok((p, t))) => (p, t),
+            Ok(Err(e)) => {
+                // A persistently broken mailbox must be distinguishable
+                // from an idle one — log the full chain, then retry on the
+                // next tick.
+                tracing::warn!("failed to process inbox for team {team_name}: {e:#}");
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("inbox worker failed for team {team_name}: {e:#}");
+                continue;
+            }
         };
 
         if protocol_msgs.is_empty() && text_msgs.is_empty() {
@@ -336,37 +371,88 @@ pub async fn run_leader_inbox_poller(
         }
 
         let cls = classify_inbox_messages(protocol_msgs, text_msgs);
+        let InboxClassification {
+            shutdown_requests,
+            shutdown_approvals,
+            shutdown_rejections,
+            permission_requests,
+            permission_responses,
+            sandbox_permission_requests,
+            sandbox_permission_responses,
+            plan_approval_requests,
+            idle_notifications,
+            task_assignments,
+            team_permission_updates,
+            mode_set_requests,
+            regular_messages,
+        } = cls;
 
-        // Auto-approve plan approval requests (leader side).
-        for entry in &cls.plan_approval_requests {
-            let _ = handle_plan_approval_auto_approve(
-                &entry.request_id,
-                &entry.from,
-                &team_name,
-                "auto",
-            );
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
-                    dispatch: InboxDispatch::PlanApprovalAutoApprove {
-                        from: entry.from.clone(),
-                        request_id: entry.request_id.clone(),
-                    },
+        // Auto-approve plan approval requests (leader side). The mailbox
+        // write is the approval — if it fails, the teammate never learns the
+        // plan was approved and would block forever, so the success dispatch
+        // is skipped rather than sent.
+        for entry in plan_approval_requests {
+            let wrote = {
+                let request_id = entry.request_id.clone();
+                let from = entry.from.clone();
+                let team = team_name.clone();
+                tokio::task::spawn_blocking(move || {
+                    handle_plan_approval_auto_approve(&request_id, &from, &team, "auto")
                 })
-                .await;
+                .await
+            };
+            match wrote {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "failed to write plan-approval response for request {} from {}: {e:#}",
+                        entry.request_id,
+                        entry.from
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "plan-approval worker failed for request {}: {e:#}",
+                        entry.request_id
+                    );
+                    continue;
+                }
+            }
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
+                    dispatch: InboxDispatch::PlanApprovalAutoApprove {
+                        from: entry.from,
+                        request_id: entry.request_id,
+                    },
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch shutdown requests (a teammate asking the leader to shut it
         // down — passed through for the model to decide).
-        for entry in &cls.shutdown_requests {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in shutdown_requests {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ShutdownRequestMessage {
-                        from: entry.from.clone(),
-                        request_id: entry.request_id.clone(),
-                        reason: entry.reason.clone(),
+                        from: entry.from,
+                        request_id: entry.request_id,
+                        reason: entry.reason,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch sandbox permission requests/responses. There is no
@@ -374,9 +460,10 @@ pub async fn run_leader_inbox_poller(
         // (the same informational treatment task assignments get) so the
         // leader model can respond. Previously these buckets were populated
         // but never dispatched, silently dropping the messages.
-        for entry in &cls.sandbox_permission_requests {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in sandbox_permission_requests {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
                         from: entry.agent_id.clone(),
                         text: format!(
@@ -385,12 +472,18 @@ pub async fn run_leader_inbox_poller(
                         ),
                         summary: Some("sandbox permission request".to_string()),
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
-        for entry in &cls.sandbox_permission_responses {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in sandbox_permission_responses {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
                         from: "sandbox-permission".to_string(),
                         text: format!(
@@ -405,128 +498,187 @@ pub async fn run_leader_inbox_poller(
                         ),
                         summary: Some("sandbox permission response".to_string()),
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch shutdown approvals.
-        for entry in &cls.shutdown_approvals {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in shutdown_approvals {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ShutdownApprovalAction {
-                        from: entry.from.clone(),
-                        request_id: entry.request_id.clone(),
-                        backend_type: entry.backend_type.clone(),
+                        from: entry.from,
+                        request_id: entry.request_id,
+                        backend_type: entry.backend_type,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch shutdown rejections (informational).
-        for entry in &cls.shutdown_rejections {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in shutdown_rejections {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ShutdownRejectionInfo {
-                        from: entry.from.clone(),
-                        request_id: entry.request_id.clone(),
-                        reason: entry.reason.clone(),
+                        from: entry.from,
+                        request_id: entry.request_id,
+                        reason: entry.reason,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch permission requests.
-        for entry in &cls.permission_requests {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in permission_requests {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::PermissionRequestPending {
-                        request_id: entry.request_id.clone(),
-                        agent_id: entry.agent_id.clone(),
-                        tool_name: entry.tool_name.clone(),
-                        tool_use_id: entry.tool_use_id.clone(),
-                        description: entry.description.clone(),
+                        request_id: entry.request_id,
+                        agent_id: entry.agent_id,
+                        tool_name: entry.tool_name,
+                        tool_use_id: entry.tool_use_id,
+                        description: entry.description,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch idle notifications.
-        for entry in &cls.idle_notifications {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in idle_notifications {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::IdleNotificationInfo {
-                        from: entry.from.clone(),
-                        idle_reason: entry.idle_reason.clone(),
-                        summary: entry.summary.clone(),
-                        completed_task_id: entry.completed_task_id.clone(),
-                        completed_status: entry.completed_status.clone(),
+                        from: entry.from,
+                        idle_reason: entry.idle_reason,
+                        summary: entry.summary,
+                        completed_task_id: entry.completed_task_id,
+                        completed_status: entry.completed_status,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch mode set requests.
-        for entry in &cls.mode_set_requests {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in mode_set_requests {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::ModeSetRequestAction {
-                        from: entry.from.clone(),
-                        permission_mode: entry.permission_mode.clone(),
+                        from: entry.from,
+                        permission_mode: entry.permission_mode,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch team permission updates.
-        for entry in &cls.team_permission_updates {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in team_permission_updates {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeamPermissionUpdateInfo {
-                        from: entry.from.clone(),
-                        allowed_tools: entry.allowed_tools.clone(),
-                        denied_tools: entry.denied_tools.clone(),
+                        from: entry.from,
+                        allowed_tools: entry.allowed_tools,
+                        denied_tools: entry.denied_tools,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch task assignments (informational).
-        for entry in &cls.task_assignments {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in task_assignments {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
-                        from: entry.assigned_by.clone(),
+                        from: entry.assigned_by,
                         text: format!("Task assigned: {} - {}", entry.subject, entry.description),
                         summary: Some(format!("task: {}", entry.subject)),
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch permission responses.
-        for entry in &cls.permission_responses {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for entry in permission_responses {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::PermissionResponseReceived {
-                        request_id: entry.request_id.clone(),
-                        subtype: entry.subtype.clone(),
-                        error: entry.error.clone(),
+                        request_id: entry.request_id,
+                        subtype: entry.subtype,
+                        error: entry.error,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
 
         // Dispatch regular text messages.
-        for msg in &cls.regular_messages {
-            let _ = tx_op
-                .send(Op::TeamInboxDispatch {
+        for msg in regular_messages {
+            if !dispatch(
+                &tx_op,
+                Op::TeamInboxDispatch {
                     dispatch: InboxDispatch::TeammateMessage {
-                        from: msg.from.clone(),
-                        text: msg.text.clone(),
-                        summary: msg.summary.clone(),
+                        from: msg.from,
+                        text: msg.text,
+                        summary: msg.summary,
                     },
-                })
-                .await;
+                },
+                &team_name,
+            )
+            .await
+            {
+                return;
+            }
         }
     }
 }

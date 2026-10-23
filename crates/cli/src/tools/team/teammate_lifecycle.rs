@@ -304,6 +304,22 @@ pub async fn try_claim_next_task(
     agent_name: &str,
     task_v2_manager: &SharedTaskV2Manager,
 ) -> Option<TaskV2Record> {
+    // The manager's calls are blocking fs+flock under a std Mutex (never
+    // held across an await), so the whole claim runs off the runtime
+    // worker thread.
+    let manager = task_v2_manager.clone();
+    let agent = agent_name.to_string();
+    tokio::task::spawn_blocking(move || claim_next_task_blocking(&agent, &manager))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The blocking half of [`try_claim_next_task`].
+fn claim_next_task_blocking(
+    agent_name: &str,
+    task_v2_manager: &SharedTaskV2Manager,
+) -> Option<TaskV2Record> {
     let mut manager = task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
 
     let tasks = match manager.list_tasks() {
@@ -370,10 +386,12 @@ pub async fn try_claim_next_task(
                 "failed to mark task {} in_progress after claim: {err}",
                 task.id
             ));
-            if let Err(unassign_err) = manager.unassign_teammate_tasks(agent_name) {
+            // Release only this claim: the blanket unassign also strips
+            // ownership from unrelated in-progress tasks of the same agent.
+            if let Err(release_err) = manager.release_task(&task.id) {
                 crate::logging::warn(format!(
-                    "failed to unassign tasks of '{agent_name}' after status-update failure: \
-                     {unassign_err}"
+                    "failed to release task {} after status-update failure: {release_err}",
+                    task.id
                 ));
             }
             continue;
@@ -392,7 +410,12 @@ pub async fn try_claim_next_task(
 /// Result of waiting for next prompt, shutdown, or available task.
 pub enum WaitResult {
     /// Shutdown request received — must be handled before anything else.
-    ShutdownRequest(ShutdownRequestEntry),
+    /// Carries the rest of the scan batch: the scanner already marked every
+    /// message read, so the caller must drain `lead_messages`,
+    /// `peer_messages`, and `task_assignments` before acting on shutdown or
+    /// they are lost on every path (approved: the teammate exits;
+    /// rejected: the next scan finds nothing unread).
+    ShutdownRequest(ShutdownRequestEntry, PriorityInboxResult),
     /// New messages (lead/peer) or task assignment available.
     NewMessage(PriorityInboxResult),
     /// A task was claimed from the team task list.
@@ -414,12 +437,18 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
             return WaitResult::Aborted;
         }
 
-        let inbox = match scan_inbox_with_priority(&rt.agent_name, &rt.team_name) {
-            Ok(i) => {
+        // The scan is synchronous flock-guarded file I/O; keep it off the
+        // runtime worker thread (this poll runs every 500ms per teammate).
+        let scan = {
+            let (agent, team) = (rt.agent_name.clone(), rt.team_name.clone());
+            tokio::task::spawn_blocking(move || scan_inbox_with_priority(&agent, &team))
+        };
+        let mut inbox = match scan.await {
+            Ok(Ok(i)) => {
                 scan_failures = 0;
                 i
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 // A persistent scan failure (bad permissions, unreadable
                 // inbox) used to make the teammate look alive while doing
                 // nothing, with no diagnostic anywhere. Log the first
@@ -428,6 +457,16 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
                 if scan_failures == 1 || scan_failures.is_multiple_of(20) {
                     crate::logging::warn(format!(
                         "teammate '{}' inbox scan failed (attempt {scan_failures}): {err}",
+                        rt.agent_name
+                    ));
+                }
+                continue;
+            }
+            Err(err) => {
+                scan_failures += 1;
+                if scan_failures == 1 || scan_failures.is_multiple_of(20) {
+                    crate::logging::warn(format!(
+                        "teammate '{}' inbox scan worker failed (attempt {scan_failures}): {err}",
                         rt.agent_name
                     ));
                 }
@@ -442,11 +481,6 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
         // leave their waiters hanging.
         resolve_permission_responses(&inbox.permission_responses, &rt.permission_registry);
 
-        // Shutdown request has highest priority.
-        if let Some(entry) = inbox.shutdown_request {
-            return WaitResult::ShutdownRequest(entry);
-        }
-
         // Apply plan approval responses.
         for resp in &inbox.plan_approval_responses {
             if resp.approved {
@@ -454,6 +488,22 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
                     .permission_mode
                     .clone()
                     .unwrap_or_else(|| "auto".to_string());
+            } else if let Some(feedback) = &resp.feedback {
+                // A leader's rejection used to be silently discarded: the
+                // teammate kept operating under a rejected plan with no idea
+                // why. Surface the feedback as a lead message so it rides
+                // the next prompt.
+                inbox.lead_messages.push(TeammateMessage {
+                    from: team_lead_name().to_string(),
+                    text: format!(
+                        "Your plan (request {}) was rejected by the lead: {feedback}",
+                        resp.request_id
+                    ),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    read: true,
+                    color: None,
+                    summary: Some("plan rejection feedback".to_string()),
+                });
             }
         }
 
@@ -472,6 +522,12 @@ pub async fn wait_for_next_prompt_or_shutdown(rt: &mut TeammateRuntime) -> WaitR
             &mut rt.allowed_tools,
             &inbox.team_permission_updates,
         );
+
+        // Shutdown request has highest priority, and carries the rest of
+        // the batch (already marked read) so the caller can drain it.
+        if let Some(entry) = inbox.shutdown_request.clone() {
+            return WaitResult::ShutdownRequest(entry, inbox);
+        }
 
         // Build prompt from lead + peer messages + task assignments.
         if !inbox.lead_messages.is_empty()
@@ -623,17 +679,41 @@ pub async fn handle_shutdown_request(
     // Default-approve, but reject when this teammate still owns
     // in-progress work — the hardcoded `true` made the reject branch dead
     // code and approved away stranded tasks (their owner then disappears).
+    // The manager lookup is blocking flock-guarded file I/O.
     let owns_in_progress = {
-        let manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
-        manager
-            .list_tasks()
-            .map(|tasks| {
+        let manager = rt.task_v2_manager.clone();
+        let agent = agent_name.to_string();
+        match tokio::task::spawn_blocking(move || {
+            let manager = manager.lock().unwrap_or_else(|e| e.into_inner());
+            manager.list_tasks().map(|tasks| {
                 tasks.iter().any(|task| {
-                    task.owner.as_deref() == Some(agent_name)
+                    task.owner.as_deref() == Some(agent.as_str())
                         && matches!(task.status, crate::tools::task_v2::TaskV2Status::InProgress)
                 })
             })
-            .unwrap_or(false)
+        })
+        .await
+        {
+            Ok(Ok(owns)) => owns,
+            // Fail closed: with ownership unknown, approving shutdown could
+            // strand in-progress tasks (their release path assumes the
+            // departure is legitimate). Rejecting keeps the teammate alive
+            // and lets shutdown be retried once the store is readable.
+            Ok(Err(err)) => {
+                crate::logging::warn(format!(
+                    "teammate '{agent_name}' cannot inspect tasks during shutdown: {err}"
+                ));
+                return Err(err.context("task state unknown; shutdown deferred"));
+            }
+            Err(err) => {
+                crate::logging::warn(format!(
+                    "teammate '{agent_name}' shutdown task inspection failed: {err}"
+                ));
+                return Err(
+                    anyhow::Error::new(err).context("task state unknown; shutdown deferred")
+                );
+            }
+        }
     };
     let approved = !owns_in_progress;
 
@@ -722,10 +802,15 @@ async fn execute_teammate_prompt(
         input["allowed_tools"] = serde_json::json!(allowed_tools);
     }
 
-    let result = tool
-        .execute(input, &rt.tool_context)
-        .await
-        .map_err(|err| err.to_string())?;
+    // The prompt run is the bulk of the loop's wall time; without this
+    // select, a hung tool call or model stream blocked cancellation (and
+    // shutdown) until it finished on its own.
+    let result = tokio::select! {
+        r = tool.execute(input, &rt.tool_context) => r.map_err(|err| err.to_string())?,
+        _ = rt.cancel_token.cancelled() => {
+            return Err("teammate cancelled during prompt execution".to_string());
+        }
+    };
     if !result.success {
         return Err(result.content);
     }
@@ -735,24 +820,35 @@ async fn execute_teammate_prompt(
 /// Complete a claimed task after successful execution.
 async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Option<&str>) {
     let metadata = summary.map(|summary| serde_json::json!({ "teammate_summary": summary }));
-    let mut manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(err) = manager.update_task(
-        task_id,
-        Some(TaskV2Status::Completed),
-        None,
-        None,
-        None,
-        None,
-        metadata,
-        None,
-        None,
-    ) {
-        // A discarded failure used to leave the task `InProgress` on disk
-        // while the agent believed it complete, with no signal anywhere.
+    // The manager's calls are blocking fs+flock under a std Mutex; the
+    // companion record_task_error below takes the same off-thread path.
+    let manager = rt.task_v2_manager.clone();
+    let id = task_id.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut manager = manager.lock().unwrap_or_else(|e| e.into_inner());
+        manager.update_task(
+            &id,
+            Some(TaskV2Status::Completed),
+            None,
+            None,
+            None,
+            None,
+            metadata,
+            None,
+            None,
+        )
+    })
+    .await;
+    if let Err(err) = result.map_err(anyhow::Error::new).and_then(|r| r) {
+        // Leaving the task `InProgress` + owned busy-locks this teammate
+        // out of every future claim (`claim_task` rejects agents with an
+        // in-progress task), so fall back to the same recovery an execution
+        // error takes: reset to `Pending`, clear the owner.
         crate::logging::warn(format!(
             "teammate '{}' failed to mark task {task_id} completed: {err}",
             rt.agent_name
         ));
+        record_task_error(rt, task_id, &format!("mark completed failed: {err}")).await;
     }
 }
 
@@ -763,29 +859,31 @@ async fn mark_task_completed(rt: &TeammateRuntime, task_id: &str, summary: Optio
 /// failure, permanently idling the teammate (`try_claim_next_task`
 /// swallows the error and just keeps polling).
 async fn record_task_error(rt: &TeammateRuntime, task_id: &str, error: &str) {
-    let mut manager = rt.task_v2_manager.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(err) = manager.update_task(
-        task_id,
-        Some(crate::tools::task_v2::TaskV2Status::Pending),
-        None,
-        None,
-        None,
-        None,
-        Some(serde_json::json!({ "last_teammate_error": error })),
-        None,
-        None,
-    ) {
+    let manager = rt.task_v2_manager.clone();
+    let id = task_id.to_string();
+    let error = error.to_string();
+    // `release_task` targets this one task: the blanket unassign used here
+    // before also strips ownership from any *other* in-progress task this
+    // agent owns, and ownerless in-progress tasks are never claimable.
+    let result = tokio::task::spawn_blocking(move || {
+        let mut manager = manager.lock().unwrap_or_else(|e| e.into_inner());
+        manager.update_task(
+            &id,
+            Some(crate::tools::task_v2::TaskV2Status::Pending),
+            None,
+            None,
+            None,
+            None,
+            Some(serde_json::json!({ "last_teammate_error": error })),
+            None,
+            None,
+        )?;
+        manager.release_task(&id)
+    })
+    .await;
+    if let Err(err) = result.map_err(anyhow::Error::new).and_then(|r| r) {
         crate::logging::warn(format!(
             "failed to reset task {task_id} after teammate error: {err}"
-        ));
-    }
-    // `update_task`'s owner parameter is set-only (None = unchanged), so
-    // ownership is cleared through the manager's unassign helper — the
-    // busy check in `claim_task` blocks on ANY in-progress ownership.
-    if let Err(err) = manager.unassign_teammate_tasks(&rt.agent_name) {
-        crate::logging::warn(format!(
-            "failed to unassign {} after task error: {err}",
-            rt.agent_name
         ));
     }
 }
@@ -838,7 +936,34 @@ pub async fn run_teammate_loop(mut rt: TeammateRuntime) -> TeammateResult {
 
         match wait_result {
             WaitResult::Aborted => break TeammateState::Terminated,
-            WaitResult::ShutdownRequest(entry) => {
+            WaitResult::ShutdownRequest(entry, inbox) => {
+                // The scanner already marked the whole batch read: drain its
+                // messages and assignments before acting on shutdown, or
+                // they are lost on every path (approved: the teammate exits;
+                // rejected: the next scan finds nothing unread).
+                let pending_prompt = format_prompt_from_inbox(&inbox);
+                if !pending_prompt.is_empty() {
+                    match execute_teammate_prompt(&rt, pending_prompt).await {
+                        Ok(result_summary) => {
+                            summary = result_summary.clone();
+                            let _ = send_idle_notification(
+                                &rt.agent_name,
+                                &rt.team_name,
+                                result_summary.or_else(|| Some("messages handled".to_string())),
+                                None,
+                            );
+                        }
+                        Err(error) => {
+                            summary = Some(format!("message handling failed: {error}"));
+                            let _ = send_idle_notification(
+                                &rt.agent_name,
+                                &rt.team_name,
+                                summary.clone(),
+                                None,
+                            );
+                        }
+                    }
+                }
                 match handle_shutdown_request(&rt, &entry.request_id, &rt.agent_name, &rt.team_name)
                     .await
                 {

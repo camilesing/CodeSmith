@@ -2480,6 +2480,11 @@ fn stub_runtime() -> SubAgentRuntime {
 
     let workspace = std::env::temp_dir().join("codesmith-test-stub");
     let context = ToolContext::new(workspace.clone());
+    // No state path: `new_shared_subagent_manager` wires a persistent
+    // `subagents.v1.json` under the (shared, fixed) workspace and loads it,
+    // so parallel tests loaded each other's stale agents and last-writer-won
+    // the same file. The stub only backs pure helper tests.
+    let manager = std::sync::Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(workspace, 5)));
     SubAgentRuntime {
         client: stub_client(),
         model: "deepseek-v4-flash".to_string(),
@@ -2493,7 +2498,7 @@ fn stub_runtime() -> SubAgentRuntime {
         event_tx: None,
         approval_router: None,
         extension_runner: None,
-        manager: new_shared_subagent_manager(workspace, 5),
+        manager,
         spawn_depth: 0,
         max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
         cancel_token: CancellationToken::new(),
