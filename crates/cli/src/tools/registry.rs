@@ -628,24 +628,19 @@ impl ToolRegistryBuilder {
     /// MCP tools are marked `defer_loading` by default (except discovery
     /// helpers) to keep the model-visible catalog compact.
     #[must_use]
-    pub fn with_mcp_tools(
-        mut self,
-        mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
-    ) -> Self {
-        // Snapshot the current tool list from the pool (non-blocking).
-        // The adapter lazily resolves at execution time via the pool.
-        if let Ok(pool) = mcp_pool.try_lock() {
-            for (name, tool) in pool.all_tools() {
-                let adapter = Arc::new(McpToolAdapter {
-                    name: name.clone(),
-                    description: crate::mcp::truncate_mcp_description(
-                        tool.description.as_deref().unwrap_or(&name),
-                    ),
-                    tool: tool.clone(),
-                    pool: mcp_pool.clone(),
-                });
-                self.tools.push(adapter);
-            }
+    pub fn with_mcp_tools(mut self, mcp_pool: std::sync::Arc<crate::mcp::McpPool>) -> Self {
+        // Snapshot the current tool list from the pool (lock-free catalog
+        // read). The adapter lazily resolves at execution time via the pool.
+        for (name, tool) in mcp_pool.all_tools() {
+            let adapter = Arc::new(McpToolAdapter {
+                name: name.clone(),
+                description: crate::mcp::truncate_mcp_description(
+                    tool.description.as_deref().unwrap_or(&name),
+                ),
+                tool,
+                pool: mcp_pool.clone(),
+            });
+            self.tools.push(adapter);
         }
         self
     }
@@ -941,7 +936,7 @@ struct McpToolAdapter {
     name: String,
     description: String,
     tool: crate::mcp::McpTool,
-    pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
+    pool: std::sync::Arc<crate::mcp::McpPool>,
 }
 
 #[async_trait::async_trait]
@@ -992,8 +987,8 @@ impl ToolSpec for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let mut pool = self.pool.lock().await;
-        let result = pool
+        let result = self
+            .pool
             .call_tool(&self.name, input)
             .await
             .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;

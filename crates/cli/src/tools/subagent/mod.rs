@@ -623,7 +623,7 @@ pub struct SubAgentRuntime {
     /// Snapshot of the request prefix visible to an opt-in forked child.
     pub fork_context: Option<SubAgentForkContext>,
     /// The parent's MCP pool if available.
-    pub mcp_pool: Option<std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
+    pub mcp_pool: Option<std::sync::Arc<crate::mcp::McpPool>>,
     /// Per-step DeepSeek API timeout for the child's `create_message` call.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800) at
     /// engine construction so a slow but legitimate model turn does not
@@ -727,10 +727,7 @@ impl SubAgentRuntime {
 
     /// Attach an MCP pool so the subagent can execute MCP tools.
     #[must_use]
-    pub fn with_mcp_pool(
-        mut self,
-        pool: Option<std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
-    ) -> Self {
+    pub fn with_mcp_pool(mut self, pool: Option<std::sync::Arc<crate::mcp::McpPool>>) -> Self {
         self.mcp_pool = pool;
         self
     }

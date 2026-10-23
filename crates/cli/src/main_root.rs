@@ -4641,7 +4641,7 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
             Ok(())
         }
         McpCommand::Connect { server } => {
-            let mut pool = McpPool::from_config_path(&config_path)?;
+            let pool = McpPool::from_config_path(&config_path)?;
             if let Some(name) = server {
                 pool.get_or_connect(&name).await?;
                 println!("Connected to MCP server: {name}");
@@ -4679,9 +4679,10 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
             Ok(())
         }
         McpCommand::Tools { server } => {
-            let mut pool = McpPool::from_config_path(&config_path)?;
+            let pool = McpPool::from_config_path(&config_path)?;
             if let Some(name) = server {
                 let conn = pool.get_or_connect(&name).await?;
+                let conn = conn.lock().await;
                 if conn.tools().is_empty() {
                     println!("No tools found for MCP server: {name}");
                 } else {
@@ -4788,7 +4789,7 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
             Ok(())
         }
         McpCommand::Validate => {
-            let mut pool = McpPool::from_config_path(&config_path)?;
+            let pool = McpPool::from_config_path(&config_path)?;
             let errors = pool.connect_all().await;
             if errors.is_empty() {
                 println!("MCP config is valid. All enabled servers connected.");

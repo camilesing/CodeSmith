@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -534,7 +533,7 @@ pub struct TurnDispatchRequest<'a> {
     /// Channel fan-out for direct child sub-agent completion (#756).
     pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
     /// Resolved MCP pool (already ensured by the engine body), when enabled.
-    pub mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    pub mcp_pool: Option<Arc<McpPool>>,
     /// MCP tool definitions (already connected by the engine body).
     pub mcp_tools: Vec<Tool>,
     /// Terminal-agnostic UI bridge (clipboard / notifications).
@@ -624,7 +623,7 @@ pub struct SpawnSubAgentRequest<'a> {
     /// Channel fan-out for direct child sub-agent completion (#756).
     pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
     /// Resolved MCP pool (already ensured by the engine body), when enabled.
-    pub mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    pub mcp_pool: Option<Arc<McpPool>>,
     /// Terminal-agnostic UI bridge (clipboard / notifications).
     pub runtime_ui: &'a Arc<dyn RuntimeUi>,
 }

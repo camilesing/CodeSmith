@@ -903,7 +903,7 @@ impl Engine {
         mode: AppMode,
         tool_registry: Option<&dyn ToolDispatcher>,
         tool_exec_lock: Arc<RwLock<()>>,
-        mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+        mcp_pool: Option<Arc<McpPool>>,
         _step_error_count: usize,
         _consecutive_tool_error_steps: u32,
     ) -> bool {
@@ -1451,7 +1451,7 @@ impl Engine {
         snapshot: Option<&CapacitySnapshot>,
         tool_registry: Option<&dyn ToolDispatcher>,
         tool_exec_lock: Arc<RwLock<()>>,
-        mut mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+        mut mcp_pool: Option<Arc<McpPool>>,
         skip_transcript: bool,
         outcome: Option<ReplayOutcome>,
     ) -> bool {

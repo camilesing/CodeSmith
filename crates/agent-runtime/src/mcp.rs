@@ -1928,14 +1928,24 @@ impl McpTransport for SseTransport {
 
 // === McpConnection - Async Connection Management ===
 
-/// Manages a single async connection to an MCP server
-pub struct McpConnection {
-    name: String,
-    transport: Box<dyn McpTransport>,
+/// Everything a connection discovered at initialize time. Filled through
+/// `&mut self` during `connect_with_policy`, frozen into an `Arc` once the
+/// connection joins a pool, and never mutated afterwards — so the pool can
+/// hand out catalog snapshots without locking the connection (which may be
+/// mid round-trip on another task).
+#[derive(Clone, Debug, Default)]
+struct McpCatalog {
     tools: Vec<McpTool>,
     resources: Vec<McpResource>,
     resource_templates: Vec<McpResourceTemplate>,
     prompts: Vec<McpPrompt>,
+}
+
+/// Manages a single async connection to an MCP server
+pub struct McpConnection {
+    name: String,
+    transport: Box<dyn McpTransport>,
+    catalog: Arc<McpCatalog>,
     request_id: AtomicU64,
     state: ConnectionState,
     config: McpServerConfig,
@@ -2163,10 +2173,7 @@ impl McpConnection {
         let mut conn = Self {
             name: name.clone(),
             transport,
-            tools: Vec::new(),
-            resources: Vec::new(),
-            resource_templates: Vec::new(),
-            prompts: Vec::new(),
+            catalog: Arc::new(McpCatalog::default()),
             request_id: AtomicU64::new(1),
             state: ConnectionState::Connecting,
             config,
@@ -2260,7 +2267,7 @@ impl McpConnection {
             if let Some(arr) = result.get("tools").and_then(|t| t.as_array()) {
                 for item in arr {
                     match serde_json::from_value::<McpTool>(item.clone()) {
-                        Ok(tool) => self.tools.push(tool),
+                        Ok(tool) => Arc::make_mut(&mut self.catalog).tools.push(tool),
                         Err(err) => {
                             // Skip individual malformed entries instead of
                             // dropping the whole page (#1410). The old
@@ -2283,7 +2290,9 @@ impl McpConnection {
         // Sort by tool name so the order the model sees doesn't depend on
         // server-side pagination ordering — keeps the prompt prefix stable
         // for cache-hit purposes (#1319).
-        self.tools.sort_by(|a, b| a.name.cmp(&b.name));
+        Arc::make_mut(&mut self.catalog)
+            .tools
+            .sort_by(|a, b| a.name.cmp(&b.name));
         Ok(())
     }
 
@@ -2312,7 +2321,7 @@ impl McpConnection {
             if let Some(arr) = result.get("resources").and_then(|r| r.as_array()) {
                 for item in arr {
                     match serde_json::from_value::<McpResource>(item.clone()) {
-                        Ok(resource) => self.resources.push(resource),
+                        Ok(resource) => Arc::make_mut(&mut self.catalog).resources.push(resource),
                         Err(err) => {
                             tracing::debug!(target: "mcp", ?err, "skipping malformed resource item");
                         }
@@ -2360,7 +2369,9 @@ impl McpConnection {
             if let Some(arr) = templates.and_then(|t| t.as_array()) {
                 for item in arr {
                     match serde_json::from_value::<McpResourceTemplate>(item.clone()) {
-                        Ok(tmpl) => self.resource_templates.push(tmpl),
+                        Ok(tmpl) => Arc::make_mut(&mut self.catalog)
+                            .resource_templates
+                            .push(tmpl),
                         Err(err) => {
                             tracing::debug!(target: "mcp", ?err, "skipping malformed resource_template item");
                         }
@@ -2404,7 +2415,7 @@ impl McpConnection {
             if let Some(arr) = result.get("prompts").and_then(|p| p.as_array()) {
                 for item in arr {
                     match serde_json::from_value::<McpPrompt>(item.clone()) {
-                        Ok(prompt) => self.prompts.push(prompt),
+                        Ok(prompt) => Arc::make_mut(&mut self.catalog).prompts.push(prompt),
                         Err(err) => {
                             tracing::debug!(target: "mcp", ?err, "skipping malformed prompt item");
                         }
@@ -2528,22 +2539,22 @@ impl McpConnection {
 
     /// Get discovered tools
     pub fn tools(&self) -> &[McpTool] {
-        &self.tools
+        &self.catalog.tools
     }
 
     /// Get discovered resources
     pub fn resources(&self) -> &[McpResource] {
-        &self.resources
+        &self.catalog.resources
     }
 
     /// Get discovered resource templates
     pub fn resource_templates(&self) -> &[McpResourceTemplate] {
-        &self.resource_templates
+        &self.catalog.resource_templates
     }
 
     /// Get discovered prompts
     pub fn prompts(&self) -> &[McpPrompt] {
-        &self.prompts
+        &self.catalog.prompts
     }
 
     /// Get server name
@@ -2710,11 +2721,34 @@ fn needs_auth_error(server: &str, entry: &McpAuthCacheEntry) -> anyhow::Error {
 
 // === McpPool - Connection Pool Management ===
 
-/// Pool of MCP connections for reuse
-pub struct McpPool {
-    connections: HashMap<String, McpConnection>,
+/// One live connection slot in the pool table.
+///
+/// `Ready` carries the frozen discovery catalog alongside the connection so
+/// pool-wide snapshots (`all_tools`, `to_api_tools`, ...) read it under the
+/// table lock without ever locking the connection itself — a connection that
+/// is mid round-trip on another task stays fully visible to the catalog.
+enum PoolSlot {
+    Ready(ReadySlot),
+    /// Another task is establishing this server's connection. Late callers
+    /// wait on the mutex (the claimant holds it until it publishes or
+    /// removes the slot), then re-check the table.
+    Connecting(Arc<TokioMutex<()>>),
+}
+
+struct ReadySlot {
+    conn: Arc<TokioMutex<McpConnection>>,
+    catalog: Arc<McpCatalog>,
+    /// `config_hash` the connection was built under. A slot from an older
+    /// config is rebuilt on next use instead of served.
+    config_hash: u64,
+}
+
+/// Pool-internal mutable state, guarded by a std mutex that is **never held
+/// across an `.await`** — connection establishment and every network round
+/// trip run outside this lock.
+struct PoolState {
+    connections: HashMap<String, PoolSlot>,
     config: McpConfig,
-    network_policy: Option<NetworkPolicyDecider>,
     /// Source path the config was loaded from, when `from_config_path` was
     /// used. `None` for pools constructed directly via `new` (tests, ad-hoc
     /// snapshots). Drives the lazy-reload check (#1267 part 2): when the
@@ -2728,6 +2762,31 @@ pub struct McpPool {
     /// Most recently observed mtime of `config_source`. Updated whenever the
     /// reload check runs (whether or not it triggered a reload).
     last_mtime: Option<std::time::SystemTime>,
+}
+
+/// Pool of MCP connections for reuse.
+///
+/// Shared as `Arc<McpPool>`: every method takes `&self` and the pool locks
+/// internally. The table lock guards only lookups, slot transitions, and
+/// config reloads — never a network operation — and each connection carries
+/// its own `Arc<TokioMutex<McpConnection>>`, so calls to *different* servers
+/// run concurrently while calls to the *same* server serialize (one
+/// request-ID correlation loop per transport). This replaces a pool-wide
+/// mutex held across the full `call_tool().await` round trip, which
+/// serialized all MCP dispatch.
+///
+/// Known limitations:
+/// - Readiness (`McpConnection::is_ready`) is probed with `try_lock`: a
+///   connection busy serving another call is assumed healthy, and a
+///   dead-but-slotted connection is rebuilt by its next failing caller (the
+///   once-only reconnect in `call_tool`) or by `connect_all`, not eagerly.
+/// - `connected_servers` reports slot presence under the current config
+///   hash; it cannot see a transport that died microseconds ago.
+pub struct McpPool {
+    state: std::sync::Mutex<PoolState>,
+    /// Per-domain network policy, attached at construction and immutable
+    /// afterwards.
+    network_policy: Option<NetworkPolicyDecider>,
 }
 
 fn connection_batch_size(env_name: &str, default: usize) -> usize {
@@ -2798,12 +2857,14 @@ impl McpPool {
     pub fn new(config: McpConfig) -> Self {
         let config_hash = hash_mcp_config(&config);
         Self {
-            connections: HashMap::new(),
-            config,
+            state: std::sync::Mutex::new(PoolState {
+                connections: HashMap::new(),
+                config,
+                config_source: None,
+                config_hash,
+                last_mtime: None,
+            }),
             network_policy: None,
-            config_source: None,
-            config_hash,
-            last_mtime: None,
         }
     }
 
@@ -2819,9 +2880,12 @@ impl McpPool {
             McpConfig::default()
         };
         let last_mtime = mcp_config_mtime(path);
-        let mut pool = Self::new(config);
-        pool.config_source = Some(path.to_path_buf());
-        pool.last_mtime = last_mtime;
+        let pool = Self::new(config);
+        {
+            let mut state = pool.state.lock().unwrap();
+            state.config_source = Some(path.to_path_buf());
+            state.last_mtime = last_mtime;
+        }
         Ok(pool)
     }
 
@@ -2830,6 +2894,10 @@ impl McpPool {
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
         self.network_policy = Some(policy);
         self
+    }
+
+    fn current_config_hash(&self) -> u64 {
+        self.state.lock().unwrap().config_hash
     }
 
     /// If the source config file's mtime has changed since the last check,
@@ -2845,18 +2913,23 @@ impl McpPool {
     /// call (and only re-reads the file when the mtime moved). On networked
     /// or remote filesystems where mtime granularity is poor, the hash
     /// compare keeps us from churning connections on every check.
-    pub async fn reload_if_config_changed(&mut self) -> Result<bool> {
-        let Some(path) = self.config_source.clone() else {
-            return Ok(false);
+    pub async fn reload_if_config_changed(&self) -> Result<bool> {
+        let path = {
+            let state = self.state.lock().unwrap();
+            let Some(path) = state.config_source.clone() else {
+                return Ok(false);
+            };
+            path
         };
         let current_mtime = match mcp_config_mtime(&path) {
             Some(m) => m,
             None => return Ok(false),
         };
-        if Some(current_mtime) == self.last_mtime {
+        if self.state.lock().unwrap().last_mtime == Some(current_mtime) {
             return Ok(false);
         }
-        // mtime moved — we owe a re-read.
+        // mtime moved — we owe a re-read. Done outside the table lock so a
+        // slow filesystem cannot stall concurrent tool dispatch.
         let new_config: McpConfig = if path.exists() {
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("Failed to re-read MCP config: {}", path.display()))?;
@@ -2866,49 +2939,55 @@ impl McpPool {
             McpConfig::default()
         };
         let new_hash = hash_mcp_config(&new_config);
+        let mut state = self.state.lock().unwrap();
         // Always advance last_mtime so a touched-but-unchanged file doesn't
         // make us re-read on every subsequent call.
-        self.last_mtime = Some(current_mtime);
-        if new_hash == self.config_hash {
+        state.last_mtime = Some(current_mtime);
+        if new_hash == state.config_hash {
             return Ok(false);
         }
         // Real content change — drop all live connections so the next
         // get_or_connect picks up the new config (sandbox flags, env, args).
-        self.connections.clear();
-        self.config = new_config;
-        self.config_hash = new_hash;
+        state.connections.clear();
+        state.config = new_config;
+        state.config_hash = new_hash;
         Ok(true)
     }
 
-    /// Get or create a connection to a server
-    pub async fn get_or_connect(&mut self, server_name: &str) -> Result<&mut McpConnection> {
-        // Lazy auto-reload (#1267 part 2): cheap mtime-then-hash check before
-        // each connection lookup. Errors from the reload check (stat failure,
-        // partial config parse) are swallowed here so a transient FS hiccup
-        // can't take down the whole tool dispatch — the user still gets the
-        // existing connection to respond to.
-        let _ = self.reload_if_config_changed().await;
-
-        let is_ready = self
-            .connections
-            .get(server_name)
-            .map(|conn| conn.is_ready())
-            .unwrap_or(false);
-        if is_ready {
-            return self
-                .connections
-                .get_mut(server_name)
-                .ok_or_else(|| anyhow::anyhow!("MCP connection disappeared for {server_name}"));
+    /// Fast path: a Ready slot under the current config whose connection is
+    /// still healthy. Returns `None` when the server needs a (re)connect.
+    async fn ready_connection(&self, server_name: &str) -> Option<Arc<TokioMutex<McpConnection>>> {
+        let (slot_conn, slot_hash, current_hash) = {
+            let state = self.state.lock().unwrap();
+            let Some(PoolSlot::Ready(slot)) = state.connections.get(server_name) else {
+                return None;
+            };
+            (Arc::clone(&slot.conn), slot.config_hash, state.config_hash)
+        };
+        if slot_hash != current_hash {
+            // Built under an older config — rebuild instead of serve.
+            return None;
         }
+        // Probe health without holding the guard past the probe: a busy
+        // connection (try_lock fails) is assumed healthy; a lockable one is
+        // healthy only while its transport is still Ready.
+        let healthy = match slot_conn.try_lock() {
+            Ok(conn) => conn.is_ready(),
+            Err(_) => true,
+        };
+        healthy.then_some(slot_conn)
+    }
 
-        self.connections.remove(server_name);
-
-        let server_config = self
-            .config
-            .servers
-            .get(server_name)
-            .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?
-            .clone();
+    /// Connect one server under the config snapshot read at claim time.
+    /// Runs entirely outside the table lock.
+    async fn connect_one(&self, server_name: &str) -> Result<McpConnection> {
+        let (server_config, timeouts) = {
+            let state = self.state.lock().unwrap();
+            let config = state.config.servers.get(server_name).cloned();
+            (config, state.config.timeouts)
+        };
+        let server_config = server_config
+            .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?;
 
         if !server_config.is_enabled() {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
@@ -2920,60 +2999,190 @@ impl McpPool {
             return Err(needs_auth_error(server_name, entry));
         }
 
-        let connection = match McpConnection::connect_with_policy(
+        match McpConnection::connect_with_policy(
             server_name.to_string(),
             server_config.clone(),
-            &self.config.timeouts,
+            &timeouts,
             self.network_policy.as_ref(),
         )
         .await
         {
-            Ok(connection) => connection,
+            Ok(connection) => Ok(connection),
             Err(err) if server_config.url.is_some() && is_mcp_auth_error(&err) => {
                 McpAuthCache::mark(server_name, &server_config, &format!("{err:#}"));
-                return Err(needs_auth_error(
+                Err(needs_auth_error(
                     server_name,
                     McpAuthCache::load()
                         .fresh_entry(server_name)
                         .expect("auth cache entry just written"),
-                ));
+                ))
             }
-            Err(err) => return Err(err),
-        };
+            Err(err) => Err(err),
+        }
+    }
 
-        self.connections.insert(server_name.to_string(), connection);
-        self.connections
-            .get_mut(server_name)
-            .ok_or_else(|| anyhow::anyhow!("Failed to store MCP connection for {server_name}"))
+    /// Insert a freshly-built connection as the Ready slot. If the pool
+    /// moved on meanwhile (config reloaded, or another task already
+    /// published a same-config connection), keeps theirs and drops ours.
+    /// Returns the live connection Arc either way so the caller's own call
+    /// can proceed.
+    fn publish_ready(
+        &self,
+        server_name: &str,
+        conn: McpConnection,
+        built_hash: u64,
+    ) -> Arc<TokioMutex<McpConnection>> {
+        let catalog = Arc::clone(&conn.catalog);
+        let conn = Arc::new(TokioMutex::new(conn));
+        let mut state = self.state.lock().unwrap();
+        if built_hash != state.config_hash {
+            // Config changed while we were connecting: this connection is
+            // stale by definition. Serve it to this one caller; the next
+            // lookup rebuilds under the new config.
+            return conn;
+        }
+        if let Some(PoolSlot::Ready(existing)) = state.connections.get(server_name)
+            && existing.config_hash == state.config_hash
+            && !Arc::ptr_eq(&existing.conn, &conn)
+        {
+            return Arc::clone(&existing.conn);
+        }
+        let conn_out = Arc::clone(&conn);
+        state.connections.insert(
+            server_name.to_string(),
+            PoolSlot::Ready(ReadySlot {
+                conn,
+                catalog,
+                config_hash: built_hash,
+            }),
+        );
+        conn_out
+    }
+
+    /// Remove a Ready slot only when it still holds exactly this connection,
+    /// so a failed round trip cannot yank a newer connection another task
+    /// published in the meantime.
+    fn remove_ready_slot_if_same(&self, server_name: &str, conn: &Arc<TokioMutex<McpConnection>>) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(PoolSlot::Ready(slot)) = state.connections.get(server_name)
+            && Arc::ptr_eq(&slot.conn, conn)
+        {
+            state.connections.remove(server_name);
+        }
+    }
+
+    /// Get or create a connection to a server. The table lock guards the
+    /// lookup and the slot transition only; the connect (and every later
+    /// round trip on the returned connection) happens outside it. Concurrent
+    /// first calls to the same server share one connect via the Connecting
+    /// slot.
+    pub async fn get_or_connect(
+        &self,
+        server_name: &str,
+    ) -> Result<Arc<TokioMutex<McpConnection>>> {
+        // Lazy auto-reload (#1267 part 2): cheap mtime-then-hash check before
+        // each connection lookup. Errors from the reload check (stat failure,
+        // partial config parse) are swallowed here so a transient FS hiccup
+        // can't take down the whole tool dispatch — the user still gets the
+        // existing connection to respond to.
+        let _ = self.reload_if_config_changed().await;
+
+        loop {
+            if let Some(conn) = self.ready_connection(server_name).await {
+                return Ok(conn);
+            }
+
+            // Race for the connecting slot. The claim mutex is acquired
+            // before the slot becomes visible in the table and held until
+            // we publish or remove it, so a waiter never observes an
+            // unfinished claim. It is never taken while holding the table
+            // lock.
+            let wait = Arc::new(TokioMutex::new(()));
+            let _claim_guard = wait.lock().await;
+            let lost_claim = {
+                let mut state = self.state.lock().unwrap();
+                match state.connections.get(server_name) {
+                    Some(PoolSlot::Connecting(other)) => Some(Arc::clone(other)),
+                    _ => {
+                        state.connections.insert(
+                            server_name.to_string(),
+                            PoolSlot::Connecting(Arc::clone(&wait)),
+                        );
+                        None
+                    }
+                }
+            };
+            if let Some(other) = lost_claim {
+                drop(_claim_guard);
+                // The claimant releases when it publishes or removes the
+                // slot; then we re-check the table.
+                let _ = other.lock().await;
+                continue;
+            }
+
+            let built_hash = self.current_config_hash();
+            match self.connect_one(server_name).await {
+                Ok(conn) => {
+                    let live = self.publish_ready(server_name, conn, built_hash);
+                    drop(_claim_guard);
+                    return Ok(live);
+                }
+                Err(err) => {
+                    {
+                        let mut state = self.state.lock().unwrap();
+                        if let Some(PoolSlot::Connecting(claimed)) =
+                            state.connections.get(server_name)
+                            && Arc::ptr_eq(claimed, &wait)
+                        {
+                            state.connections.remove(server_name);
+                        }
+                    }
+                    drop(_claim_guard);
+                    return Err(err);
+                }
+            }
+        }
     }
 
     /// Connect to all enabled servers, returning errors for failed connections
-    pub async fn connect_all(&mut self) -> Vec<(String, anyhow::Error)> {
+    pub async fn connect_all(&self) -> Vec<(String, anyhow::Error)> {
         let _ = self.reload_if_config_changed().await;
 
-        let mut local_tasks = Vec::new();
-        let mut remote_tasks = Vec::new();
-        for (name, config) in &self.config.servers {
-            if !config.is_enabled() {
-                continue;
+        let (mut local_tasks, mut remote_tasks, built_hash) = {
+            let state = self.state.lock().unwrap();
+            let mut local = Vec::new();
+            let mut remote = Vec::new();
+            let hash = state.config_hash;
+            for (name, config) in &state.config.servers {
+                if !config.is_enabled() {
+                    continue;
+                }
+                let served = match state.connections.get(name) {
+                    Some(PoolSlot::Ready(slot)) if slot.config_hash == hash => {
+                        // Busy serving another call counts as connected; a
+                        // lockable-but-not-ready slot is rebuilt here.
+                        slot.conn
+                            .try_lock()
+                            .map(|conn| conn.is_ready())
+                            .unwrap_or(true)
+                    }
+                    _ => false,
+                };
+                if served {
+                    continue;
+                }
+                let task = McpConnectTask {
+                    name: name.clone(),
+                    config: config.clone(),
+                };
+                if config.url.is_some() {
+                    remote.push(task);
+                } else {
+                    local.push(task);
+                }
             }
-            if self
-                .connections
-                .get(name)
-                .is_some_and(McpConnection::is_ready)
-            {
-                continue;
-            }
-            let task = McpConnectTask {
-                name: name.clone(),
-                config: config.clone(),
-            };
-            if config.url.is_some() {
-                remote_tasks.push(task);
-            } else {
-                local_tasks.push(task);
-            }
-        }
+            (local, remote, hash)
+        };
 
         let local_limit = connection_batch_size(
             "MCP_SERVER_CONNECTION_BATCH_SIZE",
@@ -2986,17 +3195,17 @@ impl McpPool {
 
         let mut errors = Vec::new();
         let mut results = connect_tasks_batched(
-            local_tasks,
+            std::mem::take(&mut local_tasks),
             local_limit,
-            self.config.timeouts,
+            self.config_timeouts(),
             self.network_policy.clone(),
         )
         .await;
         results.extend(
             connect_tasks_batched(
-                remote_tasks,
+                std::mem::take(&mut remote_tasks),
                 remote_limit,
-                self.config.timeouts,
+                self.config_timeouts(),
                 self.network_policy.clone(),
             )
             .await,
@@ -3005,51 +3214,80 @@ impl McpPool {
         for (name, result) in results {
             match result {
                 Ok(connection) => {
-                    self.connections.insert(name, connection);
+                    self.publish_ready(&name, connection, built_hash);
                 }
                 Err(err) => errors.push((name, err)),
             }
         }
 
-        for (name, server_cfg) in &self.config.servers {
-            if server_cfg.required
-                && server_cfg.is_enabled()
-                && !self
-                    .connections
-                    .get(name)
-                    .is_some_and(McpConnection::is_ready)
-            {
-                errors.push((
-                    name.clone(),
-                    anyhow::anyhow!("required MCP server failed to initialize"),
-                ));
+        {
+            let state = self.state.lock().unwrap();
+            for (name, server_cfg) in &state.config.servers {
+                if server_cfg.required
+                    && server_cfg.is_enabled()
+                    && !matches!(
+                        state.connections.get(name),
+                        Some(PoolSlot::Ready(slot)) if slot.config_hash == state.config_hash
+                    )
+                {
+                    errors.push((
+                        name.clone(),
+                        anyhow::anyhow!("required MCP server failed to initialize"),
+                    ));
+                }
             }
         }
 
         errors
     }
 
-    fn is_ide_server(&self, server: &str, conn: &McpConnection) -> bool {
-        server == "ide" && transport_kind(conn.config()).is_ok_and(McpTransportKind::is_ide)
+    fn config_timeouts(&self) -> McpTimeouts {
+        self.state.lock().unwrap().config.timeouts
     }
 
-    fn should_expose_tool(&self, server: &str, conn: &McpConnection, tool: &McpTool) -> bool {
-        if !conn.config().is_tool_enabled(&tool.name) {
+    fn server_config_snapshot(&self, server: &str) -> Option<McpServerConfig> {
+        self.state
+            .lock()
+            .unwrap()
+            .config
+            .servers
+            .get(server)
+            .cloned()
+    }
+
+    fn is_ide_server_config(server: &str, config: &McpServerConfig) -> bool {
+        server == "ide" && transport_kind(config).is_ok_and(McpTransportKind::is_ide)
+    }
+
+    fn should_expose_tool(
+        &self,
+        server: &str,
+        server_config: &McpServerConfig,
+        tool: &McpTool,
+    ) -> bool {
+        if !server_config.is_tool_enabled(&tool.name) {
             return false;
         }
         let model_name = qualify_mcp_tool_name(server, &tool.name);
-        !self.is_ide_server(server, conn) || is_allowed_ide_tool(&model_name)
+        !Self::is_ide_server_config(server, server_config) || is_allowed_ide_tool(&model_name)
     }
 
     /// Get all discovered tools with server-prefixed names
-    pub fn all_tools(&self) -> Vec<(String, &McpTool)> {
+    pub fn all_tools(&self) -> Vec<(String, McpTool)> {
         let mut tools = Vec::new();
-        for (server, conn) in &self.connections {
-            for tool in conn.tools() {
-                if !self.should_expose_tool(server, conn, tool) {
+        let state = self.state.lock().unwrap();
+        for (server, slot) in &state.connections {
+            let Some(PoolSlot::Ready(slot)) = Some(slot) else {
+                continue;
+            };
+            let Some(server_config) = state.config.servers.get(server) else {
+                continue;
+            };
+            for tool in &slot.catalog.tools {
+                if !self.should_expose_tool(server, server_config, tool) {
                     continue;
                 }
-                tools.push((qualify_mcp_tool_name(server, &tool.name), tool));
+                tools.push((qualify_mcp_tool_name(server, &tool.name), tool.clone()));
             }
         }
         // Sort by prefixed name so iteration order across servers is
@@ -3059,14 +3297,18 @@ impl McpPool {
     }
 
     /// Get all discovered resources with server-prefixed names
-    pub fn all_resources(&self) -> Vec<(String, &McpResource)> {
+    pub fn all_resources(&self) -> Vec<(String, McpResource)> {
         let mut resources = Vec::new();
-        for (server, conn) in &self.connections {
-            for resource in conn.resources() {
+        let state = self.state.lock().unwrap();
+        for (server, slot) in &state.connections {
+            let Some(PoolSlot::Ready(slot)) = Some(slot) else {
+                continue;
+            };
+            for resource in &slot.catalog.resources {
                 // Format: mcp_{server}_{resource_name}
                 // Note: resource names might contain spaces, we should probably slugify them
                 let safe_name = resource.name.replace(' ', "_").to_lowercase();
-                resources.push((qualify_mcp_tool_name(server, &safe_name), resource));
+                resources.push((qualify_mcp_tool_name(server, &safe_name), resource.clone()));
             }
         }
         resources
@@ -3074,20 +3316,42 @@ impl McpPool {
 
     /// Get all discovered resource templates with server-prefixed names
     #[allow(dead_code)] // Public API for MCP resource discovery
-    pub fn all_resource_templates(&self) -> Vec<(String, &McpResourceTemplate)> {
+    pub fn all_resource_templates(&self) -> Vec<(String, McpResourceTemplate)> {
         let mut templates = Vec::new();
-        for (server, conn) in &self.connections {
-            for template in conn.resource_templates() {
+        let state = self.state.lock().unwrap();
+        for (server, slot) in &state.connections {
+            let Some(PoolSlot::Ready(slot)) = Some(slot) else {
+                continue;
+            };
+            for template in &slot.catalog.resource_templates {
                 let safe_name = template.name.replace(' ', "_").to_lowercase();
-                templates.push((qualify_mcp_tool_name(server, &safe_name), template));
+                templates.push((qualify_mcp_tool_name(server, &safe_name), template.clone()));
             }
         }
         templates
     }
 
-    async fn list_resources(&mut self, server: Option<String>) -> Result<Vec<serde_json::Value>> {
+    /// Snapshot every ready slot's catalog as `(server, config, catalog)`
+    /// triples, taken under the table lock.
+    fn ready_catalogs(&self) -> Vec<(String, McpServerConfig, Arc<McpCatalog>)> {
+        let state = self.state.lock().unwrap();
+        let mut out = Vec::new();
+        for (server, slot) in &state.connections {
+            let PoolSlot::Ready(slot) = slot else {
+                continue;
+            };
+            let Some(config) = state.config.servers.get(server).cloned() else {
+                continue;
+            };
+            out.push((server.clone(), config, Arc::clone(&slot.catalog)));
+        }
+        out
+    }
+
+    async fn list_resources(&self, server: Option<String>) -> Result<Vec<serde_json::Value>> {
         if let Some(server_name) = server {
             let conn = self.get_or_connect(&server_name).await?;
+            let conn = conn.lock().await;
             let resources = conn
                 .resources()
                 .iter()
@@ -3106,8 +3370,8 @@ impl McpPool {
 
         let _ = self.connect_all().await;
         let mut items = Vec::new();
-        for (server, conn) in &self.connections {
-            for resource in conn.resources() {
+        for (server, _config, catalog) in self.ready_catalogs() {
+            for resource in &catalog.resources {
                 items.push(serde_json::json!({
                     "server": server,
                     "uri": resource.uri,
@@ -3121,11 +3385,12 @@ impl McpPool {
     }
 
     async fn list_resource_templates(
-        &mut self,
+        &self,
         server: Option<String>,
     ) -> Result<Vec<serde_json::Value>> {
         if let Some(server_name) = server {
             let conn = self.get_or_connect(&server_name).await?;
+            let conn = conn.lock().await;
             let templates = conn
                 .resource_templates()
                 .iter()
@@ -3144,8 +3409,8 @@ impl McpPool {
 
         let _ = self.connect_all().await;
         let mut items = Vec::new();
-        for (server, conn) in &self.connections {
-            for template in conn.resource_templates() {
+        for (server, _config, catalog) in self.ready_catalogs() {
+            for template in &catalog.resource_templates {
                 items.push(serde_json::json!({
                     "server": server,
                     "uri_template": template.uri_template,
@@ -3159,45 +3424,42 @@ impl McpPool {
     }
 
     /// Get all discovered prompts with server-prefixed names
-    pub fn all_prompts(&self) -> Vec<(String, &McpPrompt)> {
+    pub fn all_prompts(&self) -> Vec<(String, McpPrompt)> {
         let mut prompts = Vec::new();
-        for (server, conn) in &self.connections {
-            for prompt in conn.prompts() {
+        let state = self.state.lock().unwrap();
+        for (server, slot) in &state.connections {
+            let Some(PoolSlot::Ready(slot)) = Some(slot) else {
+                continue;
+            };
+            for prompt in &slot.catalog.prompts {
                 // Format: mcp_{server}_{prompt}
-                prompts.push((qualify_mcp_tool_name(server, &prompt.name), prompt));
+                prompts.push((qualify_mcp_tool_name(server, &prompt.name), prompt.clone()));
             }
         }
         prompts
     }
 
     /// Read a resource from a specific server
-    pub async fn read_resource(
-        &mut self,
-        server_name: &str,
-        uri: &str,
-    ) -> Result<serde_json::Value> {
-        let global_timeouts = self.config.timeouts;
-        let conn = self.get_or_connect(server_name).await?;
+    pub async fn read_resource(&self, server_name: &str, uri: &str) -> Result<serde_json::Value> {
+        let global_timeouts = self.config_timeouts();
+        let conn_arc = self.get_or_connect(server_name).await?;
+        let mut conn = conn_arc.lock().await;
         let timeout = conn.config().effective_read_timeout(&global_timeouts);
         conn.read_resource(uri, timeout).await
     }
 
     /// Get a prompt from a specific server
     pub async fn get_prompt(
-        &mut self,
+        &self,
         server_name: &str,
         prompt_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let global_timeouts = self.config.timeouts;
-        let conn = self.get_or_connect(server_name).await?;
+        let global_timeouts = self.config_timeouts();
+        let conn_arc = self.get_or_connect(server_name).await?;
+        let mut conn = conn_arc.lock().await;
         let timeout = conn.config().effective_execute_timeout(&global_timeouts);
         conn.get_prompt(prompt_name, arguments, timeout).await
-    }
-
-    /// Parse a prefixed name into (server_name, tool_name)
-    fn parse_prefixed_name<'a>(&self, prefixed_name: &'a str) -> Result<(&'a str, &'a str)> {
-        parse_mcp_tool_name(prefixed_name)
     }
 
     /// Convert discovered tools to API Tool format
@@ -3222,7 +3484,8 @@ impl McpPool {
             });
         }
 
-        if !self.config.servers.is_empty() {
+        let has_servers = !self.state.lock().unwrap().config.servers.is_empty();
+        if has_servers {
             api_tools.push(crate::models::Tool {
                 tool_type: None,
                 name: "list_mcp_resources".to_string(),
@@ -3339,7 +3602,7 @@ impl McpPool {
 
     /// Call a tool by its prefixed name (mcp__{server}__{tool}; legacy mcp_{server}_{tool} accepted)
     pub async fn call_tool(
-        &mut self,
+        &self,
         prefixed_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value> {
@@ -3406,26 +3669,29 @@ impl McpPool {
             return self.get_prompt(server_name, name, args).await;
         }
 
-        let (server_name, tool_name) = self.parse_prefixed_name(prefixed_name)?;
+        let (server_name, tool_name) = parse_mcp_tool_name(prefixed_name)?;
         let server_config_for_auth = self
-            .config
-            .servers
-            .get(server_name)
-            .cloned()
+            .server_config_snapshot(server_name)
             .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?;
         if server_config_for_auth.url.is_some()
             && let Some(entry) = McpAuthCache::load().fresh_entry(server_name)
         {
             return Err(needs_auth_error(server_name, entry));
         }
-        // Copy the global timeouts to avoid borrow conflict
-        let global_timeouts = self.config.timeouts;
-        let conn = self.get_or_connect(server_name).await?;
-        if !conn.config().is_tool_enabled(tool_name) {
-            anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
-        }
-        let timeout = conn.config().effective_execute_timeout(&global_timeouts);
-        match conn.call_tool(tool_name, arguments.clone(), timeout).await {
+        let global_timeouts = self.config_timeouts();
+        let conn_arc = self.get_or_connect(server_name).await?;
+        // The connection guard is dropped at the end of this block — before
+        // any table lock is taken on the reconnect path (lock order: table
+        // lock and connection lock are never held together).
+        let outcome = {
+            let mut conn = conn_arc.lock().await;
+            if !conn.config().is_tool_enabled(tool_name) {
+                anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
+            }
+            let timeout = conn.config().effective_execute_timeout(&global_timeouts);
+            conn.call_tool(tool_name, arguments.clone(), timeout).await
+        };
+        match outcome {
             Ok(result) => Ok(result),
             Err(err) if is_mcp_stale_session_error(&err) => {
                 tracing::debug!(
@@ -3435,8 +3701,9 @@ impl McpPool {
                     error = %err,
                     "retrying MCP tool call after stale session"
                 );
-                self.connections.remove(server_name);
-                let conn = self.get_or_connect(server_name).await?;
+                self.remove_ready_slot_if_same(server_name, &conn_arc);
+                let conn_arc = self.get_or_connect(server_name).await?;
+                let mut conn = conn_arc.lock().await;
                 if !conn.config().is_tool_enabled(tool_name) {
                     anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
                 }
@@ -3458,27 +3725,38 @@ impl McpPool {
 
     /// Get list of configured server names
     #[allow(dead_code)] // Public API for MCP consumers
-    pub fn server_names(&self) -> Vec<&str> {
-        self.config
+    pub fn server_names(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .config
             .servers
             .keys()
-            .map(std::string::String::as_str)
+            .cloned()
             .collect()
     }
 
     /// Get list of connected server names
-    pub fn connected_servers(&self) -> Vec<&str> {
-        self.connections
+    pub fn connected_servers(&self) -> Vec<String> {
+        let state = self.state.lock().unwrap();
+        state
+            .connections
             .iter()
-            .filter(|(_, c)| c.is_ready())
-            .map(|(n, _)| n.as_str())
+            .filter(|(name, slot)| match slot {
+                PoolSlot::Ready(slot) => {
+                    slot.config_hash == state.config_hash
+                        && state.config.servers.contains_key(name.as_str())
+                }
+                PoolSlot::Connecting(_) => false,
+            })
+            .map(|(name, _)| name.clone())
             .collect()
     }
 
     /// Disconnect all connections
     #[allow(dead_code)] // Public API for MCP lifecycle management
-    pub fn disconnect_all(&mut self) {
-        self.connections.clear();
+    pub fn disconnect_all(&self) {
+        self.state.lock().unwrap().connections.clear();
     }
 
     /// Graceful shutdown of every connection in the pool: send SIGTERM to
@@ -3490,20 +3768,30 @@ impl McpPool {
     /// `StdioTransport` still sends SIGTERM if this never runs, so even
     /// abnormal exits avoid leaking PIDs without a signal.
     #[allow(dead_code)] // Wired in by callers that want graceful shutdown
-    pub async fn shutdown_all(&mut self) {
-        let names: Vec<String> = self.connections.keys().cloned().collect();
-        for name in names {
-            if let Some(conn) = self.connections.get_mut(&name) {
-                conn.transport.shutdown().await;
-            }
+    pub async fn shutdown_all(&self) {
+        let conns: Vec<Arc<TokioMutex<McpConnection>>> = {
+            let mut state = self.state.lock().unwrap();
+            let conns = state
+                .connections
+                .values()
+                .filter_map(|slot| match slot {
+                    PoolSlot::Ready(slot) => Some(Arc::clone(&slot.conn)),
+                    PoolSlot::Connecting(_) => None,
+                })
+                .collect();
+            state.connections.clear();
+            conns
+        };
+        for conn in conns {
+            let mut conn = conn.lock().await;
+            conn.transport.shutdown().await;
         }
-        self.connections.clear();
     }
 
-    /// Get the underlying configuration
+    /// Get a snapshot of the underlying configuration
     #[allow(dead_code)] // Public API for MCP consumers
-    pub fn config(&self) -> &McpConfig {
-        &self.config
+    pub fn config(&self) -> McpConfig {
+        self.state.lock().unwrap().config.clone()
     }
 
     /// Check if a tool name is an MCP tool
@@ -3518,6 +3806,34 @@ impl McpPool {
                     | "read_mcp_resource"
                     | "mcp_get_prompt"
             )
+    }
+
+    /// Insert a pre-built connection as a Ready slot (tests only).
+    #[cfg(test)]
+    fn insert_ready_for_test(&self, server_name: &str, conn: McpConnection) {
+        let catalog = Arc::clone(&conn.catalog);
+        let conn = Arc::new(TokioMutex::new(conn));
+        let mut state = self.state.lock().unwrap();
+        let config_hash = state.config_hash;
+        state.connections.insert(
+            server_name.to_string(),
+            PoolSlot::Ready(ReadySlot {
+                conn,
+                catalog,
+                config_hash,
+            }),
+        );
+    }
+
+    /// Add a server config entry (tests only).
+    #[cfg(test)]
+    fn add_server_for_test(&self, name: &str, config: McpServerConfig) {
+        self.state
+            .lock()
+            .unwrap()
+            .config
+            .servers
+            .insert(name.to_string(), config);
     }
 }
 
@@ -3805,42 +4121,50 @@ fn snapshot_from_config(
                 if let Some(error) = errors.get(name) {
                     snapshot.error = Some(error.clone());
                 }
-                if let Some(conn) = pool.connections.get(name) {
-                    snapshot.connected = conn.is_ready();
-                    snapshot.tools = conn
-                        .tools()
+                let state = pool.state.lock().unwrap();
+                if let Some(PoolSlot::Ready(slot)) = state.connections.get(name)
+                    && let Some(server_config) = state.config.servers.get(name)
+                {
+                    // `connect_all` only inserts successful connects, so
+                    // slot presence == connected here.
+                    snapshot.connected = true;
+                    snapshot.tools = slot
+                        .catalog
+                        .tools
                         .iter()
-                        .filter(|tool| pool.should_expose_tool(name, conn, tool))
+                        .filter(|tool| pool.should_expose_tool(name, server_config, tool))
                         .map(|tool| McpDiscoveredItem {
                             name: tool.name.clone(),
                             model_name: qualify_mcp_tool_name(name, &tool.name),
                             description: tool.description.as_deref().map(truncate_mcp_description),
                         })
                         .collect();
-                    snapshot.resources =
-                        conn.resources()
-                            .iter()
-                            .map(|resource| McpDiscoveredItem {
-                                name: resource.name.clone(),
+                    snapshot.resources = slot
+                        .catalog
+                        .resources
+                        .iter()
+                        .map(|resource| McpDiscoveredItem {
+                            name: resource.name.clone(),
+                            model_name: qualify_mcp_tool_name(
+                                name,
+                                &resource.name.replace(' ', "_").to_lowercase(),
+                            ),
+                            description: resource.description.clone(),
+                        })
+                        .chain(slot.catalog.resource_templates.iter().map(|template| {
+                            McpDiscoveredItem {
+                                name: template.name.clone(),
                                 model_name: qualify_mcp_tool_name(
                                     name,
-                                    &resource.name.replace(' ', "_").to_lowercase(),
+                                    &template.name.replace(' ', "_").to_lowercase(),
                                 ),
-                                description: resource.description.clone(),
-                            })
-                            .chain(conn.resource_templates().iter().map(|template| {
-                                McpDiscoveredItem {
-                                    name: template.name.clone(),
-                                    model_name: qualify_mcp_tool_name(
-                                        name,
-                                        &template.name.replace(' ', "_").to_lowercase(),
-                                    ),
-                                    description: template.description.clone(),
-                                }
-                            }))
-                            .collect();
-                    snapshot.prompts = conn
-                        .prompts()
+                                description: template.description.clone(),
+                            }
+                        }))
+                        .collect();
+                    snapshot.prompts = slot
+                        .catalog
+                        .prompts
                         .iter()
                         .map(|prompt| McpDiscoveredItem {
                             name: prompt.name.clone(),
@@ -4480,10 +4804,7 @@ mod tests {
         McpConnection {
             name: "mock".to_string(),
             transport,
-            tools: Vec::new(),
-            resources: Vec::new(),
-            resource_templates: Vec::new(),
-            prompts: Vec::new(),
+            catalog: Arc::new(McpCatalog::default()),
             request_id: AtomicU64::new(1),
             state: ConnectionState::Ready,
             config: test_server_config(),
@@ -4565,7 +4886,7 @@ mod tests {
     /// to stat `/`.
     #[tokio::test]
     async fn reload_if_config_changed_is_noop_without_source_path() {
-        let mut pool = McpPool::new(McpConfig::default());
+        let pool = McpPool::new(McpConfig::default());
         let reloaded = pool.reload_if_config_changed().await.unwrap();
         assert!(!reloaded, "no source path → no reload");
     }
@@ -4579,7 +4900,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.json");
         std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
-        let mut pool = McpPool::from_config_path(&path).unwrap();
+        let pool = McpPool::from_config_path(&path).unwrap();
         // Force the mtime to advance without changing content.
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
@@ -4600,7 +4921,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.json");
         std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
-        let mut pool = McpPool::from_config_path(&path).unwrap();
+        let pool = McpPool::from_config_path(&path).unwrap();
         assert!(pool.server_names().is_empty());
         // Mutate the file so both the mtime and the hash change.
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -4613,7 +4934,7 @@ mod tests {
         assert!(reloaded, "content-changed config must trigger reload");
         let names = pool.server_names();
         assert!(
-            names.contains(&"new"),
+            names.iter().any(|name| name == "new"),
             "expected new server in pool after reload, got {names:?}"
         );
     }
@@ -4688,7 +5009,7 @@ mod tests {
         let mut conn = test_connection(Box::new(transport));
         conn.discover_tools().await.expect("discover");
 
-        let names: Vec<&str> = conn.tools.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = conn.tools().iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             names,
             vec!["alpha", "beta", "mu", "zeta"],
@@ -4709,20 +5030,21 @@ mod tests {
         };
         let mut conn = test_connection(Box::new(transport));
         conn.name = "dephy".to_string();
-        conn.tools = vec![McpTool {
-            name: "company--search".to_string(),
-            description: None,
-            input_schema: serde_json::json!({}),
-        }];
+        conn.catalog = Arc::new(McpCatalog {
+            tools: vec![McpTool {
+                name: "company--search".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+            }],
+            ..McpCatalog::default()
+        });
 
-        let mut pool = McpPool::new(McpConfig {
+        let pool = McpPool::new(McpConfig {
             timeouts: McpTimeouts::default(),
             servers: HashMap::new(),
         });
-        pool.config
-            .servers
-            .insert("dephy".to_string(), test_server_config());
-        pool.connections.insert("dephy".to_string(), conn);
+        pool.add_server_for_test("dephy", test_server_config());
+        pool.insert_ready_for_test("dephy", conn);
 
         let result = pool
             .call_tool(
@@ -4749,17 +5071,18 @@ mod tests {
             responses: VecDeque::new(),
         }));
         conn.name = "files".to_string();
-        conn.tools = vec![McpTool {
-            name: "read".to_string(),
-            description: Some("x".repeat(MAX_MCP_DESCRIPTION_LENGTH + 10)),
-            input_schema: serde_json::json!({"type": "object"}),
-        }];
+        conn.catalog = Arc::new(McpCatalog {
+            tools: vec![McpTool {
+                name: "read".to_string(),
+                description: Some("x".repeat(MAX_MCP_DESCRIPTION_LENGTH + 10)),
+                input_schema: serde_json::json!({"type": "object"}),
+            }],
+            ..McpCatalog::default()
+        });
 
-        let mut pool = McpPool::new(McpConfig::default());
-        pool.connections.insert("files".to_string(), conn);
-        pool.config
-            .servers
-            .insert("files".to_string(), test_server_config());
+        let pool = McpPool::new(McpConfig::default());
+        pool.insert_ready_for_test("files", conn);
+        pool.add_server_for_test("files", test_server_config());
 
         let tools = pool.all_tools();
         assert_eq!(tools[0].0, "mcp__files__read");
@@ -4785,26 +5108,33 @@ mod tests {
         }));
         conn.name = "ide".to_string();
         conn.config = config;
-        conn.tools = vec![
-            McpTool {
-                name: "getDiagnostics".to_string(),
-                description: None,
-                input_schema: serde_json::json!({}),
-            },
-            McpTool {
-                name: "getOpenEditorFiles".to_string(),
-                description: None,
-                input_schema: serde_json::json!({}),
-            },
-            McpTool {
-                name: "executeCode".to_string(),
-                description: None,
-                input_schema: serde_json::json!({}),
-            },
-        ];
+        conn.catalog = Arc::new(McpCatalog {
+            tools: vec![
+                McpTool {
+                    name: "getDiagnostics".to_string(),
+                    description: None,
+                    input_schema: serde_json::json!({}),
+                },
+                McpTool {
+                    name: "getOpenEditorFiles".to_string(),
+                    description: None,
+                    input_schema: serde_json::json!({}),
+                },
+                McpTool {
+                    name: "executeCode".to_string(),
+                    description: None,
+                    input_schema: serde_json::json!({}),
+                },
+            ],
+            ..McpCatalog::default()
+        });
 
-        let mut pool = McpPool::new(McpConfig::default());
-        pool.connections.insert("ide".to_string(), conn);
+        let pool = McpPool::new(McpConfig::default());
+        // The pool filters exposure against its *pool* config, so the
+        // server entry must exist there too (production pools only ever
+        // hold connections for configured servers).
+        pool.add_server_for_test("ide", conn.config.clone());
+        pool.insert_ready_for_test("ide", conn);
 
         let names: Vec<String> = pool.all_tools().into_iter().map(|(name, _)| name).collect();
         assert_eq!(
@@ -4830,17 +5160,18 @@ mod tests {
             };
             let mut conn = test_connection(Box::new(transport));
             conn.name = "dephy".to_string();
-            conn.tools = vec![McpTool {
-                name: "search".to_string(),
-                description: None,
-                input_schema: serde_json::json!({}),
-            }];
+            conn.catalog = Arc::new(McpCatalog {
+                tools: vec![McpTool {
+                    name: "search".to_string(),
+                    description: None,
+                    input_schema: serde_json::json!({}),
+                }],
+                ..McpCatalog::default()
+            });
 
-            let mut pool = McpPool::new(McpConfig::default());
-            pool.config
-                .servers
-                .insert("dephy".to_string(), test_server_config());
-            pool.connections.insert("dephy".to_string(), conn);
+            let pool = McpPool::new(McpConfig::default());
+            pool.add_server_for_test("dephy", test_server_config());
+            pool.insert_ready_for_test("dephy", conn);
 
             let result = pool
                 .call_tool(prefixed_name, serde_json::json!({"query": "dephy"}))
@@ -4849,6 +5180,63 @@ mod tests {
             assert_eq!(result, serde_json::json!({"ok": true}));
             assert_eq!(sent.lock().unwrap()[0]["params"]["name"], "search");
         }
+    }
+
+    /// Transport whose response arrives only after a fixed delay — used to
+    /// observe whether two pool calls overlap in time.
+    struct DelayingValueTransport {
+        delay: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl McpTransport for DelayingValueTransport {
+        async fn send(&mut self, _msg: Vec<u8>) -> Result<()> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Vec<u8>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(json_frame(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"ok": true}
+            })))
+        }
+    }
+
+    /// Concurrency regression for the pool-wide lock removal: calls to two
+    /// *different* servers must overlap. Each transport stalls 200 ms, so a
+    /// pool-level serialization across the round trip would take ≥400 ms;
+    /// the overlap margin fails loud well before that. Calls to the *same*
+    /// server still serialize by design (one request-ID correlation loop
+    /// per connection).
+    #[tokio::test]
+    async fn concurrent_calls_to_different_servers_overlap() {
+        let conn_alpha = test_connection(Box::new(DelayingValueTransport {
+            delay: std::time::Duration::from_millis(200),
+        }));
+        let conn_beta = test_connection(Box::new(DelayingValueTransport {
+            delay: std::time::Duration::from_millis(200),
+        }));
+
+        let pool = McpPool::new(McpConfig::default());
+        pool.add_server_for_test("alpha", test_server_config());
+        pool.add_server_for_test("beta", test_server_config());
+        pool.insert_ready_for_test("alpha", conn_alpha);
+        pool.insert_ready_for_test("beta", conn_beta);
+
+        let started = std::time::Instant::now();
+        let (alpha, beta) = tokio::join!(
+            pool.call_tool("mcp__alpha__mock", serde_json::json!({})),
+            pool.call_tool("mcp__beta__mock", serde_json::json!({})),
+        );
+        alpha.expect("alpha call");
+        beta.expect("beta call");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "cross-server MCP calls serialized on a pool-wide lock: {elapsed:?}"
+        );
     }
 
     // ENV_LOCK serializes the whole async test (env mutation): the guard
@@ -4884,8 +5272,8 @@ mod tests {
                 .contains("needs-auth")
         );
 
-        let mut pool = McpPool::new(McpConfig::default());
-        pool.config.servers.insert("remote".to_string(), config);
+        let pool = McpPool::new(McpConfig::default());
+        pool.add_server_for_test("remote", config);
         let err = match pool.get_or_connect("remote").await {
             Ok(_) => panic!("fresh auth cache should short-circuit connection"),
             Err(err) => err,
@@ -5051,11 +5439,11 @@ mod tests {
 
         conn.discover_all().await.expect("discover");
 
-        assert_eq!(conn.tools.len(), 1);
-        assert_eq!(conn.tools[0].name, "search");
-        assert!(conn.resources.is_empty());
-        assert!(conn.resource_templates.is_empty());
-        assert!(conn.prompts.is_empty());
+        assert_eq!(conn.tools().len(), 1);
+        assert_eq!(conn.tools()[0].name, "search");
+        assert!(conn.resources().is_empty());
+        assert!(conn.resource_templates().is_empty());
+        assert!(conn.prompts().is_empty());
     }
 
     /// #1244: when an MCP stdio server fails to spawn, the underlying OS
@@ -6317,7 +6705,7 @@ mod tests {
                 oauth: None,
             },
         );
-        let mut pool = McpPool::new(cfg);
+        let pool = McpPool::new(cfg);
 
         let result = pool
             .call_tool(
@@ -6576,7 +6964,7 @@ mod tests {
                 oauth: None,
             },
         );
-        let mut pool = McpPool::new(cfg);
+        let pool = McpPool::new(cfg);
 
         let result = pool
             .call_tool(

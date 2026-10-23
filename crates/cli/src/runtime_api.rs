@@ -1322,13 +1322,9 @@ async fn list_mcp_servers(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<McpServersResponse>, ApiError> {
     let config = load_mcp_config_or_default(&state.mcp_config_path)?;
-    let mut pool = McpPool::new(config.clone());
-    let _errors = connect_all_bounded(&mut pool).await;
-    let connected: HashSet<String> = pool
-        .connected_servers()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let pool = McpPool::new(config.clone());
+    let _errors = connect_all_bounded(&pool).await;
+    let connected: HashSet<String> = pool.connected_servers().into_iter().collect();
 
     let mut servers = Vec::new();
     for (name, server_cfg) in config.servers {
@@ -1358,9 +1354,9 @@ async fn list_mcp_tools(
     State(state): State<RuntimeApiState>,
     Query(query): Query<McpToolsQuery>,
 ) -> Result<Json<McpToolsResponse>, ApiError> {
-    let mut pool = McpPool::from_config_path(&state.mcp_config_path)
+    let pool = McpPool::from_config_path(&state.mcp_config_path)
         .map_err(|e| ApiError::internal(format!("Failed to load MCP config: {e}")))?;
-    let _errors = connect_all_bounded(&mut pool).await;
+    let _errors = connect_all_bounded(&pool).await;
 
     let mut tools = Vec::new();
     for (prefixed_name, tool) in pool.all_tools() {
@@ -1947,7 +1943,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 /// a pathological config (many hung servers across sequential batches) from
 /// stalling a GET for their aggregate duration. On timeout the pool reports
 /// whatever it managed to register.
-async fn connect_all_bounded(pool: &mut McpPool) -> Vec<(String, anyhow::Error)> {
+async fn connect_all_bounded(pool: &McpPool) -> Vec<(String, anyhow::Error)> {
     const MCP_STATUS_CONNECT_BUDGET: Duration = Duration::from_secs(30);
     tokio::time::timeout(MCP_STATUS_CONNECT_BUDGET, pool.connect_all())
         .await

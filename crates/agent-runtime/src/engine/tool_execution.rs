@@ -12,11 +12,10 @@ use crate::tool_dispatch::ToolDispatcher;
 
 impl Engine {
     pub async fn execute_mcp_tool_with_pool(
-        pool: Arc<AsyncMutex<McpPool>>,
+        pool: Arc<McpPool>,
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolResult, ToolError> {
-        let mut pool = pool.lock().await;
         let result = pool
             .call_tool(name, input)
             .await
@@ -139,7 +138,7 @@ impl Engine {
         tool_name: String,
         tool_input: serde_json::Value,
         registry: Option<&dyn ToolDispatcher>,
-        mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+        mcp_pool: Option<Arc<McpPool>>,
         sandbox_override: Option<serde_json::Value>,
     ) -> Result<ToolResult, ToolError> {
         let started_at = std::time::Instant::now();

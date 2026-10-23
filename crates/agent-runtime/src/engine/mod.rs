@@ -135,7 +135,7 @@ pub struct Engine {
     pub(crate) api_key_env_only_recovery: Option<String>,
     pub session: Session,
     pub(crate) api_provider: ApiProvider,
-    pub(crate) mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    pub(crate) mcp_pool: Option<Arc<McpPool>>,
     pub(crate) rx_op: mpsc::Receiver<Op>,
     /// Wrapped in `Arc` (slice 20 §E) so the `HostAgentExecutor` can
     /// `Arc::clone` it per turn — the single consumer is the executor's
@@ -872,12 +872,10 @@ impl Engine {
 
         // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
         // a brief window to exit before drop fires SIGKILL via kill_on_drop.
-        // Best-effort: pool may not exist (no MCP configured) and the lock
-        // can fail under contention; either way the kill_on_drop fallback
-        // still reaps the children.
+        // Best-effort: pool may not exist (no MCP configured); either way
+        // the kill_on_drop fallback still reaps the children.
         if let Some(pool) = self.mcp_pool.as_ref() {
-            let mut guard = pool.lock().await;
-            guard.shutdown_all().await;
+            pool.shutdown_all().await;
         }
         // §F2b T5 — `SessionShutdown` brackets the session lifecycle (fires
         // once at engine exit, after the op loop + MCP shutdown). Emit-only.
@@ -2539,7 +2537,7 @@ impl Engine {
         let _ = self.tx_event.send(Event::status(message)).await;
         false
     }
-    async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
+    async fn ensure_mcp_pool(&mut self) -> Result<Arc<McpPool>, ToolError> {
         if let Some(pool) = self.mcp_pool.as_ref() {
             return Ok(Arc::clone(pool));
         }
@@ -2548,7 +2546,7 @@ impl Engine {
         if let Some(decider) = self.config.network_policy.as_ref() {
             pool = pool.with_network_policy(decider.clone());
         }
-        let pool = Arc::new(AsyncMutex::new(pool));
+        let pool = Arc::new(pool);
         self.mcp_pool = Some(Arc::clone(&pool));
         Ok(pool)
     }
@@ -2562,7 +2560,6 @@ impl Engine {
             }
         };
 
-        let mut pool = pool.lock().await;
         let errors = pool.connect_all().await;
         for (server, err) in errors {
             let _ = self
