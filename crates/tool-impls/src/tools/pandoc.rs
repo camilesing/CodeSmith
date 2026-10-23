@@ -45,6 +45,9 @@ use codesmith_agent_runtime::tools::spec::{
 /// pathological (deeply nested markup, huge documents) and hang pandoc —
 /// without a cap the tool call (and its worker thread) wedges indefinitely.
 const PANDOC_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-stream capture cap: converted text is KBs–MBs in practice; a
+/// pathological input must not buffer whole into memory.
+const PANDOC_OUTPUT_CAP_BYTES: usize = 32 * 1024 * 1024;
 /// Cap on captured output before it lands in ToolResult/ToolError strings,
 /// so a runaway conversion cannot flood the model context.
 const MAX_INLINE_CHARS: usize = 100_000;
@@ -172,29 +175,51 @@ impl ToolSpec for PandocConvertTool {
         if let Some(out) = resolved_output_path.as_ref() {
             cmd.arg("--output").arg(out);
         }
-        // kill_on_drop: when the overall timeout below fires, the dropped
-        // output future must take the child down instead of leaving a
-        // detached pandoc running.
+        // Own process group + kill_on_drop: when the timeout below fires,
+        // the whole tree (pandoc filters, lua helpers) goes down, not just
+        // the direct child.
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        codesmith_agent_runtime::shell_manager::tokio_own_process_group(&mut cmd);
 
-        let output = tokio::time::timeout(PANDOC_TIMEOUT, cmd.output())
-            .await
-            .map_err(|_| ToolError::Timeout {
-                seconds: PANDOC_TIMEOUT.as_secs(),
-            })?
+        let mut child = cmd
+            .spawn()
             .map_err(|e| ToolError::execution_failed(format!("failed to launch pandoc: {e}")))?;
+        let mut stdout_pipe = child.stdout.take().expect("stdout piped above");
+        let mut stderr_pipe = child.stderr.take().expect("stderr piped above");
+        let stdout_task = tokio::spawn(async move {
+            codesmith_agent_runtime::utils::read_capped(&mut stdout_pipe, PANDOC_OUTPUT_CAP_BYTES)
+                .await
+        });
+        let stderr_task = tokio::spawn(async move {
+            codesmith_agent_runtime::utils::read_capped(&mut stderr_pipe, PANDOC_OUTPUT_CAP_BYTES)
+                .await
+        });
+        let status = match tokio::time::timeout(PANDOC_TIMEOUT, child.wait()).await {
+            Ok(result) => result.map_err(|e| {
+                ToolError::execution_failed(format!("pandoc wait failed: {e}"))
+            })?,
+            Err(_) => {
+                codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+                let _ = child.start_kill();
+                return Err(ToolError::Timeout {
+                    seconds: PANDOC_TIMEOUT.as_secs(),
+                });
+            }
+        };
+        let (stdout, _dropped_out) = stdout_task.await.unwrap_or_default();
+        let (stderr, _dropped_err) = stderr_task.await.unwrap_or_default();
 
-        if !output.status.success() {
+        if !status.success() {
             let stderr = truncate_chars(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                String::from_utf8_lossy(&stderr).trim().to_string(),
                 MAX_ERROR_CHARS,
             );
             return Err(ToolError::execution_failed(format!(
                 "pandoc failed (exit {:?}): {stderr}",
-                output.status.code()
+                status.code()
             )));
         }
 
@@ -207,7 +232,7 @@ impl ToolSpec for PandocConvertTool {
             )
         } else {
             let text = truncate_chars(
-                String::from_utf8_lossy(&output.stdout).to_string(),
+                String::from_utf8_lossy(&stdout).to_string(),
                 MAX_INLINE_CHARS,
             );
             return Ok(ToolResult::success(text));

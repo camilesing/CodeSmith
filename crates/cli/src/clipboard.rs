@@ -51,10 +51,13 @@ pub fn copy_text(text: &str) -> Result<(), String> {
         .stdout(Stdio::null())
         .spawn()
         .map_err(|err| format!("{program} could not be started: {err}"))?;
-    if let Some(stdin) = child.stdin.as_mut() {
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(text.as_bytes())
             .map_err(|err| format!("writing to {program}: {err}"))?;
+        // `take` + end-of-scope drop closes the write end: the clipboard
+        // tool only sees EOF (and exits) once every writer is gone, so
+        // `wait()` before this drop hangs forever.
     }
     let status = child
         .wait()

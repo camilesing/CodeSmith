@@ -281,6 +281,10 @@ async fn run_plugin_child_raw(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Own process group: a timeout kill must take interpreter/helper
+    // children with it — `kill_on_drop` alone reaches only the direct
+    // child.
+    codesmith_agent_runtime::shell_manager::tokio_own_process_group(cmd);
 
     let mut child = cmd
         .spawn()
@@ -305,12 +309,18 @@ async fn run_plugin_child_raw(
         codesmith_agent_runtime::utils::read_capped(&mut stderr, PLUGIN_OUTPUT_CAP_BYTES).await
     });
 
-    let status = tokio::time::timeout(PLUGIN_EXECUTION_TIMEOUT, child.wait())
-        .await
-        .map_err(|_| ToolError::Timeout {
-            seconds: PLUGIN_EXECUTION_TIMEOUT.as_secs(),
-        })?
-        .map_err(|e| ToolError::execution_failed(format!("process error: {e}")))?;
+    let status = match tokio::time::timeout(PLUGIN_EXECUTION_TIMEOUT, child.wait()).await {
+        Ok(result) => result.map_err(|e| ToolError::execution_failed(format!(
+            "process error: {e}"
+        )))?,
+        Err(_) => {
+            codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+            let _ = child.start_kill();
+            return Err(ToolError::Timeout {
+                seconds: PLUGIN_EXECUTION_TIMEOUT.as_secs(),
+            });
+        }
+    };
 
     if let Some(stdin_writer) = stdin_writer {
         let _ = stdin_writer.await;

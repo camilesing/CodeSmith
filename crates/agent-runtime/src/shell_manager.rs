@@ -149,6 +149,22 @@ pub fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
+/// Put a spawned tokio child in its own process group (unix) so a timeout
+/// kill can take the whole tree — `kill_on_drop` / `start_kill` reach only
+/// the direct child, orphaning interpreters and helper processes the child
+/// spawned. Pair with [`kill_process_group_of_opt`] on the timeout path.
+/// No-op on non-unix.
+pub fn tokio_own_process_group(cmd: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Kill the process group led by `pid` when only the pid is known (the
 /// child handle was consumed by a dropped wait future). ESRCH-tolerant
 /// like [`kill_process_group_of`]; errors are ignored — this runs on a

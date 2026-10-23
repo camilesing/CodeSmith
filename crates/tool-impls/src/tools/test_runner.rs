@@ -167,6 +167,9 @@ async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Ou
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Own process group: a timed-out cargo run must take rustc / test
+    // binaries with it, not orphan them.
+    codesmith_agent_runtime::shell_manager::tokio_own_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ToolError::not_available("cargo is not installed or not in PATH")
@@ -187,6 +190,8 @@ async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Ou
             "Failed to run cargo: {e}"
         )))?,
         Err(_) => {
+            codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+            let _ = child.start_kill();
             return Err(ToolError::Timeout {
                 seconds: CARGO_TEST_TIMEOUT.as_secs(),
             });

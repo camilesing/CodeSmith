@@ -62,6 +62,22 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|err| format!("{shell} could not be started: {err}"))?;
+    // Drain both pipes on reader threads while polling: a statusline
+    // command that writes more than the pipe buffer blocks on write, the
+    // poll loop below would never see it exit, and the run would die as a
+    // bogus "timeout" instead of returning the line.
+    let mut stdout_pipe = child.stdout.take().expect("stdout piped above");
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped above");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout_pipe, &mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stderr_pipe, &mut buf);
+        buf
+    });
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
@@ -70,18 +86,30 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Join so the reader threads (and their buffers) are
+                    // gone before we report the timeout.
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return Err("statusline command timed out".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
-            Err(err) => return Err(format!("statusline command failed: {err}")),
+            Err(err) => {
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!("statusline command failed: {err}"));
+            }
         }
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("statusline command output unreadable: {err}"))?;
-    if !output.status.success() {
-        let reason = String::from_utf8_lossy(&output.stderr)
+    let stdout = stdout_reader
+        .join()
+        .unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    let status = child
+        .wait()
+        .map_err(|err| format!("statusline command failed: {err}"))?;
+    if !status.success() {
+        let reason = String::from_utf8_lossy(&stderr)
             .lines()
             .map(str::trim)
             .find(|line| !line.is_empty())
@@ -92,12 +120,9 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
                 )
             })
             .unwrap_or_default();
-        return Err(format!(
-            "statusline command exited with {}{reason}",
-            output.status
-        ));
+        return Err(format!("statusline command exited with {status}{reason}"));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout);
     let line = stdout.lines().next().unwrap_or("").trim();
     if line.is_empty() {
         return Err("statusline command printed nothing".to_string());
