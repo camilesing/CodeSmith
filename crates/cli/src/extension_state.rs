@@ -64,23 +64,7 @@ impl ExtensionStateStore {
             });
         }
 
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("read extension state at {}", path.display()))?;
-        let parsed: OnDiskState = match toml::from_str(&raw) {
-            Ok(v) => v,
-            Err(err) => {
-                tracing::warn!(
-                    "extensions_state.toml at {} is malformed ({}); treating all extensions as enabled",
-                    path.display(),
-                    err
-                );
-                // Quarantine before defaulting: the next save would
-                // overwrite the malformed file and destroy the only copy
-                // of the user's enable/disable choices.
-                codesmith_agent_runtime::utils::preserve_corrupt_state_file(&path);
-                OnDiskState::default()
-            }
-        };
+        let parsed = read_on_disk(&path)?;
 
         Ok(Self {
             path: Some(path),
@@ -102,7 +86,14 @@ impl ExtensionStateStore {
         if !changed {
             return Ok(());
         }
-        self.persist()
+        let id = ext_id.to_string();
+        self.persist_delta(move |disk| {
+            if enabled {
+                disk.disabled.retain(|entry| entry != &id);
+            } else if !disk.disabled.contains(&id) {
+                disk.disabled.push(id.clone());
+            }
+        })
     }
 
     pub fn disabled(&self) -> Vec<String> {
@@ -130,25 +121,67 @@ impl ExtensionStateStore {
     pub fn add_installed(&mut self, id: &str, provenance: &str) -> Result<()> {
         self.installed
             .insert(id.to_string(), provenance.to_string());
-        self.persist()
+        let id = id.to_string();
+        let provenance = provenance.to_string();
+        self.persist_delta(move |disk| {
+            disk.installed.insert(id.clone(), provenance.clone());
+        })
     }
 
-    /// Remove install provenance for `id` (§F5c). No-op if absent.
+    /// Remove install provenance for `id` (§F5c). No-op if absent (and
+    /// then also no disk write).
     pub fn remove_installed(&mut self, id: &str) -> Result<()> {
-        self.installed.remove(id);
-        self.persist()
+        if self.installed.remove(id).is_none() {
+            return Ok(());
+        }
+        let id = id.to_string();
+        self.persist_delta(move |disk| {
+            disk.installed.remove(&id);
+        })
     }
 
-    fn persist(&self) -> Result<()> {
+    /// Serialize one mutation against the on-disk state under the shared
+    /// fd-lock helper: reload inside the lock and apply only this
+    /// mutation's delta, so a concurrent process's change survives instead
+    /// of being clobbered by a last-writer-wins whole-file persist.
+    fn persist_delta(&self, apply: impl FnOnce(&mut OnDiskState)) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
-            return Ok(());
+            anyhow::bail!(
+                "ExtensionStateStore has no backing path; refusing to silently drop state changes"
+            );
         };
-        let on_disk = OnDiskState {
-            disabled: self.disabled.iter().cloned().collect(),
-            installed: self.installed.clone(),
-        };
-        let body = toml::to_string_pretty(&on_disk).context("serialize extension state")?;
-        atomic_write(path, body.as_bytes())
+        codesmith_agent_runtime::settings_file::with_settings_lock(path, || {
+            let mut disk = read_on_disk(path)?;
+            apply(&mut disk);
+            let body = toml::to_string_pretty(&disk).context("serialize extension state")?;
+            atomic_write(path, body.as_bytes())
+        })
+    }
+}
+
+/// Read and parse the on-disk state. A missing file or a malformed file
+/// yields the default (malformed files are quarantined first so the next
+/// save cannot destroy the only copy of the user's choices).
+fn read_on_disk(path: &Path) -> Result<OnDiskState> {
+    if !path.exists() {
+        return Ok(OnDiskState::default());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read extension state at {}", path.display()))?;
+    match toml::from_str(&raw) {
+        Ok(v) => Ok(v),
+        Err(err) => {
+            tracing::warn!(
+                "extensions_state.toml at {} is malformed ({}); treating all extensions as enabled",
+                path.display(),
+                err
+            );
+            // Quarantine before defaulting: the next save would
+            // overwrite the malformed file and destroy the only copy
+            // of the user's enable/disable choices.
+            codesmith_agent_runtime::utils::preserve_corrupt_state_file(path);
+            Ok(OnDiskState::default())
+        }
     }
 }
 
