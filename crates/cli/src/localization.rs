@@ -168,9 +168,14 @@ where
     F: Fn(&str) -> Option<String>,
 {
     let normalized = normalize_locale_input(setting);
-    if !matches!(normalized.as_str(), "" | "auto" | "system") {
-        return parse_locale(&normalized).unwrap_or(Locale::En);
+    if !matches!(normalized.as_str(), "" | "auto" | "system")
+        && let Some(locale) = parse_locale(&normalized)
+    {
+        return locale;
     }
+    // An unrecognized setting (typo like "chinese" or "zh:CN") must not
+    // silently drop the environment locale: fall through to env detection
+    // before defaulting to English.
 
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Some(value) = env(key)

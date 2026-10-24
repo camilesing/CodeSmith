@@ -151,7 +151,7 @@ impl Hook {
 }
 
 /// Configuration for hooks (loaded from config.toml)
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HooksConfig {
     /// List of hooks to execute
     #[serde(default)]
@@ -174,6 +174,21 @@ pub struct HooksConfig {
 
 fn default_enabled() -> bool {
     true
+}
+
+// Manual so both construction paths agree: the derived Default set
+// `enabled: false`, contradicting the serde default (`default_enabled`) —
+// `..Default::default()` silently disabled all hooks for programmatic
+// builders while TOML-loaded configs had them on.
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            hooks: Vec::new(),
+            enabled: default_enabled(),
+            default_timeout_secs: None,
+            working_dir: None,
+        }
+    }
 }
 
 impl HooksConfig {
@@ -1138,10 +1153,16 @@ fn parse_env_lines(stdout: &str) -> HashMap<String, String> {
             continue;
         };
         let key = key.trim();
-        if key.is_empty() {
+        // std rejects env entries with NUL anywhere or `=` in the KEY at
+        // spawn() time; one stray byte of hook output must not make every
+        // later exec_shell fail to spawn.
+        if key.is_empty() || key.contains('=') || key.contains('\0') {
             continue;
         }
         let value = value.trim();
+        if value.contains('\0') {
+            continue;
+        }
         let stripped = value
             .strip_prefix('"')
             .and_then(|v| v.strip_suffix('"'))

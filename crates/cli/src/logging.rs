@@ -27,13 +27,23 @@ pub fn env_requests_verbose_logging() -> bool {
 
 fn log_value_enables_verbose(value: &str) -> bool {
     value.split(',').any(|directive| {
-        let level = directive
-            .rsplit('=')
-            .next()
-            .unwrap_or(directive)
-            .trim()
-            .to_ascii_lowercase();
-        matches!(level.as_str(), "trace" | "debug" | "info")
+        let directive = directive.trim();
+        match directive.rsplit_once('=') {
+            Some((_target, level)) => {
+                matches!(
+                    level.trim().to_ascii_lowercase().as_str(),
+                    "trace" | "debug" | "info"
+                )
+            }
+            // A bare directive is either a level (trace/debug/info turn
+            // verbose on; warn/error/off do not) or a TARGET name —
+            // standard RUST_LOG semantics read `codesmith_cli` as
+            // `codesmith_cli=trace`, which enables verbose output.
+            None => !matches!(
+                directive.to_ascii_lowercase().as_str(),
+                "" | "off" | "error" | "warn"
+            ),
+        }
     })
 }
 
@@ -71,6 +81,15 @@ mod tests {
             "warn,codesmith_cli::llm_client=trace"
         ));
         assert!(!log_value_enables_verbose("warn"));
-        assert!(!log_value_enables_verbose("codesmith_cli::off"));
+        // `codesmith_cli::off` is a bare TARGET path (RUST_LOG needs `=`
+        // for a level), so it reads as `codesmith_cli::off=trace` and
+        // enables verbose — the old parser silently no-op'd bare targets.
+        assert!(log_value_enables_verbose("codesmith_cli::off"));
+        // A bare TARGET directive is `target=trace` under RUST_LOG
+        // semantics — it must enable verbose output, not silently no-op.
+        assert!(log_value_enables_verbose("codesmith_cli"));
+        assert!(log_value_enables_verbose("warn,codesmith_cli"));
+        assert!(!log_value_enables_verbose("off"));
+        assert!(!log_value_enables_verbose(""));
     }
 }

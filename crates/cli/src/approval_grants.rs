@@ -59,12 +59,18 @@ struct GrantsProject {
 /// grants unavailable".
 #[must_use]
 pub fn approvals_toml_path() -> Option<PathBuf> {
-    Some(
-        codesmith_agent_runtime::workspace_trust::default_config_path()?
-            .parent()
-            .map(Path::to_path_buf)?
-            .join("approvals.toml"),
-    )
+    let parent = codesmith_agent_runtime::workspace_trust::default_config_path()?
+        .parent()
+        .map(Path::to_path_buf)?;
+    // A relative/empty parent (e.g. CODESMITH_CONFIG_PATH="config.toml",
+    // whose parent is "") resolves approvals.toml against the CWD — which
+    // can be inside a repository, violating "not one square inch of
+    // grantable soil inside the repo". Degrade to "persistent grants
+    // unavailable" instead of writing into the workspace.
+    if parent.as_os_str().is_empty() || !parent.is_absolute() {
+        return None;
+    }
+    Some(parent.join("approvals.toml"))
 }
 
 impl ApprovalGrants {
