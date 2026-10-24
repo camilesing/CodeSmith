@@ -717,7 +717,11 @@ impl AutomationManager {
 
     /// Record a failed enqueue of a planned run; mirrors `run_now`'s
     /// terminal bookkeeping so the failure shows up in `last_run_at`.
-    pub fn record_run_enqueue_failed(&self, run: &mut AutomationRunRecord, err: &str) -> Result<()> {
+    pub fn record_run_enqueue_failed(
+        &self,
+        run: &mut AutomationRunRecord,
+        err: &str,
+    ) -> Result<()> {
         run.status = AutomationRunStatus::Failed;
         run.ended_at = Some(Utc::now());
         run.error = Some(format!("Failed to enqueue task: {err}"));
@@ -756,8 +760,7 @@ impl AutomationManager {
                     {
                         run.status = AutomationRunStatus::Failed;
                         run.ended_at = Some(Utc::now());
-                        run.error =
-                            Some("enqueue interrupted (scheduler restart?)".to_string());
+                        run.error = Some("enqueue interrupted (scheduler restart?)".to_string());
                         self.save_run(&run)?;
                     }
                     continue;

@@ -59,8 +59,7 @@ pub fn capacity_controller_config_from_app(
     if let Some(v) = finite_or_default("severe_min_slack", capacity.severe_min_slack) {
         out.severe_min_slack = v;
     }
-    if let Some(v) = finite_or_default("severe_violation_ratio", capacity.severe_violation_ratio)
-    {
+    if let Some(v) = finite_or_default("severe_violation_ratio", capacity.severe_violation_ratio) {
         out.severe_violation_ratio = v;
     }
     if let Some(v) = capacity.refresh_cooldown_turns {
@@ -79,7 +78,10 @@ pub fn capacity_controller_config_from_app(
         out.profile_window = v.max(2);
     }
 
-    if let Some(v) = finite_or_default("deepseek_v3_2_chat_prior", capacity.deepseek_v3_2_chat_prior) {
+    if let Some(v) = finite_or_default(
+        "deepseek_v3_2_chat_prior",
+        capacity.deepseek_v3_2_chat_prior,
+    ) {
         out.model_priors.insert("deepseek_v3_2_chat".to_string(), v);
     }
     if let Some(v) = finite_or_default(
@@ -92,11 +94,11 @@ pub fn capacity_controller_config_from_app(
     if let Some(v) = finite_or_default("deepseek_v4_pro_prior", capacity.deepseek_v4_pro_prior) {
         out.model_priors.insert("deepseek_v4_pro".to_string(), v);
     }
-    if let Some(v) = finite_or_default("deepseek_v4_flash_prior", capacity.deepseek_v4_flash_prior) {
+    if let Some(v) = finite_or_default("deepseek_v4_flash_prior", capacity.deepseek_v4_flash_prior)
+    {
         out.model_priors.insert("deepseek_v4_flash".to_string(), v);
     }
-    if let Some(v) = finite_or_default("fallback_default_prior", capacity.fallback_default_prior)
-    {
+    if let Some(v) = finite_or_default("fallback_default_prior", capacity.fallback_default_prior) {
         out.fallback_default = v;
     }
 

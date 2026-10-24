@@ -50,10 +50,7 @@ pub fn copy_text(text: &str) -> Result<(), String> {
             .iter()
             .map(|(program, _)| *program)
             .collect::<Vec<_>>();
-        return Err(missing_tool_message(
-            "copy to the clipboard",
-            &programs,
-        ));
+        return Err(missing_tool_message("copy to the clipboard", &programs));
     };
     let mut child = Command::new(program)
         .args(args)
