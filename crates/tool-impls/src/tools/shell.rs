@@ -666,7 +666,19 @@ impl ToolSpec for ExecShellTool {
         }
 
         let policy_override = context.elevated_sandbox_policy.clone();
-        let effective_runtime = context.sandbox_runtime.clone();
+        let mut effective_runtime = context.sandbox_runtime.clone();
+        // Fail-closed for auto-approved commands: `approval_requirement_for_input`
+        // grants Auto purely on the prediction this command will run
+        // sandboxed. When the sandbox backend cannot prepare at spawn time,
+        // the manager's `fail_if_unavailable = false` would run the command
+        // UNCONFINED — arbitrary code the user never approved. Flip this
+        // call's copy to fail-closed so the refusal happens instead of the
+        // post-hoc violation annotation.
+        if context.sandbox_runtime.auto_allow_bash_if_sandboxed
+            && command_would_be_sandboxed(context, command)
+        {
+            effective_runtime.fail_if_unavailable = true;
+        }
         let working_dir = match input
             .get("cwd")
             .or_else(|| input.get("working_dir"))
