@@ -90,17 +90,17 @@ impl ToolRegistryPluginExt for ToolRegistry {
                             tracing::info!("Tool '{}' replaced via config override", tool_name);
                         }
                         None => {
-                            if self.remove_tool(tool_name) {
-                                tracing::warn!(
-                                    "Tool '{}' override did not create a replacement; removed the original tool to avoid override fallthrough",
-                                    tool_name
-                                );
-                            } else {
-                                tracing::warn!(
-                                    "Tool '{}' override did not create a replacement and no registered tool existed",
-                                    tool_name
-                                );
-                            }
+                            // A missing override script is a config error,
+                            // not a reason to silently delete a builtin tool
+                            // (possibly `read_file`) for the whole session.
+                            // Keep the original and fail loud on every
+                            // channel the user might see.
+                            let message = format!(
+                                "config override for tool '{tool_name}' did not build \
+                                 (script missing or unreadable); keeping the built-in tool"
+                            );
+                            tracing::error!("{message}");
+                            eprintln!("error: {message}");
                         }
                     }
                 }
@@ -1108,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_overrides_removes_original_when_replacement_is_missing() {
+    fn apply_overrides_keeps_original_when_replacement_fails_to_build() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let mut registry = ToolRegistryBuilder::new()
@@ -1129,7 +1129,10 @@ mod tests {
 
         registry.apply_overrides(&overrides, tmp.path());
 
-        assert!(!registry.contains("read_file"));
+        // A config typo (missing script) must not silently delete a builtin
+        // tool for the whole session; the original stays registered and the
+        // error is surfaced (tracing + stderr) instead.
+        assert!(registry.contains("read_file"));
         assert!(registry.contains("list_dir"));
     }
 

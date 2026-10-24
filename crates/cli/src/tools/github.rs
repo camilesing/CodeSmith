@@ -140,7 +140,14 @@ impl ToolSpec for GithubPrContextTool {
                 write_artifact_if_needed(context, "pr_diff", &diff, DIFF_ARTIFACT_THRESHOLD)
                     .await?;
             shaped["diff_summary"] = json!(summarize(&diff, 900));
-            shaped["diff_artifact"] = json!(diff_ref);
+            shaped["diff_artifact"] = json!(diff_ref.clone());
+            if diff_ref.is_none() {
+                // Below the offload threshold or no artifact backend: keep
+                // the fetched diff inline instead of discarding everything
+                // past the 900-char summary — fetching it was the point of
+                // `include_diff`.
+                shaped["diff"] = json!(diff);
+            }
         }
         let mut result = ToolResult::json(&json!({
             "summary": format!("PR #{number}: {}", shaped["title"].as_str().unwrap_or("")),
@@ -209,14 +216,30 @@ impl ToolSpec for GithubCommentTool {
         let subcmd = if target == "pr" { "pr" } else { "issue" };
         let number_s = number.to_string();
         run_gh_text(context, &[subcmd, "comment", &number_s, "--body", body]).await?;
+        // The comment is already live; a failed artifact offload must not
+        // turn the call into an Err — a retry would post the comment twice.
+        // Record the miss instead: no artifact ref in the metadata.
+        let artifact = match write_artifact_if_needed(
+            context,
+            "github_comment",
+            body,
+            BODY_ARTIFACT_THRESHOLD,
+        )
+        .await
+        {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                tracing::warn!("comment artifact offload failed (comment posted): {err}");
+                None
+            }
+        };
         let metadata = github_event_metadata(
             "comment",
             target,
             number,
             summarize(body, 240),
             None,
-            write_artifact_if_needed(context, "github_comment", body, BODY_ARTIFACT_THRESHOLD)
-                .await?,
+            artifact,
         );
         Ok(
             ToolResult::success(format!("Commented on {target} #{number}."))
@@ -373,24 +396,36 @@ async fn close_github_thread(
     }
     let subcmd = target.cli_subcommand();
     let number_s = number.to_string();
-    if let Some(comment) = optional_str(&input, "comment") {
-        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", comment]).await?;
-    }
+    // Close first, comment after: if the comment post fails the thread is
+    // still closed (the intended outcome), and a retry re-posts only the
+    // comment — whereas comment-first left a posted comment behind an Err
+    // that invited a duplicate on retry.
     let close_args: Vec<&str> = match target {
         GithubCloseTarget::Issue => vec!["issue", "close", &number_s, "--reason", "completed"],
         GithubCloseTarget::Pr => vec!["pr", "close", &number_s],
     };
     run_gh_text(context, &close_args).await?;
+    if let Some(comment) = optional_str(&input, "comment") {
+        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", comment]).await?;
+    }
+    // A failed artifact write after the close+comment must not fail the
+    // call (both side effects are live); log it so the audit trail's
+    // missing artifact ref is explainable, instead of silently vanishing.
     let comment_artifact = match optional_str(&input, "comment") {
-        Some(comment) => write_artifact_if_needed(
+        Some(comment) => match write_artifact_if_needed(
             context,
             "github_close_comment",
             comment,
             BODY_ARTIFACT_THRESHOLD,
         )
         .await
-        .ok()
-        .flatten(),
+        {
+            Ok(artifact) => artifact,
+            Err(err) => {
+                tracing::warn!("close-comment artifact offload failed (comment posted): {err}");
+                None
+            }
+        },
         None => None,
     };
     let metadata = github_event_metadata(
@@ -521,10 +556,15 @@ async fn shape_large_text(
     if let Some(body) = body
         && body.len() > threshold
     {
-        let artifact = write_artifact_if_needed(context, label, &body, threshold).await?;
-        value["body_summary"] = json!(summarize(&body, 900));
-        value["body_artifact"] = json!(artifact);
-        value["body"] = json!(summarize(&body, 1200));
+        // Truncate only when the offload actually produced an artifact;
+        // with no active task and no task_data_dir the full body would be
+        // replaced by a 1200-char summary with no copy retained anywhere —
+        // silent data loss for a body the tool already fetched.
+        if let Some(artifact) = write_artifact_if_needed(context, label, &body, threshold).await? {
+            value["body_summary"] = json!(summarize(&body, 900));
+            value["body_artifact"] = json!(artifact);
+            value["body"] = json!(summarize(&body, 1200));
+        }
     }
     Ok(value)
 }
@@ -672,13 +712,35 @@ fn validate_evidence(input: &Value, closing: bool) -> Result<(), ToolError> {
                 "acceptance_criteria entries must be non-empty",
             ));
         }
-        for key in ["files_changed", "tests_run", "final_status"] {
-            if !evidence.contains_key(key) {
+        // Presence-only checks accepted `{"files_changed": [], "tests_run":
+        // [], "final_status": ""}` — exactly the no-evidence case the guard
+        // exists to block. Require non-empty substance.
+        for key in ["files_changed", "tests_run"] {
+            let non_empty = evidence
+                .get(key)
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty());
+            if !non_empty {
                 return Err(ToolError::invalid_input(format!(
-                    "closure evidence missing {key}"
+                    "closure evidence {key} must be a non-empty array"
                 )));
             }
         }
+        let status_ok = evidence
+            .get("final_status")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        if !status_ok {
+            return Err(ToolError::invalid_input(
+                "closure evidence final_status must be a non-empty string",
+            ));
+        }
+    } else if evidence.is_empty() {
+        // The tool promises an "evidence-backed comment"; `{}` carried no
+        // evidence at all.
+        return Err(ToolError::invalid_input(
+            "comment evidence must include at least one field",
+        ));
     }
     Ok(())
 }
@@ -761,6 +823,46 @@ mod tests {
             "evidence": { "files_changed": [] }
         });
         let err = validate_evidence(&input, true).expect_err("should refuse");
-        assert!(err.to_string().contains("tests_run"));
+        // The empty array is rejected before the missing key would be.
+        assert!(err.to_string().contains("files_changed"));
+    }
+
+    /// Presence-only checks used to accept all-empty evidence — the exact
+    /// no-evidence case the closure guard exists to block.
+    #[test]
+    fn empty_closure_evidence_refuses() {
+        let input = json!({
+            "number": 1,
+            "acceptance_criteria": ["done"],
+            "evidence": {
+                "files_changed": [],
+                "tests_run": ["cargo test"],
+                "final_status": "  "
+            }
+        });
+        let err = validate_evidence(&input, true).expect_err("should refuse");
+        assert!(err.to_string().contains("files_changed"));
+    }
+
+    #[test]
+    fn blank_final_status_refuses() {
+        let input = json!({
+            "number": 1,
+            "acceptance_criteria": ["done"],
+            "evidence": {
+                "files_changed": ["src/a.rs"],
+                "tests_run": ["cargo test"],
+                "final_status": ""
+            }
+        });
+        let err = validate_evidence(&input, true).expect_err("should refuse");
+        assert!(err.to_string().contains("final_status"));
+    }
+
+    #[test]
+    fn empty_comment_evidence_object_refuses() {
+        let input = json!({ "target": "issue", "number": 1, "body": "b", "evidence": {} });
+        let err = validate_evidence(&input, false).expect_err("should refuse");
+        assert!(err.to_string().contains("at least one field"));
     }
 }

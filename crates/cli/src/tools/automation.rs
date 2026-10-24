@@ -72,10 +72,7 @@ impl ToolSpec for AutomationCreateTool {
             name: required_str(&input, "name")?.to_string(),
             prompt: required_str(&input, "prompt")?.to_string(),
             rrule: required_str(&input, "rrule")?.to_string(),
-            cwds: string_array(&input, "cwds")?
-                .into_iter()
-                .map(PathBuf::from)
-                .collect(),
+            cwds: cwds_from_input(&input)?,
             status: Some(
                 if input
                     .get("paused")
@@ -237,13 +234,11 @@ impl ToolSpec for AutomationUpdateTool {
             name: optional_str(&input, "name").map(ToString::to_string),
             prompt: optional_str(&input, "prompt").map(ToString::to_string),
             rrule: optional_str(&input, "rrule").map(ToString::to_string),
+            // Presence means "replace the list": `cwds: null` is rejected by
+            // `cwds_from_input` instead of silently clearing the configured
+            // working directories.
             cwds: if input.get("cwds").is_some() {
-                Some(
-                    string_array(&input, "cwds")?
-                        .into_iter()
-                        .map(PathBuf::from)
-                        .collect(),
-                )
+                Some(cwds_from_input(&input)?)
             } else {
                 None
             },
@@ -378,18 +373,50 @@ fn automation_id_schema(require_id: bool) -> Value {
     schema
 }
 
+/// Parse a `Vec<String>` field, rejecting wrong-typed shapes instead of
+/// silently defaulting or dropping items: `cwds: ["/tmp", 42]` used to
+/// persist as `["/tmp"]`, and a JSON `null` used to yield `Ok(vec![])` which
+/// `automation_update`'s presence check turned into "clear the configured
+/// working directories" — diverging from how `required_str`/`required_u64`
+/// treat wrong-typed fields.
 fn string_array(input: &Value, field: &str) -> Result<Vec<String>, ToolError> {
-    Ok(input
-        .get(field)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
+    match input.get(field) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let s = item.as_str().ok_or_else(|| {
+                    ToolError::invalid_input(format!(
+                        "field '{field}' must contain only strings, got: {item}"
+                    ))
+                })?;
+                out.push(s.to_string());
+            }
+            Ok(out)
+        }
+        Some(other) => Err(ToolError::invalid_input(format!(
+            "field '{field}' must be an array of strings, got: {other}"
+        ))),
+    }
+}
+
+/// Parse the `cwds` working-directory list. Entries become the workspace of
+/// unattended, auto-approved runs downstream, so every entry must be an
+/// absolute path — a relative path would resolve against wherever the
+/// scheduler happens to run, granting the run an unintended directory.
+fn cwds_from_input(input: &Value) -> Result<Vec<PathBuf>, ToolError> {
+    string_array(&input, "cwds")?
+        .into_iter()
+        .map(|raw| {
+            let path = PathBuf::from(&raw);
+            if !path.is_absolute() {
+                return Err(ToolError::invalid_input(format!(
+                    "cwds entries must be absolute paths, got: {raw:?}"
+                )));
+            }
+            Ok(path)
         })
-        .unwrap_or_default())
+        .collect()
 }
 
 #[cfg(test)]
@@ -402,5 +429,33 @@ mod tests {
         let schema = AutomationCreateTool.input_schema();
         assert!(schema["properties"]["rrule"].is_object());
         assert_eq!(schema["required"][0], "name");
+    }
+
+    #[test]
+    fn string_array_rejects_wrong_typed_shapes() {
+        let ok = json!({ "cwds": ["/tmp/a", "/tmp/b"] });
+        assert_eq!(
+            string_array(&ok, "cwds").unwrap(),
+            vec!["/tmp/a".to_string(), "/tmp/b".to_string()]
+        );
+        let absent = json!({});
+        assert!(string_array(&absent, "cwds").unwrap().is_empty());
+
+        let mixed = json!({ "cwds": ["/tmp", 42, null] });
+        assert!(string_array(&mixed, "cwds").is_err(), "non-string items");
+        let null = json!({ "cwds": null });
+        assert!(string_array(&null, "cwds").is_err(), "null must not clear");
+        let scalar = json!({ "cwds": "/tmp" });
+        assert!(string_array(&scalar, "cwds").is_err(), "non-array");
+    }
+
+    #[test]
+    fn cwds_must_be_absolute() {
+        let ok = json!({ "cwds": ["/work/repo"] });
+        assert_eq!(cwds_from_input(&ok).unwrap(), vec![PathBuf::from("/work/repo")]);
+
+        let rel = json!({ "cwds": ["repo"] });
+        let err = cwds_from_input(&rel).expect_err("relative path must be rejected");
+        assert!(err.to_string().contains("absolute"));
     }
 }
