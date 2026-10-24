@@ -44,10 +44,17 @@ pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>
     match kind {
         SandboxKind::None => Ok(None),
         SandboxKind::OpenSandbox => {
-            let base_url = config
-                .sandbox_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8080".to_string());
+            // The documented default is kept, but never silently: the user
+            // asked for a remote sandbox, and routing every command to
+            // whatever listens on localhost:8080 must be visible up front
+            // rather than surface later as "Failed to reach OpenSandbox".
+            let base_url = config.sandbox_url.clone().unwrap_or_else(|| {
+                tracing::warn!(
+                    "sandbox_backend = \"opensandbox\" but sandbox_url is unset; \
+                     defaulting to http://localhost:8080 — set sandbox_url explicitly"
+                );
+                "http://localhost:8080".to_string()
+            });
             let api_key = config.sandbox_api_key.clone();
             let backend = super::opensandbox::OpenSandboxBackend::new(base_url, api_key, 30)?;
             Ok(Some(Box::new(backend)))

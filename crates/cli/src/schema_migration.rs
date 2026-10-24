@@ -48,7 +48,7 @@
 //!         &mut value,
 //!         record.schema_version,
 //!     )?;
-//!     backup_before_migrate(&path, SessionMigration::DOMAIN);
+//!     backup_before_migrate(&path, SessionMigration::DOMAIN)?;
 //!     write_atomic(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
 //!     // Re-deserialize with the migrated value into the up-to-date struct.
 //!     record = serde_json::from_value(value)?;
@@ -225,22 +225,26 @@ pub trait SchemaMigration {
     }
 }
 
-/// Create a `.bak` copy of `path` before mutation. Returns the backup
-/// path. Errors are logged at warn level and ignored — the migration
-/// proceeds because [`codesmith_agent_runtime::utils::write_atomic`] is itself crash-safe.
+/// Create a `.bak` copy of `path` before mutation and return the backup
+/// path. Fails closed: a copy or sync failure is an `Err` so the caller
+/// can abort the migration — `write_atomic` only protects against torn
+/// writes on *crash*, while the `.bak` is the only recovery artifact if a
+/// buggy migration persists well-formed-but-corrupted JSON. The copy is
+/// fsync'd so the backup is durable before the record is overwritten.
 ///
 /// The `.bak` file is left on disk after a successful migration so a
 /// user who notices a regression can manually restore it. No automatic
 /// garbage collection — bak files are user-visible recovery artifacts.
 #[allow(dead_code)] // Public surface; first call site lands when v2 ships.
-pub fn backup_before_migrate(path: &Path, domain: &str) -> PathBuf {
+pub fn backup_before_migrate(path: &Path, domain: &str) -> std::io::Result<PathBuf> {
     let bak = path.with_extension(
         path.extension()
             .map(|ext| format!("{}.bak", ext.to_string_lossy()))
             .unwrap_or_else(|| "bak".to_string()),
     );
-    match fs::copy(path, &bak) {
-        Ok(_) => tracing::info!(
+    let result = fs::copy(path, &bak).and_then(|_| fs::File::open(&bak)?.sync_all());
+    match &result {
+        Ok(()) => tracing::info!(
             domain,
             from = %path.display(),
             to = %bak.display(),
@@ -250,10 +254,10 @@ pub fn backup_before_migrate(path: &Path, domain: &str) -> PathBuf {
             domain,
             from = %path.display(),
             error = %e,
-            "schema backup failed (continuing — migration is crash-safe)"
+            "schema backup failed; migration must not proceed without it"
         ),
     }
-    bak
+    result.map(|()| bak)
 }
 
 /// Take an advisory cross-process lock covering a record's whole
@@ -458,7 +462,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("session_abc.json");
         std::fs::write(&path, r#"{"id":"abc"}"#).expect("write");
-        let bak = backup_before_migrate(&path, "test_session");
+        let bak = backup_before_migrate(&path, "test_session").expect("backup succeeds");
         assert!(bak.exists(), "bak file must exist at {}", bak.display());
         assert_eq!(
             std::fs::read_to_string(&bak).expect("read bak"),
@@ -473,14 +477,14 @@ mod tests {
     }
 
     #[test]
-    fn backup_failure_does_not_panic_or_propagate() {
-        // Pointing at a non-existent source: copy fails, but the function
-        // returns the bak path it would have used and logs a warning.
+    fn backup_failure_is_an_error_not_a_silent_path() {
+        // Pointing at a non-existent source: copy fails, and the caller
+        // must learn it (the .bak is the only recovery artifact against a
+        // buggy migration step) rather than receive a path that was never
+        // written.
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("does_not_exist.json");
-        let bak = backup_before_migrate(&path, "test_session");
-        // The path is well-formed even though copy failed.
-        assert!(bak.to_string_lossy().ends_with(".json.bak"));
+        assert!(backup_before_migrate(&path, "test_session").is_err());
     }
     #[test]
     fn lock_record_creates_lock_file_and_grants_write_guard() {

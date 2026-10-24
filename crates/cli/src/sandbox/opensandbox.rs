@@ -138,11 +138,13 @@ impl SandboxBackend for OpenSandboxBackend {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .context("failed to read OpenSandbox error body")?;
-            let body: String = body.chars().take(1024).collect();
+            // Never let an unreadable error body (connection reset mid-body)
+            // erase the HTTP status: the caller must still learn the endpoint
+            // answered with an error, and which one.
+            let body: String = match response.text().await {
+                Ok(body) => body.chars().take(1024).collect(),
+                Err(read_err) => format!("<error body unreadable: {read_err}>"),
+            };
             anyhow::bail!("OpenSandbox returned HTTP {}: {}", status.as_u16(), body);
         }
 
