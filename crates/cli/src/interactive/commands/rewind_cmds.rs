@@ -30,14 +30,51 @@ use colored::Colorize;
 /// How many snapshots `/rewind` lists.
 pub const LIST_LIMIT: usize = 25;
 
+/// Failures of [`list`] and [`restore`], kept typed so the UI layer can
+/// distinguish "this workspace has no snapshots" (grey out or hide the
+/// command) from a git failure (surface the message; after a failed
+/// restore the tree may be mid-restore) without parsing strings.
+#[derive(Debug, thiserror::Error)]
+pub enum RewindError {
+    /// No snapshot repo for this workspace (snapshots disabled, a home
+    /// directory, an oversized workspace) — read-intent, nothing to act on.
+    #[error("no snapshots for this workspace: {0}")]
+    NoSnapshots(#[source] std::io::Error),
+    /// The side repo exists but could not be opened.
+    #[error("could not open the snapshot repository: {0}")]
+    Open(#[source] std::io::Error),
+    /// The id was not a hex object name (option-injection guard).
+    #[error("{0}")]
+    InvalidId(#[source] std::io::Error),
+    /// A git operation failed; `op` names the step that failed.
+    #[error("{op} failed: {source}")]
+    Git {
+        op: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    /// The blocking task panicked or was cancelled.
+    #[error("{op} failed: {source}")]
+    Task {
+        op: &'static str,
+        #[source]
+        source: tokio::task::JoinError,
+    },
+}
+
 /// List the workspace's snapshots, newest first.
 ///
 /// Runs the (blocking) git history read under `spawn_blocking`.
-pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, String> {
+pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, RewindError> {
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let repo = SnapshotRepo::try_open(&workspace).map_err(describe_open_error)?;
-        let snapshots = repo.list(LIST_LIMIT).map_err(|err| err.to_string())?;
+        let repo = SnapshotRepo::try_open(&workspace).map_err(classify_open_error)?;
+        let snapshots = repo
+            .list(LIST_LIMIT)
+            .map_err(|source| RewindError::Git {
+                op: "snapshot listing",
+                source,
+            })?;
         Ok(snapshots
             .into_iter()
             .map(|snapshot| SnapshotRow {
@@ -48,20 +85,23 @@ pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, Strin
             .collect())
     })
     .await
-    .map_err(|err| format!("snapshot listing failed: {err}"))?
+    .map_err(|source| RewindError::Task {
+        op: "snapshot listing",
+        source,
+    })?
 }
 
 /// Restore the workspace to one snapshot.
-pub async fn restore(workspace: &std::path::Path, id: String) -> Result<(), String> {
+pub async fn restore(workspace: &std::path::Path, id: String) -> Result<(), RewindError> {
     // `restore` feeds the id into `git checkout <id> -- :/` and deletes
     // working-tree paths — a destructive whole-tree operation.
     // `SnapshotId::from_hex` is the type's validating constructor: anything
     // that is not a hex object name (including a leading `-`, which git
     // parses as an option) is rejected before the repo is even opened.
-    let id = SnapshotId::from_hex(id).map_err(|err| err.to_string())?;
+    let id = SnapshotId::from_hex(id).map_err(RewindError::InvalidId)?;
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let repo = SnapshotRepo::try_open(&workspace).map_err(describe_open_error)?;
+        let repo = SnapshotRepo::try_open(&workspace).map_err(classify_open_error)?;
         // Safety net: the checkout deletes working-tree files the target
         // snapshot does not contain, so manual edits made outside an engine
         // turn exist in no snapshot — capture the pre-restore state so
@@ -74,10 +114,16 @@ pub async fn restore(workspace: &std::path::Path, id: String) -> Result<(), Stri
                     .yellow()
             );
         }
-        repo.restore(&id).map_err(|err| err.to_string())
+        repo.restore(&id).map_err(|source| RewindError::Git {
+            op: "restore",
+            source,
+        })
     })
     .await
-    .map_err(|err| format!("restore failed: {err}"))?
+    .map_err(|source| RewindError::Task {
+        op: "restore",
+        source,
+    })?
 }
 
 /// One row of the `/rewind` list.
@@ -118,13 +164,14 @@ impl SnapshotRow {
     }
 }
 
-/// Turn the side repo's refusal into something the user can act on.
-fn describe_open_error(err: std::io::Error) -> String {
+/// Turn the side repo's refusal into the matching typed variant: the
+/// runtime signals "this workspace has no snapshot repo" with
+/// `ErrorKind::InvalidInput`; every other open failure is a real repo
+/// problem the user should see verbatim.
+fn classify_open_error(err: std::io::Error) -> RewindError {
     match err.kind() {
-        std::io::ErrorKind::InvalidInput => {
-            format!("no snapshots for this workspace: {err}")
-        }
-        _ => format!("could not open the snapshot repository: {err}"),
+        std::io::ErrorKind::InvalidInput => RewindError::NoSnapshots(err),
+        _ => RewindError::Open(err),
     }
 }
 
@@ -169,5 +216,32 @@ mod tests {
             timestamp: 0,
         };
         assert_eq!(row.short_id(), "0123456");
+    }
+
+    /// The UI greys out `NoSnapshots` and alarms on everything else, so the
+    /// `InvalidInput` mapping and the rendered git phrasing are contracts.
+    #[test]
+    fn open_errors_classify_and_render_by_kind() {
+        let no_repo = classify_open_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "snapshots disabled",
+        ));
+        assert!(matches!(no_repo, RewindError::NoSnapshots(_)));
+        assert_eq!(
+            no_repo.to_string(),
+            "no snapshots for this workspace: snapshots disabled"
+        );
+
+        let broken = classify_open_error(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "config missing",
+        ));
+        assert!(matches!(broken, RewindError::Open(_)));
+
+        let git = RewindError::Git {
+            op: "restore",
+            source: std::io::Error::other("bad object"),
+        };
+        assert_eq!(git.to_string(), "restore failed: bad object");
     }
 }

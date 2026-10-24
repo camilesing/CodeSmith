@@ -898,6 +898,12 @@ fn split_save_flag(arg: &str) -> (Option<String>, bool) {
 async fn rewind(state: &mut ReplState, arg: &str) {
     let rows = match rewind_cmds::list(&state.workspace).await {
         Ok(rows) => rows,
+        // "This workspace has no snapshots" is a normal state (snapshots
+        // disabled, home dir) — grey it out instead of alarming in red.
+        Err(err @ rewind_cmds::RewindError::NoSnapshots(_)) => {
+            println!("{}", err.to_string().dimmed());
+            return;
+        }
         Err(err) => {
             println!("{} {err}", "✗".red());
             return;
