@@ -20,6 +20,12 @@ struct KvInner {
     path: Option<PathBuf>,
     /// `None` until first access (lazy load); `Some` thereafter.
     map: Option<BTreeMap<String, serde_json::Value>>,
+    /// Keys removed by this session since load. The persist-time merge
+    /// overlays the in-memory map onto a re-read of the file (so concurrent
+    /// sessions' keys survive), and a bare overlay would resurrect removed
+    /// keys still present on disk — tombstones keep this session's
+    /// deletions authoritative.
+    tombstones: std::collections::BTreeSet<String>,
     /// Set when the backing file existed but could not be read: `persist`
     /// refuses to overwrite on-disk state with a map built from a read
     /// that never succeeded (a transient EACCES/NFS blip would otherwise
@@ -54,6 +60,7 @@ impl ModKvStore {
         Self(Arc::new(Mutex::new(KvInner {
             path: Some(path),
             map: None,
+            tombstones: std::collections::BTreeSet::new(),
             load_failed: false,
         })))
     }
@@ -66,6 +73,7 @@ impl ModKvStore {
         Self(Arc::new(Mutex::new(KvInner {
             path: None,
             map: None,
+            tombstones: std::collections::BTreeSet::new(),
             load_failed: false,
         })))
     }
@@ -83,6 +91,7 @@ impl ModKvStore {
     pub fn set(&self, key: &str, value: serde_json::Value) {
         let mut inner = self.0.lock().expect("kv lock poisoned");
         inner.ensure_loaded();
+        inner.tombstones.remove(key);
         if let Some(map) = inner.map.as_mut() {
             map.insert(key.to_string(), value);
         }
@@ -95,6 +104,7 @@ impl ModKvStore {
     pub fn remove(&self, key: &str) {
         let mut inner = self.0.lock().expect("kv lock poisoned");
         inner.ensure_loaded();
+        inner.tombstones.insert(key.to_string());
         if let Some(map) = inner.map.as_mut() {
             map.remove(key);
         }
@@ -158,9 +168,96 @@ impl KvInner {
         let Some(path) = self.path.as_deref() else {
             return Ok(()); // ephemeral: nothing to persist
         };
-        let body = serde_json::to_string_pretty(map)
-            .map_err(|e| std::io::Error::other(format!("serialize kv: {e}")))?;
-        atomic_write(path, body.as_bytes())
+        // Cross-process lost-update mitigation: this map is a snapshot from
+        // the store's first read, and a global mod's KV file is shared
+        // across concurrent sessions (each with its own snapshot). The
+        // whole re-read → merge → rename cycle runs under the sibling-file
+        // advisory lock (same fd-lock + WouldBlock-retry pattern the
+        // runtime's settings/config stores use; reimplemented here because
+        // this crate cannot depend on agent-runtime), so two sessions'
+        // cycles serialize instead of interleaving. The merge re-reads the
+        // file, drops this session's tombstones, and overlays this store's
+        // entries, so keys another session wrote survive while this
+        // session's deletions stay authoritative. Known limitations: a key
+        // another session re-adds after this session's remove reappears
+        // once that session persists, and the lock's wait polls on the
+        // calling (script-execution) thread — Rhai handlers already run
+        // blocking file IO inline, so this adds only bounded contention
+        // wait, not a new class of blocking.
+        with_kv_lock(path, || {
+            let mut merged = match std::fs::read_to_string(path) {
+                Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "mod kv file {} malformed on persist ({e}); writing this store's view only",
+                        path.display()
+                    );
+                    BTreeMap::new()
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+                Err(e) => {
+                    return Err(e);
+                }
+            };
+            for key in &self.tombstones {
+                merged.remove(key);
+            }
+            for (key, value) in map {
+                merged.insert(key.clone(), value.clone());
+            }
+            let body = serde_json::to_string_pretty(&merged)
+                .map_err(|e| std::io::Error::other(format!("serialize kv: {e}")))?;
+            atomic_write(path, body.as_bytes())
+        })
+    }
+}
+
+/// How long [`with_kv_lock`] waits on a lock held by another writer.
+const KV_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Run `f` as one read-modify-write on the KV file, serialized against
+/// every other session's KV writer across processes. Backed by an OS
+/// advisory lock (`fd-lock`) on a sibling `<file>.json.lock`: the kernel
+/// releases it when the holder dies, so there is no stale-lock break to
+/// get wrong. Local reimplementation of agent-runtime's
+/// `settings_file::with_settings_lock` — this crate cannot depend on the
+/// runtime (the runtime already depends on this one).
+fn with_kv_lock<T>(path: &Path, f: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::other(format!("kv path {} has no parent", path.display()))
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let lock_path = path.with_extension("json.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| std::io::Error::other(format!("open kv lock {}: {e}", lock_path.display())))?;
+    let mut rw = fd_lock::RwLock::new(file);
+    let deadline = std::time::Instant::now() + KV_LOCK_TIMEOUT;
+    loop {
+        match rw.try_write() {
+            Ok(guard) => {
+                let _held = guard;
+                return f();
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::other(format!(
+                        "timed out waiting for kv lock at {}",
+                        lock_path.display()
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => {
+                return Err(std::io::Error::other(format!(
+                    "failed to acquire kv lock at {}: {err}",
+                    lock_path.display()
+                )));
+            }
+        }
     }
 }
 
@@ -189,11 +286,29 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         std::process::id(),
         TMP_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    file.sync_all()?;
-    std::fs::rename(&tmp, path)
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        // Sync the parent dir so the rename itself is durable — without
+        // it, a crash can lose the rename and the file reverts to its
+        // previous contents despite the pre-rename fsync.
+        #[cfg(unix)]
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+        #[cfg(not(unix))]
+        let _ = parent;
+        Ok(())
+    })();
+    if result.is_err() {
+        // A half-written temp sibling is never cleaned by anyone else:
+        // best-effort removal keeps the kv dir from accumulating litter.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -297,6 +412,60 @@ mod tests {
         let clone = kv.clone();
         clone.set("k", json!("v"));
         assert_eq!(kv.get("k"), Some(json!("v")));
+    }
+
+    #[test]
+    fn concurrent_stores_do_not_lose_each_others_keys() {
+        // Two sessions snapshot the file before either writes (global mods
+        // share one KV file); each `set` must persist BOTH keys, not
+        // last-rename-wins over the other session's write.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("global-x.json");
+        let s1 = ModKvStore::new(path.clone());
+        let s2 = ModKvStore::new(path.clone());
+        // Force both snapshots while the file is still empty.
+        assert!(s1.get("warmup").is_none());
+        assert!(s2.get("warmup").is_none());
+        s1.set("from_session_1", json!(1));
+        s2.set("from_session_2", json!(2));
+        let reloaded = ModKvStore::new(path);
+        assert_eq!(reloaded.get("from_session_1"), Some(json!(1)));
+        assert_eq!(reloaded.get("from_session_2"), Some(json!(2)));
+    }
+
+    #[test]
+    fn threaded_concurrent_persists_keep_all_keys() {
+        // Two threads persisting through separate stores over one shared
+        // file: without the cross-process lock their re-read→merge→rename
+        // cycles can interleave (both re-read empty, one rename clobbers
+        // the other). The fd-lock serializes the cycles; the merge keeps
+        // every key.
+        let dir = TempDir::new().unwrap();
+        let path = std::sync::Arc::new(dir.path().join("global-t.json"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|i| {
+                let path = std::sync::Arc::clone(&path);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let kv = ModKvStore::new((*path).clone());
+                    kv.get("warmup"); // snapshot before anyone persists
+                    barrier.wait();
+                    kv.set(&format!("k{i}"), json!(i));
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread");
+        }
+        let reloaded = ModKvStore::new((*path).clone());
+        for i in 0..4 {
+            assert_eq!(
+                reloaded.get(&format!("k{i}")),
+                Some(json!(i)),
+                "key k{i} lost to a concurrent persist"
+            );
+        }
     }
 
     #[test]

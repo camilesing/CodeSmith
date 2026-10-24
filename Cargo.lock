@@ -982,6 +982,7 @@ dependencies = [
  "codesmith-agent",
  "codesmith-tools",
  "extensions-fixture-dylib",
+ "fd-lock",
  "futures-util",
  "inventory",
  "libloading",

@@ -135,36 +135,53 @@ impl ApprovalGrants {
     /// anything [`Self::revoke`] removed this session — so a second
     /// codesmith running in the same workspace cannot lose its grants to
     /// this process's snapshot.
+    ///
+    /// The whole load-merge-write cycle runs under the runtime's shared
+    /// fd-lock helper (sibling `approvals.toml.lock`): without it, two
+    /// sessions whose loads interleaved still clobbered each other's
+    /// freshly added grants last-writer-wins, because the union merge only
+    /// helps when both processes read before either writes. Callers are
+    /// sync REPL handlers on an async dispatch chain (pre-existing
+    /// posture); the lock waits at most 10 s under contention.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let mut doc = load_doc(path);
-        for (key, grants) in &self.projects {
-            let project = doc.projects.entry(key.clone()).or_default();
-            for grant in grants {
-                project.grants.insert(grant.clone());
-            }
-        }
-        for (key, removed) in &self.removed {
-            if let Some(project) = doc.projects.get_mut(key) {
-                for grant in removed {
-                    project.grants.remove(grant);
+        codesmith_agent_runtime::settings_file::with_settings_lock(
+            path,
+            || -> anyhow::Result<()> {
+                let mut doc = load_doc(path);
+                for (key, grants) in &self.projects {
+                    let project = doc.projects.entry(key.clone()).or_default();
+                    for grant in grants {
+                        project.grants.insert(grant.clone());
+                    }
                 }
-            }
-        }
-        doc.projects.retain(|_, project| !project.grants.is_empty());
-        for (key, project) in doc.projects.iter_mut() {
-            if self.projects.contains_key(key) {
-                project.updated_at = Some(chrono::Utc::now().to_rfc3339());
-            }
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let encoded = toml::to_string_pretty(&doc)
-            .map_err(|err| std::io::Error::other(format!("encode grants: {err}")))?;
-        // The module doc promises atomic saves; a plain `fs::write` torn by
-        // a crash produced exactly the corrupt file the loader then
-        // silently defaults away.
-        codesmith_agent_runtime::utils::write_atomic(path, encoded.as_bytes())
+                for (key, removed) in &self.removed {
+                    if let Some(project) = doc.projects.get_mut(key) {
+                        for grant in removed {
+                            project.grants.remove(grant);
+                        }
+                    }
+                }
+                doc.projects.retain(|_, project| !project.grants.is_empty());
+                for (key, project) in doc.projects.iter_mut() {
+                    if self.projects.contains_key(key) {
+                        project.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                    }
+                }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let encoded = toml::to_string_pretty(&doc)
+                    .map_err(|err| std::io::Error::other(format!("encode grants: {err}")))?;
+                // The module doc promises atomic saves; a plain `fs::write` torn by
+                // a crash produced exactly the corrupt file the loader then
+                // silently defaults away.
+                Ok(codesmith_agent_runtime::utils::write_atomic(
+                    path,
+                    encoded.as_bytes(),
+                )?)
+            },
+        )
+        .map_err(|err| std::io::Error::other(format!("grants save under lock failed: {err:#}")))
     }
 }
 
@@ -212,6 +229,27 @@ mod tests {
         std::fs::write(&path, "not [ valid toml {{{{").expect("write");
         let grants = ApprovalGrants::load(&path);
         assert_eq!(grants, ApprovalGrants::default());
+    }
+
+    #[test]
+    fn concurrent_savers_do_not_lose_each_others_grants() {
+        // Session B holds a snapshot taken before A saved (the stale
+        // in-memory half of the read-merge-write). B's save must still
+        // keep A's on-disk grant — the load-merge-write runs as one locked
+        // critical section, so B's merge reads a state that already
+        // includes A's write.
+        let path = temp_path("concurrent.toml");
+        let mut a = ApprovalGrants::default();
+        a.grant("/w/a", "shell:cargo build");
+        a.save(&path).expect("A saves");
+
+        let mut stale = ApprovalGrants::default();
+        stale.grant("/w/b", "shell:npm test");
+        stale.save(&path).expect("B saves with a pre-A snapshot");
+
+        let reloaded = ApprovalGrants::load(&path);
+        assert!(reloaded.is_granted("/w/a", "shell:cargo build"));
+        assert!(reloaded.is_granted("/w/b", "shell:npm test"));
     }
 
     impl ApprovalGrants {}
