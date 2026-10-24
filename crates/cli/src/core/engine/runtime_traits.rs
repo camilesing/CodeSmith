@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use codesmith_agent_runtime::background_task::{
-    BackgroundTaskNotification, BackgroundTaskStatus, BackgroundTaskSummary,
+    BackgroundTaskNotification, BackgroundTaskStatus, BackgroundTaskSummary, BackgroundTaskType,
 };
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::host_services::{
@@ -105,15 +105,13 @@ impl HostServices for super::EngineHost {
     }
 
     fn bg_registry(&self) -> Arc<dyn BgRegistryApi> {
-        // `new_impl` wraps the concrete registry in `BgRegistryHost` and seeds
-        // `runtime_services.background_task_registry` before the engine runs,
-        // so this is `Some` for any engine that reaches `run()`. The clone is a
-        // cheap `Arc` bump — no per-call re-wrap.
-        self.runtime_services
-            .background_task_registry
-            .as_ref()
-            .expect("background_task_registry is set by new_impl before run()")
-            .clone()
+        // Pre-erased once at construction (`Default` / `build_engine` — the
+        // only site that ever reassigns the registry) so this is a cheap
+        // `Arc` bump, not a per-call re-wrap. A host built outside
+        // `build_engine` (embeds, tests) carries an empty registry — a
+        // well-defined no-op poll/cancel — instead of the accessor panic
+        // this field replaces.
+        Arc::clone(&self.bg_registry_api)
     }
 
     fn seam(&self) -> Option<&dyn SeamManagerApi> {
@@ -536,6 +534,19 @@ impl HostServices for super::EngineHost {
         // Load plugin tools from the user's tools directory and apply any
         // config.toml overrides. Explicit overrides win over auto-discovered
         // scripts with the same tool name.
+        //
+        // Origin bookkeeping for the catalog snapshot: mirror the
+        // registry's later-registration-replaces rule by recording who last
+        // wrote each name, in registration order — the builtin snapshot
+        // taken here, then the plugin phase's writes just below, then the
+        // extension phase's writes further down. The snapshot then reports
+        // the winner's origin instead of re-deriving it from the source
+        // sets (which could mislabel, e.g., a plugin tool an extension
+        // later replaced).
+        let builtin_names: Vec<String> = tool_registry
+            .as_ref()
+            .map(|r| r.names().into_iter().map(str::to_string).collect())
+            .unwrap_or_default();
         let mut plugin_tool_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         if let Some(ref mut tool_registry) = tool_registry {
@@ -628,15 +639,50 @@ impl HostServices for super::EngineHost {
             .as_ref()
             .map(|r| r.bound_tools().into_iter().map(|(n, _)| n).collect())
             .unwrap_or_default();
+        // The origin map's write order mirrors the registration order
+        // above (builtin snapshot → plugin writes → extension writes), so
+        // the surviving entry per name is the registry winner's origin.
+        let mut resolved_origins: std::collections::HashMap<
+            String,
+            crate::core::tool_catalog::ToolOrigin,
+        > = builtin_names
+            .into_iter()
+            .map(|n| (n, crate::core::tool_catalog::ToolOrigin::Builtin))
+            .collect();
+        for name in &plugin_tool_names {
+            resolved_origins.insert(name.clone(), crate::core::tool_catalog::ToolOrigin::Plugin);
+        }
+        for name in &extension_names {
+            resolved_origins.insert(
+                name.clone(),
+                crate::core::tool_catalog::ToolOrigin::Extension,
+            );
+        }
         let catalog_names: Vec<String> = tools
             .as_ref()
             .map(|c| c.iter().map(|t| t.name.clone()).collect())
             .unwrap_or_default();
+        // A catalog name the registry does not own is an MCP tool — unless
+        // it is one of the catalog's own control tools (e.g.
+        // `tool_search`, pushed into the catalog below the registry),
+        // which count as builtin. A same-name MCP copy was dropped at the
+        // catalog merge, so the registry's winner stays the origin there.
+        let resolved: Vec<(String, crate::core::tool_catalog::ToolOrigin)> =
+            catalog_names
+                .iter()
+                .map(|name| {
+                    let origin = resolved_origins.get(name).copied().unwrap_or(
+                        if mcp_names.contains(name) {
+                            crate::core::tool_catalog::ToolOrigin::Mcp
+                        } else {
+                            crate::core::tool_catalog::ToolOrigin::Builtin
+                        },
+                    );
+                    (name.clone(), origin)
+                })
+                .collect();
         let snapshot = crate::core::tool_catalog::ToolCatalogSnapshot::capture(
-            &catalog_names,
-            &plugin_tool_names,
-            &extension_names,
-            &mcp_names,
+            &resolved,
             &config.disabled_tools,
         );
         if let Some((added, removed)) = self.tool_catalog.update(snapshot)
@@ -807,10 +853,19 @@ impl SeamManagerApi for SeamManager {
 /// trait [`BgRegistryApi`]. A newtype is required: the orphan rule forbids
 /// `impl`-ing a foreign trait for `Arc<Mutex<..>>`. Each method locks the
 /// inner registry and converts `BackgroundTaskState` results into the
-/// portable `BackgroundTaskSummary`, so callers never hold a guard across an
-/// `Event`-channel await.
+/// portable `BackgroundTaskSummary`.
+///
+/// Lock ordering (registry ↔ sub-agent manager): the registry guard is
+/// NEVER held across a sub-agent-manager lock acquisition. The manager side
+/// of cancel/poll runs with the guard dropped, and the guard is re-taken
+/// only for the status write-back — a spawn path holds the manager write
+/// lock while registering here (`agent_open` drops it first on purpose), so
+/// nesting manager → registry against registry → manager would deadlock.
 #[derive(Clone)]
-pub(crate) struct BgRegistryHost(pub SharedBackgroundTaskRegistry);
+pub(crate) struct BgRegistryHost {
+    pub(crate) registry: SharedBackgroundTaskRegistry,
+    pub(crate) subagent_manager: SharedSubAgentManager,
+}
 
 #[async_trait::async_trait]
 impl BgRegistryApi for BgRegistryHost {
@@ -821,32 +876,46 @@ impl BgRegistryApi for BgRegistryHost {
         model: String,
         prompt: String,
     ) -> BackgroundTaskSummary {
-        let mut g = self.0.lock().await;
+        let mut g = self.registry.lock().await;
         BackgroundTaskSummary::from(&g.register_agent_task(agent_id, agent_type, model, prompt))
     }
 
     async fn cancel_task(&self, id: &str) -> anyhow::Result<()> {
-        let mut g = self.0.lock().await;
-        g.cancel_task(id).await
+        // Three steps, per the lock-ordering note above: (1) resolve under
+        // a short-lived guard …
+        let (task_type, source_id) = {
+            let g = self.registry.lock().await;
+            g.cancel_target(id)?
+        };
+        // … (2) delegate to the source subsystem with no guard held (dream
+        // tasks don't delegate — they only mark cancelled) …
+        if task_type == BackgroundTaskType::Agent {
+            let mut mgr = self.subagent_manager.write().await;
+            mgr.cancel(&source_id)?;
+        }
+        // … (3) re-lock only for the status write-back.
+        let mut g = self.registry.lock().await;
+        g.update_task_status(id, BackgroundTaskStatus::Cancelled, None);
+        Ok(())
     }
 
     async fn list_tasks(&self) -> Vec<BackgroundTaskSummary> {
-        let g = self.0.lock().await;
+        let g = self.registry.lock().await;
         g.list_tasks()
     }
 
     async fn get_task(&self, id: &str) -> Option<BackgroundTaskSummary> {
-        let g = self.0.lock().await;
+        let g = self.registry.lock().await;
         g.get_task(id).map(|s| BackgroundTaskSummary::from(&s))
     }
 
     async fn background_all(&self) {
-        let mut g = self.0.lock().await;
+        let mut g = self.registry.lock().await;
         g.background_all();
     }
 
     async fn register_dream_task(&self, memory_path: PathBuf) -> BackgroundTaskSummary {
-        let mut g = self.0.lock().await;
+        let mut g = self.registry.lock().await;
         BackgroundTaskSummary::from(&g.register_dream_task(memory_path))
     }
 
@@ -856,15 +925,40 @@ impl BgRegistryApi for BgRegistryHost {
         new_status: BackgroundTaskStatus,
         error: Option<String>,
     ) -> Option<BackgroundTaskStatus> {
-        let mut g = self.0.lock().await;
+        let mut g = self.registry.lock().await;
         g.update_task_status(id, new_status, error)
     }
 
     async fn poll_once(&self) -> Vec<BackgroundTaskNotification> {
-        // One locked pass: poll, drain notifications, evict notified tasks.
-        // Mirrors the previous poller loop's lock granularity exactly.
-        let mut g = self.0.lock().await;
-        g.poll_tasks().await;
+        // Three steps, per the lock-ordering note above. (1) Snapshot the
+        // running agent ids under a short-lived guard …
+        let agent_ids = {
+            let g = self.registry.lock().await;
+            g.running_agent_ids()
+        };
+        // … (2) one manager read pass with no registry guard held. The
+        // unfiltered list, not `list_filtered(false)`: the filter drops
+        // prior-session terminal agents and `cleanup` evicts old terminal
+        // agents, so a background agent that finished and was cleaned up
+        // before this poll vanished from the filtered view — the task then
+        // fails as record-disappeared instead of staying `Running` forever.
+        let agents = {
+            let mgr = self.subagent_manager.read().await;
+            mgr.list()
+        };
+        // … (3) re-lock to write each result back, then drain + evict in
+        // the same pass (the previous poller loop's granularity).
+        let mut g = self.registry.lock().await;
+        for (bg_id, agent_id) in agent_ids {
+            let info = agents.iter().find(|a| a.agent_id == agent_id).map(|r| {
+                (
+                    r.status.clone().into(),
+                    crate::background_task::agent_bridge::subagent_error(&r.status),
+                    r.steps_taken,
+                )
+            });
+            g.apply_agent_poll(&bg_id, info);
+        }
         let notifications = g.drain_notifications();
         g.evict_notified();
         notifications

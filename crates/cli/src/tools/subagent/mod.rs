@@ -2694,6 +2694,11 @@ impl ToolSpec for AgentSpawnTool {
                 },
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to spawn sub-agent: {e}")))?;
+        // Lock ordering (registry ↔ sub-agent manager): the registration
+        // below takes the background-task registry lock, while cancel/poll
+        // take the manager lock from inside the registry lock — nesting
+        // manager → registry against registry → manager would deadlock, so
+        // the manager write guard must be dropped first.
         drop(manager);
 
         if let Some(bg_registry) = self

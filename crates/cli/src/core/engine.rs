@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use codesmith_agent_runtime::host_services::{HostServices, SubAgentApi};
+use codesmith_agent_runtime::host_services::{BgRegistryApi, HostServices, SubAgentApi};
 
 // Explicit re-export of the engine items the CLI actually depends on. This
 // replaces an earlier `pub use ...::engine::*` glob: the lists below are the
@@ -226,6 +226,14 @@ pub struct EngineHost {
     /// instead of a fresh `Arc<SubAgentManagerHost>` allocation + vtable
     /// erasure per call.
     pub subagent_api: Arc<dyn SubAgentApi>,
+    /// Pre-erased [`BgRegistryApi`] view of the background-task registry,
+    /// mirroring `runtime_services.background_task_registry` (after
+    /// `build_engine` both point at the same host). Seeded once at
+    /// construction — `Default` installs an empty registry so the
+    /// `HostServices::bg_registry` accessor cannot panic — the
+    /// `subagent_api` pattern: a cheap refcount bump instead of an expect
+    /// on a cross-function construction invariant.
+    pub bg_registry_api: Arc<dyn BgRegistryApi>,
     /// Sub-agent process manager.
     pub subagent_manager: SharedSubAgentManager,
     /// Session-scoped workshop variable store (#548). `None` when no
@@ -288,6 +296,7 @@ impl std::fmt::Debug for EngineHost {
             .field("shell_manager", &self.shell_manager)
             .field("subagent_manager", &self.subagent_manager)
             .field("subagent_api", &true)
+            .field("bg_registry_api", &true)
             .field("workshop_vars", &self.workshop_vars)
             .field("utility_llm", &self.utility_llm)
             .field("sandbox_backend", &self.sandbox_backend)
@@ -319,6 +328,18 @@ impl Default for EngineHost {
             subagent_api: Arc::new(runtime_traits::SubAgentManagerHost(Arc::clone(
                 &subagent_manager,
             ))),
+            // Same pattern for the background registry: a host built outside
+            // `build_engine` has no background tasks to track, so an empty
+            // registry makes poll/cancel well-defined no-ops instead of the
+            // accessor panic this replaces.
+            bg_registry_api: Arc::new(runtime_traits::BgRegistryHost {
+                registry: Arc::new(tokio::sync::Mutex::new(
+                    crate::background_task::BackgroundTaskRegistry::new(
+                        crate::tools::shell::new_shared_shell_manager(std::path::PathBuf::new()),
+                    ),
+                )),
+                subagent_manager: Arc::clone(&subagent_manager),
+            }),
             subagent_manager,
             workshop_vars: None,
             utility_llm: None,
@@ -360,31 +381,25 @@ fn plugin_tools_dir(tools_config: Option<&crate::config::ToolsConfig>) -> PathBu
     default_plugin_tools_dir()
 }
 
+/// Register plugin tools from the user's tools directory and apply any
+/// config.toml overrides. Returns every name this call wrote to the
+/// registry — auto-discovered plugins plus explicit config overrides
+/// (which may replace a builtin under the same name; a shadowing
+/// auto-discovered script is refused inside `load_plugins`). The written
+/// set — not a before/after name diff — is what the caller needs to
+/// mirror the registry's later-registration-replaces rule.
 fn configure_plugin_tools(
     tool_registry: &mut crate::tools::ToolRegistry,
     tools_config: Option<&crate::config::ToolsConfig>,
 ) -> std::collections::HashSet<String> {
-    let names_before: std::collections::HashSet<String> = tool_registry
-        .names()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
-
     let plugin_dir = plugin_tools_dir(tools_config);
-    tool_registry.load_plugins(&plugin_dir);
-
+    let mut written = tool_registry.load_plugins(&plugin_dir);
     if let Some(tools_config) = tools_config
         && let Some(ref overrides) = tools_config.overrides
     {
-        tool_registry.apply_overrides(overrides, &plugin_dir);
+        written.extend(tool_registry.apply_overrides(overrides, &plugin_dir));
     }
-
-    let names_after: std::collections::HashSet<String> = tool_registry
-        .names()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
-    &names_after - &names_before
+    written.into_iter().collect()
 }
 
 // === Construction ===
@@ -1584,15 +1599,16 @@ pub fn build_engine(
         })
         .map(std::sync::Arc::from);
 
-    let bg_registry = std::sync::Arc::new(tokio::sync::Mutex::new(
-        crate::background_task::BackgroundTaskRegistry::new(
-            shell_manager.clone(),
-            subagent_manager.clone(),
-        ),
-    ));
-    host.runtime_services.background_task_registry = Some(std::sync::Arc::new(
-        runtime_traits::BgRegistryHost(bg_registry),
-    ));
+    let bg_registry_api: Arc<dyn BgRegistryApi> = Arc::new(runtime_traits::BgRegistryHost {
+        registry: Arc::new(tokio::sync::Mutex::new(
+            crate::background_task::BackgroundTaskRegistry::new(shell_manager.clone()),
+        )),
+        subagent_manager: subagent_manager.clone(),
+    });
+    // The tool context (`RuntimeToolServices`) and the host accessor see the
+    // same registry host — one object, two trait-erased views.
+    host.runtime_services.background_task_registry = Some(Arc::clone(&bg_registry_api));
+    host.bg_registry_api = bg_registry_api;
 
     host.shell_manager = Some(shell_manager.clone());
     host.subagent_manager = subagent_manager;

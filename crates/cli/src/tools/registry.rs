@@ -51,19 +51,25 @@ pub trait ToolRegistryPluginExt {
     ///   `configure_plugin_tools` can diff registered names.
     /// - `Script` / `Command` replaces the tool with the user's implementation.
     ///
-    /// `plugin_dir` is used as the base for relative script paths.
+    /// Returns the names this call actually wrote (a build failure keeps
+    /// the original tool, so its name is absent — the incumbent stays the
+    /// registry's winner). `plugin_dir` is the base for relative script
+    /// paths.
     fn apply_overrides(
         &mut self,
         overrides: &HashMap<String, crate::config::ToolOverride>,
         plugin_dir: &Path,
-    );
+    ) -> Vec<String>;
 
     /// Load and register plugin tools from a directory.
     ///
     /// Each script with valid frontmatter (`# name:`, `# description:`, etc.)
     /// becomes a registered `ScriptPluginTool`. Tools whose name matches an
     /// already-registered tool will overwrite it.
-    fn load_plugins(&mut self, plugin_dir: &Path);
+    ///
+    /// Returns the names this call actually registered (a shadowing script
+    /// is refused, so its name is absent).
+    fn load_plugins(&mut self, plugin_dir: &Path) -> Vec<String>;
 }
 
 impl ToolRegistryPluginExt for ToolRegistry {
@@ -71,7 +77,8 @@ impl ToolRegistryPluginExt for ToolRegistry {
         &mut self,
         overrides: &std::collections::HashMap<String, crate::config::ToolOverride>,
         plugin_dir: &Path,
-    ) {
+    ) -> Vec<String> {
+        let mut written = Vec::new();
         for (tool_name, override_cfg) in overrides {
             match override_cfg {
                 crate::config::ToolOverride::Disabled => {
@@ -88,6 +95,7 @@ impl ToolRegistryPluginExt for ToolRegistry {
                         Some(replacement) => {
                             self.register(replacement);
                             tracing::info!("Tool '{}' replaced via config override", tool_name);
+                            written.push(tool_name.clone());
                         }
                         None => {
                             // A missing override script is a config error,
@@ -100,7 +108,7 @@ impl ToolRegistryPluginExt for ToolRegistry {
                                  (script missing or unreadable); keeping the built-in tool"
                             );
                             tracing::error!("{message}");
-                            // Deliberate stderr copy: this runs before any
+                            // Deliberately stderr copy: this runs before any
                             // UI exists, and the user must see it. Written
                             // through the handle (not `eprintln!`, which
                             // this crate denies) so no attribute games.
@@ -113,15 +121,17 @@ impl ToolRegistryPluginExt for ToolRegistry {
                 }
             }
         }
+        written
     }
 
-    fn load_plugins(&mut self, plugin_dir: &Path) {
+    fn load_plugins(&mut self, plugin_dir: &Path) -> Vec<String> {
+        let mut written = Vec::new();
         if !plugin_dir.exists() {
             tracing::debug!(
                 "Plugin directory {} does not exist, skipping",
                 plugin_dir.display()
             );
-            return;
+            return written;
         }
         let plugins = crate::tools::plugin::load_plugin_tools(plugin_dir);
         let count = plugins.len();
@@ -142,6 +152,7 @@ impl ToolRegistryPluginExt for ToolRegistry {
                 continue;
             }
             self.register(tool);
+            written.push(name);
             loaded += 1;
         }
         if loaded > 0 {
@@ -150,6 +161,7 @@ impl ToolRegistryPluginExt for ToolRegistry {
                 plugin_dir.display()
             );
         }
+        written
     }
 }
 
@@ -1134,11 +1146,14 @@ mod tests {
             },
         );
 
-        registry.apply_overrides(&overrides, tmp.path());
+        let written = registry.apply_overrides(&overrides, tmp.path());
 
         // A config typo (missing script) must not silently delete a builtin
         // tool for the whole session; the original stays registered and the
-        // error is surfaced (tracing + stderr) instead.
+        // error is surfaced (tracing + stderr) instead. The write set the
+        // caller uses for origin bookkeeping must not claim the name
+        // either — the incumbent builtin is still the registry winner.
+        assert!(written.is_empty());
         assert!(registry.contains("read_file"));
         assert!(registry.contains("list_dir"));
     }

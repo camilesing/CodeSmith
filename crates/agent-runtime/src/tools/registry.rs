@@ -102,7 +102,6 @@ impl ToolRegistry {
 
     /// Get all registered tool names.
     #[must_use]
-    #[allow(dead_code)]
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(std::string::String::as_str).collect()
     }

@@ -14,7 +14,7 @@
 //! never registered either; both regain registry integration only if a
 //! registration path returns.
 
-mod agent_bridge;
+pub(crate) mod agent_bridge;
 mod dream_task;
 
 use std::collections::{HashMap, VecDeque};
@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::tools::shell::SharedShellManager;
-use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
+use crate::tools::subagent::SubAgentType;
 
 pub use codesmith_agent_runtime::background_task::{
     BackgroundTaskNotification, BackgroundTaskStatus, BackgroundTaskSummary, BackgroundTaskType,
@@ -104,18 +104,19 @@ pub struct BackgroundTaskRegistry {
     tasks: HashMap<String, BackgroundTaskState>,
     /// Held only to forward the foreground-shell detach flag (Ctrl+B).
     shell_manager: SharedShellManager,
-    subagent_manager: SharedSubAgentManager,
     /// Completed task ids waiting for notification injection.
     pending_notifications: VecDeque<String>,
 }
 
 impl BackgroundTaskRegistry {
-    /// Create a new registry bridging the tracked subsystems.
-    pub fn new(shell_manager: SharedShellManager, subagent_manager: SharedSubAgentManager) -> Self {
+    /// Create a new registry bridging the tracked subsystems. Subsystem
+    /// delegation (cancel/poll) lives with the caller — the registry itself
+    /// is pure state, so no subsystem lock can be taken while its own guard
+    /// is held.
+    pub fn new(shell_manager: SharedShellManager) -> Self {
         Self {
             tasks: HashMap::new(),
             shell_manager,
-            subagent_manager,
             pending_notifications: VecDeque::new(),
         }
     }
@@ -205,27 +206,18 @@ impl BackgroundTaskRegistry {
         Some(new_status)
     }
 
-    /// Cancel a background task by delegating to the source subsystem.
-    pub async fn cancel_task(&mut self, id: &str) -> Result<()> {
+    /// Resolve a task for lock-free subsystem delegation: its type plus the
+    /// originating subsystem's internal id. The cancellation split point —
+    /// the caller snapshots this under a short-lived registry guard, drops
+    /// the guard, delegates to the subsystem, then re-locks only for the
+    /// status write-back (see `BgRegistryHost::cancel_task` for the
+    /// lock-ordering contract).
+    pub fn cancel_target(&self, id: &str) -> Result<(BackgroundTaskType, String)> {
         let state = self
             .tasks
             .get(id)
-            .ok_or_else(|| anyhow::anyhow!("Background task not found: {id}"))?
-            .clone();
-
-        match state.task_type {
-            BackgroundTaskType::Agent => {
-                // SubAgentManager uses tokio::sync::RwLock
-                let mut mgr = self.subagent_manager.write().await;
-                mgr.cancel(&state.source_id)?;
-            }
-            BackgroundTaskType::Dream => {
-                // Dream tasks don't delegate — just mark cancelled
-            }
-        }
-
-        self.update_task_status(id, BackgroundTaskStatus::Cancelled, None);
-        Ok(())
+            .ok_or_else(|| anyhow::anyhow!("Background task not found: {id}"))?;
+        Ok((state.task_type, state.source_id.clone()))
     }
 
     /// Ask the shell manager to detach its foreground shell(s) on their next
@@ -288,43 +280,36 @@ impl BackgroundTaskRegistry {
         self.tasks.get(id).cloned()
     }
 
-    /// Poll all running tasks, update status from the source subsystem, and
-    /// queue completion notifications for terminal transitions.
-    pub async fn poll_tasks(&mut self) {
-        // Poll agent tasks — SubAgentManager uses tokio::sync::RwLock
-        let agent_ids: Vec<(String, String)> = self
-            .tasks
+    /// Snapshot of the running agent tasks a poll must visit:
+    /// `(registry id, source agent id)`. One half of the poll split point —
+    /// paired with [`Self::apply_agent_poll`], it lets the caller poll the
+    /// sub-agent manager with no registry guard held.
+    pub fn running_agent_ids(&self) -> Vec<(String, String)> {
+        self.tasks
             .iter()
             .filter(|(_, s)| {
                 s.task_type == BackgroundTaskType::Agent
                     && s.status == BackgroundTaskStatus::Running
             })
             .map(|(id, s)| (id.clone(), s.source_id.clone()))
-            .collect();
+            .collect()
+    }
 
-        for (bg_id, agent_id) in agent_ids {
-            // Scope the read lock
-            let agent_info: Option<(BackgroundTaskStatus, Option<String>, u32)> = {
-                let mgr = self.subagent_manager.read().await;
-                // The unfiltered list, not `list_filtered(false)`: the
-                // filter drops prior-session terminal agents and `cleanup`
-                // evicts old terminal agents, so a background agent that
-                // finished and was cleaned up before this poll vanished
-                // from the filtered view — leaving the registry task
-                // `Running` forever, with no notification and no eviction.
-                let agents = mgr.list();
-                let result = agents.iter().find(|a| a.agent_id == agent_id);
-                result.map(|r| {
-                    (
-                        r.status.clone().into(),
-                        agent_bridge::subagent_error(&r.status),
-                        r.steps_taken,
-                    )
-                })
-            };
-
-            if let Some((new_status, error, steps_taken_val)) = agent_info {
-                if let Some(state) = self.tasks.get_mut(&bg_id)
+    /// Write one poll result back: `Some((status, error, steps))` observed
+    /// from a live source record; `None` when the source record vanished
+    /// entirely (evicted by `SubAgentManager::cleanup`, or a prior-session
+    /// restart) — the task can never complete, so it fails now instead of
+    /// staying `Running` forever with no notification and no eviction path.
+    /// The registry entry is created after the source agent registers, so
+    /// an absent record is not a registration race.
+    pub fn apply_agent_poll(
+        &mut self,
+        bg_id: &str,
+        info: Option<(BackgroundTaskStatus, Option<String>, u32)>,
+    ) {
+        match info {
+            Some((new_status, error, steps_taken_val)) => {
+                if let Some(state) = self.tasks.get_mut(bg_id)
                     && let BackgroundTaskExtension::Agent {
                         ref mut steps_taken,
                         ..
@@ -332,17 +317,11 @@ impl BackgroundTaskRegistry {
                 {
                     *steps_taken = steps_taken_val;
                 }
-                self.update_task_status(&bg_id, new_status, error);
-            } else {
-                // The agent record is gone entirely (evicted by
-                // `SubAgentManager::cleanup`, or a prior-session restart):
-                // the task can never complete, so fail it now instead of
-                // leaving it `Running` forever with no notification and no
-                // eviction path. The registry entry is created after the
-                // source agent registers, so an absent record is not a
-                // registration race.
+                self.update_task_status(bg_id, new_status, error);
+            }
+            None => {
                 self.update_task_status(
-                    &bg_id,
+                    bg_id,
                     BackgroundTaskStatus::Failed,
                     Some("source agent record disappeared".to_string()),
                 );
@@ -372,10 +351,7 @@ mod tests {
 
     fn test_registry() -> BackgroundTaskRegistry {
         let shell = crate::tools::shell::new_shared_shell_manager(PathBuf::from("."));
-        let agents = Arc::new(tokio::sync::RwLock::new(
-            crate::tools::subagent::SubAgentManager::new(PathBuf::from("."), 1),
-        ));
-        BackgroundTaskRegistry::new(shell, agents)
+        BackgroundTaskRegistry::new(shell)
     }
 
     #[test]

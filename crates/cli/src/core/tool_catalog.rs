@@ -17,9 +17,11 @@
 
 use std::sync::{Arc, Mutex};
 
-/// Where a catalog tool came from. Classification precedence mirrors the
-/// registry's name-collision rule: plugin > extension > mcp > builtin (a
-/// later registration under a builtin's name replaces it).
+/// Where a catalog tool came from, as resolved by the registry's
+/// later-registration-replaces rule. The dispatcher derives it from the
+/// registration order (builtin snapshot first, then plugin writes, then
+/// extension writes); a same-name MCP tool is dropped at the catalog
+/// merge, so a catalog name is `Mcp` only when no registry tool owns it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolOrigin {
     Builtin,
@@ -51,26 +53,26 @@ pub struct ToolCatalogSnapshot {
 }
 
 impl ToolCatalogSnapshot {
-    /// Classify the final post-selection catalog `names`. The three foreign
-    /// sets are the same-name sources the dispatcher built from; anything
-    /// unclaimed is builtin. `disabled` is the manifest's configured set
-    /// (sorted for a stable render), recorded for the `/tools` readout.
+    /// Record the compiled post-selection catalog. Each name arrives
+    /// already paired with the origin the registry actually resolved —
+    /// the dispatcher builds that pairing from the registration order
+    /// (see `build_turn_dispatcher`), so this module never re-derives an
+    /// origin from the foreign source sets. `disabled` is the manifest's
+    /// configured set (sorted for a stable render), recorded for the
+    /// `/tools` readout.
     #[must_use]
     pub fn capture(
-        names: &[String],
-        plugin: &std::collections::HashSet<String>,
-        extension: &std::collections::HashSet<String>,
-        mcp: &std::collections::HashSet<String>,
+        entries_in: &[(String, ToolOrigin)],
         disabled: &std::collections::HashSet<String>,
     ) -> Self {
         // The struct doc promises disabled names are absent from `entries`;
         // enforce it here rather than trusting every composition site — an
         // overlap would render a tool as both available and disabled in the
         // model-visible `/tools` readout.
-        let entries = names
+        let entries = entries_in
             .iter()
-            .filter(|name| {
-                let overlap = disabled.contains(*name);
+            .filter(|(name, _)| {
+                let overlap = disabled.contains(name);
                 if overlap {
                     tracing::warn!(
                         tool = %name,
@@ -79,27 +81,7 @@ impl ToolCatalogSnapshot {
                 }
                 !overlap
             })
-            .map(|name| {
-                debug_assert!(
-                    [plugin, extension, mcp]
-                        .iter()
-                        .filter(|s| s.contains(name))
-                        .count()
-                        <= 1,
-                    "ambiguous origin for {name}: catalog precedence may diverge from \
-                     the registry's later-registration-replaces rule"
-                );
-                let origin = if plugin.contains(name) {
-                    ToolOrigin::Plugin
-                } else if extension.contains(name) {
-                    ToolOrigin::Extension
-                } else if mcp.contains(name) {
-                    ToolOrigin::Mcp
-                } else {
-                    ToolOrigin::Builtin
-                };
-                (name.clone(), origin)
-            })
+            .cloned()
             .collect();
         let mut disabled = disabled.iter().cloned().collect::<Vec<_>>();
         disabled.sort();
@@ -217,44 +199,29 @@ mod tests {
     use super::*;
 
     fn snap(names: &[&str]) -> ToolCatalogSnapshot {
-        let (plugin, extension, mcp, disabled) = (
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
-        ToolCatalogSnapshot::capture(
-            &names.iter().map(|n| n.to_string()).collect::<Vec<_>>(),
-            &plugin,
-            &extension,
-            &mcp,
-            &disabled,
-        )
+        ToolCatalogSnapshot {
+            entries: names
+                .iter()
+                .map(|n| ((*n).to_string(), ToolOrigin::Builtin))
+                .collect(),
+            disabled: Vec::new(),
+        }
     }
 
     #[test]
-    fn capture_classifies_by_origin_precedence() {
-        let names = ["read_file", "myplug", "call_count", "mcp_foo"]
-            .iter()
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>();
-        let plugin: std::collections::HashSet<String> =
-            ["myplug"].iter().map(|n| n.to_string()).collect();
-        let extension: std::collections::HashSet<String> =
-            ["call_count"].iter().map(|n| n.to_string()).collect();
-        let mcp: std::collections::HashSet<String> =
-            ["mcp_foo"].iter().map(|n| n.to_string()).collect();
-        let s =
-            ToolCatalogSnapshot::capture(&names, &plugin, &extension, &mcp, &Default::default());
-        assert_eq!(
-            s.entries,
-            vec![
-                ("read_file".into(), ToolOrigin::Builtin),
-                ("myplug".into(), ToolOrigin::Plugin),
-                ("call_count".into(), ToolOrigin::Extension),
-                ("mcp_foo".into(), ToolOrigin::Mcp),
-            ]
-        );
+    fn capture_records_resolved_origins_verbatim() {
+        // The origins arrive already resolved (registration-order
+        // derivation lives in the dispatcher); capture must keep them
+        // verbatim — even a plugin-over-extension flip, which the old
+        // set-precedence derivation mislabeled.
+        let entries = vec![
+            ("read_file".to_string(), ToolOrigin::Builtin),
+            ("myplug".to_string(), ToolOrigin::Plugin),
+            ("call_count".to_string(), ToolOrigin::Extension),
+            ("mcp_foo".to_string(), ToolOrigin::Mcp),
+        ];
+        let s = ToolCatalogSnapshot::capture(&entries, &Default::default());
+        assert_eq!(s.entries, entries);
     }
 
     #[test]
@@ -282,19 +249,18 @@ mod tests {
     #[test]
     fn update_ignores_origin_only_relabel() {
         let state = ToolCatalogState::default();
-        let names = vec!["mytool".to_string()];
-        let empty: std::collections::HashSet<String> = Default::default();
-        let plugin: std::collections::HashSet<String> =
-            ["mytool"].iter().map(|n| n.to_string()).collect();
+        let name = "mytool".to_string();
         // First build only establishes the baseline; the (absent) diff is
         // intentionally dropped — `#[must_use]` wants that said out loud.
-        let _ = state.update(ToolCatalogSnapshot::capture(
-            &names, &empty, &empty, &empty, &empty,
-        ));
+        let _ = state.update(ToolCatalogSnapshot {
+            entries: vec![(name.clone(), ToolOrigin::Builtin)],
+            disabled: Vec::new(),
+        });
         assert_eq!(
-            state.update(ToolCatalogSnapshot::capture(
-                &names, &plugin, &empty, &empty, &empty
-            )),
+            state.update(ToolCatalogSnapshot {
+                entries: vec![(name, ToolOrigin::Plugin)],
+                disabled: Vec::new(),
+            }),
             None,
             "an origin-only relabel leaves the visible tool set unchanged"
         );
@@ -302,11 +268,13 @@ mod tests {
 
     #[test]
     fn capture_drops_names_that_are_also_disabled() {
-        let names = vec!["kept".to_string(), "gone".to_string()];
-        let empty: std::collections::HashSet<String> = Default::default();
+        let entries = vec![
+            ("kept".to_string(), ToolOrigin::Builtin),
+            ("gone".to_string(), ToolOrigin::Mcp),
+        ];
         let disabled: std::collections::HashSet<String> =
             ["gone"].iter().map(|n| n.to_string()).collect();
-        let s = ToolCatalogSnapshot::capture(&names, &empty, &empty, &empty, &disabled);
+        let s = ToolCatalogSnapshot::capture(&entries, &disabled);
         assert_eq!(s.entries.len(), 1);
         assert_eq!(s.entries[0].0, "kept");
         assert_eq!(s.disabled, vec!["gone".to_string()]);
@@ -314,20 +282,16 @@ mod tests {
 
     #[test]
     fn render_groups_by_origin_and_skips_empty() {
-        let names = ["read_file", "call_count", "mcp_foo"]
-            .iter()
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>();
-        let extension: std::collections::HashSet<String> =
-            ["call_count"].iter().map(|n| n.to_string()).collect();
-        let mcp: std::collections::HashSet<String> =
-            ["mcp_foo"].iter().map(|n| n.to_string()).collect();
+        let entries = vec![
+            ("read_file".to_string(), ToolOrigin::Builtin),
+            ("call_count".to_string(), ToolOrigin::Extension),
+            ("mcp_foo".to_string(), ToolOrigin::Mcp),
+        ];
         let disabled: std::collections::HashSet<String> = ["edit_file", "write_file"]
             .iter()
             .map(|n| n.to_string())
             .collect();
-        let s =
-            ToolCatalogSnapshot::capture(&names, &Default::default(), &extension, &mcp, &disabled);
+        let s = ToolCatalogSnapshot::capture(&entries, &disabled);
         let rendered = s.render();
         assert!(rendered.contains("Tool catalog (3 tools)"));
         assert!(rendered.contains("── builtin (1)\n  read_file"));
