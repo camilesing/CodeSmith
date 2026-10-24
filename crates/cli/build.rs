@@ -59,10 +59,31 @@ fn declare_git_head_rerun() {
     if let Ok(contents) = std::fs::read_to_string(&head)
         && let Some(target) = parse_symbolic_ref(&contents)
     {
-        println!("cargo:rerun-if-changed={}", gitdir.join(target).display());
+        // In a linked worktree, `gitdir` is the per-worktree dir but branch
+        // refs and `packed-refs` live in the COMMON git dir — watching the
+        // per-worktree paths emitted nothing (Cargo skips nonexistent
+        // paths), so every commit in a linked worktree left the build
+        // cache stale. Follow the worktree's `commondir` pointer when it
+        // exists; a plain checkout has no such file and `gitdir` is the
+        // common dir already.
+        let common_dir = std::fs::read_to_string(gitdir.join("commondir"))
+            .ok()
+            .map(|s| {
+                let trimmed = s.trim();
+                if Path::new(trimmed).is_absolute() {
+                    PathBuf::from(trimmed)
+                } else {
+                    gitdir.join(trimmed)
+                }
+            })
+            .unwrap_or_else(|| gitdir.clone());
         println!(
             "cargo:rerun-if-changed={}",
-            gitdir.join("packed-refs").display()
+            common_dir.join(target).display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            common_dir.join("packed-refs").display()
         );
     }
 }

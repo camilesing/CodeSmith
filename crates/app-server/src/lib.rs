@@ -74,6 +74,11 @@ struct AppState {
     runtime: Arc<Runtime>,
     registry: ModelRegistry,
     auth_token: Option<String>,
+    /// Serializes the config read-modify-write (memory snapshot + disk
+    /// persist) so two concurrent ConfigSet/ConfigUnset requests cannot
+    /// lose each other's key: the load→apply→save in `persist_config`
+    /// is otherwise last-writer-wins.
+    config_write: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +86,13 @@ struct ToolCallRequest {
     call: ToolCall,
     #[serde(default)]
     cwd: Option<PathBuf>,
+    /// Explicit opt-in to run mutating tools through this endpoint.
+    /// Defaults to `false`: the bearer token (which reaches local app
+    /// frontends and can be effectively broadcast via `insecure_no_auth`)
+    /// must not silently grant destructive tool execution against an
+    /// arbitrary host directory.
+    #[serde(default)]
+    allow_mutating: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -273,15 +285,16 @@ async fn tool_handler(
     let cwd = req
         .cwd
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // Default-safest posture: mutating tools only run when the request
+    // itself opts in. Known limitation: `cwd` is caller-controlled with
+    // no allowlist — the token gate plus this opt-in are the boundary.
     match state
         .runtime
         .invoke_tool(
             req.call,
             codesmith_execpolicy::AskForApproval::OnRequest,
             &cwd,
-            // This endpoint has no read-only/restricted mode of its own;
-            // mutating tools stay allowed until a policy knob exists.
-            true,
+            req.allow_mutating,
         )
         .await
     {
@@ -356,6 +369,7 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
         runtime: Arc::new(runtime),
         registry,
         auth_token,
+        config_write: Arc::new(tokio::sync::Mutex::new(())),
     })
 }
 
@@ -931,19 +945,12 @@ async fn process_app_request(
             }
         }
         AppRequest::ConfigSet { key, value } => {
-            {
-                let mut cfg = state.config.write().await;
-                if let Err(err) = cfg.set_value(&key, &value) {
-                    return AppResponse {
-                        ok: false,
-                        data: json!({ "key": key, "value": value, "error": err.to_string() }),
-                        events: Vec::new(),
-                    };
-                }
-            }
-            // Apply the single key change to a freshly-loaded store: an
-            // external edit to config.toml made since this process started
-            // must survive, not be clobbered by our startup snapshot.
+            // The whole read-modify-write (disk + memory) runs under the
+            // config-write mutex, and the in-memory snapshot is DERIVED
+            // from disk: mutating memory first meant a failed persist
+            // left ConfigGet reporting a value that was never written,
+            // and concurrent requests lost each other's keys.
+            let _guard = state.config_write.lock().await;
             let persist_error = persist_config(
                 state,
                 PersistOp::Set {
@@ -954,6 +961,11 @@ async fn process_app_request(
             .await
             .err()
             .map(|e| e.to_string());
+            let resync_error = reload_config_snapshot(state)
+                .await
+                .err()
+                .map(|e| format!("config re-sync failed: {e}"));
+            let persist_error = persist_error.or(resync_error);
             AppResponse {
                 ok: persist_error.is_none(),
                 data: json!({
@@ -965,20 +977,16 @@ async fn process_app_request(
             }
         }
         AppRequest::ConfigUnset { key } => {
-            {
-                let mut cfg = state.config.write().await;
-                if let Err(err) = cfg.unset_value(&key) {
-                    return AppResponse {
-                        ok: false,
-                        data: json!({ "key": key, "error": err.to_string() }),
-                        events: Vec::new(),
-                    };
-                }
-            }
+            let _guard = state.config_write.lock().await;
             let persist_error = persist_config(state, PersistOp::Unset { key: &key })
                 .await
                 .err()
                 .map(|e| e.to_string());
+            let resync_error = reload_config_snapshot(state)
+                .await
+                .err()
+                .map(|e| format!("config re-sync failed: {e}"));
+            let persist_error = persist_error.or(resync_error);
             AppResponse {
                 ok: persist_error.is_none(),
                 data: json!({ "key": key, "persist_error": persist_error }),
@@ -1044,6 +1052,15 @@ async fn persist_config(state: &AppState, op: PersistOp<'_>) -> Result<()> {
         PersistOp::Unset { key } => store.config.unset_value(key)?,
     }
     store.save()
+}
+
+/// Re-derive the in-memory config snapshot from disk. Called after every
+/// persisted change (absorbing external edits) and after a failed persist
+/// (rolling back whatever the caller speculatively applied).
+async fn reload_config_snapshot(state: &AppState) -> Result<()> {
+    let store = ConfigStore::load(state.config_path.clone())?;
+    *state.config.write().await = store.config;
+    Ok(())
 }
 
 /// Denied exec prefixes for the app-server tool channel. The channel has no
