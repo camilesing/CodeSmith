@@ -201,7 +201,7 @@ impl ModStateStore {
         let h_changed = self
             .activation_hashes
             .get(mod_id)
-            .map_or(true, |old| old != entry_hash);
+            .is_none_or(|old| old != entry_hash);
         self.activation_hashes
             .insert(mod_id.to_string(), entry_hash.to_string());
         if !a_changed && !d_changed && !h_changed {
