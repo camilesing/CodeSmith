@@ -72,12 +72,49 @@ impl ProviderFactory for OpenAiCompatFactory {
         // provider's own Bearer credential — to a different vendor's
         // service instead of failing at the configuration site.
         let base_url =
-            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref())
+                .trim()
+                .to_string();
         if base_url.is_empty() {
             anyhow::bail!(
                 "provider '{}' ({}) has no base_url configured (host value \
                  and manifest default are both empty); refusing to fall back \
                  to api.openai.com — set the provider's base_url",
+                self.id.as_str(),
+                self.name
+            );
+        }
+        // Fail loud at the configuration site (not as an opaque reqwest
+        // failure at the first request), and never send the provider's
+        // Bearer credential in plaintext to a non-loopback host.
+        let parsed_url = reqwest::Url::parse(&base_url).with_context(|| {
+            format!(
+                "provider '{}' ({}) base_url is not a valid URL: '{base_url}'",
+                self.id.as_str(),
+                self.name
+            )
+        })?;
+        let host = parsed_url.host_str().unwrap_or("");
+        let host_unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+        let is_loopback = host_unbracketed == "localhost"
+            || host_unbracketed
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|a| a.is_loopback())
+            || host_unbracketed
+                .parse::<std::net::Ipv6Addr>()
+                .is_ok_and(|a| a.is_loopback());
+        if !matches!(parsed_url.scheme(), "http" | "https") {
+            anyhow::bail!(
+                "provider '{}' ({}) base_url must use http(s): '{base_url}'",
+                self.id.as_str(),
+                self.name
+            );
+        }
+        if parsed_url.scheme() == "http" && !is_loopback {
+            anyhow::bail!(
+                "provider '{}' ({}) base_url must use https (or a loopback \
+                 host) — refusing to send the provider credential in \
+                 plaintext to '{base_url}'",
                 self.id.as_str(),
                 self.name
             );
@@ -96,7 +133,22 @@ impl ProviderFactory for OpenAiCompatFactory {
         }
         let mut builder = openai::CompletionsClient::builder().api_key(cfg.api_key.clone());
         builder = builder.base_url(&base_url);
-        builder = builder.http_headers(build_header_map(&cfg.http_headers));
+        // Host-supplied extra headers must not override the auth rig derives
+        // from `cfg.api_key`: an `authorization` entry can silently break or
+        // bypass the Bearer credential (cf. the anthropic factory's guard
+        // over its auth-managed headers). Fails loud at build, mid-request
+        // never happens.
+        let headers = build_header_map(&cfg.http_headers);
+        if headers.contains_key(reqwest::header::AUTHORIZATION) {
+            anyhow::bail!(
+                "provider '{}' ({}): http_headers must not override the \
+                 auth-managed `authorization` header; configure credentials \
+                 via ProviderConfig::api_key",
+                self.id.as_str(),
+                self.name
+            );
+        }
+        builder = builder.http_headers(headers);
         // P0-3: backend with a one-shot HTTP/2 → HTTP/1.1 fallback
         // (`rig_adapter::http_fallback`). `http_client` advances the
         // builder's backend type parameter, so it chains into `build`

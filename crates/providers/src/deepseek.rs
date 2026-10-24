@@ -75,11 +75,28 @@ impl ProviderFactory for DeepSeekFactory {
         // Separate reqwest client for the FIM/translate shim. Honours the same
         // extra headers as the chat client; the shim adds bearer auth + JSON
         // body per call. Bounded: these are LLM round-trips, so the total
-        // window is generous while a connect stall still fails fast.
+        // window is generous while a connect stall still fails fast. FIM on
+        // large prompt+suffix pairs can legitimately run past two minutes,
+        // so the cap is env-tunable (the engine has no deadline covering
+        // these single POSTs, so "no total timeout" is not an option).
+        let shim_timeout_secs = match std::env::var("CODESMITH_SHIM_TIMEOUT_SECS") {
+            Ok(raw) => raw.trim().parse::<u64>().context(
+                "CODESMITH_SHIM_TIMEOUT_SECS must be a number of seconds \
+                 (the deepseek FIM/translate shim's total request cap)",
+            )?,
+            Err(_) => 120,
+        };
+        let mut shim_default_headers = build_header_map(&cfg.http_headers);
+        // The shim injects `Authorization: Bearer …` per request; a
+        // user-supplied Authorization in the defaults would be appended
+        // alongside it (reqwest merges per-request over defaults), leaving
+        // two competing credentials on the wire. Drop it so there is
+        // exactly one source of auth.
+        shim_default_headers.remove(reqwest::header::AUTHORIZATION);
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(120))
-            .default_headers(build_header_map(&cfg.http_headers))
+            .timeout(std::time::Duration::from_secs(shim_timeout_secs))
+            .default_headers(shim_default_headers)
             .build()
             .context("failed to build deepseek FIM/translate http client")?;
 

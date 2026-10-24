@@ -18,7 +18,9 @@
 //! `ApiProvider::as_str()` yields — rather than agent-runtime's `ApiProvider` enum,
 //! so this crate stays off the `codesmith-agent-runtime` dep edge (ROADMAP §C6).
 
-use codesmith_agent::reasoning::{requires_reasoning_content, should_replay_reasoning_content};
+use codesmith_agent::reasoning::{
+    requires_reasoning_content, reasoning_scope, should_replay_reasoning_content, ReasoningScope,
+};
 use serde_json::{Map, Value, json};
 
 /// The 9 providers whose API tolerates a `reasoning_content` field on assistant
@@ -61,12 +63,13 @@ pub(crate) fn provider_rejects_reasoning_content(name: &str) -> bool {
 
 /// Whether `model` matched a DeepSeek-scoped arm of
 /// [`requires_reasoning_content`] rather than its generic
-/// `*reasoner*` / `*-reasoning` / `*-thinking` globs: every DeepSeek-scoped
-/// arm (v4 / chat / reasoner / `deepseek-r<digit>`) contains the substring
-/// "deepseek", so this is exact for the DeepSeek arms and only conservative
-/// in the same direction the #1739/#1694 fix already is.
+/// `*reasoner*` / `*-reasoning` / `*-thinking` globs. Resolved via the
+/// upstream [`reasoning_scope`] so the exactness is shared, not re-derived
+/// by substring: `contains("deepseek")` was broader than the DeepSeek arms
+/// and let glob-only ids (e.g. `acme-deepseek-turbo-reasoner`) escape the
+/// #224 strip on providers confirmed to reject the field.
 fn deepseek_scoped(model: &str) -> bool {
-    model.to_lowercase().contains("deepseek")
+    reasoning_scope(model) == ReasoningScope::DeepSeek
 }
 
 /// Provider-aware replay gate — the load-bearing predicate for both the
@@ -170,6 +173,19 @@ pub(crate) fn apply_reasoning_effort(
             }
             _ => {}
         }
+        return;
+    }
+
+    // "" means "send nothing" everywhere except the DeepSeek family, whose
+    // deliberate ""→high mapping is covered by tests. Anywhere else the
+    // tier arms below would force thinking on at the highest tier when the
+    // engine meant it off.
+    if normalized.is_empty()
+        && !matches!(
+            provider,
+            "deepseek" | "deepseek-cn" | "siliconflow" | "sglang" | "volcengine"
+        )
+    {
         return;
     }
 
@@ -287,6 +303,16 @@ fn merge_chat_template_kwargs(params: &mut Map<String, Value>, key: &str, value:
     let entry = params
         .entry("chat_template_kwargs".to_string())
         .or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        // A non-object value (string/number/bool/null) is already a broken
+        // request; replacing it keeps the thinking control effective instead
+        // of silently dropping it (the vLLM "freeze" PR #1480 fixed).
+        tracing::warn!(
+            "chat_template_kwargs in additional_params is not a JSON object; \
+             replacing it so thinking control is not silently dropped"
+        );
+        *entry = json!({});
+    }
     if let Some(obj) = entry.as_object_mut() {
         obj.insert(key.to_string(), value);
     }
