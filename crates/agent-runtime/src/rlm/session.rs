@@ -116,32 +116,140 @@ impl Default for RlmSessionConfig {
 /// world-readable under the default umask and a pre-creation/symlink target
 /// for other local users. `create_dir` (not `create_dir_all`) fails loud if
 /// the exact directory already exists.
+///
+/// The first call in a process also sweeps staging directories left behind
+/// by crashed previous runs ([`sweep_stale_rlm_context_dirs`]) — the normal
+/// cleanup paths remove only `context.txt`, never the parent, so a hard
+/// crash (kill -9, power loss) leaks one directory per interrupted turn.
 pub async fn write_context_file(body: &str) -> std::io::Result<PathBuf> {
+    sweep_stale_context_dirs_once().await;
     let dir = std::env::temp_dir().join(format!(
         "deepseek_rlm_ctx_{}_{}",
         std::process::id(),
         Uuid::new_v4().simple()
     ));
     let path = dir.join("context.txt");
+    // mkdir(0700) is atomic hardening: a plain create_dir followed by
+    // chmod left a window where the staging dir was group/other-traversable,
+    // and the guarantee silently vanished if the calls were ever reordered.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .await?;
+    }
+    #[cfg(not(unix))]
+    {
         tokio::fs::create_dir(&dir).await?;
-        tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).await?;
+    }
+    let write_result = write_context_body(&path, body).await;
+    if write_result.is_err() {
+        // A half-staged directory (open/write failure) is garbage nobody
+        // will ever clean: this process is the only one that knew the UUID.
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+    write_result.map(|()| path)
+}
+
+async fn write_context_body(path: &Path, body: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        // tokio's OpenOptions has an inherent unix `.mode()` — no trait
+        // import needed (unlike std's).
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&path)
+            .open(path)
             .await?;
         tokio::io::AsyncWriteExt::write_all(&mut file, body.as_bytes()).await?;
     }
     #[cfg(not(unix))]
     {
-        tokio::fs::create_dir(&dir).await?;
-        tokio::fs::write(&path, body).await?;
+        // Exclusive create is portable and cheap; the 0600 restriction is
+        // unix-only (tracked as a platform caveat, not a guarantee here).
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, body.as_bytes()).await?;
     }
-    Ok(path)
+    Ok(())
+}
+
+/// Prefix of every RLM staging directory under the system temp dir.
+#[cfg(unix)]
+const RLM_CTX_DIR_PREFIX: &str = "deepseek_rlm_ctx_";
+
+/// Run [`sweep_stale_rlm_context_dirs`] at most once per process: the
+/// winner of the `set` race sweeps, everyone else proceeds (a double sweep
+/// is harmless — removals tolerate `NotFound` — but pointless). No-op
+/// outside unix, where there is no sweep to run.
+async fn sweep_stale_context_dirs_once() {
+    static SWEPT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if SWEPT.set(()).is_ok() {
+        #[cfg(unix)]
+        let _ = tokio::task::spawn_blocking(sweep_stale_rlm_context_dirs).await;
+        #[cfg(not(unix))]
+        {}
+    }
+}
+
+/// Remove RLM staging directories whose owning process is gone. Directory
+/// names embed the staging pid (`deepseek_rlm_ctx_{pid}_{uuid}`); a dead
+/// pid means the run crashed before its cleanup paths ran, and the dir may
+/// hold a partially written `context.txt` with sensitive prompt data.
+///
+/// Liveness is probed with `kill -0 <pid>` (a real signal is never sent):
+/// exit 0 means some process with that id exists — same-uid processes
+/// always answer, and a foreign-uid owner makes `kill` fail while its
+/// 0700 directory refuses the removal anyway, so misclassification can
+/// only produce a harmless failed `remove_dir_all`. Unix-only: non-unix
+/// staging dirs still accumulate after crashes (known limitation, same
+/// family as the non-unix permission caveat).
+#[cfg(unix)]
+pub fn sweep_stale_rlm_context_dirs() {
+    let tmp = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&tmp) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(rest) = name.strip_prefix(RLM_CTX_DIR_PREFIX) else {
+            continue;
+        };
+        let Some((pid_str, _uuid)) = rest.split_once('_') else {
+            continue;
+        };
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        if pid == std::process::id() || pid_alive(pid) {
+            continue;
+        }
+        // Best-effort: another crashed-run sweeper or the owner's dying
+        // gasp may remove it first; anything left is still swept next boot.
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
+/// `kill -0`-style liveness probe without sending a signal. Spawning the
+/// `kill` binary avoids an `unsafe libc::kill` call in this crate
+/// (`deny(unsafe_code)` with narrowly-scoped allows elsewhere); the sweep
+/// runs once per process over a handful of entries, so the spawn cost is
+/// irrelevant.
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[derive(Debug, Clone)]
@@ -489,6 +597,7 @@ pub fn derive_session_name(source_hint: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{EnvVarGuard, lock_test_env};
 
     #[test]
     fn derive_session_name_slugifies_path() {
@@ -496,6 +605,55 @@ mod tests {
             derive_session_name(Some("src/Big File.rs")),
             "big_file_rs".to_string()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sweep_removes_only_dead_owner_staging_dirs() {
+        let _env = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let _guard = EnvVarGuard::set("TMPDIR", tmp.path());
+        // 999999999 exceeds macOS/Linux default pid spaces, so no live
+        // process can ever own it; our own pid is alive by definition.
+        let dead = tmp.path().join("deepseek_rlm_ctx_999999999_abc123def");
+        let live = tmp
+            .path()
+            .join(format!("deepseek_rlm_ctx_{}_abc123def", std::process::id()));
+        let unrelated = tmp.path().join("deepseek_other_999999999_x");
+        for dir in [&dead, &live, &unrelated] {
+            std::fs::create_dir_all(dir).expect("seed dir");
+            std::fs::write(dir.join("context.txt"), "stale transcript").expect("seed file");
+        }
+
+        sweep_stale_rlm_context_dirs();
+
+        assert!(!dead.exists(), "dead-owner staging dir must be swept");
+        assert!(!dead.join("context.txt").exists());
+        assert!(live.exists(), "live-owner staging dir must survive");
+        assert!(unrelated.exists(), "non-RLM dirs are not touched");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn staged_dir_and_file_are_owner_only() {
+        let _env = lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let _guard = EnvVarGuard::set("TMPDIR", tmp.path());
+        let path = write_context_file("secret transcript")
+            .await
+            .expect("stage");
+        use std::os::unix::fs::PermissionsExt;
+        let dir_mode = std::fs::metadata(path.parent().expect("parent"))
+            .expect("dir meta")
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700, "staging dir is owner-only");
+        let file_mode = std::fs::metadata(&path)
+            .expect("file meta")
+            .permissions()
+            .mode();
+        assert_eq!(file_mode & 0o777, 0o600, "staged file is owner-only");
+        let _ = tokio::fs::remove_dir_all(path.parent().expect("parent")).await;
     }
 
     #[test]

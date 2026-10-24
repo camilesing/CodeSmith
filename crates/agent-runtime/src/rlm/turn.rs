@@ -200,7 +200,11 @@ async fn run_rlm_turn_impl(
     let mut repl = match PythonRuntime::spawn_with_context(&ctx_path).await {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = tokio::fs::remove_file(&ctx_path).await;
+            // The whole staging directory goes, not just context.txt —
+            // otherwise every spawn failure leaks the (now useless) parent.
+            let _ =
+                tokio::fs::remove_dir_all(ctx_path.parent().unwrap_or(std::path::Path::new("")))
+                    .await;
             return RlmTurnResult {
                 answer: String::new(),
                 iterations: 0,
@@ -556,6 +560,12 @@ async fn run_rlm_turn_impl(
     drop(bridge_usage);
 
     repl.shutdown().await;
+    // `shutdown()` removed the staged context FILE; the per-call staging
+    // DIRECTORY is this function's own creation (`write_context_file`
+    // above), so removing it here cannot touch anyone else's files.
+    if let Some(dir) = ctx_path.parent() {
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
 
     RlmTurnResult {
         usage: final_usage,

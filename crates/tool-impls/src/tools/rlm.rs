@@ -522,6 +522,7 @@ impl ToolSpec for RlmCloseTool {
 
         let mut session = session.lock().await;
         let kernel = session.kernel.take();
+        let context_path = session.context_path.clone();
         let output = json!({
             "name": session.name,
             "id": session.id,
@@ -535,6 +536,13 @@ impl ToolSpec for RlmCloseTool {
 
         if let Some(kernel) = kernel {
             kernel.shutdown().await;
+        }
+        // `shutdown()` removed the staged context FILE; the per-call
+        // staging DIRECTORY is `rlm_open`'s own creation
+        // (`write_context_file`), so removing it here cannot touch anyone
+        // else's files.
+        if let Some(dir) = context_path.parent() {
+            let _ = tokio::fs::remove_dir_all(dir).await;
         }
 
         ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
