@@ -190,12 +190,12 @@ impl Settings {
         // full-file save racing the runtime's key-preserving merge would
         // have both write from the same baseline and the last rename would
         // silently drop the other's keys.
-        let _lock = codesmith_agent_runtime::settings_file::SettingsFileLock::acquire(&path)?;
-
-        let content = toml::to_string_pretty(self).context("Failed to serialize settings")?;
-        codesmith_agent_runtime::utils::write_atomic(&path, content.as_bytes())
-            .with_context(|| format!("Failed to write settings to {}", path.display()))?;
-        Ok(())
+        let path_for_lock = path.clone();
+        codesmith_agent_runtime::settings_file::with_settings_lock(&path_for_lock, move || {
+            let content = toml::to_string_pretty(self).context("Failed to serialize settings")?;
+            codesmith_agent_runtime::utils::write_atomic(&path, content.as_bytes())
+                .with_context(|| format!("Failed to write settings to {}", path.display()))
+        })
     }
 
     /// Get all settings as a displayable string

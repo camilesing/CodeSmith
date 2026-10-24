@@ -37,64 +37,55 @@ pub fn settings_file_path() -> Result<PathBuf> {
     Ok(config_dir.join("settings.toml"))
 }
 
-/// How long [`write_settings_locale`] waits on a settings lock held by
+/// How long [`with_settings_lock`] waits on a settings lock held by
 /// another writer before giving up.
 const SETTINGS_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
-/// A settings lock older than this is assumed orphaned by a crashed
-/// writer and broken.
-const SETTINGS_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
-/// Advisory sibling lock file serializing the read-merge-write in
-/// [`write_settings_locale`] across processes: two concurrent writers (the
-/// first-run wizard racing the runtime, or two CLI invocations) would
-/// otherwise merge from the same baseline and the last rename would
-/// silently drop the other's keys. Acquired with `create_new`
-/// (`O_EXCL`); dropped (and removed) when the guard goes out of scope.
-/// Public so the CLI's whole-file `Settings::save` takes the same lock —
-/// an unlocked save racing this read-merge-write loses one side's keys.
-pub struct SettingsFileLock {
-    path: PathBuf,
-}
-
-impl SettingsFileLock {
-    pub fn acquire(settings: &Path) -> Result<Self> {
-        let path = settings.with_extension("toml.lock");
-        let deadline = Instant::now() + SETTINGS_LOCK_TIMEOUT;
-        loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Self { path }),
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                    if Instant::now() >= deadline {
-                        bail!("timed out waiting for settings lock at {}", path.display());
-                    }
-                    let stale = fs::metadata(&path)
-                        .ok()
-                        .and_then(|meta| meta.modified().ok())
-                        .and_then(|modified| modified.elapsed().ok())
-                        .is_some_and(|age| age >= SETTINGS_LOCK_STALE_AFTER);
-                    if stale {
-                        let _ = fs::remove_file(&path);
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
+/// Run `f` as a settings read-modify-write serialized against every other
+/// settings writer across processes. Backed by an OS advisory lock
+/// (`fd-lock`): the kernel releases it when the holder dies, so there is
+/// no stale-lock heuristic whose break could race a fresh holder (the old
+/// `create_new` + mtime-stale-break scheme could delete a freshly
+/// acquired lock between the mtime read and the removal). Every settings
+/// writer — the runtime's key-preserving locale merge here and the CLI's
+/// whole-file `Settings::save` — must go through this; an unlocked writer
+/// racing a locked one merges from the same baseline and the last rename
+/// silently drops the other's keys.
+pub fn with_settings_lock<T>(settings: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let path = settings.with_extension("toml.lock");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open settings lock at {}", path.display()))?;
+    let mut rw = fd_lock::RwLock::new(file);
+    let deadline = Instant::now() + SETTINGS_LOCK_TIMEOUT;
+    loop {
+        match rw.try_write() {
+            Ok(guard) => {
+                // Hold the guard across `f` (a `_`-binding would drop it
+                // immediately).
+                let _held = guard;
+                return f();
+            }
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    bail!("timed out waiting for settings lock at {}", path.display());
                 }
-                Err(err) => {
-                    return Err(anyhow::Error::new(err).context(format!(
-                        "failed to create settings lock at {}",
-                        path.display()
-                    )));
-                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => {
+                return Err(anyhow::Error::new(err).context(format!(
+                    "failed to acquire settings lock at {}",
+                    path.display()
+                )));
             }
         }
-    }
-}
-
-impl Drop for SettingsFileLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -110,33 +101,35 @@ pub fn write_settings_locale(tag: &str) -> Result<PathBuf> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
     }
-    let _lock = SettingsFileLock::acquire(&path)?;
-
-    let mut doc = if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read settings from {}", path.display()))?;
-        raw.parse::<toml_edit::DocumentMut>()
-            .with_context(|| format!("Failed to parse settings from {}", path.display()))?
-    } else {
-        toml_edit::DocumentMut::new()
-    };
-    doc["locale"] = toml_edit::value(tag);
-    let content = doc.to_string();
-    let tmp = path.with_extension("toml.tmp");
-    fs::write(&tmp, &content)
-        .with_context(|| format!("Failed to write settings to {}", tmp.display()))?;
-    // fsync the temp before the rename so a crash cannot publish an empty
-    // or torn settings file, and the parent dir after so the rename itself
-    // is durable.
-    if let Ok(file) = fs::File::open(&tmp) {
-        let _ = file.sync_all();
-    }
-    fs::rename(&tmp, &path)
-        .with_context(|| format!("Failed to replace settings at {}", path.display()))?;
-    if let Some(parent) = path.parent()
-        && let Ok(dir) = fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
-    }
-    Ok(path)
+    with_settings_lock(&path, || {
+        let mut doc = if path.exists() {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read settings from {}", path.display()))?;
+            raw.parse::<toml_edit::DocumentMut>()
+                .with_context(|| format!("Failed to parse settings from {}", path.display()))?
+        } else {
+            toml_edit::DocumentMut::new()
+        };
+        doc["locale"] = toml_edit::value(tag);
+        let content = doc.to_string();
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, &content)
+            .with_context(|| format!("Failed to write settings to {}", tmp.display()))?;
+        // fsync the temp before the rename so a crash cannot publish an empty
+        // or torn settings file, and the parent dir after so the rename itself
+        // is durable.
+        if let Ok(file) = fs::File::open(&tmp) {
+            let _ = file.sync_all();
+        }
+        fs::rename(&tmp, &path)
+            .with_context(|| format!("Failed to replace settings at {}", path.display()))?;
+        if let Some(parent) = path.parent()
+            && let Ok(dir) = fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
+        // The `&path` lock argument still borrows `path`, so hand back a
+        // clone instead of moving it out of the closure.
+        Ok(path.clone())
+    })
 }
