@@ -30,8 +30,9 @@ const UNKNOWN_SENDER: &str = "unknown-sender";
 /// after it was answered. Known limitation: process-local, and the
 /// check-then-act window to the mailbox write remains — durable,
 /// cross-process consumption needs state in the mailbox store itself.
-static HANDLED_REQUEST_IDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
+static HANDLED_REQUEST_IDS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
 
 fn request_already_handled(request_id: &str) -> bool {
     HANDLED_REQUEST_IDS

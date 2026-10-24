@@ -666,11 +666,10 @@ fn build_extension_runtime(
     // An unreadable state store (e.g. EACCES) must not silently fail open:
     // the empty default re-enables every extension the user explicitly
     // disabled. Log it so the silent re-enable is at least attributable.
-    let state = crate::extension_state::ExtensionStateStore::load_default()
-        .unwrap_or_else(|err| {
-            tracing::error!("extension state unreadable ({err:#}); proceeding as all-enabled");
-            Default::default()
-        });
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_else(|err| {
+        tracing::error!("extension state unreadable ({err:#}); proceeding as all-enabled");
+        Default::default()
+    });
     let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_else(|err| {
         tracing::error!("mod state unreadable ({err:#}); proceeding as all-enabled");
         Default::default()

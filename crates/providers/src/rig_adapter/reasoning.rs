@@ -19,7 +19,7 @@
 //! so this crate stays off the `codesmith-agent-runtime` dep edge (ROADMAP §C6).
 
 use codesmith_agent::reasoning::{
-    requires_reasoning_content, reasoning_scope, should_replay_reasoning_content, ReasoningScope,
+    ReasoningScope, reasoning_scope, requires_reasoning_content, should_replay_reasoning_content,
 };
 use serde_json::{Map, Value, json};
 

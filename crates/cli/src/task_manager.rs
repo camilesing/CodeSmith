@@ -42,9 +42,9 @@ const CANCEL_GRACE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub use codesmith_agent_runtime::host_services::TaskManagerHost;
 pub use codesmith_agent_runtime::tools::task_types::{
-    CURRENT_TASK_SCHEMA_VERSION, NewTaskRequest, TaskArtifactRef, TaskAttemptRecord,
-    TaskChecklistState, TaskCounts, TaskGateRecord, TaskGithubEvent, TaskRecord, TaskStatus,
-    TaskSummary, TaskTimelineEntry, TaskToolCallSummary, TaskToolStatus, TIMELINE_SUMMARY_LIMIT,
+    CURRENT_TASK_SCHEMA_VERSION, NewTaskRequest, TIMELINE_SUMMARY_LIMIT, TaskArtifactRef,
+    TaskAttemptRecord, TaskChecklistState, TaskCounts, TaskGateRecord, TaskGithubEvent, TaskRecord,
+    TaskStatus, TaskSummary, TaskTimelineEntry, TaskToolCallSummary, TaskToolStatus,
     summarize_text,
 };
 

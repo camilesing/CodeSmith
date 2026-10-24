@@ -179,9 +179,11 @@ fn sanitize_dynamic(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (idx, raw_line) in text.lines().enumerate() {
         let mut line = raw_line.trim_start();
-        while line.chars().next().is_some_and(|ch| {
-            ch == '#' || ch == '-' || ch == '>' || ch == '*' || ch == '+'
-        }) {
+        while line
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == '#' || ch == '-' || ch == '>' || ch == '*' || ch == '+')
+        {
             line = line[1..].trim_start();
         }
         if idx == 0 {

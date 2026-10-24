@@ -75,7 +75,6 @@ impl WorkspaceTrust {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .map(PathBuf::from)
             .collect();
         Self { paths }
     }

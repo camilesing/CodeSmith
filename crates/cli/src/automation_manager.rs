@@ -23,8 +23,8 @@ use codesmith_agent_runtime::utils::spawn_supervised;
 
 pub use codesmith_agent_runtime::host_services::{AutomationManagerHost, TaskManagerHost};
 pub use codesmith_agent_runtime::tools::automation_types::{
-    CURRENT_AUTOMATION_SCHEMA_VERSION, CURRENT_RUN_SCHEMA_VERSION, AutomationRecord,
-    AutomationRunRecord, AutomationRunStatus, AutomationStatus, CreateAutomationRequest,
+    AutomationRecord, AutomationRunRecord, AutomationRunStatus, AutomationStatus,
+    CURRENT_AUTOMATION_SCHEMA_VERSION, CURRENT_RUN_SCHEMA_VERSION, CreateAutomationRequest,
     UpdateAutomationRequest,
 };
 

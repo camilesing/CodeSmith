@@ -1343,7 +1343,11 @@ fn matches_at_position(
         any_loose = true;
     }
 
-    Some(if any_loose { LineMatch::Loose } else { LineMatch::Exact })
+    Some(if any_loose {
+        LineMatch::Loose
+    } else {
+        LineMatch::Exact
+    })
 }
 
 // === Unit Tests ===
@@ -1381,7 +1385,10 @@ mod tests {
             normalize_diff_path("\"b/quoted.rs\""),
             Some("quoted.rs".to_string())
         );
-        assert_eq!(normalize_diff_path("b/plain.rs"), Some("plain.rs".to_string()));
+        assert_eq!(
+            normalize_diff_path("b/plain.rs"),
+            Some("plain.rs".to_string())
+        );
         assert_eq!(normalize_diff_path("/dev/null"), None);
     }
 

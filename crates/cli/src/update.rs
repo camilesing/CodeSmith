@@ -194,7 +194,9 @@ enum UpdateReleaseSource {
     /// defeat the mirror's purpose (reachability), and release signing
     /// (minisign/cosign with a baked-in public key) is the eventual fix;
     /// until then the install warns that the mirror owns the whole chain.
-    Mirror { base_url: String },
+    Mirror {
+        base_url: String,
+    },
 }
 
 pub(crate) fn release_arch_for_rust_arch(arch: &str) -> &str {
@@ -642,8 +644,8 @@ mod tests {
                 },
             ],
         };
-        let selected = select_platform_asset(&release, "codesmith-macos-arm64")
-            .expect("exact asset selected");
+        let selected =
+            select_platform_asset(&release, "codesmith-macos-arm64").expect("exact asset selected");
         assert_eq!(selected.name, "codesmith-macos-arm64");
 
         let with_exe = Release {

@@ -100,6 +100,9 @@ impl ToolRegistryPluginExt for ToolRegistry {
                                  (script missing or unreadable); keeping the built-in tool"
                             );
                             tracing::error!("{message}");
+                            // Deliberate stderr copy: this runs before any
+                            // UI exists, and the user must see it.
+                            #[allow(clippy::print_stderr)]
                             eprintln!("error: {message}");
                         }
                     }

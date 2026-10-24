@@ -69,12 +69,10 @@ pub async fn list(workspace: &std::path::Path) -> Result<Vec<SnapshotRow>, Rewin
     let workspace = workspace.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let repo = SnapshotRepo::try_open(&workspace).map_err(classify_open_error)?;
-        let snapshots = repo
-            .list(LIST_LIMIT)
-            .map_err(|source| RewindError::Git {
-                op: "snapshot listing",
-                source,
-            })?;
+        let snapshots = repo.list(LIST_LIMIT).map_err(|source| RewindError::Git {
+            op: "snapshot listing",
+            source,
+        })?;
         Ok(snapshots
             .into_iter()
             .map(|snapshot| SnapshotRow {

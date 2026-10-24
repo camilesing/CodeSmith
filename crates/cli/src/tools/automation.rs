@@ -405,7 +405,7 @@ fn string_array(input: &Value, field: &str) -> Result<Vec<String>, ToolError> {
 /// absolute path — a relative path would resolve against wherever the
 /// scheduler happens to run, granting the run an unintended directory.
 fn cwds_from_input(input: &Value) -> Result<Vec<PathBuf>, ToolError> {
-    string_array(&input, "cwds")?
+    string_array(input, "cwds")?
         .into_iter()
         .map(|raw| {
             let path = PathBuf::from(&raw);
@@ -452,7 +452,10 @@ mod tests {
     #[test]
     fn cwds_must_be_absolute() {
         let ok = json!({ "cwds": ["/work/repo"] });
-        assert_eq!(cwds_from_input(&ok).unwrap(), vec![PathBuf::from("/work/repo")]);
+        assert_eq!(
+            cwds_from_input(&ok).unwrap(),
+            vec![PathBuf::from("/work/repo")]
+        );
 
         let rel = json!({ "cwds": ["repo"] });
         let err = cwds_from_input(&rel).expect_err("relative path must be rejected");
