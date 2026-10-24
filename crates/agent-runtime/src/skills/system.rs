@@ -93,6 +93,17 @@ pub fn is_bundled_skill_name(name: &str) -> bool {
 
 /// Attempt to install a single bundled skill into `skills_dir`.
 ///
+/// Whether an existing skill directory looks like one we previously
+/// installed: its SKILL.md still carries this skill's frontmatter `name`.
+/// A user-authored skill whose directory name collides with a bundled
+/// skill keeps its own `name:` and is never treated as ours. Known
+/// limitation: a user-authored SKILL.md that also redeclares the bundled
+/// name is indistinguishable from our install without per-skill
+/// provenance markers.
+fn looks_like_our_install(target_file: &Path, name: &str) -> bool {
+    fs::read_to_string(target_file).is_ok_and(|body| body.contains(&format!("name: {name}")))
+}
+
 /// Returns `true` if installation occurred (fresh install or version bump).
 fn install_one(
     skills_dir: &Path,
@@ -108,10 +119,20 @@ fn install_one(
         // Fresh install: neither marker nor directory.
         (None, _, false) => true,
         // Newly bundled skill: add it for older system-skill installs.
-        (Some(_), Some(version), _) if version < skill.introduced_in => true,
-        // Version bump for an existing skill: refresh only if the user has not
-        // intentionally deleted that skill directory.
-        (Some(version), _, true) if version != BUNDLED_SKILL_VERSION => true,
+        // Never clobber a pre-existing (possibly user-authored) directory —
+        // a name collision with a personal skill must not overwrite it.
+        (Some(_), Some(version), false) if version < skill.introduced_in => true,
+        // Version bump for an existing skill: refresh only if the user has
+        // not intentionally deleted that skill directory AND the existing
+        // SKILL.md still carries this skill's frontmatter name — a
+        // user-authored skill that merely collides with a bundled name
+        // keeps its own `name:` and must not be overwritten by a refresh.
+        (Some(version), _, true)
+            if version != BUNDLED_SKILL_VERSION
+                && looks_like_our_install(&target_file, skill.name) =>
+        {
+            true
+        }
         // Every other case: current install, user-deleted dir, or pre-existing
         // user-owned skill without our marker.
         _ => false,
@@ -313,10 +334,20 @@ mod tests {
     fn outdated_marker_triggers_reinstall_of_existing_skills() {
         let tmp = TempDir::new().unwrap();
 
-        // Simulate a previous install at a lower version with all skills present.
+        // Simulate a previous install at a lower version with all skills
+        // present. The existing bodies carry each skill's frontmatter name,
+        // as real prior bundled installs do — the refresh arm relies on it
+        // to tell our installs from user-authored name collisions.
         for skill in BUNDLED_SKILLS {
             fs::create_dir_all(skill_dir(&tmp, skill.name)).unwrap();
-            fs::write(skill_file(&tmp, skill.name), format!("old-{}", skill.name)).unwrap();
+            fs::write(
+                skill_file(&tmp, skill.name),
+                format!(
+                    "---\nname: {}\ndescription: old\n---\nold body\n",
+                    skill.name
+                ),
+            )
+            .unwrap();
         }
         fs::write(marker_file(&tmp), "0").unwrap(); // older than BUNDLED_SKILL_VERSION
 
@@ -344,12 +375,22 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Simulate state from v2: v1/v2 skills exist, v3 skills do not.
+        // The existing bodies carry the skill's frontmatter name, as any
+        // real prior bundled install does — the refresh arm relies on it
+        // to tell our installs from user-authored name collisions.
         for skill in BUNDLED_SKILLS
             .iter()
             .filter(|skill| skill.introduced_in <= 2)
         {
             fs::create_dir_all(skill_dir(&tmp, skill.name)).unwrap();
-            fs::write(skill_file(&tmp, skill.name), format!("old-{}", skill.name)).unwrap();
+            fs::write(
+                skill_file(&tmp, skill.name),
+                format!(
+                    "---\nname: {}\ndescription: old\n---\nold body\n",
+                    skill.name
+                ),
+            )
+            .unwrap();
         }
         fs::write(marker_file(&tmp), "2").unwrap();
 
@@ -363,6 +404,35 @@ mod tests {
                 skill.name
             );
         }
+    }
+
+    #[test]
+    fn version_bump_does_not_clobber_user_authored_collision() {
+        let tmp = TempDir::new().unwrap();
+
+        // A user-authored skill dir whose name collides with a skill the
+        // next version bundles (introduced_in > marker version): arm 2
+        // used to ignore `dir_exists` and silently overwrote the user's
+        // SKILL.md with the bundled body.
+        let victim = BUNDLED_SKILLS
+            .iter()
+            .find(|skill| skill.introduced_in > 2)
+            .expect("a skill introduced after v2");
+        fs::create_dir_all(skill_dir(&tmp, victim.name)).unwrap();
+        fs::write(
+            skill_file(&tmp, victim.name),
+            "---\nname: my-own\ndescription: user-authored\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(marker_file(&tmp), "2").unwrap();
+
+        install_system_skills(tmp.path()).unwrap();
+
+        let body = fs::read_to_string(skill_file(&tmp, victim.name)).unwrap();
+        assert_eq!(
+            body, "---\nname: my-own\ndescription: user-authored\n---\nbody\n",
+            "a pre-existing user-owned skill dir must not be overwritten"
+        );
     }
 
     #[test]

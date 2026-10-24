@@ -235,7 +235,12 @@ A `.trusted` marker file next to the `SKILL.md` marks the skill trusted
 trusted snippets are then passed through with instructions to
 execute via the `exec_shell` tool, so normal approval and sandbox policy
 still apply. Trust is per-skill and deliberate: review what a community
-skill wants to run before trusting it. MCP-prompt skills (see below) never
+skill wants to run before trusting it. Markers are honored only in
+user-owned roots outside the workspace (`~/.codesmith/skills`,
+`~/.agents/skills`, ...): a root inside the workspace (`.claude/skills`,
+`.cursor/skills`, ...) is repo-populated, so a shipped marker there is
+ignored — install the skill into your user directory to trust it. MCP-prompt
+skills (see below) never
 get shell snippets enabled.
 
 ## Companion files

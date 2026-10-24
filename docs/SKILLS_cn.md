@@ -214,7 +214,10 @@ max_install_size_bytes = 5_242_880   # 5 MiB default
 受信任的片段随后被透传，并附带通过
 `exec_shell` 工具执行的指令，因此常规审批和沙箱策略仍然适用。信任
 是按技能划分且需要刻意为之的：在信任一个社区技能之前，先审查它想
-运行什么。MCP 提示技能（见下文）从不会启用 shell 片段。
+运行什么。标记只在 workspace 之外的用户自有根（`~/.codesmith/skills`、
+`~/.agents/skills` 等）中生效：workspace 内的根（`.claude/skills`、
+`.cursor/skills` 等）由仓库填充，其中自带的标记会被忽略——请把技能
+安装到用户目录后再信任。MCP 提示技能（见下文）从不会启用 shell 片段。
 
 ## 伴随文件
 

@@ -592,13 +592,7 @@ pub async fn fetch_registry(
     }
     .error_for_status()
     .with_context(|| format!("registry {registry_url} returned an error status"))?;
-    let bytes = resp
-        .bytes()
-        .await
-        .with_context(|| format!("failed to read registry body from {registry_url}"))?;
-    if bytes.len() as u64 > REGISTRY_BODY_CAP {
-        bail!("registry {registry_url} exceeds body cap of {REGISTRY_BODY_CAP} bytes");
-    }
+    let bytes = read_body_capped(resp, REGISTRY_BODY_CAP, registry_url).await?;
     let body = String::from_utf8_lossy(&bytes);
     let parsed: RegistryDocument = serde_json::from_str(&body)
         .with_context(|| format!("failed to parse registry json from {registry_url}"))?;
@@ -1471,9 +1465,11 @@ fn extract_into(scan: &TarballScan, bytes: &[u8], dest: &Path, max_size: u64) ->
                 bytes.eq_ignore_ascii_case(marker.as_bytes())
             })
         };
-        if entry_type.is_file()
-            && (forbidden_marker(TRUSTED_MARKER) || forbidden_marker(INSTALLED_FROM_MARKER))
-        {
+        // Applies to any entry type: a directory named `.trusted` /
+        // `.installed-from` also satisfies the `Path::exists()` checks in
+        // `trust` / `update` / `uninstall` and the tool-execution gate, so
+        // filtering only files let a tarball pre-trust its own skill.
+        if forbidden_marker(TRUSTED_MARKER) || forbidden_marker(INSTALLED_FROM_MARKER) {
             continue;
         }
 
@@ -1898,6 +1894,17 @@ mod tests {
                     std::io::Cursor::new(marker),
                 )
                 .expect("append .installed-from");
+            // Directory variant: a directory named `.trusted` also
+            // satisfies the `Path::exists()` trust lookups, so the filter
+            // must apply to every entry type, not just files.
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o755);
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, ".trusted/", std::io::Cursor::new(marker))
+                .expect("append .trusted directory");
             builder.into_inner().expect("finalize tar");
             encoder.finish().expect("finalize gz");
         }
