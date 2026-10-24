@@ -268,8 +268,11 @@ jobs:
             if [[ "$variant" != "portable" ]]; then
               if [[ "$platform" == windows-* ]]; then
                 cp scripts/release/install.bat "$dir/"
-                # Convert line endings to CRLF for Windows
-                sed -i 's/$/\r/' "$dir/install.bat" 2>/dev/null || true
+                # Convert line endings to CRLF for Windows. Idempotent
+                # ('\r\r\n' from an already-CRLF source breaks cmd.exe
+                # parsing) and NOT masked: a corrupted installer must fail
+                # the build, not ship inside the zip.
+                sed -i 's/\r*$/\r/' "$dir/install.bat"
               else
                 cp scripts/release/install.sh "$dir/"
                 chmod +x "$dir/install.sh"
@@ -428,6 +431,11 @@ jobs:
       - uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
+          # When the dispatch flow creates the tag itself (tag did not exist
+          # yet), point it at the commit the artifacts were built from —
+          # without this the Releases API tags the default branch's HEAD,
+          # which may have advanced.
+          target_commitish: ${{ needs.resolve.outputs.sha }}
           files: artifacts/*/*
           prerelease: false
           body: |

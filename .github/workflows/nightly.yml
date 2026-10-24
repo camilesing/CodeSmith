@@ -94,7 +94,12 @@ jobs:
           SRC
           sudo dpkg --add-architecture riscv64
           sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/riscv64.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
-          sudo apt-get install -y libdbus-1-dev:riscv64
+          # Both architectures in ONE transaction: libdbus-1-dev is
+          # Multi-Arch: same, and the host (amd64, archive.ubuntu.com) and
+          # foreign (riscv64, ports.ubuntu.com) copies must be the exact
+          # same version — split transactions fail with "cannot be
+          # co-installed" whenever the two mirror sets lag each other.
+          sudo apt-get install -y libdbus-1-dev libdbus-1-dev:riscv64
       - name: Build
         shell: bash
         env:

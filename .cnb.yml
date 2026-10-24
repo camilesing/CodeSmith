@@ -140,6 +140,12 @@ main:
             if [ -z "$tag_name" ]; then
               tag_name="$(git describe --tags --exact-match 2>/dev/null || true)"
             fi
+            if [ -z "$tag_name" ]; then
+              # An empty tag would still publish a release titled "CNB
+              # release" with latest: true and no error anywhere.
+              echo "ERROR: unable to determine release tag name (CNB_BRANCH unset and no exact-match tag)" >&2
+              exit 1
+            fi
             version="${tag_name#v}"
             commit_sha="${CNB_COMMIT:-$(git rev-parse HEAD)}"
             {

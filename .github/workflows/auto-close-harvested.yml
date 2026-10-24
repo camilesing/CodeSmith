@@ -67,9 +67,19 @@ jobs:
           fi
           echo "Scanning commit range: ${RANGE}"
 
-          # `git log --format=%H%n%B%n--END--` separates commits with a
-          # sentinel so multi-line bodies don't get mangled.
-          mapfile -t commits < <(git log "${RANGE_ARGS[@]}" --format="%H")
+          # Command substitution (not `mapfile < <(...)`): a process
+          # substitution's exit status is never checked, even under
+          # `set -euo pipefail`, so a failing `git log` (bad range, missing
+          # ref) was indistinguishable from an empty push.
+          if ! commits_raw="$(git log "${RANGE_ARGS[@]}" --format="%H")"; then
+            echo "::error::git log failed for range ${RANGE}"
+            exit 1
+          fi
+          if [[ -z "${commits_raw}" ]]; then
+            echo "No commits in range; nothing to do."
+            exit 0
+          fi
+          mapfile -t commits <<< "${commits_raw}"
 
           if [[ ${#commits[@]} -eq 0 ]]; then
             echo "No commits in range; nothing to do."
@@ -110,13 +120,22 @@ jobs:
               processed_prs[${key}]=1
 
               # Idempotency: skip if the PR is already closed.
-              state="$(gh pr view "${pr}" --json state --jq .state 2>/dev/null || echo "MISSING")"
+              state="$(gh pr view "${pr}" --json state --jq .state 2>/dev/null)"
+              if [[ -z "${state}" ]]; then
+                # Distinguish a genuinely absent PR from a transient API
+                # failure: rate limits / 5xx must fail the run so it can be
+                # retried — this workflow has no other retry path, and a
+                # silent skip permanently leaves the harvested PR open.
+                detail="$(gh pr view "${pr}" --json state 2>&1 >/dev/null || true)"
+                if grep -qiE "Not Found|could not resolve" <<<"${detail}"; then
+                  echo "::warning::PR #${pr} not found; skipping. (${detail})"
+                  continue
+                fi
+                echo "::error::gh pr view #${pr} failed: ${detail}; failing so this run can be retried"
+                exit 1
+              fi
               if [[ "${state}" == "CLOSED" || "${state}" == "MERGED" ]]; then
                 echo "PR #${pr} is already ${state}; skipping."
-                continue
-              fi
-              if [[ "${state}" == "MISSING" ]]; then
-                echo "::warning::PR #${pr} not found or inaccessible; skipping."
                 continue
               fi
 

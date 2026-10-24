@@ -1,6 +1,18 @@
 # Ensure LF line endings for files consumed by include_str!() on all platforms.
 # include_str!() preserves raw bytes; CRLF breaks substring assertions and
-# produces different compiled binaries on Windows vs Linux/macOS.
+# produces different compiled binaries on Windows vs Linux/macOS. The explicit
+# per-pattern eol=lf rules matter beyond `* text=auto`: with core.autocrlf=true
+# a Windows checkout would otherwise materialize these files as CRLF.
 
-# Everything else auto-detects (default).
 * text=auto
+*.md   text eol=lf
+*.txt  text eol=lf
+*.toml text eol=lf
+*.rhai text eol=lf
+*.html text eol=lf
+*.rs   text eol=lf
+
+# git attributes are not retroactive: blobs committed with CRLF before these
+# rules keep CRLF in the object database. One-time migration after adopting
+# these rules (Git >= 2.16), then commit the result:
+#   git add --renormalize .

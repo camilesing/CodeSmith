@@ -142,6 +142,25 @@ memory_path = "~/.codesmith/memory.md"
 # Run /system in the REPL to inspect the final assembled prompt.
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Stream Idle Watchdog (top-level keys — keep them out of any [table]; both
+# are read at the TOP level, so uncommenting them under any [table] header
+# would silently ignore them)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Maximum silence between two consecutive stream events before the stream is
+# declared silently stalled (connection open, data flow stopped) and aborted
+# into the transparent-retry path. Per-event idle budget — a steadily
+# streaming response never trips it, no matter how long the turn runs.
+# Default: 120. Set 0 to disable. Clamped to 10..=3600 otherwise.
+# stream_idle_timeout_secs = 120
+
+# Per-retry widening of the idle watchdog window: each transparent retry's
+# deadline grows by this amount times the retries already spent, so a
+# provider silence gap longer than the base window doesn't kill every retry
+# in the same silent stretch. Default: 30. Set 0 to keep the window fixed.
+# Clamped to 0..=600 otherwise.
+# stream_idle_retry_increment_secs = 30
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # User memory (#489) — default ON. When enabled, CodeSmith reads memory_path on
 # startup and injects its contents into the system prompt as a
 # <user_memory> block, intercepts `# foo` typed in the composer to append
@@ -636,7 +655,7 @@ exec_policy = true
 # Xiaomi MiMo image understanding can be configured through the same tool:
 # model = "mimo-v2.5"
 # api_key = "YOUR_XIAOMI_KEY"
-# base_url = "https://api.xiaomimo.com/v1"
+# base_url = "https://api.xiaomimimo.com/v1"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Utility Model Configuration (optional)
@@ -684,22 +703,6 @@ exec_policy = true
 # router_model = "override the classifier brain itself"  # optional
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Stream Idle Watchdog (top-level keys — keep them out of any [table])
-# ─────────────────────────────────────────────────────────────────────────────────
-# Maximum silence between two consecutive stream events before the stream is
-# declared silently stalled (connection open, data flow stopped) and aborted
-# into the transparent-retry path. Per-event idle budget — a steadily
-# streaming response never trips it, no matter how long the turn runs.
-# Default: 120. Set 0 to disable. Clamped to 10..=3600 otherwise.
-# stream_idle_timeout_secs = 120
-
-# Per-retry widening of the idle watchdog window: each transparent retry's
-# deadline grows by this amount times the retries already spent, so a
-# provider silence gap longer than the base window doesn't kill every retry
-# in the same silent stretch. Default: 30. Set 0 to keep the window fixed.
-# Clamped to 0..=600 otherwise.
-# stream_idle_retry_increment_secs = 30
-
 # ─────────────────────────────────────────────────────────────────────────────────
 # Retry Configuration
 # ─────────────────────────────────────────────────────────────────────────────────

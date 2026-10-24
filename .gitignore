@@ -46,9 +46,11 @@ docs/*.pdf
 
 # Note: Cargo.lock is intentionally NOT ignored for reproducible builds
 
-# Local dev scripts and temp files
-*.sh
-*.cmd
+# Local dev scripts and temp files — only ROOT-level scratch scripts, so a
+# global *.sh would hide helper scripts in docker/, hack/, or next to
+# workflows from ever being tracked.
+/*.sh
+/*.cmd
 !scripts/**
 !.github/scripts/**
 test.txt
