@@ -456,12 +456,16 @@ pub(crate) fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
 }
 
 fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -> Result<()> {
-    let active_provider = store.config.provider;
     store.config.api_key = None;
     for provider in PROVIDER_LIST {
         clear_provider_api_key_from_config(store, provider);
+        // The keyring entry must go for every provider whose config slot is
+        // cleared: `auth set --provider openrouter` wrote its key to the
+        // platform keyring, and clearing only the active provider's slot
+        // left those authenticated while `logout` printed an unqualified
+        // "logged out".
+        clear_provider_api_key_from_keyring(secrets, provider);
     }
-    clear_provider_api_key_from_keyring(secrets, active_provider);
     store.config.auth_mode = None;
     store.save()?;
     println!("logged out");
@@ -522,7 +526,20 @@ fn write_provider_api_key_to_keyring(
     provider: ProviderKind,
     api_key: &str,
 ) -> bool {
-    secrets.set(provider_slot(provider), api_key).is_ok()
+    match secrets.set(provider_slot(provider), api_key) {
+        Ok(()) => true,
+        Err(err) => {
+            // The caller still saves the key in plaintext config.toml as the
+            // fallback; without this warning the only signal is a missing
+            // backend name in the success message, and the user never learns
+            // the secret-store write failed (cf. `run_auth_migrate`).
+            eprintln!(
+                "warning: failed to store API key in {}: {err}",
+                secrets.backend_name()
+            );
+            false
+        }
+    }
 }
 /// Move plaintext keys from config.toml into the configured secret store.
 /// Hidden in v0.8.8 because the normal setup path is config/env only.

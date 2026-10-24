@@ -21,24 +21,31 @@ pub fn log_sensitive_event(event: &str, details: Value) {
 fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
     let path = default_audit_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
         // The audit log records details of sensitive operations and
         // `open_append` creates the file 0600; the containing
-        // `~/.codesmith` must not stay world-accessible when this helper
-        // is the first to create it on a fresh machine.
+        // `~/.codesmith` must not stay world-accessible. Create with the
+        // intended mode from the start (a `create_dir_all` + later tighten
+        // leaves a group/world-traversable window on a fresh machine, and
+        // umask cannot widen a mode we set explicitly); only pre-existing
+        // directories need the tightening pass.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
             let perms = fs::metadata(parent)?.permissions();
             if perms.mode() & 0o077 != 0 {
                 fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
             }
         }
+        #[cfg(not(unix))]
+        fs::create_dir_all(parent)?;
     }
     // Open the append handle (owner-only on Unix via `open_append`), then
     // write each event as one syscall and fsync so the record is durably
     // on disk.
-    let mut writer = open_append(&path)?;
     let record = json!({
         "ts": Utc::now().to_rfc3339(),
         "event": event,
@@ -46,18 +53,24 @@ fn append_event(event: &str, details: Value) -> anyhow::Result<()> {
     });
     let line = serde_json::to_string(&record)?;
     use std::io::Write;
-    // One write syscall for line + newline: under O_APPEND a single
-    // `write_all` keeps the record atomic in practice, so concurrent CLI
-    // processes cannot interleave a torn half-line into the audit trail.
-    // (`writeln!` on the BufWriter can flush mid-record whenever the line
-    // exceeds the buffer capacity.) Durability is unchanged — the fsync
-    // below covers the bytes that just went out.
-    let mut bytes = Vec::with_capacity(line.len() + 1);
-    bytes.extend_from_slice(line.as_bytes());
-    bytes.push(b'\n');
-    writer.get_mut().write_all(&bytes)?;
-    writer.get_mut().sync_all()?;
-    Ok(())
+    // `write_all` is a loop of `write()` calls and POSIX does not guarantee
+    // O_APPEND atomicity for regular files (NFS home directories ignore it),
+    // so a torn half-line from a concurrent CLI process is possible without
+    // serialization. The whole write+fsync runs under the runtime's fd-lock
+    // helper (sibling `audit.log.lock`); inside it the record goes through
+    // the BufWriter and one `flush()` — a single `write_all` of the whole
+    // buffer — preserving the one-syscall-per-record goal while the lock
+    // holds.
+    codesmith_agent_runtime::settings_file::with_settings_lock(&path, || {
+        let mut writer = open_append(&path)?;
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        Ok(())
+    })
 }
 
 /// Key markers whose values are masked before `details` reaches the
