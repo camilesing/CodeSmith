@@ -534,11 +534,15 @@ pub fn tool_from_override(
 
             // Read the script's own frontmatter for metadata, or provide
             // defaults if it has none.
-            let meta = read_script_metadata(&script_path).unwrap_or_else(|| PluginMetadata {
+            let mut meta = read_script_metadata(&script_path).unwrap_or_else(|| PluginMetadata {
                 name: tool_name.to_string(),
                 description: format!("Override for built-in tool '{tool_name}'"),
                 input_schema: serde_json::json!({"type": "object"}),
             });
+            // The override key defines the tool identity: a mismatched
+            // frontmatter `# name:` used to register a differently-named
+            // tool instead of replacing the intended built-in.
+            meta.name = tool_name.to_string();
 
             Some(Arc::new(ScriptPluginTool {
                 metadata: meta,

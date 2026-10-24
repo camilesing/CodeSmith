@@ -540,6 +540,16 @@ fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
         &context.workspace,
     )
     .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
+    // Fail closed: `Git::output` returns Ok even on a non-zero exit, and
+    // an empty stdout from a FAILED status run read as "clean worktree" —
+    // the close proceeded on an unverified tree (or from a non-git
+    // workspace entirely).
+    if !out.status.success() {
+        return Err(ToolError::execution_failed(format!(
+            "git status --porcelain failed ({}); refusing to close on an unverified worktree",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 

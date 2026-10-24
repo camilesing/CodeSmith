@@ -64,17 +64,34 @@ pub use codesmith_agent_runtime::team::handle_shutdown_approval;
 /// Handle shutdown rejection from a teammate. The teammate continues working.
 ///
 /// `sender` is the teammate rejecting the shutdown and `recipient` the lead
-/// receiving the rejection (the inverted `_leader_name`/`_teammate_name`
-/// names used to invite a real bug the moment this no-op starts using its
-/// parameters). Informational only — the teammate's mailbox already
-/// contains their rejection response.
+/// receiving the rejection. Delivery mirrors [`handle_shutdown_request`]:
+/// a `ShutdownRejected` protocol message lands in the lead's mailbox so
+/// the inbox poller's rejection machinery actually fires — the old no-op
+/// made the caller report success while the lead never learned its
+/// request was rejected.
 pub fn handle_shutdown_rejection(
-    _request_id: &str,
-    _sender_name: &str,
-    _recipient_name: &str,
-    _team_name: &str,
-    _reason: String,
+    request_id: &str,
+    sender_name: &str,
+    recipient_name: &str,
+    team_name: &str,
+    reason: String,
 ) -> anyhow::Result<()> {
+    let protocol = StructuredProtocolMessage::ShutdownRejected {
+        request_id: request_id.to_string(),
+        from: sender_name.to_string(),
+        reason,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let text = serde_json::to_string(&protocol)?;
+    let msg = TeammateMessage {
+        from: sender_name.to_string(),
+        text,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        read: false,
+        color: None,
+        summary: Some("shutdown rejected".to_string()),
+    };
+    write_to_mailbox(recipient_name, team_name, msg)?;
     Ok(())
 }
 

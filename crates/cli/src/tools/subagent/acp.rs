@@ -342,14 +342,26 @@ fn permission_answer(value: &Value, auto_approve: bool) -> Option<Value> {
     }
     let id = value.get("id")?.clone();
     let options = value.pointer("/params/options")?.as_array()?;
+    let exact_kind = if auto_approve {
+        "allow_once"
+    } else {
+        "reject_once"
+    };
     let wanted_kind = if auto_approve { "allow" } else { "reject" };
+    // The once-only kind wins first: taking the FIRST allow-prefixed
+    // option let a server listing allow_always/allow_for_session ahead of
+    // allow_once escalate the grant beyond the parent's once-only ceiling
+    // for the rest of the child session.
     let chosen = options
         .iter()
-        .find(|option| {
-            option
-                .get("kind")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| kind.starts_with(wanted_kind))
+        .find(|option| option.get("kind").and_then(Value::as_str) == Some(exact_kind))
+        .or_else(|| {
+            options.iter().find(|option| {
+                option
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.starts_with(wanted_kind))
+            })
         })
         .or_else(|| {
             // Lenient servers that send no kinds: match by optionId.

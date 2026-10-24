@@ -154,6 +154,12 @@ impl ToolSpec for LoadSkillTool {
         .map_err(|e| ToolError::execution_failed(format!("skill body task failed: {e}")))?;
         let body = format_skill_body_with_body(skill, &gated_body, &companions);
         let source = skill.loaded_from.label(&skill.path);
+        // Metadata values are model-visible too (agents read them back):
+        // gate the free-text fields with the same snippet preprocessing.
+        let trusted = codesmith_agent_runtime::skills::skill_is_trusted(skill);
+        let gate = |text: String| {
+            codesmith_agent_runtime::skills::preprocess_shell_snippets(skill, &text, trusted)
+        };
         // `skill_path` stays a real filesystem path (empty for file-less
         // mod skills); the mod label lives in its own `skill_source` key so
         // no consumer ever mistakes "mod: <owner>" for a path.
@@ -161,8 +167,8 @@ impl ToolSpec for LoadSkillTool {
             "skill_name": skill.name,
             "skill_path": skill.path.display().to_string(),
             "skill_source": source,
-            "description": skill.description,
-            "when_to_use": skill.when_to_use,
+            "description": gate(skill.description.clone()),
+            "when_to_use": skill.when_to_use.clone().map(|w| gate(w)),
             "allowed_tools": skill.allowed_tools,
             "model": skill.model,
             "effort": skill.effort,
@@ -197,23 +203,44 @@ fn format_skill_body_with_body(
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Skill: {}\n\n", skill.name));
+    // Every frontmatter field is attacker-controllable (mod registrations,
+    // community SKILL.md) and renders model-visible: gate them all with
+    // the same shell-snippet preprocessing the body gets — gating only
+    // `skill.body` let an untrusted description carry a live `!`cmd``
+    // snippet through the trust gate.
+    let trusted = codesmith_agent_runtime::skills::skill_is_trusted(skill);
+    let gate = |text: String| {
+        codesmith_agent_runtime::skills::preprocess_shell_snippets(skill, &text, trusted)
+    };
     if !skill.description.trim().is_empty() {
-        out.push_str(&format!("> {}\n\n", skill.description.trim()));
+        out.push_str(&format!(
+            "> {}\n\n",
+            gate(skill.description.trim().to_string())
+        ));
     }
     if let Some(when_to_use) = skill
         .when_to_use
         .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
-        out.push_str(&format!("When to use: {}\n\n", when_to_use.trim()));
+        out.push_str(&format!(
+            "When to use: {}\n\n",
+            gate(when_to_use.trim().to_string())
+        ));
     }
     if !skill.paths.is_empty() {
-        out.push_str(&format!("Path triggers: {}\n\n", skill.paths.join(", ")));
+        out.push_str(&format!(
+            "Path triggers: {}\n\n",
+            gate(skill.paths.join(", "))
+        ));
     }
     if let Some(allowed_tools) = &skill.allowed_tools
         && !allowed_tools.is_empty()
     {
-        out.push_str(&format!("Allowed tools: {}\n\n", allowed_tools.join(", ")));
+        out.push_str(&format!(
+            "Allowed tools: {}\n\n",
+            gate(allowed_tools.join(", "))
+        ));
     }
     // Mod-registered skills have no file — attribute the owning mod.
     let source = skill.loaded_from.label(&skill.path);

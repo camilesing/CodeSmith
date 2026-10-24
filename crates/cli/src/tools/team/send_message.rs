@@ -122,7 +122,14 @@ impl SendMessageTool {
 /// `sanitize_name`, silently redirecting messages).
 fn ensure_known_recipient(recipient: &str, team_name: &str) -> Result<(), ToolError> {
     if recipient == "*" {
-        return Ok(());
+        // Broadcast fan-out exists only in send_plain_text (which handles
+        // "*" before this helper runs): letting protocol messages through
+        // used to write them into a mailbox literally named after
+        // sanitize_name("*") that no agent polls — a privileged message
+        // silently mis-delivered behind a success result.
+        return Err(ToolError::invalid_input(
+            "Broadcast ('*') is only supported for plain text messages",
+        ));
     }
     let team_file = read_team_file(team_name)
         .map_err(|e| ToolError::execution_failed(format!("Failed to read team roster: {}", e)))?;

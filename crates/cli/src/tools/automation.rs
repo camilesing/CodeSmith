@@ -226,10 +226,19 @@ impl ToolSpec for AutomationUpdateTool {
             .automations
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
-        let status = optional_str(&input, "status").map(|value| match value {
-            "paused" => AutomationStatus::Paused,
-            _ => AutomationStatus::Active,
-        });
+        let status = match optional_str(&input, "status") {
+            None => None,
+            Some("paused") => Some(AutomationStatus::Paused),
+            Some("active") => Some(AutomationStatus::Active),
+            // The schema's enum is model-facing only — a typo like
+            // "Paused" or "activ" used to silently resume unattended
+            // scheduled runs instead of failing loudly.
+            Some(other) => {
+                return Err(ToolError::invalid_input(format!(
+                    "field 'status' must be \"active\" or \"paused\", got: {other}"
+                )));
+            }
+        };
         let req = UpdateAutomationRequest {
             name: optional_str(&input, "name").map(ToString::to_string),
             prompt: optional_str(&input, "prompt").map(ToString::to_string),
