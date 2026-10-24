@@ -103,7 +103,7 @@ const STALE_ACTIVE_GRACE: Duration = Duration::from_secs(30);
 pub fn snapshot() -> RetryState {
     let mut state = cell().lock().unwrap_or_else(|e| e.into_inner());
     if let RetryState::Active(banner) = &*state
-        && banner.deadline + STALE_ACTIVE_GRACE < Instant::now()
+        && Instant::now().saturating_duration_since(banner.deadline) > STALE_ACTIVE_GRACE
     {
         *state = RetryState::Idle;
     }

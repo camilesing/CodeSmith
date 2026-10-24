@@ -380,10 +380,26 @@ pub fn execute_purge_operations(messages: &[Message], ops: &[PurgeOp]) -> PurgeR
         }
     }
 
-    // Phase 2: cascade removal to tool-call/result counterparts.
-    cascade_tool_pair_removals(&msgs, &mut msg_indices_to_remove);
+    // Phase 2: cascade removal to tool-call/result counterparts — at the
+    // BLOCK level, so removing one of several parallel tool results strips
+    // only its paired call/result blocks instead of whole sibling messages.
+    let mut block_removals: HashMap<usize, std::collections::HashSet<usize>> = HashMap::new();
+    cascade_tool_pair_removals(&msgs, &msg_indices_to_remove, &mut block_removals);
 
-    // Phase 3: sort indices descending and remove.
+    // Phase 3: strip paired blocks, then drop emptied/explicit messages.
+    for (idx, drop_positions) in &block_removals {
+        let mut pos = 0usize;
+        msgs[*idx].content.retain(|_| {
+            let keep = !drop_positions.contains(&pos);
+            pos += 1;
+            keep
+        });
+    }
+    for (idx, msg) in msgs.iter().enumerate() {
+        if msg.content.is_empty() {
+            msg_indices_to_remove.insert(idx);
+        }
+    }
     let mut to_remove: Vec<usize> = msg_indices_to_remove.into_iter().collect();
     to_remove.sort_unstable_by(|a, b| b.cmp(a));
 
@@ -399,61 +415,81 @@ pub fn execute_purge_operations(messages: &[Message], ops: &[PurgeOp]) -> PurgeR
     }
 }
 
-/// When a message containing a ToolUse or ToolResult is marked for removal,
-/// cascade that removal to its counterpart so the API never sees orphaned
-/// blocks. Runs a fixpoint loop until the remove set is closed under pairing.
-fn cascade_tool_pair_removals(messages: &[Message], remove_set: &mut HashSet<usize>) {
+/// When a ToolUse or ToolResult block is removed — its whole message was
+/// marked, or the block itself was stripped as a counterpart — cascade that
+/// removal to the paired block so the API never sees an orphan. Counterpart
+/// blocks inside otherwise-kept messages are stripped at the block level
+/// (`block_removals`); whole-message removal stays reserved for explicitly
+/// requested messages (and messages emptied by stripping). Runs a fixpoint
+/// loop until the removal set is closed under pairing.
+fn cascade_tool_pair_removals(
+    messages: &[Message],
+    remove_set: &HashSet<usize>,
+    block_removals: &mut HashMap<usize, std::collections::HashSet<usize>>,
+) {
     if remove_set.is_empty() {
         return;
     }
 
-    // Build lookup maps: tool_use id → message index, tool_result id → message index.
-    let mut call_id_to_idx: HashMap<String, usize> = HashMap::new();
-    let mut result_id_to_idx: HashMap<String, usize> = HashMap::new();
+    // Build lookup maps: tool_use id → (message index, block index), and
+    // the same for tool results.
+    let mut call_pos: HashMap<&str, (usize, usize)> = HashMap::new();
+    let mut result_pos: HashMap<&str, (usize, usize)> = HashMap::new();
 
     for (idx, msg) in messages.iter().enumerate() {
-        for block in &msg.content {
+        for (b, block) in msg.content.iter().enumerate() {
             match block {
                 ContentBlock::ToolUse { id, .. } => {
-                    call_id_to_idx.insert(id.clone(), idx);
+                    call_pos.insert(id.as_str(), (idx, b));
                 }
                 ContentBlock::ToolResult { tool_use_id, .. } => {
-                    result_id_to_idx.insert(tool_use_id.clone(), idx);
+                    result_pos.insert(tool_use_id.as_str(), (idx, b));
                 }
                 _ => {}
             }
         }
     }
 
-    // Fixpoint: when a tool-call is removed, also remove its result (and vice versa).
+    let is_gone = |remove_set: &HashSet<usize>,
+                   block_removals: &HashMap<usize, std::collections::HashSet<usize>>,
+                   idx: usize,
+                   block: usize|
+     -> bool {
+        remove_set.contains(&idx)
+            || block_removals
+                .get(&idx)
+                .is_some_and(|stripped| stripped.contains(&block))
+    };
+
+    // Fixpoint: when a paired block is gone, its counterpart block — in any
+    // message NOT itself marked for whole removal — is stripped.
     let max_iters = messages.len().max(10);
     for _ in 0..max_iters {
-        let snapshot: Vec<usize> = remove_set.iter().copied().collect();
         let mut changed = false;
-
-        for idx in snapshot {
-            let msg = &messages[idx];
-            for block in &msg.content {
-                match block {
-                    ContentBlock::ToolUse { id, .. } => {
-                        if let Some(&result_idx) = result_id_to_idx.get(id)
-                            && remove_set.insert(result_idx)
-                        {
-                            changed = true;
-                        }
-                    }
-                    ContentBlock::ToolResult { tool_use_id, .. } => {
-                        if let Some(&call_idx) = call_id_to_idx.get(tool_use_id)
-                            && remove_set.insert(call_idx)
-                        {
-                            changed = true;
-                        }
-                    }
-                    _ => {}
-                }
+        for (id, &(call_idx, call_block)) in &call_pos {
+            if is_gone(remove_set, block_removals, call_idx, call_block)
+                && let Some(&(result_idx, result_block)) = result_pos.get(id)
+                && !remove_set.contains(&result_idx)
+                && block_removals
+                    .entry(result_idx)
+                    .or_default()
+                    .insert(result_block)
+            {
+                changed = true;
             }
         }
-
+        for (id, &(result_idx, result_block)) in &result_pos {
+            if is_gone(remove_set, block_removals, result_idx, result_block)
+                && let Some(&(call_idx, call_block)) = call_pos.get(id)
+                && !remove_set.contains(&call_idx)
+                && block_removals
+                    .entry(call_idx)
+                    .or_default()
+                    .insert(call_block)
+            {
+                changed = true;
+            }
+        }
         if !changed {
             break;
         }
@@ -635,6 +671,67 @@ mod tests {
                 content_blocks: None,
             }],
         }
+    }
+
+    #[test]
+    fn removing_one_parallel_result_strips_only_its_paired_blocks() {
+        // Parallel tool calls: assistant text + two calls, results in two
+        // separate messages. Removing ONE result used to cascade to the
+        // whole assistant message — deleting the sibling call, its result,
+        // and the text. Block-level cascade keeps everything but the
+        // removed pair.
+        let assistant = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "let me check both".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "call_a".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "a.rs"}),
+                    caller: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "call_b".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "b.rs"}),
+                    caller: None,
+                },
+            ],
+        };
+        let msgs = vec![
+            msg_text("user", "compare a and b"),
+            assistant,
+            msg_tool_result("call_a", "contents of a"),
+            msg_tool_result("call_b", "contents of b"),
+        ];
+        let ops = vec![PurgeOp::Remove { msg_id: 4 }]; // remove call_b's result
+        let result = execute_purge_operations(&msgs, &ops);
+
+        assert_eq!(
+            result.removed_count, 1,
+            "only the removed result message drops; the rest is stripped at block level"
+        );
+        assert_eq!(result.messages.len(), 3);
+        let ContentBlock::ToolUse { id, .. } = &result.messages[1].content[1] else {
+            panic!("expected a surviving tool call block");
+        };
+        assert_eq!(
+            id, "call_a",
+            "the surviving call is the untouched sibling, not the removed pair's"
+        );
+        assert!(
+            result.messages[1].content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text == "let me check both")
+            ),
+            "assistant text survives block-level cascade"
+        );
+        assert!(matches!(
+            &result.messages[2].content[0],
+            ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_a"
+        ));
     }
 
     #[test]

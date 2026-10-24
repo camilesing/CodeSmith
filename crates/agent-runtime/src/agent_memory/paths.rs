@@ -172,6 +172,20 @@ pub fn scoped_path_within_memory(memory_dir: &Path, raw: &str) -> Result<PathBuf
                 ));
             }
         } else {
+            // A dangling (broken) symlink leaf also lands in this branch:
+            // `canonicalize()` fails (realpath needs the full path to
+            // exist) and `exists()` is false (it follows symlinks), so
+            // without this check the caller's write would follow the
+            // symlink and create the file outside the memory root.
+            if let Ok(meta) = fs::symlink_metadata(&candidate)
+                && meta.file_type().is_symlink()
+            {
+                return Err(format!(
+                    "path {} is a symlink; symlinks are not permitted inside agent memory directory {}",
+                    candidate.display(),
+                    canonical_base.display()
+                ));
+            }
             // Write target not on disk yet: the final component must be a
             // single safe segment — a separator inside it would mean the
             // lexical component scan above was bypassed (e.g. a backslash
@@ -307,6 +321,29 @@ mod tests {
         assert!(
             err.contains("escapes"),
             "symlinked leaf escape must be rejected; got: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn scoped_path_rejects_dangling_symlink_leaf() {
+        // A DANGLING symlink leaf: canonicalize() fails and exists() is
+        // false, so it used to fall into the "fresh write target" branch —
+        // the caller's write would follow the symlink and create the file
+        // outside the memory root.
+        let tmp = tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join("not-yet-created.md"),
+            memory_dir.join("leaked.md"),
+        )
+        .unwrap();
+
+        let err = scoped_path_within_memory(&memory_dir, "leaked.md").unwrap_err();
+        assert!(
+            err.contains("symlink"),
+            "dangling symlink leaf must be rejected; got: {err}"
         );
     }
 

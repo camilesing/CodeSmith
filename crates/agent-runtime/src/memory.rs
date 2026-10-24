@@ -55,7 +55,12 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
         return None;
     }
 
-    let display = source.display().to_string();
+    // The path flows into `source="…"` attributes (header and truncation
+    // marker): escape it so `"`, `&`, `<`, `>` — all legal in POSIX
+    // filenames — cannot terminate the attribute and smuggle framing
+    // markup into the system prompt (the payload-only defusing below
+    // never sees it).
+    let display = crate::utils::escape_prompt_attr(&source.display().to_string());
     let payload = if content.len() > MAX_MEMORY_SIZE {
         let cutoff = truncation_cutoff(content, &display);
         let omitted_bytes = content.len() - cutoff;

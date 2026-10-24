@@ -18,9 +18,9 @@ use codesmith_agent_runtime::background_task::{
 };
 use codesmith_agent_runtime::hooks::HookHost;
 use codesmith_agent_runtime::host_services::{
-    BgRegistryApi, HostServices, LspManagerApi, SeamManagerApi, SpawnSubAgentRequest,
-    StructuredStateRequest, SubAgentApi, SubAgentSpawnResult, TurnDispatchPlan,
-    TurnDispatchRequest,
+    BgRegistryApi, HostServices, LspManagerApi, LspNavigationMethod, SeamManagerApi,
+    SpawnSubAgentRequest, StructuredStateRequest, SubAgentApi, SubAgentSpawnResult,
+    TurnDispatchPlan, TurnDispatchRequest,
 };
 use codesmith_agent_runtime::lsp_config::LspConfig;
 use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
@@ -76,7 +76,7 @@ impl LspManagerApi for LspManager {
     async fn navigation_request(
         &self,
         file: &Path,
-        method: &str,
+        method: LspNavigationMethod,
         params: serde_json::Value,
     ) -> Option<serde_json::Value> {
         LspManager::navigation_request(self, file, method, params).await

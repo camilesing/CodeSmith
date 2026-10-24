@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use codesmith_agent_runtime::host_services::LspNavigationMethod;
 use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -201,7 +202,7 @@ impl LspManager {
     pub async fn navigation_request(
         &self,
         file: &Path,
-        method: &str,
+        method: LspNavigationMethod,
         params: Value,
     ) -> Option<Value> {
         if !self.config.enabled {
@@ -243,6 +244,11 @@ impl LspManager {
             Value::String(client::uri_from_path(file)),
         );
 
+        // The enum→wire mapping happens here, at the host boundary: the
+        // trait accepts only the three read-only navigation requests, so
+        // a mutating LSP method can never reach the transport from
+        // model-supplied input.
+        let method = method.wire_name();
         match transport.request(method, params).await {
             Ok(result) => Some(result),
             Err(err) => {
@@ -610,7 +616,7 @@ pub(crate) mod tests {
         let path = dir.path().join("foo.rs");
         tokio::fs::write(&path, b"fn main() {}").await.unwrap();
         assert!(
-            mgr.navigation_request(&path, "textDocument/hover", json!({}))
+            mgr.navigation_request(&path, LspNavigationMethod::Hover, json!({}))
                 .await
                 .is_none()
         );
@@ -623,7 +629,7 @@ pub(crate) mod tests {
         let path = dir.path().join("notes.txt");
         tokio::fs::write(&path, b"hi").await.unwrap();
         assert!(
-            mgr.navigation_request(&path, "textDocument/hover", json!({}))
+            mgr.navigation_request(&path, LspNavigationMethod::Hover, json!({}))
                 .await
                 .is_none()
         );
@@ -651,7 +657,7 @@ pub(crate) mod tests {
         let result = mgr
             .navigation_request(
                 &path,
-                "textDocument/definition",
+                LspNavigationMethod::Definition,
                 json!({ "position": { "line": 0, "character": 3 } }),
             )
             .await
@@ -701,7 +707,7 @@ pub(crate) mod tests {
         let result = mgr
             .navigation_request(
                 &path,
-                "textDocument/hover",
+                LspNavigationMethod::Hover,
                 json!({ "position": { "line": 0, "character": 0 } }),
             )
             .await
@@ -734,7 +740,7 @@ pub(crate) mod tests {
         .await;
 
         assert!(
-            mgr.navigation_request(&path, "textDocument/definition", json!({}))
+            mgr.navigation_request(&path, LspNavigationMethod::Definition, json!({}))
                 .await
                 .is_none()
         );

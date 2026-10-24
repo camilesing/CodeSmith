@@ -4983,7 +4983,7 @@ mod tests {
         async fn navigation_request(
             &self,
             _file: &Path,
-            _method: &str,
+            _method: crate::host_services::LspNavigationMethod,
             _params: serde_json::Value,
         ) -> Option<serde_json::Value> {
             None

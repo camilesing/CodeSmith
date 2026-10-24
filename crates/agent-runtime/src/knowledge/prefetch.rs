@@ -72,8 +72,19 @@ impl KnowledgePrefetch {
         let mut surfaced = self.already_surfaced.lock().await;
         let mut budget = self.session_budget.lock().await;
         for mem in memories {
+            // Propagate the rejection instead of ignoring it: a concurrent
+            // turn can exhaust the session budget between `run_prefetch`'s
+            // check and this call. A rejected memory is NOT inserted into
+            // the dedup set — marking it surfaced would lose it forever
+            // after a single over-budget injection.
+            if !budget.try_consume(mem.byte_count) {
+                tracing::debug!(
+                    path = %mem.path.display(),
+                    "prefetch memory not marked surfaced: session budget exhausted"
+                );
+                continue;
+            }
             surfaced.insert(mem.path.clone());
-            budget.try_consume(mem.byte_count);
         }
     }
 }

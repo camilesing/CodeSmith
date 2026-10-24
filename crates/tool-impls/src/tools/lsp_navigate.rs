@@ -36,6 +36,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use codesmith_agent_runtime::host_services::LspNavigationMethod;
 use codesmith_agent_runtime::tools::spec::{
     ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64, required_str,
     required_u64,
@@ -117,10 +118,12 @@ impl ToolSpec for LspNavigateTool {
         let operation = required_str(&input, "operation")?
             .trim()
             .to_ascii_lowercase();
+        // The trait-level enum makes the read-only contract structural: a
+        // mutating LSP method is unrepresentable past this mapping.
         let method = match operation.as_str() {
-            "definition" => "textDocument/definition",
-            "references" => "textDocument/references",
-            "hover" => "textDocument/hover",
+            "definition" => LspNavigationMethod::Definition,
+            "references" => LspNavigationMethod::References,
+            "hover" => LspNavigationMethod::Hover,
             other => {
                 return Err(ToolError::invalid_input(format!(
                     "unknown operation '{other}' (expected definition, references, or hover)"
@@ -375,7 +378,7 @@ fn hex_val(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codesmith_agent_runtime::host_services::LspManagerApi;
+    use codesmith_agent_runtime::host_services::{LspManagerApi, LspNavigationMethod};
     use codesmith_agent_runtime::lsp_config::LspConfig;
     use codesmith_agent_runtime::lsp_diagnostics::DiagnosticBlock;
     use std::sync::{Arc, Mutex};
@@ -420,13 +423,14 @@ mod tests {
         async fn navigation_request(
             &self,
             file: &Path,
-            method: &str,
+            method: LspNavigationMethod,
             params: Value,
         ) -> Option<Value> {
-            self.requests
-                .lock()
-                .unwrap()
-                .push((file.to_path_buf(), method.to_string(), params));
+            self.requests.lock().unwrap().push((
+                file.to_path_buf(),
+                method.wire_name().to_string(),
+                params,
+            ));
             self.response.clone()
         }
     }

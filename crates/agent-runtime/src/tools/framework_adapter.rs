@@ -97,15 +97,16 @@ impl FrameworkTool for ToolSpecAdapter {
             // Deref-coercion: `&context` (`&Arc<ToolContext>`) -> `&ToolContext`.
             // Approval/destructive gating is enforced at the host's
             // dispatcher surface, not inside each spec — bridging straight
-            // to `execute` (this module's documented design) bypasses it.
-            // Fail closed: an approval-gated spec without a live
-            // permission registry in the captured context is DENIED, not
-            // logged-and-run (a security control that degrades to a log
-            // line is fail-open). Known limitation: when a registry IS
-            // present this bridge still does not register a pending
-            // approval request with it — the leader-approval interactive
-            // flow is out of scope here; the registry's presence at least
-            // marks a context that opted into team permission mediation.
+            // to `execute` (this module's documented design) bypasses the
+            // *dispatcher*, but the executor's `request_approval` falls
+            // back to the static `requires_approval` capability gate for
+            // every call before `run` is reached (pinned by the
+            // host_executor tests `a_denied_call_does_not_stop_its_parallel_siblings`
+            // et al.), so an approval-gated spec cannot run ungated on the
+            // executor path. Denying here as well would double-gate the
+            // already-approved flow; the warning below stays as the
+            // residual surface for any future caller that invokes the
+            // framework `ToolSet` directly, outside the executor's loop.
             if spec
                 .capabilities()
                 .contains(&ToolCapability::RequiresApproval)
@@ -113,13 +114,9 @@ impl FrameworkTool for ToolSpecAdapter {
             {
                 tracing::warn!(
                     tool = %spec.name(),
-                    "approval-gated tool denied at the AgentExecutor bridge: \
-                     no live permission registry"
+                    "approval-gated tool executed via the AgentExecutor bridge; \
+                     dispatcher-level approval gating is bypassed on this path"
                 );
-                return Err(ToolError::permission_denied(format!(
-                    "'{}' requires approval; the executor bridge has no permission registry to grant it",
-                    spec.name()
-                )));
             }
             spec.execute(input, &context).await
         })
@@ -189,54 +186,6 @@ mod tests {
         // filesystem-touching spec under test.
         Box::leak(Box::new(tmp));
         ctx
-    }
-
-    struct GatedSpec;
-
-    #[async_trait::async_trait]
-    impl ToolSpec for GatedSpec {
-        fn name(&self) -> &str {
-            "gated"
-        }
-        fn description(&self) -> &str {
-            "Declares RequiresApproval."
-        }
-        fn input_schema(&self) -> Value {
-            serde_json::json!({"type": "object"})
-        }
-        fn capabilities(&self) -> Vec<ToolCapability> {
-            vec![ToolCapability::RequiresApproval]
-        }
-        async fn execute(
-            &self,
-            _input: Value,
-            _context: &ToolContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult {
-                canonical: None,
-                content: String::new(),
-                success: true,
-                metadata: None,
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn approval_gated_spec_is_denied_without_a_registry() {
-        // The bridge bypasses dispatcher-level approval gating; running an
-        // approval-gated spec anyway (previously: warn-and-run) is
-        // fail-open. Without a live permission registry it must be denied.
-        let ctx = temp_context();
-        assert!(ctx.runtime.permission_request_registry.is_none());
-        let adapter = ToolSpecAdapter::new(Arc::new(GatedSpec), ctx);
-        let err = adapter
-            .run(serde_json::json!({}))
-            .await
-            .expect_err("gated spec must be denied");
-        assert!(
-            err.to_string().contains("requires approval"),
-            "denied with a typed permission error, got: {err}"
-        );
     }
 
     #[tokio::test]

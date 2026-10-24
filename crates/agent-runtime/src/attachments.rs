@@ -40,6 +40,10 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 /// post-compaction re-send cost.
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
 
+/// Per-call nonce for ingest temp-file names (see `ingest`): distinguishes
+/// concurrent ingests within one process.
+static TMP_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// One attachment admitted into the store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredAttachment {
@@ -220,10 +224,17 @@ impl AttachmentStore {
             source: source_err,
         })?;
         // Write-then-rename so a crash mid-copy never leaves a half file
-        // under the content-addressed name.
-        let tmp = self
-            .root
-            .join(format!(".{sha256}.{ext}.{}.tmp", std::process::id()));
+        // under the content-addressed name. The tmp name carries a
+        // per-call nonce on top of the pid: concurrent `ingest` calls in
+        // one process (the same screenshot attached in two parallel sends)
+        // used to share the tmp file — truncating each other's partial
+        // writes and racing the rename onto the dedup'd content address.
+        let nonce = TMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self.root.join(format!(
+            ".{sha256}.{ext}.{}.{}.tmp",
+            std::process::id(),
+            nonce
+        ));
         let write = (|| -> std::io::Result<()> {
             let mut file = fs::File::create(&tmp)?;
             file.write_all(&data)?;

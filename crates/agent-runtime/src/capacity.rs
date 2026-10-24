@@ -477,6 +477,20 @@ impl CapacityController {
             return None;
         }
 
+        // `f64::clamp` propagates NaN, and every NaN comparison is false —
+        // a single non-finite telemetry value made `p_fail <= threshold`
+        // universally false (ladder fell to `RiskBand::High` with `severe`
+        // still finite) and `decide_policy` returned
+        // `VerifyWithToolReplay` off garbage input. Reject non-finite
+        // observations at the boundary: treat them as missing.
+        if !input.context_used_ratio.is_finite() {
+            tracing::warn!(
+                target: "capacity",
+                "dropping non-finite context_used_ratio observation"
+            );
+            return None;
+        }
+
         // Self-contained per-turn reset: an observation is the first thing
         // each turn (possibly ahead of the host's `mark_turn_start`), so
         // the reset must not depend on that call ordering.
@@ -495,6 +509,17 @@ impl CapacityController {
             + (0.20 * ref_complexity_bits)
             + (0.15 * context_pressure_bits);
         let c_hat = self.model_prior(&input.model);
+        // Defense-in-depth: a non-finite user-supplied `model_priors` entry
+        // also poisons everything downstream — drop the observation rather
+        // than let NaN drive the risk band.
+        if !c_hat.is_finite() {
+            tracing::warn!(
+                target: "capacity",
+                model = %input.model,
+                "dropping observation with non-finite model prior"
+            );
+            return None;
+        }
         let slack = c_hat - h_hat;
 
         push_window(&mut self.slack_window, slack, self.config.profile_window);
@@ -722,6 +747,36 @@ mod tests {
         let cfg = CapacityControllerConfig::default();
         let snap = make_snapshot(0.9, true, RiskBand::High);
         assert_eq!(decide_policy(&cfg, &snap), GuardrailAction::VerifyAndReplan);
+    }
+
+    /// Non-finite telemetry must be dropped as a missing observation
+    /// instead of poisoning the risk band (NaN comparisons are all false,
+    /// which used to force `RiskBand::High` → a spurious tool replay).
+    #[test]
+    fn non_finite_observations_are_dropped() {
+        let cfg = CapacityControllerConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut controller = CapacityController::new(cfg);
+        let input = |ratio: f64| CapacityObservationInput {
+            turn_index: 1,
+            model: "deepseek-v4-pro".to_string(),
+            action_count_this_turn: 10,
+            tool_calls_recent_window: 10,
+            unique_reference_ids_recent_window: 10,
+            context_used_ratio: ratio,
+        };
+        assert!(
+            controller.observe_pre_turn(input(f64::NAN)).is_none(),
+            "NaN ratio must be treated as a missing observation"
+        );
+        assert!(
+            controller.observe_pre_turn(input(f64::INFINITY)).is_none(),
+            "infinite ratio must be treated as a missing observation"
+        );
+        // Finite observations still work after the drops.
+        assert!(controller.observe_pre_turn(input(0.95)).is_some());
     }
 
     /// v0.8.11 flipped the default to `enabled = false`. The controller's

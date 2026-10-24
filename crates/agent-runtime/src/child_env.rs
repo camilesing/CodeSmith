@@ -240,8 +240,25 @@ fn is_allowed_mcp_env_key(key: &OsStr) -> bool {
     }
     // npm config namespace (NPM_CONFIG_PREFIX, NPM_CONFIG_CACHE, …) and
     // uv (UV_CACHE_DIR, UV_PYTHON, …) — both ecosystems use a stable prefix
-    // for their bootstrap configuration, so allow the whole namespace.
+    // for their bootstrap configuration, so allow the namespace — EXCEPT
+    // credential-shaped keys: npm reads auth from env config
+    // (NPM_CONFIG__AUTH, scoped `npm_config_//registry/:_authToken`) and
+    // uv index URLs commonly embed `user:token@host`, so a blanket
+    // passthrough silently exported user credentials to every configured
+    // MCP stdio server.
     if normalized.starts_with("NPM_CONFIG_") || normalized.starts_with("UV_") {
+        // Index-URL keys frequently carry `user:token@host` in the value
+        // even though the key name carries no credential marker.
+        if matches!(normalized.as_str(), "UV_INDEX_URL" | "UV_EXTRA_INDEX_URL") {
+            return false;
+        }
+        const SECRET_MARKERS: [&str; 6] = ["AUTH", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "_KEY"];
+        if SECRET_MARKERS
+            .iter()
+            .any(|marker| normalized.contains(marker))
+        {
+            return false;
+        }
         return true;
     }
     false
@@ -324,6 +341,25 @@ mod tests {
     }
 
     #[test]
+    fn mcp_env_allowlist_excludes_credential_shaped_npm_uv_keys() {
+        // npm reads auth from env config and uv index URLs embed tokens —
+        // those must not be silently exported to every MCP stdio server.
+        for key in [
+            "NPM_CONFIG__AUTH",
+            "NPM_CONFIG_//REGISTRY.EXAMPLE.COM/:_AUTHTOKEN",
+            "UV_INDEX_URL",
+            "UV_EXTRA_INDEX_URL",
+            "NPM_CONFIG_REGISTRY_TOKEN",
+            "UV_API_KEY",
+        ] {
+            assert!(
+                !is_allowed_mcp_env_key(OsStr::new(key)),
+                "MCP allowlist must exclude credential-shaped key {key}"
+            );
+        }
+    }
+
+    #[test]
     fn mcp_env_allowlist_includes_proxy_keys_either_case() {
         for key in [
             "HTTP_PROXY",
@@ -382,7 +418,10 @@ mod tests {
 
     #[test]
     fn mcp_env_allowlist_includes_uv_prefixed_keys() {
-        for key in ["UV_CACHE_DIR", "UV_INDEX_URL", "UV_PYTHON"] {
+        // UV_INDEX_URL / UV_EXTRA_INDEX_URL are deliberately absent here:
+        // their values commonly embed `user:token@host` credentials — see
+        // `mcp_env_allowlist_excludes_credential_shaped_npm_uv_keys`.
+        for key in ["UV_CACHE_DIR", "UV_PYTHON", "UV_PYTHON_INSTALL_DIR"] {
             assert!(
                 is_allowed_mcp_env_key(OsStr::new(key)),
                 "MCP allowlist should include uv prefixed key {key}"

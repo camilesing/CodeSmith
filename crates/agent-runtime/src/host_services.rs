@@ -80,9 +80,33 @@ pub trait LspManagerApi: Send + Sync {
     async fn navigation_request(
         &self,
         file: &Path,
-        method: &str,
+        method: LspNavigationMethod,
         params: serde_json::Value,
     ) -> Option<serde_json::Value>;
+}
+
+/// The read-only navigation requests [`LspManagerApi::navigation_request`]
+/// accepts, modeled as an enum so a mutating or server-executing LSP method
+/// (`textDocument/rename`, `workspace/executeCommand`, `shutdown`, …) is
+/// unrepresentable at the trait boundary — the method value ultimately
+/// originates from model-supplied tool input, and the "read-only" invariant
+/// must not rest on a doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspNavigationMethod {
+    Definition,
+    References,
+    Hover,
+}
+
+impl LspNavigationMethod {
+    /// The LSP wire method name for this request.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Definition => "textDocument/definition",
+            Self::References => "textDocument/references",
+            Self::Hover => "textDocument/hover",
+        }
+    }
 }
 
 /// Terminal-agnostic background-task registry surface.
