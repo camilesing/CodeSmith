@@ -39,9 +39,33 @@
 /// `codesmith-providers` `rig_adapter/reasoning`) rather than assume
 /// DeepSeek-scoped semantics here.
 pub fn requires_reasoning_content(model: &str) -> bool {
+    reasoning_scope(model) != ReasoningScope::None
+}
+
+/// Which arm of [`requires_reasoning_content`] a model id matched. Exposed
+/// so provider adapters can gate DeepSeek-specific shaping on the scope
+/// upstream actually matched instead of re-deriving it by substring —
+/// `model.contains("deepseek")` is broader than the DeepSeek arms and let
+/// e.g. `acme-deepseek-turbo-reasoner` (a generic-glob match) escape
+/// `reasoning_content` stripping on providers confirmed to reject the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningScope {
+    /// A DeepSeek-scoped arm matched (`deepseek-v4`, `deepseek-chat`,
+    /// `deepseek-reasoner`, `deepseek-r<digit>`).
+    DeepSeek,
+    /// Only the generic `*reasoner*` / `*-reasoning` / `*-thinking` globs
+    /// matched (third-party/custom reasoning deployments).
+    Generic,
+    /// No reasoning arm matched.
+    None,
+}
+
+/// Resolve the [`ReasoningScope`] for a model id; the single definition both
+/// [`requires_reasoning_content`] and the provider-side DeepSeek gating use.
+pub fn reasoning_scope(model: &str) -> ReasoningScope {
     let lower = model.to_lowercase();
     // V4-family direct model IDs.
-    lower.contains("deepseek-v4")
+    let deepseek = lower.contains("deepseek-v4")
         // Public DeepSeek API aliases routed server-side to the V4 family.
         // `deepseek-chat` resolves to `deepseek-v4-flash` and `deepseek-reasoner`
         // resolves to `deepseek-v4-pro`; both have thinking mode enabled by
@@ -49,11 +73,15 @@ pub fn requires_reasoning_content(model: &str) -> bool {
         // `reasoning_content` on subsequent turns or the API returns 400.
         || lower.contains("deepseek-chat")
         || lower.contains("deepseek-reasoner")
-        // Generic reasoning markers used by custom/proxied deployments.
-        || lower.contains("reasoner")
-        || lower.contains("-reasoning")
-        || lower.contains("-thinking")
-        || has_deepseek_r_series_marker(&lower)
+        || has_deepseek_r_series_marker(&lower);
+    if deepseek {
+        return ReasoningScope::DeepSeek;
+    }
+    // Generic reasoning markers used by custom/proxied deployments.
+    if lower.contains("reasoner") || lower.contains("-reasoning") || lower.contains("-thinking") {
+        return ReasoningScope::Generic;
+    }
+    ReasoningScope::None
 }
 
 fn has_deepseek_r_series_marker(model_lower: &str) -> bool {
