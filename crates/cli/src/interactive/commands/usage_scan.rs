@@ -95,15 +95,21 @@ pub fn shell_commands(path: &Path) -> Vec<String> {
 /// (`skills_cmds::activate`), which is what makes a skill's use countable
 /// from the record instead of from a counter that does not exist.
 pub fn skill_activations(path: &Path) -> Vec<String> {
-    const MARKER: &str = "# Skill: ";
+    // The exact preamble `skills_cmds::activate` submits as the whole user
+    // message — anchoring to it (instead of finding the bare marker
+    // anywhere in the text) makes the heuristic exact: a user message that
+    // pastes a skill doc, quotes the instruction, or types a Markdown
+    // heading like `## Skill: foo` no longer counts as an activation.
+    const PREAMBLE: &str =
+        "You are now using a skill. Follow these instructions:\n\n# Skill: ";
 
     let mut names = Vec::new();
     let value = parsed(path).unwrap_or(Value::Null);
     let messages = value.get("messages").and_then(Value::as_array);
     for message in messages.into_iter().flatten() {
-        // The marker counts activations of the instruction the engine
+        // The preamble counts activations of the instruction the engine
         // injects into USER messages — without the role/type gates, a
-        // skill body that mentions the marker, an assistant reply echoing
+        // skill body that mentions the preamble, an assistant reply echoing
         // it, or a tool result containing it all counted as extra
         // activations and inflated `/skill-doctor`'s numbers.
         if message.get("role").and_then(Value::as_str) != Some("user") {
@@ -119,12 +125,9 @@ pub fn skill_activations(path: &Path) -> Vec<String> {
             let Some(text) = block.get("text").and_then(Value::as_str) else {
                 continue;
             };
-            // At most the FIRST marker per block: the activation
-            // instruction embeds the whole skill body after the marker, so
-            // later occurrences inside that body are content, not
-            // activations.
-            if let Some(index) = text.find(MARKER) {
-                let rest = &text[index + MARKER.len()..];
+            // `rest` starts with `<name>\n\n<body>…`; at most one match per
+            // block since the preamble can only open the message.
+            if let Some(rest) = text.strip_prefix(PREAMBLE) {
                 let name = rest.split_whitespace().next().unwrap_or("");
                 if !name.is_empty() {
                     names.push(name.to_string());

@@ -98,6 +98,13 @@ fn parse(arg: &str) -> Option<Request> {
     let (nth_from_last, comment) = match head.parse::<usize>() {
         Ok(0) => return None,
         Ok(n) => (n, tail.trim()),
+        // A bare number that overflows usize is an out-of-range reply
+        // index, not a comment on the latest reply: the old fallback
+        // recorded the rating against reply #1 with the digits stored as
+        // the comment and no error shown.
+        Err(_) if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) => {
+            return None;
+        }
         Err(_) => (1, rest),
     };
     Some(Request {

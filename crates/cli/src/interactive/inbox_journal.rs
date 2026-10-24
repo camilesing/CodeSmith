@@ -45,6 +45,9 @@ struct InboxEntry {
 pub(crate) struct JournalContents {
     pub entries: Vec<String>,
     pub corrupt: usize,
+    /// The file exists but could not be read at all (permissions, torn
+    /// non-UTF-8 write): callers must not rewrite or remove it.
+    pub unreadable: bool,
 }
 
 /// The append-only queue journal for one session.
@@ -81,6 +84,7 @@ impl InboxJournal {
             content: content.to_string(),
             enqueued_at: chrono::Utc::now().timestamp_millis(),
         };
+        let creating = !self.path.exists();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -91,17 +95,46 @@ impl InboxJournal {
         let record = format!("{}\n", serde_json::to_string(&line)?);
         file.write_all(record.as_bytes())?;
         file.flush()?;
-        file.sync_all()
+        file.sync_all()?;
+        // `sync_all` on the file does not make a NEW file's directory
+        // entry durable: a power loss right after the "successful" append
+        // could drop the whole journal. Sync the parent once per creation.
+        if creating
+            && let Some(parent) = self.path.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
+        Ok(())
     }
 
     /// Read the journal; corrupt lines are skipped and counted, never fatal.
+    /// An existing-but-unreadable file (permissions, non-UTF-8 from a torn
+    /// write) is reported loudly and flagged, so callers never treat it as
+    /// "no journal yet" and later rewrite/remove the damaged file.
     pub(crate) fn load(&self) -> JournalContents {
         let mut contents = JournalContents {
             entries: Vec::new(),
             corrupt: 0,
+            unreadable: false,
         };
-        let Ok(text) = std::fs::read_to_string(&self.path) else {
-            return contents; // no journal yet — nothing was ever queued
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return contents; // no journal yet — nothing was ever queued
+            }
+            Err(err) => {
+                println!(
+                    "{}",
+                    format!(
+                        "warning: inbox journal {} is unreadable ({err}); leaving it untouched for manual recovery",
+                        self.path.display()
+                    )
+                    .yellow()
+                );
+                contents.unreadable = true;
+                return contents;
+            }
         };
         for line in text.lines() {
             if line.trim().is_empty() {
@@ -197,6 +230,12 @@ pub(crate) fn mirror_after_persist(state: &super::state::ReplState, sessions_dir
     if !journal.exists() && state.queued_messages.is_empty() {
         return;
     }
+    // An unreadable journal survives untouched: rewriting it (or removing
+    // it for an empty queue) would destroy the user's only copy for manual
+    // recovery.
+    if journal.load().unreadable {
+        return;
+    }
     if let Err(err) = journal.rewrite(&state.queued_messages) {
         println!(
             "{}",
@@ -250,6 +289,32 @@ pub(crate) fn rekey(sessions_dir: &Path, old_id: &str, new_id: &str) {
     }
     if let Err(err) = std::fs::rename(&old.path, &new.path) {
         tracing::warn!(target: "codesmith::inbox", %err, "inbox journal rekey failed");
+        // The startup sweep deletes orphans older than 24h without
+        // harvesting them, so leaving the journal under the old id can
+        // silently destroy the queued user text after a day of idle time.
+        // Fall back to a durable copy: append every old entry to the new
+        // journal and only then remove the old file.
+        let contents = old.load();
+        if contents.unreadable {
+            return; // leave the damaged file for manual recovery
+        }
+        for entry in contents.entries {
+            if let Err(append_err) = new.append(&entry) {
+                tracing::warn!(
+                    target: "codesmith::inbox",
+                    %append_err,
+                    "inbox journal rekey copy-append failed; keeping the old journal"
+                );
+                return;
+            }
+        }
+        if let Err(remove_err) = old.remove() {
+            tracing::warn!(
+                target: "codesmith::inbox",
+                %remove_err,
+                "inbox journal rekey cleanup failed; the old journal remains as a duplicate-harvest source"
+            );
+        }
     }
 }
 

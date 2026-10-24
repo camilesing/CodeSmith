@@ -54,15 +54,14 @@ fn window_of(arg: &str) -> Result<Option<DateTime<Utc>>, String> {
 }
 
 /// The report directory, beside the other `~/.codesmith` stores.
-fn report_dir() -> PathBuf {
+/// `None` when no home directory can be determined — the caller skips the
+/// report rather than silently writing `./.codesmith/insights/…` into
+/// whatever directory the CLI happened to start in.
+fn report_dir() -> Option<PathBuf> {
     codesmith_config::codesmith_home()
         .map(|home| home.join("insights"))
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".codesmith")
-                .join("insights")
-        })
+        .ok()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codesmith").join("insights")))
 }
 
 /// The busiest tools, by call count.
@@ -127,7 +126,13 @@ pub async fn run(arg: &str) {
     print_digest(&rollup, &window);
 
     let html = render_html(&rollup, &window);
-    let dir = report_dir();
+    let Some(dir) = report_dir() else {
+        println!(
+            "{}",
+            "warning: no home directory — skipped writing the HTML report".yellow()
+        );
+        return;
+    };
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let path = dir.join(format!("insights-{stamp}.html"));
     // `create_dir_all` then `write` — both through tokio, since this is

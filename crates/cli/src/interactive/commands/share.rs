@@ -152,13 +152,15 @@ async fn upload_gist(tmp: tempfile::NamedTempFile) -> Result<String, ShareError>
     }
 
     // `gh` can print warnings/notices alongside the URL (GH_DEBUG,
-    // extension wrappers, newer gh versions) — echoing raw stdout would
-    // hand that noise back as the share "URL". Keep the last line that
-    // actually looks like a gist URL.
+    // extension wrappers, newer gh versions). Anchor to the gist host and
+    // token-split: a line merely CONTAINING "gist" (e.g. a docs URL) used
+    // to win as the "URL", while a URL embedded mid-line
+    // ("✓ Created secret gist https://gist.github.com/…") was missed —
+    // leaving an orphaned gist behind a reported failure.
     let url = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("http") && line.contains("gist"))
+        .flat_map(str::split_whitespace)
+        .filter(|token| token.starts_with("https://gist.github.com/"))
         .next_back()
         .ok_or(ShareError::NoUrl)?
         .to_string();

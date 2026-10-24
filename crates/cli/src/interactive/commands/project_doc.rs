@@ -50,19 +50,34 @@ pub(crate) fn ensure_codesmith_gitignored(workspace: &Path) {
     }
 
     // Append missing entries. If .gitignore doesn't exist yet, create it.
+    // Failures are loud: on permission errors, disk-full, or read-only
+    // mounts the user must not believe `.codesmith/` is ignored while
+    // snapshots/instructions get committed.
     use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&gitignore)
     {
-        // If the file is non-empty and doesn't end with a newline, add one first.
-        if !existing.is_empty() && !existing.ends_with('\n') {
-            let _ = writeln!(file);
+        Ok(mut file) => {
+            // If the file is non-empty and doesn't end with a newline, add one first.
+            if !existing.is_empty() && !existing.ends_with('\n') {
+                let _ = writeln!(file);
+            }
+            for entry in &missing {
+                if let Err(err) = writeln!(file, "{entry}") {
+                    crate::logging::warn(format!(
+                        "cannot append {entry} to {}: {err} — .codesmith/ may not be git-ignored",
+                        gitignore.display()
+                    ));
+                    break;
+                }
+            }
         }
-        for entry in &missing {
-            let _ = writeln!(file, "{entry}");
-        }
+        Err(err) => crate::logging::warn(format!(
+            "cannot open {} for append: {err} — .codesmith/ may not be git-ignored",
+            gitignore.display()
+        )),
     }
 }
 

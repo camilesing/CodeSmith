@@ -288,7 +288,15 @@ fn imported_from_json(name: &str, entry: &serde_json::Value) -> ImportedServer {
     let args = entry
         .get("args")
         .and_then(|value| value.as_array())
-        .map(|args| args.iter().filter_map(scalar).collect())
+        .map(|args| {
+            // Arg position carries meaning: `filter_map(scalar)` dropped a
+            // JSON `null` (or object/array) element and shifted everything
+            // after it — `["--flag", null, "file"]` put `file` where the
+            // flag's value belonged. Stringify non-scalars like serde does.
+            args.iter()
+                .map(|value| scalar(value).unwrap_or_else(|| value.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     ImportedServer {
         name: name.to_string(),
@@ -357,7 +365,13 @@ pub fn servers_from_toml(document: &str) -> Found {
         let args = entry
             .get("args")
             .and_then(|value| value.as_array())
-            .map(|args| args.iter().filter_map(scalar).collect())
+            .map(|args| {
+                // Same positional-shift hazard as the JSON path: inline
+                // table elements must not be dropped, only stringified.
+                args.iter()
+                    .map(|value| scalar(value).unwrap_or_else(|| value.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
         let candidate = ImportedServer {
             name: name.clone(),
@@ -389,8 +403,18 @@ pub fn servers_from_toml(document: &str) -> Found {
 pub fn scan(source: Source, home: Option<&Path>, workspace: &Path) -> Found {
     let mut total = Found::default();
     for path in source.mcp_paths(home, workspace) {
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
+        // Only a missing file is silent: an existing-but-unreadable config
+        // (permissions, non-UTF-8) recorded as "no MCP config found" would
+        // read as "nothing to migrate" and invite deleting the source.
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                total
+                    .skipped
+                    .push((path.display().to_string(), format!("unreadable: {err}")));
+                continue;
+            }
         };
         let mut found = if path.extension().is_some_and(|ext| ext == "toml") {
             servers_from_toml(&raw)
@@ -444,10 +468,18 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
             source
         })
         .collect();
-    let sources = if sources.is_empty() {
-        Source::all().to_vec()
-    } else {
+    // The all-sources default applies only when the user gave NO positional
+    // words: with a typo'd source (`/import claudee --yes`) every word was
+    // rejected, and falling through to "all sources" scanned and — with
+    // `--yes` — wrote every found server after the error.
+    let any_positional = words.iter().any(|word| !word.starts_with("--"));
+    let sources = if any_positional {
+        if sources.is_empty() {
+            return; // every source word was rejected — do not scan everything
+        }
         sources
+    } else {
+        Source::all().to_vec()
     };
 
     let home = crate::config::effective_home_dir();
