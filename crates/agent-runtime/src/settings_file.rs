@@ -41,6 +41,20 @@ pub fn settings_file_path() -> Result<PathBuf> {
 /// another writer before giving up.
 const SETTINGS_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Sibling lock file for `path`: `.lock` appended after the full extension
+/// (`settings.toml` → `settings.toml.lock`, `config.json` →
+/// `config.json.lock`, extension-less `name` → `name.lock`). Every writer
+/// of one file must derive the same name — two derivations for one file
+/// are two locks, which is no lock (the config.toml writers once split
+/// between `config.lock` and `config.toml.lock`).
+pub(crate) fn lock_path_for(path: &Path) -> PathBuf {
+    let lock_ext = match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => format!("{ext}.lock"),
+        None => "lock".to_string(),
+    };
+    path.with_extension(lock_ext)
+}
+
 /// Run `f` as a read-modify-write serialized against every other writer of
 /// the same file across processes. Named for its first user (settings.toml)
 /// but generic over the path: the CLI's `/network` store, workspace trust,
@@ -60,11 +74,7 @@ const SETTINGS_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// an async executor block for that long under contention (the lock body
 /// is expected to be short file IO).
 pub fn with_settings_lock<T>(settings: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let lock_ext = match settings.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) => format!("{ext}.lock"),
-        None => "lock".to_string(),
-    };
-    let path = settings.with_extension(lock_ext);
+    let path = lock_path_for(settings);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -144,4 +154,28 @@ pub fn write_settings_locale(tag: &str) -> Result<PathBuf> {
         // clone instead of moving it out of the closure.
         Ok(path.clone())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_path_keeps_the_full_extension() {
+        // One file, one lock name: every config/settings/team/grants writer
+        // derives through this, so the derivation itself is the contract.
+        for (file, lock) in [
+            ("/x/settings.toml", "/x/settings.toml.lock"),
+            ("/x/config.toml", "/x/config.toml.lock"),
+            ("/x/approvals.toml", "/x/approvals.toml.lock"),
+            ("/x/config.json", "/x/config.json.lock"),
+            ("/x/noext", "/x/noext.lock"),
+        ] {
+            assert_eq!(
+                lock_path_for(Path::new(file)),
+                PathBuf::from(lock),
+                "{file}"
+            );
+        }
+    }
 }
