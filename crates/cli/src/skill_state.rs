@@ -85,44 +85,45 @@ impl SkillStateStore {
         !self.disabled.contains(skill_name)
     }
 
-    /// Toggle a skill and persist the full `disabled` list.
+    /// Toggle a skill and persist the result.
     ///
-    /// Single-writer assumption: within one process the store is guarded
-    /// by the owner's `Arc<Mutex<…>>`, but the persist is a whole-file
-    /// read-modify-write with no cross-process locking — two concurrent
-    /// `codesmith` processes sharing `$HOME` can lose one toggle
-    /// (last writer wins). Advisory file locking is needed before
-    /// multi-process operation is relied upon.
+    /// Re-read-and-merge at persist time: the store is often loaded once
+    /// and held for the process's lifetime (the runtime API server), so
+    /// writing the startup snapshot wholesale would clobber any external
+    /// toggle made since. Only THIS toggle is applied to the freshly read
+    /// list; a malformed re-read is an error (never silently defaulted —
+    /// that would destroy the user's choices). Within one process the
+    /// store is guarded by the owner's `Arc<Mutex<…>>`.
     pub fn set_enabled(&mut self, skill_name: &str, enabled: bool) -> Result<()> {
-        let changed = if enabled {
-            self.disabled.remove(skill_name)
-        } else {
-            self.disabled.insert(skill_name.to_string())
+        let Some(path) = self.path.clone() else {
+            anyhow::bail!("skill state store has no backing file; cannot persist skill state");
         };
-        if !changed {
-            return Ok(());
+        let fresh: OnDiskState = match fs::read_to_string(&path) {
+            Ok(raw) if raw.trim().is_empty() => OnDiskState::default(),
+            Ok(raw) => toml::from_str(&raw).context("parse skill state for merge")?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => OnDiskState::default(),
+            Err(err) => {
+                return Err(err).with_context(|| format!("read skill state at {}", path.display()));
+            }
+        };
+        let mut on_disk = fresh.disabled.into_iter().collect::<BTreeSet<_>>();
+        if enabled {
+            on_disk.remove(skill_name);
+        } else {
+            on_disk.insert(skill_name.to_string());
         }
-        self.persist()
+        let body = toml::to_string_pretty(&OnDiskState {
+            disabled: on_disk.iter().cloned().collect(),
+        })
+        .context("serialize skill state")?;
+        atomic_write(&path, body.as_bytes())?;
+        self.disabled = on_disk;
+        Ok(())
     }
 
     #[allow(dead_code)]
     pub fn disabled(&self) -> Vec<String> {
         self.disabled.iter().cloned().collect()
-    }
-
-    fn persist(&self) -> Result<()> {
-        let Some(path) = self.path.as_ref() else {
-            // A detached store (constructed via `Default`, e.g. the
-            // runtime_api fallback after an unreadable state file) used to
-            // report success here while writing nothing — silent data loss
-            // behind a false success signal.
-            anyhow::bail!("skill state store has no backing file; cannot persist skill state");
-        };
-        let on_disk = OnDiskState {
-            disabled: self.disabled.iter().cloned().collect(),
-        };
-        let body = toml::to_string_pretty(&on_disk).context("serialize skill state")?;
-        atomic_write(path, body.as_bytes())
     }
 }
 

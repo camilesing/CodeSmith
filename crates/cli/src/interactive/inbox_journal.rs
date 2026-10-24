@@ -85,8 +85,11 @@ impl InboxJournal {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        serde_json::to_writer(&mut file, &line)?;
-        file.write_all(b"\n")?;
+        // One write, newline included: the old to_writer + write_all pair
+        // could crash between them, and the next append then concatenated
+        // onto the torn tail — losing both entries as one corrupt line.
+        let record = format!("{}\n", serde_json::to_string(&line)?);
+        file.write_all(record.as_bytes())?;
         file.flush()?;
         file.sync_all()
     }
@@ -274,7 +277,14 @@ const ORPHAN_HARVEST_WINDOW: std::time::Duration = std::time::Duration::from_sec
 /// entries for the fresh queue; an old one (its session file was evicted or
 /// deleted) is just deleted. Journals whose session file still exists are
 /// left alone — they belong to a session the user can resume.
-pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<String> {
+/// An orphan journal slated for harvest: its entries ride along until the
+/// caller has durably re-journaled them, and only then is the file removed.
+pub(crate) struct OrphanHarvest {
+    pub path: std::path::PathBuf,
+    pub entries: Vec<String>,
+}
+
+pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<OrphanHarvest> {
     let Ok(read_dir) = std::fs::read_dir(sessions_dir) else {
         return Vec::new();
     };
@@ -284,6 +294,21 @@ pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<String> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
+        // Crash leftover from an interrupted rewrite: its entries still
+        // live in the pre-rename journal, so it is never harvested — but
+        // it was also never cleaned. Remove once it ages out of the
+        // harvest window.
+        if name.ends_with(".inbox.tmp") {
+            let stale = std::fs::metadata(&path)
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|mtime| mtime.elapsed().ok())
+                .is_some_and(|age| age >= ORPHAN_HARVEST_WINDOW);
+            if stale {
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
         let Some(stem) = name.strip_suffix(".inbox.jsonl") else {
             continue;
         };
@@ -300,13 +325,16 @@ pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<String> {
             .map(|age| age < ORPHAN_HARVEST_WINDOW)
             .unwrap_or(true);
         if recent {
-            harvested.extend(
-                InboxJournal::for_session(sessions_dir, stem)
-                    .map(|journal| journal.load().entries)
-                    .unwrap_or_default(),
-            );
-        }
-        if let Err(err) = std::fs::remove_file(&path) {
+            let entries = InboxJournal::for_session(sessions_dir, stem)
+                .map(|journal| journal.load().entries)
+                .unwrap_or_default();
+            // Do NOT delete here: the entries only become durable again
+            // once the caller re-journals them; deleting inside the sweep
+            // lost exactly the queued text it was rescuing on a crash
+            // between the two.
+            harvested.push(OrphanHarvest { path, entries });
+        } else if let Err(err) = std::fs::remove_file(&path) {
+            // Out of the rescue window: nothing left to harvest, clean up.
             tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
         }
     }
@@ -329,10 +357,20 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
         }
     };
     let harvested = sweep_orphans(manager.sessions_dir());
-    let count = harvested.len();
-    for text in harvested {
-        journal_enqueue(state, &text);
-        state.queued_messages.push(text);
+    let count = harvested
+        .iter()
+        .map(|orphan| orphan.entries.len())
+        .sum::<usize>();
+    for orphan in harvested {
+        for text in orphan.entries {
+            journal_enqueue(state, &text);
+            state.queued_messages.push(text);
+        }
+        // The entries are durably re-journaled under the current id — now
+        // the orphan file can go.
+        if let Err(err) = std::fs::remove_file(&orphan.path) {
+            tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
+        }
     }
     count
 }
@@ -436,8 +474,17 @@ mod tests {
         std::fs::write(dir.join("live-session.json"), "{}").unwrap();
 
         let harvested = sweep_orphans(dir);
-        assert_eq!(harvested, vec!["typed during the crash".to_string()]);
-        assert!(!dir.join("fresh-orphan.inbox.jsonl").exists());
+        let mut rescued: Vec<&str> = Vec::new();
+        for orphan in &harvested {
+            rescued.extend(orphan.entries.iter().map(String::as_str));
+        }
+        assert_eq!(rescued, vec!["typed during the crash"]);
+        // The fresh orphan SURVIVES the sweep: its file is only removed
+        // after the caller durably re-journals the entries.
+        assert!(
+            dir.join("fresh-orphan.inbox.jsonl").exists(),
+            "harvested orphan is not deleted inside the sweep"
+        );
         assert!(!stale_path.exists(), "the stale orphan is deleted");
         assert!(
             dir.join("live-session.inbox.jsonl").exists(),

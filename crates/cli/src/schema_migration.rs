@@ -197,14 +197,26 @@ pub trait SchemaMigration {
         }
 
         if current != Self::CURRENT_VERSION {
-            return Err(MigrationError {
-                from_version: version,
-                to_version: Self::CURRENT_VERSION,
-                reason: format!(
+            // Distinguish the no-steps-registered gap: a record older than
+            // the version the writers stamp runs zero steps and dead-ends
+            // here — that needs its own message instead of a misleading
+            // "migrated to v1 but expected v2".
+            let reason = if Self::MIGRATIONS.is_empty() {
+                format!(
+                    "{} record predates the migration baseline (v{current}); no migration steps are registered for this domain",
+                    Self::DOMAIN
+                )
+            } else {
+                format!(
                     "{} migrated to v{current} but expected v{}",
                     Self::DOMAIN,
                     Self::CURRENT_VERSION
-                ),
+                )
+            };
+            return Err(MigrationError {
+                from_version: version,
+                to_version: Self::CURRENT_VERSION,
+                reason,
                 source: None,
             });
         }
@@ -260,12 +272,18 @@ pub fn lock_record(path: &Path) -> std::io::Result<fd_lock::RwLock<fs::File>> {
             .map(|ext| format!("{}.lock", ext.to_string_lossy()))
             .unwrap_or_else(|| "lock".to_string()),
     );
-    fs::OpenOptions::new()
+    // Open ONCE, read+write+create, and lock that handle: the old
+    // create→drop→reopen sequence locked a read-only descriptor (an
+    // exclusive fd-lock wants a write-capable handle) and left a TOCTOU
+    // window where a recreated lock file gave two processes different
+    // inodes — voiding the mutual exclusion this function exists for.
+    let file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
         .truncate(false)
         .open(&lock_path)?;
-    Ok(fd_lock::RwLock::new(fs::File::open(&lock_path)?))
+    Ok(fd_lock::RwLock::new(file))
 }
 
 /// Per-domain migration registrations.

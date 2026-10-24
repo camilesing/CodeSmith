@@ -431,6 +431,12 @@ pub struct SafetyAnalysis {
     pub command: String,
     pub reasons: Vec<String>,
     pub suggestions: Vec<String>,
+    /// `false` when the analysis GAVE UP (unparseable input, unknown
+    /// command) rather than positively classifying the command.
+    /// `RequiresApproval` is then a failure outcome, not a routine
+    /// escalation: auto-approve consumers must treat it as fail-closed
+    /// (strip/deny), not auto-grant.
+    pub analyzable: bool,
 }
 
 impl SafetyAnalysis {
@@ -440,6 +446,7 @@ impl SafetyAnalysis {
             command: command.to_string(),
             reasons: vec!["Command is read-only".to_string()],
             suggestions: vec![],
+            analyzable: true,
         }
     }
 
@@ -449,6 +456,7 @@ impl SafetyAnalysis {
             command: command.to_string(),
             reasons: vec![reason.to_string()],
             suggestions: vec![],
+            analyzable: true,
         }
     }
 
@@ -458,6 +466,7 @@ impl SafetyAnalysis {
             command: command.to_string(),
             reasons,
             suggestions: vec![],
+            analyzable: true,
         }
     }
 
@@ -467,6 +476,7 @@ impl SafetyAnalysis {
             command: command.to_string(),
             reasons,
             suggestions,
+            analyzable: true,
         }
     }
 }
@@ -784,10 +794,13 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
     // Single command: classify the first top-level segment (nested
     // substitution bodies were already screened by the checks above).
     let Some(segment) = facts.segments.iter().find(|s| !s.is_nested) else {
-        return SafetyAnalysis::requires_approval(
-            command,
-            vec!["Unknown command - review before execution".to_string()],
-        );
+        return SafetyAnalysis {
+            analyzable: false,
+            ..SafetyAnalysis::requires_approval(
+                command,
+                vec!["Unknown command - review before execution".to_string()],
+            )
+        };
     };
     analyze_single_segment(segment, command)
 }
@@ -863,11 +876,15 @@ fn analyze_single_segment(
         );
     }
 
-    // Default: requires approval for unknown commands
-    SafetyAnalysis::requires_approval(
-        command,
-        vec!["Unknown command - review before execution".to_string()],
-    )
+    // Default: requires approval for unknown commands — the analysis
+    // gave up, so mark it unanalyzable for fail-closed consumers.
+    SafetyAnalysis {
+        analyzable: false,
+        ..SafetyAnalysis::requires_approval(
+            command,
+            vec!["Unknown command - review before execution".to_string()],
+        )
+    }
 }
 
 /// Fail-closed path for commands the bash grammar cannot parse (unclosed
@@ -884,13 +901,16 @@ fn analyze_unparseable(command: &str) -> SafetyAnalysis {
             vec!["Review the command carefully before execution".to_string()],
         );
     }
-    SafetyAnalysis::requires_approval(
-        command,
-        vec![
-            "Command could not be parsed for safety analysis".to_string(),
-            "Fix quoting/syntax so the command can be analyzed".to_string(),
-        ],
-    )
+    SafetyAnalysis {
+        analyzable: false,
+        ..SafetyAnalysis::requires_approval(
+            command,
+            vec![
+                "Command could not be parsed for safety analysis".to_string(),
+                "Fix quoting/syntax so the command can be analyzed".to_string(),
+            ],
+        )
+    }
 }
 
 /// Destructive-pattern scan over every executable segment the AST found —

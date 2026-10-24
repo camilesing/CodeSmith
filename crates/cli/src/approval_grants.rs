@@ -190,7 +190,25 @@ impl ApprovalGrants {
 fn load_doc(path: &Path) -> GrantsDoc {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
-        Err(_) => return GrantsDoc::default(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return GrantsDoc::default();
+        }
+        Err(err) => {
+            // Only NotFound is legitimately empty. Every other error
+            // (PermissionDenied, IsADirectory, transient EIO) used to
+            // silently degrade to an empty store — a later save would then
+            // overwrite the unreadable-but-intact file with only this
+            // session's grants. Surface it loudly; the save side's lock
+            // and atomic write keep the torn-overwrite window small.
+            tracing::warn!(
+                target: "codesmith::approvals",
+                path = %path.display(),
+                error = %err,
+                "approvals.toml is unreadable; starting with no persistent grants \
+                 (the file was NOT overwritten — fix the read error to recover them)"
+            );
+            return GrantsDoc::default();
+        }
     };
     toml::from_str::<GrantsDoc>(&raw).unwrap_or_else(|err| {
         tracing::warn!(

@@ -694,9 +694,15 @@ impl HookExecutor {
             .envs(env_vars)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if stdin_bytes.is_some() {
-            command.stdin(Stdio::piped());
-        }
+        let stdin = if stdin_bytes.is_some() {
+            Stdio::piped()
+        } else {
+            // "All other events run with no stdin" (docs/HOOKS.md): never
+            // inherit the CLI's stdin — a hook that reads (`cat`, `read`)
+            // would steal REPL keystrokes or block until the timeout.
+            Stdio::null()
+        };
+        command.stdin(stdin);
 
         let mut child = match command.spawn() {
             Ok(child) => child,

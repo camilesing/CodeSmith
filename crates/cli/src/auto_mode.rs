@@ -34,9 +34,18 @@ use codesmith_agent_runtime::command_safety::{self, SafetyLevel};
 ///
 /// `RequiresApproval` commands (command chains, substitution, privileged
 /// commands) are *not* stripped — auto-approve exists precisely to
-/// auto-grant that tier. Only the `Dangerous` tier is stripped.
+/// auto-grant that tier. Two tiers ARE stripped: the `Dangerous` tier,
+/// and commands the analyzer GAVE UP on (`analyzable == false` —
+/// unparseable input, unknown commands). In the manual path a human
+/// reviews those; auto-granting them would hand an unanalyzed — possibly
+/// catastrophic — shape the caller-supplied sandbox with nobody looking.
 pub fn dangerous_command_reason(command: &str) -> Option<String> {
     let analysis = command_safety::analyze_command(command);
+    if !analysis.analyzable {
+        return Some(
+            "command could not be analyzed for safety; auto-approve refuses it".to_string(),
+        );
+    }
     if analysis.level == SafetyLevel::Dangerous {
         let reason = analysis.reasons.join("; ");
         Some(if reason.is_empty() {
