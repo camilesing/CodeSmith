@@ -67,6 +67,21 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
                 base_url
             );
         }
+        // Mirror mode honours the same version guard as GitHub: without it
+        // a plain `update` replaced the binary with whatever the mirror
+        // advertised, silently downgrading while `--check` (which does run
+        // the guard) reported "up to date".
+        if !update_is_needed(channel, current_version, latest_tag)? {
+            println!(
+                "Mirror version {latest_tag} is not newer than the current build; no download needed."
+            );
+            return Ok(());
+        }
+        println!(
+            "warning: a release mirror is a full trust anchor — the SHA256 \
+             manifest is served by the same origin, so it only guards \
+             transport, not a compromised mirror."
+        );
     } else if !update_is_needed(channel, current_version, latest_tag)? {
         println!("Already up to date; no download needed.");
         return Ok(());
@@ -168,6 +183,17 @@ struct FetchedRelease {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UpdateReleaseSource {
     GitHub,
+    /// User-configured mirror origin (`CODESMITH_RELEASE_BASE_URL`).
+    ///
+    /// # Known limitations (deliberate)
+    ///
+    /// A mirror is a **full trust anchor**: the SHA256 manifest and every
+    /// binary are fetched from the same mirror origin, so verification only
+    /// guards transport corruption and asset mixups — a compromised mirror
+    /// can regenerate both. Cross-checking digests against GitHub would
+    /// defeat the mirror's purpose (reachability), and release signing
+    /// (minisign/cosign with a baked-in public key) is the eventual fix;
+    /// until then the install warns that the mirror owns the whole chain.
     Mirror { base_url: String },
 }
 
@@ -218,20 +244,18 @@ fn release_asset_name_for_prefix(prefix: &str, os: &str, rust_arch: &str) -> Str
     }
 }
 
-pub(crate) fn asset_matches_platform(asset_name: &str, binary_name: &str) -> bool {
-    if asset_name.ends_with(".sha256") {
-        return false;
-    }
-    asset_name == binary_name
-        || asset_name == format!("{binary_name}.exe")
-        || asset_name.starts_with(&format!("{binary_name}."))
-}
-
 fn select_platform_asset<'a>(release: &'a Release, binary_name: &str) -> Option<&'a Asset> {
+    // Exact names only (the platform stem, plus `.exe` on Windows): a
+    // dotted-suffix prefix match let any sidecar (`codesmith-x64.zip`,
+    // `.sig`, `.txt`) win in server-controlled asset order, and the
+    // manifest lookup keys on the selected asset's exact name — so a
+    // non-executable could pass verification and be written over the
+    // binary.
+    let exe_name = format!("{binary_name}.exe");
     release
         .assets
         .iter()
-        .find(|asset| asset_matches_platform(&asset.name, binary_name))
+        .find(|asset| asset.name == binary_name || asset.name == exe_name)
 }
 
 fn select_checksum_manifest_asset(release: &Release) -> Option<&Asset> {
@@ -537,8 +561,21 @@ fn replace_binary(target: &Path, new_bytes: &[u8]) -> Result<()> {
         }
 
         if let Err(err) = tmp.persist(target) {
+            // A failed restore must not leave the user with NO executable
+            // while the original sits under the `.old-<pid>` name with no
+            // pointer to it — surface both failures and the backup path so
+            // recovery is possible.
             if backup.exists() {
-                let _ = std::fs::rename(&backup, target);
+                if let Err(restore_err) = std::fs::rename(&backup, target) {
+                    bail!(
+                        "failed to install new binary at {}: {}; restoring the \
+                         previous binary also failed: {restore_err}; recover it \
+                         manually from {}",
+                        target.display(),
+                        err.error,
+                        backup.display()
+                    );
+                }
             }
             bail!(
                 "failed to install new binary at {}: {}",
@@ -585,6 +622,55 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
+
+    /// Only the exact platform asset name (plus `.exe`) may be selected —
+    /// the old dotted-prefix rule let any sidecar listed first
+    /// (`codesmith-x64.zip`, `.sig`) win and pass manifest verification.
+    #[test]
+    fn platform_asset_selection_is_exact() {
+        let release = Release {
+            tag_name: "v9.9.9".to_string(),
+            prerelease: false,
+            assets: vec![
+                Asset {
+                    name: "codesmith-macos-arm64.zip".to_string(),
+                    browser_download_url: "https://mirror/codesmith-macos-arm64.zip".to_string(),
+                },
+                Asset {
+                    name: "codesmith-macos-arm64".to_string(),
+                    browser_download_url: "https://mirror/codesmith-macos-arm64".to_string(),
+                },
+            ],
+        };
+        let selected = select_platform_asset(&release, "codesmith-macos-arm64")
+            .expect("exact asset selected");
+        assert_eq!(selected.name, "codesmith-macos-arm64");
+
+        let with_exe = Release {
+            tag_name: "v9.9.9".to_string(),
+            prerelease: false,
+            assets: vec![Asset {
+                name: "codesmith-windows-x64.exe".to_string(),
+                browser_download_url: "https://mirror/e".to_string(),
+            }],
+        };
+        let exe_name = select_platform_asset(&with_exe, "codesmith-windows-x64")
+            .expect("exe asset selected")
+            .name
+            .clone();
+        assert_eq!(exe_name, "codesmith-windows-x64.exe");
+
+        // A release whose only "binary" is a dotted sidecar selects nothing.
+        let sidecar_only = Release {
+            tag_name: "v9.9.9".to_string(),
+            prerelease: false,
+            assets: vec![Asset {
+                name: "codesmith-macos-arm64.tar.gz".to_string(),
+                browser_download_url: "https://mirror/t".to_string(),
+            }],
+        };
+        assert!(select_platform_asset(&sidecar_only, "codesmith-macos-arm64").is_none());
+    }
 
     /// Verify the arch mapping used when constructing asset names.
     /// The mapping must use release-asset naming (arm64/x64), not Rust
