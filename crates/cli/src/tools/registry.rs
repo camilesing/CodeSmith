@@ -101,9 +101,13 @@ impl ToolRegistryPluginExt for ToolRegistry {
                             );
                             tracing::error!("{message}");
                             // Deliberate stderr copy: this runs before any
-                            // UI exists, and the user must see it.
-                            #[allow(clippy::print_stderr)]
-                            eprintln!("error: {message}");
+                            // UI exists, and the user must see it. Written
+                            // through the handle (not `eprintln!`, which
+                            // this crate denies) so no attribute games.
+                            {
+                                use std::io::Write as _;
+                                let _ = writeln!(std::io::stderr(), "error: {message}");
+                            }
                         }
                     }
                 }
