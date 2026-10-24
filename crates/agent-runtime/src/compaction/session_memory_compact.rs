@@ -222,7 +222,23 @@ fn calculate_retain_start_index(
         .min(messages.len().saturating_sub(1));
 
     // Adjust to preserve tool_use/tool_result pairs.
-    adjust_index_for_tool_pairs(messages, boundary)
+    let adjusted = adjust_index_for_tool_pairs(messages, boundary);
+    if adjusted < boundary {
+        // Budget cap on the pullback: unbounded, it can walk to the head —
+        // a retained suffix far past `max_retain_tokens`, or index 0 where
+        // `session_memory_compact` no-ops and every retry repeats the same
+        // no-op. The block-level orphan filter at the split already
+        // preserves API validity at the original boundary, so the budget
+        // wins over the pullback.
+        let adjusted_suffix_tokens: usize = messages[adjusted..]
+            .iter()
+            .map(estimate_tokens_for_message_conservative)
+            .sum();
+        if adjusted_suffix_tokens > config.max_retain_tokens {
+            return boundary;
+        }
+    }
+    adjusted
 }
 
 /// Adjust a start index to ensure we don't split tool_use/tool_result pairs.
@@ -418,6 +434,44 @@ mod tests {
         // which would be removed. Adjust should move back to include index 1.
         let adjusted = adjust_index_for_tool_pairs(&messages, 2);
         assert_eq!(adjusted, 1);
+    }
+
+    #[test]
+    fn pair_pullback_is_capped_by_the_retain_budget() {
+        // A tool_use near the head whose result sits in the retained tail
+        // used to walk the boundary back unbounded — past
+        // `max_retain_tokens` or to 0 (where the compaction no-ops and
+        // every retry repeats it). The budget must win: the boundary falls
+        // back and the block-level orphan filter handles the crossing pair.
+        let messages = vec![
+            msg("user", "start"),                  // 0
+            tool_use_msg("t1", "read"),            // 1 — pair head, far from boundary
+            msg("assistant", &"h".repeat(40_000)), // 2 — huge middle message
+            tool_result_msg("t1", "result"),       // 3 — walk lands the boundary here
+            msg("assistant", "final"),             // 4
+        ];
+        let config = SessionMemoryCompactConfig {
+            enabled: true,
+            min_retain_tokens: 10,
+            max_retain_tokens: 1_000,
+        };
+        let result = session_memory_compact(&messages, "memory", &config);
+        // The pair pullback to index 1 would retain the 40K middle message;
+        // the budget cap must keep the retained suffix small.
+        let retained_tokens: usize = result
+            .messages
+            .iter()
+            .map(estimate_tokens_for_message_conservative)
+            .sum();
+        assert!(
+            retained_tokens <= config.max_retain_tokens,
+            "pullback must not push the retained suffix past the budget (got {retained_tokens} tokens, {} messages)",
+            result.messages.len()
+        );
+        assert!(
+            !result.messages.is_empty(),
+            "budget cap must not empty the transcript either"
+        );
     }
 
     #[test]

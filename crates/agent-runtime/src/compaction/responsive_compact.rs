@@ -5,13 +5,13 @@
 //! aggressive strategies before falling back to trimming oldest messages.
 
 /// State tracker for responsive compaction attempts.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResponsiveCompactState {
     /// Consecutive prompt-too-long errors encountered this turn.
     pub consecutive_overflows: u32,
     /// Total responsive compaction attempts made this session.
     pub attempts: u32,
-    /// Maximum attempts before giving up (default: 3).
+    /// Maximum attempts before giving up (default: 4).
     pub max_attempts: u32,
 }
 
@@ -21,7 +21,10 @@ impl ResponsiveCompactState {
         Self {
             consecutive_overflows: 0,
             attempts: 0,
-            max_attempts: 3,
+            // The cascade has 4 steps (attempt indices 0..=3); allowing
+            // only 3 made `FullCompact` unreachable — the state read as
+            // exhausted before the strongest recovery ran.
+            max_attempts: 4,
         }
     }
 
@@ -39,6 +42,15 @@ impl ResponsiveCompactState {
     /// Check if we've exhausted our recovery attempts.
     pub fn is_exhausted(&self) -> bool {
         self.attempts >= self.max_attempts
+    }
+}
+
+impl Default for ResponsiveCompactState {
+    fn default() -> Self {
+        // The derived Default set max_attempts = 0, i.e. born exhausted:
+        // any parent deriving Default embedded a state whose first
+        // `next_recovery_action` was `Fail`.
+        Self::new()
     }
 }
 
@@ -110,7 +122,24 @@ mod tests {
         state.record_overflow();
         state.record_overflow();
         assert_eq!(state.attempts, 3);
+        // 4 cascade steps exist, so 3 attempts must not read as exhausted —
+        // the FullCompact step still has to run.
+        assert!(!state.is_exhausted());
+        state.record_overflow();
+        assert_eq!(state.attempts, 4);
         assert!(state.is_exhausted());
+    }
+
+    #[test]
+    fn default_matches_new_so_derived_parents_are_not_born_exhausted() {
+        let default = ResponsiveCompactState::default();
+        let new = ResponsiveCompactState::new();
+        assert_eq!(default.max_attempts, new.max_attempts);
+        assert!(!default.is_exhausted());
+        assert_eq!(
+            next_recovery_action(&default, 0),
+            ResponsiveCompactAction::MicroCompact
+        );
     }
 
     #[test]
@@ -142,13 +171,32 @@ mod tests {
     #[test]
     fn exhausted_state_returns_fail() {
         let mut state = ResponsiveCompactState::new();
-        state.record_overflow();
-        state.record_overflow();
-        state.record_overflow();
+        for _ in 0..state.max_attempts {
+            state.record_overflow();
+        }
 
         assert_eq!(
             next_recovery_action(&state, 0),
             ResponsiveCompactAction::Fail
+        );
+    }
+
+    #[test]
+    fn full_cascade_is_reachable_before_exhaustion() {
+        // Record overflow before each step, as the engine does: after 3
+        // overflows the 4th cascade step (FullCompact) must still be
+        // returned, not Fail.
+        let mut state = ResponsiveCompactState::new();
+        for attempt in 0..3 {
+            state.record_overflow();
+            assert!(
+                !state.is_exhausted(),
+                "must not be exhausted after {attempt} overflows"
+            );
+        }
+        assert_eq!(
+            next_recovery_action(&state, 3),
+            ResponsiveCompactAction::FullCompact
         );
     }
 

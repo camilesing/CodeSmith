@@ -178,6 +178,7 @@ fn estimate_compactable_bytes(messages: &[Message]) -> usize {
             if let ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                content_blocks,
                 ..
             } = block
             {
@@ -185,7 +186,14 @@ fn estimate_compactable_bytes(messages: &[Message]) -> usize {
                     .get(tool_use_id)
                     .is_some_and(|name| is_micro_compactable_tool(name))
                 {
-                    Some(content.len())
+                    // The payload can live in `content_blocks` with `content`
+                    // as a short fallback — size both, or large structured
+                    // results look uncompactable here and under-trigger.
+                    let blocks_len = content_blocks
+                        .as_ref()
+                        .and_then(|b| serde_json::to_string(b).ok())
+                        .map_or(0, |s| s.len());
+                    Some(content.len() + blocks_len)
                 } else {
                     None
                 }
@@ -245,7 +253,14 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                     continue;
                 }
 
-                let original_len = content.len();
+                // Size both payload holders: `content_blocks` can carry the
+                // real payload while `content` is a short fallback, and a
+                // content-only length skips clearing exactly those results.
+                let blocks_len = content_blocks
+                    .as_ref()
+                    .and_then(|b| serde_json::to_string(b).ok())
+                    .map_or(0, |s| s.len());
+                let original_len = content.len() + blocks_len;
                 if original_len <= knobs.cleared_placeholder.len() {
                     continue; // Too small to benefit from clearing
                 }
@@ -444,6 +459,45 @@ mod tests {
 
         let cleared = micro_compact_messages(&mut messages, &mut state);
         assert_eq!(cleared, 0);
+    }
+
+    #[test]
+    fn micro_compact_sees_content_blocks_payloads() {
+        let _guard = policy_test_lock();
+        // Short `content` + large structured `content_blocks`: the payload
+        // lives in the blocks, so both clearing and the trigger estimate
+        // must count them (a content-only length made this uncompactable).
+        let mut messages = vec![
+            tool_use_msg("b1", "file_read", json!({"path": "a.rs"})),
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "b1".into(),
+                    content: "see blocks".into(),
+                    is_error: None,
+                    content_blocks: Some(vec![json!({"blob": "x".repeat(4096)})]),
+                }],
+            },
+        ];
+        assert!(
+            estimate_compactable_bytes(&messages) >= 4096,
+            "estimate must count content_blocks bytes"
+        );
+
+        let mut state = MicroCompactState::default();
+        let cleared = micro_compact_messages(&mut messages, &mut state);
+        // 4KB of blocks minus the ~42-char placeholder still clears >4KB.
+        assert!(cleared >= 4_000, "cleared bytes must include the blocks");
+        let ContentBlock::ToolResult {
+            content,
+            content_blocks,
+            ..
+        } = &messages[1].content[0]
+        else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, DEFAULT_CLEARED_PLACEHOLDER);
+        assert!(content_blocks.is_none());
     }
 
     #[test]

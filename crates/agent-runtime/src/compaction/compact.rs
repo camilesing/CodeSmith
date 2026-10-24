@@ -654,17 +654,26 @@ pub fn should_compact(
         .sum();
     let message_count = plan.summarize_indices.len();
 
-    // Pinned messages consume part of the budget, so compact earlier when needed.
-    let effective_token_threshold = config.token_threshold.saturating_sub(pinned_tokens);
+    // Pinned messages consume part of the budget, so compact earlier when
+    // needed. When pinned content alone exhausts the threshold, floor the
+    // effective threshold at `token_threshold / 16` instead of reverting
+    // to a message-count heuristic: pinned content is never summarized,
+    // so the count branch re-fired a full LLM summary (plus prefix-cache
+    // rewrite) every `MIN_SUMMARIZE_MESSAGES` new messages that could
+    // never restore budget. The proportional floor keeps the trigger
+    // token-governed — under the 967K default it takes a ~60K-token
+    // unpinned tail to fire, while small tails stay silent.
+    let effective_token_threshold = config
+        .token_threshold
+        .saturating_sub(pinned_tokens)
+        .max(config.token_threshold / 16)
+        .max(1);
 
     // Token-only trigger: the prior message-count branch was a
     // 128K-era heuristic that fired compaction on long chats of small
     // messages — exactly the case where rewriting the V4 prefix cache is
     // most wasteful. Token budget is the only signal that maps to actual
     // model context pressure.
-    if effective_token_threshold == 0 {
-        return message_count >= MIN_SUMMARIZE_MESSAGES;
-    }
     if message_count < MIN_SUMMARIZE_MESSAGES {
         return false;
     }
@@ -2179,7 +2188,8 @@ mod anchored_estimate_tests {
 #[cfg(test)]
 mod tool_pairing_balance_tests {
     use super::{
-        enforce_tool_call_pairs, plan_compaction, tool_call_pairs_balanced, unanswered_tool_use_ids,
+        CompactionConfig, enforce_tool_call_pairs, plan_compaction, should_compact,
+        tool_call_pairs_balanced, unanswered_tool_use_ids,
     };
     use crate::models::{ContentBlock, Message};
     use std::collections::BTreeSet;
@@ -2350,5 +2360,57 @@ mod tool_pairing_balance_tests {
             "planner keep-set must be pair-balanced, pinned={:?}",
             plan.pinned_indices
         );
+    }
+
+    fn text_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    /// Pinned content alone exceeds `token_threshold`: the trigger must
+    /// stay token-governed (proportional floor) instead of reverting to
+    /// the count-only heuristic that thrashed — one full LLM summary per
+    /// MIN_SUMMARIZE_MESSAGES new messages that could never restore budget.
+    #[test]
+    fn pinned_exhausted_threshold_does_not_fire_on_message_count() {
+        let config = CompactionConfig {
+            token_threshold: 1_600,
+            ..CompactionConfig::default()
+        };
+        // Old error-marker messages get pinned; their tokens alone exceed
+        // the threshold (floor = 100 tokens).
+        let mut messages: Vec<Message> = (0..2)
+            .map(|_| text_message("user", &format!("error: {}", "x".repeat(10_000))))
+            .collect();
+        // Ten tiny messages: the last 4 are keep-recent, leaving 6
+        // summarizable — exactly the count the old branch fired on. Their
+        // combined tokens sit far below the floor.
+        for _ in 0..10 {
+            messages.push(text_message("user", "hi"));
+        }
+        assert!(!should_compact(&messages, &config, None, None, None));
+    }
+
+    #[test]
+    fn pinned_exhausted_threshold_still_fires_on_a_large_tail() {
+        let config = CompactionConfig {
+            token_threshold: 1_600,
+            ..CompactionConfig::default()
+        };
+        let mut messages: Vec<Message> = (0..2)
+            .map(|_| text_message("user", &format!("error: {}", "x".repeat(10_000))))
+            .collect();
+        // The summarizable tail far exceeds the floor (100 tokens) —
+        // compacting it is the one thing that still helps, so the trigger
+        // must fire.
+        for _ in 0..10 {
+            messages.push(text_message("user", &"y".repeat(30_000)));
+        }
+        assert!(should_compact(&messages, &config, None, None, None));
     }
 }

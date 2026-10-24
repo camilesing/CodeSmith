@@ -7,7 +7,7 @@
 
 use crate::models::{ContentBlock, ImageSource, Message};
 use crate::session::{RecentMediaAttachment, RecentReadFile};
-use crate::subagent::SubAgentResult;
+use crate::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tool_state::plan::PlanSnapshot;
 use crate::tool_state::todo::TodoListSnapshot;
 
@@ -137,7 +137,17 @@ pub(crate) fn summarize_subagents(snapshots: &[SubAgentResult]) -> Vec<AgentSumm
             );
             AgentSummary {
                 name,
-                status: "running".to_string(),
+                // Map the snapshot's real status: re-injecting a finished
+                // agent as "running" made the model wait on / re-dispatch
+                // work that was already done.
+                status: match &snapshot.status {
+                    SubAgentStatus::Running => "running",
+                    SubAgentStatus::Completed => "completed",
+                    SubAgentStatus::Interrupted(_) => "interrupted",
+                    SubAgentStatus::Failed(_) => "failed",
+                    SubAgentStatus::Cancelled => "cancelled",
+                }
+                .to_string(),
                 description,
             }
         })
@@ -389,6 +399,28 @@ mod tests {
     #[test]
     fn reinject_skills_empty_returns_none() {
         assert!(reinject_skill_attachments(&[]).is_none());
+    }
+
+    #[test]
+    fn summarize_subagents_maps_the_real_status() {
+        let snapshot = SubAgentResult {
+            name: "researcher".to_string(),
+            agent_id: "a1".to_string(),
+            context_mode: "isolated".to_string(),
+            fork_context: false,
+            agent_type: crate::subagent::SubAgentType::General,
+            assignment: crate::subagent::SubAgentAssignment::new("objective".to_string(), None),
+            model: "m".to_string(),
+            nickname: None,
+            status: SubAgentStatus::Failed("boom".to_string()),
+            agent_memory: None,
+            result: None,
+            steps_taken: 2,
+            duration_ms: 10,
+            from_prior_session: false,
+        };
+        let summaries = summarize_subagents(&[snapshot]);
+        assert_eq!(summaries[0].status, "failed");
     }
 
     #[test]

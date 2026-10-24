@@ -211,7 +211,12 @@ pub fn cycle_trigger_floor(
     cfg: &CycleConfig,
 ) -> u64 {
     let threshold = cfg.threshold_for(model) as u64;
-    input_budget_tokens.map_or(threshold, |budget| threshold.min(budget))
+    // A zero budget is a misconfiguration (window <= reserve), not a real
+    // "fire at 0 tokens" wall — treating it literally restarted the cycle
+    // after every turn. Treat it like an unknown window instead.
+    input_budget_tokens
+        .filter(|budget| *budget > 0)
+        .map_or(threshold, |budget| threshold.min(budget))
 }
 
 /// Build the prompt the model uses to produce its `<carry_forward>` briefing.
@@ -684,6 +689,23 @@ mod tests {
         assert_eq!(
             cfg.threshold_for("unknown-model"),
             DEFAULT_CYCLE_THRESHOLD_TOKENS
+        );
+    }
+
+    #[test]
+    fn zero_budget_is_treated_as_an_unknown_window() {
+        // A zero budget (window <= reserve misconfiguration) must not make
+        // the floor 0 — that fired a cycle on every turn.
+        let cfg = CycleConfig::default();
+        let threshold = cfg.threshold_for("deepseek-v4-pro") as u64;
+        assert_eq!(
+            cycle_trigger_floor(Some(0), "deepseek-v4-pro", &cfg),
+            threshold
+        );
+        // Positive budgets still clamp the threshold as before.
+        assert_eq!(
+            cycle_trigger_floor(Some(threshold / 2), "deepseek-v4-pro", &cfg),
+            threshold / 2
         );
     }
 
