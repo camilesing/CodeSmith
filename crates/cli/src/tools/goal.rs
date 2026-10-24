@@ -232,9 +232,10 @@ impl ToolSpec for UpdateGoalTool {
                             "evidence is required when status is complete",
                         ));
                     }
-                    state
-                        .mark_complete(evidence)
-                        .map_err(ToolError::invalid_input)?;
+                    // "No active goal" is a state-machine precondition (remedy:
+                    // create_goal first), not a malformed argument — `rejected`
+                    // keeps the model from re-sending "corrected" input.
+                    state.mark_complete(evidence).map_err(ToolError::rejected)?;
                 }
                 "blocked" => {
                     let blocker = input
@@ -248,18 +249,25 @@ impl ToolSpec for UpdateGoalTool {
                             "blocker is required when status is blocked",
                         ));
                     }
-                    state
-                        .mark_blocked(blocker)
-                        .map_err(ToolError::invalid_input)?;
+                    state.mark_blocked(blocker).map_err(ToolError::rejected)?;
                 }
                 "active" => {
-                    let objective = input
-                        .get("objective")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    state.resume(objective).map_err(ToolError::invalid_input)?;
+                    // Absent → keep the existing objective. Present but empty
+                    // or not a string → reject (same rule as create_goal):
+                    // silently resuming with the OLD objective would tell the
+                    // caller its replacement succeeded.
+                    let objective = match input.get("objective") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(value)) if !value.trim().is_empty() => {
+                            Some(value.trim().to_string())
+                        }
+                        Some(other) => {
+                            return Err(ToolError::invalid_input(format!(
+                                "objective must be a non-empty string when provided; got: {other}"
+                            )));
+                        }
+                    };
+                    state.resume(objective).map_err(ToolError::rejected)?;
                 }
                 other => {
                     return Err(ToolError::invalid_input(format!(

@@ -134,10 +134,12 @@ impl ToolSpec for WebSearchTool {
         if query.is_empty() {
             return Err(ToolError::invalid_input("Query cannot be empty"));
         }
-        let max_results =
-            usize::try_from(optional_search_max_results(&input)).unwrap_or(DEFAULT_MAX_RESULTS);
-        let max_results = max_results.clamp(1, MAX_RESULTS);
-        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS)?.min(60_000);
+        // Clamp on the u64 side first: an oversized value must land on
+        // MAX_RESULTS, not silently become the default on narrow targets.
+        let max_results = optional_search_max_results(&input)?.clamp(1, MAX_RESULTS as u64);
+        let max_results = usize::try_from(max_results).unwrap_or(MAX_RESULTS);
+        // Floor at 1ms: a zero timeout's meaning depends on the service.
+        let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS)?.clamp(1, 60_000);
 
         let service = context.web_service.as_ref().ok_or_else(|| {
             ToolError::not_available(
@@ -184,8 +186,14 @@ fn search_tool_result(
     results: Vec<WebSearchEntry>,
     message_suffix: Option<&str>,
 ) -> Result<ToolResult, ToolError> {
+    // Provider warnings (e.g. "Bing returned no results; used DuckDuckGo
+    // fallback") matter MOST when nothing was found — the model decides
+    // whether to retry or rephrase from them.
     let message = if results.is_empty() {
-        "No results found".to_string()
+        match message_suffix {
+            Some(suffix) if !suffix.is_empty() => format!("No results found. {suffix}"),
+            _ => "No results found".to_string(),
+        }
     } else if let Some(suffix) = message_suffix {
         format!("Found {} result(s). {suffix}", results.len())
     } else {
@@ -237,14 +245,23 @@ fn extract_search_query(input: &Value) -> Result<String, ToolError> {
     Err(ToolError::missing_field("query"))
 }
 
-fn optional_search_max_results(input: &Value) -> u64 {
-    if let Some(value) = input.get("max_results").and_then(Value::as_u64) {
-        return value;
+/// `max_results` from the top level or the first query item that carries
+/// one. A present-but-non-integer value (negative, float, string) is an
+/// error, not a silent fallback to the default.
+fn optional_search_max_results(input: &Value) -> Result<u64, ToolError> {
+    let candidate = input.get("max_results").or_else(|| {
+        search_query_items(input)
+            .filter_map(|item| item.get("max_results"))
+            .next()
+    });
+    match candidate {
+        None | Some(Value::Null) => Ok(DEFAULT_MAX_RESULTS as u64),
+        Some(value) => value.as_u64().ok_or_else(|| {
+            ToolError::invalid_input(format!(
+                "max_results must be a non-negative integer, got: {value}"
+            ))
+        }),
     }
-    search_query_items(input)
-        .filter_map(|item| item.get("max_results").and_then(Value::as_u64))
-        .next()
-        .unwrap_or(DEFAULT_MAX_RESULTS as u64)
 }
 
 fn search_query_items(input: &Value) -> impl Iterator<Item = &Value> {
@@ -291,7 +308,7 @@ mod tests {
         let input = json!({"search_query": [{"q": "deepseek api", "max_results": 3}]});
         let query = extract_search_query(&input).expect("array form should parse");
         assert_eq!(query, "deepseek api");
-        assert_eq!(optional_search_max_results(&input), 3);
+        assert_eq!(optional_search_max_results(&input).unwrap(), 3);
     }
 
     #[test]
@@ -309,7 +326,7 @@ mod tests {
         assert_eq!(
             optional_search_max_results(
                 &json!({"query": "x", "max_results": 8, "search_query": [{"q": "y", "max_results": 2}]})
-            ),
+            ).unwrap(),
             8,
         );
     }
@@ -320,7 +337,8 @@ mod tests {
         // one that should reach the caller. This is the path V4 uses
         // when it emits the structured `search_query: [{…}]` shape.
         assert_eq!(
-            optional_search_max_results(&json!({"search_query": [{"q": "y", "max_results": 3}]})),
+            optional_search_max_results(&json!({"search_query": [{"q": "y", "max_results": 3}]}))
+                .unwrap(),
             3,
         );
     }
@@ -330,11 +348,22 @@ mod tests {
         // No explicit bound anywhere → the DEFAULT (currently 5)
         // applies, so the model can't accidentally pull MAX_RESULTS
         // worth of bandwidth just by omitting the field.
-        assert_eq!(optional_search_max_results(&json!({"query": "x"})), 5);
         assert_eq!(
-            optional_search_max_results(&json!({"search_query": [{"q": "y"}]})),
+            optional_search_max_results(&json!({"query": "x"})).unwrap(),
+            5
+        );
+        assert_eq!(
+            optional_search_max_results(&json!({"search_query": [{"q": "y"}]})).unwrap(),
             5,
         );
+    }
+
+    #[test]
+    fn optional_max_results_rejects_non_integer_values() {
+        // A present-but-malformed value is an error, not a silent default.
+        assert!(optional_search_max_results(&json!({"query": "x", "max_results": 3.5})).is_err());
+        assert!(optional_search_max_results(&json!({"query": "x", "max_results": -1})).is_err());
+        assert!(optional_search_max_results(&json!({"query": "x", "max_results": "5"})).is_err());
     }
 
     #[test]
@@ -346,7 +375,7 @@ mod tests {
         assert_eq!(
             optional_search_max_results(
                 &json!({"search_query": [{"q": "first", "max_results": 1}, {"q": "second", "max_results": 9}]})
-            ),
+            ).unwrap(),
             1,
         );
     }

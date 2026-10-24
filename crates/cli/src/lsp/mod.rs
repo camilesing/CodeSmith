@@ -151,6 +151,11 @@ impl LspManager {
             Ok(Ok(items)) => items,
             Ok(Err(err)) => {
                 tracing::debug!(?err, file = %file.display(), "lsp: diagnostics call failed");
+                // Evict the (presumably dead) transport: keeping it cached
+                // would hand out the same failed server for the rest of the
+                // session, silently degrading diagnostics permanently. The
+                // next edit lazily respawns a fresh one.
+                self.transports.lock().await.remove(&lang);
                 return None;
             }
             Err(_) => {
@@ -234,11 +239,20 @@ impl LspManager {
 
         // Fill in the document URI the caller cannot build.
         let mut params = params;
-        let obj = params.as_object_mut()?;
-        let text_document = obj
+        // A non-object `params`/`textDocument` is a caller bug; say so
+        // instead of returning the same `None` as "server unavailable".
+        let Some(obj) = params.as_object_mut() else {
+            tracing::warn!("lsp: navigation params must be a JSON object");
+            return None;
+        };
+        let Some(text_document) = obj
             .entry("textDocument")
             .or_insert_with(|| json!({}))
-            .as_object_mut()?;
+            .as_object_mut()
+        else {
+            tracing::warn!("lsp: navigation params.textDocument must be a JSON object");
+            return None;
+        };
         text_document.insert(
             "uri".to_string(),
             Value::String(client::uri_from_path(file)),
@@ -314,18 +328,24 @@ impl LspManager {
     }
 }
 
-/// Render `path` relative to the workspace when possible. Falls back to
-/// `path.file_name()` (per the issue's hard rule about not using
-/// `display().to_string()` on the bare path) when relativization fails.
+/// Render `path` relative to the workspace when possible. Neither input is
+/// guaranteed canonical (symlinked workspaces such as `/tmp` vs
+/// `/private/tmp`, relative vs absolute spellings), so a failed
+/// `strip_prefix` is retried on best-effort canonical forms before falling
+/// back to the full canonical path — never to a bare file name, which made
+/// two `mod.rs` files in different directories indistinguishable in the
+/// rendered `DiagnosticBlock`.
 fn relative_to_workspace(workspace: &Path, path: &Path) -> PathBuf {
     if let Ok(rel) = path.strip_prefix(workspace) {
         return rel.to_path_buf();
     }
-    PathBuf::from(
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| String::from("unknown")),
-    )
+    let canonical_workspace =
+        std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(rel) = canonical_path.strip_prefix(&canonical_workspace) {
+        return rel.to_path_buf();
+    }
+    canonical_path
 }
 
 /// Used for tests / no-op runs. Builds an empty manager that always returns
@@ -579,13 +599,15 @@ pub(crate) mod tests {
         assert!(rendered.contains("file=\"b.rs\""));
     }
 
+    /// Outside the workspace the full path is kept — a bare file name made
+    /// two `mod.rs` in different directories indistinguishable.
     #[test]
-    fn relative_path_falls_back_to_filename_when_outside_workspace() {
+    fn relative_path_keeps_full_path_when_outside_workspace() {
         let workspace = PathBuf::from("/foo/bar");
         let path = PathBuf::from("/baz/qux.rs");
         assert_eq!(
             relative_to_workspace(&workspace, &path),
-            PathBuf::from("qux.rs")
+            PathBuf::from("/baz/qux.rs")
         );
     }
 

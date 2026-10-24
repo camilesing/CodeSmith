@@ -449,12 +449,17 @@ pub async fn run_http_server(
         );
         SkillStateStore::default()
     });
+    // Fail loud beats serving endpoints that would each fail at open time
+    // anyway — same error, earlier, once — but as an `Err` the caller can
+    // handle: a panic here skipped the scheduler/handle cleanup at the end
+    // of this function and surfaced as a backtrace.
     let sessions = std::sync::Arc::new(
-        crate::session_manager::SessionManager::new(sessions_dir.clone()).unwrap_or_else(|err| {
-            // Fail loud beats serving endpoints that would each fail at
-            // open time anyway — same error, earlier, once.
-            panic!("runtime API: cannot open sessions directory: {err}")
-        }),
+        crate::session_manager::SessionManager::new(sessions_dir.clone()).with_context(|| {
+            format!(
+                "runtime API: cannot open sessions directory {}",
+                sessions_dir.display()
+            )
+        })?,
     );
     let state = RuntimeApiState {
         config: config.clone(),
@@ -1658,9 +1663,25 @@ async fn stream_thread_events(
             yield Ok(sse_json(&event_name, runtime_event_payload(event)));
         }
         loop {
-            let incoming = live.recv().await;
-            let Ok(event) = incoming else {
-                break;
+            let event = match live.recv().await {
+                Ok(event) => event,
+                // A slow consumer lost `n` ring-buffer slots: tell the
+                // client (with the last seq it did get) so it can reconnect
+                // with `?since_seq=` and replay the gap — ending the stream
+                // here would look exactly like a normal end-of-stream while
+                // an approval or turn completion silently went missing.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    yield Ok(sse_json(
+                        "lagged",
+                        serde_json::json!({
+                            "thread_id": thread_id,
+                            "skipped": skipped,
+                            "last_seq": last_seq,
+                        }),
+                    ));
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
             if event.thread_id != thread_id {
                 continue;

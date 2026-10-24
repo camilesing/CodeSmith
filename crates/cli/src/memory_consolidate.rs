@@ -51,21 +51,27 @@ fence and nothing else. Stay within {line_budget} lines."
 /// or plain ```` ``` ```` fences; returns the inner content. Unfenced input is
 /// returned trimmed — the validator makes the final call either way.
 pub(crate) fn strip_code_fence(text: &str) -> String {
+    // Fences are line-anchored: a stray ``` inside the model's preamble
+    // ("here is the index in a ```markdown fence") or trailing chatter
+    // must not be taken as the opener/closer, which silently truncated the
+    // proposal and made the validator reject it for a misleading reason.
     let trimmed = text.trim();
-    let Some(open_end) = trimmed.find("```") else {
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let Some(open) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("```"))
+    else {
         return trimmed.to_string();
     };
-    let after_open = &trimmed[open_end + 3..];
-    // Skip an optional language tag on the opening fence line.
-    let body_start = after_open
-        .find('\n')
-        .map(|nl| open_end + 3 + nl + 1)
-        .unwrap_or(open_end + 3);
-    let body = &trimmed[body_start..];
-    match body.rfind("```") {
-        Some(close) => body[..close].trim().to_string(),
-        None => body.trim().to_string(),
-    }
+    let close = lines
+        .iter()
+        .enumerate()
+        .skip(open + 1)
+        .rev()
+        .find(|(_, line)| line.trim_start().starts_with("```"))
+        .map(|(idx, _)| idx)
+        .unwrap_or(lines.len());
+    lines[open + 1..close].join("\n").trim().to_string()
 }
 
 /// Ask the model for a consolidated index. `Ok(None)` on empty response;
@@ -321,11 +327,21 @@ pub(crate) async fn run_memory_consolidate(
     // chained rewrite, and a fixed `MEMORY.md.bak` would overwrite the
     // pre-first-consolidation original on the second `--apply` — the only
     // recovery path for pointers dropped by a bad rewrite.
+    // Millisecond precision plus a refusal to overwrite: two --apply runs
+    // in the same second (scripted, or an immediate re-run after a bad
+    // merge) would otherwise clobber the only pre-consolidation recovery
+    // copy — exactly what the backup promises cannot happen.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map(|d| d.as_millis())
+        .map_err(|err| anyhow::anyhow!("system clock is before the UNIX epoch: {err}"))?;
     let backup = memory_dir.join(format!("MEMORY.md.bak.{ts}"));
+    if backup.exists() {
+        anyhow::bail!(
+            "backup {} already exists; refusing to overwrite a recovery copy — retry in a moment",
+            backup.display()
+        );
+    }
     std::fs::copy(&report.index_path, &backup)?;
     codesmith_agent_runtime::utils::write_atomic(&report.index_path, final_index.as_bytes())?;
     println!();
@@ -357,6 +373,14 @@ mod tests {
     fn strip_code_fence_handles_plain_and_unfenced() {
         assert_eq!(strip_code_fence("```\nline\n```"), "line");
         assert_eq!(strip_code_fence("  bare text  "), "bare text");
+    }
+
+    /// Fences are line-anchored: ``` inside preamble/trailing chatter must
+    /// not be mistaken for the opener/closer.
+    #[test]
+    fn strip_code_fence_ignores_inline_backticks_in_chatter() {
+        let text = "here is the index in a ```markdown fence:\n```markdown\n- [a](a.md)\n```\nhope the ``` helps";
+        assert_eq!(strip_code_fence(text), "- [a](a.md)");
     }
 
     #[tokio::test]

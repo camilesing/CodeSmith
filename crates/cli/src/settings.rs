@@ -163,15 +163,41 @@ impl Settings {
         let mut s: Settings = toml::from_str(&content)
             .with_context(|| format!("Failed to parse settings from {}", path.display()))?;
         s.default_mode = normalize_mode(&s.default_mode).to_string();
-        s.locale = normalize_configured_locale(&s.locale)
-            .unwrap_or("en")
-            .to_string();
-        s.theme = normalize_settings_theme(&s.theme).to_string();
+        // Load stays lenient, but an unrecognized persisted value falls back
+        // to the SAME default a fresh install gets (not a second, diverging
+        // fallback), and says so — otherwise a typo silently changes
+        // behavior with nothing to discover why.
+        s.locale = match normalize_configured_locale(&s.locale) {
+            Some(locale) => locale.to_string(),
+            None => {
+                tracing::warn!(
+                    "settings: unrecognized locale '{}', using default 'auto'",
+                    s.locale
+                );
+                "auto".to_string()
+            }
+        };
+        s.theme = match normalize_theme_name(&s.theme) {
+            Some(theme) => theme.to_string(),
+            None => {
+                tracing::warn!(
+                    "settings: unrecognized theme '{}', using default 'terminal'",
+                    s.theme
+                );
+                "terminal".to_string()
+            }
+        };
         s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
-        s.reasoning_effort = s
-            .reasoning_effort
-            .as_deref()
-            .and_then(|value| normalize_reasoning_effort_setting(value).ok().flatten());
+        s.reasoning_effort = match s.reasoning_effort.as_deref() {
+            Some(value) => match normalize_reasoning_effort_setting(value) {
+                Ok(normalized) => normalized,
+                Err(err) => {
+                    tracing::warn!("settings: ignoring persisted reasoning_effort: {err}");
+                    None
+                }
+            },
+            None => None,
+        };
         Ok(s)
     }
 
@@ -283,10 +309,6 @@ fn normalize_mode(value: &str) -> &str {
         "yolo" => "yolo",
         _ => value,
     }
-}
-
-fn normalize_settings_theme(value: &str) -> &'static str {
-    normalize_theme_name(value).unwrap_or("system")
 }
 
 #[cfg(test)]
