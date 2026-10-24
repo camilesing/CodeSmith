@@ -663,8 +663,18 @@ fn build_extension_runtime(
     // The engine's policy sink, bound before populate so the first
     // generation's flush already lands in this engine's store.
     runner.bind_policy_store(policy_store.clone());
-    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
-    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    // An unreadable state store (e.g. EACCES) must not silently fail open:
+    // the empty default re-enables every extension the user explicitly
+    // disabled. Log it so the silent re-enable is at least attributable.
+    let state = crate::extension_state::ExtensionStateStore::load_default()
+        .unwrap_or_else(|err| {
+            tracing::error!("extension state unreadable ({err:#}); proceeding as all-enabled");
+            Default::default()
+        });
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_else(|err| {
+        tracing::error!("mod state unreadable ({err:#}); proceeding as all-enabled");
+        Default::default()
+    });
     let report = populate_extension_runtime(
         &runner,
         workspace,
