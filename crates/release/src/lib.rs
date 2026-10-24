@@ -506,11 +506,15 @@ pub fn parse_release_version(value: &str) -> Result<semver::Version> {
 }
 
 /// Version core parser shared by the public parse and the side-tagging
-/// variants above.
+/// variants above. Strips at most ONE leading `v`: `vv1.2.3` must surface
+/// as an invalid pin downstream (the documented contract of
+/// `update_version_from_env` and `cnb_release_base_url`), not silently
+/// parse as `1.2.3`.
 fn parse_version(value: &str) -> std::result::Result<semver::Version, semver::Error> {
-    let version = value
-        .trim()
-        .trim_start_matches('v')
+    let trimmed = value.trim();
+    let version = trimmed
+        .strip_prefix('v')
+        .unwrap_or(trimmed)
         .split_whitespace()
         .next()
         .unwrap_or("");
