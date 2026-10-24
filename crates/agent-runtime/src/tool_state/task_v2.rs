@@ -266,6 +266,14 @@ impl TaskV2Manager {
         let mut updated = record;
 
         if let Some(s) = status {
+            // `Deleted` is routed exclusively through `soft_delete_task`:
+            // setting it here would hide the task from `list_tasks` /
+            // `claim_task` while other tasks keep its id in their
+            // `blocks` / `blocked_by` arrays — scheduling logic then waits
+            // forever on a hidden, never-completed blocker.
+            if s == TaskV2Status::Deleted {
+                return Err(anyhow::anyhow!("use soft_delete_task to delete task {id}"));
+            }
             // Track timing transitions
             if prev_status == TaskV2Status::Pending && s == TaskV2Status::InProgress {
                 updated.started_at = Some(now);
@@ -317,12 +325,30 @@ impl TaskV2Manager {
             }
         }
 
+        // Validate self-references in BOTH link lists before touching any
+        // files: the loops below persist back-links into other tasks'
+        // files as they go, so an input error discovered mid-loop leaves
+        // a one-sided link on disk that fails the bidirectional invariant
+        // — and fails the same way forever on retry.
+        if add_blocks
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&updated.id))
+        {
+            return Err(anyhow::anyhow!("task {} cannot block itself", updated.id));
+        }
+        if add_blocked_by
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&updated.id))
+        {
+            return Err(anyhow::anyhow!(
+                "task {} cannot be blocked by itself",
+                updated.id
+            ));
+        }
+
         // Add blocks: update this task's `blocks` and the blocked tasks' `blocked_by`
         if let Some(new_blocks) = add_blocks {
             for block_id in &new_blocks {
-                if block_id == &updated.id {
-                    return Err(anyhow::anyhow!("task {} cannot block itself", updated.id));
-                }
                 if !updated.blocks.contains(block_id) {
                     updated.blocks.push(block_id.clone());
                     match self.read_task_file(block_id) {
@@ -343,12 +369,6 @@ impl TaskV2Manager {
         // Add blocked_by: update this task's `blocked_by` and the blockers' `blocks`
         if let Some(new_blocked_by) = add_blocked_by {
             for blocker_id in &new_blocked_by {
-                if blocker_id == &updated.id {
-                    return Err(anyhow::anyhow!(
-                        "task {} cannot be blocked by itself",
-                        updated.id
-                    ));
-                }
                 if !updated.blocked_by.contains(blocker_id) {
                     updated.blocked_by.push(blocker_id.clone());
                     match self.read_task_file(blocker_id) {
@@ -1208,6 +1228,40 @@ mod tests {
             .unwrap();
         assert!(reopened.completed_at.is_none());
         assert!(reopened.started_at.is_none());
+    }
+
+    #[test]
+    fn update_task_rejects_deleted_status() {
+        // `Deleted` through update_task would hide the task from listing
+        // and claiming while leaving dangling blocks/blocked_by links on
+        // other tasks; deletion must route through soft_delete_task.
+        let mut mgr = temp_manager();
+        let id = mgr
+            .create_task(
+                "A".into(),
+                "desc".into(),
+                None,
+                None,
+                None,
+                vec![],
+                vec![],
+                None,
+            )
+            .unwrap();
+        let err = mgr
+            .update_task(
+                &id,
+                Some(TaskV2Status::Deleted),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("soft_delete_task"));
     }
 
     #[test]

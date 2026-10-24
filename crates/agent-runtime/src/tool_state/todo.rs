@@ -190,6 +190,13 @@ impl TodoList {
 
     /// Update an item's status by id.
     pub fn update_status(&mut self, id: u32, status: TodoStatus) -> Option<TodoItem> {
+        // Verify the id before `set_single_in_progress` demotes the
+        // current in-progress item: an unknown id must leave the list
+        // untouched, not silently demote an unrelated item and then
+        // report "not found".
+        if !self.items.iter().any(|item| item.id == id) {
+            return None;
+        }
         let mut updated: Option<TodoItem> = None;
         if status == TodoStatus::InProgress {
             self.set_single_in_progress(Some(id));

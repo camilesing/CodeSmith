@@ -109,9 +109,28 @@ impl GoalState {
                 } else {
                     GoalStatus::Active
                 };
-                if changed || self.status.is_none() || self.status != Some(new_status) {
+                // The host's objective/budget/completed surface cannot
+                // represent `Blocked` (set at runtime via `mark_blocked`):
+                // for an unchanged objective, a "not completed" host sync
+                // must not silently un-block the goal and restart
+                // continuation prompts. Host-driven un-blocking is a
+                // changed objective (handled above) or `completed`.
+                let keep_blocked =
+                    !completed && !changed && self.status == Some(GoalStatus::Blocked);
+                if !keep_blocked
+                    && (changed || self.status.is_none() || self.status != Some(new_status))
+                {
                     self.status = Some(new_status);
                     self.finished_at = completed.then(Instant::now);
+                    // Reconcile terminal fields on every host-driven
+                    // transition: leaving `Blocked` drops a stale blocker
+                    // string, leaving `Complete` drops stale evidence.
+                    if new_status != GoalStatus::Blocked {
+                        self.blocker = None;
+                    }
+                    if new_status != GoalStatus::Complete {
+                        self.evidence = None;
+                    }
                 }
             }
             None => self.clear(),
@@ -276,5 +295,52 @@ mod tests {
         state.sync_from_host(Some("ship the release"), None, true);
         assert!(!state.snapshot().is_active());
         assert_eq!(state.snapshot().status, "complete");
+    }
+
+    #[test]
+    fn sync_from_host_does_not_unblock_a_runtime_blocked_goal() {
+        // `mark_blocked` is a runtime decision; the host's
+        // objective/budget/completed surface cannot express "blocked", so
+        // an unchanged "not completed" sync must not resurrect the goal
+        // as active (that restarted continuation prompts every turn).
+        let mut state = GoalState::default();
+        state.sync_from_host(Some("ship the release"), Some(1000), false);
+        state
+            .mark_blocked("missing signing key".to_string())
+            .unwrap();
+        assert_eq!(state.snapshot().status, "blocked");
+
+        state.sync_from_host(Some("ship the release"), None, false);
+        assert_eq!(
+            state.snapshot().status,
+            "blocked",
+            "host sync must not silently un-block a runtime-blocked goal"
+        );
+
+        // Completion still wins over Blocked, and the blocker string is
+        // reconciled away with the transition.
+        state.sync_from_host(Some("ship the release"), None, true);
+        assert_eq!(state.snapshot().status, "complete");
+        assert!(
+            state.snapshot().blocker.is_none(),
+            "leaving Blocked must drop the stale blocker"
+        );
+    }
+
+    #[test]
+    fn sync_from_host_transition_to_active_drops_stale_evidence() {
+        let mut state = GoalState::default();
+        state.sync_from_host(Some("ship the release"), Some(1000), false);
+        state.sync_from_host(Some("ship the release"), None, true);
+        assert_eq!(state.snapshot().status, "complete");
+
+        // A changed objective restarts the goal as active; stale evidence
+        // from the previous completion must not ride along.
+        state.sync_from_host(Some("ship the next release"), None, false);
+        assert_eq!(state.snapshot().status, "active");
+        assert!(
+            state.snapshot().evidence.is_none(),
+            "leaving Complete must drop stale evidence"
+        );
     }
 }

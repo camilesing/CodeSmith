@@ -16,12 +16,13 @@ pub mod worktree;
 use std::collections::HashSet;
 
 /// Collect the ids of tool calls that actually executed successfully: a
-/// user-role `ToolResult` for the id whose `is_error` is not `Some(true)`.
-/// Unmatched ids (a call without a result, e.g. an interrupted turn) and
-/// errored calls are absent — transcript projections must fold only the
-/// calls that mutated live state. Same id→`is_error` correlation as
-/// `session.rs`'s `rebuild_recent_read_files_from_messages` and
-/// `capacity_flow.rs`.
+/// user-role `ToolResult` for the id whose `is_error` is explicitly
+/// `Some(false)`. Unmatched ids (a call without a result, e.g. an
+/// interrupted turn), errored calls, and legacy results that omitted the
+/// flag on failed reads are absent — transcript projections must fold
+/// only the calls that mutated live state. Same id→`is_error` policy as
+/// `session.rs`'s `rebuild_recent_read_files_from_messages` (a `None`
+/// flag counts as not-executed, not as success).
 pub(crate) fn executed_tool_call_ids(
     messages: &[codesmith_agent::models::Message],
 ) -> HashSet<&str> {
@@ -38,7 +39,11 @@ pub(crate) fn executed_tool_call_ids(
                 is_error,
                 ..
             } = block
-                && !matches!(is_error, Some(true))
+                // Require an explicit `Some(false)`, matching
+                // `rebuild_recent_read_files_from_messages`: legacy
+                // transcripts that omitted the flag on FAILED reads must
+                // not fold back in as executed mutations.
+                && matches!(is_error, Some(false))
             {
                 executed.insert(tool_use_id.as_str());
             }
