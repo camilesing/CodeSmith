@@ -29,21 +29,28 @@ pub fn persist_root_string_key(
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut doc: toml::Value = if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-    let table = doc
-        .as_table_mut()
-        .context("config.toml root must be a table")?;
-    table.insert(key.to_string(), toml::Value::String(value.to_string()));
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    codesmith_agent_runtime::utils::write_atomic(&path, body.as_bytes())
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    // Same shared config lock the other config.toml writers take
+    // (`/network` edits, workspace trust, the first-run wizard): an
+    // unlocked read-modify-write here could interleave with theirs and the
+    // last rename silently dropped one side's keys.
+    codesmith_agent_runtime::settings_file::with_settings_lock(&path, || {
+        let mut doc: toml::Value = if path.exists() {
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read config at {}", path.display()))?;
+            toml::from_str(&raw)
+                .with_context(|| format!("failed to parse config at {}", path.display()))?
+        } else {
+            toml::Value::Table(toml::value::Table::new())
+        };
+        let table = doc
+            .as_table_mut()
+            .context("config.toml root must be a table")?;
+        table.insert(key.to_string(), toml::Value::String(value.to_string()));
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        codesmith_agent_runtime::utils::write_atomic(&path, body.as_bytes())
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+        Ok(())
+    })?;
     Ok(path)
 }
 

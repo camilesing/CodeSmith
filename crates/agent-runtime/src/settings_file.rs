@@ -41,18 +41,30 @@ pub fn settings_file_path() -> Result<PathBuf> {
 /// another writer before giving up.
 const SETTINGS_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Run `f` as a settings read-modify-write serialized against every other
-/// settings writer across processes. Backed by an OS advisory lock
-/// (`fd-lock`): the kernel releases it when the holder dies, so there is
-/// no stale-lock heuristic whose break could race a fresh holder (the old
-/// `create_new` + mtime-stale-break scheme could delete a freshly
-/// acquired lock between the mtime read and the removal). Every settings
-/// writer — the runtime's key-preserving locale merge here and the CLI's
-/// whole-file `Settings::save` — must go through this; an unlocked writer
-/// racing a locked one merges from the same baseline and the last rename
-/// silently drops the other's keys.
+/// Run `f` as a read-modify-write serialized against every other writer of
+/// the same file across processes. Named for its first user (settings.toml)
+/// but generic over the path: the CLI's `/network` store, workspace trust,
+/// and the grants store route through it with their own file, and every
+/// writer of a given file must use the same lock or the unlocked writer's
+/// last rename silently drops the locked writer's merge. Backed by an OS
+/// advisory lock (`fd-lock`): the kernel releases it when the holder dies,
+/// so there is no stale-lock heuristic whose break could race a fresh
+/// holder (the old `create_new` + mtime-stale-break scheme could delete a
+/// freshly acquired lock between the mtime read and the removal).
+///
+/// Lock-file naming appends `.lock` after the full extension
+/// (`settings.toml` → `settings.toml.lock`, `config.json` →
+/// `config.json.lock`) so sibling files with different extensions never
+/// share a lock. Known limitation: the wait polls `try_write` every 50 ms
+/// on the calling thread for up to [`SETTINGS_LOCK_TIMEOUT`] — callers on
+/// an async executor block for that long under contention (the lock body
+/// is expected to be short file IO).
 pub fn with_settings_lock<T>(settings: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let path = settings.with_extension("toml.lock");
+    let lock_ext = match settings.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => format!("{ext}.lock"),
+        None => "lock".to_string(),
+    };
+    let path = settings.with_extension(lock_ext);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }

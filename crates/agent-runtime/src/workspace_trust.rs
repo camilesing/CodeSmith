@@ -199,42 +199,37 @@ pub fn apply_workspace_trust(doc: &mut toml::Value, workspace: &Path) -> Result<
 /// merge that preserves every unrelated field. Moved from the TUI's
 /// `config.rs` (same behavior byte-for-byte) so the CLI first-run wizard
 /// performs the identical write; the CLI re-exports this path.
+///
+/// The read-modify-write runs under the crate's shared fd-lock helper
+/// (sibling `config.toml.lock`) — the same lock `with_settings_lock`
+/// gives every other config.toml writer (`/network` edits, the wizard's
+/// batched persist, `persist_root_string_key`), so any two of them
+/// serialize instead of merging from stale snapshots. The write itself
+/// goes through `write_config_file_private`, a temp-file + rename, so
+/// concurrent readers never observe a torn TOML file.
 pub fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
     let config_path = default_config_path()
         .context("Failed to resolve config path: home directory not found.")?;
     ensure_parent_dir_private(&config_path)?;
 
-    // Serialize the read-modify-write against concurrent writers (the REPL
-    // and the CLI first-run wizard both land here) with an advisory lock
-    // next to the config file; without it, two processes each merge into
-    // their own stale snapshot and one side's unrelated fields are lost.
-    // The write itself goes through `write_config_file_private`, which is
-    // a temp-file + rename, so concurrent readers never observe a torn
-    // TOML file. Mirrors the evolution-log lock posture.
-    let lock_path = config_path.with_extension("lock");
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&lock_path)
-        .with_context(|| format!("Failed to open config lock at {}", lock_path.display()))?;
-    let mut lock = fd_lock::RwLock::new(lock_file);
-    let _guard = lock
-        .write()
-        .map_err(|err| std::io::Error::other(format!("config lock failed: {err}")))?;
+    crate::settings_file::with_settings_lock(&config_path, || {
+        let mut doc = if config_path.exists() {
+            let raw = fs::read_to_string(&config_path)?;
+            toml::from_str::<toml::Value>(&raw)
+                .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
+        } else {
+            toml::Value::Table(toml::value::Table::new())
+        };
+        apply_workspace_trust(&mut doc, workspace)?;
 
-    let mut doc = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path)?;
-        toml::from_str::<toml::Value>(&raw)
-            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-    apply_workspace_trust(&mut doc, workspace)?;
-
-    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
-    codesmith_config::write_config_file_private(&config_path, &serialized)
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    Ok(config_path)
+        let serialized =
+            toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
+        codesmith_config::write_config_file_private(&config_path, &serialized)
+            .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+        // The `&config_path` lock argument still borrows it, so hand back
+        // a clone instead of moving it out of the closure.
+        Ok(config_path.clone())
+    })
 }
 
 /// `create_dir_all` on the parent plus a best-effort Unix tightening of

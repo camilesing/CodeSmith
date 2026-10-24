@@ -332,77 +332,85 @@ fn persist_config(
     let config_path = store.path();
     ensure_config_file_at(config_path)?;
 
-    let mut doc = if config_path.exists() {
-        let raw = std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read config at {}", config_path.display()))?;
-        toml::from_str::<toml::Value>(&raw)
-            .with_context(|| format!("failed to parse config at {}", config_path.display()))?
-    } else {
-        bail!(
-            "config template was not created at {}",
-            config_path.display()
-        );
-    };
+    // The whole batched read-modify-write runs under the runtime's shared
+    // config lock (sibling `config.toml.lock`): an unlocked wizard write
+    // could clobber a concurrent `save_workspace_trust` merge from the
+    // REPL — the exact lost-update race that lock exists to prevent (the
+    // trust write itself is folded in here via `apply_workspace_trust`).
+    codesmith_agent_runtime::settings_file::with_settings_lock(config_path, || {
+        let mut doc = if config_path.exists() {
+            let raw = std::fs::read_to_string(config_path)
+                .with_context(|| format!("failed to read config at {}", config_path.display()))?;
+            toml::from_str::<toml::Value>(&raw)
+                .with_context(|| format!("failed to parse config at {}", config_path.display()))?
+        } else {
+            bail!(
+                "config template was not created at {}",
+                config_path.display()
+            );
+        };
 
-    let root = doc
-        .as_table_mut()
-        .context("Config root must be a TOML table.")?;
-    root.insert(
-        "provider".to_string(),
-        toml::Value::String(provider.as_str().to_string()),
-    );
-    if let Some(key) = api_key {
+        let root = doc
+            .as_table_mut()
+            .context("Config root must be a TOML table.")?;
         root.insert(
-            "auth_mode".to_string(),
-            toml::Value::String("api_key".to_string()),
+            "provider".to_string(),
+            toml::Value::String(provider.as_str().to_string()),
         );
-        if provider == ProviderKind::Deepseek {
-            // DeepSeek keeps a root `api_key` mirror for legacy readers.
-            root.insert("api_key".to_string(), toml::Value::String(key.to_string()));
+        if let Some(key) = api_key {
+            root.insert(
+                "auth_mode".to_string(),
+                toml::Value::String("api_key".to_string()),
+            );
+            if provider == ProviderKind::Deepseek {
+                // DeepSeek keeps a root `api_key` mirror for legacy readers.
+                root.insert("api_key".to_string(), toml::Value::String(key.to_string()));
+            }
         }
-    }
 
-    let providers = root
-        .entry("providers".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .context("`providers` must be a table.")?;
-    let field = provider_toml_field(provider);
-    let table = providers
-        .entry(field.to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .context("Provider entry must be a table.")?;
+        let providers = root
+            .entry("providers".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+            .as_table_mut()
+            .context("`providers` must be a table.")?;
+        let field = provider_toml_field(provider);
+        let table = providers
+            .entry(field.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+            .as_table_mut()
+            .context("Provider entry must be a table.")?;
 
-    if let Some(url) = endpoint {
-        table.insert("base_url".to_string(), toml::Value::String(url.to_string()));
-    }
-    if let Some(key) = api_key {
-        table.insert("api_key".to_string(), toml::Value::String(key.to_string()));
-    }
-    // Pin a per-provider model only when the file cannot resolve one on its
-    // own: DeepSeek reads the template's `default_text_model`, every other
-    // provider would otherwise boot on a DeepSeek model id (#1714
-    // pass-through).
-    let has_model = table
-        .get("model")
-        .and_then(toml::Value::as_str)
-        .is_some_and(|model| !model.trim().is_empty());
-    if !has_model && provider != ProviderKind::Deepseek {
-        let model = cli
-            .model_flag
-            .clone()
-            .unwrap_or_else(|| heavy_model_for_provider(provider).to_string());
-        table.insert("model".to_string(), toml::Value::String(model));
-    }
+        if let Some(url) = endpoint {
+            table.insert("base_url".to_string(), toml::Value::String(url.to_string()));
+        }
+        if let Some(key) = api_key {
+            table.insert("api_key".to_string(), toml::Value::String(key.to_string()));
+        }
+        // Pin a per-provider model only when the file cannot resolve one on its
+        // own: DeepSeek reads the template's `default_text_model`, every other
+        // provider would otherwise boot on a DeepSeek model id (#1714
+        // pass-through).
+        let has_model = table
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|model| !model.trim().is_empty());
+        if !has_model && provider != ProviderKind::Deepseek {
+            let model = cli
+                .model_flag
+                .clone()
+                .unwrap_or_else(|| heavy_model_for_provider(provider).to_string());
+            table.insert("model".to_string(), toml::Value::String(model));
+        }
 
-    if trusted {
-        apply_workspace_trust(&mut doc, workspace)?;
-    }
+        if trusted {
+            apply_workspace_trust(&mut doc, workspace)?;
+        }
 
-    let serialized = toml::to_string_pretty(&doc).context("failed to serialize config")?;
-    write_config_file_private(config_path, &serialized)
-        .with_context(|| format!("failed to write config at {}", config_path.display()))?;
+        let serialized = toml::to_string_pretty(&doc).context("failed to serialize config")?;
+        write_config_file_private(config_path, &serialized)
+            .with_context(|| format!("failed to write config at {}", config_path.display()))?;
+        Ok(())
+    })?;
 
     if let Some(key) = api_key
         && !write_provider_api_key_to_keyring(secrets, provider, key)

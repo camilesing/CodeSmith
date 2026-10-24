@@ -303,7 +303,10 @@ mod tests {
         assert!(body.contains("# trusted hosts"));
         let theme_pos = body.find("theme").expect("theme key kept");
         let network_pos = body.find("[network]").expect("network section kept");
-        assert!(theme_pos < network_pos, "top-level keys stay before sections");
+        assert!(
+            theme_pos < network_pos,
+            "top-level keys stay before sections"
+        );
         assert!(body.contains("\"registry.npmjs.org\""));
         assert!(body.contains("\"api.example.com\""));
     }
