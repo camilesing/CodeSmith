@@ -287,6 +287,11 @@
       const params = new URLSearchParams(location.search);
       const urlToken = params.get("token");
       if (!urlToken) return;
+      // Never silently replace an already-stored token from a URL parameter:
+      // an attacker-crafted link must not be able to switch this client to
+      // their credentials (token fixation). The user can paste the new token
+      // manually in the field instead.
+      if (sessionStorage.getItem("codesmith_runtime_token")) return;
       // sessionStorage, not localStorage: this token authorizes thread
       // creation, shell-enabling turns, and approval Allow decisions —
       // full agent control — so it must not outlive the tab session or

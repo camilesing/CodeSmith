@@ -13,11 +13,24 @@ const pkg = require("../package.json");
 // This script's whole purpose is release integrity verification, so it
 // refuses plaintext HTTP for the initial URL and for every redirect target
 // — an https -> http downgrade would let a MITM serve a tampered manifest.
-// Plain HTTP is allowed only when CODESMITH_RELEASE_BASE_URL is explicitly
-// overridden (local testing against a staging origin).
+// Plain HTTP is allowed only for URLs on the origin of an explicitly
+// overridden CODESMITH_RELEASE_BASE_URL (local testing against a staging
+// origin) — never for redirect targets on unrelated hosts.
 function requireHttps(url) {
-  if (!url.startsWith("https:") && !process.env.CODESMITH_RELEASE_BASE_URL) {
+  if (url.startsWith("https:")) {
+    return;
+  }
+  const override = process.env.CODESMITH_RELEASE_BASE_URL;
+  if (!override) {
     throw new Error(`Refusing insecure HTTP request: ${url}`);
+  }
+  const allowedOrigin = new URL(override).origin;
+  const target = new URL(url);
+  if (target.origin !== allowedOrigin) {
+    throw new Error(
+      `Refusing insecure HTTP request to ${target.origin} ` +
+        `(override only permits ${allowedOrigin}): ${url}`,
+    );
   }
 }
 

@@ -24,6 +24,11 @@ sudoedit /etc/codesmith/feishu-bridge.env
 node src/index.mjs
 ```
 
+> `npm install` must run from inside this directory: the security pins for
+> `axios`/`qs` live in this package's `overrides`, and npm only applies
+> `overrides` at the root of the install tree. Installing from a parent
+> directory (or hoisting this package into a workspace) silently drops them.
+
 Validate the env files before starting the service:
 
 ```bash

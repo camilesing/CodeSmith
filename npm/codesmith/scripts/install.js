@@ -1040,6 +1040,29 @@ async function adoptExistingBinaryIfValid(targetPath, assetName, version, getChe
   return false;
 }
 
+// The `.version` marker fast-path historically trusted the on-disk binary
+// with no integrity check — a corrupted, truncated, or replaced binary at
+// targetPath would be silently executed. Re-verify against the checksum
+// manifest when it is reachable; offline installs (manifest unreachable)
+// keep the historical trust so an already-installed binary still runs
+// without network.
+async function markedBinaryIsIntact(targetPath, assetName, getChecksums) {
+  let checksums;
+  try {
+    checksums = await getChecksums();
+  } catch {
+    return true;
+  }
+  try {
+    await verifyChecksum(targetPath, assetName, checksums);
+  } catch {
+    // Fails the checksum gate: fall through to a fresh download.
+    return false;
+  }
+  preflightGlibc(targetPath);
+  return true;
+}
+
 async function ensureBinary(targetPath, assetName, version, repo, getChecksums, options = {}) {
   const marker = `${targetPath}.version`;
   const downloadIfNeeded =
@@ -1049,7 +1072,9 @@ async function ensureBinary(targetPath, assetName, version, repo, getChecksums, 
     if (existing) {
       const markerVersion = await readLocalVersion(marker);
       if (markerVersion === String(version)) {
-        return targetPath;
+        if (await markedBinaryIsIntact(targetPath, assetName, getChecksums)) {
+          return targetPath;
+        }
       }
     }
     if (await adoptExistingBinaryIfValid(targetPath, assetName, version, getChecksums, marker)) {

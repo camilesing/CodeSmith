@@ -95,11 +95,30 @@ function resolveBaseUrl(version, repo, useMirror) {
   const override = String(process.env.CODESMITH_RELEASE_BASE_URL || "").trim();
   if (override) {
     const base = override.endsWith("/") ? override : `${override}/`;
+    let parsed;
     try {
-      new URL(base);
+      parsed = new URL(base);
     } catch {
       throw new Error(
         `CODESMITH_RELEASE_BASE_URL must be a valid absolute URL (got: ${override}).`,
+      );
+    }
+    // The checksum manifest is fetched from this same base, so an insecure
+    // scheme on a non-loopback host would let a network attacker serve both
+    // the binary and its manifest, silently defeating checksum verification.
+    const host = parsed.hostname;
+    const isLoopback =
+      host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+    if (parsed.protocol !== "https:" && !isLoopback) {
+      throw new Error(
+        `CODESMITH_RELEASE_BASE_URL must use https: (got: ${parsed.protocol}//${host}). ` +
+          `The checksum manifest is downloaded from the same base, so an insecure ` +
+          `scheme would defeat checksum verification.`,
+      );
+    }
+    if (parsed.protocol === "http:") {
+      console.warn(
+        `warning: CODESMITH_RELEASE_BASE_URL uses plaintext http on ${host}; only acceptable for local testing.`,
       );
     }
     return base;
