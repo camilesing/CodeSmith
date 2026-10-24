@@ -97,12 +97,38 @@ fn user_block_to_rig(block: &ContentBlock) -> Option<UserContent> {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
+            is_error,
+            content_blocks,
             ..
-        } => Some(UserContent::ToolResult(RigToolResult {
-            id: tool_use_id.clone(),
-            call_id: None,
-            content: OneOrMany::one(ToolResultContent::text(content.clone())),
-        })),
+        } => {
+            // rig's ToolResult has no `is_error` slot, so surface the failure
+            // in the text itself: without it, a failed tool result is
+            // reconstructed as an ordinary success and the model may trust
+            // garbage output or repeat the failing call. When the transcript
+            // carries the payload in `content_blocks` with `content` only a
+            // short fallback (compaction records it that way), flatten the
+            // text blocks so the substance is not dropped on the floor.
+            let body = if content.trim().is_empty() {
+                content_blocks
+                    .iter()
+                    .flatten()
+                    .filter_map(|b| b.get("text").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                content.clone()
+            };
+            let text = if is_error.unwrap_or(false) {
+                format!("[tool error] {body}")
+            } else {
+                body
+            };
+            Some(UserContent::ToolResult(RigToolResult {
+                id: tool_use_id.clone(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::text(text)),
+            }))
+        }
         ContentBlock::Image { source } => image_block_to_rig(source),
         _ => None,
     }
@@ -293,6 +319,23 @@ fn nonzero(v: u64) -> Option<u32> {
 ///    tool (OpenAI `tool_calls` normalizes to this).
 /// 3. `"end_turn"` — proof of a clean finish, value indistinguishable at this
 ///    layer (stop vs. anything below the cap).
+///
+/// # Known limitations (deliberate)
+///
+/// This is a billed-tokens heuristic, not the wire signal, and the error
+/// direction is chosen to be safe (over-reporting truncation):
+///
+/// - A turn that ended with a complete, parseable tool call exactly at the
+///   cap reports `max_tokens`, not `tool_use`. The P0-2 gate tolerates this
+///   (it only blocks unparseable arguments), but UI badges and telemetry
+///   cannot distinguish such a healthy turn from a truncated one.
+/// - On reasoning models, billed `output_tokens` includes thinking tokens,
+///   so "billed output == cap" is not always proof that the visible content
+///   was truncated.
+///
+/// Capturing the wire `finish_reason` in the shaper/stream layer before rig
+/// collapses it and preferring it here is the eventual fix; it requires
+/// touching every provider shaper, so the heuristic stays as the fallback.
 pub(crate) fn derive_stop_reason(saw_tool_use: bool, usage: &Usage, max_tokens: u32) -> String {
     if max_tokens > 0 && usage.output_tokens >= max_tokens {
         "max_tokens".to_string()

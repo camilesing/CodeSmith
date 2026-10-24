@@ -35,7 +35,14 @@ pub(crate) async fn fim_completion(
     suffix: String,
     max_tokens: u32,
 ) -> Result<String> {
-    let base = base_url.trim_end_matches('/');
+    // DeepSeek's FIM endpoint lives at the bare-host `/beta/completions`;
+    // a trailing `/v1` (the documented OpenAI-compat base users commonly
+    // configure) must not leak into this path — it would 404 while chat
+    // and /models survive the `/v1` base.
+    let base = base_url
+        .trim_end_matches('/')
+        .strip_suffix("/v1")
+        .unwrap_or_else(|| base_url.trim_end_matches('/'));
     let url = format!("{base}/beta/completions");
     let body = serde_json::json!({
         "model": model,

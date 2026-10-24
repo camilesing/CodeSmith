@@ -133,7 +133,7 @@ where
                     // instead of forging MessageDelta/MessageStop. The engine
                     // then transparently retries the round (zero content) or
                     // surfaces the partial content it did receive.
-                    state.close_current_block();
+                    state.close_current_block_on_error();
                     state.pending.push_back(Err(anyhow::anyhow!(
                         "stream ended without termination proof: provider \
                          connection closed before any finish signal arrived \
@@ -148,7 +148,7 @@ where
                     // before surfacing the error, matching the unproven path
                     // above — a salvaging consumer would otherwise get an
                     // unterminated block.
-                    state.close_current_block();
+                    state.close_current_block_on_error();
                     state.pending.push_back(Err(anyhow::Error::new(e)));
                     state.finished = true;
                     continue;
@@ -277,6 +277,26 @@ where
             .push_back(Ok(StreamEvent::ContentBlockStop { index }));
     }
 
+    /// Error-teardown variant of [`close_current_block`]: a delta-assembled
+    /// tool-use block whose `ContentBlockStart` was never emitted is DROPPED,
+    /// not force-materialized. `close_current_block` would announce a tool
+    /// call with empty input, and the engine finalizes and speculatively
+    /// dispatches at Stop with the announced empty input — on an interrupted
+    /// round (authoritative arguments in the never-arrived finish chunk)
+    /// that dispatches with wrong arguments, exactly what the reconciliation
+    /// paths exist to prevent. The consumer never saw a Start for that
+    /// index, so nothing dangles; text/thinking blocks and already-started
+    /// tool blocks still close so partial content stays well-formed.
+    fn close_current_block_on_error(&mut self) {
+        if matches!(
+            self.current.as_ref(),
+            Some(&CurrentBlock::ToolUse { started: false, .. })
+        ) {
+            self.current = None;
+        }
+        self.close_current_block();
+    }
+
     /// Open a text block: close the current one first if it isn't already text.
     fn open_text(&mut self) {
         if matches!(self.current, Some(CurrentBlock::Text { .. })) {
@@ -337,7 +357,7 @@ where
             &self.current,
             Some(CurrentBlock::ToolUse { id: cur_id, .. }) if *cur_id == id
         );
-        if let Some(record) = self.tool_blocks_by_id.get(&id).cloned() {
+        if let Some(mut record) = self.tool_blocks_by_id.get(&id).cloned() {
             if matching_current {
                 let started = matches!(
                     &self.current,
@@ -359,7 +379,7 @@ where
                     self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
                         index,
                         content_block: ContentBlockStart::ToolUse {
-                            id,
+                            id: id.clone(),
                             name,
                             input,
                             caller: None,
@@ -381,7 +401,7 @@ where
                     self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
                         index,
                         content_block: ContentBlockStart::ToolUse {
-                            id,
+                            id: id.clone(),
                             name,
                             input,
                             caller: None,
@@ -389,6 +409,15 @@ where
                     }));
                 }
                 self.close_current_block();
+                // The authoritative ToolCall for the current block has been
+                // reconciled (emitted here, already streamed via deltas, or
+                // null): persist the record so a gateway re-delivery of the
+                // complete ToolCall is suppressed (instead of re-issuing
+                // Start/Stop pairs) and a later delta for this id cannot
+                // reopen with an empty build.
+                record.input_delivered = true;
+                record.reopened = false;
+                self.tool_blocks_by_id.insert(id, record);
                 return;
             }
             // Closed delta block for this id — suppress the duplicate block.
@@ -405,7 +434,7 @@ where
                 self.pending.push_back(Ok(StreamEvent::ContentBlockStart {
                     index,
                     content_block: ContentBlockStart::ToolUse {
-                        id,
+                        id: id.clone(),
                         name,
                         input,
                         caller: None,
@@ -413,6 +442,9 @@ where
                 }));
                 self.pending
                     .push_back(Ok(StreamEvent::ContentBlockStop { index }));
+                record.input_delivered = true;
+                record.reopened = false;
+                self.tool_blocks_by_id.insert(id, record);
             }
             return;
         }
