@@ -7,8 +7,18 @@
 # 2 = model patch failed to apply, 3 = docker pull/run failed.
 set -uo pipefail
 
+if [ "$#" -ne 2 ]; then
+  echo "usage: $0 <task_id> <docker_image>" >&2
+  exit 1
+fi
 TASK_ID="$1"
 IMAGE="$2"
+# TASK_ID is interpolated into paths and the container name; reject anything
+# that is not a single safe path component (also avoids 'unbound variable'
+# aborts being read as the 'REWARD absent' exit code).
+case "$TASK_ID" in
+  ''|*/*|*..*) echo "invalid task_id: $TASK_ID" >&2; exit 1 ;;
+esac
 TASKS_DIR="${TASKS_DIR:-$HOME/deep-swe/tasks}"
 WORK_DIR="/tmp/deep-swe-verify/$TASK_ID"
 

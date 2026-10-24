@@ -47,6 +47,20 @@ venv/
 /.claude/
 /.ace-tool/
 
+# Credentials / keys (defense-in-depth before COPY . .)
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/.npmrc
+**/.pypirc
+**/.aws/
+**/.ssh/
+/secrets/
+**/*kubeconfig*
+
 # Documentation (not needed at runtime)
 /docs/
 /website/

@@ -285,7 +285,11 @@ check_localhost_health() {
     return
   fi
 
-  if curl -fsS --max-time 3 -H "Authorization: Bearer ${token}" \
+  # Feed the token via curl's --config stdin: printf is a builtin, so the
+  # bearer never appears in any process's argv (cf. check_env_file, which
+  # rejects world-readable env files for the same reason).
+  if curl -fsS --max-time 3 \
+    --config <(printf 'header = "Authorization: Bearer %s"\n' "${token}") \
     "http://127.0.0.1:${port}/v1/runtime/info" \
     | node -e '
       let raw = "";

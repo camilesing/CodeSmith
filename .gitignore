@@ -94,6 +94,15 @@ apps/
 .claude/CODEMAP_*
 .claude/handoff_*
 .claude/codemap_*
+# …including nested and repo-root emissions (AI_HANDOFF.md precedent):
+.claude/**/HANDOFF_*
+.claude/**/CODEMAP_*
+.claude/**/*.local.md
+.claude/**/*.local.json
+/HANDOFF_*
+/CODEMAP_*
+/handoff_*
+/codemap_*
 
 # Maintainer-internal design notes (trade-secret material, never published)
 .private/
@@ -109,7 +118,11 @@ all_preds.jsonl
 docs/*HANDOFF*.md
 docs/*handoff*.md
 docs/*_PLAN.md
-!docs/archive/**
+# Keep archived docs tracked, but only markdown/scripts — a blanket
+# !docs/archive/** would re-include .env/*.log/*.db that the global
+# patterns above ignore for the rest of the tree.
+!docs/archive/**/*.md
+!docs/archive/**/*.sh
 
 # direnv
 .envrc

@@ -82,6 +82,14 @@ jobs:
           # is operator-controlled and `${{ }}` in `run:` is script injection.
           INPUT_VERSION: ${{ inputs.version }}
         run: |
+          # Reject anything outside a safe version charset before the value
+          # flows into refs, docker metadata rules, and the release tag.
+          case "${INPUT_VERSION}" in
+            ''|*[!A-Za-z0-9._-]*)
+              echo "invalid version input: ${INPUT_VERSION}" >&2
+              exit 1
+              ;;
+          esac
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             tag="v${INPUT_VERSION}"
             if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then

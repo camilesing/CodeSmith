@@ -60,6 +60,12 @@ for repo_spec in ${WORKSPACE_EXTRA_REPOS}; do
     echo "Skipping malformed WORKSPACE_EXTRA_REPOS entry: ${repo_spec}" >&2
     continue
   fi
+  # repo_name becomes a path under WORKSPACE_ROOT in a root-run script:
+  # accept only a single safe path component.
+  if [[ ! "${repo_name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "${repo_name}" == ".." ]]; then
+    echo "Skipping WORKSPACE_EXTRA_REPOS entry with unsafe repo name: ${repo_name}" >&2
+    continue
+  fi
   if [[ ! -d "${WORKSPACE_ROOT}/${repo_name}/.git" ]]; then
     sudo -u "${CODESMITH_USER}" git clone "${repo_url}" "${WORKSPACE_ROOT}/${repo_name}" || {
       echo "Warning: failed to clone optional repo ${repo_name} from ${repo_url}" >&2
