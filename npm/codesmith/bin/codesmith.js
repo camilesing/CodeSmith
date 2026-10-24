@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
-const { runCodeSmith } = require("../scripts/run");
+// Everything inside main(): a require() failure (module resolution, syntax
+// error in a transitive dep) or a renamed export throws synchronously and
+// must still flow through the single error handler below, not escape as a
+// raw stack trace.
+async function main() {
+  const { runCodeSmith } = require("../scripts/run");
+  await runCodeSmith();
+}
 
-runCodeSmith().catch((error) => {
-  console.error("Failed to start codesmith:", error.message);
+main().catch((error) => {
+  console.error("Failed to start codesmith:", error?.message ?? error);
   process.exit(1);
 });

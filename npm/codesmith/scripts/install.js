@@ -856,6 +856,12 @@ function streamToFile(response, destination, progress) {
       if (done) return;
       done = true;
       if (err) {
+        // On a sink/write error the source response must be torn down too:
+        // httpRequest attaches its own 'data' listener, so the response
+        // stays in flowing mode and would otherwise keep downloading the
+        // entire body to nowhere while withRetry starts the next attempt.
+        response.unpipe(sink);
+        response.destroy();
         sink.destroy();
         reject(err);
       } else {

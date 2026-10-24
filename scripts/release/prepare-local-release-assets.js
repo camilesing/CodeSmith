@@ -64,6 +64,25 @@ async function main() {
     }
   }
 
+  // Pre-flight before the destructive rm/mkdir phase: in PREPARE_ALL_ASSETS
+  // mode the cross-platform sources exist only if the operator staged
+  // cross-build fixtures in buildDir — a missing file would otherwise abort
+  // copyFile mid-way with a raw ENOENT after outputDir was already wiped,
+  // leaving a partially populated directory and no manifest.
+  const missing = (
+    await Promise.all(
+      assets.map(async (asset) =>
+        (await fs.stat(asset.source).catch(() => null)) ? null : asset.source,
+      ),
+    )
+  ).filter(Boolean);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing build outputs in ${buildDir}:\n  ${missing.join("\n  ")}\n` +
+        "Cross-build or stage the per-platform binaries before running with CODESMITH_PREPARE_ALL_ASSETS=1.",
+    );
+  }
+
   // Clear stale assets from previous runs: mkdir alone leaves behind files
   // with no manifest entry, which a later upload could publish with
   // mismatched checksums.

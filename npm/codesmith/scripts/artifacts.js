@@ -77,12 +77,14 @@ function unsupportedBuildHint() {
 }
 
 function isCnbMirrorEnabled() {
-  // Plain truthiness would route "0"/"false" — the conventional opt-out
-  // spellings — to the CNB mirror.
+  // Fail closed: only an explicit allowlist of enabling spellings routes to
+  // the mirror — opt-outs like "no"/"off"/"disable" and any unrecognized
+  // value must not silently enable it (the mirror hosts linux-x64 only, so
+  // a wrongly-enabled mirror breaks macOS/Windows installs entirely).
   const flag = String(process.env.CODESMITH_USE_CNB_MIRROR || "")
     .trim()
     .toLowerCase();
-  return flag !== "" && flag !== "0" && flag !== "false";
+  return ["1", "true", "yes", "on"].includes(flag);
 }
 
 // The CNB mirror only builds and hosts the linux-x64 binary (and its own
@@ -90,7 +92,35 @@ function isCnbMirrorEnabled() {
 // the mirror is enabled, or installs on macOS/Windows point at 404s.
 const CNB_MIRROR_ASSETS = new Set(["codesmith-linux-x64"]);
 
+// `version` and `repo` come from documented user-facing env overrides
+// (CODESMITH_VERSION, CODESMITH_GITHUB_REPO) and are interpolated into URL
+// templates, so they are validated here — at the configuration site — rather
+// than surfacing later as an opaque 404 from the installer's generic
+// download-failure error.
+function normalizeVersion(version) {
+  const normalized = String(version).trim().replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(normalized)) {
+    throw new Error(
+      `Invalid release version: ${JSON.stringify(version)} ` +
+        `(expected e.g. 0.8.19 or v0.8.19).`,
+    );
+  }
+  return normalized;
+}
+
+function normalizeRepo(repo) {
+  const normalized = String(repo).trim().replace(/\.git$/, "");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) {
+    throw new Error(
+      `Invalid repo: ${JSON.stringify(repo)} (expected owner/name).`,
+    );
+  }
+  return normalized;
+}
+
 function resolveBaseUrl(version, repo, useMirror) {
+  version = normalizeVersion(version);
+  repo = normalizeRepo(repo);
   // CODESMITH_RELEASE_BASE_URL is the canonical override.
   const override = String(process.env.CODESMITH_RELEASE_BASE_URL || "").trim();
   if (override) {

@@ -29,6 +29,20 @@ async function run(binaryName) {
   if (result.error) {
     throw result.error;
   }
+  if (result.signal) {
+    // Killed by a signal (status is null): mirror the conventional
+    // 128+signal-number exit code so callers can distinguish signal deaths
+    // from genuine failures.
+    const SIGNAL_CODES = {
+      SIGHUP: 1,
+      SIGINT: 2,
+      SIGQUIT: 3,
+      SIGKILL: 9,
+      SIGSEGV: 11,
+      SIGTERM: 15,
+    };
+    process.exit(128 + (SIGNAL_CODES[result.signal] ?? 0));
+  }
   process.exit(result.status ?? 1);
 }
 
@@ -43,5 +57,11 @@ module.exports = {
 };
 
 if (require.main === module) {
-  runCodeSmith();
+  // Direct entry (`node scripts/run.js`): bin/codesmith.js already wraps
+  // this; this path needs the same treatment or a download failure escapes
+  // as a raw unhandled-rejection stack trace.
+  runCodeSmith().catch((error) => {
+    console.error("Failed to start codesmith:", error?.message ?? error);
+    process.exit(1);
+  });
 }

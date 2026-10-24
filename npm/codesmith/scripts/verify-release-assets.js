@@ -2,7 +2,6 @@ const crypto = require("crypto");
 const https = require("https");
 const {
   allAssetNames,
-  allReleaseAssetNames,
   checksumManifestUrl,
   DEFAULT_REPO,
   releaseAssetUrl,
@@ -99,6 +98,9 @@ function requestStatus(url, method = "HEAD", redirects = 0) {
 }
 
 async function downloadText(url, redirects = 0) {
+  if (redirects > 10) {
+    throw new Error(`Too many redirects while downloading ${url}`);
+  }
   const client = clientFor(url);
   return new Promise((resolve, reject) => {
     const req = client.get(
@@ -111,10 +113,10 @@ async function downloadText(url, redirects = 0) {
       (res) => {
         const status = res.statusCode || 0;
         if (status >= 300 && status < 400 && res.headers.location) {
-          if (redirects > 10) {
-            reject(new Error(`Too many redirects while downloading ${url}`));
-            return;
-          }
+          // Drain the 3xx body so keep-alive sockets are not pinned by an
+          // unconsumed response (Node >= 19 default agent) across the
+          // manifest + asset fetches.
+          res.resume();
           const next = new URL(res.headers.location, url).toString();
           resolve(downloadText(next, redirects + 1));
           return;
@@ -167,6 +169,10 @@ async function downloadBuffer(url, redirects = 0) {
       (res) => {
         const status = res.statusCode || 0;
         if (status >= 300 && status < 400 && res.headers.location) {
+          // Drain the 3xx body so keep-alive sockets are not pinned by an
+          // unconsumed response (Node >= 19 default agent) across the
+          // manifest + asset fetches.
+          res.resume();
           const next = new URL(res.headers.location, url).toString();
           resolve(downloadBuffer(next, redirects + 1));
           return;
@@ -189,7 +195,12 @@ async function downloadBuffer(url, redirects = 0) {
 async function run() {
   const version = resolveBinaryVersion();
   const repo = resolveRepo();
-  const assets = allReleaseAssetNames();
+  // Single source of truth for both the log and the verification loop: the
+  // checksum manifest cannot contain its own checksum, so the verified set
+  // is every release asset except the manifest itself. Deriving the loop
+  // from a different list than the log would let diverging helpers hide
+  // assets that are listed but never checksum-verified.
+  const assets = allAssetNames();
 
   // Drift guard: install.js prefers codesmithBinaryVersion over version, and
   // this gate only checks that assets exist for the binary version — a
@@ -212,7 +223,7 @@ async function run() {
     await downloadText(checksumManifestUrl(version, repo)),
   );
   await Promise.all(
-    allAssetNames().map(async (asset) => {
+    assets.map(async (asset) => {
       // Actually compare the SHA-256 of each downloaded asset against the
       // manifest value — checking only that the name appears as a key would
       // let a tampered release pass verification.
