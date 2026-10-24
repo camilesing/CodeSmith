@@ -185,6 +185,32 @@ impl IndexStore {
         Ok(())
     }
 
+    /// The backend id recorded for the current symbol data, if any.
+    pub fn backend_id(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("index store mutex poisoned");
+        let id = conn
+            .query_row("SELECT value FROM meta WHERE key = 'backend'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(id)
+    }
+
+    /// Delete every symbol and occurrence row. Dirty detection is
+    /// (mtime, size)-only, so a backend or enabled-language change must
+    /// purge stale extractor output — unchanged files would otherwise
+    /// never be re-extracted and would serve mixed old/new rows forever.
+    pub fn clear_symbols(&self) -> Result<()> {
+        let conn = self.conn.lock().expect("index store mutex poisoned");
+        conn.execute("DELETE FROM occurrences", [])?;
+        conn.execute("DELETE FROM symbols", [])?;
+        Ok(())
+    }
+
     /// Record which backend produced the current symbol data.
     pub fn set_backend(&self, backend_id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("index store mutex poisoned");

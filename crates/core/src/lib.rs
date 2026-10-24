@@ -598,11 +598,23 @@ impl ThreadManager {
         // starts effectively empty, contradicting `InitialHistory::Forked`'s
         // documented "with the given history items".
         let parent_id = parent_thread.id.clone();
+        // Synthesize an item from role/content when `item` is absent:
+        // user turns are persisted via `append_message(.., None)`, so the
+        // old `filter_map(record.item)` dropped EVERY user prompt from the
+        // forked history.
         let mut history: Vec<Value> = self
             .store
             .list_messages(&parent_id, None)?
             .into_iter()
-            .filter_map(|record| record.item)
+            .map(|record| {
+                record.item.unwrap_or_else(|| {
+                    json!({
+                        "type": "message",
+                        "role": record.role,
+                        "content": record.content,
+                    })
+                })
+            })
             .collect();
         history.push(json!({
             "type": "fork",
@@ -676,8 +688,12 @@ impl ThreadManager {
 
     /// Records a user message in a thread and updates its preview and timestamp.
     pub fn touch_message(&mut self, thread_id: &str, input: &str) -> Result<()> {
+        // Fail loud on an unknown thread: returning Ok(()) made
+        // `ThreadRequest::Message` acknowledge a message that was never
+        // recorded, and `handle_prompt` then died later with an unrelated
+        // leaf-id error.
         let Some(mut metadata) = self.store.get_thread(thread_id)? else {
-            return Ok(());
+            anyhow::bail!("cannot record message: thread {thread_id} not found");
         };
         metadata.updated_at = chrono::Utc::now().timestamp();
         metadata.preview = truncate_preview(input);

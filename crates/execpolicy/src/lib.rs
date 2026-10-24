@@ -328,17 +328,18 @@ impl ExecPolicyEngine {
         if self.rulesets.is_empty() {
             return (self.trusted_prefixes.clone(), self.denied_prefixes.clone());
         }
-        // Collect all trusted/denied across all layers, highest-priority last so they
-        // shadow lower-priority entries with the same prefix.
-        let mut trusted: Vec<String> = vec![];
-        let mut denied: Vec<String> = vec![];
-        for rs in &self.rulesets {
+        // Collect trusted/denied highest-priority-FIRST — legacy flat
+        // lists are user-layer, then the layered rulesets from highest
+        // layer down — so `check()`'s first-match `find` resolves to the
+        // highest-priority entry. The old ascending flatten let a
+        // BuiltinDefault entry shadow a User-layer one in matched-rule
+        // attribution.
+        let mut trusted: Vec<String> = self.trusted_prefixes.clone();
+        let mut denied: Vec<String> = self.denied_prefixes.clone();
+        for rs in self.rulesets.iter().rev() {
             trusted.extend(rs.trusted_prefixes.iter().cloned());
             denied.extend(rs.denied_prefixes.iter().cloned());
         }
-        // Also merge legacy flat lists as user-layer.
-        trusted.extend(self.trusted_prefixes.iter().cloned());
-        denied.extend(self.denied_prefixes.iter().cloned());
         (trusted, denied)
     }
 
@@ -398,7 +399,7 @@ impl ExecPolicyEngine {
         } else {
             segments
                 .iter()
-                .map(|segment| dequote_for_deny(&normalize_command(segment)))
+                .map(|segment| normalize_deny_segment(segment))
                 .collect()
         };
         // Deny rules match ANY segment of a (possibly compound) command on a
@@ -548,6 +549,47 @@ fn dequote_for_deny(value: &str) -> String {
         .collect()
 }
 
+/// Normalize a command segment for deny matching: dequote, strip wrapper
+/// commands that merely execute their argument (`env` — also swallowing
+/// leading `VAR=VALUE` assignments — `nohup`, `exec`, `command`,
+/// `xargs`), and reduce the first token to its basename so
+/// `/bin/rm -rf /` matches a denied `rm`. Known limitation (shared with
+/// `command_segments`): splitting is not quote-aware, so a quoted `;`
+/// inside a benign argument can still mis-segment; a real shell
+/// tokenizer remains the long-term fix.
+fn normalize_deny_segment(segment: &str) -> String {
+    let mut tokens: Vec<String> = dequote_for_deny(&normalize_command(segment))
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    loop {
+        let first = tokens.first().map(String::as_str).unwrap_or_default();
+        if matches!(first, "env" | "nohup" | "exec" | "command" | "xargs") {
+            let strip_assignments = first == "env";
+            tokens.remove(0);
+            if strip_assignments {
+                while tokens
+                    .first()
+                    .is_some_and(|token| token.contains('=') && !token.starts_with('-'))
+                {
+                    tokens.remove(0);
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    if let Some(first) = tokens.first_mut() {
+        *first = first
+            .replace('\\', "/")
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+    }
+    tokens.join(" ")
+}
+
 /// Splits a raw shell command on the operators that chain further commands
 /// (`;`, `&&`, `||`, `|`, newlines, backticks, `$(`), so prefix rules can be
 /// evaluated against every segment instead of only the first word.
@@ -657,6 +699,47 @@ mod tests {
             decision.reason(),
             "Command blocked by denied prefix rule 'git status'"
         );
+    }
+
+    #[test]
+    fn deny_rules_survive_absolute_paths_and_wrapper_commands() {
+        // The deny boundary must not be defeated by spelling the binary
+        // differently: absolute paths, and wrappers that merely execute
+        // their argument (env with assignments, nohup, xargs).
+        let engine = ExecPolicyEngine::new(vec![], vec!["rm".to_string()]);
+        for command in [
+            "rm -rf /",
+            "/bin/rm -rf /",
+            "env rm -rf /",
+            "env FOO=1 rm -rf /",
+            "nohup rm -rf /",
+            "xargs rm -rf /",
+        ] {
+            let decision = engine
+                .check(ctx(command, AskForApproval::UnlessTrusted))
+                .unwrap();
+            assert!(
+                matches!(
+                    decision.requirement,
+                    ExecApprovalRequirement::Forbidden { .. }
+                ),
+                "deny rule must survive '{command}': {:?}",
+                decision.requirement
+            );
+        }
+        // Basename reduction must not swallow deny rules that themselves
+        // carry a path-ish first token or longer prefixes.
+        let engine = ExecPolicyEngine::new(vec![], vec!["git push".to_string()]);
+        let decision = engine
+            .check(ctx(
+                "/usr/bin/git push origin main",
+                AskForApproval::UnlessTrusted,
+            ))
+            .unwrap();
+        assert!(matches!(
+            decision.requirement,
+            ExecApprovalRequirement::Forbidden { .. }
+        ));
     }
 
     #[test]

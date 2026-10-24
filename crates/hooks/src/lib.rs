@@ -308,10 +308,16 @@ impl HookSink for UnixSocketHookSink {
         });
         let mut line = serde_json::to_string(&payload).context("failed to encode hook event")?;
         line.push('\n');
-        stream
-            .write_all(line.as_bytes())
-            .await
-            .context("failed to write to unix socket")?;
+        // Bound the write: a connected peer that stops reading fills the
+        // kernel socket buffer and `write_all` would await forever — and
+        // `HookDispatcher::emit` awaits every sink, so one stalled
+        // listener would freeze the whole dispatcher.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            stream.write_all(line.as_bytes()).await
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out writing hook event to unix socket"))?
+        .context("failed to write to unix socket")?;
         Ok(())
     }
 

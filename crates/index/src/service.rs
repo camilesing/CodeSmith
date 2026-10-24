@@ -96,7 +96,16 @@ impl IndexService {
 
     /// Query-path refresh: bounded pass now, background completion later.
     async fn refresh_before_query(&self) -> Result<()> {
-        let report = self.refresh_once(self.default_budget).await?;
+        // A refresh hiccup (one unreadable directory aborts the walk by
+        // design, to protect the delete pass) must not fail the query: the
+        // stored index may be stale but is still usable — serve it.
+        let report = match self.refresh_once(self.default_budget).await {
+            Ok(report) => report,
+            Err(err) => {
+                tracing::warn!(%err, "pre-query index refresh failed; serving stale index");
+                return Ok(());
+            }
+        };
         if report.stale > 0 {
             spawn_background_completion(self.inner.clone());
         }
@@ -130,6 +139,16 @@ pub fn build_service(
                 languages,
             },
         )?;
+        // Dirty detection is mtime+size: unchanged files are never
+        // re-extracted, so rows produced by a previous backend would be
+        // served forever. Purge symbol data on backend mismatch, forcing
+        // re-extraction. Known limitation: changing only the enabled-
+        // LANGUAGE set keeps the same backend id and does not purge —
+        // rows of a later-disabled language survive until the file
+        // changes.
+        if store.backend_id()?.as_deref() != Some(backend.id()) {
+            store.clear_symbols()?;
+        }
         store.set_backend(backend.id())?;
         Some(backend)
     } else {
