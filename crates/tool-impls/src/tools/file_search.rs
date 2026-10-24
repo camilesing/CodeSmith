@@ -130,9 +130,7 @@ async fn search_files_async(
     // walker, so the walk must be cancellable through check_cancelled —
     // otherwise it pinned a blocking thread for the whole tree, minutes
     // past the deadline.
-    let worker_cancel_token = cancel_token
-        .clone()
-        .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+    let worker_cancel_token = cancel_token.clone().unwrap_or_default();
     let worker_token = worker_cancel_token.child_token();
     let guard = WorkerCancelGuard(worker_token.clone());
     let result = run_blocking_file_search(timeout, cancel_token, move || {
