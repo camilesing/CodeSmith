@@ -144,7 +144,15 @@ impl AutomationSchedule {
                 interval_hours,
                 byday,
             } => {
-                let mut candidate = local_after + Duration::hours(i64::from(*interval_hours))
+                // Checked arithmetic throughout: a tool-supplied INTERVAL
+                // like 4294967295 pushes `DateTime + Duration` past
+                // chrono's year cap, and the panicking Add/AddAssign impls
+                // would take down the API on a user-facing input.
+                let step = Duration::try_hours(i64::from(*interval_hours))
+                    .context("INTERVAL out of range")?;
+                let mut candidate = local_after
+                    .checked_add_signed(step)
+                    .context("INTERVAL pushes the schedule past the supported date range")?
                     - Duration::seconds(i64::from(local_after.second()))
                     - Duration::nanoseconds(i64::from(local_after.nanosecond()));
 
@@ -153,7 +161,9 @@ impl AutomationSchedule {
                         if days.contains(&candidate.weekday()) {
                             return Ok(candidate.with_timezone(&Utc));
                         }
-                        candidate += Duration::hours(i64::from(*interval_hours));
+                        candidate = candidate.checked_add_signed(step).context(
+                            "INTERVAL pushes the schedule past the supported date range",
+                        )?;
                     }
                     bail!("Unable to compute next HOURLY run for BYDAY filter");
                 }
@@ -217,6 +227,10 @@ fn parse_byday(value: &str) -> Result<Vec<Weekday>> {
 pub struct AutomationManager {
     automations_dir: PathBuf,
     runs_dir: PathBuf,
+    /// Deployment-level containment roots for automation cwds (empty =
+    /// no containment policy yet; existence + canonicalization still
+    /// apply to every entry via `codesmith_agent_runtime::tools::automation_types::validate_cwds`).
+    allowed_cwd_roots: Vec<PathBuf>,
 }
 
 /// A due run planned by [`AutomationManager::plan_due_runs`]: the run
@@ -244,6 +258,7 @@ impl AutomationManager {
         Ok(Self {
             automations_dir,
             runs_dir,
+            allowed_cwd_roots: Vec::new(),
         })
     }
 
@@ -274,6 +289,13 @@ impl AutomationManager {
 
     pub fn create_automation(&self, req: CreateAutomationRequest) -> Result<AutomationRecord> {
         validate_name_and_prompt(&req.name, &req.prompt)?;
+        // Validate cwds at the shared boundary (existence + canonical form;
+        // containment when the deployment carries allowed roots): they
+        // become auto-approved task workspaces downstream.
+        let cwds = codesmith_agent_runtime::tools::automation_types::validate_cwds(
+            &req.cwds,
+            &self.allowed_cwd_roots,
+        )?;
         let schedule = AutomationSchedule::parse_rrule(&req.rrule)?;
         let now = Utc::now();
         let status = req.status.unwrap_or(AutomationStatus::Active);
@@ -289,7 +311,7 @@ impl AutomationManager {
             name: req.name.trim().to_string(),
             prompt: req.prompt.trim().to_string(),
             rrule: req.rrule.trim().to_ascii_uppercase(),
-            cwds: req.cwds,
+            cwds,
             status,
             created_at: now,
             updated_at: now,
@@ -355,14 +377,27 @@ impl AutomationManager {
             }
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read {}", path.display()))?;
-            let record: AutomationRecord = serde_json::from_str(&raw)
-                .with_context(|| format!("Failed to parse {}", path.display()))?;
+            // Skip-and-warn (the documented quarantine posture): one
+            // hand-edited/corrupt/newer-version record must not halt
+            // scheduling for every other automation.
+            let record: AutomationRecord = match serde_json::from_str(&raw) {
+                Ok(record) => record,
+                Err(err) => {
+                    tracing::warn!(
+                        "skipping unparseable automation record {}: {err}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             if record.schema_version > CURRENT_AUTOMATION_SCHEMA_VERSION {
-                bail!(
-                    "Automation schema v{} is newer than supported v{}",
+                tracing::warn!(
+                    "skipping automation record {}: schema v{} is newer than supported v{}",
+                    path.display(),
                     record.schema_version,
                     CURRENT_AUTOMATION_SCHEMA_VERSION
                 );
+                continue;
             }
             // A record-carried id that is not a safe path component would
             // poison the scheduler tick downstream (save/run path joins);
@@ -422,7 +457,10 @@ impl AutomationManager {
             }
         }
         if let Some(cwds) = req.cwds {
-            existing.cwds = cwds;
+            existing.cwds = codesmith_agent_runtime::tools::automation_types::validate_cwds(
+                &cwds,
+                &self.allowed_cwd_roots,
+            )?;
         }
         if let Some(status) = req.status {
             existing.status = status;
@@ -500,8 +538,15 @@ impl AutomationManager {
             }
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read {}", path.display()))?;
-            let run: AutomationRunRecord = serde_json::from_str(&raw)
-                .with_context(|| format!("Failed to parse {}", path.display()))?;
+            // Same skip-and-warn quarantine as `list_automations`: one
+            // corrupt run record must not fail the whole listing.
+            let run: AutomationRunRecord = match serde_json::from_str(&raw) {
+                Ok(run) => run,
+                Err(err) => {
+                    tracing::warn!("skipping unparseable run record {}: {err}", path.display());
+                    continue;
+                }
+            };
             if run.schema_version > CURRENT_RUN_SCHEMA_VERSION {
                 bail!(
                     "Automation run schema v{} is newer than supported v{}",
@@ -633,9 +678,34 @@ impl AutomationManager {
                 continue;
             }
 
-            let schedule = AutomationSchedule::parse_rrule(&automation.rrule)?;
+            // One automation with an unparseable/unsatisfiable rrule must
+            // not abort the tick for every remaining automation — it would
+            // fail again on every 15 s tick and effectively halt all
+            // scheduling.
+            let schedule = match AutomationSchedule::parse_rrule(&automation.rrule) {
+                Ok(schedule) => schedule,
+                Err(err) => {
+                    tracing::warn!(
+                        "skipping automation {} ({}): rrule '{}' unusable: {err}",
+                        automation.id,
+                        automation.name,
+                        automation.rrule
+                    );
+                    continue;
+                }
+            };
             if automation.next_run_at.is_none() {
-                automation.next_run_at = Some(schedule.next_after(now)?);
+                match schedule.next_after(now) {
+                    Ok(next) => automation.next_run_at = Some(next),
+                    Err(err) => {
+                        tracing::warn!(
+                            "skipping automation {} ({}): next run uncomputable: {err}",
+                            automation.id,
+                            automation.name
+                        );
+                        continue;
+                    }
+                }
                 automation.updated_at = now;
                 self.save_automation(automation)?;
                 continue;
