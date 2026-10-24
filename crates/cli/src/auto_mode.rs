@@ -71,6 +71,14 @@ pub enum AutoElevationDecision {
 /// 3. **Deny** — otherwise, deny with a reason explaining that auto-approve
 ///    does not bypass the sandbox without the trust/YOLO opt-in.
 ///
+/// # Security
+///
+/// `command` MUST be the fully rendered shell command for every
+/// shell-executing tool; `None` is valid only for a tool that runs no shell
+/// command at all. A shell tool that fails to render its command silently
+/// skips step 1 — the catastrophic-command strip — for exactly the tools
+/// that need it.
+///
 /// `elevation_target` is the most permissive policy auto-approve may
 /// escalate to — the active mode's baseline sandbox
 /// (`sandbox_policy_for_mode`). Callers pass `DangerFullAccess` *only* for

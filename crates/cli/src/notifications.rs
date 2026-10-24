@@ -130,24 +130,36 @@ fn wrap_for_multiplexer(seq: &str, in_tmux: bool) -> String {
 /// so tmux forwards them to the outer terminal.
 #[must_use]
 fn build_escape(method: Method, in_tmux: bool, msg: &str) -> Vec<u8> {
+    // `msg` can be a model-influenced response preview. Strip control
+    // characters once here so an embedded BEL/ESC cannot terminate an OSC
+    // payload early and leak the remainder into the terminal as arbitrary
+    // control sequences (e.g. an injected OSC 52 clipboard overwrite).
+    let sanitized: String = msg.chars().filter(|c| !c.is_control()).collect();
+    let msg = sanitized.as_str();
     match method {
         Method::Bel => vec![b'\x07'],
         Method::Osc9 => {
             let inner = format!("\x1b]9;{msg}\x07");
-            if in_tmux {
-                let escaped_inner = inner.replace('\x1b', "\x1b\x1b");
-                format!("\x1bPtmux;{escaped_inner}\x1b\\").into_bytes()
-            } else {
-                inner.into_bytes()
-            }
+            wrap_for_multiplexer(&inner, in_tmux).into_bytes()
         }
         Method::Kitty => {
             // Kitty notification: OSC 99 ; params ST
             // ST terminator (ESC \) instead of BEL to avoid audible beep.
-            let title_seq = "\x1b]99;d=0:p=title\x1b\\";
-            let body_seq = format!("\x1b]99;p=body;{msg}\x1b\\");
-            let focus_seq = "\x1b]99;d=1:a=focus\x1b\\";
-            let combined = format!("{title_seq}{body_seq}{focus_seq}");
+            // Multi-part delivery must tag every part with the same `i=` id,
+            // else title/body/focus register as three unrelated
+            // notifications and `d=1:a=focus` closes nothing that was shown.
+            static KITTY_NOTIF_ID: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let id = KITTY_NOTIF_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Payload is %-escaped per the kitty protocol: a raw `%` would
+            // start an escape the terminal may reject, and a `;` would split
+            // the payload into further key=value pairs.
+            let body = msg.replace('%', "%25").replace(';', "%3b");
+            let combined = format!(
+                "\x1b]99;i={id}:d=0:p=title\x1b\\\
+                 \x1b]99;i={id}:p=body;{body}\x1b\\\
+                 \x1b]99;i={id}:d=1:a=focus\x1b\\"
+            );
             wrap_for_multiplexer(&combined, in_tmux).into_bytes()
         }
         Method::Ghostty => {
@@ -424,6 +436,34 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(s.starts_with("\x1bPtmux;"), "should start with DCS");
         assert!(s.ends_with("\x1b\\"), "should end with ST");
+    }
+
+    /// A BEL/ESC inside the model-influenced preview must never reach the
+    /// payload: it would terminate the OSC early and leak the remainder as
+    /// arbitrary terminal control sequences.
+    #[test]
+    fn control_characters_are_stripped_from_payload() {
+        let out = capture(Method::Osc9, false, "ok\x1b]52;c;\x07injected", 0, 1);
+        assert_eq!(out, b"\x1b]9;ok]52;c;injected\x07");
+    }
+
+    /// Kitty multi-part delivery: all three parts share one `i=` id, and the
+    /// body payload is %-escaped so `;`/`%` cannot split or escape it.
+    #[test]
+    fn kitty_parts_share_id_and_escape_payload() {
+        let out = capture(Method::Kitty, false, "a;b%c", 0, 1);
+        let s = String::from_utf8(out).unwrap();
+        let ids: Vec<&str> = s
+            .split("\x1b\\")
+            .filter(|part| part.contains("]99;"))
+            .filter_map(|part| part.split("i=").nth(1).map(|rest| &rest[..1]))
+            .collect();
+        assert_eq!(ids.len(), 3, "three OSC 99 parts");
+        assert!(
+            ids.windows(2).all(|w| w[0] == w[1]),
+            "all parts share the same i= id"
+        );
+        assert!(s.contains("a%3bb%25c"), "payload is %-escaped");
     }
 
     #[test]

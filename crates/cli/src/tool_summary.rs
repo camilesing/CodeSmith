@@ -133,7 +133,27 @@ pub fn tool_detail_block(record: &ToolCallRecord, max_lines: usize) -> String {
         .unwrap_or_default();
     let mut block = format!("#{} {}{}", record.seq, record.name, args);
     match (&record.output, &record.error) {
-        (Some(output), _) => {
+        // Partial output before a failure is a real record shape (stdout
+        // captured, then the call errored): render both, never drop the
+        // error — a failed call must not replay as a success.
+        (Some(output), Some(error)) => {
+            let lines: Vec<&str> = output.lines().collect();
+            if lines.is_empty() {
+                block.push_str("\n  (no output)");
+            } else {
+                let shown = lines.len().min(max_lines);
+                for line in lines.iter().take(shown) {
+                    block.push_str("\n  ");
+                    block.push_str(line);
+                }
+                if lines.len() > shown {
+                    block.push_str(&format!("\n  … (+{} more lines)", lines.len() - shown));
+                }
+            }
+            block.push_str("\n  error: ");
+            block.push_str(error);
+        }
+        (Some(output), None) => {
             let lines: Vec<&str> = output.lines().collect();
             if lines.is_empty() {
                 block.push_str("\n  (no output)");
@@ -148,7 +168,7 @@ pub fn tool_detail_block(record: &ToolCallRecord, max_lines: usize) -> String {
                 }
             }
         }
-        (_, Some(error)) => {
+        (None, Some(error)) => {
             block.push_str("\n  error: ");
             block.push_str(error);
         }
@@ -183,6 +203,17 @@ mod tests {
         assert!(block.contains("\n  l2"));
         assert!(!block.contains("l3"));
         assert!(block.contains("(+2 more lines)"));
+    }
+
+    /// Partial output followed by a failure must replay BOTH — the old
+    /// `(Some(output), _)` arm dropped the error and replayed the failed
+    /// call as a success.
+    #[test]
+    fn detail_block_keeps_error_alongside_partial_output() {
+        let rec = record(Some("partial stdout"), Some("tool failed"));
+        let block = tool_detail_block(&rec, 10);
+        assert!(block.contains("partial stdout"), "output still shown");
+        assert!(block.contains("error: tool failed"), "error not dropped");
     }
 
     #[test]
