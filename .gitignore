@@ -51,8 +51,14 @@ docs/*.pdf
 # workflows from ever being tracked.
 /*.sh
 /*.cmd
-!scripts/**
-!.github/scripts/**
+# Re-include only what the root-level *.sh/*.cmd excludes were meant to
+# exempt — blanket `scripts/**` negations also re-included scripts/.env,
+# node_modules/, venv/, logs (gitignore is last-match-wins): a stray env
+# file next to a release script became committable.
+!scripts/**/*.sh
+!scripts/**/*.cmd
+!.github/scripts/**/*.sh
+!.github/scripts/**/*.cmd
 test.txt
 TODO*.md
 todo*.md

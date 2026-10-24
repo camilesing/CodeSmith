@@ -27,15 +27,17 @@
 # CI/CD
 /.github/
 
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-venv/
-.venv/
+# Python — `**/` prefix: .dockerignore patterns are context-root-anchored
+# and `*` never crosses `/`, so nested caches (pkg/__pycache__/) entered
+# the build context anyway.
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/venv/
+**/.venv/
 
 # Logs
-*.log
+**/*.log
 
 # Generated
 /outputs/

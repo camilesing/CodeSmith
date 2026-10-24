@@ -58,7 +58,14 @@ jobs:
           # The first push to a fresh branch has BEFORE_SHA = 0000…0000.
           # In that case fall back to the latest commit only — we don't
           # want to scan the entire history.
-          if [[ "${BEFORE_SHA}" == "0000000000000000000000000000000000000000" || -z "${BEFORE_SHA:-}" ]]; then
+          # Force-push safety: after a rewrite of main, BEFORE_SHA is often
+          # not an ancestor (or absent from the clone entirely — fetch-depth 0
+          # only fetches history reachable from the new tip), and the range
+          # would error or silently omit the harvested commits.
+          if [[ "${BEFORE_SHA}" == "0000000000000000000000000000000000000000" || -z "${BEFORE_SHA:-}" ]] \
+             || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null \
+             || ! git merge-base --is-ancestor "${BEFORE_SHA}" "${AFTER_SHA}" 2>/dev/null; then
+            echo "::warning::BEFORE_SHA ${BEFORE_SHA} missing or not an ancestor of ${AFTER_SHA}; scanning latest commit only"
             RANGE="${AFTER_SHA}"
             RANGE_ARGS=("-1" "${AFTER_SHA}")
           else

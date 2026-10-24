@@ -52,6 +52,10 @@ multimap = "0.10.0"
 pdf-extract = "0.7"
 qrcode = "0.14"
 regex = "1.11"
+# `blocking` exists for the sync `update` subcommand and the Kimi OAuth
+# refresh only; every reqwest::blocking call site must run on a plain
+# thread (see refresh_kimi_oauth_token), never directly on the tokio
+# runtime — the blocking client panics on a runtime worker.
 reqwest = { workspace = true, features = ["blocking", "json", "stream", "multipart", "form", "rustls", "http2", "gzip", "brotli"] }
 rustyline = "14.0.0"
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }

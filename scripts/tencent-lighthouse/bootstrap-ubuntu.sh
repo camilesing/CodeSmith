@@ -35,7 +35,12 @@ apt-get install -y \
 
 node_major="$(node -p "Number(process.versions.node.split('.')[0])")"
 if (( node_major < 18 )); then
-  echo "Node.js 18+ is required for the Feishu bridge; install a newer Node.js before running install-services.sh." >&2
+  # Fatal: on Ubuntu 20.04/22.04 the distro nodejs is 10/12 — a warning
+  # let bootstrap "succeed" and pushed the failure into install-services.sh
+  # where the root cause is invisible.
+  echo "Node.js 18+ is required for the Feishu bridge; installed Node is ${node_major}.x." >&2
+  echo "Install Node 18+ (e.g., via NodeSource) and re-run this script." >&2
+  exit 1
 fi
 
 if ! id -u "${CODESMITH_USER}" >/dev/null 2>&1; then
@@ -73,9 +78,15 @@ for repo_spec in ${WORKSPACE_EXTRA_REPOS}; do
   fi
 done
 
+# Generate ONE strong token shared by both env files: committed
+# placeholders had to be manually replaced and kept identical — a skipped
+# edit shipped a publicly known token as the only runtime API auth, and a
+# divergence surfaced later as a cryptic 401.
+runtime_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
 if [[ ! -f /etc/codesmith/runtime.env ]]; then
-  cat >/etc/codesmith/runtime.env <<'EOF'
-CODESMITH_RUNTIME_TOKEN=replace-with-long-random-token
+  cat >/etc/codesmith/runtime.env <<EOF
+CODESMITH_RUNTIME_TOKEN=${runtime_token}
 CODESMITH_RUNTIME_PORT=7878
 CODESMITH_RUNTIME_WORKERS=2
 DEEPSEEK_API_KEY=replace-with-deepseek-platform-key
@@ -86,12 +97,12 @@ EOF
 fi
 
 if [[ ! -f /etc/codesmith/feishu-bridge.env ]]; then
-  cat >/etc/codesmith/feishu-bridge.env <<'EOF'
+  cat >/etc/codesmith/feishu-bridge.env <<EOF
 FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=replace-with-app-secret
 FEISHU_DOMAIN=feishu
 CODESMITH_RUNTIME_URL=http://127.0.0.1:7878
-CODESMITH_RUNTIME_TOKEN=replace-with-same-token-as-runtime-env
+CODESMITH_RUNTIME_TOKEN=${runtime_token}
 CODESMITH_WORKSPACE=/opt/codesmith-workspace
 CODESMITH_MODEL=auto
 CODESMITH_MODE=agent

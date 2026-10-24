@@ -33,7 +33,11 @@ crate_version_status() {
   local crate_name="$1"
   local crate_version="$2"
   local status
+  # crates.io's API policy requires a User-Agent; bare curl commonly gets
+  # 403 (which the status branching would then report as "unknown" for
+  # every crate).
   status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+    -H 'User-Agent: codesmith-release-checks (https://github.com/codesmith)' \
     "https://crates.io/api/v1/crates/${crate_name}/${crate_version}")" || {
     echo "unknown"
     return 0

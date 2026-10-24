@@ -180,8 +180,19 @@ check_env() {
     feishu|lark)
       pass "FEISHU_DOMAIN is ${domain:-feishu}"
       ;;
-    https://open.feishu.cn|https://open.feishu.cn/*|https://open.larksuite.com|https://open.larksuite.com/*)
+    # Exact-host URL with an optional /-prefixed path of restricted
+    # charset: a shell `*` also matches `@`, `.` and `/`, so the old glob
+    # blessed `https://open.feishu.cn@evil.com/x` (host is evil.com) and
+    # `..evil.com` suffix tricks — exfiltrating the app secret.
+    https://open.feishu.cn|https://open.larksuite.com)
       pass "FEISHU_DOMAIN is ${domain}"
+      ;;
+    *)
+      if [[ "${domain}" =~ ^https://open\.(feishu\.cn|larksuite\.com)(/[A-Za-z0-9._/-]+)?$ ]]; then
+        pass "FEISHU_DOMAIN is ${domain}"
+      else
+        fail "FEISHU_DOMAIN must be feishu, lark, or an exact https://open.feishu.cn / https://open.larksuite.com URL (got: ${domain})"
+      fi
       ;;
     *)
       fail "FEISHU_DOMAIN must be feishu, lark, or an https://open.feishu.cn / https://open.larksuite.com URL (got: ${domain})"

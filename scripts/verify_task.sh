@@ -101,14 +101,17 @@ echo "[$TASK_ID] Done. Result:"
 grep -E 'REWARD|FAILED|PATCH_FAILED|passed' "$RESULT_FILE" || true
 cp "$RESULT_FILE" "$WORK_DIR/result.txt"
 
-if [ "$RUN_STATUS" -ne 0 ]; then
-  echo "[$TASK_ID] docker run exited with status $RUN_STATUS" >&2
-  exit 3
-fi
+# PATCH_FAILED first: the in-container `exit 2` makes docker run return 2,
+# so checking RUN_STATUS first misreported patch failures as docker
+# failures (exit 3) and the documented exit-2 route was unreachable.
 # Line-anchored: the verifier's own output tail is in the same file, and a
 # stray "REWARD=1" substring inside it must not grade the task as solved.
 if grep -qE '^PATCH_FAILED\r?$' "$RESULT_FILE"; then
   exit 2
+fi
+if [ "$RUN_STATUS" -ne 0 ]; then
+  echo "[$TASK_ID] docker run exited with status $RUN_STATUS" >&2
+  exit 3
 fi
 if grep -qE '^REWARD=1\r?$' "$RESULT_FILE"; then
   exit 0

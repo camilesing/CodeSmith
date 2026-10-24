@@ -69,12 +69,19 @@ fail=0
 
 echo "Checking published release ${version}..."
 
-# Canonical post-rebrand npm package.
-npm_manifest="$(npm view "codesmith@${version}" --json --fetch-timeout 30000 2>/dev/null || true)"
-if [[ -n "${npm_manifest}" ]]; then
+# Canonical post-rebrand npm package. Tool/network failures (missing npm
+# binary, auth, DNS, timeout) must not read as "not published": capture
+# stderr and branch on E404 vs anything else.
+npm_manifest=""
+if npm_out="$(npm view "codesmith@${version}" --json --fetch-timeout 30000 2>&1)"; then
+  npm_manifest="${npm_out}"
   echo "npm codesmith@${version} is published."
-else
+elif printf '%s' "${npm_out}" | grep -q 'E404'; then
   echo "npm codesmith@${version} is not published." >&2
+  fail=1
+else
+  echo "npm view codesmith@${version} failed:" >&2
+  printf '%s\n' "${npm_out}" >&2
   fail=1
 fi
 
@@ -82,7 +89,15 @@ fi
 binary_field=""
 npm_binary_version=""
 if [[ -n "${npm_manifest}" ]]; then
-  value="$(printf '%s' "${npm_manifest}" | node -e 'const fs = require("fs"); const manifest = JSON.parse(fs.readFileSync(0, "utf8")); console.log(manifest.codesmithBinaryVersion || "");')"
+  # Guarded: a missing `node` (127) or a null/array manifest (npm emits
+  # `null` for some no-match cases) would abort the whole script under
+  # `set -e` before the crates.io loop ran.
+  value="$(printf '%s' "${npm_manifest}" | node -e '
+    const fs = require("fs");
+    const manifest = JSON.parse(fs.readFileSync(0, "utf8"));
+    const entry = Array.isArray(manifest) ? manifest[manifest.length - 1] : manifest;
+    console.log((entry && entry.codesmithBinaryVersion) || "");
+  ' 2>/dev/null || true)"
   if [[ -n "${value}" ]]; then
     binary_field="codesmithBinaryVersion"
     npm_binary_version="${value}"

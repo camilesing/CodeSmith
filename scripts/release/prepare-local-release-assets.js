@@ -83,6 +83,16 @@ async function main() {
     );
   }
 
+  // outputDir comes from argv: refuse to wipe a directory that equals or
+  // CONTAINS buildDir (e.g. outputDir=target with buildDir=target/release)
+  // — the rm below would delete the freshly built binaries, and `.`/`/`
+  // would wipe the repo/root.
+  const rel = path.relative(outputDir, buildDir);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+    throw new Error(
+      `Refusing to delete outputDir ${outputDir}: it equals or contains buildDir ${buildDir}`,
+    );
+  }
   // Clear stale assets from previous runs: mkdir alone leaves behind files
   // with no manifest entry, which a later upload could publish with
   // mismatched checksums.

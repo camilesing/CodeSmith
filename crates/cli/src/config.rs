@@ -4621,40 +4621,53 @@ fn kimi_oauth_access_token_is_fresh(credential: &KimiOAuthCredential) -> bool {
 }
 
 fn refresh_kimi_oauth_token(refresh_token: &str) -> Result<KimiOAuthCredential> {
+    // The closure may cross to a plain thread ('static): own the inputs.
+    let refresh_token = refresh_token.to_string();
     let oauth_host = std::env::var("KIMI_CODE_OAUTH_HOST")
         .or_else(|_| std::env::var("KIMI_OAUTH_HOST"))
         .unwrap_or_else(|_| "https://auth.kimi.com".to_string());
     let url = format!("{}/api/oauth/token", oauth_host.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .context("Failed to build Kimi OAuth refresh client")?;
-    let params = [
-        ("client_id", KIMI_CODE_CLIENT_ID),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
-    ];
-    let response = client
-        .post(url)
-        .header("X-Msh-Platform", "kimi_cli")
-        .header("X-Msh-Version", env!("CARGO_PKG_VERSION"))
-        .form(&params)
-        .send()
-        .context("Kimi OAuth refresh request failed")?;
-    let status = response.status();
-    if !status.is_success() {
-        anyhow::bail!("Kimi OAuth refresh failed with HTTP {status}. Run `kimi login` again.");
+    // `reqwest::blocking` panics on a tokio runtime worker, and this
+    // refresh is reachable from engine construction (provider_api_key)
+    // which runs inside the async host: route the blocking POST to a
+    // plain thread when a runtime is active, call directly otherwise.
+    let send = move || -> Result<KimiOAuthCredential> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build Kimi OAuth refresh client")?;
+        let params = [
+            ("client_id", KIMI_CODE_CLIENT_ID),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+        ];
+        let response = client
+            .post(&url)
+            .header("X-Msh-Platform", "kimi_cli")
+            .header("X-Msh-Version", env!("CARGO_PKG_VERSION"))
+            .form(&params)
+            .send()
+            .context("Kimi OAuth refresh request failed")?;
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!("Kimi OAuth refresh failed with HTTP {status}. Run `kimi login` again.");
+        }
+        let mut refreshed: KimiOAuthCredential = response
+            .json()
+            .context("Failed to parse Kimi OAuth refresh response")?;
+        if let Some(expires_in) = refreshed.expires_in
+            && let Some(now) = now_unix_secs()
+        {
+            refreshed.expires_at = Some(now + expires_in);
+        }
+        Ok(refreshed)
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => std::thread::spawn(send)
+            .join()
+            .map_err(|_| anyhow::anyhow!("Kimi OAuth refresh thread panicked"))?,
+        Err(_) => send(),
     }
-
-    let mut refreshed: KimiOAuthCredential = response
-        .json()
-        .context("Failed to parse Kimi OAuth refresh response")?;
-    if let Some(expires_in) = refreshed.expires_in
-        && let Some(now) = now_unix_secs()
-    {
-        refreshed.expires_at = Some(now + expires_in);
-    }
-    Ok(refreshed)
 }
 
 fn kimi_cli_oauth_credentials_path() -> Result<PathBuf> {

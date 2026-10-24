@@ -515,9 +515,27 @@ function httpRequest(rawUrl, opts = {}) {
       reject(err);
     };
 
+    // Timer expiry AFTER the headers were handed to the caller
+    // (settled === true) must still tear the live response down:
+    // `fail` alone early-returns, so a connection that delivered headers
+    // and then went silent hung streamToFile/downloadText forever —
+    // both budgets were silent no-ops for the whole body phase.
+    const abort = (err) => {
+      if (settled) {
+        try {
+          if (res && !res.destroyed) res.destroy(err);
+          else if (req && !req.destroyed) req.destroy(err);
+        } catch {
+          // ignore — the consumer's error handlers already ran
+        }
+        return;
+      }
+      fail(err);
+    };
+
     if (totalTimeoutMs > 0) {
       totalTimer = setTimeout(() => {
-        fail(new DownloadTimeoutError(
+        abort(new DownloadTimeoutError(
           `download exceeded total timeout of ${totalTimeoutMs} ms ` +
           `(set CODESMITH_DOWNLOAD_TIMEOUT_MS to raise it; current stall budget is ${stallMs} ms)`,
         ));
@@ -528,7 +546,7 @@ function httpRequest(rawUrl, opts = {}) {
       if (stallMs <= 0) return;
       if (stallTimer) clearTimeout(stallTimer);
       stallTimer = setTimeout(() => {
-        fail(new DownloadTimeoutError(
+        abort(new DownloadTimeoutError(
           `download stalled — no bytes received for ${stallMs} ms ` +
           `(set CODESMITH_DOWNLOAD_STALL_MS to raise it; total budget is ${totalTimeoutMs} ms)`,
         ));
@@ -613,8 +631,11 @@ function httpRequest(rawUrl, opts = {}) {
       try {
         proxy = parseProxy(proxyStr);
       } catch (err) {
+        // The message reaches stderr and CI/npm logs: strip any embedded
+        // userinfo (http://user:pass@host) before interpolating.
+        const safeProxyStr = proxyStr.replace(/:\/\/[^@/]+@/, "://***@");
         fail(new NonRetryableError(
-          `Invalid proxy URL "${proxyStr}": ${err.message}`,
+          `Invalid proxy URL "${safeProxyStr}": ${err.message}`,
         ));
         return;
       }

@@ -596,15 +596,27 @@
             if (dataLines.length) handleEventFrame(eventName, dataLines.join("\n"));
           }
         };
+        // CR normalization must not split a CRLF pair across chunks: a
+        // chunk ending in \r normalized to "\n" plus the next chunk's
+        // leading "\n" produced a FALSE blank line, splitting frames and
+        // silently dropping events (then replaying them after reconnect).
+        // Carry a lone trailing \r to the next chunk instead.
+        let pendingCR = false;
         for (;;) {
           const { done, value: chunk } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n?/g, "\n");
+          let text = decoder.decode(chunk, { stream: true });
+          if (pendingCR) text = "\r" + text;
+          pendingCR = text.endsWith("\r");
+          if (pendingCR) text = text.slice(0, -1);
+          buffer += text.replace(/\r\n?/g, "\n");
           takeFrames();
         }
         // Flush the decoder's pending multibyte tail and dispatch a final
         // frame that arrived without a terminating blank line.
-        buffer += decoder.decode().replace(/\r\n?/g, "\n");
+        let tail = decoder.decode();
+        if (pendingCR) tail = "\r" + tail;
+        buffer += tail.replace(/\r\n?/g, "\n");
         takeFrames();
         // Stream ended cleanly (server-side timeout) — reconnect.
         throw new Error("event stream ended");

@@ -133,7 +133,11 @@ git commit -m "chore: bump formula to ${VERSION}
 
 Automated update from the release workflow."
 
-TAP_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's/^origin\///')"
+# ls-remote --symref resolves the default branch on ANY clone (shallow
+# `--depth 1` clones have no origin/HEAD, and the old symbolic-ref pipe
+# died at exit 128 under pipefail before this fallback could run).
+TAP_BRANCH="$(git ls-remote --symref "${TAP_REPO_SSH_URL:-origin}" HEAD 2>/dev/null \
+  | awk '/^ref:/{sub("refs/heads/","",$2); print $2; exit}' || true)"
 TAP_BRANCH="${TAP_BRANCH:-main}"
 
 if ! git push origin "HEAD:${TAP_BRANCH}"; then
@@ -141,8 +145,12 @@ if ! git push origin "HEAD:${TAP_BRANCH}"; then
   # moved branch tip and retry once on top of it instead of aborting the
   # release on a non-fast-forward.
   echo "::warning::push to ${TAP_BRANCH} was non-fast-forward; rebasing and retrying once"
-  git fetch --depth 1 origin "${TAP_BRANCH}"
-  git rebase "origin/${TAP_BRANCH}"
+  # Unshallow first (tap repos are tiny): both the clone and a --depth 1
+  # fetch are grafted parentless tips sharing no merge base, so the rebase
+  # replayed the whole tree as add/add conflicts — failing exactly in the
+  # concurrent-update race this path handles. Guard it too.
+  git fetch --unshallow origin "${TAP_BRANCH}" 2>/dev/null || git fetch origin "${TAP_BRANCH}"
+  git rebase "origin/${TAP_BRANCH}" || die "rebase onto origin/${TAP_BRANCH} failed"
   git push origin "HEAD:${TAP_BRANCH}" || die "push to ${TAP_REPO}:${TAP_BRANCH} failed after rebase retry"
 fi
 echo "Pushed formula update to ${TAP_REPO} (v${VERSION})"

@@ -154,7 +154,15 @@ function resolveBaseUrl(version, repo, useMirror) {
     return base;
   }
   if (useMirror && isCnbMirrorEnabled()) {
-    return `https://cnb.cool/${repo}/-/releases/v${version}/`;
+    // The CNB pipeline (`.cnb.yml` "v*" tag job) publishes only the
+    // linux-x64 asset family plus the checksum manifest: every other
+    // platform/arch must stay on GitHub or the install 404s with no
+    // fallback.
+    const platform = process.env.npm_config_platform || process.platform;
+    const arch = process.env.npm_config_arch || process.arch;
+    if (platform === "linux" && arch === "x64") {
+      return `https://cnb.cool/${repo}/-/releases/v${version}/`;
+    }
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;
 }

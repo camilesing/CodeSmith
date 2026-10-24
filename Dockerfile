@@ -50,16 +50,24 @@ RUN rustup target add "$(cat /rust-target)"
 WORKDIR /build
 COPY . .
 
-# Build both binaries for the target platform.  --locked ensures
+# Build both workspace binaries (the CLI and its app-server companion).
+# --locked ensures
 # reproducible builds from the committed lockfile.
+# Only aarch64 cross-compilation is configured (toolchain + linker env
+# above): fail fast on an amd64 cross-build instead of failing later with
+# a confusing native-linker error.
+RUN if [ "${BUILDPLATFORM}" != "${TARGETPLATFORM}" ] && [ "${TARGETARCH}" = "amd64" ]; then \
+      echo "Cross-building linux/amd64 is not supported by this Dockerfile (only arm64 cross-compilation is configured)" >&2; exit 1; \
+    fi
+
 RUN --mount=type=cache,id=codesmith-target-${TARGETARCH},target=/build/target,sharing=locked \
     --mount=type=cache,id=codesmith-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=codesmith-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
     cargo build --release --locked --target "$(cat /rust-target)" \
-      -p codesmith-cli \
+      -p codesmith-cli -p codesmith-app-server \
     && mkdir -p /out \
     && cp target/$(cat /rust-target)/release/codesmith /out/ \
-    && cp target/$(cat /rust-target)/release/codesmith /out/
+    && cp target/$(cat /rust-target)/release/codesmith-app-server /out/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -77,7 +85,7 @@ USER codesmith
 WORKDIR /home/codesmith
 
 COPY --from=builder --chown=codesmith:codesmith /out/codesmith /usr/local/bin/codesmith
-COPY --from=builder --chown=codesmith:codesmith /out/codesmith /usr/local/bin/codesmith
+COPY --from=builder --chown=codesmith:codesmith /out/codesmith-app-server /usr/local/bin/codesmith-app-server
 
 # The dispatcher expects to find its companion binary next to it.
 # Both are in /usr/local/bin — no further path setup needed.

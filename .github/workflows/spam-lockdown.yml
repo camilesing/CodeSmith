@@ -26,7 +26,13 @@ jobs:
 
             const blob = `${issue.title || ''}\n${issue.body || ''}`;
             const patterns = [
-              /\bcrypto\b/i,
+              // "crypto" alone matches legitimate technical reports
+              // ("crypto.subtle fails in Node 20", "web crypto API import
+              // error") from exactly the first-time contributors this
+              // filter gates — require promotional context in the same
+              // phrase.
+              /\bcrypto\b[^\n]{0,40}(airdrop|presale|giveaway|invest|profit|usdt)/i,
+              /\bairdrop\b/i,
               /\bairdrop\b/i,
               /\bnft\b/i,
               /\bpresale\b/i,
