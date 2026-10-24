@@ -55,14 +55,19 @@ use crate::utils::sha256_hex;
 fn system_text(system: Option<&SystemPrompt>) -> String {
     match system {
         Some(SystemPrompt::Text(text)) => text.clone(),
-        Some(SystemPrompt::Blocks(blocks)) => {
-            let mut text = String::new();
-            for block in blocks {
-                text.push_str(&block.text);
-                text.push('\n');
-            }
-            text
-        }
+        // Hash the canonical wire form, not the concatenated `text` fields:
+        // `block_type` and `cache_control` also serialize onto the wire
+        // (cache_control steers the provider's KV-cache breakpoints), so a
+        // change there must register as drift. Serialization of these
+        // plain-data blocks cannot fail; if it somehow did, fall back to the
+        // text-only join rather than panic.
+        Some(SystemPrompt::Blocks(blocks)) => serde_json::to_string(blocks).unwrap_or_else(|_| {
+            blocks
+                .iter()
+                .map(|b| b.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
         None => String::new(),
     }
 }
@@ -75,7 +80,13 @@ fn system_text(system: Option<&SystemPrompt>) -> String {
 fn tool_catalog_digest(tools: &[Tool]) -> String {
     let mut serialized: Vec<String> = tools
         .iter()
-        .filter_map(|t| serde_json::to_string(t).ok())
+        .map(|t| match serde_json::to_string(t) {
+            Ok(json) => json,
+            // An unserializable tool must still perturb the digest:
+            // dropping it made two different catalogs hash identically
+            // and hid the tool from drift detection entirely.
+            Err(err) => format!("<unserializable tool {:#?}: {err}>", t.name),
+        })
         .collect();
     serialized.sort();
     serialized.join("\n")

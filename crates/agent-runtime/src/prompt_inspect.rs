@@ -1076,6 +1076,13 @@ fn build_chat_messages_with_reasoning(
                 .unwrap_or_default();
 
             // Collect tool result IDs immediately following this assistant message.
+            // Only the CONTIGUOUS run counts: OpenAI-compatible endpoints
+            // (including DeepSeek, which this builder targets) require
+            // role:"tool" messages to directly follow the assistant
+            // tool_calls message, so results found after an intervening
+            // user/system message cannot satisfy the ordering contract —
+            // they must let the strip path below remove them instead of
+            // vouching for the tool_calls they fail to legally follow.
             let mut found_ids: HashSet<String> = HashSet::new();
             let mut tool_result_end = i + 1;
             while tool_result_end < out.len() {
@@ -1090,21 +1097,6 @@ fn build_chat_messages_with_reasoning(
                 } else {
                     break;
                 }
-            }
-
-            // Also scan non-contiguous tool results up to the next assistant message
-            // in case compaction left gaps.
-            let mut scan = tool_result_end;
-            while scan < out.len() {
-                if out[scan].get("role").and_then(Value::as_str) == Some("assistant") {
-                    break;
-                }
-                if out[scan].get("role").and_then(Value::as_str) == Some("tool")
-                    && let Some(id) = out[scan].get("tool_call_id").and_then(Value::as_str)
-                {
-                    found_ids.insert(id.to_string());
-                }
-                scan += 1;
             }
 
             if !expected_ids.is_subset(&found_ids) {
@@ -1207,6 +1199,52 @@ mod stream_decoder_tests {
                 content_blocks: None,
             }],
         }
+    }
+
+    #[test]
+    fn non_contiguous_tool_results_do_not_vouch_for_tool_calls() {
+        // A user message carrying both text and the tool result emits the
+        // user text first and the tool message after, leaving the
+        // assistant tool_calls non-contiguous from its results. The safety
+        // net must strip the pairing (both messages removed) — counting
+        // the non-contiguous result as "found" produced
+        // assistant(tool_calls) -> user -> tool, which OpenAI-compatible
+        // endpoints reject with a 400.
+        let messages = vec![
+            tool_use_message("call-1", "read_file", serde_json::json!({"path": "a"})),
+            Message {
+                role: "user".to_string(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "note between call and result".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".to_string(),
+                        content: "file body".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    },
+                ],
+            },
+        ];
+        let out = build_chat_messages_with_reasoning(None, &messages, "m", false, false);
+        let roles: Vec<&str> = out
+            .iter()
+            .filter_map(|m| m.get("role").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            roles,
+            vec!["user"],
+            "the non-contiguous pair must be stripped, leaving the user text; got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|m| {
+                m.get("tool_calls").is_some()
+                    || m.get("role").and_then(Value::as_str) == Some("tool")
+            }),
+            "no dangling tool_calls or orphaned tool message may survive"
+        );
     }
 
     fn user_message_with_turn_meta(turn_meta: &str, task: &str) -> Message {

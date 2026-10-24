@@ -167,8 +167,9 @@ impl PromptBundle {
     /// The dynamic-boundary predicate: the first section that is
     /// session-scoped, dynamic, or uncacheable ends the cache-stable
     /// prefix. Shared by [`Self::from_sections`], [`Self::push`], and
-    /// [`Self::stable_prefix_text`] (via the stored index) so the three
-    /// cannot drift apart.
+    /// [`Self::stable_prefix_text`] (recomputed there, so a stale stored
+    /// index cannot drift from the sections) so the sites cannot drift
+    /// apart.
     fn is_dynamic_boundary(section: &PromptSection) -> bool {
         matches!(
             section.stability,
@@ -218,7 +219,16 @@ impl PromptBundle {
     /// rendered prompt and therefore useless as a provider cache
     /// breakpoint (cached prefixes must byte-match the full prompt's start).
     pub fn stable_prefix_text(&self) -> String {
-        let boundary = self.dynamic_boundary_index.unwrap_or(self.sections.len());
+        // Recompute the boundary instead of trusting the stored index:
+        // `PromptBundle` derives `Deserialize`, so a persisted bundle with
+        // an index past `sections.len()` (or a caller-side truncation)
+        // made the stored-index slice panic. Recomputing is O(n), the same
+        // cost as the render that follows.
+        let boundary = self
+            .sections
+            .iter()
+            .position(Self::is_dynamic_boundary)
+            .unwrap_or(self.sections.len());
         self.sections[..boundary]
             .iter()
             .map(PromptSection::render)
@@ -479,6 +489,41 @@ fn unescape_attr(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_prefix_survives_a_stale_out_of_range_boundary_index() {
+        // `PromptBundle` derives Deserialize: a persisted (or hand-built)
+        // bundle with a boundary index past the sections must not panic
+        // the prefix accessor — the boundary is recomputed.
+        let mut bundle = PromptBundle::from_sections(vec![
+            PromptSection::cacheable(
+                "a",
+                "A",
+                "stable body",
+                PromptSectionStability::Static,
+                PromptSectionSource::Builtin,
+            ),
+            PromptSection::cacheable(
+                "b",
+                "B",
+                "dynamic body",
+                PromptSectionStability::Session,
+                PromptSectionSource::Builtin,
+            ),
+        ]);
+        bundle.dynamic_boundary_index = Some(9);
+        let prefix = bundle.stable_prefix_text();
+        assert!(prefix.contains("stable body"));
+        assert!(
+            !prefix.contains("dynamic body"),
+            "prefix must stop at the dynamic section despite the stale index: {prefix:?}"
+        );
+
+        // Empty sections with a stale index: empty prefix, no panic.
+        bundle.sections.clear();
+        bundle.dynamic_boundary_index = Some(3);
+        assert_eq!(bundle.stable_prefix_text(), "");
+    }
 
     #[test]
     fn effective_prompt_uses_override_before_default_and_append_last() {

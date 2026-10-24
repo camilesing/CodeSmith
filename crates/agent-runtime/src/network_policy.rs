@@ -357,6 +357,30 @@ fn ipv4_in_cidr(ip: Ipv4Addr, base: Ipv4Addr, prefix: u8) -> bool {
     (u32::from(ip) & mask) == (u32::from(base) & mask)
 }
 
+/// Restricted IPv4 space that must never be trusted as a fake-IP
+/// placeholder: this-host, RFC1918 private, CGNAT, loopback, and
+/// link-local (which carries the 169.254.169.254 cloud-metadata IP).
+const RESTRICTED_FAKEIP_RANGES: [([u8; 4], u8); 7] = [
+    ([0, 0, 0, 0], 8),
+    ([10, 0, 0, 0], 8),
+    ([100, 64, 0, 0], 10),
+    ([127, 0, 0, 0], 8),
+    ([169, 254, 0, 0], 16),
+    ([172, 16, 0, 0], 12),
+    ([192, 168, 0, 0], 16),
+];
+
+/// Whether the `base/prefix` CIDR overlaps any restricted range: two
+/// blocks overlap iff they share the shorter of the two prefixes.
+fn cidr_overlaps_restricted_range(base: Ipv4Addr, prefix: u8) -> bool {
+    RESTRICTED_FAKEIP_RANGES
+        .iter()
+        .any(|&(restricted, rprefix)| {
+            let common = prefix.min(rprefix);
+            ipv4_in_cidr(base, Ipv4Addr::from(restricted), common)
+        })
+}
+
 /// Best-effort writer for the network audit log.
 #[derive(Debug, Clone)]
 pub struct NetworkAuditor {
@@ -531,12 +555,28 @@ impl NetworkPolicyDecider {
 
     /// Register IPv4 CIDR ranges to treat as benign fake-IP placeholders.
     /// Invalid CIDR strings are skipped. See [`Self::is_trusted_fakeip_addr`].
+    ///
+    /// CIDRs overlapping restricted IP space (this-host, private, CGNAT,
+    /// loopback, link-local incl. the 169.254.169.254 metadata IP) are
+    /// refused with a warning: trusting them would silently disable the
+    /// restricted-IP SSRF block that `is_trusted_fakeip_addr` feeds, and
+    /// this is user-editable config — the documented safety contract is
+    /// enforced here, not assumed of the config author.
     #[must_use]
     pub fn with_trusted_fakeip_cidrs(mut self, cidrs: &[&str]) -> Self {
         for cidr in cidrs {
-            if let Some(parsed) = parse_ipv4_cidr(cidr) {
-                self.trusted_fakeip_cidrs.push(parsed);
+            let Some(parsed) = parse_ipv4_cidr(cidr) else {
+                continue;
+            };
+            if cidr_overlaps_restricted_range(parsed.0, parsed.1) {
+                tracing::warn!(
+                    target: "network_policy",
+                    cidr,
+                    "refusing to trust fake-ip CIDR overlapping restricted IP space"
+                );
+                continue;
             }
+            self.trusted_fakeip_cidrs.push(parsed);
         }
         self
     }
@@ -851,6 +891,32 @@ mod tests {
         // no ranges configured → nothing trusted
         let bare = NetworkPolicyDecider::new(NetworkPolicy::default(), None);
         assert!(!bare.is_trusted_fakeip_addr(&"198.18.0.5".parse::<std::net::IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn fakeip_cidrs_overlapping_restricted_space_are_refused() {
+        // Config entries covering restricted ranges must not disable the
+        // restricted-IP SSRF block — the documented contract is enforced
+        // in code, not trusted of the config author.
+        let decider = NetworkPolicyDecider::new(NetworkPolicy::default(), None)
+            .with_trusted_fakeip_cidrs(&[
+                "0.0.0.0/0",
+                "10.0.0.0/8",
+                "192.168.0.0/16",
+                "169.254.0.0/16",
+                "127.0.0.0/8",
+            ]);
+        for ip in ["192.168.1.1", "10.0.0.1", "127.0.0.1", "169.254.169.254"] {
+            assert!(
+                !decider.is_trusted_fakeip_addr(&ip.parse::<std::net::IpAddr>().unwrap()),
+                "{ip} must stay blocked despite the overlapping config entry"
+            );
+        }
+
+        // The legitimate placeholder range still works alongside refusals.
+        let mixed = NetworkPolicyDecider::new(NetworkPolicy::default(), None)
+            .with_trusted_fakeip_cidrs(&["0.0.0.0/0", "198.18.0.0/15"]);
+        assert!(mixed.is_trusted_fakeip_addr(&"198.18.0.5".parse::<std::net::IpAddr>().unwrap()));
     }
 
     #[test]

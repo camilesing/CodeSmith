@@ -372,10 +372,12 @@ fn generate_params(ctx: &ProfileContext) -> Vec<(String, PathBuf)> {
     let writable_roots = &ctx.writable_roots;
 
     for (index, root) in writable_roots.iter().enumerate() {
-        let canonical = root
-            .root
-            .canonicalize()
-            .unwrap_or_else(|_| root.root.clone());
+        // Resolve via deepest-existing-ancestor canonicalization: SBPL
+        // `subpath` filters match kernel-resolved vnode paths, so a
+        // raw-spelled root behind macOS symlinks (`/tmp` → `/private/tmp`,
+        // `/var` → `/private/var`) or a not-yet-existing root would never
+        // match and every write into it would fail with a confusing EPERM.
+        let canonical = super::normalize_for_containment(&root.root);
         params.push((format!("WRITABLE_ROOT_{index}"), canonical.clone()));
 
         // Add parameters for read-only subpaths
