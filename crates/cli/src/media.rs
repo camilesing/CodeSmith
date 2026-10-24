@@ -127,11 +127,7 @@ pub async fn ingest_for_message(images: Vec<PendingImage>, message_index: usize)
     }
 }
 
-fn refuse_all(
-    images: &[PendingImage],
-    message_index: usize,
-    reason: &str,
-) -> IntakeOutcome {
+fn refuse_all(images: &[PendingImage], message_index: usize, reason: &str) -> IntakeOutcome {
     let mut outcome = IntakeOutcome::default();
     for image in images {
         outcome.rejections.push(format!(

@@ -549,6 +549,11 @@ fn to_cmd(edit: Edit) -> Option<Cmd> {
         // exactly like the library's own backspace binding — which resets
         // the kill ring, clobbering an earlier Ctrl+K/U/W kill. Upgrading
         // to a rustyline with `Cmd::Delete(Movement)` is the fix.
+        // Known limitation: rustyline 14 has no kill-ring-free delete —
+        // `Cmd::Replace(_, None)` also routes through `edit_kill` — so a
+        // Ctrl+D with text on the line clobbers the last Ctrl+K/U/W kill.
+        // `Cmd::Delete(Movement)` (readline delete-char semantics) arrives
+        // with a rustyline upgrade; swap it in then.
         Edit::DeleteForward => Some(Cmd::Kill(Movement::ForwardChar(1))),
         Edit::Newline => Some(Cmd::Newline),
         // `Cmd::Interrupt` is rustyline's "abandon this readline call"

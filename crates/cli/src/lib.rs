@@ -1097,7 +1097,9 @@ pub(crate) fn run_sandbox_check(command: String, ask: ApprovalModeArg) -> Result
         ask_for_approval: ask.into(),
         sandbox_mode: Some("workspace-write"),
     })?;
-    println!("note: decision computed with the built-in default policy (user exec rules not loaded)");
+    println!(
+        "note: decision computed with the built-in default policy (user exec rules not loaded)"
+    );
     println!("{}", serde_json::to_string_pretty(&decision)?);
     Ok(())
 }

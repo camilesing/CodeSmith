@@ -166,8 +166,7 @@ impl ToolSpec for TeamCreateTool {
                 // inboxes/ or the task dir failed) is safe — otherwise every
                 // retry for this name fails "already exists" until the user
                 // manually deletes ~/.codesmith/teams/<name>.
-                if let Err(cleanup_err) = crate::tools::team::delete_team_directories(&team_name)
-                {
+                if let Err(cleanup_err) = crate::tools::team::delete_team_directories(&team_name) {
                     crate::logging::warn(format!(
                         "failed to roll back partially-created team '{}': {cleanup_err}",
                         team_name
