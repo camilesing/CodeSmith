@@ -24,6 +24,31 @@ use codesmith_agent_runtime::features::Feature;
 /// identity. Such contexts must never be treated as the lead.
 const UNKNOWN_SENDER: &str = "unknown-sender";
 
+/// Request ids this process has already answered (shutdown and plan
+/// approval responses): a request may be approved/rejected at most once, so
+/// an id still sitting in the append-only mailbox file cannot be replayed
+/// after it was answered. Known limitation: process-local, and the
+/// check-then-act window to the mailbox write remains — durable,
+/// cross-process consumption needs state in the mailbox store itself.
+static HANDLED_REQUEST_IDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn request_already_handled(request_id: &str) -> bool {
+    HANDLED_REQUEST_IDS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(request_id)
+}
+
+fn mark_request_handled(request_id: &str) {
+    HANDLED_REQUEST_IDS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(request_id.to_string());
+}
+
 /// Protocol actions only the team lead may exercise.
 const LEAD_ONLY_ACTIONS: [&str; 5] = [
     "shutdown_request",
@@ -345,6 +370,11 @@ impl ToolSpec for SendMessageTool {
                         "No outstanding shutdown request '{request_id}' issued to '{sender_name}'"
                     )));
                 }
+                if request_already_handled(&request_id) {
+                    return Err(ToolError::invalid_input(format!(
+                        "Shutdown request '{request_id}' was already answered"
+                    )));
+                }
                 // Write approval protocol to teammate mailbox (informational).
                 // Actual cancellation happens via inbox poller on leader side.
                 deliver_protocol(
@@ -358,6 +388,7 @@ impl ToolSpec for SendMessageTool {
                     }),
                     "shutdown approved",
                 )?;
+                mark_request_handled(&request_id);
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown approved for {}", recipient),
@@ -376,6 +407,11 @@ impl ToolSpec for SendMessageTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("No reason provided")
                     .to_string();
+                if request_already_handled(&request_id) {
+                    return Err(ToolError::invalid_input(format!(
+                        "Shutdown request '{request_id}' was already answered"
+                    )));
+                }
                 handle_shutdown_rejection(
                     &request_id,
                     &sender_name,
@@ -386,6 +422,7 @@ impl ToolSpec for SendMessageTool {
                 .map_err(|e| {
                     ToolError::execution_failed(format!("Shutdown rejection failed: {}", e))
                 })?;
+                mark_request_handled(&request_id);
                 ToolResult::json(&json!({
                     "success": true,
                     "message": format!("Shutdown rejected for {}", recipient),
@@ -403,6 +440,37 @@ impl ToolSpec for SendMessageTool {
                     .get("approve")
                     .and_then(|v| v.as_bool())
                     .ok_or_else(|| ToolError::missing_field("approve"))?;
+                // The approval must be bound to a real, outstanding
+                // PlanApprovalRequest issued BY the plan owner (the
+                // recipient) to this responder — a stale or fabricated id
+                // would otherwise write an approved response (carrying the
+                // caller-chosen permission_mode) into the teammate's
+                // mailbox, where the inbox poller applies it to whatever
+                // plan happens to be pending.
+                let mailbox = read_mailbox(&sender_name, &team_name).map_err(|e| {
+                    ToolError::execution_failed(format!("Failed to read mailbox: {e}"))
+                })?;
+                let pending = mailbox.iter().any(|msg| {
+                    matches!(
+                        parse_structured_protocol_from(&msg.text, &msg.from),
+                        Some(StructuredProtocolMessage::PlanApprovalRequest {
+                            request_id: id,
+                            from,
+                            ..
+                        }) if id == request_id && from == recipient
+                    )
+                });
+                if !pending {
+                    return Err(ToolError::invalid_input(format!(
+                        "No outstanding plan approval request '{request_id}' from '{recipient}' \
+                         issued to '{sender_name}'"
+                    )));
+                }
+                if request_already_handled(&request_id) {
+                    return Err(ToolError::invalid_input(format!(
+                        "Plan approval request '{request_id}' was already answered"
+                    )));
+                }
                 if approved {
                     let permission_mode = obj
                         .get("permission_mode")
@@ -418,6 +486,7 @@ impl ToolSpec for SendMessageTool {
                     .map_err(|e| {
                         ToolError::execution_failed(format!("Plan approval failed: {}", e))
                     })?;
+                    mark_request_handled(&request_id);
                     ToolResult::json(&json!({
                         "success": true,
                         "message": format!("Plan approved for {}", recipient),
@@ -434,6 +503,7 @@ impl ToolSpec for SendMessageTool {
                         .map_err(|e| {
                         ToolError::execution_failed(format!("Plan rejection failed: {}", e))
                     })?;
+                    mark_request_handled(&request_id);
                     ToolResult::json(&json!({
                         "success": true,
                         "message": format!("Plan rejected for {}", recipient),

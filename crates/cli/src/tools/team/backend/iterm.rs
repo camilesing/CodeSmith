@@ -163,6 +163,15 @@ pub fn build_applescript(
         shell_quote(&spec.cwd.to_string_lossy()),
         build_team_teammate_command(spec, prompt_file, env_file)
     );
+    // `write … text` delivers these bytes as raw keystrokes to the pty — a
+    // fundamentally different channel than tmux's argv: a C0 byte embedded
+    // in a spec field is interpreted by the tty line discipline BEFORE the
+    // shell parses anything (0x03 raises SIGINT mid-typing, 0x04 can EOF an
+    // open-quote continuation line, 0x15 erases the typed line and can
+    // unbalance quoting so a partial command executes, \r/\n submit partial
+    // lines). None of the interpolated values may carry control characters;
+    // strip rather than reject so a hostile name cannot wedge spawning.
+    let shell_cmd: String = shell_cmd.chars().filter(|c| !c.is_control()).collect();
     let escaped = applescript_escape(&shell_cmd);
     format!(
         "tell application \"iTerm\"\n\
@@ -221,6 +230,32 @@ mod tests {
         assert_eq!(applescript_escape("he said \"hi\""), "he said \\\"hi\\\"");
         assert_eq!(applescript_escape("a\\b"), "a\\\\b");
         assert_eq!(applescript_escape("plain"), "plain");
+    }
+
+    /// A C0 byte in a spec field would reach the pty as a raw keystroke and
+    /// be interpreted by the line discipline (0x03 SIGINT, 0x04 EOF,
+    /// 0x15 line-kill) before the shell parses the command.
+    #[test]
+    fn typed_command_strips_control_characters() {
+        let mut spec = sample_spec();
+        spec.agent_name = "wor\u{3}ker\u{15}".to_string();
+        let script = build_applescript(&spec, Path::new("/tmp/p.txt"), None);
+        // The typed payload (the quoted argument of `write theSession
+        // text`) carries no control characters — the template's own
+        // leading tab is not part of the payload.
+        let typed = script
+            .lines()
+            .find(|l| l.contains(" text \""))
+            .expect("write-text line");
+        let payload = typed
+            .split_once(" text \"")
+            .map(|(_, rest)| rest.trim_end_matches('"'))
+            .unwrap_or_default();
+        assert!(
+            !payload.chars().any(char::is_control),
+            "control character reached the pty payload: {payload:?}"
+        );
+        assert!(payload.contains("worker"));
     }
 
     #[test]
