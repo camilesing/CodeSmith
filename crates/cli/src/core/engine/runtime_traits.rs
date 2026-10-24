@@ -329,17 +329,29 @@ impl HostServices for super::EngineHost {
         // Mailbox for structured sub-agent envelopes (#128/#130). One per
         // turn: the receiver is drained by a short-lived task that converts
         // envelopes into `Event::SubAgentMailbox` so the UI can route them
-        // to the matching in-transcript card. The drainer exits naturally
-        // when every cloned sender is dropped at turn-end.
+        // to the matching in-transcript card. The drainer exits when every
+        // cloned sender is dropped OR the turn token is cancelled — a
+        // detached background agent can retain a sender past turn-end, and
+        // `recv()` alone never observes the token, so without the select
+        // the drainer (and its `tx_event` clone) stayed alive indefinitely
+        // and could wedge shutdown paths awaiting channel closure.
         let mailbox_for_runtime = if config.features.enabled(Feature::Subagents) {
             let mailbox_cancel = req.cancel_token.child_token();
             let (mailbox, mut receiver) = Mailbox::new(mailbox_cancel.clone());
             let tx_event_clone = req.tx_event.clone();
+            let drainer_cancel = mailbox_cancel.clone();
             spawn_supervised(
                 "subagent-mailbox-drainer",
                 std::panic::Location::caller(),
                 async move {
-                    while let Some(envelope) = receiver.recv().await {
+                    loop {
+                        let envelope = tokio::select! {
+                            _ = drainer_cancel.cancelled() => break,
+                            envelope = receiver.recv() => match envelope {
+                                Some(envelope) => envelope,
+                                None => break,
+                            },
+                        };
                         if tx_event_clone
                             .send(Event::SubAgentMailbox {
                                 seq: envelope.seq,
