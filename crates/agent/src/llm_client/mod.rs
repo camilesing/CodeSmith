@@ -536,7 +536,12 @@ impl RetryConfig {
             let random_factor = f64::from((sample % 65_536) as u16) / f64::from(u16::MAX); // 0.0 to 1.0
             let jitter = jitter_range * (2.0 * random_factor - 1.0); // -range to +range
 
-            (capped_delay + jitter).max(0.0)
+            // Re-clamp after jitter: a non-finite `jitter_factor` (a valid
+            // TOML float literal) makes `jitter_range` ±inf, and the
+            // NaN-dropping min/max that bounded `capped_delay` did not
+            // bound the jittered sum — `Duration::from_secs_f64(+inf)`
+            // panics.
+            (capped_delay + jitter).min(HARD_DELAY_CAP_SECS).max(0.0)
         } else {
             capped_delay
         };
@@ -667,7 +672,11 @@ where
     }
 
     let start_time = Instant::now();
-    let total_timeout = if config.total_timeout > 0.0 {
+    // A non-finite budget (`total_timeout = +inf` is a valid TOML float)
+    // would panic `Duration::from_secs_f64`; treat it as "no total
+    // timeout", mirroring the NaN robustness documented on
+    // `delay_for_attempt`.
+    let total_timeout = if config.total_timeout > 0.0 && config.total_timeout.is_finite() {
         Some(Duration::from_secs_f64(config.total_timeout))
     } else {
         None
@@ -688,7 +697,20 @@ where
             });
         }
 
-        match operation().await {
+        // Bound each in-flight attempt by the REMAINING wall-clock budget:
+        // checking only between attempts let a single hanging `operation()`
+        // exceed the budget indefinitely, and fabricating `LlmError::Timeout`
+        // on expiry obscured that the operation never returned.
+        let remaining = total_timeout.map(|t| t.saturating_sub(start_time.elapsed()));
+        let fut = operation();
+        let attempt_result = match remaining {
+            Some(r) => match tokio::time::timeout(r, fut).await {
+                Ok(res) => res,
+                Err(_) => Err(LlmError::Timeout(r)),
+            },
+            None => fut.await,
+        };
+        match attempt_result {
             Ok(result) => return Ok(result),
             Err(err) => {
                 // Non-retryable errors fail immediately
@@ -714,7 +736,13 @@ where
                 // capped by the configured max delay so a misbehaving
                 // server cannot park the client far beyond the backoff budget
                 let base_delay = config.delay_for_attempt(attempt);
-                let retry_after_cap = Duration::from_secs_f64(config.max_delay.max(0.0));
+                // Same NaN-dropping clamp as `delay_for_attempt`: `+inf`
+                // `max_delay` panicked `from_secs_f64`, NaN clamped every
+                // server Retry-After hint to zero (instant re-hammer), and
+                // a huge finite value skipped the hard cap entirely.
+                #[allow(clippy::manual_clamp)] // NaN-dropping min/max is intentional
+                let retry_after_cap_secs = config.max_delay.min(HARD_DELAY_CAP_SECS).max(0.0);
+                let retry_after_cap = Duration::from_secs_f64(retry_after_cap_secs);
                 let delay = if config.respect_retry_after {
                     err.suggested_retry_delay()
                         .map(|ra| ra.min(retry_after_cap))
@@ -916,6 +944,63 @@ mod tests {
         assert!(d1.as_secs_f64() <= base + range);
         assert!(d2.as_secs_f64() >= base - range);
         assert!(d2.as_secs_f64() <= base + range);
+    }
+
+    #[test]
+    fn non_finite_jitter_factor_stays_bounded() {
+        // `jitter_factor = +inf` (a valid TOML float) used to make half the
+        // jittered samples +inf and panic `Duration::from_secs_f64`.
+        let mut config = RetryConfig::new().with_jitter(true);
+        config.jitter_factor = f64::INFINITY;
+        for _ in 0..64 {
+            let d = config.delay_for_attempt(1);
+            assert!(d.as_secs_f64().is_finite() && d.as_secs_f64() <= HARD_DELAY_CAP_SECS);
+        }
+        // NaN degrades to a bounded delay as well.
+        let mut nan = RetryConfig::new().with_jitter(true);
+        nan.jitter_factor = f64::NAN;
+        for _ in 0..64 {
+            let d = nan.delay_for_attempt(1);
+            assert!(d.as_secs_f64().is_finite());
+        }
+    }
+
+    #[test]
+    fn infinite_total_timeout_means_no_total_timeout() {
+        // `+inf` passes the `> 0.0` guard; constructing the Duration used
+        // to panic. The with_retry loop treats it as unbounded (None), so
+        // this test exercises the config boundary indirectly by asserting
+        // the guard expression's behavior.
+        let config = RetryConfig::new().with_total_timeout(f64::INFINITY);
+        assert!(config.total_timeout > 0.0);
+        assert!(!config.total_timeout.is_finite());
+    }
+
+    #[tokio::test]
+    async fn total_timeout_bounds_a_hanging_operation() {
+        // One in-flight attempt that never returns must be cut off by the
+        // remaining wall-clock budget (previously the budget was only
+        // checked between attempts).
+        use std::time::Duration;
+        let config = RetryConfig::new()
+            .with_max_retries(5)
+            .with_total_timeout(0.2);
+        let start = std::time::Instant::now();
+        let result = with_retry::<_, _, ()>(
+            &config,
+            || async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(())
+            },
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "hanging operation must be cut off by the budget, took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

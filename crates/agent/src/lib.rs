@@ -558,6 +558,12 @@ impl ModelRegistry {
         if let Some(name) = requested {
             fallback_chain.push(format!("requested:{name}"));
             if provider_hint == Some(ProviderKind::Ollama) {
+                // Passthrough for arbitrary local tags: tool support is
+                // ASSUMED (Ollama's OpenAI-compat surface gates at request
+                // time, not per-model metadata), but reasoning support is
+                // derived from the tag via the shared name heuristic —
+                // hardcoding `false` misreported `deepseek-r1:14b` /
+                // `*reasoner*` tags and mis-shaped their requests.
                 return ModelResolution {
                     requested: Some(name.to_string()),
                     resolved: ModelInfo {
@@ -565,7 +571,7 @@ impl ModelRegistry {
                         provider: ProviderKind::Ollama,
                         aliases: Vec::new(),
                         supports_tools: true,
-                        supports_reasoning: false,
+                        supports_reasoning: reasoning::requires_reasoning_content(name),
                     },
                     used_fallback: false,
                     fallback_chain,
@@ -876,6 +882,22 @@ mod tests {
         assert_eq!(resolved.resolved.provider, ProviderKind::Ollama);
         assert_eq!(resolved.resolved.id, "qwen2.5-coder:7b");
         assert!(!resolved.used_fallback);
+    }
+
+    #[test]
+    fn ollama_reasoner_tag_reports_reasoning_support() {
+        // The passthrough used to hardcode `supports_reasoning: false`,
+        // misreporting local reasoner tags and mis-shaping their requests.
+        let registry = ModelRegistry::default();
+        for tag in ["deepseek-r1:14b", "qwen3-reasoner:7b"] {
+            let resolved = registry.resolve(Some(tag), Some(ProviderKind::Ollama));
+            assert!(
+                resolved.resolved.supports_reasoning,
+                "{tag} should report reasoning support"
+            );
+        }
+        let plain = registry.resolve(Some("llama3:8b"), Some(ProviderKind::Ollama));
+        assert!(!plain.resolved.supports_reasoning);
     }
 
     #[test]
