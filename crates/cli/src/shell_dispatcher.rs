@@ -6,7 +6,7 @@
 //! it and keeps the terminal-coupled `run_foreground` (crossterm raw-mode
 //! save/restore), which cannot live in the terminal-agnostic runtime crate.
 
-pub use codesmith_agent_runtime::shell_dispatcher::*;
+pub use codesmith_agent_runtime::shell_dispatcher::{ShellDispatcher, global_dispatcher};
 
 use std::path::Path;
 

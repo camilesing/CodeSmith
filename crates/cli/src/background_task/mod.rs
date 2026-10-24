@@ -29,7 +29,9 @@ use tokio::sync::Mutex;
 use crate::tools::shell::SharedShellManager;
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentType};
 
-pub use codesmith_agent_runtime::background_task::*;
+pub use codesmith_agent_runtime::background_task::{
+    BackgroundTaskNotification, BackgroundTaskStatus, BackgroundTaskSummary, BackgroundTaskType,
+};
 pub use codesmith_agent_runtime::host_services::BgRegistryApi;
 
 // ---------------------------------------------------------------------------

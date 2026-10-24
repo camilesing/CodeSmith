@@ -5,13 +5,28 @@
 //! prompt via `system_prompt_for_mode_with_context_skills_session_and_approval`
 //! with a fully-configured `PromptSessionContext` (skills discovery happens
 //! at the call site — it is workspace-coupled and has not yet migrated to
-//! the runtime crate). The verbatim test module below exercises the full
-//! public surface via the glob re-export.
+//! the runtime crate). The re-export list is explicit so the compiler pins
+//! the shim's surface: a rename or removal in the runtime module fails at
+//! this file first, in every build, instead of only at downstream use sites.
 
+pub use codesmith_agent_runtime::prompts::{
+    Personality, PromptAppendSource, PromptRuntimeContext, PromptSessionContext,
+    effective_prompt_bundle_for_mode_with_runtime_context_and_approval,
+};
+// Names consumed only by this file's test module. Gated so the production
+// surface stays limited to what the CLI actually uses; the pinning property
+// is the same — every name resolves through `codesmith_agent_runtime::prompts`.
 #[cfg(test)]
-pub use codesmith_agent_runtime::prompt_sources::InstructionSource;
-pub use codesmith_agent_runtime::prompt_sources::PromptAppendSource;
-pub use codesmith_agent_runtime::prompts::*;
+pub use codesmith_agent_runtime::prompts::{
+    AGENT_PROMPT, BASE_PROMPT, CALM_PERSONALITY, InstructionSource, MEMORY_GUIDANCE,
+    MemoryExtractionMessage, PLAN_MODE, TOOL_TAXONOMY_DISCOVERY, TOOL_TAXONOMY_GIT,
+    TOOL_TAXONOMY_VERIFICATION, apply_model_template, build_memory_extraction_prompt,
+    compose_prompt, compose_prompt_with_approval, compose_prompt_with_approval_and_model,
+    effective_prompt_override, locale_reinforcement_closer, locale_reinforcement_preamble,
+    render_core_tool_taxonomy_block, render_environment_block, render_instructions_block,
+    set_prompt_override, system_prompt_for_mode_with_context_skills_and_session,
+    system_prompt_for_mode_with_context_skills_session_and_approval,
+};
 
 #[cfg(test)]
 use crate::app_state::AppMode;

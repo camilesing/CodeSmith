@@ -41,7 +41,12 @@ const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const CANCEL_GRACE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub use codesmith_agent_runtime::host_services::TaskManagerHost;
-pub use codesmith_agent_runtime::tools::task_types::*;
+pub use codesmith_agent_runtime::tools::task_types::{
+    CURRENT_TASK_SCHEMA_VERSION, NewTaskRequest, TaskArtifactRef, TaskAttemptRecord,
+    TaskChecklistState, TaskCounts, TaskGateRecord, TaskGithubEvent, TaskRecord, TaskStatus,
+    TaskSummary, TaskTimelineEntry, TaskToolCallSummary, TaskToolStatus, TIMELINE_SUMMARY_LIMIT,
+    summarize_text,
+};
 
 /// Task manager startup options.
 #[derive(Debug, Clone)]

@@ -7,7 +7,16 @@
 //! here would violate the orphan rule (`CapacityControllerConfig` is now
 //! defined in agent-runtime).
 
-pub use codesmith_agent_runtime::capacity::*;
+pub use codesmith_agent_runtime::capacity::{CapacityController, CapacityControllerConfig};
+// Names consumed only by this crate's test modules (engine tests exercise
+// the controller's decision types directly). Gated so the production
+// surface stays at what the CLI actually uses; the pinning property is the
+// same — every name resolves through `codesmith_agent_runtime::capacity`.
+#[cfg(test)]
+pub use codesmith_agent_runtime::capacity::{
+    CapacityDecision, CapacitySnapshot, DynamicSlackProfile, GuardrailAction, ReplayOutcome,
+    RiskBand, TargetedRefreshOutcome,
+};
 
 /// Build effective capacity config from app config.
 ///

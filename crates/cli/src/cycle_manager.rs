@@ -6,8 +6,9 @@
 //! (`produce_briefing` / `extract_carry_forward` / `build_seed_messages`), and
 //! the archive IO (`archive_cycle` / `open_archive`) is now the
 //! `codesmith-agent-runtime` crate. This shim keeps `crate::cycle_manager::*`
-//! paths in the CLI working. `StructuredState` stays here because its snapshot
-//! sources (`SharedTodoList`, `SharedPlanState`, `SharedSubAgentManager`,
+//! paths in the CLI working (the explicit re-export list pins the surface: a
+//! rename upstream fails here first). `StructuredState` stays here because its
+//! snapshot sources (`SharedTodoList`, `SharedPlanState`, `SharedSubAgentManager`,
 //! `WorkingSet`) are still CLI-local.
 
 use std::path::PathBuf;
@@ -17,7 +18,9 @@ use crate::tools::subagent::{SharedSubAgentManager, SubAgentResult, SubAgentStat
 use crate::tools::todo::{SharedTodoList, TodoListSnapshot};
 use codesmith_agent_runtime::working_set::WorkingSet;
 
-pub use codesmith_agent_runtime::cycle_manager::*;
+pub use codesmith_agent_runtime::cycle_manager::{
+    CYCLE_HANDOFF_TEMPLATE, CycleConfig, extract_carry_forward,
+};
 
 /// Roll-up of state that survives a cycle boundary deterministically.
 ///

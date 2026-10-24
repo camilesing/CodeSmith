@@ -10,7 +10,9 @@ use serde_json::json;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
-pub use codesmith_agent_runtime::tool_state::task_v2::*;
+pub use codesmith_agent_runtime::tool_state::task_v2::{
+    SharedTaskV2Manager, TaskV2Manager, TaskV2Record, TaskV2Status, new_shared_task_v2_manager,
+};
 
 // === Types ===
 

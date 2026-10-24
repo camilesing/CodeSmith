@@ -22,7 +22,11 @@ use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus, wrap_ta
 use codesmith_agent_runtime::utils::spawn_supervised;
 
 pub use codesmith_agent_runtime::host_services::{AutomationManagerHost, TaskManagerHost};
-pub use codesmith_agent_runtime::tools::automation_types::*;
+pub use codesmith_agent_runtime::tools::automation_types::{
+    CURRENT_AUTOMATION_SCHEMA_VERSION, CURRENT_RUN_SCHEMA_VERSION, AutomationRecord,
+    AutomationRunRecord, AutomationRunStatus, AutomationStatus, CreateAutomationRequest,
+    UpdateAutomationRequest,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutomationFrequency {

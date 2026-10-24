@@ -21,7 +21,9 @@ mod teammate_lifecycle;
 mod teammate_mailbox;
 
 pub use backend::PermissionMode;
-pub use codesmith_agent_runtime::tool_state::team::*;
+pub use codesmith_agent_runtime::tool_state::team::{
+    SharedTeamContext, TeamContext, TeammateInfo, new_shared_team_context,
+};
 pub use inbox_poller::run_leader_inbox_poller;
 pub use protocol_handlers::new_shared_permission_registry;
 pub use send_message::SendMessageTool;
