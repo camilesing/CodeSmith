@@ -169,11 +169,22 @@ impl ToolSpec for PandocConvertTool {
             )
         })?;
 
+        // Convert into a sibling temp file and rename into place on
+        // success: pandoc writing straight to the final output_path leaves
+        // a truncated/corrupt artifact there on a mid-write crash or the
+        // timeout kill, indistinguishable from a complete conversion.
+        let mut tmp_out: Option<PathBuf> = None;
         let mut cmd = tokio::process::Command::new(&pandoc);
         cmd.arg(&source_path);
         cmd.arg("--to").arg(&target_format);
         if let Some(out) = resolved_output_path.as_ref() {
-            cmd.arg("--output").arg(out);
+            let tmp = PathBuf::from(format!(
+                "{}.pandoc-{}.tmp",
+                out.display(),
+                std::process::id()
+            ));
+            cmd.arg("--output").arg(&tmp);
+            tmp_out = Some(tmp);
         }
         // Own process group + kill_on_drop: when the timeout below fires,
         // the whole tree (pandoc filters, lua helpers) goes down, not just
@@ -203,6 +214,13 @@ impl ToolSpec for PandocConvertTool {
             Err(_) => {
                 codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
                 let _ = child.start_kill();
+                // Reap the killed child (start_kill only signals) so it does
+                // not linger as a zombie until tokio's orphan queue happens
+                // to run, and drop the partial temp output.
+                let _ = child.wait().await;
+                if let Some(tmp) = tmp_out.as_ref() {
+                    let _ = tokio::fs::remove_file(tmp).await;
+                }
                 return Err(ToolError::Timeout {
                     seconds: PANDOC_TIMEOUT.as_secs(),
                 });
@@ -212,6 +230,9 @@ impl ToolSpec for PandocConvertTool {
         let (stderr, _dropped_err) = stderr_task.await.unwrap_or_default();
 
         if !status.success() {
+            if let Some(tmp) = tmp_out.as_ref() {
+                let _ = tokio::fs::remove_file(tmp).await;
+            }
             let stderr = truncate_chars(
                 String::from_utf8_lossy(&stderr).trim().to_string(),
                 MAX_ERROR_CHARS,
@@ -222,7 +243,14 @@ impl ToolSpec for PandocConvertTool {
             )));
         }
 
-        let summary = if let Some(out) = resolved_output_path {
+        let summary = if let (Some(out), Some(tmp)) = (resolved_output_path, tmp_out.as_ref()) {
+            tokio::fs::rename(tmp, &out).await.map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "failed to move converted file {} -> {}: {e}",
+                    tmp.display(),
+                    out.display()
+                ))
+            })?;
             format!(
                 "Converted {} → {} via pandoc; wrote {}",
                 source_path.display(),

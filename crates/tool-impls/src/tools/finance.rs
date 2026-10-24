@@ -269,16 +269,21 @@ impl ToolSpec for FinanceTool {
         let client = shared_client()?;
 
         // `timeout_ms` is the budget for the ENTIRE quote+fallback
-        // sequence, not per attempt, so total wall time honors the
-        // schema's documented "Request timeout in milliseconds".
+        // sequence; each attempt gets HALF so a slow quote endpoint
+        // (e.g. a 401/503 that answers just before the deadline) cannot
+        // starve the chart fallback — the documented purpose of this
+        // tool's fallback path — of its share.
+        let attempt_timeout = Duration::from_millis((timeout_ms / 2).max(100));
         let lookup = async {
             let quote_result =
-                fetch_quote_endpoint(&client, timeout, &self.endpoints, &request).await;
+                fetch_quote_endpoint(&client, attempt_timeout, &self.endpoints, &request).await;
             match quote_result {
                 Ok(result) => ToolResult::json(&result)
                     .map_err(|e| ToolError::execution_failed(e.to_string())),
                 Err(first_failure) => {
-                    match fetch_chart_endpoint(&client, timeout, &self.endpoints, &request).await {
+                    match fetch_chart_endpoint(&client, attempt_timeout, &self.endpoints, &request)
+                        .await
+                    {
                         Ok(result) => ToolResult::json(&result)
                             .map_err(|e| ToolError::execution_failed(e.to_string())),
                         Err(second_failure) => Err(finalize_failure(
@@ -489,8 +494,16 @@ async fn fetch_response_body(
 }
 
 fn status_failure(endpoint: &'static str, status: StatusCode, body: &str) -> AttemptFailure {
-    if endpoint == CHART_SOURCE && status == StatusCode::NOT_FOUND {
-        return AttemptFailure::not_found(endpoint, format!("HTTP {}", status.as_u16()));
+    if status == StatusCode::NOT_FOUND {
+        // Yahoo also signals unknown/delisted symbols on the QUOTE endpoint
+        // via 404 ("Not Found ... symbol may be delisted"); classifying
+        // those as Upstream misreports an invalid ticker as an upstream
+        // failure instead of InvalidInput.
+        let not_found_on_quote =
+            endpoint != CHART_SOURCE && body.to_ascii_lowercase().contains("delist");
+        if endpoint == CHART_SOURCE || not_found_on_quote {
+            return AttemptFailure::not_found(endpoint, format!("HTTP {}", status.as_u16()));
+        }
     }
 
     let snippet = body.trim();

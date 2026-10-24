@@ -86,15 +86,32 @@ impl ReviewOutput {
     #[must_use]
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(raw: &str) -> Self {
-        if let Some(parsed) = parse_review_output_json(raw) {
+        // An all-empty parse is not a review: every field is
+        // #[serde(default)] and unknown fields are ignored, so ANY JSON
+        // object (a code sample, `{"a":1}`) parses "successfully" with
+        // zero issues — continuing past it would bypass the informative
+        // fallback below and look identical to "no issues found".
+        if let Some(parsed) = parse_review_output_json(raw)
+            && !parsed.is_empty()
+        {
             return parsed.normalize();
         }
         if let Some(json_block) = extract_json_block(raw)
             && let Some(parsed) = parse_review_output_json(json_block)
+            && !parsed.is_empty()
         {
             return parsed.normalize();
         }
         ReviewOutput::fallback(raw)
+    }
+
+    /// Whether every parsed field is empty/blank — the signature of having
+    /// parsed a non-review JSON object by accident.
+    fn is_empty(&self) -> bool {
+        self.summary.trim().is_empty()
+            && self.issues.is_empty()
+            && self.suggestions.is_empty()
+            && self.overall_assessment.trim().is_empty()
     }
 
     fn fallback(raw: &str) -> Self {
@@ -276,16 +293,23 @@ impl ToolSpec for ReviewTool {
 
         let response_text = extract_text(&response.content);
         let output = ReviewOutput::from_str(&response_text);
-        let metadata = review_usage_metadata(&response.model, &response.usage);
+        // A length-capped review is frequently cut mid-JSON and degrades to
+        // the raw-text fallback with zero issues; without this flag callers
+        // cannot distinguish a capped review from a clean one.
+        let truncated = response.stop_reason.as_deref().is_some_and(|reason| {
+            reason.eq_ignore_ascii_case("length") || reason.eq_ignore_ascii_case("max_tokens")
+        });
+        let metadata = review_usage_metadata(&response.model, &response.usage, truncated);
         let result =
             ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))?;
         Ok(result.with_metadata(metadata))
     }
 }
 
-fn review_usage_metadata(model: &str, usage: &Usage) -> Value {
+fn review_usage_metadata(model: &str, usage: &Usage, output_truncated: bool) -> Value {
     json!({
         "tool": "review",
+        "output_truncated": output_truncated,
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "child_model": model,
@@ -771,9 +795,11 @@ mod tests {
                 reasoning_tokens: Some(7),
                 ..Default::default()
             },
+            false,
         );
 
         assert_eq!(metadata["tool"], "review");
+        assert_eq!(metadata["output_truncated"], false);
         assert_eq!(metadata["child_model"], "deepseek-v4-flash");
         assert_eq!(metadata["child_input_tokens"], 123);
         assert_eq!(metadata["child_output_tokens"], 45);

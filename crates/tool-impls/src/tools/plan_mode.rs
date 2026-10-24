@@ -370,9 +370,20 @@ impl ToolSpec for WritePlanFileTool {
                         .to_string(),
             });
         }
+        // Validate input BEFORE touching state: a missing-field error below
+        // must not leave current_slug pointing at a plan file that was
+        // never written (the resolve-before-mutate discipline this file
+        // documents for enter_plan_mode).
+        let content = input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::missing_field("content"))?;
+
         // Mint the slug on the first write: a plan-mode turn that only
         // investigates leaves no plan file behind, and the file that does
-        // appear is the one the user will be asked to approve.
+        // appear is the one the user will be asked to approve. Persisted
+        // only now (the write runs under this same guard, so nothing can
+        // interleave).
         let slug = match state.current_slug.clone() {
             Some(slug) => slug,
             None => {
@@ -385,11 +396,6 @@ impl ToolSpec for WritePlanFileTool {
             }
         };
 
-        let content = input
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::missing_field("content"))?;
-
         // Write to disk
         plan_file::write_plan_file(&slug, content)
             .await
@@ -400,6 +406,17 @@ impl ToolSpec for WritePlanFileTool {
         // Release plan_mode_state before taking plan_state (lock order:
         // plan_mode_state → plan_state, never nested).
         drop(state);
+        // The session may have exited — or re-entered under a NEW slug —
+        // while the guard was released; publish REPL steps only if this
+        // write's slug is still the current one, so a stale sync cannot
+        // clobber a newer plan's steps or outlive the session that wrote it.
+        let still_current =
+            self.plan_mode_state.lock().await.current_slug.as_deref() == Some(slug.as_str());
+        if !still_current {
+            return Ok(ToolResult::success(format!(
+                "Plan written to {slug}.md (session changed concurrently; REPL plan view not refreshed)"
+            )));
+        }
         // Also update in-memory PlanState for REPL rendering. Derive plan
         // steps from markdown headings (## / ### lines) OUTSIDE fenced code
         // blocks, preserving existing per-step statuses by text so a

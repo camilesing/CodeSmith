@@ -120,8 +120,11 @@ impl ToolSpec for SymbolSearchTool {
             ))?
             .clone();
 
-        // Query one row past the requested limit so `truncated` is exact: a
-        // result set that exactly fills the limit is not truncation.
+        // Query one row past the requested limit so `truncated` is exact
+        // for unfiltered queries. With a `file_glob` the store applies the
+        // glob AFTER its SQL limit, so the probe cannot prove completeness —
+        // report truncation conservatively instead of claiming exactness.
+        let globbed = file_glob.as_ref().is_some_and(|g| !g.trim().is_empty());
         let query = SymbolQuery {
             query: query_str,
             kind,
@@ -136,7 +139,7 @@ impl ToolSpec for SymbolSearchTool {
             .map_err(|err| ToolError::execution_failed(format!("index search failed: {err}")))?;
 
         let stats = service.stats();
-        let truncated = symbols.len() > limit;
+        let truncated = symbols.len() > limit || (globbed && symbols.len() == limit);
         symbols.truncate(limit);
         ToolResult::json(&json!({
             "symbols": symbols,

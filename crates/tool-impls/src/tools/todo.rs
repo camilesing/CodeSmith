@@ -109,11 +109,7 @@ impl ToolSpec for TodoAddTool {
             .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::invalid_input("Missing 'content'"))?;
-        let status = input
-            .get("status")
-            .and_then(|v| v.as_str())
-            .and_then(TodoStatus::from_str)
-            .unwrap_or(TodoStatus::Pending);
+        let status = parse_item_status(input.get("status"))?;
 
         let mut list = self.todo_list.lock().await;
         let item = list.add(content.to_string(), status);
@@ -375,12 +371,10 @@ impl ToolSpec for TodoWriteTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::invalid_input("Todo item missing 'content'"))?;
 
-            let status_str = item
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pending");
-
-            let status = TodoStatus::from_str(status_str).unwrap_or(TodoStatus::Pending);
+            // The documented default applies only to an ABSENT status: a
+            // present-but-invalid value (typo, non-string) silently
+            // regressed in_progress items to pending.
+            let status = parse_item_status(item.get("status"))?;
 
             list.add(content.to_string(), status);
         }
@@ -411,23 +405,72 @@ fn checklist_metadata(snapshot: &TodoListSnapshot, tool_name: &str) -> serde_jso
             })
         })
         .collect::<Vec<_>>();
+    // checklist_add / checklist_update produce this metadata too; a
+    // hardcoded "checklist_write" misreports their operation to consumers
+    // routing on canonical_tool. No fake timestamp: the snapshot carries
+    // none, and a null one misled ordering/dedupe consumers.
+    let canonical_tool = match tool_name.strip_prefix("todo_") {
+        Some(rest) => format!("checklist_{rest}"),
+        None => tool_name.to_string(),
+    };
     json!({
-        "canonical_tool": "checklist_write",
+        "canonical_tool": canonical_tool,
         "compat_alias": tool_name.starts_with("todo_"),
         "task_updates": {
             "checklist": {
                 "items": items,
                 "completion_pct": snapshot.completion_pct,
-                "in_progress_id": snapshot.in_progress_id,
-                "updated_at": null
+                "in_progress_id": snapshot.in_progress_id
             }
         }
     })
 }
 
+/// Item status parsing shared by todo_add / todo_write: the documented
+/// `pending` default applies only to an ABSENT (or null) field; a
+/// present-but-unparseable value is rejected so a typo cannot silently
+/// regress an item's state.
+fn parse_item_status(value: Option<&serde_json::Value>) -> Result<TodoStatus, ToolError> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(TodoStatus::Pending),
+        Some(v) => v
+            .as_str()
+            .and_then(TodoStatus::from_str)
+            .ok_or_else(|| ToolError::invalid_input(format!("invalid 'status' value: {v}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_item_status_rejects_invalid_but_defaults_absent() {
+        assert!(matches!(parse_item_status(None), Ok(TodoStatus::Pending)));
+        assert!(matches!(
+            parse_item_status(Some(&json!(null))),
+            Ok(TodoStatus::Pending)
+        ));
+        assert!(matches!(
+            parse_item_status(Some(&json!("in_progress"))),
+            Ok(TodoStatus::InProgress)
+        ));
+        // A typo or non-string must not silently regress to pending.
+        assert!(parse_item_status(Some(&json!("in_progres"))).is_err());
+        assert!(parse_item_status(Some(&json!(3))).is_err());
+    }
+
+    #[test]
+    fn checklist_metadata_names_the_actual_operation() {
+        let mut list = TodoList::new();
+        list.add("sample item".to_string(), TodoStatus::Pending);
+        let snapshot = list.snapshot();
+        let write = checklist_metadata(&snapshot, "todo_write");
+        assert_eq!(write["canonical_tool"], "checklist_write");
+        let add = checklist_metadata(&snapshot, "todo_add");
+        assert_eq!(add["canonical_tool"], "checklist_add");
+        assert!(add["task_updates"]["checklist"].get("updated_at").is_none());
+    }
 
     #[tokio::test]
     async fn checklist_write_returns_task_update_metadata() {

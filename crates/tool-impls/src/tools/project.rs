@@ -70,7 +70,12 @@ fn generate_project_map(root: &std::path::Path, max_depth: usize) -> Result<Proj
     // For key_files, we can just do a quick scan since summarize_project doesn't return them directly anymore
     let mut key_files = Vec::new();
     let mut builder = ignore::WalkBuilder::new(root);
-    builder.hidden(false).follow_links(false).max_depth(Some(2));
+    // Honor the caller-requested depth (floor 2): a hard depth-2 cap
+    // silently drops nested manifests like crates/<crate>/Cargo.toml.
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .max_depth(Some(max_depth.max(2)));
     let walker = builder.build();
 
     for entry in walker {

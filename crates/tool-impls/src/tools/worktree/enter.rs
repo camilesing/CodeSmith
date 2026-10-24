@@ -121,6 +121,10 @@ impl ToolSpec for EnterWorktreeTool {
         // would have its state silently overwritten here (orphaning a
         // worktree/branch, or resurrecting a cleared session with a stale
         // original_cwd).
+        // If a concurrent enter/exit won the race, remember the leak to roll
+        // back AFTER the guard's scope: the sync MutexGuard must never live
+        // across an await (Send).
+        let mut race_lost_leak: Option<std::path::PathBuf> = None;
         {
             let mut state = self.worktree_state.lock().map_err(|_| {
                 ToolError::execution_failed(
@@ -128,29 +132,54 @@ impl ToolSpec for EnterWorktreeTool {
                 )
             })?;
             if state.active {
-                return Err(ToolError::execution_failed(
-                    "Already in a worktree session. Use exit_worktree first before entering another.",
-                ));
-            }
-            state.active = true;
-            state.worktree_path = Some(create_result.worktree_path.clone());
-            state.worktree_branch = Some(create_result.worktree_branch.clone());
-            state.worktree_name = Some(slug.clone());
-            state.original_cwd = Some(context.cwd.clone());
-            // For a RESUMED worktree, `create_result.head_commit` is the
-            // worktree's CURRENT HEAD — storing it as the session baseline
-            // made exit_worktree's `rev-list original..HEAD` count report
-            // 0 for all prior-session commits, so `action: "remove"` could
-            // delete earlier work (dir + `git branch -D`) without
-            // `discard_changes`. Use the branch point when derivable.
-            let baseline = if create_result.existed {
-                merge_base_baseline(&create_result.worktree_path, &create_result.worktree_branch)
-                    .unwrap_or_else(|| create_result.head_commit.clone())
+                // A concurrent enter/exit won the race. If THIS call created
+                // the worktree, roll it back best-effort so the lost race
+                // does not leak a directory + branch under
+                // .codesmith/worktrees/. (Resumed worktrees are left alone.)
+                race_lost_leak =
+                    (!create_result.existed).then(|| create_result.worktree_path.clone());
             } else {
-                create_result.head_commit.clone()
-            };
-            state.original_head_commit = Some(baseline);
-            state.session_id = None; // session_id not available in ToolContext
+                state.active = true;
+                state.worktree_path = Some(create_result.worktree_path.clone());
+                state.worktree_branch = Some(create_result.worktree_branch.clone());
+                state.worktree_name = Some(slug.clone());
+                state.original_cwd = Some(context.cwd.clone());
+                // For a RESUMED worktree, `create_result.head_commit` is the
+                // worktree's CURRENT HEAD — storing it as the session baseline
+                // made exit_worktree's `rev-list original..HEAD` count report
+                // 0 for all prior-session commits, so `action: "remove"` could
+                // delete earlier work (dir + `git branch -D`) without
+                // `discard_changes`. Use the branch point when derivable.
+                let baseline = if create_result.existed {
+                    merge_base_baseline(
+                        &create_result.worktree_path,
+                        &create_result.worktree_branch,
+                    )
+                    .unwrap_or_else(|| create_result.head_commit.clone())
+                } else {
+                    create_result.head_commit.clone()
+                };
+                state.original_head_commit = Some(baseline);
+                state.session_id = None; // session_id not available in ToolContext
+            }
+        }
+        if race_lost_leak.is_some() {
+            let leaked_path = race_lost_leak.take().expect("checked above");
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = super::run_git(
+                    &leaked_path,
+                    &[
+                        "worktree",
+                        "remove",
+                        "--force",
+                        &leaked_path.display().to_string(),
+                    ],
+                );
+            })
+            .await;
+            return Err(ToolError::execution_failed(
+                "Already in a worktree session. Use exit_worktree first before entering another.",
+            ));
         }
 
         // 7. Build result message
@@ -194,5 +223,11 @@ fn merge_base_baseline(worktree_path: &std::path::Path, worktree_branch: &str) -
         return None;
     }
     let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (sha.len() == 40).then_some(sha)
+    // SHA-1 repos yield 40 hex chars, SHA-256 repos 64; anything else is not
+    // an object id and must not silently fall back to the resumed HEAD
+    // baseline (which undercounts commits exit_worktree may then delete).
+    let valid_object_id = matches!(sha.len(), 40 | 64)
+        && !sha.is_empty()
+        && sha.bytes().all(|b| b.is_ascii_hexdigit());
+    valid_object_id.then_some(sha)
 }

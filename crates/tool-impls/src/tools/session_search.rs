@@ -220,7 +220,51 @@ fn sessions_root() -> Result<PathBuf, std::io::Error> {
 /// moved/deleted since it was saved — that session must stay comparable,
 /// not silently become scope-mismatched garbage).
 fn comparable(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(windows)]
+    {
+        // `canonicalize` yields verbatim `\\?\C:\...` paths on Windows
+        // while the not-found fallback keeps the unprefixed spelling;
+        // stripping the prefix keeps both branches comparable.
+        const VERBATIM_PREFIX: &str = "\\\\?\\";
+        let text = canonical.to_string_lossy();
+        if let Some(stripped) = text.strip_prefix(VERBATIM_PREFIX) {
+            return PathBuf::from(stripped);
+        }
+    }
+    canonical
+}
+
+enum CappedRead {
+    Parsed(SavedSession),
+    /// Larger than the cap (fstat or the take() bound tripped).
+    Oversize,
+    /// Vanished, unreadable, non-UTF-8, or invalid JSON.
+    Corrupt,
+}
+
+/// Read at most `MAX_SESSION_FILE_BYTES + 1` bytes from `file` and parse,
+/// so the cap holds even if the file grows between fstat and read.
+fn read_capped(file: std::fs::File) -> CappedRead {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if file
+        .take(MAX_SESSION_FILE_BYTES + 1)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return CappedRead::Corrupt;
+    }
+    if buf.len() > MAX_SESSION_FILE_BYTES as usize {
+        return CappedRead::Oversize;
+    }
+    match String::from_utf8(buf)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+    {
+        Some(session) => CappedRead::Parsed(session),
+        None => CappedRead::Corrupt,
+    }
 }
 
 /// Enumerate, scope-filter, and load the scoreable corpus. Blocking — runs
@@ -254,23 +298,31 @@ fn scan_saved_sessions(sessions_dir: &Path, workspace: &Path) -> (Vec<SessionDoc
     let workspace_key = comparable(workspace);
     let mut retained_text_bytes = 0usize;
     'sessions: for (_mtime, path) in &candidates {
-        match std::fs::metadata(path) {
-            Ok(meta) if meta.len() > MAX_SESSION_FILE_BYTES => {
+        // Cap the read atomically on the opened handle: a stat-then-read
+        // race (the current session's file rewritten by turn-boundary
+        // autosave mid-scan) could otherwise pull unbounded bytes into
+        // memory past the cap before the JSON parse rejects them.
+        let outcome = match std::fs::File::open(path) {
+            Ok(file) => match file.metadata() {
+                // Non-regular files (FIFO, device) report len 0 — never
+                // read them unboundedly.
+                Ok(meta) if !meta.is_file() => CappedRead::Corrupt,
+                Ok(meta) if meta.len() > MAX_SESSION_FILE_BYTES => CappedRead::Oversize,
+                Ok(_) => read_capped(file),
+                Err(_) => CappedRead::Corrupt,
+            },
+            Err(_) => CappedRead::Corrupt,
+        };
+        let session = match outcome {
+            CappedRead::Parsed(session) => session,
+            CappedRead::Oversize => {
                 stats.skipped_oversize += 1;
                 continue;
             }
-            Err(_) => {
+            CappedRead::Corrupt => {
                 stats.skipped_corrupt += 1;
                 continue;
             }
-            _ => {}
-        }
-        let parsed: Option<SavedSession> = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok());
-        let Some(session) = parsed else {
-            stats.skipped_corrupt += 1;
-            continue;
         };
         stats.sessions_parsed += 1;
         if comparable(&session.metadata.workspace) != workspace_key {

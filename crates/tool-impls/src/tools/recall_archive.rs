@@ -326,11 +326,15 @@ pub(crate) fn message_text(message: &Message) -> String {
 
 /// Lower-case, split on non-alphanumerics, drop short tokens. Same recipe as
 /// most lightweight BM25 implementations. Shared with the cross-session
-/// search tool (round-3 TODO-43).
+/// search tool (round-3 TODO-43). Unicode-aware lowercasing (ASCII-only
+/// would never match `Привет` against `привет`) and a char-count filter
+/// (a byte filter dropped 1-byte letters but kept single 2-byte chars).
+/// Known limitation: CJK text has no separator, so a sentence becomes one
+/// long token — n-gram tokenization would be needed for real CJK recall.
 pub(crate) fn tokenize(text: &str) -> Vec<String> {
-    text.to_ascii_lowercase()
+    text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| s.len() >= 2)
+        .filter(|s| s.chars().count() >= 2)
         .map(str::to_string)
         .collect()
 }
@@ -349,6 +353,16 @@ pub(crate) fn bm25_rank(
         return Vec::new();
     }
 
+    // Deduplicate query terms once (order-preserving): a repeated term adds
+    // the same IDF-weighted contribution to every score again, skewing BM25
+    // ranking and inflating best_window's hit density.
+    let mut seen = std::collections::HashSet::new();
+    let query_tokens: Vec<String> = query_tokens
+        .iter()
+        .filter(|token| seen.insert(token.as_str()))
+        .cloned()
+        .collect();
+
     let n = docs.len() as f64;
     let avgdl: f64 = docs.iter().map(|d| d.len() as f64).sum::<f64>() / n.max(1.0);
 
@@ -365,7 +379,7 @@ pub(crate) fn bm25_rank(
 
     // Document frequency per query term.
     let mut df: HashMap<&str, u64> = HashMap::new();
-    for token in query_tokens {
+    for token in &query_tokens {
         let count = term_counts
             .iter()
             .filter(|counts| counts.contains_key(token.as_str()))
@@ -379,7 +393,7 @@ pub(crate) fn bm25_rank(
         .enumerate()
         .map(|(idx, (tokens, counts))| {
             (
-                bm25_doc_score(counts, tokens.len(), query_tokens, &df, n, avgdl),
+                bm25_doc_score(counts, tokens.len(), &query_tokens, &df, n, avgdl),
                 idx,
             )
         })

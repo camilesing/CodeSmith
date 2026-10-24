@@ -91,8 +91,16 @@ impl ToolSpec for ExitWorktreeTool {
                      in the current session. No filesystem changes were made.",
                 ));
             }
+            // Fail loud on a broken invariant instead of defaulting to "":
+            // an empty path would run git against "" and still delete the
+            // branch while reporting success.
+            let Some(worktree_path) = state.worktree_path.clone() else {
+                return Err(ToolError::execution_failed(
+                    "Active worktree session is missing its worktree path; refusing to exit.",
+                ));
+            };
             (
-                state.worktree_path.clone().unwrap_or_default(),
+                worktree_path,
                 state.worktree_branch.clone(),
                 state
                     .original_cwd

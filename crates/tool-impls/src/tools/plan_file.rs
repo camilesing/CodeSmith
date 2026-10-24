@@ -119,7 +119,20 @@ pub fn find_recent_plan() -> Result<Option<(String, String)>> {
 
         let slug = name_str.trim_end_matches(".md");
         let path = entry.path();
-        let content = fs::read_to_string(&path).ok();
+        // A plan that vanished between metadata() and the read, or that is
+        // not valid UTF-8, cannot be recalled anyway — skip it. Every other
+        // read failure (e.g. permissions) must surface: silently skipping it
+        // could hide the most recent plan behind an older one.
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => Some(content),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => None,
+            Err(e) => {
+                return Err(
+                    anyhow::Error::new(e).context(format!("failed to read plan file {name_str}"))
+                );
+            }
+        };
 
         if let (Some(mtime), Some(content)) = (mtime, content) {
             match &most_recent {

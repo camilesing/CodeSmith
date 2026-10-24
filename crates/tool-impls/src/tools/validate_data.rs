@@ -122,9 +122,21 @@ async fn load_input_source(
             // supplied path can point at a multi-GB workspace file, which
             // must not be fully buffered and then parsed end-to-end.
             const MAX_BYTES: u64 = 4 * 1024 * 1024;
-            let metadata = tokio::fs::metadata(&resolved).await.map_err(|e| {
+            // Cap on the opened handle (not a stat-then-read race, which a
+            // concurrent writer wins) and only for regular files: a FIFO or
+            // symlinked device reports len 0 and would be read unboundedly.
+            let file = tokio::fs::File::open(&resolved).await.map_err(|e| {
+                ToolError::execution_failed(format!("Failed to open {}: {e}", resolved.display()))
+            })?;
+            let metadata = file.metadata().await.map_err(|e| {
                 ToolError::execution_failed(format!("Failed to stat {}: {e}", resolved.display()))
             })?;
+            if !metadata.is_file() {
+                return Err(ToolError::invalid_input(format!(
+                    "{} is not a regular file; validate_data reads files only",
+                    resolved.display()
+                )));
+            }
             if metadata.len() > MAX_BYTES {
                 return Err(ToolError::invalid_input(format!(
                     "File {} is {} bytes; validate_data accepts files up to {MAX_BYTES} bytes",
@@ -132,8 +144,29 @@ async fn load_input_source(
                     metadata.len()
                 )));
             }
-            let raw_content = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
-                ToolError::execution_failed(format!("Failed to read {}: {e}", resolved.display()))
+            // take(cap+1) bounds even a file that grew after the fstat.
+            let mut raw = Vec::new();
+            use tokio::io::AsyncReadExt;
+            file.take(MAX_BYTES + 1)
+                .read_to_end(&mut raw)
+                .await
+                .map_err(|e| {
+                    ToolError::execution_failed(format!(
+                        "Failed to read {}: {e}",
+                        resolved.display()
+                    ))
+                })?;
+            if raw.len() > MAX_BYTES as usize {
+                return Err(ToolError::invalid_input(format!(
+                    "File {} grew past {MAX_BYTES} bytes while reading; retry",
+                    resolved.display()
+                )));
+            }
+            let raw_content = String::from_utf8(raw).map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "{} is not valid UTF-8: {e}",
+                    resolved.display()
+                ))
             })?;
             let extension = resolved
                 .extension()
