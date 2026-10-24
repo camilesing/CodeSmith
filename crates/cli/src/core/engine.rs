@@ -452,17 +452,29 @@ fn env_only_api_key_recovery_hint(api_config: &Config) -> Option<String> {
 /// #1694) plus rig's faithful `reasoning_content` serialization for the OpenAI
 /// / DeepSeek providers. See ROADMAP §A1 / §D1.
 /// Wrap `client` in a [`RecordingClient`](codesmith_agent::llm_client::record_replay::RecordingClient)
-/// when `CODESMITH_RECORD_LLM` is set. Misconfiguration fails loud here:
-/// the recording was explicitly requested, so an unopenable path aborts
-/// engine construction instead of silently running unrecorded.
-fn wrap_with_recording(client: LlmClientHandle) -> LlmClientHandle {
-    let path = std::env::var("CODESMITH_RECORD_LLM").unwrap_or_default();
+/// when `CODESMITH_RECORD_LLM` is set. Misconfiguration fails loud, but as
+/// a typed error the caller routes into the existing `llm_client_error`
+/// channel — not a panic mid-startup, which lost the diagnostic framing and
+/// any cleanup. A non-UTF-8 value is reported too, instead of silently
+/// disabling a recording that was explicitly requested.
+fn wrap_with_recording(client: LlmClientHandle) -> Result<LlmClientHandle, String> {
+    let path = match std::env::var("CODESMITH_RECORD_LLM") {
+        Ok(path) => path,
+        Err(std::env::VarError::NotPresent) => return Ok(client),
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            return Err(format!(
+                "CODESMITH_RECORD_LLM is set but not valid UTF-8 ({raw:?}); refusing to run unrecorded"
+            ));
+        }
+    };
     if path.is_empty() {
-        return client;
+        return Ok(client);
     }
     match codesmith_agent::llm_client::record_replay::RecordingClient::new(client, &path) {
-        Ok(recorder) => Arc::new(recorder) as LlmClientHandle,
-        Err(e) => panic!("CODESMITH_RECORD_LLM={path}: cannot open recording file: {e}"),
+        Ok(recorder) => Ok(Arc::new(recorder) as LlmClientHandle),
+        Err(e) => Err(format!(
+            "CODESMITH_RECORD_LLM={path}: cannot open recording file: {e}"
+        )),
     }
 }
 
@@ -558,22 +570,42 @@ pub(crate) fn resolve_utility_llm(
 
     // Key resolution: an explicit utility key wins; otherwise the main key is
     // only valid for the same provider (never leak one vendor's key to
-    // another). A cross-provider table without a key builds an empty key and
-    // lets the factory surface the error, which falls back to the main model.
+    // another). A cross-provider table without a key is a config error:
+    // factories defer auth errors to call time, so building with an empty
+    // key "succeeds" and every assist then 401s with no fallback — drop the
+    // utility here instead (the documented fallback to the main model).
     let api_key = if let Some(key) = utility.api_key.clone() {
         key
     } else if provider == main_provider {
         api_config.provider_api_key().unwrap_or_default()
-    } else {
+    } else if crate::config::has_api_key_for(api_config, provider)
+        || crate::config::provider_is_self_hosted(provider)
+    {
+        // The factory resolves the provider's own env/config key (never the
+        // main provider's) when the config key is empty.
         String::new()
+    } else {
+        tracing::warn!(
+            "utility model provider '{}' has no api_key (keys are never inherited across \
+             providers); assists fall back to the main model",
+            provider.as_str()
+        );
+        return None;
     };
     let cfg = ProviderConfig {
         provider: ProviderId::from(provider.as_str()),
         api_key,
-        base_url: utility
-            .base_url
-            .clone()
-            .unwrap_or_else(|| api_config.provider_base_url()),
+        // Only a same-provider utility may inherit the main base_url: pairing
+        // the main endpoint with another vendor's wire protocol would send
+        // requests to the wrong service. Cross-provider leaves it empty so
+        // the registry/manifest default applies.
+        base_url: utility.base_url.clone().unwrap_or_else(|| {
+            if provider == main_provider {
+                api_config.provider_base_url()
+            } else {
+                String::new()
+            }
+        }),
         default_model: utility.model.clone(),
         retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
         http_headers: api_config.http_headers(),
@@ -1336,7 +1368,13 @@ pub fn build_engine(
     // calls (full request envelope + streamed response) are replayable
     // keyless. Known gap: a cross-provider `[utility_model]` client is
     // built separately in `resolve_utility_llm` and is not recorded.
-    let llm_client = llm_client.map(wrap_with_recording);
+    let (llm_client, llm_client_error) = match llm_client {
+        Some(client) => match wrap_with_recording(client) {
+            Ok(client) => (Some(client), llm_client_error),
+            Err(err) => (None, Some(err)),
+        },
+        None => (None, llm_client_error),
+    };
 
     let mut session = Session::new(
         config.model.clone(),
@@ -1454,14 +1492,25 @@ pub fn build_engine(
 
     // Resolve the optional [utility_model] once. Seam defaults below and the
     // workshop synthesis handle both consume it.
-    let utility_llm = resolve_utility_llm(api_config, llm_client.as_ref()).map(|mut utility| {
-        // Same recording path as the main client: a cross-provider
-        // `[utility_model]` handle gets its own recorder (append mode;
-        // whole-line writes keep the shared JSONL parseable), so
-        // multi-model sessions record completely.
-        utility.client = wrap_with_recording(utility.client);
-        utility
-    });
+    let utility_llm =
+        resolve_utility_llm(api_config, llm_client.as_ref()).and_then(|mut utility| {
+            // Same recording path as the main client: a cross-provider
+            // `[utility_model]` handle gets its own recorder (append mode;
+            // whole-line writes keep the shared JSONL parseable), so
+            // multi-model sessions record completely. An unopenable
+            // recording drops the utility (documented fallback to the main
+            // model) rather than running it unrecorded.
+            match wrap_with_recording(utility.client) {
+                Ok(client) => {
+                    utility.client = client;
+                    Some(utility)
+                }
+                Err(err) => {
+                    tracing::error!("utility model recording disabled: {err}");
+                    None
+                }
+            }
+        });
 
     // Create Flash seam manager for layered context (#159). An explicit
     // `[context] seam_model` always wins (and keeps the main client — the id

@@ -34,14 +34,24 @@ impl EngineHandle {
     /// Cancel the current request and latch the reason so downstream
     /// "request cancelled" error messages can name a cause.
     pub fn cancel_with_reason(&self, reason: CancelReason) {
-        match self.cancel_reason.lock() {
-            Ok(mut slot) => *slot = Some(reason),
-            Err(poisoned) => *poisoned.into_inner() = Some(reason),
-        }
-        match self.cancel_token.lock() {
-            Ok(token) => token.cancel(),
-            Err(poisoned) => poisoned.into_inner().cancel(),
-        }
+        // Lock order: cancel_reason, then cancel_token — the same order
+        // `Engine::reset_cancel_token` takes, so the latch+cancel pair is
+        // atomic against the engine's turn-boundary reset. Taken
+        // separately, the engine could clear the reason and install a
+        // fresh token between the two steps, leaving the NEW turn cancelled
+        // with `cancel_reason == None`.
+        let mut slot = self
+            .cancel_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let token = self
+            .cancel_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(reason);
+        token.cancel();
+        drop(token);
+        drop(slot);
         codesmith_agent_runtime::retry_status::clear();
     }
 

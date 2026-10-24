@@ -264,18 +264,20 @@ impl Engine {
     pub fn reset_cancel_token(&mut self) {
         let token = CancellationToken::new();
         self.cancel_token = token.clone();
-        match self.shared_cancel_token.lock() {
-            Ok(mut shared) => {
-                *shared = token;
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = token;
-            }
-        }
-        match self.cancel_reason.lock() {
-            Ok(mut slot) => *slot = None,
-            Err(poisoned) => *poisoned.into_inner() = None,
-        }
+        // Lock order: cancel_reason, then shared_cancel_token — matches
+        // `EngineHandle::cancel_with_reason`, so resetting the pair is
+        // atomic against a concurrent latch+cancel (which would otherwise
+        // land on the fresh token with its reason already cleared).
+        let mut slot = self
+            .cancel_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut shared = self
+            .shared_cancel_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *shared = token;
+        *slot = None;
     }
 
     // === Knowledge On Demand helpers ===

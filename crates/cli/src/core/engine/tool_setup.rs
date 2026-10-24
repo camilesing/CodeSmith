@@ -50,7 +50,7 @@ pub(super) fn build_tool_context_for(
     {
         trusted_external_paths.push(clipboard_images_dir);
     }
-    let mut ctx = ToolContext::with_auto_approve(
+    let ctx = ToolContext::with_auto_approve(
         session.workspace.clone(),
         session.trust_mode,
         session.notes_path.clone(),
@@ -60,23 +60,31 @@ pub(super) fn build_tool_context_for(
     .with_mode(mode)
     .with_state_namespace(session.id.clone())
     .with_features(config.features.clone())
-    .with_parse_gate(config.parse_gate)
-    .with_shell_manager(wrap_shell_manager(
-        host.shell_manager
-            .as_ref()
-            .expect("shell_manager is set by new_impl before turn dispatch")
-            .clone(),
-    ))
-    .with_runtime_services(host.runtime_services.clone())
-    .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
-        session.id.clone(),
-        session.model.clone(),
-        session.workspace.clone(),
-        session.system_prompt.clone(),
-        session.messages.snapshot(),
-    ))
-    .with_cancel_token(cancel_token.clone())
-    .with_trusted_external_paths(trusted_external_paths);
+    .with_parse_gate(config.parse_gate);
+    // A missing shell manager degrades to a runtime tool failure for
+    // shell-backed tools instead of a panic in the per-turn request path —
+    // `new_impl` seeds it, but any host/test path that skips `new_impl`
+    // must not abort the whole process here.
+    let ctx = match host.shell_manager.as_ref() {
+        Some(manager) => ctx.with_shell_manager(wrap_shell_manager(manager.clone())),
+        None => {
+            tracing::error!(
+                "shell_manager is unset at turn dispatch; shell-backed tools will fail to run"
+            );
+            ctx
+        }
+    };
+    let mut ctx = ctx
+        .with_runtime_services(host.runtime_services.clone())
+        .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
+            session.id.clone(),
+            session.model.clone(),
+            session.workspace.clone(),
+            session.system_prompt.clone(),
+            session.messages.snapshot(),
+        ))
+        .with_cancel_token(cancel_token.clone())
+        .with_trusted_external_paths(trusted_external_paths);
 
     // Set effective cwd: if a worktree session is active, shift cwd
     // to the worktree path so relative paths resolve inside it.

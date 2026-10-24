@@ -63,8 +63,22 @@ impl ToolCatalogSnapshot {
         mcp: &std::collections::HashSet<String>,
         disabled: &std::collections::HashSet<String>,
     ) -> Self {
+        // The struct doc promises disabled names are absent from `entries`;
+        // enforce it here rather than trusting every composition site — an
+        // overlap would render a tool as both available and disabled in the
+        // model-visible `/tools` readout.
         let entries = names
             .iter()
+            .filter(|name| {
+                let overlap = disabled.contains(*name);
+                if overlap {
+                    tracing::warn!(
+                        tool = %name,
+                        "tool is both in the catalog and capability-disabled; dropping it from the catalog"
+                    );
+                }
+                !overlap
+            })
             .map(|name| {
                 debug_assert!(
                     [plugin, extension, mcp]
@@ -174,17 +188,21 @@ fn diff_names(
     prev: &ToolCatalogSnapshot,
     next: &ToolCatalogSnapshot,
 ) -> Option<(Vec<String>, Vec<String>)> {
-    let prev_set: std::collections::HashSet<(&str, ToolOrigin)> =
-        prev.entries.iter().map(|(n, o)| (n.as_str(), *o)).collect();
-    let next_set: std::collections::HashSet<(&str, ToolOrigin)> =
-        next.entries.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+    // Names only: the `tools-change` payload carries no origin, so an
+    // origin-only relabel (plugin drops `x`, an MCP server picks `x` up)
+    // must not surface as removed+added under the same name — consumers
+    // would invalidate caches for what is a no-op in the visible tool set.
+    let prev_set: std::collections::HashSet<&str> =
+        prev.entries.iter().map(|(n, _)| n.as_str()).collect();
+    let next_set: std::collections::HashSet<&str> =
+        next.entries.iter().map(|(n, _)| n.as_str()).collect();
     let mut added: Vec<String> = next_set
         .difference(&prev_set)
-        .map(|(n, _)| (*n).to_string())
+        .map(|n| (*n).to_string())
         .collect();
     let mut removed: Vec<String> = prev_set
         .difference(&next_set)
-        .map(|(n, _)| (*n).to_string())
+        .map(|n| (*n).to_string())
         .collect();
     if added.is_empty() && removed.is_empty() {
         return None;
@@ -262,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn update_diffs_same_name_origin_change() {
+    fn update_ignores_origin_only_relabel() {
         let state = ToolCatalogState::default();
         let names = vec!["mytool".to_string()];
         let empty: std::collections::HashSet<String> = Default::default();
@@ -277,9 +295,21 @@ mod tests {
             state.update(ToolCatalogSnapshot::capture(
                 &names, &plugin, &empty, &empty, &empty
             )),
-            Some((vec!["mytool".to_string()], vec!["mytool".to_string()])),
-            "a re-origined tool surfaces as removed+added under the same name"
+            None,
+            "an origin-only relabel leaves the visible tool set unchanged"
         );
+    }
+
+    #[test]
+    fn capture_drops_names_that_are_also_disabled() {
+        let names = vec!["kept".to_string(), "gone".to_string()];
+        let empty: std::collections::HashSet<String> = Default::default();
+        let disabled: std::collections::HashSet<String> =
+            ["gone"].iter().map(|n| n.to_string()).collect();
+        let s = ToolCatalogSnapshot::capture(&names, &empty, &empty, &empty, &disabled);
+        assert_eq!(s.entries.len(), 1);
+        assert_eq!(s.entries[0].0, "kept");
+        assert_eq!(s.disabled, vec!["gone".to_string()]);
     }
 
     #[test]
@@ -292,7 +322,7 @@ mod tests {
             ["call_count"].iter().map(|n| n.to_string()).collect();
         let mcp: std::collections::HashSet<String> =
             ["mcp_foo"].iter().map(|n| n.to_string()).collect();
-        let disabled: std::collections::HashSet<String> = ["edit_file", "call_count"]
+        let disabled: std::collections::HashSet<String> = ["edit_file", "write_file"]
             .iter()
             .map(|n| n.to_string())
             .collect();
@@ -305,9 +335,9 @@ mod tests {
         assert!(rendered.contains("── mcp (1)\n  mcp_foo"));
         assert!(!rendered.contains("plugin"), "empty groups are skipped");
         assert!(
-            rendered.contains("── disabled via capabilities.toml (2)\n  call_count, edit_file"),
+            rendered.contains("── disabled via capabilities.toml (2)\n  edit_file, write_file"),
             "disabled names render sorted in their own group:\n{rendered}"
         );
-        assert_eq!(s.disabled, vec!["call_count", "edit_file"]);
+        assert_eq!(s.disabled, vec!["edit_file", "write_file"]);
     }
 }
