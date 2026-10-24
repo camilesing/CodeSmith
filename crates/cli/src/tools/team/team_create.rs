@@ -118,20 +118,13 @@ impl ToolSpec for TeamCreateTool {
         }
         // A second session creating the same-named team would silently
         // clobber the existing roster (the one-team-per-leader guard above
-        // is in-process only). Refuse instead.
-        // Creation itself is exclusive (O_EXCL on config.json) — the
-        // `.exists()` pre-check was a TOCTOU across sessions, and its
-        // `.unwrap_or(false)` silently skipped the guard when home-dir
-        // resolution failed.
-        let pre_exists = crate::tools::team::team_config_path(&team_name)
-            .map(|path| path.exists())
-            .unwrap_or(false);
-        if pre_exists {
-            return Err(ToolError::invalid_input(format!(
-                "A team named '{}' already exists; pick a different name or delete the existing team first",
-                sanitized
-            )));
-        }
+        // is in-process only). Refuse instead. Creation itself is
+        // exclusive (O_EXCL on config.json) and its `AlreadyExists` arm
+        // returns the same message — the old `.exists()` pre-check was a
+        // TOCTOU across sessions, and its `.unwrap_or(false)` silently
+        // skipped the guard when home-dir resolution failed. Home-dir
+        // resolution failures now surface from `create_team_file_exclusive`
+        // as execution_failed with context.
         let lead_agent_id = format_lead_agent_id(&team_name);
         let now = chrono::Utc::now().timestamp_millis();
 
@@ -168,6 +161,18 @@ impl ToolSpec for TeamCreateTool {
                 )));
             }
             Err(e) => {
+                // O_EXCL proved any config.json at this path is ours, so
+                // rolling back a partial creation (config written while
+                // inboxes/ or the task dir failed) is safe — otherwise every
+                // retry for this name fails "already exists" until the user
+                // manually deletes ~/.codesmith/teams/<name>.
+                if let Err(cleanup_err) = crate::tools::team::delete_team_directories(&team_name)
+                {
+                    crate::logging::warn(format!(
+                        "failed to roll back partially-created team '{}': {cleanup_err}",
+                        team_name
+                    ));
+                }
                 return Err(ToolError::execution_failed(format!(
                     "Failed to create team file: {}",
                     e

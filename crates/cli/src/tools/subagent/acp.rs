@@ -149,6 +149,10 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
             .ok_or_else(|| anyhow!("ACP sub-agent stdout unavailable"))?;
         let mut reader = BufReader::new(stdout).lines();
 
+        // The child's session id, shared out of `drive` so the timeout arm
+        // can address its `session/cancel` (the method requires a sessionId
+        // — empty params are a silent no-op).
+        let session_slot = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let drive = async {
             // --- initialize ---
             send_request(
@@ -183,6 +187,9 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("ACP session/new returned no sessionId: {new_session}"))?
                 .to_string();
+            if let Ok(mut slot) = session_slot.lock() {
+                *slot = session_id.clone();
+            }
 
             // --- session/prompt (collect agent_message_chunk updates) ---
             let mut prompt_text = String::new();
@@ -225,6 +232,28 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
                     write_line(&mut stdin, answer).await?;
                     continue;
                 }
+                // Any OTHER server-initiated request (id + method) must be
+                // answered, not dropped: a child awaiting `fs/read_text_file`
+                // or a custom request would hang until its own timeout. A
+                // -32601 error response is the protocol-honest "not
+                // supported by this client".
+                if let (Some(id), Some(method)) = (
+                    value.get("id").cloned(),
+                    value.get("method").and_then(Value::as_str),
+                ) {
+                    let unsupported = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32601,
+                            "message": format!(
+                                "method {method} not supported by the CodeSmith ACP parent"
+                            )
+                        }
+                    });
+                    write_line(&mut stdin, unsupported).await?;
+                    continue;
+                }
                 if let Some(chunk) = agent_message_chunk(&value, &session_id) {
                     output.push_str(&chunk);
                 }
@@ -234,14 +263,21 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
             if let Some(error) = prompt_result.get("error") {
                 bail!("ACP session/prompt failed: {error}");
             }
+            // A missing stopReason is a protocol violation by the child —
+            // defaulting it to "end_turn" reported a malformed termination
+            // as a clean finish.
             let stop_reason = prompt_result
                 .pointer("/result/stopReason")
                 .and_then(Value::as_str)
-                .unwrap_or("end_turn");
+                .ok_or_else(|| anyhow!("ACP session/prompt result carried no stopReason"))?;
             let status = match stop_reason {
-                "end_turn" | "stop" | "max_tokens" | "max_tokens_reached" => {
-                    SubAgentStatus::Completed
-                }
+                "end_turn" | "stop" => SubAgentStatus::Completed,
+                // A token-budget-truncated answer is not a complete terminal
+                // output; surface the truncation so the parent can react
+                // (the partial text still rides `output`).
+                "max_tokens" | "max_tokens_reached" => SubAgentStatus::Failed(
+                    "ACP child stopped at max_tokens; the answer may be truncated".to_string(),
+                ),
                 "cancelled" | "canceled" | "aborted" => SubAgentStatus::Cancelled,
                 other => SubAgentStatus::Failed(format!("ACP child stopped with reason '{other}'")),
             };
@@ -257,8 +293,16 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
             Ok(outcome) => outcome,
             Err(_) => {
                 // Best-effort cancel before kill_on_drop tears the child
-                // down with the dropped future.
-                let _ = send_notification(&mut stdin, "session/cancel", json!({})).await;
+                // down with the dropped future. `session/cancel` REQUIRES a
+                // sessionId — empty params are a silent no-op in the repo's
+                // own server handler and any spec-conforming agent, so the
+                // id must ride the notification or nothing is cancelled.
+                let _ = send_notification(
+                    &mut stdin,
+                    "session/cancel",
+                    json!({ "sessionId": session_slot.lock().map(|s| s.clone()).unwrap_or_default() }),
+                )
+                .await;
                 Ok(ExternalSubagentOutcome {
                     status: SubAgentStatus::Failed(format!(
                         "ACP sub-agent timed out after {}s",
@@ -370,9 +414,13 @@ fn permission_answer(value: &Value, auto_approve: bool) -> Option<Value> {
                     == Some(wanted_kind_prefix_fallback(auto_approve))
             })
         });
-    let option_id = chosen
-        .and_then(|option| option.get("optionId").cloned())
-        .unwrap_or_else(|| json!(wanted_kind_prefix_fallback(auto_approve)));
+    // Per ACP, a "selected" outcome must reference one of the offered
+    // optionIds: fabricating an id the child never offered is rejected as
+    // an invalid response at best, or leniently matched against the wrong
+    // option at worst. No matching option → no answer; the child's own
+    // permission timeout then refuses the call (fail-closed under the
+    // parent's ceiling either way).
+    let option_id = chosen.and_then(|option| option.get("optionId").cloned())?;
     Some(json!({
         "jsonrpc": "2.0",
         "id": id,

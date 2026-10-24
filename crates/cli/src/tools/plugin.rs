@@ -17,7 +17,8 @@
 //!
 //! The script receives the tool's JSON input on **stdin** and must return
 //! a JSON `ToolResult` (`{"content": "...", "success": true}`) on **stdout**.
-//! Non-JSON output is wrapped in a `ToolResult` with `success: false`.
+//! Non-JSON output is wrapped in a successful `ToolResult` carrying the text
+//! (an exit-0 script's prose is its result).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -341,7 +342,11 @@ async fn run_plugin_child_raw(
         if let Ok(parsed) = serde_json::from_str::<ToolResult>(&stdout) {
             Ok(parsed)
         } else {
-            Ok(ToolResult::success(stdout))
+            // Plain-text output from an exit-0 script is a success carrying
+            // the text (the module doc's old `success: false` claim was the
+            // bug — an exit-0 script's prose is its result, not a failure).
+            // Trailing newline trimmed so the text renders as one block.
+            Ok(ToolResult::success(stdout.trim_end().to_string()))
         }
     } else {
         let stderr = String::from_utf8_lossy(&stderr_kept).to_string();
@@ -406,7 +411,19 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
         // Default: accept any object payload
         serde_json::json!({"type": "object"})
     } else {
-        serde_json::from_str(&schema_str).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        // An invalid `# schema:` JSON string silently replaced with the
+        // permissive object schema weakens input validation with zero
+        // diagnostics — warn so the plugin author learns their frontmatter
+        // is broken.
+        match serde_json::from_str(&schema_str) {
+            Ok(schema) => schema,
+            Err(err) => {
+                tracing::warn!(
+                    "ignoring invalid '# schema:' frontmatter ({err}); using permissive object schema"
+                );
+                serde_json::json!({"type": "object"})
+            }
+        }
     };
 
     PluginMetadata {

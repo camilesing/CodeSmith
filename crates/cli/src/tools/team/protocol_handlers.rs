@@ -31,7 +31,15 @@ pub fn handle_shutdown_request(
     team_name: &str,
     reason: Option<String>,
 ) -> anyhow::Result<String> {
-    let request_id = format!("req-shutdown-{}", chrono::Utc::now().timestamp_millis());
+    // A millisecond timestamp alone is neither unique (two requests in the
+    // same millisecond collide — and a duplicate id lets one teammate's
+    // response satisfy another's approval binding) nor unpredictable. Add a
+    // random component.
+    let request_id = format!(
+        "req-shutdown-{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        uuid::Uuid::new_v4()
+    );
     let now = chrono::Utc::now().to_rfc3339();
 
     let protocol = StructuredProtocolMessage::ShutdownRequest {

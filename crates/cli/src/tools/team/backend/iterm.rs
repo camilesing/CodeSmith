@@ -91,10 +91,10 @@ impl TeammateBackend for ITermBackend {
                 }
             },
             Err(_) => {
-                let _ = tokio::fs::remove_file(&prompt_file).await;
-                if let Some(env_file) = &env_file {
-                    let _ = tokio::fs::remove_file(env_file).await;
-                }
+                // The kill may land AFTER `write text` already typed the
+                // command, in which case the (possibly starting) teammate
+                // owns the prompt/env files — deleting them here can break
+                // it, so leave them; the temp-dir sweep covers true leaks.
                 return Err(BackendError::SpawnFailed {
                     backend: "iterm",
                     message: "osascript timed out after 30s (Automation permission prompt \
@@ -119,15 +119,31 @@ impl TeammateBackend for ITermBackend {
             });
         }
 
-        let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // The handle is the LAST colon-bearing line: osascript can print
+        // banners or diagnostics around the session id (iTerm session ids
+        // look like `w0t0p0:UUID`), and trusting the whole trimmed stdout
+        // corrupted every later operation on this teammate.
+        let session_id = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .rev()
+            .find_map(|line| {
+                let line = line.trim();
+                line.contains(':').then(|| line.to_string())
+            })
+            .unwrap_or_default();
         if session_id.is_empty() {
-            let _ = tokio::fs::remove_file(&prompt_file).await;
-            if let Some(env_file) = &env_file {
-                let _ = tokio::fs::remove_file(env_file).await;
-            }
+            // osascript exited 0, so the AppleScript ran to completion and
+            // `write text` ALREADY typed the teammate command into the tab:
+            // the just-launched teammate owns the prompt/env files now, and
+            // deleting them here would break it. The tab is orphaned with
+            // no handle, which the error message names.
             return Err(BackendError::SpawnFailed {
                 backend: "iterm",
-                message: "osascript did not return a session id".to_string(),
+                message: format!(
+                    "osascript produced no session id (stdout: {:?}); an orphaned tab may \
+                     need manual cleanup",
+                    String::from_utf8_lossy(&output.stdout)
+                ),
             });
         }
 
@@ -158,10 +174,16 @@ pub fn build_applescript(
     // The shell command typed into the new tab: cd into the teammate cwd,
     // then run the codesmith team-teammate subcommand. `write text` sends
     // this to the interactive shell, so the user can watch / interrupt it.
+    // The `|| rm -f` fallback unlinks the 0600 prompt file when the command
+    // never starts (stale cwd makes `cd` fail and `&&` short-circuit, or
+    // the binary is missing) — otherwise it would leak in the temp dir
+    // forever; when the teammate does start, it unlinks the file itself and
+    // the fallback never runs.
     let shell_cmd = format!(
-        "cd {} && {}",
+        "cd {} && {} || rm -f -- {}",
         shell_quote(&spec.cwd.to_string_lossy()),
-        build_team_teammate_command(spec, prompt_file, env_file)
+        build_team_teammate_command(spec, prompt_file, env_file),
+        shell_quote(&prompt_file.to_string_lossy())
     );
     // `write … text` delivers these bytes as raw keystrokes to the pty — a
     // fundamentally different channel than tmux's argv: a C0 byte embedded
@@ -183,8 +205,11 @@ pub fn build_applescript(
          \t\tset theWindow to current window\n\
          \t\tset theSession to current session of (create tab with default profile)\n\
          \tend if\n\
+         \tset tries to 0\n\
          \trepeat until (length of (contents of theSession)) > 0\n\
-         \t\t\tdelay 0.05\n\
+         \t\tset tries to tries + 1\n\
+         \t\tif tries is greater than or equal to 400 then error \"session never became ready\"\n\
+         \t\tdelay 0.05\n\
          \tend repeat\n\
          \twrite theSession text \"{escaped}\"\n\
          \treturn id of theSession\n\

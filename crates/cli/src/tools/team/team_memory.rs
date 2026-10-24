@@ -47,39 +47,43 @@ pub fn team_memory_sync_path(team_name: &str) -> anyhow::Result<PathBuf> {
 pub fn build_team_memory_sync_manifest(
     team_file: &TeamFile,
     workspace: &Path,
-) -> TeamMemorySyncManifest {
-    let members = team_file
-        .members
-        .iter()
-        .filter(|member| member.is_active)
-        .filter_map(|member| {
-            let agent_type = member
-                .agent_type
-                .as_deref()
-                .unwrap_or(member.name.as_str())
-                .to_string();
-            let project_memory_dir =
-                resolve_agent_memory_dir(workspace, &agent_type, AgentMemoryScope::Project).ok()?;
-            let local_memory_dir =
-                resolve_agent_memory_dir(workspace, &agent_type, AgentMemoryScope::Local).ok()?;
-            Some(TeamMemoryMemberSync {
-                agent_id: member.agent_id.clone(),
-                name: member.name.clone(),
-                agent_type,
-                project_memory_entrypoint: resolve_agent_memory_entrypoint(&project_memory_dir),
-                local_memory_entrypoint: resolve_agent_memory_entrypoint(&local_memory_dir),
-                project_memory_dir,
-                local_memory_dir,
-            })
-        })
-        .collect();
+) -> anyhow::Result<TeamMemorySyncManifest> {
+    let mut members = Vec::new();
+    for member in team_file.members.iter().filter(|member| member.is_active) {
+        let agent_type = member
+            .agent_type
+            .as_deref()
+            .unwrap_or(member.name.as_str())
+            .to_string();
+        // Resolution failures are loud with member context: the old `.ok()?`
+        // silently dropped any member whose memory dir could not be resolved
+        // (e.g. an unsanitized agent_type the segment validator rejects),
+        // producing an incomplete sync roster with no signal.
+        let project_memory_dir =
+            resolve_agent_memory_dir(workspace, &agent_type, AgentMemoryScope::Project).map_err(
+                |err| anyhow::anyhow!("member '{}': project memory dir: {err}", member.name),
+            )?;
+        let local_memory_dir =
+            resolve_agent_memory_dir(workspace, &agent_type, AgentMemoryScope::Local).map_err(
+                |err| anyhow::anyhow!("member '{}': local memory dir: {err}", member.name),
+            )?;
+        members.push(TeamMemoryMemberSync {
+            agent_id: member.agent_id.clone(),
+            name: member.name.clone(),
+            agent_type,
+            project_memory_entrypoint: resolve_agent_memory_entrypoint(&project_memory_dir),
+            local_memory_entrypoint: resolve_agent_memory_entrypoint(&local_memory_dir),
+            project_memory_dir,
+            local_memory_dir,
+        });
+    }
 
-    TeamMemorySyncManifest {
+    Ok(TeamMemorySyncManifest {
         team_name: team_file.name.clone(),
         workspace: workspace.to_path_buf(),
         generated_at_ms: now_ms(),
         members,
-    }
+    })
 }
 
 #[allow(dead_code)]
@@ -87,12 +91,18 @@ pub fn write_team_memory_sync_manifest(
     team_file: &TeamFile,
     workspace: &Path,
 ) -> anyhow::Result<PathBuf> {
-    let manifest = build_team_memory_sync_manifest(team_file, workspace);
+    let manifest = build_team_memory_sync_manifest(team_file, workspace)?;
     let path = team_memory_sync_path(&team_file.name)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, serde_json::to_string_pretty(&manifest)?)?;
+    // Atomic replace: `fs::write` truncates first, so a crash or concurrent
+    // reader mid-write could leave a truncated manifest that the next read
+    // reports as a JSON parse error instead of the last valid state.
+    codesmith_agent_runtime::utils::write_atomic(
+        &path,
+        serde_json::to_string_pretty(&manifest)?.as_bytes(),
+    )?;
     Ok(path)
 }
 

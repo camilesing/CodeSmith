@@ -68,7 +68,10 @@ fn detect_backend_kind_with(lookup: impl Fn(&str) -> Option<String>) -> BackendK
 
 fn detect_from_env(lookup: &impl Fn(&str) -> Option<String>) -> BackendKind {
     // 2. Inside a tmux session — `tmux split-window` targets the active pane.
-    if lookup("TMUX").is_some() {
+    // Real tmux always sets TMUX to a non-empty socket path; an empty value
+    // (e.g. `export TMUX=` in a shell rc) must not select tmux and then fail
+    // or target an unrelated session — degrade to the next detector.
+    if lookup("TMUX").is_some_and(|value| !value.trim().is_empty()) {
         return BackendKind::Tmux;
     }
     // 3. Running inside iTerm2 — AppleScript can open a new tab.
@@ -113,6 +116,16 @@ mod tests {
         assert_eq!(
             detect_backend_kind_from_env(&env(&[("TMUX", "/tmp/tmux-1000/default,123,0")])),
             BackendKind::Tmux
+        );
+    }
+
+    /// `export TMUX=` (blanked instead of unset, common in shell rc files)
+    /// must not select tmux: real tmux always sets a non-empty socket path.
+    #[test]
+    fn blank_tmux_env_stays_in_process() {
+        assert_eq!(
+            detect_backend_kind_from_env(&env(&[("TMUX", "")])),
+            BackendKind::InProcess
         );
     }
 

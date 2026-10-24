@@ -100,7 +100,26 @@ impl TeammateBackend for TmuxBackend {
         }
 
         // `-P -F "#{pane_id}"` prints the new pane id to stdout.
-        let pane_id = parse_tmux_pane_id(&output.stdout)?;
+        let pane_id = match parse_tmux_pane_id(&output.stdout) {
+            Ok(id) => id,
+            Err(err) => {
+                // tmux exited 0, so the pane exists and the teammate process
+                // is running in it. Kill it best-effort (any `%`-prefixed
+                // line may be the pane id) so a parse failure does not leak
+                // a live pane that a caller retry would duplicate.
+                if let Some(candidate) = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .find(|line| line.starts_with('%'))
+                    .map(str::to_owned)
+                {
+                    let _ = Command::new("tmux")
+                        .args(["kill-pane", "-t", &candidate])
+                        .output()
+                        .await;
+                }
+                return Err(err);
+            }
+        };
 
         Ok(SpawnedTeammate {
             agent_id: spec.agent_id.clone(),
