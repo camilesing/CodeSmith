@@ -357,6 +357,29 @@ pub fn mod_state_lock() -> std::sync::MutexGuard<'static, ()> {
     }
 }
 
+/// The mod transition lock — serializes the whole persist→transition
+/// sequence (and the whole-layer [`reload_mods`] rebuild) across BOTH
+/// mutation entry points: the `/mods …` REPL commands and the
+/// model-visible `manage_mods` tool. Without it, two concurrent mutations
+/// can interleave as persist(A) → persist(B) → transition(B) →
+/// transition(A): each transition re-validates from disk-fresh state, but
+/// the runner-side bind/unload ordering is not serialized against the
+/// persists, so the final transition can contradict the final persist and
+/// the live runtime diverges from the store until the next reload or
+/// session start.
+///
+/// Lock ordering: transition lock → state lock. Acquired BEFORE
+/// [`mod_state_lock`] and held across persist + transition; the
+/// activation-hash backfill inside `load_mod` re-acquires only the state
+/// lock (after the persist guard dropped), so no reentrancy hazard exists.
+pub fn mod_transition_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    match LOCK.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// SHA-256 hex of a mod's entry file — the content the activation consent
 /// is bound to. Known limitation: companion files beside the entry are not
 /// hashed (the entry script is the executable unit mods load).
@@ -566,6 +589,14 @@ pub fn reload_mods(
     mods_enabled: bool,
     session_mods: &SessionMods,
 ) -> String {
+    // The transition lock serializes this whole-layer rebuild against the
+    // per-mod persist→transition sequences (`/mods` commands, the
+    // manage_mods tool): a rebuild interleaved with a persist could
+    // repopulate from pre-persist state, and the following transition
+    // would then run against a diverged baseline. Lock order:
+    // transition → state (the populate-path backfill takes the state lock
+    // inside).
+    let _transition = mod_transition_lock();
     // Disk-fresh stores: the tool path may have mutated them since the App
     // copies were loaded. An unreadable store must NOT silently become an
     // empty one — `reload_extension_runtime` clears every binding and
@@ -801,35 +832,51 @@ pub fn session_remove_mod(ctx: &ModReloadCtx, id: &str) -> String {
 /// consent) is re-checked for this id, then compile + bind + retain.
 /// Survivors are untouched: no recompile, no whole-layer reload. Fails
 /// loud in-band (the returned message says what is wrong; nothing loads).
+///
+/// `Err` means the persisted state and the live runtime now disagree — the
+/// mod is recorded on disk but nothing bound — so callers surface it as a
+/// failure with a reconcile hint, not as a success note.
 pub fn load_mod(
     runner: &Arc<ExtensionRunner>,
     workspace: &Path,
     id: &str,
     mods_enabled: bool,
-) -> String {
+) -> Result<String, String> {
     if !mods_enabled {
-        return format!(
+        return Err(format!(
             "Mod layer disabled ([mods] enabled = false) — '{id}' stays on disk; it loads at the next session with the layer enabled."
-        );
+        ));
     }
     let Some(m) = discover_workspace_mods(workspace)
         .into_iter()
         .find(|m| m.id == id)
     else {
-        return format!("No mod with id '{id}' on disk — /mods list shows what exists.");
+        return Err(format!(
+            "No mod with id '{id}' on disk — /mods list shows what exists."
+        ));
     };
     let Ok(state) = ModStateStore::load_default() else {
-        return "Mod state unreadable — activation status unknown; nothing loaded.".to_string();
+        return Err(
+            "Mod state unreadable — activation status unknown; nothing loaded.".to_string(),
+        );
     };
     if state.is_disabled(id) {
-        return format!("Mod '{id}' is disabled — enable it first (/mods enable {id}).");
+        return Err(format!(
+            "Mod '{id}' is disabled — enable it first (/mods enable {id})."
+        ));
     }
     if !state.is_activated(id) {
-        return format!("Mod '{id}' is not activated — activate it first (/mods activate {id}).");
+        return Err(format!(
+            "Mod '{id}' is not activated — activate it first (/mods activate {id})."
+        ));
     }
     let hash = match entry_file_hash(&m.entry_path) {
         Ok(h) => h,
-        Err(e) => return format!("Cannot read '{id}' entry file: {e} — nothing loaded."),
+        Err(e) => {
+            return Err(format!(
+                "Cannot read '{id}' entry file: {e} — nothing loaded."
+            ));
+        }
     };
     match state.activation_hash_state(id, &hash) {
         ActivationHashState::Matches => {}
@@ -853,16 +900,16 @@ pub fn load_mod(
             }
         }
         ActivationHashState::Changed => {
-            return format!(
+            return Err(format!(
                 "Mod '{id}' entry file changed since activation — the recorded consent does not cover this content. /mods activate {id} to re-consent."
-            );
+            ));
         }
     }
     let kv_dir = state.kv_dir();
     let hub = runner.message_projection_hub();
     let rhai_mod = match load_rhai_mod(&m, kv_dir.as_deref(), hub) {
         Ok(m) => Arc::new(m),
-        Err(e) => return format!("Compile '{id}' failed, nothing loaded: {e}"),
+        Err(e) => return Err(format!("Compile '{id}' failed, nothing loaded: {e}")),
     };
     let gen_before = runner.generation();
     let runner_in = Arc::clone(runner);
@@ -875,11 +922,11 @@ pub fn load_mod(
             for r in rejections {
                 msg.push_str(&format!(" Rejected registration: {r}"));
             }
-            msg
+            Ok(msg)
         }
-        Err(e) => {
-            format!("Bind '{id}' failed: {e} — the mod stays on disk; retry or /mods reload.")
-        }
+        Err(e) => Err(format!(
+            "Bind '{id}' failed: {e} — the mod stays on disk; retry or /mods reload."
+        )),
     }
 }
 
@@ -888,16 +935,20 @@ pub fn load_mod(
 /// compiled ASTs (no recompile), bump the generation once. Known
 /// limitation, by design: the mod's KV file persists (its opt-in store);
 /// the unload reclaims the compiled engine + AST only.
-pub fn unload_mod(runner: &Arc<ExtensionRunner>, id: &str) -> String {
+///
+/// `Err` is reserved for a runtime the store no longer matches: survivors
+/// that failed to re-register. An id with no live binding is the desired
+/// state already — an idempotent `Ok`, not a failure.
+pub fn unload_mod(runner: &Arc<ExtensionRunner>, id: &str) -> Result<String, String> {
     let gen_before = runner.generation();
     let survivors_before = runner.retained_mod_ids();
     let runner_in = Arc::clone(runner);
     let id_in = id.to_string();
     let outcome = drive_transition(async move { runner_in.unload_retained_mod(&id_in).await });
     if !outcome.evicted {
-        return format!(
+        return Ok(format!(
             "Mod '{id}' had no live binding this session (discovered, not loaded); nothing to unload."
-        );
+        ));
     }
     let mut msg = format!(
         "Unloaded mod '{id}' (generation {gen_before} → {}); {} surviving mod(s) re-registered without recompile.",
@@ -906,8 +957,11 @@ pub fn unload_mod(runner: &Arc<ExtensionRunner>, id: &str) -> String {
     );
     if !outcome.errors.is_empty() {
         msg.push_str(&format!(" Errors: {}.", outcome.errors.join("; ")));
+        // Survivors lost their re-registration — the live layer is now
+        // short of what the store says should run.
+        return Err(msg);
     }
-    msg
+    Ok(msg)
 }
 
 #[cfg(test)]
@@ -1268,9 +1322,9 @@ trust_level = "trusted"
         }
 
         let runner = bound_runner(&ws);
-        let note = load_mod(&runner, &ws, "mod-a", true);
+        let note = load_mod(&runner, &ws, "mod-a", true).unwrap();
         assert!(note.contains("Loaded mod 'mod-a' live"), "{note}");
-        let note = load_mod(&runner, &ws, "mod-b", true);
+        let note = load_mod(&runner, &ws, "mod-b", true).unwrap();
         assert!(note.contains("Loaded mod 'mod-b' live"), "{note}");
 
         let tools = |runner: &Arc<ExtensionRunner>| {
@@ -1287,14 +1341,14 @@ trust_level = "trusted"
         // Unload one: its binding goes, the survivor stays live without a
         // recompile, generation bumps.
         let gen_before = runner.generation();
-        let note = unload_mod(&runner, "mod-a");
+        let note = unload_mod(&runner, "mod-a").unwrap();
         assert!(note.contains("Unloaded mod 'mod-a'"), "{note}");
         assert!(runner.generation() > gen_before);
         assert_eq!(tools(&runner), vec!["tool-b"]);
 
         // Enable-after-disable roundtrip: the same mod loads back live.
         // Slot order is preserved (same-id retain replaces in place).
-        let note = load_mod(&runner, &ws, "mod-a", true);
+        let note = load_mod(&runner, &ws, "mod-a", true).unwrap();
         assert!(note.contains("Loaded mod 'mod-a' live"), "{note}");
         assert_eq!(tools(&runner), vec!["tool-a", "tool-b"]);
     }
@@ -1326,7 +1380,7 @@ trust_level = "trusted"
             rt.block_on(runner.bind_mod(Arc::new(m)))
                 .expect("bind builtin");
         }
-        let note = load_mod(&runner, &ws, "pol-mod", true);
+        let note = load_mod(&runner, &ws, "pol-mod", true).unwrap();
         assert!(note.contains("Loaded mod 'pol-mod' live"), "{note}");
 
         {
@@ -1343,7 +1397,7 @@ trust_level = "trusted"
 
         // Unload (what disable/remove drive): the listing falls back to
         // the builtin id + builtin default live.
-        let note = unload_mod(&runner, "pol-mod");
+        let note = unload_mod(&runner, "pol-mod").unwrap();
         assert!(note.contains("Unloaded mod 'pol-mod'"), "{note}");
         {
             let _guard = mod_state_lock();
@@ -1595,7 +1649,11 @@ trust_level = "trusted"
             activate(&ws, &mut state, "drift").unwrap();
         }
         let runner = bound_runner(&ws);
-        assert!(load_mod(&runner, &ws, "drift", true).contains("Loaded mod 'drift' live"));
+        assert!(
+            load_mod(&runner, &ws, "drift", true)
+                .unwrap()
+                .contains("Loaded mod 'drift' live")
+        );
 
         // Content changed since the recorded consent: load must refuse
         // (the one-time consent no longer covers this content).
@@ -1604,13 +1662,13 @@ trust_level = "trusted"
             r#"register_tool(#{ name: "tool-drift-2", description: "d", schema: #{ type: "object", properties: #{} } }, |i| ok("x"));"#,
         )
         .unwrap();
-        let note = load_mod(&runner, &ws, "drift", true);
+        let note = load_mod(&runner, &ws, "drift", true).unwrap_err();
         assert!(note.contains("changed since activation"), "{note}");
 
         // Unknown id: loud no-op.
-        let note = load_mod(&runner, &ws, "ghost", true);
+        let note = load_mod(&runner, &ws, "ghost", true).unwrap_err();
         assert!(note.contains("No mod with id 'ghost'"), "{note}");
-        let note = unload_mod(&runner, "ghost");
+        let note = unload_mod(&runner, "ghost").unwrap();
         assert!(note.contains("no live binding"), "{note}");
     }
 }
