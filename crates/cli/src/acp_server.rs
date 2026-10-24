@@ -144,9 +144,16 @@ pub async fn run_acp_server(config: Config, model: String) -> Result<()> {
         let method = match message.get("method").and_then(Value::as_str) {
             Some(method) => method,
             None => {
-                // A response to one of OUR requests carries an id, no
-                // method, and expects no reply: it answers a pending
-                // `session/request_permission`.
+                // A client RESPONSE (id, no method, `result`/`error`) must
+                // never be replied to — JSON-RPC 2.0 forbids answering a
+                // response, and strict clients (Zed among them) drop the
+                // connection on it. Swallow it whether or not its waiter is
+                // still pending: a late answer to a timed-out permission
+                // request, or a duplicated reply, is not a protocol error.
+                if message.get("result").is_some() || message.get("error").is_some() {
+                    route_client_response(&server.shared, &message);
+                    continue;
+                }
                 if route_client_response(&server.shared, &message) {
                     continue;
                 }
@@ -211,6 +218,11 @@ struct AcpSession {
     /// Creation stamp; the oldest session is evicted once the map grows
     /// past `MAX_ACP_SESSIONS`.
     created_at: Instant,
+    /// Monotonic identity of this map entry: bumped every time the id is
+    /// re-inserted (a `session/new`/`session/resume` replacing an entry) so
+    /// `ensure_engine` can detect that the session it built an engine for
+    /// was replaced while the build was in flight.
+    generation: u64,
     /// The editor's `cwd` from `session/new`, or the saved session's
     /// workspace on resume — what the record's `workspace` field says.
     workspace: PathBuf,
@@ -464,6 +476,7 @@ impl AcpServer {
             session_id.clone(),
             AcpSession {
                 created_at: Instant::now(),
+                generation: 0,
                 workspace,
                 history: Arc::new(Vec::new()),
                 system_prompt: None,
@@ -539,6 +552,12 @@ impl AcpServer {
                     .map_err(AcpError::internal)?;
             }
         }
+        // Capture the entry's generation BEFORE closing: the fresh entry
+        // must carry generation+1 so an engine built against the removed
+        // entry (in-flight `ensure_engine`) is never installed into it.
+        let next_generation = lock_sessions(&self.shared.sessions)
+            .get(&session_id)
+            .map_or(0, |session| session.generation + 1);
         self.close_session(&session_id);
         let mut sessions = lock_sessions(&self.shared.sessions);
         evict_oldest_if_full(&mut sessions);
@@ -546,6 +565,7 @@ impl AcpServer {
             session_id,
             AcpSession {
                 created_at: Instant::now(),
+                generation: next_generation,
                 workspace: saved.metadata.workspace,
                 history: Arc::new(saved.messages),
                 system_prompt: saved.system_prompt.map(SystemPrompt::Text),
@@ -772,7 +792,7 @@ async fn ensure_engine<W>(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (existing, workspace, history, system_prompt) = {
+    let (existing, workspace, history, system_prompt, generation) = {
         let sessions = lock_sessions(&shared.sessions);
         let Some(session) = sessions.get(session_id) else {
             anyhow::bail!("unknown sessionId {session_id:?}");
@@ -782,6 +802,7 @@ where
             session.workspace.clone(),
             session.history.clone(),
             session.system_prompt.clone(),
+            session.generation,
         )
     };
     if let Some(engine) = existing {
@@ -824,22 +845,58 @@ where
         writer,
     ));
     let mut sessions = lock_sessions(&shared.sessions);
-    if let Some(session) = sessions.get_mut(session_id) {
-        session.engine = Some(engine.clone());
-        session.pump_task = Some(pump.abort_handle());
-    } else {
-        // Closed while the engine was being built.
-        pump.abort();
-        release_engine(engine);
-        anyhow::bail!("unknown sessionId {session_id:?}");
+    match sessions.get_mut(session_id) {
+        Some(session) if session.generation == generation => {
+            session.engine = Some(engine.clone());
+            session.pump_task = Some(pump.abort_handle());
+        }
+        // Closed or REPLACED while the engine was being built (e.g. a
+        // concurrent `session/resume` for the same id removed and re-inserted
+        // the entry): a plain `get_mut` success here would install an engine
+        // built from the replaced entry's workspace/history into the fresh
+        // session. The generation mismatch names that case.
+        _ => {
+            pump.abort();
+            release_engine(engine);
+            anyhow::bail!("session {session_id:?} went away while its engine was built");
+        }
     }
     Ok(engine)
 }
 
-/// Relay one session's engine events to the client until the session goes.
-/// The single-reader discipline is the point: every event of this session's
-/// engine flows through this task alone, so a cancelled turn cannot be
-/// confused with its successor.
+/// Write one session update on behalf of the pump. `false` means stdout is
+/// gone (editor crashed / pipe closed): once writes fail, every further
+/// event would stream into a void while an in-flight `session/prompt` waits
+/// out its completion — so the caller stops the pump, and the pending
+/// prompt's sender is dropped here, which the waiter resolves as
+/// `Interrupted` (cancelling the engine) instead of hanging.
+async fn pump_emit<W>(
+    writer: &SharedWriter<W>,
+    shared: &AcpShared,
+    session_id: &str,
+    update: Value,
+) -> bool
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let mut writer = writer.lock().await;
+    let ok = write_session_update(&mut *writer, session_id, update)
+        .await
+        .is_ok();
+    drop(writer);
+    if !ok {
+        let mut sessions = lock_sessions(&shared.sessions);
+        if let Some(session) = sessions.get_mut(session_id) {
+            drop(session.pending_prompt.take());
+        }
+    }
+    ok
+}
+
+/// Stream engine events to the client as `session/update` notifications
+/// until the engine (or the write side) goes away; the pump is the engine's
+/// only event reader, so `ensure_engine` aborts it when a session closes and
+/// the successor must not be confused with its predecessor.
 async fn pump_events<W>(
     engine: EngineHandle,
     shared: AcpShared,
@@ -858,27 +915,33 @@ async fn pump_events<W>(
         };
         match event {
             Event::MessageDelta { content, .. } => {
-                let mut writer = writer.lock().await;
-                let _ = write_session_update(
-                    &mut *writer,
+                if !pump_emit(
+                    &writer,
+                    &shared,
                     &session_id,
                     chunk_update("agent_message_chunk", content),
                 )
-                .await;
+                .await
+                {
+                    return;
+                }
             }
             Event::ThinkingDelta { content, .. } => {
-                let mut writer = writer.lock().await;
-                let _ = write_session_update(
-                    &mut *writer,
+                if !pump_emit(
+                    &writer,
+                    &shared,
                     &session_id,
                     chunk_update("agent_thinking_chunk", content),
                 )
-                .await;
+                .await
+                {
+                    return;
+                }
             }
             Event::ToolCallStarted { id, name, input } => {
-                let mut writer = writer.lock().await;
-                let _ = write_session_update(
-                    &mut *writer,
+                if !pump_emit(
+                    &writer,
+                    &shared,
                     &session_id,
                     json!({
                         "sessionUpdate": "tool_call",
@@ -888,16 +951,22 @@ async fn pump_events<W>(
                         "status": "in_progress",
                     }),
                 )
-                .await;
+                .await
+                {
+                    return;
+                }
             }
             Event::ToolCallProgress { id, output } => {
-                let mut writer = writer.lock().await;
-                let _ = write_session_update(
-                    &mut *writer,
+                if !pump_emit(
+                    &writer,
+                    &shared,
                     &session_id,
                     tool_call_update(&id, "in_progress", &output),
                 )
-                .await;
+                .await
+                {
+                    return;
+                }
             }
             Event::ToolCallComplete { id, result, .. } => {
                 let (status, text) = match result {
@@ -911,13 +980,16 @@ async fn pump_events<W>(
                     ),
                     Err(err) => ("failed", err.to_string()),
                 };
-                let mut writer = writer.lock().await;
-                let _ = write_session_update(
-                    &mut *writer,
+                if !pump_emit(
+                    &writer,
+                    &shared,
                     &session_id,
                     tool_call_update(&id, status, &text),
                 )
-                .await;
+                .await
+                {
+                    return;
+                }
             }
             // The permission channel: a session "always" grant answers
             // directly; otherwise the client is asked over
@@ -1472,6 +1544,7 @@ mod tests {
             id.to_string(),
             AcpSession {
                 created_at: Instant::now(),
+                generation: 0,
                 workspace: workspace.to_path_buf(),
                 history: Arc::new(Vec::new()),
                 system_prompt: None,
