@@ -236,7 +236,9 @@ fn comparable(path: &Path) -> PathBuf {
 }
 
 enum CappedRead {
-    Parsed(SavedSession),
+    // Boxed: `SavedSession` is ~550 bytes and the other variants carry
+    // none, so an unboxed variant bloated every `CappedRead` on the stack.
+    Parsed(Box<SavedSession>),
     /// Larger than the cap (fstat or the take() bound tripped).
     Oversize,
     /// Vanished, unreadable, non-UTF-8, or invalid JSON.
@@ -262,7 +264,7 @@ fn read_capped(file: std::fs::File) -> CappedRead {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
     {
-        Some(session) => CappedRead::Parsed(session),
+        Some(session) => CappedRead::Parsed(Box::new(session)),
         None => CappedRead::Corrupt,
     }
 }
