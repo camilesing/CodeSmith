@@ -544,16 +544,16 @@ fn to_cmd(edit: Edit) -> Option<Cmd> {
         Edit::Consumed => Some(Cmd::Noop),
         Edit::Insert(text) => Some(Cmd::Insert(1, text)),
         Edit::KillWholeLine => Some(Cmd::Kill(Movement::WholeLine)),
-        // Known limitation: rustyline 14 has no kill-ring-free forward
-        // delete (no `Cmd::Delete`), so Ctrl+D maps to single-char Kill
-        // exactly like the library's own backspace binding — which resets
-        // the kill ring, clobbering an earlier Ctrl+K/U/W kill. Upgrading
-        // to a rustyline with `Cmd::Delete(Movement)` is the fix.
-        // Known limitation: rustyline 14 has no kill-ring-free delete —
-        // `Cmd::Replace(_, None)` also routes through `edit_kill` — so a
-        // Ctrl+D with text on the line clobbers the last Ctrl+K/U/W kill.
-        // `Cmd::Delete(Movement)` (readline delete-char semantics) arrives
-        // with a rustyline upgrade; swap it in then.
+        // Known limitation (verified against rustyline 14.0.0's source):
+        // the `Cmd` enum has no kill-ring-free forward delete. There is no
+        // alternative mapping — `Cmd::Delete` does not exist, `Replace(..)`
+        // routes through `edit_kill` for BOTH its `None` and `Some(text)`
+        // arms (command.rs `execute`), and `ReplaceChar`/`Overwrite` are
+        // replace-not-delete semantics. So Ctrl+D maps to single-char Kill
+        // (matching the library's own backspace binding), which resets the
+        // kill-ring head and clobbers an earlier Ctrl+K/U/W kill — a later
+        // Ctrl+Y yanks the single deleted character. The fix is a rustyline
+        // upgrade that adds `Cmd::Delete(Movement)`; swap it in then.
         Edit::DeleteForward => Some(Cmd::Kill(Movement::ForwardChar(1))),
         Edit::Newline => Some(Cmd::Newline),
         // `Cmd::Interrupt` is rustyline's "abandon this readline call"
