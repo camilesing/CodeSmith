@@ -32,6 +32,11 @@ pub struct RlmSession {
     pub total_duration: Duration,
     pub peak_var_count: usize,
     pub final_count: usize,
+    /// Monotonic sequence for stdout/stderr large-output handles:
+    /// `HandleStore` is last-writer-wins on (session, name), so fixed
+    /// `stdout_0`/`stderr_0` names invalidated every earlier issued handle
+    /// after a second large-output eval.
+    pub output_count: usize,
     pub created_at: Instant,
     pub last_used_at: Instant,
     pub context_path: PathBuf,
@@ -56,6 +61,7 @@ impl RlmSession {
             total_duration: Duration::ZERO,
             peak_var_count: 0,
             final_count: 0,
+            output_count: 0,
             created_at: now,
             last_used_at: now,
             context_path,

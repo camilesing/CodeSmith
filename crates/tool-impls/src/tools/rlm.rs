@@ -34,6 +34,25 @@ const FULL_STDOUT_TAIL_CHARS: usize = 1_024;
 const STDOUT_HANDLE_THRESHOLD_CHARS: usize = 1_000;
 const HARD_SUB_RLM_DEPTH_CAP: u32 = 3;
 
+/// Hard wall-clock bound for one RLM eval. The per-session mutex is held
+/// across the eval and RLM-context rounds have NO round timeout by design,
+/// so an infinite loop in user code would otherwise wedge the session
+/// forever — `rlm_close` could not even reach `kernel.shutdown()` behind
+/// the same mutex.
+const RLM_EVAL_HARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Timeout handler: tear the wedged kernel down (it is being killed, not
+/// reused) and fail the eval with a clear message.
+fn rlm_eval_timeout(name: &str) -> ToolError {
+    // The caller drops `kernel` right after this returns via `?`; mark the
+    // session closed so the next eval says "closed" instead of dangling.
+    ToolError::execution_failed(format!(
+        "rlm_eval: eval in context `{name}` exceeded the hard deadline of {} s and was killed; \
+         the context is now closed — re-open it with rlm_open to continue",
+        RLM_EVAL_HARD_TIMEOUT.as_secs()
+    ))
+}
+
 pub struct RlmSessionObjectsTool;
 
 #[async_trait]
@@ -294,17 +313,23 @@ impl ToolSpec for RlmEvalTool {
             )
             .with_child_timeout_secs(config.sub_query_timeout_secs);
             let usage_handle = bridge.usage_handle();
-            let round = kernel
-                .run(code, Some(&bridge))
-                .await
-                .map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))?;
+            let round =
+                tokio::time::timeout(RLM_EVAL_HARD_TIMEOUT, kernel.run(code, Some(&bridge)))
+                    .await
+                    .map_err(|_| rlm_eval_timeout(name))
+                    .and_then(|res| {
+                        res.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))
+                    })?;
             let usage = usage_handle.lock().await.clone();
             (round, usage)
         } else {
-            let round = kernel
-                .run(code, None::<&RlmBridge>)
-                .await
-                .map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))?;
+            let round =
+                tokio::time::timeout(RLM_EVAL_HARD_TIMEOUT, kernel.run(code, None::<&RlmBridge>))
+                    .await
+                    .map_err(|_| rlm_eval_timeout(name))
+                    .and_then(|res| {
+                        res.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))
+                    })?;
             (round, Default::default())
         };
 
@@ -339,7 +364,7 @@ impl ToolSpec for RlmEvalTool {
             text: &str,
             feedback: &OutputFeedback,
             store: &mut crate::tools::handle::HandleStore,
-            session_id: &str,
+            session: &mut RlmSession,
             tag: &str,
         ) -> (Option<String>, Option<crate::tools::handle::VarHandle>) {
             let threshold = STDOUT_HANDLE_THRESHOLD_CHARS;
@@ -348,9 +373,13 @@ impl ToolSpec for RlmEvalTool {
                     (Some(preview_output(text)), None)
                 }
                 (OutputFeedback::Full, _) if !text.trim().is_empty() => {
-                    // Store full body as a handle for out-of-band retrieval
-                    let name = format!("{tag}_{}", 0); // single counter is fine
-                    let handle = store.insert_text(session_id, name, text);
+                    // Per-session monotonic sequence (mirrors final_count):
+                    // HandleStore is last-writer-wins on (session, name),
+                    // so the fixed `_0` name invalidated every earlier
+                    // issued handle after a second large-output eval.
+                    session.output_count = session.output_count.saturating_add(1);
+                    let name = format!("{tag}_{}", session.output_count);
+                    let handle = store.insert_text(&session.id, name, text);
                     (
                         Some(format!("{} chars; retrieve via handle_read", text.len())),
                         Some(handle),
@@ -364,14 +393,14 @@ impl ToolSpec for RlmEvalTool {
             &round.full_stdout,
             &config.output_feedback,
             &mut *context.runtime.handle_store.lock().await,
-            &session.id,
+            &mut session,
             "stdout",
         );
         let (stderr_preview, stderr_handle) = route_output(
             &round.stderr,
             &config.output_feedback,
             &mut *context.runtime.handle_store.lock().await,
-            &session.id,
+            &mut session,
             "stderr",
         );
 

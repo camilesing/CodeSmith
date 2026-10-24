@@ -255,7 +255,23 @@ fn load_messages(
         {
             continue;
         }
-        let (header, reader) = open_archive(path)?;
+        // File-level failures (partial write from a crash mid-cycle,
+        // unreadable header) skip THAT archive and keep the recall alive —
+        // the module contract ("one bad record must not make the whole
+        // tool permanently unusable") extends to whole files.
+        let (header, reader) = match open_archive(path) {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::warn!(
+                    target: "codesmith::recall",
+                    path = %path.display(),
+                    error = %err,
+                    "skipping unreadable archive file"
+                );
+                skipped += 1;
+                continue;
+            }
+        };
         for (idx, message_result) in reader.enumerate() {
             let message = match message_result {
                 Ok(message) => message,

@@ -237,9 +237,21 @@ async fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
 }
 
 fn run_command_blocking(program: &str, args: &[String], cwd: &Path) -> CommandProbe {
-    let output = Command::new(program).args(args).current_dir(cwd).output();
-    let output = match output {
-        Ok(output) => output,
+    // Bound the probe: git blocking on a credential helper or a wedged
+    // rustc used to pin this blocking thread (and the tool call) forever.
+    // std has no wait-with-timeout, so poll try_wait and kill at the
+    // deadline; probe output is tiny (version strings), so the pipes
+    // cannot fill and block the child between polls.
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let mut child = match Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return CommandProbe::Missing,
         // Keep the spawn error (EACCES, …): a silent `stderr: None` made
         // "git refused to run" indistinguishable from "not a git repo".
@@ -250,10 +262,44 @@ fn run_command_blocking(program: &str, args: &[String], cwd: &Path) -> CommandPr
         }
     };
 
-    if output.status.success() {
-        CommandProbe::Success(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return CommandProbe::Failed {
+                        stderr: Some(format!(
+                            "{program} probe timed out after {} s",
+                            PROBE_TIMEOUT.as_secs()
+                        )),
+                    };
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => {
+                return CommandProbe::Failed {
+                    stderr: Some(format!("failed to run {program}: {err}")),
+                };
+            }
+        }
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut stderr);
+    }
+
+    if status.success() {
+        CommandProbe::Success(String::from_utf8_lossy(&stdout).trim().to_string())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
         CommandProbe::Failed {
             stderr: if stderr.is_empty() {
                 None

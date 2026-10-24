@@ -99,7 +99,10 @@ impl ToolSpec for FimEditTool {
 
     fn capabilities(&self) -> Vec<ToolCapability> {
         vec![
-            ToolCapability::ReadOnly,
+            // No ReadOnly here: the tool overwrites the file on disk —
+            // advertising ReadOnly alongside WritesFiles misled
+            // capability-driven gating into treating it as side-effect
+            // free.
             ToolCapability::WritesFiles,
             ToolCapability::RequiresApproval,
         ]

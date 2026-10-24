@@ -19,6 +19,28 @@ impl ExitWorktreeTool {
     pub fn new(worktree_state: SharedWorktreeSessionState) -> Self {
         Self { worktree_state }
     }
+
+    /// Compare-and-clear: only reset when the tracked worktree is still
+    /// the one this exit read. The old unconditional clear could wipe a
+    /// NEW session's fields when a concurrent `enter_worktree` landed
+    /// between the read and the clear — orphaning a live worktree — and
+    /// two concurrent exits could both pass the active check.
+    fn clear_session_if_same(&self, entered_path: &std::path::Path) {
+        let mut state = self
+            .worktree_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.worktree_path.as_deref() != Some(entered_path) {
+            return; // a different session owns the state now — leave it
+        }
+        state.active = false;
+        state.worktree_path = None;
+        state.worktree_branch = None;
+        state.worktree_name = None;
+        state.original_cwd = None;
+        state.original_head_commit = None;
+        state.session_id = None;
+    }
 }
 
 #[async_trait]
@@ -156,21 +178,10 @@ impl ToolSpec for ExitWorktreeTool {
 
         // 3. Perform action
         if action == "keep" {
-            // Clear state but keep files on disk (single guard — the old
-            // form re-locked seven times, once per field).
-            {
-                let mut state = self
-                    .worktree_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                state.active = false;
-                state.worktree_path = None;
-                state.worktree_branch = None;
-                state.worktree_name = None;
-                state.original_cwd = None;
-                state.original_head_commit = None;
-                state.session_id = None;
-            }
+            // Clear state but keep files on disk — conditionally, so a
+            // concurrent enter that landed between our read and this clear
+            // keeps its own state.
+            self.clear_session_if_same(&worktree_path);
 
             let branch_info = worktree_branch
                 .as_deref()
@@ -192,20 +203,8 @@ impl ToolSpec for ExitWorktreeTool {
 
         cleanup_worktree(&worktree_path, &worktree_branch, &git_root)?;
 
-        // Clear state
-        {
-            let mut state = self
-                .worktree_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            state.active = false;
-            state.worktree_path = None;
-            state.worktree_branch = None;
-            state.worktree_name = None;
-            state.original_cwd = None;
-            state.original_head_commit = None;
-            state.session_id = None;
-        }
+        // Clear state — conditionally (same compare-and-clear rationale).
+        self.clear_session_if_same(&worktree_path);
 
         Ok(ToolResult::success(format!(
             "Exited and removed worktree at {}. Session is now back in {}.",

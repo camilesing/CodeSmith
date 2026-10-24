@@ -125,18 +125,39 @@ async fn search_files_async(
     cancel_token: Option<CancellationToken>,
     timeout: Duration,
 ) -> Result<Vec<FileSearchMatch>, ToolError> {
-    let worker_cancel_token = cancel_token.clone();
-    run_blocking_file_search(timeout, cancel_token, move || {
+    // A worker-local token derived from the caller's (or standalone):
+    // dropping the JoinHandle on timeout does NOT stop a spawn_blocking
+    // walker, so the walk must be cancellable through check_cancelled —
+    // otherwise it pinned a blocking thread for the whole tree, minutes
+    // past the deadline.
+    let worker_cancel_token = cancel_token
+        .clone()
+        .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+    let worker_token = worker_cancel_token.child_token();
+    let guard = WorkerCancelGuard(worker_token.clone());
+    let result = run_blocking_file_search(timeout, cancel_token, move || {
         search_files(
             &query,
             &base_path,
             extensions,
             exclude_patterns,
             limit,
-            worker_cancel_token.as_ref(),
+            Some(&worker_token),
         )
     })
-    .await
+    .await;
+    drop(guard);
+    result
+}
+
+/// Cancels the worker token when dropped: every early return of
+/// `run_blocking_file_search` (timeout above all) must unblock the walk.
+struct WorkerCancelGuard(tokio_util::sync::CancellationToken);
+
+impl Drop for WorkerCancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 async fn run_blocking_file_search<F>(

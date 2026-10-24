@@ -160,7 +160,15 @@ fn write_kod_memory(
     // A slug collision must not silently clobber the existing memory
     // file — durable data would be lost with a success message that
     // reads identically for create and overwrite. Disambiguate with a
-    // numeric suffix instead.
+    // numeric suffix instead. Serialize selection-through-write so two
+    // concurrent `remember` calls with the same slug cannot both pass
+    // the `exists()` check and clobber each other's `write_atomic`
+    // rename (the failure mode ENTRYPOINT_LOCK already prevents for
+    // MEMORY.md).
+    static MEMORY_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let memory_io_guard = MEMORY_IO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if memory_dir.join(format!("{filename}.md")).exists() {
         let mut n = 2u32;
         while memory_dir.join(format!("{filename}_{n}.md")).exists() {
@@ -194,12 +202,15 @@ fn write_kod_memory(
         ))
     })?;
 
-    // Write file.
+    // Write file — still under the guard: the write_atomic rename is the
+    // moment the chosen filename is claimed, so selection-through-write
+    // must be one critical section.
     codesmith_agent_runtime::utils::write_atomic(&file_path, content.as_bytes()).map_err(
         |err| {
             ToolError::execution_failed(format!("failed to write {}: {err}", file_path.display()))
         },
     )?;
+    drop(memory_io_guard);
 
     // Append pointer line to MEMORY.md entrypoint. Markdown brackets are
     // stripped from the interpolated values so a hostile name/description

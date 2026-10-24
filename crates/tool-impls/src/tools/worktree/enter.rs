@@ -209,11 +209,49 @@ impl ToolSpec for EnterWorktreeTool {
 /// and the default branch, so prior-session commits stay visible to
 /// exit_worktree's `rev-list original..HEAD` safety check. Best-effort —
 /// callers fall back to the current HEAD when git cannot answer.
+/// The oldest entry of `worktree_branch`'s reflog — the branch's
+/// creation point, when the reflog exists and is non-empty.
+fn reflog_oldest_baseline(
+    worktree_path: &std::path::Path,
+    worktree_branch: &str,
+) -> Option<String> {
+    let output = super::run_git(
+        worktree_path,
+        &["reflog", "show", worktree_branch, "--format=%H"],
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()?
+        .trim()
+        .to_string();
+    let valid = matches!(sha.len(), 40 | 64) && sha.chars().all(|c| c.is_ascii_hexdigit());
+    valid.then_some(sha)
+}
+
 fn merge_base_baseline(worktree_path: &std::path::Path, worktree_branch: &str) -> Option<String> {
     if worktree_branch.is_empty() {
         return None;
     }
+    // Prefer the branch reflog's OLDEST entry: it is the branch's
+    // creation point — durable, session-independent, and immune to the
+    // merge-base failure modes (a `get_default_branch` fallback to the
+    // literal `HEAD` made baseline == tip, and a fetched origin/main moves
+    // the merge-base forward, both hiding commits from the removal count).
+    if let Some(sha) = reflog_oldest_baseline(worktree_path, worktree_branch) {
+        return Some(sha);
+    }
     let default_branch = super::get_default_branch(worktree_path).ok()?;
+    if default_branch == "HEAD" {
+        // merge-base <branch> HEAD inside the worktree is just the branch
+        // tip — a 0-commit count that re-enables the very deletion hazard
+        // this baseline exists to prevent. Let the caller fall back to
+        // head_commit (and count_worktree_changes treat it as unsafe).
+        return None;
+    }
     let output = super::run_git(
         worktree_path,
         &["merge-base", worktree_branch, &default_branch],

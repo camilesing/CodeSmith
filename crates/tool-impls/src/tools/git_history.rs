@@ -222,6 +222,7 @@ impl ToolSpec for GitShowTool {
         if stat {
             args.push("--stat".to_string());
         }
+        ensure_rev_is_not_an_option(rev)?;
         args.push(rev.to_string());
         if let Some(pathspec) = &git_ctx.pathspec {
             args.push("--".to_string());
@@ -355,6 +356,7 @@ impl ToolSpec for GitBlameTool {
         if porcelain {
             args.push("--line-porcelain".to_string());
         }
+        ensure_rev_is_not_an_option(rev)?;
         args.push(rev.to_string());
         args.push("--".to_string());
         args.push(pathspec.display().to_string());
@@ -393,6 +395,15 @@ impl ToolSpec for GitBlameTool {
 struct GitContext {
     working_dir: PathBuf,
     pathspec: Option<PathBuf>,
+}
+
+fn ensure_rev_is_not_an_option(rev: &str) -> Result<(), ToolError> {
+    if rev.trim_start().starts_with('-') {
+        return Err(ToolError::invalid_input(format!(
+            "rev must be a revision expression, not an option: {rev}"
+        )));
+    }
+    Ok(())
 }
 
 fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {

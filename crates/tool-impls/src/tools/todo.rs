@@ -360,23 +360,27 @@ impl ToolSpec for TodoWriteTool {
             .and_then(|v| v.as_array())
             .ok_or_else(|| ToolError::invalid_input("Missing or invalid 'todos' array"))?;
 
+        // Validate and parse EVERY item before touching the shared list:
+        // clear-then-validate wiped the caller's checklist on a rejected
+        // item while the tool reported failure (and the transcript rebuild
+        // resurrected the old list — live state and projection diverged).
+        let parsed: Result<Vec<(String, TodoStatus)>, ToolError> = todos
+            .iter()
+            .map(|item| {
+                let content = item
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::invalid_input("Todo item missing 'content'"))?;
+                let status = parse_item_status(item.get("status"))?;
+                Ok((content.to_string(), status))
+            })
+            .collect();
+        let parsed = parsed?;
+
         let mut list = self.todo_list.lock().await;
-
-        // Clear and rebuild the list
         list.clear();
-
-        for item in todos {
-            let content = item
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::invalid_input("Todo item missing 'content'"))?;
-
-            // The documented default applies only to an ABSENT status: a
-            // present-but-invalid value (typo, non-string) silently
-            // regressed in_progress items to pending.
-            let status = parse_item_status(item.get("status"))?;
-
-            list.add(content.to_string(), status);
+        for (content, status) in parsed {
+            list.add(content, status);
         }
 
         let snapshot = list.snapshot();
