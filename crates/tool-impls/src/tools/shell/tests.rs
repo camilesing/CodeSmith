@@ -1403,6 +1403,57 @@ fn session_cwd_capture_accepts_workspace_subdir() {
     );
 }
 
+/// Only jobs the harness itself wrapped (a foreground command demoted to
+/// background — the wrapper's `_cs_rc=$?` bytes are in the job's command)
+/// may steer the session cwd through a wait/interact delta; a plain
+/// `background: true` task emitting a marker-shaped line must not.
+#[cfg(unix)]
+#[tokio::test]
+async fn delta_cwd_capture_only_for_harness_wrapped_jobs() {
+    let tmp = tempdir().expect("tempdir");
+    let sub = tmp.path().join("sub");
+    std::fs::create_dir_all(&sub).expect("mkdir");
+
+    let delta_result = |command: &str| {
+        let mut result = failed_network_shell_result("", "");
+        result.status = ShellStatus::Completed;
+        result.exit_code = Some(0);
+        result.stderr = format!("{}{}\n", CWD_MARKER_PREFIX, sub.display());
+        ShellDeltaResult {
+            command: command.to_string(),
+            result,
+            stdout_total_len: 0,
+            stderr_total_len: 0,
+        }
+    };
+
+    // Unwrapped background task: the marker line stays in the output and
+    // the session cwd is untouched.
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let tool_result =
+        build_shell_delta_tool_result(delta_result("long-running --daemon"), &ctx).await;
+    assert!(
+        tool_result.content.contains(CWD_MARKER_PREFIX),
+        "marker must not be consumed for an unwrapped task"
+    );
+    assert!(ctx.session_cwd_override().is_none());
+
+    // Wrapped (demoted foreground) job: the marker is stripped and applied.
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let wrapped_cmd = wrap_with_cwd_capture("cd sub && build");
+    let tool_result = build_shell_delta_tool_result(delta_result(&wrapped_cmd), &ctx).await;
+    assert!(
+        !tool_result.content.contains(CWD_MARKER_PREFIX),
+        "marker stripped for the wrapped job"
+    );
+    assert_eq!(
+        ctx.session_cwd_override().unwrap().canonicalize().unwrap(),
+        sub.canonicalize().unwrap()
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn exec_shell_cd_persists_across_calls() {

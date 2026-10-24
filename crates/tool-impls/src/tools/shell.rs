@@ -1177,11 +1177,19 @@ async fn build_shell_delta_tool_result(
     let mut result = delta.result;
     // P2-6: a foreground command demoted to background reports its cwd marker
     // through this polling path — strip it and fold the cwd into the session
-    // slot (same boundary posture as the foreground capture).
-    let ran_in = context
-        .session_cwd_override()
-        .unwrap_or_else(|| context.cwd.clone());
-    apply_session_cwd_capture(context, &mut result.stdout, &mut result.stderr, &ran_in);
+    // slot (same boundary posture as the foreground capture). Gated on the
+    // job's command carrying the harness wrapper (`_cs_rc=$?` is the
+    // wrapper's own byte sequence): a plain `background: true` task never
+    // ran the wrapper, so no process may steer the session cwd by emitting a
+    // marker-shaped line. Known limitation: `ran_in` re-derives from the
+    // session cwd at wait time, not the job's spawn-time directory — the
+    // acceptance checks (workspace/ran-in/trusted roots) still bound it.
+    if delta.command.contains("_cs_rc=$?") {
+        let ran_in = context
+            .session_cwd_override()
+            .unwrap_or_else(|| context.cwd.clone());
+        apply_session_cwd_capture(context, &mut result.stdout, &mut result.stderr, &ran_in);
+    }
     let network_restricted_hint =
         shell_network_restricted_hint(context, &delta.command, &result).map(str::to_string);
     let provenance_hint = macos_provenance_hint(&result);
