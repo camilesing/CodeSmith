@@ -168,7 +168,7 @@ impl ToolSpec for LoadSkillTool {
             "skill_path": skill.path.display().to_string(),
             "skill_source": source,
             "description": gate(skill.description.clone()),
-            "when_to_use": skill.when_to_use.clone().map(|w| gate(w)),
+            "when_to_use": skill.when_to_use.clone().map(gate),
             "allowed_tools": skill.allowed_tools,
             "model": skill.model,
             "effort": skill.effort,
