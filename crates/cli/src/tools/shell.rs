@@ -32,7 +32,15 @@ struct CrosstermTerminalControl;
 
 impl ShellTerminalControl for CrosstermTerminalControl {
     fn raw_mode_enabled(&self) -> bool {
-        crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+        // A failed query reading as "off" skips BOTH the pre-spawn disable
+        // and the post-spawn restore (the manager's
+        // `raw_mode_was_enabled` protocol): if raw mode actually was on,
+        // the child spawns into a raw terminal — exactly the regression
+        // this controller exists to fix. At least make it observable.
+        crossterm::terminal::is_raw_mode_enabled().unwrap_or_else(|err| {
+            tracing::warn!("failed to query terminal raw mode; assuming disabled: {err}");
+            false
+        })
     }
     fn disable_raw_mode(&self) {
         let _ = crossterm::terminal::disable_raw_mode();

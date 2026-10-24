@@ -284,7 +284,11 @@ fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
             .flatten()
             .filter_map(|entry| {
                 let path = entry.path();
-                let is_file = entry.file_type().is_ok_and(|ft| ft.is_file());
+                // `DirEntry::file_type()` does not follow symlinks, so a
+                // symlinked companion reported `is_file() == false` and was
+                // silently dropped from the "sibling files" listing.
+                // `fs::metadata` follows the link.
+                let is_file = std::fs::metadata(&path).is_ok_and(|m| m.is_file());
                 let file_name = path.file_name().and_then(|s| s.to_str());
                 let is_internal = file_name.is_some_and(|s| s == "SKILL.md" || s.starts_with('.'));
                 if is_file && !is_internal {

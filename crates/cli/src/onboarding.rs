@@ -397,17 +397,23 @@ fn persist_config(
         // Pin a per-provider model only when the file cannot resolve one on its
         // own: DeepSeek reads the template's `default_text_model`, every other
         // provider would otherwise boot on a DeepSeek model id (#1714
-        // pass-through).
-        let has_model = table
-            .get("model")
-            .and_then(toml::Value::as_str)
-            .is_some_and(|model| !model.trim().is_empty());
-        if !has_model && provider != ProviderKind::Deepseek {
-            let model = cli
-                .model_flag
-                .clone()
-                .unwrap_or_else(|| heavy_model_for_provider(provider).to_string());
+        // pass-through). An explicitly passed `--model` wins for EVERY
+        // provider — silently dropping the user's own flag on the very
+        // first run (the old DeepSeek guard) was inconsistent with every
+        // other provider.
+        if let Some(model) = cli.model_flag.clone() {
             table.insert("model".to_string(), toml::Value::String(model));
+        } else {
+            let has_model = table
+                .get("model")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|model| !model.trim().is_empty());
+            if !has_model && provider != ProviderKind::Deepseek {
+                table.insert(
+                    "model".to_string(),
+                    toml::Value::String(heavy_model_for_provider(provider).to_string()),
+                );
+            }
         }
 
         if trusted {

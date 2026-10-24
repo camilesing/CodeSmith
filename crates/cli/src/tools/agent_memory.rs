@@ -234,12 +234,22 @@ impl ToolSpec for AgentMemoryEditTool {
             )));
         }
         let updated = contents.replace(search, replace);
-        // Atomic temp-file + rename (via spawn_blocking — the helper
-        // fsyncs): a crash or ENOSPC mid-write must not truncate the
-        // previously intact memory file.
+        // Optimistic concurrency: the memory directory is keyed by agent
+        // TYPE, so concurrently running same-type sub-agents share this
+        // file and one's edit could be silently overwritten by the other's
+        // stale `contents`. Confirm the file still matches what we read
+        // right before persisting; on mismatch fail loudly ("retry")
+        // instead of discarding the concurrent writer's edit.
         let write_path = path.clone();
         let updated_bytes = updated.as_bytes().to_vec();
+        let stale_contents = contents.clone();
         tokio::task::spawn_blocking(move || {
+            if std::fs::read_to_string(&write_path).ok().as_deref() != Some(stale_contents.as_str())
+            {
+                return Err(std::io::Error::other(
+                    "file changed concurrently; re-read and retry the edit",
+                ));
+            }
             codesmith_agent_runtime::utils::write_atomic(&write_path, &updated_bytes)
         })
         .await

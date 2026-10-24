@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use codesmith_agent_runtime::attachments::{AttachmentError, AttachmentStore, StoredAttachment};
+use codesmith_agent_runtime::attachments::{AttachmentStore, StoredAttachment};
 use codesmith_agent_runtime::session_store::{
     ContextReference, ContextReferenceKind, ContextReferenceSource, SessionContextReference,
 };
@@ -110,36 +110,39 @@ pub async fn ingest_for_message(images: Vec<PendingImage>, message_index: usize)
     }
     let store = match AttachmentStore::default_location() {
         Ok(store) => store,
-        Err(err) => return refuse_all(&images, message_index, &err),
+        Err(err) => return refuse_all(&images, message_index, &err.to_string()),
     };
+    // Keep the attempt list for the join-failure path: the outcome must
+    // record a session reference for every attempted image (path, source,
+    // reason) on ALL refusal paths — an empty `references` vec silently
+    // loses the trace of what was turned away.
+    let attempted = images.clone();
     match tokio::task::spawn_blocking(move || ingest_into(&store, &images, message_index)).await {
         Ok(outcome) => outcome,
-        Err(join_err) => {
-            let mut outcome = IntakeOutcome::default();
-            outcome.rejections.push(format!(
-                "attachment intake worker failed: {join_err}; no images were sent"
-            ));
-            outcome
-        }
+        Err(join_err) => refuse_all(
+            &attempted,
+            message_index,
+            &format!("intake worker failed: {join_err}; no images were sent"),
+        ),
     }
 }
 
 fn refuse_all(
     images: &[PendingImage],
     message_index: usize,
-    err: &AttachmentError,
+    reason: &str,
 ) -> IntakeOutcome {
     let mut outcome = IntakeOutcome::default();
     for image in images {
         outcome.rejections.push(format!(
-            "attachment refused: {err} ({})",
+            "attachment refused: {reason} ({})",
             image.path.display()
         ));
         outcome.references.push(rejected_reference(
             &image.path,
             image.source,
             message_index,
-            &err.to_string(),
+            reason,
         ));
     }
     outcome

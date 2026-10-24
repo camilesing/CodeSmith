@@ -1067,20 +1067,39 @@ pub(crate) fn run_thread_command(command: ThreadCommand) -> Result<()> {
 }
 
 pub(crate) fn run_sandbox_check(command: String, ask: ApprovalModeArg) -> Result<()> {
-    {
-        let engine = ExecPolicyEngine::new(Vec::new(), vec!["rm -rf".to_string()]);
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let decision = engine.check(ExecPolicyContext {
-            command: &command,
-            cwd: &cwd.display().to_string(),
-            tool: Some("exec_shell"),
-            path: None,
-            ask_for_approval: ask.into(),
-            sandbox_mode: Some("workspace-write"),
-        })?;
-        println!("{}", serde_json::to_string_pretty(&decision)?);
-        Ok(())
-    }
+    // The same default denied-prefix set the app-server tool channel builds
+    // its engine with (`default_denied_exec_prefixes` there) — the old
+    // single hardcoded `rm -rf` pattern printed verdicts the real runtime
+    // would deny or gate, actively misleading for a diagnostics command.
+    // Known limitation: user-configured exec rules are not loaded here;
+    // the note below says so.
+    let denied_prefixes = [
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf ~",
+        "rm -rf $HOME",
+        "sudo rm",
+        "mkfs",
+        "dd if=/dev/zero of=/dev/",
+        "chmod -R 777 /",
+        "shred /dev/",
+        "> /dev/sda",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let engine = ExecPolicyEngine::new(Vec::new(), denied_prefixes);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let decision = engine.check(ExecPolicyContext {
+        command: &command,
+        cwd: &cwd.display().to_string(),
+        tool: Some("exec_shell"),
+        path: None,
+        ask_for_approval: ask.into(),
+        sandbox_mode: Some("workspace-write"),
+    })?;
+    println!("note: decision computed with the built-in default policy (user exec rules not loaded)");
+    println!("{}", serde_json::to_string_pretty(&decision)?);
+    Ok(())
 }
 
 pub(crate) fn run_app_server_command(args: AppServerArgs) -> Result<()> {

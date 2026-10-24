@@ -269,7 +269,12 @@ fn tool_entries(summary: &serde_json::Value) -> &Vec<serde_json::Value> {
 /// engine must derive `max_spawn_depth = 0` and reject the second-level
 /// spawn; the rejection text the model then sees is the observable proof
 /// that the budget crossed the process boundary and was enforced.
-#[tokio::test]
+// Multi-thread flavor: wiremock's connection handling is driven by the
+// runtime that started the MockServer, and `run_with_timeout` (via
+// spawn_blocking below) blocks a thread with sleep+try_wait loops — a
+// current-thread runtime starved the server and degraded every test to the
+// timeout-kill panic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_contract_round_trip_against_real_binary() {
     let e2e = HeadlessE2E::new("").await;
     HeadlessE2E::mock(body_string_contains("E2E-CHILD-OBJECTIVE"))
@@ -298,7 +303,10 @@ async fn provider_contract_round_trip_against_real_binary() {
         .env("CODESMITH_SUBAGENT_DEPTH", "1")
         .env("CODESMITH_MAX_SPAWN_DEPTH", "1")
         .env("CODESMITH_SUBAGENT_ID", "agent_headless_e2e");
-    let (status, stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(120));
+    let (status, stdout, stderr) =
+        tokio::task::spawn_blocking(move || run_with_timeout(cmd, Duration::from_secs(120)))
+            .await
+            .expect("join blocking runner");
 
     assert_eq!(status.code(), Some(0), "stderr:\n{stderr}");
     let summary = parse_summary(&stdout);
@@ -346,7 +354,7 @@ async fn provider_contract_round_trip_against_real_binary() {
 /// explore role prompt the provider forwards via `--append-system-prompt`
 /// (the outer conversation never contains it), and only the outer's second
 /// turn contains the session name.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_provider_dispatches_real_child_and_enforces_configured_depth() {
     let e2e = HeadlessE2E::new(
         "[subagents]\nexternal_provider = \"headless\"\n\n[runtime]\nmax_spawn_depth = 1\n",
@@ -395,7 +403,10 @@ async fn external_provider_dispatches_real_child_and_enforces_configured_depth()
         .arg("--model")
         .arg("e2e-test-model")
         .arg("E2E-OUTER-OBJECTIVE: delegate one inspection");
-    let (status, stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(180));
+    let (status, stdout, stderr) =
+        tokio::task::spawn_blocking(move || run_with_timeout(cmd, Duration::from_secs(180)))
+            .await
+            .expect("join blocking runner");
 
     assert_eq!(status.code(), Some(0), "stderr:\n{stderr}");
     let summary = parse_summary(&stdout);
@@ -459,7 +470,7 @@ async fn external_provider_dispatches_real_child_and_enforces_configured_depth()
 /// `max_spawn_depth = 0` the FIRST spawn must be rejected by the real
 /// binary; before the wiring this test fails because the config key is
 /// ignored and the spawn succeeds.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_max_spawn_depth_config_reaches_the_depth_gate() {
     let e2e = HeadlessE2E::new("[runtime]\nmax_spawn_depth = 0\n").await;
     HeadlessE2E::mock(body_string_contains("E2E-OUTER-OBJECTIVE"))
@@ -483,7 +494,10 @@ async fn runtime_max_spawn_depth_config_reaches_the_depth_gate() {
         .arg("--model")
         .arg("e2e-test-model")
         .arg("E2E-OUTER-OBJECTIVE: try to delegate");
-    let (status, stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(120));
+    let (status, stdout, stderr) =
+        tokio::task::spawn_blocking(move || run_with_timeout(cmd, Duration::from_secs(120)))
+            .await
+            .expect("join blocking runner");
 
     assert_eq!(status.code(), Some(0), "stderr:\n{stderr}");
     let summary = parse_summary(&stdout);

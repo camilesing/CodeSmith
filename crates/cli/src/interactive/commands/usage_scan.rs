@@ -100,8 +100,7 @@ pub fn skill_activations(path: &Path) -> Vec<String> {
     // anywhere in the text) makes the heuristic exact: a user message that
     // pastes a skill doc, quotes the instruction, or types a Markdown
     // heading like `## Skill: foo` no longer counts as an activation.
-    const PREAMBLE: &str =
-        "You are now using a skill. Follow these instructions:\n\n# Skill: ";
+    const PREAMBLE: &str = "You are now using a skill. Follow these instructions:\n\n# Skill: ";
 
     let mut names = Vec::new();
     let value = parsed(path).unwrap_or(Value::Null);
@@ -168,12 +167,15 @@ mod tests {
     fn skill_activations_are_counted_from_the_instruction() {
         let (_dir, path) = fixture(
             r##"{"messages":[
-              {"role":"user","content":[{"type":"text","text":"You are now using a skill.\n\n# Skill: code-review\n\nbody"}]},
+              {"role":"user","content":[{"type":"text","text":"You are now using a skill. Follow these instructions:\n\n# Skill: code-review\n\nbody"}]},
               {"role":"assistant","content":[{"type":"text","text":"no marker here"}]},
               {"role":"user","content":[{"type":"text","text":"# Skill: batch\nmore"}]}
             ]}"##,
         );
-        assert_eq!(skill_activations(&path), vec!["code-review", "batch"]);
+        // Only the exact activation preamble counts: a bare `# Skill:` in
+        // genuine user text (typed heading, pasted doc, quoted
+        // instruction) is content, not an activation.
+        assert_eq!(skill_activations(&path), vec!["code-review"]);
     }
 
     #[test]
