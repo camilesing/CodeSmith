@@ -51,7 +51,7 @@ fn build_saved_session(state: &ReplState) -> crate::session_manager::SavedSessio
         &state.api_messages,
         &state.model,
         &state.workspace,
-        u64::from(state.session.total_tokens),
+        state.session.total_tokens,
         state.system_prompt.as_ref(),
         Some(state.mode.label()),
     );
@@ -170,7 +170,7 @@ pub async fn branch(state: &mut ReplState, name: Option<&str>) {
                 &state.api_messages,
                 &state.model,
                 &state.workspace,
-                u64::from(state.session.total_tokens),
+                state.session.total_tokens,
                 state.system_prompt.as_ref(),
                 Some(state.mode.label()),
             )
@@ -179,7 +179,7 @@ pub async fn branch(state: &mut ReplState, name: Option<&str>) {
             update_session(
                 existing,
                 &state.api_messages,
-                u64::from(state.session.total_tokens),
+                state.session.total_tokens,
                 state.system_prompt.as_ref(),
             )
         },
@@ -404,7 +404,7 @@ async fn adopt_loaded_session(
             state.workspace.display()
         );
     }
-    state.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
+    state.session.total_tokens = session.metadata.total_tokens;
     state.session.total_conversation_tokens = state.session.total_tokens;
     // Accumulated token breakdown is per-runtime-session; zero on load.
     state.session.total_input_tokens = 0;
@@ -739,7 +739,7 @@ pub fn rename(state: &mut ReplState, arg: Option<&str>) {
     session = update_session(
         session,
         &state.api_messages,
-        u64::from(state.session.total_tokens),
+        state.session.total_tokens,
         state.system_prompt.as_ref(),
     );
     sync_cost_to_metadata(state, &mut session.metadata);

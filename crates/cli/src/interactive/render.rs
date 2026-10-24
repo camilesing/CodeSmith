@@ -1460,7 +1460,7 @@ fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager:
         state.api_messages.as_slice(),
         &state.model,
         &state.workspace,
-        u64::from(state.session.total_tokens),
+        state.session.total_tokens,
         state.system_prompt.as_ref(),
         Some(state.mode.label()),
     );
@@ -1556,7 +1556,7 @@ fn apply_turn_accounting(
         .unwrap_or_default();
     state.cumulative_turn_duration = state.cumulative_turn_duration.saturating_add(turn_elapsed);
 
-    let turn_tokens = usage.input_tokens + usage.output_tokens;
+    let turn_tokens = u64::from(usage.input_tokens) + u64::from(usage.output_tokens);
     state.session.total_tokens = state.session.total_tokens.saturating_add(turn_tokens);
     state.session.total_conversation_tokens = state
         .session
@@ -1565,23 +1565,23 @@ fn apply_turn_accounting(
     state.session.total_input_tokens = state
         .session
         .total_input_tokens
-        .saturating_add(usage.input_tokens);
+        .saturating_add(u64::from(usage.input_tokens));
     state.session.total_output_tokens = state
         .session
         .total_output_tokens
-        .saturating_add(usage.output_tokens);
+        .saturating_add(u64::from(usage.output_tokens));
     if let Some(hit_tokens) = usage.prompt_cache_hit_tokens {
         state.session.total_cache_hit_tokens = state
             .session
             .total_cache_hit_tokens
-            .saturating_add(hit_tokens);
+            .saturating_add(u64::from(hit_tokens));
         let cache_miss = usage
             .prompt_cache_miss_tokens
             .unwrap_or_else(|| usage.input_tokens.saturating_sub(hit_tokens));
         state.session.total_cache_miss_tokens = state
             .session
             .total_cache_miss_tokens
-            .saturating_add(cache_miss);
+            .saturating_add(u64::from(cache_miss));
     }
     state.session.last_prompt_tokens = Some(usage.input_tokens);
     state.session.last_completion_tokens = Some(usage.output_tokens);

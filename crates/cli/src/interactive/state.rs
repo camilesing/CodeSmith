@@ -567,7 +567,10 @@ impl ReplState {
             .with_workspace(self.workspace.clone())
             .with_model(&self.model)
             .with_mode(self.mode.as_setting())
-            .with_tokens(self.session.total_tokens)
+            // The hook payload field is u32 (agent-runtime contract); the
+            // session accumulator is u64, so bridge with saturation — the
+            // hook reports ">= 4.29B tokens", never a wrap.
+            .with_tokens(u32::try_from(self.session.total_tokens).unwrap_or(u32::MAX))
             .with_cost(self.session.session_cost);
         if let Some(thread_id) = self.current_session_id.as_deref() {
             context = context.with_thread_id(thread_id);

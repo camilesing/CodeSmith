@@ -113,13 +113,17 @@ pub struct SessionState {
     pub last_prompt_cache_hit_tokens: Option<u32>,
     pub last_prompt_cache_miss_tokens: Option<u32>,
     pub last_reasoning_replay_tokens: Option<u32>,
-    pub total_tokens: u32,
-    pub total_conversation_tokens: u32,
+    // Session-lifetime accumulators are u64: provider usage payloads are
+    // u64-shaped at the wire and a long session with large prompt-cache
+    // hits can exceed u32::MAX, at which point saturating_add silently
+    // clamps every total (and any cost derived from them) forever.
+    pub total_tokens: u64,
+    pub total_conversation_tokens: u64,
     /// Accumulated token breakdown for the session.
-    pub total_input_tokens: u32,
-    pub total_cache_hit_tokens: u32,
-    pub total_cache_miss_tokens: u32,
-    pub total_output_tokens: u32,
+    pub total_input_tokens: u64,
+    pub total_cache_hit_tokens: u64,
+    pub total_cache_miss_tokens: u64,
+    pub total_output_tokens: u64,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
     /// Tool catalog from the most recent model request.
     ///
