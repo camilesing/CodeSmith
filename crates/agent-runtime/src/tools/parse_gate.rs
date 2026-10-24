@@ -306,13 +306,29 @@ fn format_rustfmt_content(bin: Option<&Path>, content: &str) -> Option<String> {
         let _ = stdin.write_all(&payload);
         // Dropping stdin closes the pipe so rustfmt can finish.
     });
-    let mut stdout = Vec::new();
-    if child.stdout.take()?.read_to_end(&mut stdout).is_err() {
-        let _ = child.kill();
-        // Reap the killed child so it doesn't linger as a zombie.
-        let _ = child.wait();
-        return None;
-    }
+    // Read on a helper thread with a bounded recv: `read_to_end` on the
+    // piped stdout blocks until EOF (i.e. until rustfmt exits), so a hung
+    // rustfmt that stays alive without closing stdout would block this
+    // thread — and the async caller's write path — indefinitely, with
+    // RUSTFMT_TIMEOUT never consulted.
+    let mut stdout_pipe = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut out);
+        let _ = tx.send(out);
+    });
+    let stdout = match rx.recv_timeout(RUSTFMT_TIMEOUT) {
+        Ok(out) => out,
+        Err(_) => {
+            // rustfmt hung (or produced nothing within the cap): the
+            // timeout must bound the read too, not just the wait.
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
+    let _ = reader.join();
     match child.wait_timeout(RUSTFMT_TIMEOUT) {
         Ok(Some(status)) if status.success() => {
             let _ = writer.join();

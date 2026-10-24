@@ -23,10 +23,20 @@ use std::collections::HashMap;
 /// root-relative hook lookup (`/pre-commit`) — so hooks are disabled by
 /// pointing them at a path where the lookup deterministically fails. Only
 /// the owner can create anything under `~/.codesmith` (0700), so a hook
-/// cannot be smuggled in by another local user.
+/// cannot be smuggled in by another local user. The path is derived from
+/// `$HOME` DIRECTLY: honoring `$CODESMITH_HOME` here would let the very
+/// environment being scrubbed (which can inject `GIT_CONFIG_*` can equally
+/// set `CODESMITH_HOME`) redirect the hook lookup at an attacker-controlled
+/// directory containing real hook scripts — or at a relative path resolving
+/// inside the sandboxed workspace.
 fn hooks_disabled_path() -> String {
-    codesmith_config::codesmith_home()
-        .map(|home| home.join("hooks-disabled").to_string_lossy().into_owned())
+    dirs::home_dir()
+        .map(|home| {
+            home.join(".codesmith")
+                .join("hooks-disabled")
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_default()
 }
 
@@ -80,6 +90,25 @@ pub fn merge_git_scrub_env(env: &mut HashMap<String, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hooks_disabled_path_is_absolute_and_home_anchored() {
+        // The scrub target must derive from the real home directory, NOT
+        // from `$CODESMITH_HOME` (the environment being scrubbed can set it
+        // too), and must never be relative — a relative hooksPath resolves
+        // inside the sandboxed workspace.
+        let path = hooks_disabled_path();
+        let parsed = std::path::Path::new(&path);
+        assert!(
+            parsed.is_absolute(),
+            "hooksPath must be absolute, got {path:?}"
+        );
+        let home = dirs::home_dir().expect("home dir");
+        assert!(
+            parsed.starts_with(&home),
+            "hooksPath must anchor under the real home, got {path:?}"
+        );
+    }
 
     #[test]
     fn merge_adds_scrub_keys_when_unset() {

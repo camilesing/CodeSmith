@@ -216,7 +216,19 @@ fn balance_braces(s: &str, max_iter: usize) -> String {
                 }
             }
         }
-        if stack.is_empty() || in_string {
+        if in_string {
+            // Truncated mid-string (the documented SSE failure mode):
+            // close the string so the missing brackets/braces below can
+            // still be appended — dropping it fell straight to the `{}`
+            // fallback and discarded every argument. A trailing backslash
+            // would escape our appended quote, so drop it first.
+            if escape {
+                out.pop();
+            }
+            out.push('"');
+            continue;
+        }
+        if stack.is_empty() {
             break;
         }
         while let Some(open) = stack.pop() {
@@ -313,6 +325,19 @@ mod tests {
     fn repairs_missing_close_brace() {
         let v = repair(r#"{"path": "hello.txt""#).unwrap();
         assert_eq!(v, json!({"path": "hello.txt"}));
+    }
+
+    #[test]
+    fn repairs_unterminated_string_value() {
+        // Truncation mid-string (the documented SSE failure mode): the
+        // repair must close the string and the missing brace instead of
+        // dropping all arguments to the `{}` fallback.
+        let v = repair(r#"{"path": "hel"#).unwrap();
+        assert_eq!(v, json!({"path": "hel"}));
+        // Truncation mid-escape: the dangling backslash must not escape
+        // the appended quote.
+        let v = repair(r#"{"path": "hel\"#).unwrap();
+        assert_eq!(v, json!({"path": "hel"}));
     }
 
     #[test]
