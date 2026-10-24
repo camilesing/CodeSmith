@@ -18,6 +18,21 @@ pub use codesmith_agent_runtime::capacity::{
     RiskBand, TargetedRefreshOutcome,
 };
 
+/// `Some(v)` only when `v` is finite, else `None` + a warning: TOML accepts
+/// `nan`/`inf` for f64, and a NaN prior propagates into the p_fail score
+/// where every band comparison goes false — the controller would silently
+/// classify every turn as high risk (or disable severe escalation via
+/// `min_slack <= NaN`) with no error surfaced.
+fn finite_or_default(field: &str, v: Option<f64>) -> Option<f64> {
+    match v {
+        Some(v) if !v.is_finite() => {
+            tracing::warn!("ignoring non-finite capacity.{field} ({v})");
+            None
+        }
+        other => other,
+    }
+}
+
 /// Build effective capacity config from app config.
 ///
 /// Kept in the CLI as a free function: `Config` is defined in the CLI while
@@ -35,16 +50,17 @@ pub fn capacity_controller_config_from_app(
     if let Some(v) = capacity.enabled {
         out.enabled = v;
     }
-    if let Some(v) = capacity.low_risk_max {
+    if let Some(v) = finite_or_default("low_risk_max", capacity.low_risk_max) {
         out.low_risk_max = v;
     }
-    if let Some(v) = capacity.medium_risk_max {
+    if let Some(v) = finite_or_default("medium_risk_max", capacity.medium_risk_max) {
         out.medium_risk_max = v;
     }
-    if let Some(v) = capacity.severe_min_slack {
+    if let Some(v) = finite_or_default("severe_min_slack", capacity.severe_min_slack) {
         out.severe_min_slack = v;
     }
-    if let Some(v) = capacity.severe_violation_ratio {
+    if let Some(v) = finite_or_default("severe_violation_ratio", capacity.severe_violation_ratio)
+    {
         out.severe_violation_ratio = v;
     }
     if let Some(v) = capacity.refresh_cooldown_turns {
@@ -63,20 +79,24 @@ pub fn capacity_controller_config_from_app(
         out.profile_window = v.max(2);
     }
 
-    if let Some(v) = capacity.deepseek_v3_2_chat_prior {
+    if let Some(v) = finite_or_default("deepseek_v3_2_chat_prior", capacity.deepseek_v3_2_chat_prior) {
         out.model_priors.insert("deepseek_v3_2_chat".to_string(), v);
     }
-    if let Some(v) = capacity.deepseek_v3_2_reasoner_prior {
+    if let Some(v) = finite_or_default(
+        "deepseek_v3_2_reasoner_prior",
+        capacity.deepseek_v3_2_reasoner_prior,
+    ) {
         out.model_priors
             .insert("deepseek_v3_2_reasoner".to_string(), v);
     }
-    if let Some(v) = capacity.deepseek_v4_pro_prior {
+    if let Some(v) = finite_or_default("deepseek_v4_pro_prior", capacity.deepseek_v4_pro_prior) {
         out.model_priors.insert("deepseek_v4_pro".to_string(), v);
     }
-    if let Some(v) = capacity.deepseek_v4_flash_prior {
+    if let Some(v) = finite_or_default("deepseek_v4_flash_prior", capacity.deepseek_v4_flash_prior) {
         out.model_priors.insert("deepseek_v4_flash".to_string(), v);
     }
-    if let Some(v) = capacity.fallback_default_prior {
+    if let Some(v) = finite_or_default("fallback_default_prior", capacity.fallback_default_prior)
+    {
         out.fallback_default = v;
     }
 

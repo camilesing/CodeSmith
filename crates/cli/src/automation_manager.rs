@@ -219,6 +219,20 @@ pub struct AutomationManager {
     runs_dir: PathBuf,
 }
 
+/// A due run planned by [`AutomationManager::plan_due_runs`]: the run
+/// is already persisted as `Queued` and the automation's `next_run_at`
+/// already advanced, so the caller may await `add_task` WITHOUT holding
+/// the manager lock (a user-facing tool call on the same lock is not
+/// stalled for the round-trip, and the task-manager path can never
+/// re-enter the automation host while the guard is held). A crash
+/// between planning and enqueueing at worst leaves a `Queued` run with
+/// no task, which `reconcile_run_statuses` later fails as "enqueue
+/// interrupted" — never a double enqueue.
+pub struct PlannedRun {
+    pub run: AutomationRunRecord,
+    pub request: NewTaskRequest,
+}
+
 impl AutomationManager {
     pub fn open(root: PathBuf) -> Result<Self> {
         let automations_dir = root.join("automations");
@@ -605,9 +619,14 @@ impl AutomationManager {
         Ok(run)
     }
 
-    pub async fn scheduler_tick(&self, task_manager: &Arc<dyn TaskManagerHost>) -> Result<()> {
+    /// Plan the runs that are due right now: sync filesystem work only, no
+    /// awaits. Slot idempotency scans ALL runs of the automation (the old
+    /// 25-run window let a slot double-enqueue once 25+ newer runs existed,
+    /// e.g. after downtime catch-up).
+    pub fn plan_due_runs(&self) -> Result<Vec<PlannedRun>> {
         let now = Utc::now();
         let mut automations = self.list_automations()?;
+        let mut planned = Vec::new();
 
         for automation in &mut automations {
             if !matches!(automation.status, AutomationStatus::Active) {
@@ -627,10 +646,11 @@ impl AutomationManager {
                 continue;
             }
 
-            // Idempotency: if a run already exists for this schedule slot, skip enqueue and
-            // advance next_run_at.
+            // Idempotency: if a run already exists for this schedule slot,
+            // skip enqueue and advance next_run_at. All runs, not a recent
+            // window — see the method doc.
             let existing_for_slot = self
-                .list_runs(&automation.id, Some(25))?
+                .list_runs(&automation.id, None)?
                 .into_iter()
                 .any(|run| run.scheduled_for == due_at);
 
@@ -641,7 +661,7 @@ impl AutomationManager {
                 continue;
             }
 
-            let mut run = AutomationRunRecord {
+            let run = AutomationRunRecord {
                 schema_version: CURRENT_RUN_SCHEMA_VERSION,
                 id: Uuid::new_v4().to_string(),
                 automation_id: automation.id.clone(),
@@ -656,15 +676,57 @@ impl AutomationManager {
                 error: None,
             };
 
-            self.enqueue_run_task(automation, &mut run, task_manager)
-                .await?;
+            // Persist the slot anchor and advance the schedule BEFORE the
+            // caller enqueues: a crash past this point skips the slot (the
+            // idempotency scan finds the run) instead of double-running it.
             self.save_run(&run)?;
-
             automation.updated_at = now;
             automation.next_run_at = Some(schedule.next_after(due_at)?);
             self.save_automation(automation)?;
+
+            let request = NewTaskRequest {
+                prompt: automation.prompt.clone(),
+                model: None,
+                workspace: automation.cwds.first().cloned(),
+                mode: Some("agent".to_string()),
+                allow_shell: Some(false),
+                trust_mode: Some(false),
+                auto_approve: Some(true),
+            };
+            planned.push(PlannedRun { run, request });
         }
 
+        Ok(planned)
+    }
+
+    /// Record a successful enqueue of a planned run (called after
+    /// `add_task` resolved, under the manager lock).
+    pub fn record_run_enqueued(
+        &self,
+        run: &mut AutomationRunRecord,
+        task: &codesmith_agent_runtime::tools::task_types::TaskRecord,
+    ) -> Result<()> {
+        run.status = AutomationRunStatus::Running;
+        run.started_at = Some(Utc::now());
+        run.task_id = Some(task.id.clone());
+        run.thread_id = task.thread_id.clone();
+        run.turn_id = task.turn_id.clone();
+        run.error = None;
+        self.save_run(run)
+    }
+
+    /// Record a failed enqueue of a planned run; mirrors `run_now`'s
+    /// terminal bookkeeping so the failure shows up in `last_run_at`.
+    pub fn record_run_enqueue_failed(&self, run: &mut AutomationRunRecord, err: &str) -> Result<()> {
+        run.status = AutomationRunStatus::Failed;
+        run.ended_at = Some(Utc::now());
+        run.error = Some(format!("Failed to enqueue task: {err}"));
+        self.save_run(run)?;
+        if let Ok(mut automation) = self.get_automation(&run.automation_id) {
+            automation.last_run_at = run.ended_at.or(Some(Utc::now()));
+            automation.updated_at = Utc::now();
+            self.save_automation(&automation)?;
+        }
         Ok(())
     }
 
@@ -683,6 +745,21 @@ impl AutomationManager {
                     continue;
                 }
                 let Some(task_id) = run.task_id.clone() else {
+                    // A planned run whose enqueue never happened (crash
+                    // between plan_due_runs and add_task). Grace period
+                    // covers an in-flight enqueue on this very tick; past
+                    // it, fail the run so it does not linger as a phantom
+                    // `Queued` entry forever.
+                    const ENQUEUE_GRACE: chrono::Duration = chrono::Duration::minutes(10);
+                    if run.status == AutomationRunStatus::Queued
+                        && Utc::now() - run.created_at > ENQUEUE_GRACE
+                    {
+                        run.status = AutomationRunStatus::Failed;
+                        run.ended_at = Some(Utc::now());
+                        run.error =
+                            Some("enqueue interrupted (scheduler restart?)".to_string());
+                        self.save_run(&run)?;
+                    }
                     continue;
                 };
                 let task = match task_manager.get_task(&task_id).await {
@@ -833,11 +910,38 @@ pub fn spawn_scheduler(
                     break;
                 }
 
+                // Plan under the lock (sync fs work only), then await the
+                // task-manager round-trips WITHOUT the automation lock:
+                // holding it across `add_task` stalled every user-facing
+                // automation tool call for the tick and could deadlock if
+                // the task-manager path ever re-entered the automation
+                // host.
+                let planned = {
+                    let manager = automations.lock().await;
+                    match manager.plan_due_runs() {
+                        Ok(planned) => planned,
+                        Err(err) => {
+                            tracing::warn!("automation scheduler tick failed: {err}");
+                            Vec::new()
+                        }
+                    }
+                };
+                for mut item in planned {
+                    let outcome = task_manager.add_task(item.request).await;
+                    let manager = automations.lock().await;
+                    let recorded = match &outcome {
+                        Ok(task) => manager.record_run_enqueued(&mut item.run, task),
+                        Err(err) => {
+                            manager.record_run_enqueue_failed(&mut item.run, &err.to_string())
+                        }
+                    };
+                    if let Err(err) = recorded {
+                        tracing::warn!("automation run {} commit failed: {err}", item.run.id);
+                    }
+                }
+
                 {
                     let manager = automations.lock().await;
-                    if let Err(err) = manager.scheduler_tick(&task_manager).await {
-                        tracing::warn!("automation scheduler tick failed: {err}");
-                    }
                     if let Err(err) = manager.reconcile_run_statuses(&task_manager).await {
                         tracing::warn!("automation reconcile failed: {err}");
                     }

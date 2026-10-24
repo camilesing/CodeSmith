@@ -189,7 +189,13 @@ impl BackgroundTaskRegistry {
             return None;
         }
         state.status = new_status;
-        state.error = error;
+        // Only overwrite the stored diagnostic when a new message is
+        // actually supplied: a `None`-carrying transition (poll-driven
+        // Cancelled/Completed, `cancel_task`) must not erase an earlier
+        // update's failure reason from a terminal task.
+        if error.is_some() {
+            state.error = error;
+        }
 
         if new_status.is_terminal() {
             state.ended_at = Some(Utc::now());
@@ -300,7 +306,13 @@ impl BackgroundTaskRegistry {
             // Scope the read lock
             let agent_info: Option<(BackgroundTaskStatus, Option<String>, u32)> = {
                 let mgr = self.subagent_manager.read().await;
-                let agents = mgr.list_filtered(false);
+                // The unfiltered list, not `list_filtered(false)`: the
+                // filter drops prior-session terminal agents and `cleanup`
+                // evicts old terminal agents, so a background agent that
+                // finished and was cleaned up before this poll vanished
+                // from the filtered view — leaving the registry task
+                // `Running` forever, with no notification and no eviction.
+                let agents = mgr.list();
                 let result = agents.iter().find(|a| a.agent_id == agent_id);
                 result.map(|r| {
                     (
@@ -321,6 +333,19 @@ impl BackgroundTaskRegistry {
                     *steps_taken = steps_taken_val;
                 }
                 self.update_task_status(&bg_id, new_status, error);
+            } else {
+                // The agent record is gone entirely (evicted by
+                // `SubAgentManager::cleanup`, or a prior-session restart):
+                // the task can never complete, so fail it now instead of
+                // leaving it `Running` forever with no notification and no
+                // eviction path. The registry entry is created after the
+                // source agent registers, so an absent record is not a
+                // registration race.
+                self.update_task_status(
+                    &bg_id,
+                    BackgroundTaskStatus::Failed,
+                    Some("source agent record disappeared".to_string()),
+                );
             }
         }
     }

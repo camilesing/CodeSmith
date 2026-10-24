@@ -130,19 +130,23 @@ fn manifest_path() -> Result<PathBuf, String> {
 }
 
 fn manifest() -> Result<&'static CapabilityManifest, String> {
-    static MANIFEST: OnceLock<Result<CapabilityManifest, String>> = OnceLock::new();
-    MANIFEST
-        .get_or_init(|| {
-            let path = manifest_path()?;
-            CapabilityManifest::load_from(&path).map_err(|e| {
-                format!(
-                    "capabilities manifest invalid ({e}) — fix {}",
-                    path.display()
-                )
-            })
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+    // Only successful loads are cached: caching the `Result` pinned a
+    // transient failure (EACCES, a read racing an atomic replace) for the
+    // whole process, permanently blocking engine builds off one unlucky
+    // startup read. A malformed manifest still fails loud on every call —
+    // callers propagate the error.
+    static MANIFEST: OnceLock<CapabilityManifest> = OnceLock::new();
+    if let Some(loaded) = MANIFEST.get() {
+        return Ok(loaded);
+    }
+    let path = manifest_path()?;
+    let loaded = CapabilityManifest::load_from(&path).map_err(|e| {
+        format!(
+            "capabilities manifest invalid ({e}) — fix {}",
+            path.display()
+        )
+    })?;
+    Ok(MANIFEST.get_or_init(|| loaded))
 }
 
 /// Union legacy config.toml `[tools].overrides` `disabled` entries into

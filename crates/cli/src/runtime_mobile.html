@@ -395,9 +395,12 @@
 
     function settleApproval(approvalId, label) {
       const container = state.approvals.get(approvalId);
-      if (!container || !container.isConnected) return;
-      settleApprovalContainer(container, label);
+      if (!container) return;
+      // Delete regardless of connectivity: a trimmed/detached-but-pending
+      // block must not keep the entry (and its DOM subtree) reachable
+      // until the next thread switch.
       state.approvals.delete(approvalId);
+      if (container.isConnected) settleApprovalContainer(container, label);
     }
 
     function appendEvent(name, data) {
@@ -678,6 +681,14 @@
       $("save-token").onclick = async () => {
         sessionStorage.setItem("codesmith_runtime_token", token());
         await loadThreads().catch((err) => setStatus(err.message, "bad"));
+        // Saving a token after the stream hit a 4xx dead-end must restart
+        // streaming for the already-selected thread; reloading the list
+        // alone leaves the UI on "Event stream error 401" until the user
+        // re-taps the thread.
+        if (state.threadId) {
+          if (state.source) state.source.abort();
+          connectEvents(state.threadId);
+        }
       };
       $("refresh").onclick = () => loadThreads().catch((err) => setStatus(err.message, "bad"));
       $("new-thread").onclick = () => newThread().catch((err) => setStatus(err.message, "bad"));
