@@ -19,6 +19,10 @@ packages=("${release_crates[@]}")
 workspace_version=""
 workspace_codesmith_packages=()
 workspace_package_dep_flags=()
+# Workspace dependency edges as parallel arrays (from, to): associative
+# arrays are bash-4+, and this script must also run on macOS's bash 3.2.
+dep_from=()
+dep_to=()
 
 while IFS=$'\t' read -r kind name value; do
   case "${kind}" in
@@ -28,6 +32,10 @@ while IFS=$'\t' read -r kind name value; do
     crate)
       workspace_codesmith_packages+=("${name}")
       workspace_package_dep_flags+=("${value}")
+      ;;
+    dep)
+      dep_from+=("${name}")
+      dep_to+=("${value}")
       ;;
   esac
 done < <(
@@ -62,6 +70,11 @@ for pkg in sorted(workspace_packages, key=lambda item: item["name"]):
         for dep in pkg["dependencies"]
     )
     print(f"crate\t{pkg['name']}\t{1 if has_workspace_dep else 0}")
+    for dep in pkg["dependencies"]:
+        # Dev-dependencies don't need to exist on the registry at publish
+        # time; only normal and build dependencies constrain the order.
+        if dep.get("path") and dep.get("kind") != "dev" and dep["name"] in workspace_by_name:
+            print(f"dep\t{pkg['name']}\t{dep['name']}")
 PY
 )
 
@@ -107,6 +120,32 @@ if (( ${#missing_packages[@]} > 0 || ${#extra_packages[@]} > 0 )); then
   fi
   exit 1
 fi
+
+# Publish order must actually follow the dependency graph, not just by
+# convention: a dependent listed before its workspace dependency fails
+# `cargo publish` (the dependency is not yet visible on crates.io) and, under
+# `set -e`, aborts the run mid-way leaving a partial release.
+package_index() {
+  local wanted="$1" index
+  for ((index = 0; index < ${#packages[@]}; index += 1)); do
+    if [[ "${packages[$index]}" == "${wanted}" ]]; then
+      printf '%s' "${index}"
+      return 0
+    fi
+  done
+  return 1
+}
+for ((edge = 0; edge < ${#dep_from[@]}; edge += 1)); do
+  from_index="$(package_index "${dep_from[$edge]}")" || continue
+  if ! to_index="$(package_index "${dep_to[$edge]}")"; then
+    echo "release_crates order: ${dep_from[$edge]} depends on ${dep_to[$edge]}, which is not in the list." >&2
+    exit 1
+  fi
+  if (( to_index > from_index )); then
+    echo "release_crates order: ${dep_from[$edge]} depends on ${dep_to[$edge]}, which is listed later; publish dependencies first." >&2
+    exit 1
+  fi
+done
 
 package_has_workspace_deps() {
   local package_name="$1"
@@ -161,8 +200,13 @@ for package in "${packages[@]}"; do
   echo "::group::${mode} ${package}"
   if [[ "${mode}" == "dry-run" ]]; then
     if package_has_workspace_deps "${package}"; then
-      cargo package --allow-dirty --locked --list -p "${package}" >/dev/null
-      echo "Verified package contents for ${package}; full crates.io dry-run requires workspace dependencies at ${workspace_version} to be published first."
+      # `--list` only prints the file list: no tarball is built, so
+      # packaging failures (missing README/include, accidentally bundled
+      # files) surface only during the real publish. `--no-verify` still
+      # produces and validates the actual .crate without building it and
+      # without needing workspace dependencies on the registry.
+      cargo package --no-verify --allow-dirty --locked -p "${package}" >/dev/null
+      echo "Packaged ${package} (tarball validated, build verification skipped); full crates.io dry-run requires workspace dependencies at ${workspace_version} to be published first."
     else
       cargo publish --dry-run --locked --allow-dirty -p "${package}"
     fi

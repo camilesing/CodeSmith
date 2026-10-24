@@ -31,7 +31,10 @@ while (($# > 0)); do
       exit 0
       ;;
     *)
-      if [[ -n "${version}" ]]; then
+      # A typo like 'v1.2.3', a stray flag, or an oddly-expanded glob must
+      # not silently probe the wrong version on npm/crates.io and report a
+      # misleading 'not published'.
+      if [[ -n "${version}" ]] || ! [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
         usage >&2
         exit 2
       fi
@@ -44,7 +47,17 @@ done
 cd "${repo_root}"
 
 if [[ -z "${version}" ]]; then
-  version="$(awk '/^\[workspace\.package\]/{in_ws=1; next} /^\[/{in_ws=0} in_ws && /^version = "/{sub(/^version = "/, ""); sub(/"$/, ""); print; exit}' Cargo.toml || true)"
+  # Authoritative source (same as the sibling release scripts): the awk
+  # one-liner this replaced only matched `version = "…"` with exactly one
+  # space and no trailing comment, silently yielding garbage or empty on
+  # every other legal TOML spelling.
+  version="$(python3 -c '
+import json, subprocess
+m = json.loads(subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps"]))
+ws = set(m["workspace_members"])
+versions = sorted({p["version"] for p in m["packages"] if p["id"] in ws})
+print(versions[0] if versions else "")
+' 2>/dev/null || true)"
 fi
 
 if [[ -z "${version}" ]]; then

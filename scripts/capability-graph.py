@@ -73,14 +73,50 @@ def crate_of(path: Path) -> str:
     return path.relative_to(REPO_ROOT).parts[1].removeprefix("codesmith-")
 
 
+def strip_rust_comments(text: str) -> str:
+    """Strip //… and /*…*/ comments, leaving string literals verbatim.
+
+    A plain `re.sub(r"//…")` truncates everything after `//` even inside a
+    string literal (URLs like "https://…"), erasing any `impl X for` /
+    `dyn X` tokens later on that line; block comments were never stripped,
+    so commented-out code counted. Char literals are recognized so a '"'
+    literal does not toggle string mode.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            # Copy string literals verbatim so "//" inside them survives.
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : min(j + 1, n)])
+            i = j + 1
+        elif ch == "'" and (m := re.match(r"'(\\.|[^\\'])'", text[i:])):
+            out.append(m.group(0))
+            i += m.end()
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j  # keep the newline
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def scan() -> list[tuple[str, str, list[str], list[str]]]:
     # Read every source once and reuse the text across all seams (the seam
     # count multiplies the tree walk otherwise). Sorted for deterministic
-    # output across machines/filesystem orders; line comments are stripped
-    # so a doc-comment mention of `dyn Seam` does not count as a consumer
-    # reference (impl-in-test noise remains accepted, see the docstring).
+    # output across machines/filesystem orders; comments are stripped
+    # (string-literal aware) so a doc-comment mention of `dyn Seam` does not
+    # count as a consumer reference (impl-in-test noise remains accepted,
+    # see the docstring).
     sources = [
-        (crate_of(p), re.sub(r"//[^\n]*", "", p.read_text(encoding="utf-8", errors="replace")))
+        (crate_of(p), strip_rust_comments(p.read_text(encoding="utf-8", errors="replace")))
         for p in sorted((REPO_ROOT / "crates").glob("*/src/**/*.rs"))
         if "target" not in p.parts
     ]
@@ -90,7 +126,11 @@ def scan() -> list[tuple[str, str, list[str], list[str]]]:
         definition = None
         providers: set[str] = set()
         consumers: set[str] = set()
-        impl_re = re.compile(rf"\bimpl\s*(?:<[^>]*>\s*)?{esc}\s+for\b")
+        # The generic-bounds group is non-greedy across `->` arrows inside
+        # `<…>` (a greedy-ish `[^>]*` stops at the first `>` and misses
+        # `impl<T: Fn() -> U> Seam for`); the optional `<…>` after the seam
+        # name catches trait generic arguments (`impl Seam<X> for`).
+        impl_re = re.compile(rf"\bimpl\s*(?:<[\s\S]*?>\s*)?{esc}(?:<[^>]*>)?\s+for\b")
         def_re = re.compile(rf"\bpub trait {esc}\b")
         dyn_re = re.compile(rf"\bdyn {esc}\b")
         for crate, text in sources:

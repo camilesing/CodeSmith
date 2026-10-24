@@ -18,13 +18,15 @@ if [ -z "${TOKEN:-}" ]; then
   exit 1
 fi
 
+die() { echo "::error::${1}" >&2; exit 1; }
+
 # TAG is interpolated into the release URL, the Ruby formula body (which
 # Homebrew evaluates on every end-user machine), and the commit message —
-# refuse anything outside a plain vX.Y.Z[-suffix] shape.
+# refuse anything outside a plain vX.Y.Z[-suffix] shape. (die is defined
+# above: bash resolves functions at call time, so calling it before the
+# definition printed "die: command not found" instead of the message.)
 [[ "${TAG}" =~ ^v[0-9]+(\.[0-9]+)+(-[0-9A-Za-z.]+)?$ ]] || die "Refusing unvalidated TAG: ${TAG}"
 VERSION="${TAG#v}"
-
-die() { echo "::error::${1}" >&2; exit 1; }
 
 sha() {
   local file="${1:?}"

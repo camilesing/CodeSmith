@@ -22,6 +22,19 @@ esac
 TASKS_DIR="${TASKS_DIR:-$HOME/deep-swe/tasks}"
 WORK_DIR="/tmp/deep-swe-verify/$TASK_ID"
 
+# Pre-flight the bind-mount sources: Docker materializes a DIRECTORY at the
+# host path when the source of a -v mount does not exist, so a mis-staged
+# task would leave stray directories behind and then fail inside the
+# container with a confusing git-apply/verify error.
+for f in "$WORK_DIR/model.patch" \
+         "$TASKS_DIR/$TASK_ID/tests/test.patch" \
+         "$TASKS_DIR/$TASK_ID/tests/test.sh"; do
+  if [ ! -f "$f" ]; then
+    echo "[$TASK_ID] missing required file: $f" >&2
+    exit 3
+  fi
+done
+
 mkdir -p "$WORK_DIR"
 # Per-run result file: concurrent invocations of the same task must not read
 # (and exit on) each other's output. result.txt stays as a last-writer-wins
@@ -63,7 +76,12 @@ timeout 900 docker run --rm \
       echo "VERIFIER_EXIT=$EC"
     fi
     if [ -f /logs/verifier/reward.txt ]; then
+      # Normalize: a decorated value ('REWARD=1') or trailing whitespace/CRLF
+      # would otherwise emit 'REWARD=REWARD=1' and fail the line-anchored
+      # grep below, grading a solved task as failed.
       REWARD=$(cat /logs/verifier/reward.txt)
+      REWARD="${REWARD#REWARD=}"
+      REWARD="${REWARD//[[:space:]]/}"
       echo "REWARD=$REWARD"
     else
       # Extract from output

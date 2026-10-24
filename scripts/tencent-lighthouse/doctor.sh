@@ -38,10 +38,10 @@ env_value() {
   local file="$1"
   local key="$2"
   [[ -f "${file}" ]] || return 0
-  grep -E "^[[:space:]]*(export[[:space:]]+)?${key}=" "${file}" \
+  grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "${file}" 2>/dev/null \
     | tr -d '\r' \
     | tail -n 1 \
-    | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}=//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//" \
+    | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=//; s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^\"([^\"]*)\"$/\1/; s/^'([^']*)'$/\1/" \
     || true
 }
 
@@ -203,8 +203,14 @@ check_validator() {
     return
   fi
   local runner=(node)
-  if [[ "${EUID}" -eq 0 ]] && id -u "${CODESMITH_USER}" >/dev/null 2>&1 && have_command sudo; then
-    runner=(sudo -u "${CODESMITH_USER}" node)
+  if [[ "${EUID}" -eq 0 ]]; then
+    if id -u "${CODESMITH_USER}" >/dev/null 2>&1 && have_command sudo; then
+      # -n: a misconfigured sudoers (requiretty / password prompt) must
+      # report, not hang the doctor run.
+      runner=(sudo -n -u "${CODESMITH_USER}" node)
+    else
+      warn "running as root without sudo; filesystem permission checks may pass trivially (root reads everything)"
+    fi
   fi
   if "${runner[@]}" "${validator}" --env "${BRIDGE_ENV}" --runtime-env "${RUNTIME_ENV}" --workspace-root "${WORKSPACE_ROOT}" --check-filesystem; then
     pass "bridge config validator passed"

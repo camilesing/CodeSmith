@@ -2,8 +2,18 @@
 set -euo pipefail
 
 expected_version="${1:-}"
+# Callers pass tags, not bare versions ('v1.2.3'); strip the optional 'v'
+# so the comparison below is not a guaranteed false mismatch.
+expected_version="${expected_version#v}"
 if [[ -z "${expected_version}" && "${GITHUB_REF:-}" == refs/tags/v* ]]; then
   expected_version="${GITHUB_REF#refs/tags/v}"
+fi
+
+if [[ -z "${expected_version}" && -n "${GITHUB_REF:-}" && "${GITHUB_REF}" != refs/tags/v* ]]; then
+  # An explicit error beats the generic usage message: the ref, not the
+  # invocation, is why no version could be derived.
+  echo "GITHUB_REF '${GITHUB_REF}' is not a 'v'-prefixed tag; cannot determine version" >&2
+  exit 1
 fi
 
 if [[ -z "${expected_version}" ]]; then
