@@ -336,9 +336,20 @@ impl Helper for ReplHelper {}
 
 /// The word under the cursor: its byte offset in `line`, and its text.
 fn word_at(line: &str, pos: usize) -> (usize, &str) {
-    let head = &line[..pos.min(line.len())];
-    let start = head.rfind(char::is_whitespace).map_or(0, |i| i + 1);
-    (start, &line[start..head.len()])
+    // Clamp to a char boundary first: `pos` can sit inside a multi-byte
+    // character (CJK input). `rfind` returns the FIRST byte of the matched
+    // whitespace, which for multi-byte whitespace (ideographic space
+    // U+3000 etc.) is not `i + 1` — slicing there panicked on the render
+    // thread.
+    let mut end = pos.min(line.len());
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &line[..end];
+    let start = head.rfind(char::is_whitespace).map_or(0, |i| {
+        i + head[i..].chars().next().map_or(1, char::len_utf8)
+    });
+    (start, &line[start..end])
 }
 
 /// The argument vocabulary of a command: the registry's `args` column.

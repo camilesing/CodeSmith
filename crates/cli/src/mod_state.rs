@@ -192,10 +192,18 @@ impl ModStateStore {
     pub fn activate(&mut self, mod_id: &str, entry_hash: &str) -> Result<()> {
         let a_changed = self.activated.insert(mod_id.to_string());
         let d_changed = self.disabled.remove(mod_id);
+        // A MISSING recorded hash counts as a change: the legacy
+        // re-activation path (activated before hashes existed) used to
+        // insert the hash via `insert(..).is_some_and(..)` — `None` for a
+        // new key meant "not changed", so persist was skipped and the
+        // in-memory-only hash diverged from disk until the next reload
+        // dropped it.
         let h_changed = self
             .activation_hashes
-            .insert(mod_id.to_string(), entry_hash.to_string())
-            .is_some_and(|old| old != entry_hash);
+            .get(mod_id)
+            .map_or(true, |old| old != entry_hash);
+        self.activation_hashes
+            .insert(mod_id.to_string(), entry_hash.to_string());
         if !a_changed && !d_changed && !h_changed {
             return Ok(());
         }

@@ -210,7 +210,22 @@ impl Decoder {
             b'1' if body.starts_with(b"13;5u") => Decoded::Key(TurnKey::SendNow, 5),
             b'3' => match body.get(1) {
                 Some(b'~') => Decoded::Key(TurnKey::Delete, 2),
-                Some(_) | None => Decoded::Incomplete,
+                // `CSI 3;5~` (Ctrl+Delete) and friends can never match the
+                // 2-byte form: `body.get(1)` is `;` and will never change
+                // as bytes arrive. Consuming through the terminator like
+                // the unknown arm — `Some(_) => Incomplete` used to stall
+                // every later key behind one such keystroke.
+                Some(_) => {
+                    match body
+                        .iter()
+                        .position(|byte| byte.is_ascii_alphabetic() || *byte == b'~')
+                    {
+                        Some(end) => Decoded::Key(TurnKey::Char('\0'), end + 1),
+                        None => Decoded::Incomplete,
+                    }
+                }
+                // Still waiting for the final `~`.
+                None => Decoded::Incomplete,
             },
             b'1' | b'4' | b'7' | b'8' => {
                 // Home/End by terminfo flavour: `CSI 1~`, `CSI 4~`, `CSI 7~`,
@@ -482,6 +497,11 @@ mod imp {
             }
             let mut noncanonical = orig;
             noncanonical.c_lflag &= !(libc::ICANON | libc::ECHO);
+            // IXON otherwise swallows 0x13 as XOFF: neither SendNow
+            // spelling (bare Ctrl+S / Ctrl+X Ctrl+S) would reach `read`,
+            // and output would freeze until Ctrl+Q — the app looks hung.
+            // Restored with the saved `orig` on drop.
+            noncanonical.c_iflag &= !libc::IXON;
             // VMIN=0 / VTIME=1: read(2) returns after 0.1s with no data,
             // giving the thread a chance to observe the stop flag.
             noncanonical.c_cc[libc::VMIN] = 0;

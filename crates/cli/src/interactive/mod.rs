@@ -298,11 +298,15 @@ pub async fn run_repl(
         // has already updated.
         if state.settings.composer_vim_mode != editor_mode {
             let _ = save_history(&mut editor, history_path.as_deref());
-            editor_mode = state.settings.composer_vim_mode.clone();
             match build_editor(&state, bindings.clone()) {
                 Ok((rebuilt, rebuilt_history)) => {
                     editor = rebuilt;
                     history_path = rebuilt_history;
+                    // Commit the mode only on success: assigning it before
+                    // the rebuild made the guard false forever, so a failed
+                    // rebuild was never retried and the stale keymap stayed
+                    // while the settings claimed the new mode.
+                    editor_mode = state.settings.composer_vim_mode.clone();
                     println!("{}", format!("— editor mode: {editor_mode}").dimmed());
                 }
                 Err(err) => println!(

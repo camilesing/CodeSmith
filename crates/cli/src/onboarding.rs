@@ -157,7 +157,11 @@ fn pick_language() -> Result<&'static str> {
             return Ok("auto");
         }
         let parsed = answer.parse::<usize>();
-        if let Some(tag) = parsed.ok().and_then(|idx| LANGUAGE_OPTIONS.get(idx - 1)) {
+        if let Some(tag) = parsed
+            .ok()
+            .and_then(|idx| idx.checked_sub(1))
+            .and_then(|idx| LANGUAGE_OPTIONS.get(idx))
+        {
             return Ok(tag);
         }
         println!("Enter a number between 1 and {}.", LANGUAGE_OPTIONS.len());
@@ -180,7 +184,11 @@ fn pick_provider() -> Result<ProviderKind> {
             return Ok(ProviderKind::Deepseek);
         }
         let parsed = answer.parse::<usize>();
-        if let Some(provider) = parsed.ok().and_then(|idx| PROVIDER_LIST.get(idx - 1)) {
+        if let Some(provider) = parsed
+            .ok()
+            .and_then(|idx| idx.checked_sub(1))
+            .and_then(|idx| PROVIDER_LIST.get(idx))
+        {
             return Ok(*provider);
         }
         println!("Enter a number between 1 and {}.", PROVIDER_LIST.len());

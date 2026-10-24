@@ -63,6 +63,7 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
         .arg(flag)
         .arg(command)
         .current_dir(cwd)
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -81,10 +82,38 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
         codesmith_agent_runtime::utils::read_capped(&mut stderr, MAX_OUTPUT_BYTES).await
     });
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|err| format!("{shell} failed to report its exit status: {err}"))?;
+    // Bound the wait: a command that never exits on its own (`!tail -f`,
+    // `!npm run dev`) used to wedge the interactive session forever with
+    // zero feedback. A timeout is a normal result, like a non-zero exit.
+    let status = match tokio::time::timeout(RUN_TIMEOUT, child.wait()).await {
+        Ok(status) => {
+            status.map_err(|err| format!("{shell} failed to report its exit status: {err}"))?
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
+            let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
+            let mut combined = String::from_utf8_lossy(&stdout_kept).into_owned();
+            let stderr = String::from_utf8_lossy(&stderr_kept);
+            if !stderr.is_empty() {
+                if !combined.is_empty() && !combined.ends_with('\n') {
+                    combined.push('\n');
+                }
+                combined.push_str(&stderr);
+            }
+            let dropped = stdout_dropped + stderr_dropped;
+            if dropped > 0 {
+                combined.push_str(&format!(
+                    "\n… [{dropped} more bytes of output not captured]\n"
+                ));
+            }
+            return Ok((
+                format!("timed out after {} s", RUN_TIMEOUT.as_secs()),
+                cap(combined, MAX_OUTPUT_CHARS),
+            ));
+        }
+    };
     let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
     let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
 
@@ -115,6 +144,10 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
 /// loosened by the byte cap.
 const MAX_OUTPUT_BYTES: usize = MAX_OUTPUT_CHARS * 4;
 
+/// Wall-clock bound for a shell-mode command: long-running servers are a
+/// timeout result, not an interactive-session wedge.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Truncate to `max` chars, saying how much was dropped.
 #[must_use]
 pub fn cap(text: String, max: usize) -> String {
@@ -126,14 +159,39 @@ pub fn cap(text: String, max: usize) -> String {
     format!("{kept}\n… [{dropped} more characters, truncated]\n")
 }
 
-/// The message the model sees for a shell-mode run.
+/// Longest backtick run in `s`.
+fn longest_backtick_run(s: &str) -> usize {
+    s.split(|c: char| c != '`').map(str::len).max().unwrap_or(0)
+}
+
+/// The message the model sees for a shell-mode run. The fence is longer
+/// than any backtick run inside the command or the output: a fixed
+/// three-backtick fence is closed early by ``` inside the content (a
+/// README with fenced blocks, or attacker-controlled output), letting
+/// untrusted text escape into the transcript as fabricated model/system
+/// content.
 #[must_use]
 pub fn transcript_message(command: &str, status: &str, output: &str) -> String {
+    let fence = "`".repeat(
+        longest_backtick_run(command)
+            .max(longest_backtick_run(output))
+            .max(2)
+            + 1,
+    );
     if output.trim().is_empty() {
-        format!("I ran this shell command myself:\n\n```sh\n{command}\n```\n\n{status}, no output.")
-    } else {
         format!(
-            "I ran this shell command myself:\n\n```sh\n{command}\n```\n\n{status}:\n\n```\n{output}```"
+            "I ran this shell command myself:\n\n{fence}sh\n{command}\n{fence}\n\n{status}, no output."
+        )
+    } else {
+        // Normalize a trailing newline so the last output line cannot
+        // glue onto the closing fence.
+        let out = if output.ends_with('\n') {
+            output.to_string()
+        } else {
+            format!("{output}\n")
+        };
+        format!(
+            "I ran this shell command myself:\n\n{fence}sh\n{command}\n{fence}\n\n{status}:\n\n{fence}\n{out}{fence}"
         )
     }
 }

@@ -1113,25 +1113,25 @@ fn app_server_token_from_env() -> Option<String> {
 }
 
 pub(crate) fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
-    let persisted = load_mcp_server_definitions(store);
+    let persisted = load_mcp_server_definitions(store)?;
     let updated = run_stdio_server(persisted)?;
     persist_mcp_server_definitions(store, &updated)
 }
 
-fn load_mcp_server_definitions(store: &ConfigStore) -> Vec<McpServerDefinition> {
+fn load_mcp_server_definitions(store: &ConfigStore) -> Result<Vec<McpServerDefinition>> {
     let Some(raw) = store.config.get_value(MCP_SERVER_DEFINITIONS_KEY) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     match parse_mcp_server_definitions(&raw) {
-        Ok(definitions) => definitions,
+        Ok(definitions) => Ok(definitions),
         Err(err) => {
             eprintln!(
                 "warning: failed to parse persisted MCP server definitions ({MCP_SERVER_DEFINITIONS_KEY}): {err}"
             );
-            // The parse already failed once and the fallback would have the
-            // next save overwrite the store with an empty list — quarantine
-            // the raw value so the definitions stay recoverable.
+            // Quarantine the raw value so the definitions stay
+            // recoverable, then ABORT: proceeding with an empty list made
+            // the persist below overwrite the user's saved definitions.
             eprintln!(
                 "warning: quarantined the raw value to mcp-server-definitions.corrupt.txt in the config directory"
             );
@@ -1143,7 +1143,9 @@ fn load_mcp_server_definitions(store: &ConfigStore) -> Vec<McpServerDefinition> 
                     }),
                 &raw,
             );
-            Vec::new()
+            Err(anyhow::anyhow!(
+                "refusing to rewrite key {MCP_SERVER_DEFINITIONS_KEY};                  fix or unset it first (the raw value was quarantined)"
+            ))
         }
     }
 }

@@ -265,7 +265,14 @@ impl LspManager {
             return Some(t.clone());
         }
 
-        if let Some(t) = self.transports.lock().await.get(&lang) {
+        // Hold the cache lock across the spawn: releasing it between the
+        // lookup and the insert (spawn can take up to the 30 s init
+        // timeout) let two concurrent callers of the same language both
+        // miss, both fork a server, and blindly overwrite each other's
+        // Arc — duplicate servers and two callers talking to different
+        // instances for one language.
+        let mut transports = self.transports.lock().await;
+        if let Some(t) = transports.get(&lang) {
             return Some(t.clone());
         }
 
@@ -273,7 +280,7 @@ impl LspManager {
         match StdioLspTransport::spawn(&cmd, &args, lang, self.workspace.clone()).await {
             Ok(transport) => {
                 let arc: Arc<dyn LspTransport> = Arc::new(transport);
-                self.transports.lock().await.insert(lang, arc.clone());
+                transports.insert(lang, arc.clone());
                 Some(arc)
             }
             Err(err) => {

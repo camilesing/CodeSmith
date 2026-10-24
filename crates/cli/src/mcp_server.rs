@@ -494,8 +494,20 @@ impl McpServer {
             top_p: None,
         };
 
+        // Bound the upstream call: this server handles requests strictly
+        // sequentially, so one hung request (dead connection with no
+        // HTTP-level timeout) used to block every subsequent MCP request
+        // forever with no recovery. A stuck call now fails cleanly and
+        // the loop continues.
         let response = runtime
-            .block_on(client.create_message(request))
+            .block_on(tokio::time::timeout(
+                std::time::Duration::from_secs(300),
+                client.create_message(request),
+            ))
+            .map_err(|_| RpcError {
+                code: -32000,
+                message: "DeepSeek API call timed out after 300 s".to_string(),
+            })?
             .map_err(|e| RpcError {
                 code: -32000,
                 message: format!("DeepSeek API call failed: {e}"),
