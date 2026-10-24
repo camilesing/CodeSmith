@@ -344,25 +344,33 @@ impl McpManager {
         arguments: Value,
     ) -> Result<Value> {
         let parsed = parse_qualified_tool_name(qualified_tool_name)
-            .with_context(|| format!("invalid qualified MCP tool name: {qualified_tool_name}"));
+            .with_context(|| format!("invalid qualified MCP tool name: {qualified_tool_name}"))?;
 
-        if let Ok((server_name, tool_name)) = &parsed
-            && self.clients.contains_key(server_name)
-        {
+        if self.clients.contains_key(&parsed.0) {
             // Propagate execution errors instead of swallowing them: the
             // old `let Ok(result)` chain fell through to the fallback scan
             // AND a trailing repeat of the same call, so a possibly
             // non-idempotent tool could execute up to three times per
             // request. The scan below is only for names the direct path
             // cannot resolve.
-            return self.call_tool(server_name, tool_name, arguments);
+            return self.call_tool(&parsed.0, &parsed.1, arguments);
         }
 
         for (server_name, (_, filter)) in &self.configs {
             let Some(client) = self.clients.get(server_name) else {
                 continue;
             };
-            for tool in client.list_tools().unwrap_or_default() {
+            let tools = match client.list_tools() {
+                Ok(tools) => tools,
+                Err(err) => {
+                    tracing::warn!(
+                        "mcp list_tools on '{server_name}' failed while resolving \
+                         '{qualified_tool_name}': {err:#}"
+                    );
+                    continue;
+                }
+            };
+            for tool in tools {
                 if !allowed_by_filter(&tool.tool_name, filter) {
                     continue;
                 }
@@ -372,8 +380,7 @@ impl McpManager {
             }
         }
 
-        let (server_name, tool_name) = parsed?;
-        self.call_tool(&server_name, &tool_name, arguments)
+        bail!("qualified MCP tool '{qualified_tool_name}' not found");
     }
 
     /// List all resources from all running servers.
@@ -432,17 +439,23 @@ fn allowed_by_filter(name: &str, filter: &ToolFilter) -> bool {
     filter.allow.iter().any(|pattern| pattern == name)
 }
 
+/// Sanitize a server/tool name component. Runs of separators collapse into a
+/// single `_` so a component can never contain the `__` delimiter — with
+/// per-character mapping, server `a--b` + tool `c` and server `a` + tool
+/// `b__c` would both produce `mcp__a__b__c` and collide.
 fn sanitize_component(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let mut out = String::with_capacity(value.len());
+    let mut pending_sep = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            pending_sep = false;
+        } else if !pending_sep {
+            out.push('_');
+            pending_sep = true;
+        }
+    }
+    out
 }
 
 fn qualify_tool_name(server: &str, tool: &str) -> String {
@@ -936,6 +949,11 @@ fn dispatch_stdio_request(
                     default_stdio_client(&name),
                 )
             {
+                // The old registration was unregistered above; leaving the
+                // previous `running` value here would let `lifecycle_snapshot`
+                // report a running server the manager cannot serve, and a
+                // later `server/start` would be skipped as "already running".
+                state.running.insert(name.clone(), false);
                 return Err(JsonRpcError {
                     code: -32000,
                     message: format!("MCP server {name} rejected: {err:#}"),
@@ -1495,6 +1513,12 @@ mod tests {
     fn sanitize_component_lowercases_and_replaces_specials() {
         assert_eq!(sanitize_component("My-Server.Name"), "my_server_name");
         assert_eq!(sanitize_component("ABC123"), "abc123");
+        // Separator runs collapse: a component containing `__` could collide
+        // with the qualified-name delimiter (server `a--b` + tool `c` vs
+        // server `a` + tool `b__c`).
+        assert_eq!(sanitize_component("a--b"), "a_b");
+        assert_eq!(sanitize_component("a..b  c"), "a_b_c");
+        assert!(!sanitize_component("a--b").contains("__"));
     }
 
     #[test]
