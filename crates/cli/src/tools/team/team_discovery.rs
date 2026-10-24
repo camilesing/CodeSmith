@@ -1,22 +1,17 @@
 //! Team discovery — utilities for reading team config and finding members.
 
-use crate::tools::team::team_file::{TeamFile, TeamMember, read_team_file, write_team_file};
+use crate::tools::team::team_file::{TeamFile, TeamMember, read_team_file};
 
 /// Read the team config file from disk.
 pub fn read_team_config(team_name: &str) -> anyhow::Result<TeamFile> {
     read_team_file(team_name)
 }
 
-/// Write the team config file back to disk.
-pub fn write_team_config(team_file: &TeamFile) -> anyhow::Result<()> {
-    write_team_file(team_file)
-}
-
 /// Add a member to the team file, rejecting duplicates by name or
 /// agent_id: the in-memory `ctx.teammates` guard at call sites cannot see
 /// members persisted on disk by another session, and duplicate names make
 /// every name-based lookup/removal/toggle ambiguous (first match wins).
-/// Caller must call `write_team_config()` to persist.
+/// Persist via `with_team_file` (the locked read-modify-write).
 pub fn add_member(team_file: &mut TeamFile, member: TeamMember) -> anyhow::Result<()> {
     if team_file.members.iter().any(|m| m.name == member.name) {
         anyhow::bail!("team member with name '{}' already exists", member.name);
@@ -39,7 +34,8 @@ pub fn add_member(team_file: &mut TeamFile, member: TeamMember) -> anyhow::Resul
 /// old `bool` conflated not-found with success and every call site
 /// discarded it with `let _ =`, so a bad name silently "succeeded".
 /// Names are unique (`add_member` rejects duplicates), so the first match
-/// is the only match. Caller must call `write_team_config()` to persist.
+/// is the only match. Persist via `with_team_file` (the locked
+/// read-modify-write).
 pub fn set_member_inactive(team_file: &mut TeamFile, name: &str) -> anyhow::Result<()> {
     let Some(member) = team_file.members.iter_mut().find(|m| m.name == name) else {
         anyhow::bail!("no team member named '{name}' in team '{}'", team_file.name);

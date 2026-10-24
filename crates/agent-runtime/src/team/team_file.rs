@@ -204,6 +204,46 @@ pub fn read_team_file(team_name: &str) -> anyhow::Result<TeamFile> {
     Ok(team_file)
 }
 
+/// Run `mutate` as one serialized read-modify-write on the team config.
+///
+/// The persistence model is caller-driven (`read_team_file` → mutate →
+/// `write_team_file`), and this module exists for multi-process
+/// coordination — two agent processes running an unguarded sequence
+/// silently lost updates (last writer wins, the other's roster change is
+/// erased). Holding the lock across the WHOLE sequence is the point;
+/// locking only the write would still let both reads happen first. The
+/// fd-lock helper is the same one the config/settings stores use
+/// (sibling `config.json.lock`), so every `with_team_file` caller across
+/// processes serializes. `mutate` returning `Err` leaves the file
+/// untouched.
+///
+/// Known limitation: the lock waits on the calling thread (up to 10 s
+/// under contention); call sites on async executors currently inline it
+/// alongside their other blocking team-file IO (pre-existing posture —
+/// these sequences were already blocking inline).
+pub fn with_team_file<T>(
+    team_name: &str,
+    mutate: impl FnOnce(&mut TeamFile) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let path = team_config_path(team_name)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    crate::settings_file::with_settings_lock(&path, || {
+        use anyhow::Context as _;
+        let json = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read team config {}", path.display()))?;
+        let mut team_file: TeamFile = serde_json::from_str(&json)
+            .with_context(|| format!("failed to parse team config {}", path.display()))?;
+        let result = mutate(&mut team_file)?;
+        let body =
+            serde_json::to_string_pretty(&team_file).context("failed to encode team config")?;
+        crate::utils::write_atomic(&path, body.as_bytes())
+            .with_context(|| format!("failed to write team config {}", path.display()))?;
+        Ok(result)
+    })
+}
+
 /// Write the team config.json back to disk (full overwrite).
 pub fn write_team_file(team_file: &TeamFile) -> anyhow::Result<()> {
     use anyhow::Context as _;
@@ -272,4 +312,120 @@ pub fn active_teammates(team_file: &TeamFile) -> Vec<TeamMember> {
 /// Count active teammates (excluding the lead).
 pub fn active_teammate_count(team_file: &TeamFile) -> usize {
     active_teammates(team_file).len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+
+    fn member(name: &str) -> TeamMember {
+        TeamMember {
+            agent_id: format!("{name}@t"),
+            name: name.to_string(),
+            agent_type: None,
+            model: None,
+            prompt: None,
+            color: None,
+            joined_at: 1,
+            cwd: String::new(),
+            worktree_path: None,
+            session_id: None,
+            is_active: true,
+        }
+    }
+
+    #[test]
+    fn with_team_file_mutates_and_persists() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let team = TeamFile {
+            name: "lock-basic".to_string(),
+            description: None,
+            created_at: 0,
+            lead_agent_id: format_lead_agent_id("lock-basic"),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![],
+        };
+        create_team_file(&team).expect("create");
+
+        with_team_file("lock-basic", |tf| {
+            tf.members.push(member("w1"));
+            Ok(())
+        })
+        .expect("mutate");
+
+        assert_eq!(read_team_file("lock-basic").expect("read").members.len(), 1);
+    }
+
+    #[test]
+    fn with_team_file_mutate_error_leaves_file_untouched() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let team = TeamFile {
+            name: "lock-err".to_string(),
+            description: None,
+            created_at: 0,
+            lead_agent_id: format_lead_agent_id("lock-err"),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![],
+        };
+        create_team_file(&team).expect("create");
+
+        with_team_file("lock-err", |_tf| -> anyhow::Result<()> {
+            anyhow::bail!("mutator refused")
+        })
+        .expect_err("error propagates");
+
+        assert!(
+            read_team_file("lock-err").expect("read").members.is_empty(),
+            "a failed mutator must not persist anything"
+        );
+    }
+
+    #[test]
+    fn concurrent_with_team_file_calls_do_not_lose_members() {
+        // Without the lock, two threads doing read→push→write could both
+        // read the empty roster and one's member is erased by the other's
+        // write. The fd-lock serializes the whole cycle.
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let team = TeamFile {
+            name: "lock-race".to_string(),
+            description: None,
+            created_at: 0,
+            lead_agent_id: format_lead_agent_id("lock-race"),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![],
+        };
+        create_team_file(&team).expect("create");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|i| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    with_team_file("lock-race", |tf| {
+                        tf.members.push(member(&format!("w{i}")));
+                        Ok(())
+                    })
+                    .expect("mutate")
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread");
+        }
+
+        let members = read_team_file("lock-race").expect("read").members;
+        assert_eq!(
+            members.len(),
+            4,
+            "every concurrent join survives: {members:?}"
+        );
+    }
 }

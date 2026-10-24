@@ -62,8 +62,8 @@ use crate::tools::spec::{
     optional_bool, optional_u64, required_str,
 };
 use crate::tools::team::{
-    PermissionMode, TeamMember, TeammateInfo, TeammateRuntime, add_member, read_team_config,
-    run_teammate_loop, write_team_config,
+    PermissionMode, TeamMember, TeammateInfo, TeammateRuntime, add_member, run_teammate_loop,
+    with_team_file,
 };
 use crate::tools::todo::{SharedTodoList, TodoList};
 use codesmith_agent_runtime::agent_memory::{
@@ -2869,28 +2869,27 @@ async fn spawn_team_teammate_in_process(
             )));
         }
 
-        let mut team_file = read_team_config(&ctx.team_name)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to read team config: {e}")))?;
-        add_member(
-            &mut team_file,
-            TeamMember {
-                agent_id: agent_id.clone(),
-                name: agent_name.clone(),
-                agent_type: Some(agent_type.as_str().to_string()),
-                model: effective_model.clone(),
-                prompt: Some(effective_prompt.clone()),
-                color: None,
-                joined_at: now,
-                cwd: cwd.to_string_lossy().to_string(),
-                worktree_path: None,
-                session_id: None,
-                is_active: true,
-            },
-        )
-        .map_err(|e| ToolError::execution_failed(format!("Failed to add team member: {e}")))?;
-        write_team_config(&team_file).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to write team config: {e}"))
-        })?;
+        // One locked read-modify-write: an unguarded read→add→write could
+        // erase a concurrent roster change from another agent process.
+        with_team_file(&ctx.team_name, |team_file| {
+            add_member(
+                team_file,
+                TeamMember {
+                    agent_id: agent_id.clone(),
+                    name: agent_name.clone(),
+                    agent_type: Some(agent_type.as_str().to_string()),
+                    model: effective_model.clone(),
+                    prompt: Some(effective_prompt.clone()),
+                    color: None,
+                    joined_at: now,
+                    cwd: cwd.to_string_lossy().to_string(),
+                    worktree_path: None,
+                    session_id: None,
+                    is_active: true,
+                },
+            )
+        })
+        .map_err(|e| ToolError::execution_failed(format!("Failed to update team config: {e:#}")))?;
 
         ctx.teammates.insert(
             agent_id.clone(),
@@ -2966,19 +2965,15 @@ async fn spawn_team_teammate_in_process(
                 ctx.teammates.remove(&cleanup_agent_id);
                 ctx.teammate_cancel_tokens.remove(&cleanup_agent_name);
             }
-            if let Ok(mut team_file) = read_team_config(&cleanup_team_name) {
-                if let Err(err) =
-                    crate::tools::team::set_member_inactive(&mut team_file, &cleanup_agent_name)
-                {
-                    crate::logging::warn(format!(
-                        "failed to mark teammate '{cleanup_agent_name}' inactive: {err}"
-                    ));
-                }
-                if let Err(err) = write_team_config(&team_file) {
-                    crate::logging::warn(format!(
-                        "failed to persist team config after '{cleanup_agent_name}' exit: {err}"
-                    ));
-                }
+            // One locked read-modify-write: an unguarded
+            // read→set_inactive→write could erase a concurrent roster
+            // change from another agent process.
+            if let Err(err) = with_team_file(&cleanup_team_name, |team_file| {
+                crate::tools::team::set_member_inactive(team_file, &cleanup_agent_name)
+            }) {
+                crate::logging::warn(format!(
+                    "failed to mark teammate '{cleanup_agent_name}' inactive after exit: {err:#}"
+                ));
             }
         },
     );
@@ -3064,28 +3059,27 @@ async fn spawn_team_teammate_in_pane(
             )));
         }
 
-        let mut team_file = read_team_config(&ctx.team_name)
-            .map_err(|e| ToolError::execution_failed(format!("Failed to read team config: {e}")))?;
-        add_member(
-            &mut team_file,
-            TeamMember {
-                agent_id: agent_id.clone(),
-                name: agent_name.clone(),
-                agent_type: Some(agent_type.as_str().to_string()),
-                model: effective_model.clone(),
-                prompt: Some(effective_prompt.clone()),
-                color: None,
-                joined_at: now,
-                cwd: cwd.to_string_lossy().to_string(),
-                worktree_path: None,
-                session_id: None,
-                is_active: true,
-            },
-        )
-        .map_err(|e| ToolError::execution_failed(format!("Failed to add team member: {e}")))?;
-        write_team_config(&team_file).map_err(|e| {
-            ToolError::execution_failed(format!("Failed to write team config: {e}"))
-        })?;
+        // One locked read-modify-write: an unguarded read→add→write could
+        // erase a concurrent roster change from another agent process.
+        with_team_file(&ctx.team_name, |team_file| {
+            add_member(
+                team_file,
+                TeamMember {
+                    agent_id: agent_id.clone(),
+                    name: agent_name.clone(),
+                    agent_type: Some(agent_type.as_str().to_string()),
+                    model: effective_model.clone(),
+                    prompt: Some(effective_prompt.clone()),
+                    color: None,
+                    joined_at: now,
+                    cwd: cwd.to_string_lossy().to_string(),
+                    worktree_path: None,
+                    session_id: None,
+                    is_active: true,
+                },
+            )
+        })
+        .map_err(|e| ToolError::execution_failed(format!("Failed to update team config: {e:#}")))?;
 
         ctx.teammates.insert(
             agent_id.clone(),
@@ -3128,10 +3122,10 @@ async fn spawn_team_teammate_in_pane(
         Err(e) => {
             // Roll back the leader-side registration so a failed spawn does
             // not leave a phantom teammate in the team file / context.
-            if let Ok(mut team_file) = read_team_config(&team_name) {
-                let _ = crate::tools::team::remove_member_by_name(&mut team_file, &agent_name);
-                let _ = write_team_config(&team_file);
-            }
+            let _ = with_team_file(&team_name, |team_file| {
+                crate::tools::team::remove_member_by_name(team_file, &agent_name);
+                Ok(())
+            });
             let mut slot = shared_team_context.lock().await;
             if let Some(ctx) = slot.as_mut() {
                 ctx.teammates.remove(&agent_id);

@@ -29,7 +29,7 @@ pub use protocol_handlers::new_shared_permission_registry;
 pub use send_message::SendMessageTool;
 pub use team_create::TeamCreateTool;
 pub use team_delete::TeamDeleteTool;
-pub use team_discovery::{add_member, read_team_config, set_member_inactive, write_team_config};
+pub use team_discovery::{add_member, read_team_config, set_member_inactive};
 // `create_team_file` is test-only today (creation moved to the exclusive
 // variant); kept exported for those tests.
 #[allow(unused_imports)]
@@ -37,6 +37,7 @@ pub use team_file::{
     TeamFile, TeamMember, active_teammate_count, active_teammates, create_team_file,
     create_team_file_exclusive, delete_team_directories, find_member_by_name, format_lead_agent_id,
     read_team_file, remove_member_by_name, sanitize_name, team_config_path, team_lead_name,
+    with_team_file,
 };
 #[allow(unused_imports)]
 pub use team_memory::{

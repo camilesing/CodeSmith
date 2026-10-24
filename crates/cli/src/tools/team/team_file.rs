@@ -9,14 +9,16 @@
 
 pub use codesmith_agent_runtime::team::team_file::{
     TeamFile, TeamMember, active_teammate_count, active_teammates, create_team_file,
-    create_team_file_exclusive, delete_team_directories, find_member_by_name,
-    format_lead_agent_id, read_team_file, remove_member_by_name, sanitize_name,
-    team_config_path, team_dir, team_lead_name, with_team_file, write_team_file,
+    create_team_file_exclusive, delete_team_directories, find_member_by_name, format_lead_agent_id,
+    read_team_file, remove_member_by_name, sanitize_name, team_config_path, team_dir,
+    team_lead_name, with_team_file,
 };
 // Test-module-only consumers; the production surface above stays at what
 // the CLI actually uses, with the same name-resolution pinning.
 #[cfg(test)]
-pub use codesmith_agent_runtime::team::team_file::{find_member_by_agent_id, team_task_dir};
+pub use codesmith_agent_runtime::team::team_file::{
+    find_member_by_agent_id, team_task_dir, write_team_file,
+};
 
 #[cfg(test)]
 mod tests {

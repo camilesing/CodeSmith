@@ -6371,7 +6371,7 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     use crate::tools::task_v2::new_shared_task_v2_manager;
     use crate::tools::team::{
         TeamContext, TeammateMessage, find_member_by_name, new_shared_team_context,
-        read_team_config, set_member_inactive, team_config_path, team_lead_name, write_team_config,
+        read_team_config, set_member_inactive, team_config_path, team_lead_name, with_team_file,
         write_to_mailbox,
     };
     use codesmith_agent_runtime::ops::Op;
@@ -6632,19 +6632,13 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             summary: Some(format!("teammate {} complete", args.name)),
         },
     );
-    if let Ok(mut tf) = read_team_config(&args.team) {
-        if let Err(err) = set_member_inactive(&mut tf, &args.name) {
-            crate::logging::warn(format!(
-                "failed to mark teammate '{}' inactive: {err}",
-                args.name
-            ));
-        }
-        if let Err(err) = write_team_config(&tf) {
-            crate::logging::warn(format!(
-                "failed to persist team config for '{}': {err}",
-                args.team
-            ));
-        }
+    // One locked read-modify-write: an unguarded read→set_inactive→write
+    // could erase a concurrent roster change from another agent process.
+    if let Err(err) = with_team_file(&args.team, |tf| set_member_inactive(tf, &args.name)) {
+        crate::logging::warn(format!(
+            "failed to mark teammate '{}' inactive in '{}': {err:#}",
+            args.name, args.team
+        ));
     }
 
     if let Some(err) = turn_error.as_ref().filter(|e| !e.trim().is_empty()) {

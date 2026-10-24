@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use self::team_file::{read_team_file, remove_member_by_name, write_team_file};
+use self::team_file::{remove_member_by_name, with_team_file};
 
 /// Idle reason variants — why a teammate went idle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -168,10 +168,13 @@ pub fn handle_shutdown_approval(
         token.cancel();
     }
 
-    // Remove the teammate from the team file.
-    let mut team_file = read_team_file(team_name)?;
-    remove_member_by_name(&mut team_file, teammate_name);
-    write_team_file(&team_file)?;
+    // Remove the teammate from the team file as one locked
+    // read-modify-write: an unguarded read→remove→write could erase a
+    // concurrent roster change from another agent process.
+    with_team_file(team_name, |team_file| {
+        remove_member_by_name(team_file, teammate_name);
+        Ok(())
+    })?;
 
     Ok(())
 }
