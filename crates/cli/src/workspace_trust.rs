@@ -30,9 +30,14 @@ const TRUST_FILE_NAME: &str = "workspace-trust.json";
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct TrustFile {
-    /// Map workspace canonical path → sorted unique trusted paths.
+    /// Map workspace canonical path → sorted unique trusted paths. `PathBuf`
+    /// on both sides so the in-memory pipeline (compare, retain, push) never
+    /// routes a real path through `to_string_lossy`. Known limitation: the
+    /// on-disk form is JSON, so non-UTF-8 path bytes are still mangled at
+    /// serialization time — the type change only stops adding a SECOND lossy
+    /// conversion before the file is even reached.
     #[serde(default)]
-    workspaces: BTreeMap<String, Vec<String>>,
+    workspaces: BTreeMap<PathBuf, Vec<PathBuf>>,
 }
 
 /// In-memory trust list for a single workspace, snapshotted at load time.
@@ -84,15 +89,25 @@ impl WorkspaceTrust {
     /// Whether the candidate is trusted: the candidate (after canonical
     /// normalization) starts with one of the trusted prefixes. Directory
     /// trust grants access to anything under the directory.
+    ///
+    /// Both the canonicalized and the raw candidate form are matched, and the
+    /// trusted prefix is re-canonicalized at check time: a grant recorded for
+    /// a not-yet-existing path keeps its verbatim form (macOS
+    /// `/var/folders/...` vs. canonical `/private/var/folders/...`), so a
+    /// single-form comparison silently never matches once the path exists.
+    ///
+    /// Known limitation (TOCTOU): the check and the file tool's actual open
+    /// are separate steps; a symlink swapped in between can redirect access
+    /// after the check returned true. The engine's sandbox remains the
+    /// enforcement boundary for shell commands.
     #[must_use]
     #[allow(dead_code)]
     pub fn permits(&self, candidate: &Path) -> bool {
-        let canonical = candidate
-            .canonicalize()
-            .unwrap_or_else(|_| candidate.to_path_buf());
-        self.paths
-            .iter()
-            .any(|trusted| canonical.starts_with(trusted))
+        let forms = [candidate.canonicalize().ok(), Some(candidate.to_path_buf())];
+        self.paths.iter().any(|trusted| {
+            let trusted = trusted.canonicalize().unwrap_or_else(|_| trusted.clone());
+            forms.iter().flatten().any(|c| c.starts_with(&trusted))
+        })
     }
 }
 
@@ -108,16 +123,22 @@ pub fn add(workspace: &Path, path: &Path) -> Result<PathBuf> {
 fn add_at(workspace: &Path, path: &Path, trust_path: &Path) -> Result<PathBuf> {
     let canonical = canonicalize_or_keep(path);
     let key = workspace_key(workspace);
-    let mut file = read_trust_file_at(trust_path).unwrap_or_default();
-    let entry = file.workspaces.entry(key).or_default();
-    let stored = canonical.to_string_lossy().to_string();
-    if !entry.iter().any(|p| p == &stored) {
-        entry.push(stored.clone());
-        entry.sort();
-        entry.dedup();
-    }
-    write_trust_file_at(&file, trust_path)?;
-    Ok(canonical)
+    // The whole read-modify-write runs under the shared fd-lock helper
+    // (sibling `workspace-trust.json.lock`): two CLI processes mutating
+    // different workspaces' entries share one file, and without the lock
+    // both read the old state and the loser's write silently drops the
+    // winner's entry.
+    codesmith_agent_runtime::settings_file::with_settings_lock(trust_path, || {
+        let mut file = read_trust_file_at(trust_path)?;
+        let entry = file.workspaces.entry(key.clone()).or_default();
+        if !entry.iter().any(|p| p == &canonical) {
+            entry.push(canonical.clone());
+            entry.sort();
+            entry.dedup();
+        }
+        write_trust_file_at(&file, trust_path)?;
+        Ok(canonical.clone())
+    })
 }
 
 /// Remove `path` from `workspace`'s trust list. Returns true when an entry
@@ -132,30 +153,31 @@ pub fn remove(workspace: &Path, path: &Path) -> Result<bool> {
 fn remove_at(workspace: &Path, path: &Path, trust_path: &Path) -> Result<bool> {
     let canonical = canonicalize_or_keep(path);
     let key = workspace_key(workspace);
-    let mut file = read_trust_file_at(trust_path).unwrap_or_default();
-    let stored = canonical.to_string_lossy().to_string();
-    let removed = match file.workspaces.get_mut(&key) {
-        Some(entry) => {
-            let len_before = entry.len();
-            entry.retain(|p| p != &stored);
-            let changed = entry.len() != len_before;
-            if entry.is_empty() {
-                file.workspaces.remove(&key);
+    // Same fd-lock rationale as `add_at`: hold the exclusive guard across
+    // read-modify-write so a concurrent mutation cannot be lost.
+    codesmith_agent_runtime::settings_file::with_settings_lock(trust_path, || {
+        let mut file = read_trust_file_at(trust_path)?;
+        let removed = match file.workspaces.get_mut(&key) {
+            Some(entry) => {
+                let len_before = entry.len();
+                entry.retain(|p| p != &canonical);
+                let changed = entry.len() != len_before;
+                if entry.is_empty() {
+                    file.workspaces.remove(&key);
+                }
+                changed
             }
-            changed
+            None => false,
+        };
+        if removed {
+            write_trust_file_at(&file, trust_path)?;
         }
-        None => false,
-    };
-    if removed {
-        write_trust_file_at(&file, trust_path)?;
-    }
-    Ok(removed)
+        Ok(removed)
+    })
 }
 
-fn workspace_key(workspace: &Path) -> String {
+fn workspace_key(workspace: &Path) -> PathBuf {
     canonicalize_or_keep(workspace)
-        .to_string_lossy()
-        .into_owned()
 }
 
 fn canonicalize_or_keep(path: &Path) -> PathBuf {
@@ -301,5 +323,33 @@ mod tests {
 
         let trust = WorkspaceTrust::load_from_file(&workspace, &trust_path);
         assert!(trust.paths().is_empty());
+    }
+
+    /// A grant recorded for a path that did not exist yet keeps the verbatim
+    /// (non-canonical) form; once the path exists and the candidate
+    /// canonicalizes (macOS `/var` → `/private/var`), the check must still
+    /// match instead of silently never applying the user's opt-in.
+    #[test]
+    fn permits_matches_verbatim_grant_after_path_exists() {
+        let (tmp, _trust_path) = isolated_trust_path();
+        let other = tmp.path().join("data/notes");
+        std::fs::create_dir_all(&other).unwrap();
+        let inner = other.join("file.md");
+        std::fs::write(&inner, "x").unwrap();
+
+        // Store the raw, possibly non-canonical form directly (as
+        // canonicalize_or_keep would for a not-yet-existing path).
+        let trust = WorkspaceTrust {
+            paths: vec![other.clone()],
+        };
+        assert!(
+            trust.permits(&inner),
+            "raw-form grant must match the canonicalized candidate"
+        );
+        assert!(
+            trust.permits(&inner.canonicalize().unwrap_or(inner.clone())),
+            "grant must also match itself in canonical form"
+        );
+        assert!(!trust.permits(Path::new("/etc/passwd")));
     }
 }
