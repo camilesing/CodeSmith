@@ -3,6 +3,16 @@
 //! Inbox files live at `~/.codesmith/teams/{sanitized_name}/inboxes/{agent_name}.json`.
 //! Each inbox is a JSON array of TeammateMessage entries. Concurrent writes
 //! use flock via a separate `.lock` file (same pattern as TaskV2Manager).
+//! A `.owner` sidecar claims each sanitized inbox file name for the first
+//! exact agent name that delivers to it, so `sanitize_name` collisions
+//! surface as errors instead of silently sharing one inbox.
+//!
+//! **This store is not an authentication boundary.** Sender authentication
+//! would need per-agent signing keys the writer cannot forge — see the
+//! design record in `Review/261022/mailbox-sender-auth-design.md` (in the
+//! review workspace) for the proposed shape; it is a deliberate
+//! not-yet-taken design decision, recorded there instead of improvised
+//! here.
 #![allow(clippy::suspicious_open_options)]
 
 use std::fs;
@@ -239,20 +249,93 @@ const INBOX_RETENTION_LIMIT: usize = 1000;
 
 /// Path to a teammate's inbox file.
 ///
-/// Known limitation: the file name goes through `sanitize_name`, which
-/// folds every non-ASCII-alphanumeric character to `-`, so distinct
-/// teammates ("code reviewer", "code-reviewer", "code_reviewer") share one
-/// inbox file and one lock — their messages cross-deliver and one agent's
-/// read-marking clears the other's unread state. Exclusive filename
-/// registration (as team dirs do with `create_team_file_exclusive`) or
-/// keying on a unique component would surface the collision; changing the
-/// naming scheme needs a migration for existing inboxes, so the limit is
-/// recorded here instead.
+/// The file name goes through `sanitize_name`, which folds every
+/// non-ASCII-alphanumeric character to `-`, so distinct teammates ("code
+/// reviewer", "code-reviewer", "code_reviewer") would share one inbox
+/// file and one lock. The `.owner` sidecar ([`ensure_inbox_owner`])
+/// claims the sanitized file name exclusively for the first exact name
+/// that delivers to it and fails every later differently-spelled name, so
+/// a collision surfaces as an error instead of silent cross-delivery.
 fn inbox_path(agent_name: &str, team_name: &str) -> anyhow::Result<PathBuf> {
     let dir = team_dir(team_name)?;
     Ok(dir
         .join("inboxes")
         .join(format!("{}.json", sanitize_name(agent_name))))
+}
+
+/// Path to the sidecar recording which exact agent name owns a sanitized
+/// inbox file. Content is the owner's exact (unsanitized) name.
+fn inbox_owner_path(agent_name: &str, team_name: &str) -> anyhow::Result<PathBuf> {
+    Ok(inbox_path(agent_name, team_name)?.with_extension("owner"))
+}
+
+/// Claim (`claim = true`, write paths) or verify (read paths) the inbox
+/// file name for `agent_name`.
+///
+/// Claim: the first delivery registers the exact name with `create_new`
+/// (O_EXCL — atomic against another session claiming the same sanitized
+/// name for a different spelling). Any later access through a name that
+/// sanitizes identically but differs textually fails loud, naming both
+/// spellings, instead of silently sharing one inbox (cross-delivered
+/// messages, one agent's read-marking clearing the other's unread state).
+///
+/// Verify: an inbox with no sidecar yet (legacy inboxes predating the
+/// claim, or a never-messaged agent) passes — the sidecar is created only
+/// by the first WRITE, mirroring the lock-file convention that reads do
+/// not create. A legacy inbox is claimed by the first name that writes to
+/// it; if that was the wrong spelling of a colliding pair, the other
+/// spelling's next access names the collision explicitly.
+///
+/// Known limitation: the claim is per-inbox-file, not per-roster — two
+/// colliding names are only detected once at least one has delivered
+/// mail, not at team creation.
+fn ensure_inbox_owner(agent_name: &str, team_name: &str, claim: bool) -> anyhow::Result<()> {
+    let owner_path = inbox_owner_path(agent_name, team_name)?;
+    let sanitized = sanitize_name(agent_name);
+    if !claim {
+        // Read path: an absent sidecar means nothing has been claimed to
+        // collide with; never create files from a read.
+        match fs::read_to_string(&owner_path) {
+            Ok(existing) => {
+                if existing.trim() != agent_name && !existing.trim().is_empty() {
+                    anyhow::bail!(
+                        "inbox name collision: agent '{agent_name}' and '{}' both sanitize to \
+                         '{sanitized}' and would share one inbox; rename one of them",
+                        existing.trim()
+                    );
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+        return Ok(());
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&owner_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            writeln!(file, "{agent_name}")?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = fs::read_to_string(&owner_path)?;
+            let existing = existing.trim();
+            if existing.is_empty() {
+                // A crash between create_new and the name write left an
+                // empty sidecar: it claims nothing, so take it over.
+                fs::write(&owner_path, format!("{agent_name}\n"))?;
+            } else if existing != agent_name {
+                anyhow::bail!(
+                    "inbox name collision: agent '{agent_name}' and '{existing}' both sanitize \
+                     to '{sanitized}' and would share one inbox; rename one of them",
+                );
+            }
+        }
+        Err(err) => return Err(err.into()),
+    }
+    Ok(())
 }
 
 /// Path to the flock lock file for a teammate's inbox.
@@ -281,6 +364,7 @@ fn acquire_inbox_lock(agent_name: &str, team_name: &str) -> anyhow::Result<RwLoc
 
 /// Read all messages from a teammate's inbox file.
 pub fn read_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<Vec<TeammateMessage>> {
+    ensure_inbox_owner(agent_name, team_name, false)?;
     let path = inbox_path(agent_name, team_name)?;
     let lock = acquire_inbox_lock(agent_name, team_name)?;
     let _guard = lock.read()?;
@@ -327,6 +411,7 @@ pub fn write_to_mailbox(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    ensure_inbox_owner(recipient_name, team_name, true)?;
 
     // Acquire exclusive lock via separate .lock file.
     let mut lock = acquire_inbox_lock(recipient_name, team_name)?;
@@ -345,6 +430,7 @@ pub fn write_to_mailbox(
 
 /// Mark all messages in a teammate's inbox as read.
 pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
+    ensure_inbox_owner(agent_name, team_name, false)?;
     let path = inbox_path(agent_name, team_name)?;
     let mut lock = acquire_inbox_lock(agent_name, team_name)?;
     let _guard = lock.write()?;
@@ -379,6 +465,7 @@ pub fn mark_messages_as_read(agent_name: &str, team_name: &str) -> anyhow::Resul
 /// Clear a teammate's inbox (set to empty array).
 #[allow(dead_code)]
 pub fn clear_mailbox(agent_name: &str, team_name: &str) -> anyhow::Result<()> {
+    ensure_inbox_owner(agent_name, team_name, false)?;
     let path = inbox_path(agent_name, team_name)?;
     let mut lock = acquire_inbox_lock(agent_name, team_name)?;
     let _guard = lock.write()?;
@@ -692,5 +779,81 @@ mod tests {
 
         let msgs = read_mailbox("worker1", "mb-clear").expect("read");
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn colliding_sanitized_name_fails_loud_on_write_and_read() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-collide")).expect("team");
+
+        // First delivery claims the sanitized file name for the exact
+        // spelling "code reviewer".
+        write_to_mailbox("code reviewer", "mb-collide", make_message("leader", "hi"))
+            .expect("first spelling claims the inbox");
+
+        // A DIFFERENT spelling with the same sanitize result must not
+        // silently share the inbox — neither writing nor reading.
+        let err = write_to_mailbox("code-reviewer", "mb-collide", make_message("leader", "x"))
+            .expect_err("colliding write must fail");
+        assert!(
+            err.to_string().contains("collision"),
+            "error should name the collision: {err}"
+        );
+        assert!(
+            err.to_string().contains("code reviewer") && err.to_string().contains("code-reviewer"),
+            "error should name both spellings: {err}"
+        );
+
+        let err =
+            read_mailbox("code-reviewer", "mb-collide").expect_err("colliding read must fail");
+        assert!(err.to_string().contains("collision"));
+
+        // The rightful owner is unaffected.
+        let msgs = read_mailbox("code reviewer", "mb-collide").expect("owner reads fine");
+        assert_eq!(msgs.len(), 1);
+        assert!(mark_messages_as_read("code reviewer", "mb-collide").is_ok());
+    }
+
+    #[test]
+    fn same_name_reclaim_and_empty_sidecar_recovery() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-owner")).expect("team");
+
+        // Repeated delivery under the SAME name re-verifies the sidecar.
+        write_to_mailbox("worker1", "mb-owner", make_message("leader", "a")).expect("first");
+        write_to_mailbox("worker1", "mb-owner", make_message("leader", "b")).expect("second");
+
+        // A crash between create_new and the name write leaves an empty
+        // sidecar claiming nothing — the next writer takes it over.
+        let owner = inbox_owner_path("worker1", "mb-owner").expect("owner path");
+        fs::write(&owner, "").expect("truncate sidecar");
+        write_to_mailbox("worker1", "mb-owner", make_message("leader", "c")).expect("reclaim");
+        assert_eq!(
+            fs::read_to_string(&owner).expect("reread").trim(),
+            "worker1"
+        );
+    }
+
+    #[test]
+    fn legacy_inbox_without_sidecar_is_claimed_by_first_writer() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-legacy")).expect("team");
+
+        // Seed an inbox the way a pre-sidecar version did: direct file,
+        // no .owner. Reads pass (nothing claimed to collide with).
+        let path = inbox_path("worker1", "mb-legacy").expect("path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+        fs::write(&path, "[]").expect("seed legacy inbox");
+        assert!(read_mailbox("worker1", "mb-legacy").is_ok());
+
+        // The first write claims the name for that exact spelling. A
+        // different spelling with the SAME sanitize result ("Worker1"
+        // lowercases to "worker1") now fails loud.
+        write_to_mailbox("worker1", "mb-legacy", make_message("leader", "m")).expect("claim");
+        assert!(read_mailbox("worker1", "mb-legacy").is_ok());
+        assert!(read_mailbox("Worker1", "mb-legacy").is_err());
     }
 }
