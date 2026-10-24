@@ -540,7 +540,9 @@ impl RetryConfig {
             // TOML float literal) makes `jitter_range` ±inf, and the
             // NaN-dropping min/max that bounded `capped_delay` did not
             // bound the jittered sum — `Duration::from_secs_f64(+inf)`
-            // panics.
+            // panics. Deliberately NOT `clamp`: clamp(NaN, ..) panics,
+            // while this min/max chain folds NaN to the hard cap.
+            #[allow(clippy::manual_clamp)] // NaN-safety, see comment above
             (capped_delay + jitter).min(HARD_DELAY_CAP_SECS).max(0.0)
         } else {
             capped_delay

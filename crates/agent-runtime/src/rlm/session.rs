@@ -635,6 +635,11 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    // The env lock is a std Mutex held across the staging await on
+    // purpose: TMPDIR must stay scoped for the duration of the async
+    // write, and the lock serializes this test's env mutation against
+    // every other env-mutating test (same allowance as engine/tests.rs).
+    #[allow(clippy::await_holding_lock)]
     async fn staged_dir_and_file_are_owner_only() {
         let _env = lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
