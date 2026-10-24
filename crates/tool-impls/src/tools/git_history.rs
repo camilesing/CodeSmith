@@ -337,7 +337,9 @@ impl ToolSpec for GitBlameTool {
         let working_dir = resolved_path.parent().ok_or_else(|| {
             ToolError::invalid_input(format!("Path has no parent directory: {path_str}"))
         })?;
-        let pathspec = pathspec_from(working_dir, &resolved_path);
+        // Blame's trailing argument is a file path, not a pathspec — the
+        // `:(literal)` guard belongs to log/show only.
+        let pathspec = file_arg_from(working_dir, &resolved_path);
         let rev = optional_str(&input, "rev").unwrap_or("HEAD");
         let start_line = optional_u64(&input, "start_line", DEFAULT_BLAME_START_LINE)?.max(1);
         let max_lines = optional_u64(&input, "max_lines", DEFAULT_BLAME_MAX_LINES)?
@@ -440,8 +442,26 @@ fn canonical_or_workspace(workspace: &Path) -> PathBuf {
 fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
     match resolved.strip_prefix(working_dir) {
         Ok(rel) if rel.as_os_str().is_empty() => PathBuf::from("."),
+        // `:(literal)` disables pathspec globbing/magic (same guard as
+        // git.rs): a file literally named `*.rs` must not act as a glob,
+        // and `:!x` must not become an exclude pathspec widening the query.
+        Ok(rel) => PathBuf::from(format!(":(literal){}", rel.display())),
+        // Unreachable for canonical paths; if it ever fires, never silently
+        // widen a file-scoped query to the whole directory — git accepts
+        // absolute pathspecs, so fall back to the full literal path.
+        Err(_) => PathBuf::from(format!(":(literal){}", resolved.display())),
+    }
+}
+
+/// Plain file argument for commands whose trailing argument is a PATH, not a
+/// pathspec (`git blame <rev> -- <file>`): blame rejects pathspec magic
+/// (`fatal: no such path ':(literal)…'`), and a path after `--` can never be
+/// parsed as an option, so the literal relative path is the safe form.
+fn file_arg_from(working_dir: &Path, resolved: &Path) -> PathBuf {
+    match resolved.strip_prefix(working_dir) {
+        Ok(rel) if rel.as_os_str().is_empty() => PathBuf::from("."),
         Ok(rel) => rel.to_path_buf(),
-        Err(_) => PathBuf::from("."),
+        Err(_) => resolved.to_path_buf(),
     }
 }
 

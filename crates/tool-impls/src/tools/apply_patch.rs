@@ -39,6 +39,8 @@ pub struct PatchResult {
     pub fuzz_used: usize,
     #[serde(default)]
     pub hunks_with_fuzz: usize,
+    #[serde(default)]
+    pub hunks_whitespace_loose: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub touched_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -54,6 +56,8 @@ pub struct FileSummary {
     pub hunks_applied: usize,
     pub fuzz_used: usize,
     pub hunks_with_fuzz: usize,
+    #[serde(default)]
+    pub hunks_whitespace_loose: usize,
     pub created: bool,
     pub deleted: bool,
 }
@@ -121,6 +125,7 @@ struct PatchStats {
     hunks_total: usize,
     fuzz_used: usize,
     hunks_with_fuzz: usize,
+    hunks_whitespace_loose: usize,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -148,6 +153,7 @@ struct HunkApplyStats {
     hunks_applied: usize,
     fuzz_used: usize,
     hunks_with_fuzz: usize,
+    hunks_whitespace_loose: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +266,7 @@ impl ToolSpec for ApplyPatchTool {
                 hunks_total: stats.stats.hunks_total,
                 fuzz_used: stats.stats.fuzz_used,
                 hunks_with_fuzz: stats.stats.hunks_with_fuzz,
+                hunks_whitespace_loose: stats.stats.hunks_whitespace_loose,
                 touched_files: stats.touched_files.clone(),
                 file_summaries: stats.file_summaries.clone(),
                 message: build_summary_message(&stats),
@@ -312,6 +319,7 @@ impl ToolSpec for ApplyPatchTool {
             hunks_total: stats.stats.hunks_total,
             fuzz_used: stats.stats.fuzz_used,
             hunks_with_fuzz: stats.stats.hunks_with_fuzz,
+            hunks_whitespace_loose: stats.stats.hunks_whitespace_loose,
             touched_files: stats.touched_files.clone(),
             file_summaries: stats.file_summaries.clone(),
             message: build_summary_message(&stats),
@@ -571,7 +579,11 @@ fn resolve_diff_paths(
 }
 
 fn normalize_diff_path(raw: &str) -> Option<String> {
-    let raw = raw.trim();
+    // Standard `diff -u` headers carry a tab-separated timestamp
+    // (`+++ b/file.rs\t2026-10-22 10:00:00 …`); git diffs omit it. Keep only
+    // the path, and drop the quoting diff(1) adds around paths with spaces.
+    let raw = raw.split('\t').next().unwrap_or(raw).trim();
+    let raw = raw.trim_matches('"');
     if raw.is_empty() {
         return None;
     }
@@ -775,6 +787,13 @@ fn build_summary_message(stats: &PatchStatsExt) -> String {
         ));
     }
 
+    if stats.stats.hunks_whitespace_loose > 0 {
+        parts.push(format!(
+            "{} hunk(s) applied with loose whitespace matching; added lines keep the patch's indentation — verify indentation.",
+            stats.stats.hunks_whitespace_loose
+        ));
+    }
+
     if let Some(note) = stats.header_path_mismatch.as_deref() {
         parts.push(note.to_string());
     }
@@ -846,6 +865,7 @@ fn build_pending_writes_from_changes(
             hunks_applied: 0,
             fuzz_used: 0,
             hunks_with_fuzz: 0,
+            hunks_whitespace_loose: 0,
             created,
             deleted: false,
         });
@@ -930,6 +950,7 @@ fn build_pending_writes_from_patches(
         stats.stats.hunks_total += file_patch.hunks.len();
         stats.stats.fuzz_used += apply_stats.fuzz_used;
         stats.stats.hunks_with_fuzz += apply_stats.hunks_with_fuzz;
+        stats.stats.hunks_whitespace_loose += apply_stats.hunks_whitespace_loose;
         stats.stats.files_applied += 1;
         push_unique(&mut stats.touched_files, file_patch.path.clone());
         stats.file_summaries.push(FileSummary {
@@ -938,6 +959,7 @@ fn build_pending_writes_from_patches(
             hunks_applied: apply_stats.hunks_applied,
             fuzz_used: apply_stats.fuzz_used,
             hunks_with_fuzz: apply_stats.hunks_with_fuzz,
+            hunks_whitespace_loose: apply_stats.hunks_whitespace_loose,
             created: original.is_none() && !file_patch.delete_after,
             deleted: file_patch.delete_after,
         });
@@ -1034,8 +1056,18 @@ fn apply_pending_writes_blocking(pending: &[PendingWrite]) -> Result<(), ToolErr
         };
 
         if let Err(err) = result {
-            rollback_pending_writes(&applied);
-            return Err(err);
+            let rollback_failures = rollback_pending_writes(&applied);
+            if rollback_failures.is_empty() {
+                return Err(err);
+            }
+            // The write failed AND restoring the already-applied entries
+            // failed: the workspace is partially mutated — say so instead
+            // of returning the write error as if nothing had been written.
+            return Err(ToolError::execution_failed(format!(
+                "{err}; additionally, rollback left the workspace partially \
+                 mutated: {} (verify these paths manually)",
+                rollback_failures.join("; ")
+            )));
         }
 
         applied.push(entry.clone());
@@ -1044,17 +1076,24 @@ fn apply_pending_writes_blocking(pending: &[PendingWrite]) -> Result<(), ToolErr
     Ok(())
 }
 
-fn rollback_pending_writes(applied: &[PendingWrite]) {
+/// Best-effort restore of already-applied entries in reverse order.
+/// Returns the per-entry failures so the caller can surface an
+/// inconsistent tree; a silent `let _ =` here would report the original
+/// write error as if nothing had been written. Known limitation:
+/// directories created by `create_dir_all` are not removed (they may
+/// predate the patch).
+fn rollback_pending_writes(applied: &[PendingWrite]) -> Vec<String> {
+    let mut failures = Vec::new();
     for entry in applied.iter().rev() {
-        match entry.original.as_ref() {
-            Some(content) => {
-                let _ = fs::write(&entry.path, content);
-            }
-            None => {
-                let _ = fs::remove_file(&entry.path);
-            }
+        let result = match entry.original.as_ref() {
+            Some(content) => fs::write(&entry.path, content),
+            None => fs::remove_file(&entry.path),
+        };
+        if let Err(e) = result {
+            failures.push(format!("restore {}: {e}", entry.path.display()));
         }
     }
+    failures
 }
 
 fn read_file_content(path: &PathBuf) -> Result<String, ToolError> {
@@ -1134,11 +1173,14 @@ fn apply_hunks_to_lines(
 
     for (idx, hunk) in hunks.iter().enumerate() {
         match apply_hunk(lines, hunk, fuzz, &mut cumulative_offset) {
-            Ok(fuzz_used) => {
+            Ok((fuzz_used, quality)) => {
                 stats.fuzz_used += fuzz_used;
                 stats.hunks_applied += 1;
-                if fuzz_used > 0 {
+                if fuzz_used > 0 || quality == LineMatch::Loose {
                     stats.hunks_with_fuzz += 1;
+                }
+                if quality == LineMatch::Loose {
+                    stats.hunks_whitespace_loose += 1;
                 }
             }
             Err(e) => {
@@ -1157,13 +1199,14 @@ fn apply_hunks_to_lines(
     Ok(stats)
 }
 
-/// Apply a hunk to the file content with fuzzy matching
+/// Apply a hunk to the file content with fuzzy matching. Returns the fuzz
+/// used and whether the match was byte-exact or only whitespace-loose.
 fn apply_hunk(
     lines: &mut Vec<String>,
     hunk: &Hunk,
     max_fuzz: usize,
     cumulative_offset: &mut isize,
-) -> Result<usize, ApplyHunkError> {
+) -> Result<(usize, LineMatch), ApplyHunkError> {
     // Build expected old lines from hunk
     let old_lines: Vec<&str> = hunk
         .lines
@@ -1193,45 +1236,52 @@ fn apply_hunk(
     };
     let start_idx = ((base_idx as isize) + *cumulative_offset).max(0) as usize;
 
-    for fuzz in 0..=max_fuzz {
-        // Try at exact position first, then nearby
-        let search_range = if fuzz == 0 {
-            vec![start_idx]
-        } else {
-            let min = start_idx.saturating_sub(fuzz);
-            let max = (start_idx + fuzz).min(lines.len());
-            (min..=max).collect()
-        };
+    // Exact-byte match first across the whole fuzz window: drifted context
+    // indentation (semantically load-bearing in Makefile/YAML/Python) must
+    // not cross-match while an exact match exists anywhere. Only when no
+    // exact match exists does the whitespace-loose fallback run — and the
+    // loose application is counted so the drift is visible in the result.
+    for loose in [false, true] {
+        for fuzz in 0..=max_fuzz {
+            // Try at exact position first, then nearby
+            let search_range = if fuzz == 0 {
+                vec![start_idx]
+            } else {
+                let min = start_idx.saturating_sub(fuzz);
+                let max = (start_idx + fuzz).min(lines.len());
+                (min..=max).collect()
+            };
 
-        for pos in search_range {
-            if matches_at_position(lines, &old_lines, pos) {
-                // Apply the hunk. Context lines are re-emitted from the file
-                // verbatim, not from the patch: with whitespace-loose matching
-                // the model's remembered indentation must not rewrite lines
-                // the patch does not change — only `+` lines carry the
-                // patch's own bytes.
-                let mut replaced: Vec<String> = Vec::with_capacity(hunk.lines.len());
-                let mut file_idx = pos;
-                for line in &hunk.lines {
-                    match line {
-                        HunkLine::Context(_) => {
-                            replaced.push(lines[file_idx].clone());
-                            file_idx += 1;
+            for pos in search_range {
+                if let Some(quality) = matches_at_position(lines, &old_lines, pos, loose) {
+                    // Apply the hunk. Context lines are re-emitted from the file
+                    // verbatim, not from the patch: with whitespace-loose matching
+                    // the model's remembered indentation must not rewrite lines
+                    // the patch does not change — only `+` lines carry the
+                    // patch's own bytes.
+                    let mut replaced: Vec<String> = Vec::with_capacity(hunk.lines.len());
+                    let mut file_idx = pos;
+                    for line in &hunk.lines {
+                        match line {
+                            HunkLine::Context(_) => {
+                                replaced.push(lines[file_idx].clone());
+                                file_idx += 1;
+                            }
+                            HunkLine::Remove(_) => {
+                                file_idx += 1;
+                            }
+                            HunkLine::Add(text) => replaced.push(text.clone()),
                         }
-                        HunkLine::Remove(_) => {
-                            file_idx += 1;
-                        }
-                        HunkLine::Add(text) => replaced.push(text.clone()),
                     }
+                    let end_pos = pos + old_lines.len();
+                    let delta = replaced.len() as isize - old_lines.len() as isize;
+                    lines.splice(pos..end_pos, replaced);
+
+                    // Update cumulative offset: new lines added minus old lines removed
+                    *cumulative_offset += delta;
+
+                    return Ok((fuzz, quality));
                 }
-                let end_pos = pos + old_lines.len();
-                let delta = replaced.len() as isize - old_lines.len() as isize;
-                lines.splice(pos..end_pos, replaced);
-
-                // Update cumulative offset: new lines added minus old lines removed
-                *cumulative_offset += delta;
-
-                return Ok(fuzz);
             }
         }
     }
@@ -1241,7 +1291,7 @@ fn apply_hunk(
         let delta = new_lines.len() as isize;
         lines.extend(new_lines);
         *cumulative_offset += delta;
-        return Ok(0);
+        return Ok((0, LineMatch::Exact));
     }
 
     Err(ApplyHunkError::NoMatch {
@@ -1251,27 +1301,49 @@ fn apply_hunk(
     })
 }
 
-/// Check if `old_lines` match at the given position
-fn matches_at_position(lines: &[String], old_lines: &[&str], pos: usize) -> bool {
+/// Match quality at a candidate position: `Exact` (byte-identical context)
+/// or `Loose` (equal only after trimming leading/trailing whitespace).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineMatch {
+    Exact,
+    Loose,
+}
+
+/// Check if `old_lines` match at the given position. With `loose` false,
+/// only byte-identical context matches; with `loose` true, lines that differ
+/// solely in leading/trailing whitespace also match (reported as `Loose`).
+fn matches_at_position(
+    lines: &[String],
+    old_lines: &[&str],
+    pos: usize,
+    loose: bool,
+) -> Option<LineMatch> {
     if pos + old_lines.len() > lines.len() {
-        return false;
+        return None;
     }
 
+    let mut any_loose = false;
     for (i, old_line) in old_lines.iter().enumerate() {
+        let file_line = lines[pos + i].as_str();
+        if file_line == *old_line {
+            continue;
+        }
+        if !loose {
+            return None;
+        }
         // Whitespace-loose on both ends: models routinely drift the leading
         // indentation of remembered context while the content is current,
         // and fuzz only widens the position search — it cannot rescue a
         // content comparison. Known trade-off: leading whitespace that is
         // semantically load-bearing (Makefile recipes) can cross-match; the
         // line anchor and multi-line context keep that window tiny.
-        let file_line = lines[pos + i].trim();
-        let expected = old_line.trim();
-        if file_line != expected {
-            return false;
+        if file_line.trim() != old_line.trim() {
+            return None;
         }
+        any_loose = true;
     }
 
-    true
+    Some(if any_loose { LineMatch::Loose } else { LineMatch::Exact })
 }
 
 // === Unit Tests ===
@@ -1290,6 +1362,27 @@ mod tests {
         assert_eq!(parse_range("10,5").unwrap(), (10, 5));
         assert_eq!(parse_range("10").unwrap(), (10, 1));
         assert_eq!(parse_range("1,0").unwrap(), (1, 0));
+    }
+
+    /// Standard `diff -u` headers carry a tab-separated timestamp; the path
+    /// must resolve without it (and without diff(1)'s quoting). Callers pass
+    /// the header text after the `+++ `/`--- ` marker.
+    #[test]
+    fn normalize_diff_path_strips_timestamps_and_quotes() {
+        assert_eq!(
+            normalize_diff_path("b/file.rs\t2026-10-22 10:00:00.000000000 +0000"),
+            Some("file.rs".to_string())
+        );
+        assert_eq!(
+            normalize_diff_path("a/path with spaces.rs\t2026-10-22 10:00:00 +0000"),
+            Some("path with spaces.rs".to_string())
+        );
+        assert_eq!(
+            normalize_diff_path("\"b/quoted.rs\""),
+            Some("quoted.rs".to_string())
+        );
+        assert_eq!(normalize_diff_path("b/plain.rs"), Some("plain.rs".to_string()));
+        assert_eq!(normalize_diff_path("/dev/null"), None);
     }
 
     #[test]
@@ -1428,8 +1521,9 @@ diff --git a/same.txt b/same.txt
         };
 
         let mut offset: isize = 0;
-        let fuzz = apply_hunk(&mut lines, &hunk, 0, &mut offset).unwrap();
+        let (fuzz, quality) = apply_hunk(&mut lines, &hunk, 0, &mut offset).unwrap();
         assert_eq!(fuzz, 0);
+        assert_eq!(quality, LineMatch::Exact);
         assert_eq!(lines, vec!["line1", "modified", "line3"]);
     }
 
@@ -1456,8 +1550,9 @@ diff --git a/same.txt b/same.txt
         };
 
         let mut offset: isize = 0;
-        let fuzz = apply_hunk(&mut lines, &hunk, 3, &mut offset).unwrap();
+        let (fuzz, quality) = apply_hunk(&mut lines, &hunk, 3, &mut offset).unwrap();
         assert!(fuzz > 0);
+        assert_eq!(quality, LineMatch::Exact);
         assert_eq!(lines, vec!["line0", "modified", "line2", "line3"]);
     }
 
@@ -1489,8 +1584,10 @@ diff --git a/same.txt b/same.txt
         };
 
         let mut offset: isize = 0;
-        let fuzz = apply_hunk(&mut lines, &hunk, 0, &mut offset).expect("loose match applies");
+        let (fuzz, quality) =
+            apply_hunk(&mut lines, &hunk, 0, &mut offset).expect("loose match applies");
         assert_eq!(fuzz, 0);
+        assert_eq!(quality, LineMatch::Loose);
         assert_eq!(offset, 1);
         assert_eq!(
             lines,
@@ -1874,6 +1971,52 @@ diff --git a/b.txt b/b.txt
     }
 
     #[tokio::test]
+    async fn test_apply_patch_prefers_exact_match_and_counts_loose() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let tool = ApplyPatchTool;
+
+        // Exact `x` exists at line 4 while the drifted (indented) copy sits
+        // at the announced position (line 2): the exact match must win, so
+        // the add lands on line 4 and the application is not loose.
+        fs::write(tmp.path().join("exact.txt"), "a\n    x\nb\nx\n").expect("write");
+        let result = tool
+            .execute(
+                json!({"path": "exact.txt", "patch": "@@ -2,1 +2,1 @@\n-x\n+x2\n"}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success);
+        let patch_result = parse_patch_result(result);
+        assert_eq!(patch_result.hunks_whitespace_loose, 0);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("exact.txt")).unwrap(),
+            "a\n    x\nb\nx2\n"
+        );
+
+        // No exact match anywhere: the trim-based fallback applies, the
+        // context line keeps the FILE's indentation, and the loose
+        // application is counted so the drift is visible in the result.
+        fs::write(tmp.path().join("drift.txt"), "a\n    x\n").expect("write");
+        let result = tool
+            .execute(
+                json!({"path": "drift.txt", "patch": "@@ -2,1 +2,1 @@\n-x\n+y\n"}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success);
+        let patch_result = parse_patch_result(result);
+        assert_eq!(patch_result.hunks_whitespace_loose, 1);
+        assert!(patch_result.message.contains("loose whitespace"));
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("drift.txt")).unwrap(),
+            "a\ny\n"
+        );
+    }
+
+    #[tokio::test]
     async fn test_path_override_header_mismatch_note() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
@@ -1962,8 +2105,9 @@ diff --git a/b.txt b/b.txt
         let mut offset: isize = 0;
 
         // Apply first hunk
-        let fuzz1 = apply_hunk(&mut lines, &hunk1, 3, &mut offset).unwrap();
+        let (fuzz1, quality1) = apply_hunk(&mut lines, &hunk1, 3, &mut offset).unwrap();
         assert_eq!(fuzz1, 0);
+        assert_eq!(quality1, LineMatch::Exact);
         assert_eq!(offset, 2); // Added 2 lines (4 new - 2 old)
         assert_eq!(
             lines,
@@ -1973,8 +2117,9 @@ diff --git a/b.txt b/b.txt
         );
 
         // Apply second hunk - this would fail without offset tracking!
-        let fuzz2 = apply_hunk(&mut lines, &hunk2, 3, &mut offset).unwrap();
+        let (fuzz2, quality2) = apply_hunk(&mut lines, &hunk2, 3, &mut offset).unwrap();
         assert_eq!(fuzz2, 0);
+        assert_eq!(quality2, LineMatch::Exact);
         assert!(lines.contains(&"modified5".to_string()));
         assert!(!lines.contains(&"line5".to_string()));
     }

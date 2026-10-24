@@ -261,8 +261,15 @@ fn canonical_or_workspace(workspace: &Path) -> PathBuf {
 fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
     match resolved.strip_prefix(working_dir) {
         Ok(rel) if rel.as_os_str().is_empty() => PathBuf::from("."),
-        Ok(rel) => rel.to_path_buf(),
-        Err(_) => PathBuf::from("."),
+        // `:(literal)` disables pathspec globbing/magic: a file literally
+        // named `*.rs` must not act as a glob, and `:!secret.txt` must not
+        // become an exclude pathspec that silently widens the scoping.
+        Ok(rel) => PathBuf::from(format!(":(literal){}", rel.display())),
+        // Unreachable for canonical paths (working_dir == resolved.parent()),
+        // but never silently widen a file-scoped query to the whole
+        // directory: git accepts absolute pathspecs, so fall back to the
+        // full literal path instead of ".".
+        Err(_) => PathBuf::from(format!(":(literal){}", resolved.display())),
     }
 }
 

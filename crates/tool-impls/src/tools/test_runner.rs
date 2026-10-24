@@ -89,24 +89,7 @@ impl ToolSpec for RunTestsTool {
             let split = shlex::split(extra).ok_or_else(|| {
                 ToolError::invalid_input("Failed to parse 'args' as shell-style tokens")
             })?;
-            // Model-supplied args run under an approval prompt rendered as
-            // "cargo test" — cargo flags themselves can widen the blast
-            // radius far beyond the workspace (`--manifest-path` runs tests
-            // from an arbitrary project; `--config` can set
-            // `target.<triple>.runner`, an arbitrary command executed for
-            // every test binary; `--target-dir`/`--target` redirect the
-            // build). Reject them before a `--` separator; tokens after
-            // `--` go to the test binary and are the intended use case.
-            const BLOCKED_FLAGS: &[&str] =
-                &["--manifest-path", "--config", "--target-dir", "--target"];
-            for token in split.iter().take_while(|t| t.as_str() != "--") {
-                let flag = token.split('=').next().unwrap_or("");
-                if BLOCKED_FLAGS.contains(&flag) {
-                    return Err(ToolError::invalid_input(format!(
-                        "args flag `{flag}` redirects the build outside the workspace"
-                    )));
-                }
-            }
+            validate_extra_args(&split)?;
             args.extend(split);
         }
 
@@ -254,12 +237,73 @@ fn char_boundary_index(text: &str, max_chars: usize) -> usize {
     text.len()
 }
 
+/// Model-supplied args run under an approval prompt rendered as "cargo
+/// test" — the flag list is effectively the only line of defense, so it is
+/// an allowlist of test-selection flags, not a denylist: any unknown or
+/// future cargo flag that widens the blast radius (`--manifest-path` runs
+/// tests from an arbitrary project, `--config` can set
+/// `target.<triple>.runner`, an arbitrary command executed for every test
+/// binary, `--target-dir`/`--target` redirect the build, `-Z` unstable
+/// options unlock all of the above) is rejected by default. Tokens after a
+/// `--` separator go to the test binary and are the intended use case.
+fn validate_extra_args(split: &[String]) -> Result<(), ToolError> {
+    const ALLOWED_FLAGS: &[&str] = &[
+        "-p", "--package", "--lib", "--bin", "--bins", "--test", "--tests", "--bench",
+        "--benches", "--example", "--examples", "--all", "--workspace", "--exclude",
+        "--features", "--no-default-features", "--release", "--profile", "--debug",
+        "--no-fail-fast", "--doc", "--quiet", "-q", "--verbose", "-v", "--color", "--jobs",
+        "-j", "--locked", "--offline", "--frozen", "--ignore-rust-version",
+    ];
+    for token in split.iter().take_while(|t| t.as_str() != "--") {
+        let flag = token.split('=').next().unwrap_or("");
+        if !flag.starts_with('-') {
+            continue;
+        }
+        let parallel_jobs = flag.len() > 2
+            && flag.starts_with("-j")
+            && flag[2..].bytes().all(|b| b.is_ascii_digit());
+        if !ALLOWED_FLAGS.contains(&flag) && !parallel_jobs {
+            return Err(ToolError::invalid_input(format!(
+                "args flag `{flag}` is not allowed for run_tests; only \
+                 test-selection flags are accepted (use exec_shell for \
+                 anything else)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
     use tempfile::tempdir;
+
+    #[test]
+    fn extra_args_flag_allowlist() {
+        let ok = |s: &str| validate_extra_args(&shlex::split(s).unwrap()).is_ok();
+        // Test-selection flags, = forms, values, and post-`--` tokens pass.
+        assert!(ok("-p cli --lib --test parity_state --features=a,b"));
+        assert!(ok("--release --no-fail-fast -j 4"));
+        assert!(ok("-j4 --quiet"));
+        assert!(ok("-- --manifest-path anything --config runner=evil"));
+        // Redirecting/executing flags are rejected, including -Z and unknown
+        // flags the denylist never knew about.
+        for bad in [
+            "--manifest-path ../other",
+            "--config build.target-dir=/tmp/x",
+            "--target-dir /tmp/x",
+            "--target x86_64-unknown-linux-gnu",
+            "-Zunstable-options",
+            "--future-flag",
+        ] {
+            assert!(
+                validate_extra_args(&shlex::split(bad).unwrap()).is_err(),
+                "should reject: {bad}"
+            );
+        }
+    }
 
     fn cargo_available() -> bool {
         Command::new("cargo")

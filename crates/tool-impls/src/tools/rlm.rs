@@ -178,9 +178,19 @@ impl ToolSpec for RlmOpenTool {
         let context_path = write_context_file(&body).await.map_err(|e| {
             ToolError::execution_failed(format!("rlm_open: failed to stage context: {e}"))
         })?;
-        let kernel = PythonRuntime::spawn_with_context(&context_path)
-            .await
-            .map_err(|e| ToolError::execution_failed(format!("rlm_open: {e}")))?;
+        let kernel = match PythonRuntime::spawn_with_context(&context_path).await {
+            Ok(kernel) => kernel,
+            Err(e) => {
+                // On spawn failure no PythonRuntime exists to own the staged
+                // file (neither shutdown() nor Drop runs): the dir is
+                // per-call, so removing it keeps failed opens (e.g. no
+                // Python on PATH) from leaking the sensitive context body.
+                if let Some(dir) = context_path.parent() {
+                    let _ = tokio::fs::remove_dir_all(dir).await;
+                }
+                return Err(ToolError::execution_failed(format!("rlm_open: {e}")));
+            }
+        };
         let context_meta = ContextMeta::from_body(&body, source_type);
         let session = RlmSession::new(name.clone(), kernel, context_meta.clone(), context_path);
         let id = session.id.clone();
@@ -537,6 +547,21 @@ async fn load_source(
 ) -> Result<(String, String, Option<String>), ToolError> {
     if let Some(path) = rlm_open_source_field(input, "file_path").map(str::trim) {
         let resolved = context.resolve_path(path)?;
+        // Cap before reading: a multi-gigabyte file would otherwise be fully
+        // buffered, hashed, staged, and injected into the kernel context —
+        // resource exhaustion when the model picks the path. (The `url`
+        // branch is already bounded by fetch_url's hard byte cap.)
+        const MAX_FILE_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+        let meta = tokio::fs::metadata(&resolved).await.map_err(|e| {
+            ToolError::execution_failed(format!("rlm_open: stat {}: {e}", resolved.display()))
+        })?;
+        if meta.len() > MAX_FILE_SOURCE_BYTES {
+            return Err(ToolError::invalid_input(format!(
+                "rlm_open: file is {} bytes (cap {MAX_FILE_SOURCE_BYTES}): {}",
+                meta.len(),
+                resolved.display()
+            )));
+        }
         let body = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
             ToolError::execution_failed(format!("rlm_open: read {}: {e}", resolved.display()))
         })?;
