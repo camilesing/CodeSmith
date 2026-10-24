@@ -19,16 +19,20 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-/// The text-clipboard writer for this platform, if one is installed.
-fn text_writer() -> Option<(&'static str, &'static [&'static str])> {
-    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+/// The text-clipboard writer candidates for this platform.
+fn text_writer_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
     } else if cfg!(target_os = "windows") {
         &[("clip", &[])]
     } else {
         &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
-    };
-    candidates
+    }
+}
+
+/// The text-clipboard writer for this platform, if one is installed.
+fn text_writer() -> Option<(&'static str, &'static [&'static str])> {
+    text_writer_candidates()
         .iter()
         .find(|(program, _)| which(program))
         .map(|(program, args)| (*program, *args))
@@ -40,9 +44,15 @@ fn text_writer() -> Option<(&'static str, &'static [&'static str])> {
 /// Names the missing program when no clipboard tool is installed.
 pub fn copy_text(text: &str) -> Result<(), String> {
     let Some((program, args)) = text_writer() else {
+        // Suggest only the tools this platform actually probes: advising a
+        // macOS user to install wl-copy is noise.
+        let programs = text_writer_candidates()
+            .iter()
+            .map(|(program, _)| *program)
+            .collect::<Vec<_>>();
         return Err(missing_tool_message(
             "copy to the clipboard",
-            &["pbcopy", "wl-copy", "xclip", "clip"],
+            &programs,
         ));
     };
     let mut child = Command::new(program)
@@ -68,11 +78,9 @@ pub fn copy_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The clipboard-image reader for this platform, if one is installed.
-///
-/// Returns PNG bytes. Called by the `Ctrl+V` binding.
-pub fn read_image_png() -> Result<Vec<u8>, String> {
-    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+/// The clipboard-image reader candidates for this platform.
+fn image_reader_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    if cfg!(target_os = "macos") {
         // `pngpaste -` writes the clipboard PNG to stdout.
         &[("pngpaste", &["-"])]
     } else if cfg!(target_os = "windows") {
@@ -85,23 +93,52 @@ pub fn read_image_png() -> Result<Vec<u8>, String> {
                 &["-selection", "clipboard", "-t", "image/png", "-o"],
             ),
         ]
-    };
+    }
+}
+
+/// The clipboard-image reader for this platform, if one is installed.
+///
+/// Returns PNG bytes. Called by the `Ctrl+V` binding.
+pub fn read_image_png() -> Result<Vec<u8>, String> {
+    let candidates = image_reader_candidates();
     let Some((program, args)) = candidates
         .iter()
         .find(|(program, _)| which(program))
         .map(|(program, args)| (*program, *args))
     else {
+        if candidates.is_empty() {
+            // The candidate list is empty on Windows: advising
+            // pngpaste/wl-paste/xclip there is a promise that can never be
+            // fulfilled, so name the real limitation instead.
+            return Err(
+                "cannot paste an image from the clipboard: no image paste tool is supported on Windows"
+                    .to_string(),
+            );
+        }
+        let programs = candidates
+            .iter()
+            .map(|(program, _)| *program)
+            .collect::<Vec<_>>();
         return Err(missing_tool_message(
             "paste an image from the clipboard",
-            &["pngpaste", "wl-paste", "xclip"],
+            &programs,
         ));
     };
     let output = Command::new(program)
         .args(args)
-        .stderr(Stdio::null())
         .output()
         .map_err(|err| format!("{program} could not be started: {err}"))?;
-    if !output.status.success() || output.stdout.is_empty() {
+    if !output.status.success() {
+        // A tool failure (xclip with no X display, wl-paste outside
+        // Wayland) is a different situation from an empty clipboard; keep
+        // the tool's own diagnostic instead of guessing "no image".
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "{program} failed with {status}: {stderr}",
+            status = output.status
+        ));
+    }
+    if !output.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(format!(
             "{program} returned no image — is there one on the clipboard?"
         ));

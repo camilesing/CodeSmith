@@ -161,7 +161,9 @@ actually builds and starts, by writing the project skills they should read.
 2. Prove each step by running it, in a clean state where that is cheap
    (`cargo build`, `npm ci`, `docker compose up --build`). Quote the commands
    that worked and the output that shows they worked.
-3. Write two skills next to this project's skills: `run` and `verify`. Each is
+3. Write two skills next to this project's skills, named exactly `run` and
+   `verify-app` so each overrides its bundled twin (a project skill only
+   wins under the registry's exact-name, first-wins merge). Each is
    a `SKILL.md` with frontmatter (`name`, `description`) and a body that lists
    the exact commands, the environment they need, how to observe the running
    program, and the failure each step is likely to hit. Write them where the

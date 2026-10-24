@@ -161,7 +161,15 @@ impl EvalHarness {
         let mut per_tool: BTreeMap<ScenarioStepKind, ToolStats> = BTreeMap::new();
 
         let list_output = self.run_step(ScenarioStepKind::List, &mut steps, &mut per_tool, || {
-            let entries = list_dir(workspace.path())?;
+            // The documented fail_step contract ("the harness will
+            // intentionally fail this step") applies to List too: point it
+            // at a missing directory, the same trick the other steps use.
+            let root = if self.config.fail_step == Some(ScenarioStepKind::List) {
+                workspace.path().join("missing-dir")
+            } else {
+                workspace.path().to_path_buf()
+            };
+            let entries = list_dir(&root)?;
             Ok(entries.join(", "))
         });
 
@@ -228,7 +236,25 @@ impl EvalHarness {
 
         let duration = started_at.elapsed();
 
-        let workspace_summary = summarize_workspace(workspace.path(), list_output.as_deref())?;
+        // A summarization failure (walk error, empty-workspace invariant)
+        // must not discard the already-collected steps and per-tool metrics:
+        // fall back to an empty summary and fold the failure into `success`,
+        // like a validation failure, instead of aborting via `?`.
+        let (workspace_summary, summary_error) =
+            match summarize_workspace(workspace.path(), list_output.as_deref()) {
+                Ok(summary) => (summary, None),
+                Err(err) => (
+                    WorkspaceSummary {
+                        root: workspace.path().to_path_buf(),
+                        file_count: 0,
+                        files: Vec::new(),
+                    },
+                    Some(err),
+                ),
+            };
+        if let Some(err) = &summary_error {
+            tracing::warn!("workspace summarization failed: {err:#}");
+        }
 
         let validation_success = validate_outputs(
             workspace.path(),
@@ -240,7 +266,7 @@ impl EvalHarness {
         );
 
         let tool_errors = steps.iter().filter(|s| !s.success).count();
-        let success = tool_errors == 0 && validation_success;
+        let success = tool_errors == 0 && validation_success && summary_error.is_none();
 
         let metrics = EvalMetrics {
             success,
@@ -688,6 +714,7 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
 
     let mut cursor = 0usize;
     let mut saw_end_marker = false;
+    let mut saw_hunk = false;
     for raw_line in lines {
         if raw_line == "*** End Patch" {
             saw_end_marker = true;
@@ -697,6 +724,14 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
             return Err(anyhow!("unexpected patch directive: {raw_line}"));
         }
         if raw_line.starts_with("@@") {
+            // A second hunk would keep `cursor` from the first hunk's end
+            // and silently anchor at a wrong offset (or out-of-order hunk
+            // regions mis-anchor); the harness only emits single-hunk
+            // patches, so reject instead of guessing.
+            if saw_hunk {
+                return Err(anyhow!("multi-hunk patches are not supported"));
+            }
+            saw_hunk = true;
             continue;
         }
 
