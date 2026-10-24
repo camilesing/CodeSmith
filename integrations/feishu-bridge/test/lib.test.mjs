@@ -175,6 +175,28 @@ test("splitMessage does not split surrogate pairs", () => {
   assert.deepEqual(splitMessage("a🧪b", 2), ["a🧪", "b"]);
 });
 
+test("splitMessage fills chunks to maxChars exactly", () => {
+  // 5 + 1 + 5 == 11: one chunk. The old accounting counted a separator on
+  // the first line of every chunk, flushing prematurely.
+  assert.deepEqual(splitMessage("aaaaa\nbbbbb", 11), ["aaaaa\nbbbbb"]);
+  assert.deepEqual(splitMessage("aaaa\nbbbb\ncccc", 9), ["aaaa\nbbbb", "cccc"]);
+});
+
+test("splitMessage keeps blank lines in the multi-chunk path", () => {
+  // A leading blank line fits the budget: it is preserved, not silently
+  // dropped (10+1 == 11).
+  assert.deepEqual(splitMessage("\nabcdefghij", 11), ["\nabcdefghij"]);
+  // Budget-forced flush after a blank line: never emit an empty chunk.
+  assert.deepEqual(splitMessage("\nabcdefghij", 10), ["abcdefghij"]);
+});
+
+test("parseEnvText keeps quoted values before inline comments", () => {
+  assert.deepEqual(
+    parseEnvText('CODESMITH_RUNTIME_TOKEN="abc" # prod\nPLAIN=value\n'),
+    { CODESMITH_RUNTIME_TOKEN: "abc", PLAIN: "value" }
+  );
+});
+
 test("validateBridgeConfig accepts locked-down whalebro DM config", () => {
   const result = validateBridgeConfig(
     {

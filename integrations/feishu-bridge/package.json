@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/index.mjs",
     "check": "node --check src/index.mjs && node --check src/lib.mjs && node --check scripts/validate-config.mjs",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test",
     "validate:config": "node scripts/validate-config.mjs"
   },
   "dependencies": {

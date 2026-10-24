@@ -20,10 +20,20 @@ export function parseEnvText(raw) {
     if (index <= 0) continue;
     const key = normalized.slice(0, index).trim();
     let value = normalized.slice(index + 1).trim();
-    // Strip trailing comments on unquoted values (common dotenv behavior):
-    // TOKEN=abc123 # note would otherwise parse as "abc123 # note" and fail
-    // token_mismatch / invalid-auth in ways that are hard to diagnose.
-    if (!/^["']/.test(value)) {
+    // Quoted values: locate the CLOSING quote and discard the remainder —
+    // `TOKEN="abc" # note` must not keep `"abc" # note` verbatim (it fails
+    // the quote-pair check below and corrupts the token). Unquoted values:
+    // strip trailing comments (common dotenv behavior). Known limitation: an
+    // unquoted secret legitimately containing ` #` is truncated.
+    const quote = value.startsWith('"') || value.startsWith("'") ? value[0] : "";
+    if (quote) {
+      const end = value.indexOf(quote, 1);
+      if (end > 0) {
+        env[key] = value.slice(1, end);
+        continue;
+      }
+      // Unterminated quote: fall through and keep the raw text.
+    } else {
       value = value.split(/\s+#/)[0].trim();
     }
     if (
@@ -198,14 +208,20 @@ export function splitMessage(text, maxChars = 3500) {
   // only an oversized single line falls back to code-point slicing. A chunk
   // never gains a trailing newline the input did not have.
   const chunks = [];
-  let current = "";
+  // `lines` (not a pre-joined string) so blank lines survive: joining on
+  // push keeps "current truthiness" from silently dropping a leading blank
+  // line or one landing right after a flush. The separator is counted only
+  // when it is actually appended — after a flush the line starts a fresh
+  // chunk with no separator (the old `current ? 1 : 0` was evaluated after
+  // the reassignment and over-counted every chunk's first line).
+  let lines = [];
   let currentChars = 0;
   for (const line of value.split("\n")) {
     const lineChars = Array.from(line).length;
     if (lineChars > maxChars) {
-      if (current) {
-        chunks.push(current);
-        current = "";
+      if (lines.length > 0) {
+        chunks.push(lines.join("\n"));
+        lines = [];
         currentChars = 0;
       }
       const chars = Array.from(line);
@@ -214,16 +230,25 @@ export function splitMessage(text, maxChars = 3500) {
       }
       continue;
     }
-    const separator = current ? 1 : 0;
+    const separator = lines.length > 0 ? 1 : 0;
     if (currentChars + separator + lineChars > maxChars) {
-      chunks.push(current);
-      current = "";
-      currentChars = 0;
+      const chunk = lines.join("\n");
+      // Never emit an empty chunk: a budget-forced flush right after a
+      // blank line would otherwise send an empty message.
+      if (chunk !== "") {
+        chunks.push(chunk);
+      }
+      lines = [line];
+      currentChars = lineChars;
+    } else {
+      lines.push(line);
+      currentChars += separator + lineChars;
     }
-    current += (current ? "\n" : "") + line;
-    currentChars += (current ? 1 : 0) + lineChars;
   }
-  if (current) chunks.push(current);
+  const tail = lines.length > 0 ? lines.join("\n") : null;
+  if (tail !== null && tail !== "") {
+    chunks.push(tail);
+  }
   return chunks;
 }
 

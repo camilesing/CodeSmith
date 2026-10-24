@@ -30,13 +30,21 @@ rustPlatform.buildRustPackage (finalAttrs: {
     autoPatchelfHook
   ];
 
-  buildInputs = [
-    openssl
-  ] ++ lib.optionals (stdenv.isLinux && dbus != null) [
-    dbus.dev
-    dbus.lib
-    stdenv.cc.cc.lib
-  ];
+  buildInputs =
+    [
+      openssl
+    ]
+    # libstdc++ is a runtime dependency of the produced binary (needed
+    # whenever native code links against it) and has nothing to do with
+    # dbus: bundling it inside the dbus guard makes a Linux build with the
+    # default dbus = null produce a binary whose RUNPATH lacks it.
+    ++ lib.optionals stdenv.isLinux [
+      stdenv.cc.cc.lib
+    ]
+    ++ lib.optionals (stdenv.isLinux && dbus != null) [
+      dbus.dev
+      dbus.lib
+    ];
 
   nativeCheckInputs = [
     python3

@@ -36,8 +36,11 @@ try {
   }
   process.exitCode = result.ok ? 0 : 1;
 } catch (error) {
-  console.error(`Config validation failed: ${error.message}`);
-  process.exitCode = 1;
+  // 2 = operational/usage error (missing option value, unknown argument,
+  // unreadable --env file); 1 is reserved for "config invalid" so CI can
+  // distinguish the two. error may be a non-Error throw.
+  console.error(`Failed to validate config: ${error?.message ?? String(error)}`);
+  process.exitCode = 2;
 }
 
 function parseArgs(argv) {
@@ -114,8 +117,12 @@ async function checkDirectoryAccess(result, dir, label, writable) {
       : fsConstants.R_OK | fsConstants.X_OK;
     await fs.access(dir, modes);
     result.info.push({ code: `${access}_directory`, message: `${label} is ${access}: ${dir}` });
-  } catch {
-    result.errors.push({ code: "directory_access", message: `${label} is not ${access}: ${dir}` });
+  } catch (error) {
+    // Include the underlying failure (ENOENT vs EACCES vs a stat/access
+    // race): a bare "not readable" sends operators to fix permissions when
+    // the directory may simply not exist.
+    const detail = error?.code ? ` (${error.code})` : "";
+    result.errors.push({ code: "directory_access", message: `${label} is not ${access}: ${dir}${detail}` });
     result.ok = false;
   }
 }
