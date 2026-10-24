@@ -715,6 +715,12 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
     let mut cursor = 0usize;
     let mut saw_end_marker = false;
     let mut saw_hunk = false;
+    // Fuzzy anchoring is limited to the FIRST context line: every later
+    // context/- line must match CONTIGUOUSLY from the cursor. The old
+    // unconstrained forward search let non-adjacent context lines
+    // "match" (skipping arbitrary target lines), silently applying hunks
+    // at a wrong offset on drifted files.
+    let mut anchored = false;
     for raw_line in lines {
         if raw_line == "*** End Patch" {
             saw_end_marker = true;
@@ -741,33 +747,52 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
 
         match kind {
             Some(' ') => {
-                let Some(found) = file_lines[cursor..]
-                    .iter()
-                    .position(|line| line == &content)
-                    .map(|offset| cursor + offset)
-                else {
+                let found = if anchored {
+                    if file_lines.get(cursor).is_some_and(|line| *line == content) {
+                        Some(cursor)
+                    } else {
+                        None
+                    }
+                } else {
+                    file_lines[cursor..]
+                        .iter()
+                        .position(|line| line == &content)
+                        .map(|offset| cursor + offset)
+                };
+                let Some(found) = found else {
                     return Err(anyhow!(
-                        "patch context not found in {}: {}",
+                        "patch context not found{} in {}: {}",
+                        if anchored { " (contiguously)" } else { "" },
                         file_path.display(),
                         content
                     ));
                 };
+                anchored = true;
                 cursor = found + 1;
             }
             // An empty line is an empty context line whose leading space
             // was stripped (common in model-emitted patches) — match the
             // next blank line in the target instead of rejecting it.
             None => {
-                let Some(found) = file_lines[cursor..]
-                    .iter()
-                    .position(|line| line.is_empty())
-                    .map(|offset| cursor + offset)
-                else {
+                let found = if anchored {
+                    file_lines
+                        .get(cursor)
+                        .is_some_and(|line| line.is_empty())
+                        .then_some(cursor)
+                } else {
+                    file_lines[cursor..]
+                        .iter()
+                        .position(|line| line.is_empty())
+                        .map(|offset| cursor + offset)
+                };
+                let Some(found) = found else {
                     return Err(anyhow!(
-                        "patch context not found in {}: <empty line>",
+                        "patch context not found{} in {}: <empty line>",
+                        if anchored { " (contiguously)" } else { "" },
                         file_path.display()
                     ));
                 };
+                anchored = true;
                 cursor = found + 1;
             }
             Some('-') => {

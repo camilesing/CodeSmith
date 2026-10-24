@@ -157,11 +157,25 @@ fn run_with_timeout(
     mut cmd: Command,
     timeout: Duration,
 ) -> (std::process::ExitStatus, String, String) {
+    // Own process group: the timeout kill must take the `serve --acp`
+    // grandchild with it (it inherits the stderr write end, so an orphan
+    // left alive would also hold the reader open forever).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn codesmith");
+    // Drain both pipes on reader threads from the start: a chatty child
+    // (or the serve --acp grandchild sharing its stderr) that outwrites
+    // the OS pipe buffer used to block on write and turn every regression
+    // into the full timeout.
+    let stdout_reader = spawn_reader(child.stdout.take());
+    let stderr_reader = spawn_reader(child.stderr.take());
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -170,25 +184,52 @@ fn run_with_timeout(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Ok(None) => {
-                child.kill().expect("kill runaway codesmith");
-                child.wait().expect("reap codesmith");
-                let stderr = read_pipe(child.stderr.take());
+                kill_process_group(&mut child);
+                let stderr = stderr_reader
+                    .join()
+                    .unwrap_or_else(|_| "stderr reader panicked".to_string());
                 panic!("codesmith did not exit within {timeout:?}; stderr so far:\n{stderr}");
             }
             Err(error) => panic!("failed to wait for codesmith: {error}"),
         }
     };
-    let stdout = read_pipe(child.stdout.take());
-    let stderr = read_pipe(child.stderr.take());
+    let stdout = stdout_reader
+        .join()
+        .unwrap_or_else(|_| "stdout reader panicked".to_string());
+    let stderr = stderr_reader
+        .join()
+        .unwrap_or_else(|_| "stderr reader panicked".to_string());
     (status, stdout, stderr)
 }
 
-fn read_pipe(mut pipe: Option<impl Read>) -> String {
-    let mut out = String::new();
-    if let Some(pipe) = pipe.as_mut() {
-        let _ = pipe.read_to_string(&mut out);
+/// Kill the child's whole process group (falling back to a direct kill),
+/// then reap it.
+fn kill_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // std::process::Child::kill only signals the direct child; the
+        // group kill takes inherited grandchildren too.
+        unsafe {
+            let pid = child.id() as i32;
+            if libc::kill(-pid, libc::SIGKILL) == 0 {
+                let _ = child.wait();
+                return;
+            }
+        }
     }
-    out
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Read a piped child stream to EOF on a dedicated thread.
+fn spawn_reader(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_string(&mut out);
+        }
+        out
+    })
 }
 
 /// The `exec --json` summary: the last JSON document on stdout.

@@ -238,6 +238,10 @@ struct AcpSession {
     pump_task: Option<tokio::task::AbortHandle>,
     /// The in-flight prompt's completion slot, if any.
     pending_prompt: Option<oneshot::Sender<PromptOutcome>>,
+    /// Monotonic per-session prompt generation: lets an abandoned turn
+    /// clear ITS reservation without clobbering a newer prompt's slot
+    /// after a close/resume re-created the same session id.
+    prompt_generation: u64,
     /// Approval grouping keys the client allowed "for this session".
     approved_keys: HashSet<String>,
 }
@@ -483,6 +487,7 @@ impl AcpServer {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
         );
@@ -572,6 +577,7 @@ impl AcpServer {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
         );
@@ -606,17 +612,25 @@ impl AcpServer {
                     "a prompt is already in flight for this session — session/cancel it first",
                 ));
             }
+            session.prompt_generation = session.prompt_generation.wrapping_add(1);
             session.pending_prompt = Some(completion_tx);
         }
 
-        let request = TurnRequest {
+        let mut request = TurnRequest {
             config: self.config.clone(),
             settings: self.settings.clone(),
             model: self.model.clone(),
             store: self.store.clone(),
             session_id,
             prompt,
+            generation: 0,
         };
+        {
+            let sessions = lock_sessions(&self.shared.sessions);
+            if let Some(session) = sessions.get(&request.session_id) {
+                request.generation = session.prompt_generation;
+            }
+        }
         let shared = self.shared.clone();
         tokio::spawn(async move {
             let outcome = run_turn(request, completion_rx, &shared, writer.clone()).await;
@@ -661,6 +675,10 @@ struct TurnRequest {
     store: FileSessionStore,
     session_id: String,
     prompt: String,
+    /// Generation of this turn's slot reservation (see
+    /// `Session::prompt_generation`): abandoned-turn cleanup only clears
+    /// the slot when it still belongs to THIS turn.
+    generation: u64,
 }
 
 /// Run one prompt: resolve the route, ensure the session's engine exists,
@@ -682,13 +700,26 @@ where
         store,
         session_id,
         prompt,
+        generation,
     } = request;
+
+    // Abandoned-turn cleanup: clear OUR slot reservation (a close/resume
+    // can re-create the same session id with a NEWER reservation — the
+    // generation check keeps us from clobbering it).
+    let release_slot = |shared: &AcpShared| {
+        let mut sessions = lock_sessions(&shared.sessions);
+        if let Some(session) = sessions.get_mut(&session_id)
+            && session.prompt_generation == generation
+        {
+            session.pending_prompt = None;
+        }
+    };
     let route = crate::main_root::resolve_cli_auto_route(&config, &model, &prompt).await;
     let reasoning_effort = route
         .reasoning_effort
         .map(|effort| effort.as_setting().to_string());
 
-    let engine = ensure_engine(
+    let engine = match ensure_engine(
         shared,
         &config,
         &settings,
@@ -696,8 +727,17 @@ where
         &route.model,
         writer,
     )
-    .await?;
-    engine
+    .await
+    {
+        Ok(engine) => engine,
+        Err(err) => {
+            // The slot leaks otherwise: nothing will take() it, and every
+            // later session/prompt is refused with "already in flight".
+            release_slot(shared);
+            return Err(err);
+        }
+    };
+    if let Err(err) = engine
         .send(Op::SendMessage {
             content: prompt,
             image_paths: Vec::new(),
@@ -722,16 +762,34 @@ where
                 .unwrap_or_default(),
         })
         .await
-        .context("send prompt to the engine")?;
+    {
+        release_slot(shared);
+        return Err(err).context("send prompt to the engine");
+    }
 
-    let outcome = match completion.await {
-        Ok(outcome) => outcome,
-        // The session closed (or its pump died); the turn is over either way.
-        Err(_) => {
+    // Wall-clock bound: the sender lives in the session map (not the
+    // pump), so a dead or stalled engine that never emits TurnComplete
+    // would otherwise leave this await — and the slot — stuck forever.
+    const TURN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+    let outcome = match tokio::time::timeout(TURN_DEADLINE, completion).await {
+        Ok(Ok(outcome)) => outcome,
+        // The session closed (its slot was dropped); the turn is over.
+        Ok(Err(_)) => {
             engine.cancel();
             return Ok(PromptOutcome {
                 status: TurnOutcomeStatus::Interrupted,
                 error: None,
+                tokens: 0,
+            });
+        }
+        // Deadline: cancel the engine, free OUR slot, answer interrupted.
+        Err(_) => {
+            engine.cancel();
+            release_slot(shared);
+            return Ok(PromptOutcome {
+                status: TurnOutcomeStatus::Interrupted,
+                error: Some("turn exceeded the 1h wall-clock deadline".to_string()),
                 tokens: 0,
             });
         }
@@ -1551,6 +1609,7 @@ mod tests {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
         );

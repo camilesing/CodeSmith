@@ -181,6 +181,14 @@ fn run_with_timeout(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn codesmith");
+    // Drain both pipes on reader threads from the start: (a) a child that
+    // outwrites the OS pipe buffer blocked on write and turned the test
+    // into a misleading full-timeout panic; (b) an orphaned grandchild can
+    // inherit the write ends, so post-kill reads had no EOF and hung the
+    // helper forever — the readers detach instead (bounded by the test
+    // runner's own process teardown).
+    let stdout_reader = spawn_reader(child.stdout.take());
+    let stderr_reader = spawn_reader(child.stderr.take());
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -191,23 +199,32 @@ fn run_with_timeout(
             Ok(None) => {
                 child.kill().expect("kill runaway codesmith");
                 child.wait().expect("reap codesmith");
-                let stderr = read_pipe(child.stderr.take());
+                let stderr = stderr_reader
+                    .join()
+                    .unwrap_or_else(|_| "stderr reader panicked".to_string());
                 panic!("codesmith did not exit within {timeout:?}; stderr so far:\n{stderr}");
             }
             Err(error) => panic!("failed to wait for codesmith: {error}"),
         }
     };
-    let stdout = read_pipe(child.stdout.take());
-    let stderr = read_pipe(child.stderr.take());
+    let stdout = stdout_reader
+        .join()
+        .unwrap_or_else(|_| "stdout reader panicked".to_string());
+    let stderr = stderr_reader
+        .join()
+        .unwrap_or_else(|_| "stderr reader panicked".to_string());
     (status, stdout, stderr)
 }
 
-fn read_pipe(mut pipe: Option<impl Read>) -> String {
-    let mut out = String::new();
-    if let Some(pipe) = pipe.as_mut() {
-        let _ = pipe.read_to_string(&mut out);
-    }
-    out
+/// Read a piped child stream to EOF on a dedicated thread.
+fn spawn_reader(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_string(&mut out);
+        }
+        out
+    })
 }
 
 /// The `exec --json` summary: the last JSON document on stdout, parsed the
