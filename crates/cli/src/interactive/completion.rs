@@ -211,6 +211,14 @@ impl Completer for ReplHelper {
         pos: usize,
         ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // A `!` line is owned by shell completion (paths, then history):
+        // consulting command completion first made `!ls /mo` offer `/mode`,
+        // `/model`, … — Tab inserted a command name into a shell line.
+        // `complete_shell` returns `None` immediately for non-`!` lines, so
+        // trying it first preserves behavior everywhere else.
+        if let Some(shell) = self.complete_shell(line, pos, ctx) {
+            return Ok(shell);
+        }
         let pool = self.command_name_pool();
         let disabled = self.disabled_builtin_names();
         let (start, pairs) = complete_at(line, pos, &pool, &disabled);
@@ -219,9 +227,6 @@ impl Completer for ReplHelper {
         }
         if let Some(mention) = self.complete_mention(line, pos) {
             return Ok(mention);
-        }
-        if let Some(shell) = self.complete_shell(line, pos, ctx) {
-            return Ok(shell);
         }
         Ok((start, pairs))
     }
@@ -234,6 +239,12 @@ impl Hinter for ReplHelper {
         // Every keystroke passes through here before the line is redrawn:
         // this is where the shared cell keeps its copy of the buffer.
         Bindings::lock(&self.bindings).note_line(line);
+        // `!` lines get no hint: the command hint would ghost command text
+        // ("de — …") into `!ls /mo` and mislead with "no command matches"
+        // on `!ls /ho`.
+        if line.trim_start().starts_with('!') {
+            return None;
+        }
         let pool = self.command_name_pool();
         let disabled = self.disabled_builtin_names();
         hint_at(line, pos, &pool, &disabled)
@@ -303,7 +314,10 @@ pub(crate) fn validate_input(input: &str) -> ValidationResult {
 /// line, so `C:\path\` mid-message is untouched.
 #[must_use]
 pub(crate) fn strip_line_continuations(input: &str) -> String {
-    input.replace("\\\n", "\n")
+    // The CRLF form first (a `\` before a pasted `\r\n` pair), else the
+    // inner `\r` shields the `\n` from the LF-only replace and the marker
+    // backslash survives into the sent message.
+    input.replace("\\\r\n", "\n").replace("\\\n", "\n")
 }
 
 impl Validator for ReplHelper {

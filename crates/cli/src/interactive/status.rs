@@ -74,7 +74,11 @@ pub fn context_usage(
     last_prompt_tokens: Option<u32>,
     window: Option<u32>,
 ) -> Option<(i64, u32, f64)> {
-    let max = window?;
+    // A zero window (hand-edited `context_window = 0` reaches here verbatim)
+    // is treated as unknown: dividing by it produced a NaN percent that
+    // `clamp` propagated and every level comparison read as `Normal`,
+    // masking the bad config instead of rendering `🧭 —`.
+    let max = window.filter(|&w| w > 0)?;
     let max_i64 = i64::from(max);
     let reported = last_prompt_tokens
         .map(i64::from)

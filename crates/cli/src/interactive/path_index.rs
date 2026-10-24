@@ -121,11 +121,13 @@ fn walk(root: &Path, depth: usize, _limit: usize) -> Vec<Entry> {
     // walk at the menu limit kept whichever paths readdir happened to yield
     // first (pre-sort), so matching files beyond the cap were never indexed
     // and prefix queries could return zero hits in any real repository.
-    // `complete()` applies the per-query menu cap itself.
-    const MAX_INDEXED: usize = 5_000;
+    // `MAX_VISITED` alone bounds the index: an `entries.len()` cap at 5,000
+    // reintroduced exactly the same readdir-order bias at a higher
+    // threshold (whichever entries came after the cap silently never
+    // indexed, filesystem-order-dependent).
     let deadline = Instant::now() + MAX_WALK_TIME;
     for (visited, result) in builder.build().enumerate() {
-        if visited >= MAX_VISITED || entries.len() >= MAX_INDEXED {
+        if visited >= MAX_VISITED {
             break;
         }
         if visited % 256 == 0 && Instant::now() > deadline {

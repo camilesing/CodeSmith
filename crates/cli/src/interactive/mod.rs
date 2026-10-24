@@ -377,12 +377,20 @@ pub async fn run_repl(
                 // draft — put the original text back (the function's own
                 // doc promise, previously defeated by `?` aborting the
                 // whole session).
-                next_prompt = Some(match open_in_editor(&draft).await {
+                let edited = match open_in_editor(&draft).await {
                     Ok(text) => text,
                     Err(err) => {
                         println!("{} editor failed, draft restored: {err}", "✗".red());
                         draft
                     }
+                };
+                // Compose, never overwrite: a TakeBackQueue earlier in this
+                // drained batch already moved the queued messages into
+                // `next_prompt` — replacing them destroyed messages that
+                // were removed from the queue and never restored.
+                next_prompt = Some(match next_prompt {
+                    Some(queued) if !queued.is_empty() => format!("{queued}\n{edited}"),
+                    _ => edited,
                 });
                 continue;
             }
@@ -1377,7 +1385,6 @@ async fn submit_with_images(
     for line in &intake.rejections {
         println!("{} {line}", "✗".red());
     }
-    state.context_references.extend(intake.references);
     let image_paths = intake.accepted;
 
     // Auto-model routing per request (mirror of the retired dispatch path
@@ -1408,7 +1415,12 @@ async fn submit_with_images(
         )
     };
 
-    engine
+    // Record references only after the send lands: a failed send must leave
+    // no orphaned references against an index no message ever took — several
+    // command callers swallow this error and the session keeps running, so
+    // the next successful message would take the same index and the
+    // references would be misattributed to it.
+    let send_result = engine
         .send(Op::SendMessage {
             content,
             image_paths,
@@ -1428,6 +1440,9 @@ async fn submit_with_images(
             is_simple: state.is_simple,
             approval_mode: state.approval_mode,
         })
-        .await
-        .context("failed to send message to engine")
+        .await;
+    if send_result.is_ok() {
+        state.context_references.extend(intake.references);
+    }
+    send_result.context("failed to send message to engine")
 }

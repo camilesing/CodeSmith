@@ -345,11 +345,22 @@ impl Bindings {
         // Not our prompt (rustyline's reverse-search prompt is one row and
         // says something else).
         let (_, rest) = prompt.split_once('\n')?;
+        // Guard the relabel: a first-occurrence `replacen` silently no-ops
+        // when the segment is absent (row-composition drift) or when a
+        // user-controlled segment happens to contain the mode text. A
+        // padded-but-stale row would change the width this function exists
+        // to preserve, so report failure instead.
+        if !self.prompt_row.contains(&status::mode_segment(applied)) {
+            return None;
+        }
         let row = self.prompt_row.replacen(
             &status::mode_segment(applied),
             &status::mode_segment(mode),
             1,
         );
+        if row == self.prompt_row {
+            return None;
+        }
         Some(format!("{row}{}\n{rest}", " ".repeat(self.pad_for(mode))))
     }
 
@@ -533,6 +544,11 @@ fn to_cmd(edit: Edit) -> Option<Cmd> {
         Edit::Consumed => Some(Cmd::Noop),
         Edit::Insert(text) => Some(Cmd::Insert(1, text)),
         Edit::KillWholeLine => Some(Cmd::Kill(Movement::WholeLine)),
+        // Known limitation: rustyline 14 has no kill-ring-free forward
+        // delete (no `Cmd::Delete`), so Ctrl+D maps to single-char Kill
+        // exactly like the library's own backspace binding — which resets
+        // the kill ring, clobbering an earlier Ctrl+K/U/W kill. Upgrading
+        // to a rustyline with `Cmd::Delete(Movement)` is the fix.
         Edit::DeleteForward => Some(Cmd::Kill(Movement::ForwardChar(1))),
         Edit::Newline => Some(Cmd::Newline),
         // `Cmd::Interrupt` is rustyline's "abandon this readline call"

@@ -69,6 +69,13 @@ pub struct Decoder {
     pending: Vec<u8>,
     /// Inside a bracketed paste: everything up to the terminator is text.
     pasting: Vec<u8>,
+    /// Paste mode is explicit state, not inferred from `pasting` being
+    /// non-empty: a feed that ends exactly at `PASTE_START` (marker split
+    /// from its body across reads, realistic under tmux/SSH chunking) or an
+    /// empty paste body would otherwise lose the flag, and the next feed
+    /// would decode the paste body as ordinary keys — a pasted `\r`
+    /// prematurely submitting the turn.
+    in_paste: bool,
 }
 
 /// Bracketed-paste markers (the sequences are long enough that a paste body
@@ -85,7 +92,7 @@ impl Decoder {
     /// one paste, the marker of the next, and ordinary keys after it.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TurnKey> {
         let mut keys = Vec::new();
-        let mut in_paste = !self.pasting.is_empty();
+        let mut in_paste = self.in_paste;
         let input = if in_paste {
             self.pasting.extend_from_slice(bytes);
             std::mem::take(&mut self.pasting)
@@ -111,6 +118,7 @@ impl Decoder {
                         // Still open: hold the body for the next read instead
                         // of leaking the marker as text.
                         self.pasting = input[cursor..].to_vec();
+                        self.in_paste = true;
                         return keys;
                     }
                 }
@@ -128,10 +136,12 @@ impl Decoder {
                 }
                 Decoded::Incomplete => {
                     self.pending = input[cursor..].to_vec();
+                    self.in_paste = false;
                     return keys;
                 }
             }
         }
+        self.in_paste = in_paste;
         keys
     }
 
@@ -187,8 +197,10 @@ impl Decoder {
                 None => Decoded::Incomplete,
             },
             // Alt+<char> and other ESC-prefixed keys are not rebound
-            // mid-turn; consume the ESC and let the character through.
-            Some(_) => Decoded::Key(TurnKey::Esc, 1),
+            // mid-turn; drop the ESC and let the character through without
+            // spuriously firing the Escape binding (interrupt) on every
+            // Alt-keypress.
+            Some(_) => Decoded::Key(TurnKey::Char('\0'), 1),
         }
     }
 
@@ -229,21 +241,41 @@ impl Decoder {
             },
             b'1' | b'4' | b'7' | b'8' => {
                 // Home/End by terminfo flavour: `CSI 1~`, `CSI 4~`, `CSI 7~`,
-                // `CSI 8~`.
+                // `CSI 8~`. Other `1`-prefixed tilde codes are F-keys
+                // (`CSI 15~`…), not Home — only the exact Home/End codes map.
                 let mut index = 0usize;
                 while body.get(index).is_some_and(u8::is_ascii_digit) {
                     index += 1;
                 }
                 match body.get(index) {
-                    Some(b'~') => Decoded::Key(
-                        if matches!(first, b'1' | b'7') {
-                            TurnKey::Home
-                        } else {
-                            TurnKey::End
-                        },
-                        index + 1,
-                    ),
-                    Some(_) => Decoded::Key(TurnKey::Char('\0'), index + 1),
+                    Some(b'~') => {
+                        let code: u32 = std::str::from_utf8(&body[..index])
+                            .ok()
+                            .and_then(|digits| digits.parse().ok())
+                            .unwrap_or(0);
+                        match code {
+                            // Home/End flavours; every other tilde code
+                            // (2/5/6, F-key ranges, …) has no composer
+                            // binding — consume it as ignored.
+                            1 | 7 => Decoded::Key(TurnKey::Home, index + 1),
+                            4 | 8 => Decoded::Key(TurnKey::End, index + 1),
+                            _ => Decoded::Key(TurnKey::Char('\0'), index + 1),
+                        }
+                    }
+                    // A non-`~` byte starts modifier/vt-style parameters
+                    // (`CSI 1;5A` = Ctrl+Up, `CSI 13;2u` = Shift+Enter):
+                    // consuming digits+one byte used to leak the tail as
+                    // typed text — consume through the terminator like the
+                    // unknown arm instead.
+                    Some(_) => {
+                        match body
+                            .iter()
+                            .position(|byte| byte.is_ascii_alphabetic() || *byte == b'~')
+                        {
+                            Some(end) => Decoded::Key(TurnKey::Char('\0'), end + 1),
+                            None => Decoded::Incomplete,
+                        }
+                    }
                     None => Decoded::Incomplete,
                 }
             }
@@ -475,7 +507,15 @@ mod imp {
             }
             if let Some(orig) = self.orig.take() {
                 // SAFETY: restoring the fd-0 state `arm` captured earlier.
-                unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig) };
+                // A failed restore leaves the terminal non-canonical with
+                // echo off — the user's shell looks broken after exit — so
+                // never swallow the failure silently.
+                if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig) } != 0 {
+                    eprintln!(
+                        "warning: failed to restore terminal mode on stdin: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
             }
         }
 
@@ -539,8 +579,20 @@ mod imp {
                         READ_BUF,
                     )
                 };
-                if n <= 0 {
-                    // 0 = VTIME timeout; -1 = EINTR (e.g. SIGINT arrived).
+                if n < 0 {
+                    // Only EINTR is retriable; anything persistent (EBADF
+                    // after fd 0 was closed elsewhere, EIO on a lost tty)
+                    // must break, or this loop re-calls `read` immediately
+                    // forever — a 100%-CPU hot spin in a thread the owner
+                    // believes is quiescent.
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
+                }
+                if n == 0 {
+                    // VTIME timeout: poll the stop flag again.
                     continue;
                 }
                 for key in decoder.feed(&buf[..n as usize]) {
@@ -549,8 +601,24 @@ mod imp {
                     if key == TurnKey::Char('\0') {
                         continue;
                     }
-                    if tx.blocking_send(key).is_err() {
-                        return; // turn ended, receiver dropped
+                    // Never block on a full channel: `suspend()` joins this
+                    // thread while showing a blocking prompt, and a large
+                    // paste with a momentarily stalled consumer would
+                    // deadlock the whole REPL. `try_send` + stop re-check
+                    // keeps the join bounded by the VTIME slice.
+                    loop {
+                        if stop.load(Ordering::Relaxed) {
+                            return; // suspend() is joining us
+                        }
+                        match tx.try_send(key.clone()) {
+                            Ok(()) => break,
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                std::thread::sleep(std::time::Duration::from_millis(5));
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                return; // turn ended, receiver dropped
+                            }
+                        }
                     }
                 }
             }

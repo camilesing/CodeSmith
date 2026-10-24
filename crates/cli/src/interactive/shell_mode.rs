@@ -58,10 +58,20 @@ fn shell() -> String {
 /// result, not an error — the caller prints the status and the output.
 pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String), String> {
     let shell = shell();
-    let flag = if cfg!(windows) { "/C" } else { "-c" };
-    let mut child = tokio::process::Command::new(&shell)
-        .arg(flag)
-        .arg(command)
+    let mut cmd = tokio::process::Command::new(&shell);
+    // Windows: cmd.exe does not follow MSVCRT quoting rules, so `.arg()`
+    // (which applies them) mangles commands containing quotes, `&`, `|`,
+    // `%`, or `&&`/`||` chains — pass the command raw.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.arg("/C").raw_arg(command);
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.arg("-c").arg(command);
+    }
+    let mut child = cmd
         .current_dir(cwd)
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())

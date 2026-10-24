@@ -54,10 +54,19 @@ pub fn is_due() -> bool {
 /// so the status line shows why it has nothing to say.
 pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
     let shell = if cfg!(windows) { "cmd" } else { "sh" };
-    let flag = if cfg!(windows) { "/C" } else { "-c" };
-    let mut child = std::process::Command::new(shell)
-        .arg(flag)
-        .arg(command)
+    let mut cmd = std::process::Command::new(shell);
+    // Windows: cmd.exe does not follow MSVCRT quoting rules; `.arg()`
+    // applies them and mangles commands with quotes/`&`/`|`/`&&`.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.arg("/C").raw_arg(command);
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.arg("-c").arg(command);
+    }
+    let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -95,6 +104,12 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(err) => {
+                // Kill and reap before returning: dropping a live
+                // `std::process::Child` neither kills nor reaps it — the
+                // process kept running and lingered as a zombie until the
+                // parent exited.
+                let _ = child.kill();
+                let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 return Err(format!("statusline command failed: {err}"));
