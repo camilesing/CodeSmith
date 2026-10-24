@@ -248,8 +248,16 @@ pub(crate) fn tool_choice_to_rig(value: &serde_json::Value) -> Option<ToolChoice
                     function_names: vec![name.to_string()],
                 });
             }
-            if matches!(map.get("type").and_then(|t| t.as_str()), Some("required")) {
-                return Some(ToolChoice::Required);
+            // Map the object `type` explicitly BEFORE falling through:
+            // OpenAI `{"type":"none"}` (disable all tool calls) and
+            // Anthropic `{"type":"any"}` (force tool use) are recognized
+            // shapes with direct rig equivalents — silently converting
+            // them to the provider default changed request semantics.
+            match map.get("type").and_then(|t| t.as_str()) {
+                Some("none") => return Some(ToolChoice::None),
+                Some("any" | "required") => return Some(ToolChoice::Required),
+                Some("auto") => return Some(ToolChoice::Auto),
+                _ => {}
             }
             None
         }

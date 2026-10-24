@@ -30,22 +30,28 @@ use crate::rig_adapter::{
 /// / `model` defaults it falls back to when the host passes an empty
 /// `ProviderConfig` value.
 pub struct DeepSeekFactory {
+    id: ProviderId,
     base_url: Option<String>,
     model: Option<String>,
 }
 
 impl DeepSeekFactory {
-    /// Construct the factory with the manifest defaults for `base_url` /
-    /// `model`. Called by `default_registry` from the `deepseek` entry in
-    /// `providers.toml`.
-    pub(crate) fn new(base_url: Option<String>, model: Option<String>) -> Self {
-        Self { base_url, model }
+    /// Construct the factory with its manifest id plus the manifest
+    /// defaults for `base_url` / `model`. The manifest id is the
+    /// authoritative registration key (an override entry must register
+    /// under its own id, not clobber the builtin name).
+    pub(crate) fn new(id: ProviderId, base_url: Option<String>, model: Option<String>) -> Self {
+        Self {
+            id,
+            base_url,
+            model,
+        }
     }
 }
 
 impl ProviderFactory for DeepSeekFactory {
     fn id(&self) -> ProviderId {
-        ProviderId::from("deepseek")
+        self.id.clone()
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
@@ -104,7 +110,18 @@ impl ProviderFactory for DeepSeekFactory {
         // the deepseek base_url, but if both the host and manifest are empty,
         // `resolve_base_url` still falls back to DeepSeek's built-in default so
         // the shim always has an absolute base.
-        let resolved_base_url = crate::rig_adapter::resolve_base_url(&base_url).to_string();
+        // The FIM/translate shim appends `/beta/completions` itself:
+        // strip a trailing `/beta` (the manifest default and an explicit
+        // beta opt-in both carry it) so the URL does not double up to
+        // `…/beta/beta/completions` and 404. Known limitation: the
+        // both-empty case still lets the chat client keep rig's
+        // compiled-in default while the shim uses its own constant.
+        let resolved = crate::rig_adapter::resolve_base_url(&base_url);
+        let resolved_base_url = {
+            let trimmed = resolved.trim_end_matches('/');
+            trimmed.strip_suffix("/beta").unwrap_or(trimmed)
+        }
+        .to_string();
         let adapter = RigLlmClient::new(
             client,
             default_model,

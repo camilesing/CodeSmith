@@ -22,26 +22,33 @@ use crate::rig_adapter::{
 /// the manifest-sourced `base_url` / `model` defaults it falls back to when the
 /// host passes an empty `ProviderConfig` value.
 pub struct OpenAiFactory {
+    id: ProviderId,
     base_url: Option<String>,
     model: Option<String>,
 }
 
 impl OpenAiFactory {
-    /// Construct the factory with the manifest defaults for `base_url` /
-    /// `model`. Called by `default_registry` from the `openai` entry in
-    /// `providers.toml`.
-    pub(crate) fn new(base_url: Option<String>, model: Option<String>) -> Self {
-        Self { base_url, model }
+    /// Construct the factory with its manifest id plus the manifest
+    /// defaults for `base_url` / `model`. The manifest id is the
+    /// authoritative key: hardcoding "openai" made an override entry like
+    /// `id = "my-openai", backend = "openai"` register under `openai` —
+    /// unresolvable by its own name and clobbering any genuine `openai`
+    /// entry via last-wins register.
+    pub(crate) fn new(id: ProviderId, base_url: Option<String>, model: Option<String>) -> Self {
+        Self {
+            id,
+            base_url,
+            model,
+        }
     }
 }
 
 impl ProviderFactory for OpenAiFactory {
     fn id(&self) -> ProviderId {
-        // `ProviderId::from` parses via `codesmith_config::ProviderKind::parse`,
-        // so "openai" resolves to `Builtin(Openai)` — matching the id the host
-        // builds from its config. String here keeps this crate off the
-        // `codesmith-config` dep edge (provider box ↔ abstraction only).
-        ProviderId::from("openai")
+        // The manifest id, parsed by the registry builder via
+        // `ProviderId::from` (which resolves "openai" to `Builtin(Openai)`
+        // — matching the id the host builds from its config).
+        self.id.clone()
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {

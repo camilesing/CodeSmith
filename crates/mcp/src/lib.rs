@@ -330,6 +330,16 @@ impl McpManager {
 
     /// Call a tool on a specific server by name.
     pub fn call_tool(&self, server_name: &str, tool_name: &str, arguments: Value) -> Result<Value> {
+        // The tool filter is a security boundary, not a listing hint: it
+        // used to be enforced only on `list_tools`, so a denied (or
+        // non-allowed) tool stayed invokable by anyone who knew the
+        // server + tool name. Enforce on every call path — the qualified
+        // direct branch delegates here too.
+        if let Some((_, filter)) = self.configs.get(server_name)
+            && !allowed_by_filter(tool_name, filter)
+        {
+            bail!("tool '{tool_name}' is not exposed by server '{server_name}'");
+        }
         let client = self
             .clients
             .get(server_name)

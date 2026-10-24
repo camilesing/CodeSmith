@@ -290,7 +290,10 @@ where
             let response = builder.send().await.map_err(anyhow::Error::new)?;
             convert::build_message_response(
                 response.message_id,
-                request.model.clone(),
+                // The DEFAULTED id, not the (possibly empty) request value:
+                // consumers keyed on the model id (telemetry, cost, UI) used
+                // to see "" for defaulted requests.
+                model_id,
                 response.choice,
                 &response.usage,
                 request.max_tokens,
@@ -313,7 +316,7 @@ where
             };
             let builder = build_request(&client, &model_id, &request, shaper)?;
             let stream = builder.stream().await.map_err(anyhow::Error::new)?;
-            let mapped = stream::map_rig_stream(stream, request.model.clone(), request.max_tokens);
+            let mapped = stream::map_rig_stream(stream, model_id, request.max_tokens);
             Ok(Box::pin(mapped) as StreamEventBox)
         })
     }

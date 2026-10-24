@@ -158,10 +158,15 @@ pub enum ReleaseQuery {
 /// falling back to the running version would make `latest` == `current` and
 /// the update check a permanent silent no-op.
 pub fn resolve_release_query(channel: ReleaseChannel) -> Result<ReleaseQuery> {
-    // The base URL is probed with the running version only to satisfy the
-    // signature; the pinned version below is what the Mirror query carries.
-    if let Some(base_url) = release_base_url_from_env(env!("CARGO_PKG_VERSION")) {
+    if release_base_url_from_env(env!("CARGO_PKG_VERSION")).is_some() {
         let version = update_version_from_env().ok_or(ReleaseError::MirrorVersionNotPinned)?;
+        // Re-derive the base URL from the PINNED version: the mirror embeds
+        // the version in the URL, and asset/checksum downloads must come
+        // from the release the pin names — not the running binary's
+        // directory (wrong binary or 404 while reporting the pinned
+        // version).
+        let base_url =
+            release_base_url_from_env(&version).ok_or(ReleaseError::MirrorVersionNotPinned)?;
         return Ok(ReleaseQuery::Mirror { base_url, version });
     }
 

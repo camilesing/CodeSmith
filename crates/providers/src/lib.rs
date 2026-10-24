@@ -107,10 +107,25 @@ pub fn default_registry() -> &'static ProviderRegistry {
 fn active_manifest() -> &'static ProvidersManifest {
     let override_manifest = codesmith_config::providers_manifest();
     if !override_manifest.providers.is_empty() {
-        override_manifest
-    } else {
-        bundled_manifest()
+        return override_manifest;
     }
+    // An EXPLICITLY set manifest env var that loaded no providers (load
+    // failure — logged by the config layer — or a file declaring none)
+    // used to silently fall back to the bundled catalog: an override that
+    // redefined builtin ids would then resolve them against the official
+    // endpoints and send the user's key to a service they did not
+    // configure. Explicit intent fails loud instead. (No Result channel
+    // exists at this seam; a clear panic at first access beats silent
+    // credential mis-routing.)
+    if std::env::var_os(codesmith_config::PROVIDERS_MANIFEST_ENV)
+        .is_some_and(|value| !value.is_empty())
+    {
+        panic!(
+            "{} is set but loaded no providers; refusing to silently fall back to the bundled catalog",
+            codesmith_config::PROVIDERS_MANIFEST_ENV
+        );
+    }
+    bundled_manifest()
 }
 
 /// The shipped `providers.toml`, parsed + validated once and cached for the
@@ -145,6 +160,7 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
         #[cfg(feature = "openai")]
         if desc.backend == FactoryBackend::Openai {
             registry.register(Arc::new(openai::OpenAiFactory::new(
+                id.clone(),
                 desc.base_url.clone(),
                 desc.model.clone(),
             )));
@@ -153,6 +169,7 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
         #[cfg(feature = "anthropic")]
         if desc.backend == FactoryBackend::Anthropic {
             registry.register(Arc::new(anthropic::AnthropicFactory::new(
+                id.clone(),
                 desc.base_url.clone(),
                 desc.model.clone(),
             )));
@@ -161,6 +178,7 @@ fn build_registry_from(manifest: &ProvidersManifest) -> ProviderRegistry {
         #[cfg(feature = "deepseek")]
         if desc.backend == FactoryBackend::Deepseek {
             registry.register(Arc::new(deepseek::DeepSeekFactory::new(
+                id.clone(),
                 desc.base_url.clone(),
                 desc.model.clone(),
             )));

@@ -21,22 +21,28 @@ use crate::rig_adapter::{
 /// `base_url` / `model` defaults it falls back to when the host passes an empty
 /// `ProviderConfig` value.
 pub struct AnthropicFactory {
+    id: ProviderId,
     base_url: Option<String>,
     model: Option<String>,
 }
 
 impl AnthropicFactory {
-    /// Construct the factory with the manifest defaults for `base_url` /
-    /// `model`. Called by `default_registry` from the `anthropic` entry in
-    /// `providers.toml`.
-    pub(crate) fn new(base_url: Option<String>, model: Option<String>) -> Self {
-        Self { base_url, model }
+    /// Construct the factory with its manifest id plus the manifest
+    /// defaults for `base_url` / `model`. The manifest id is the
+    /// authoritative registration key (an override entry must register
+    /// under its own id, not clobber the builtin name).
+    pub(crate) fn new(id: ProviderId, base_url: Option<String>, model: Option<String>) -> Self {
+        Self {
+            id,
+            base_url,
+            model,
+        }
     }
 }
 
 impl ProviderFactory for AnthropicFactory {
     fn id(&self) -> ProviderId {
-        ProviderId::from("anthropic")
+        self.id.clone()
     }
 
     fn build(&self, cfg: &ProviderConfig) -> Result<LlmClientHandle> {
