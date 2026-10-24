@@ -237,6 +237,16 @@ impl ShellDispatcher {
 
     /// Build the program + args tuple. Useful when the caller needs to
     /// inspect or modify the args before passing them to `Command`.
+    ///
+    /// **Windows `cmd.exe` caveat:** this is the one case where the tuple
+    /// cannot express what [`Self::build_command`] does — `build_command`
+    /// passes the command string via `CommandExt::raw_arg` to bypass
+    /// MSVCRT quoting, and re-applying the returned `args` through
+    /// `Command::arg` will MSVCRT-escape embedded quotes (e.g.
+    /// `git commit -m "a b"` gets mangled). On Windows prefer
+    /// [`Self::build_command`]; when spawning from the parts, re-apply the
+    /// final argument with `raw_arg` for `cmd.exe`. The non-cmd kinds are
+    /// pinned to match `build_command` by test.
     pub fn build_command_parts(&self, shell_command: &str) -> (String, Vec<String>) {
         let program = self.kind.binary().to_string();
         let args = if self.kind.needs_command_flag() {
@@ -273,7 +283,15 @@ impl ShellDispatcher {
             if let Ok(shell) = std::env::var("SHELL") {
                 let lower = shell.to_lowercase();
                 if lower.contains("bash") {
-                    return ShellKind::Bash;
+                    // Preserve the full detected path: `bash` is often not
+                    // on PATH on Windows (Git Bash lives at
+                    // `C:\Program Files\Git\bin\bash.exe`), and the bare
+                    // binary name made every spawn fail with
+                    // program-not-found.
+                    return ShellKind::Custom {
+                        binary: shell,
+                        flag: "-c".to_string(),
+                    };
                 }
                 if lower.contains("pwsh") {
                     return ShellKind::Pwsh;
@@ -371,6 +389,26 @@ pub fn global_dispatcher() -> &'static ShellDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_command_parts_matches_build_command_for_non_cmd_kinds() {
+        // Pins the two builders together so they cannot drift: the parts
+        // tuple must reconstruct exactly what build_command spawns (the
+        // sole exception is Windows cmd.exe, whose raw_arg semantics the
+        // tuple cannot carry — documented on build_command_parts).
+        let dispatcher = ShellDispatcher::detect();
+        let command = r#"git commit -m "feat: quoted subject""#;
+        let (program, args) = dispatcher.build_command_parts(command);
+        let built = dispatcher.build_command(command);
+        assert_eq!(program, built.get_program().to_string_lossy());
+        if !(cfg!(windows) && matches!(dispatcher.kind(), ShellKind::Cmd)) {
+            let built_args: Vec<String> = built
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(args, built_args);
+        }
+    }
 
     #[test]
     fn shell_kind_binary_names() {

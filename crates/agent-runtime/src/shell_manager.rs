@@ -136,6 +136,27 @@ pub fn kill_process_group_of(pid: u32) -> std::io::Result<()> {
     }
 }
 
+/// Grace period a sync reader thread gets to finish after the child has
+/// exited before it is detached: normally EOF arrives immediately; a
+/// grandchild holding the pipe write-ends open never EOFs, and waiting
+/// longer than this would freeze the manager mutex.
+const SYNC_READER_JOIN_GRACE: Duration = Duration::from_secs(2);
+
+/// Join a reader thread with a bounded deadline, detaching it if the
+/// pipe never EOFs (grandchild outside the process group still holds the
+/// write-end). The thread's bytes land in the Arc-shared buffer it was
+/// given; a detached thread simply never contributes more.
+fn drain_reader_thread(handle: std::thread::JoinHandle<()>) {
+    let deadline = Instant::now() + SYNC_READER_JOIN_GRACE;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return; // detach
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = handle.join();
+}
+
 /// Kill `child`'s whole process group (the child must have been spawned
 /// with `process_group(0)`), falling back to the direct child. ESRCH is
 /// tolerated — the group may already be gone. Public so the CLI hook
@@ -1326,6 +1347,40 @@ impl ShellManager {
             .spawn()
             .with_context(|| format!("Failed to execute: {original_command}"))?;
 
+        // Take the pipe ends and start draining BEFORE feeding stdin: a
+        // chatty child can fill the OS pipe buffer while we are still
+        // blocked in write_all (neither reader exists yet), stop reading
+        // its stdin, and deadlock both sides.
+        let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
+        let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
+
+        // Reader threads write into Arc-shared buffers and are joined with
+        // a bounded deadline below: a grandchild that escaped the process
+        // group (setsid, `nohup job &`) keeps the pipe write-ends open
+        // past the child's exit, so read_to_end never EOFs and an
+        // unbounded join would freeze the manager mutex forever — the
+        // same failure `BackgroundShell::collect_output` detaches for.
+        let stdout_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stderr_buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stdout_sink = Arc::clone(&stdout_buffer);
+        let stdout_thread = std::thread::spawn(move || {
+            let mut reader = stdout_handle;
+            let mut buf = Vec::new();
+            let _ = reader.read_to_end(&mut buf);
+            if let Ok(mut sink) = stdout_sink.lock() {
+                *sink = buf;
+            }
+        });
+        let stderr_sink = Arc::clone(&stderr_buffer);
+        let stderr_thread = std::thread::spawn(move || {
+            let mut reader = stderr_handle;
+            let mut buf = Vec::new();
+            let _ = reader.read_to_end(&mut buf);
+            if let Ok(mut sink) = stderr_sink.lock() {
+                *sink = buf;
+            }
+        });
+
         if let Some(input) = stdin_data
             && let Some(mut stdin) = child.stdin.take()
         {
@@ -1335,28 +1390,12 @@ impl ShellManager {
             stdin.flush().ok();
         }
 
-        let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
-        let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
-
-        // Spawn threads to read output
-        let stdout_thread = std::thread::spawn(move || {
-            let mut reader = stdout_handle;
-            let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
-            buf
-        });
-
-        let stderr_thread = std::thread::spawn(move || {
-            let mut reader = stderr_handle;
-            let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
-            buf
-        });
-
         // Wait with timeout
         if let Some(status) = child.wait_timeout(timeout)? {
-            let stdout = stdout_thread.join().unwrap_or_default();
-            let stderr = stderr_thread.join().unwrap_or_default();
+            drain_reader_thread(stdout_thread);
+            drain_reader_thread(stderr_thread);
+            let stdout = stdout_buffer.lock().map(|b| b.clone()).unwrap_or_default();
+            let stderr = stderr_buffer.lock().map(|b| b.clone()).unwrap_or_default();
             let stdout_str = String::from_utf8_lossy(&stdout).to_string();
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let exit_code = status.code().unwrap_or(-1);
@@ -1407,8 +1446,10 @@ impl ShellManager {
             #[cfg(not(unix))]
             let _ = child.kill();
             let status = child.wait().ok();
-            let stdout = stdout_thread.join().unwrap_or_default();
-            let stderr = stderr_thread.join().unwrap_or_default();
+            drain_reader_thread(stdout_thread);
+            drain_reader_thread(stderr_thread);
+            let stdout = stdout_buffer.lock().map(|b| b.clone()).unwrap_or_default();
+            let stderr = stderr_buffer.lock().map(|b| b.clone()).unwrap_or_default();
             let stdout_str = String::from_utf8_lossy(&stdout).to_string();
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
