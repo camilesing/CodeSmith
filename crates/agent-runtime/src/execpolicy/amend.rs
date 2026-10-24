@@ -23,6 +23,8 @@ pub enum AmendError {
     },
     #[error("failed to format prefix tokens: {source}")]
     SerializePrefix { source: serde_json::Error },
+    #[error("generated rule failed to round-trip the policy parser (not written): {source}")]
+    RuleRoundTrip { source: super::error::Error },
     #[error("failed to open policy file {path}: {source}")]
     OpenPolicyFile {
         path: PathBuf,
@@ -61,7 +63,9 @@ pub fn blocking_append_allow_prefix_rule(
     policy_path: &Path,
     prefix: &[String],
 ) -> Result<(), AmendError> {
-    if prefix.is_empty() {
+    // An EMPTY first token (empty slice, `["", "flag"]`) only fails at
+    // eval time inside `PrefixPattern::new` — reject it up front.
+    if prefix.first().is_none_or(String::is_empty) {
         return Err(AmendError::EmptyPrefix);
     }
 
@@ -72,6 +76,15 @@ pub fn blocking_append_allow_prefix_rule(
         .map_err(|source| AmendError::SerializePrefix { source })?;
     let pattern = format!("[{}]", tokens.join(", "));
     let rule = format!(r#"prefix_rule(pattern={pattern}, decision="allow")"#);
+
+    // Fail fast: the whole policy file is one Starlark module, so one
+    // unparseable appended line (serde_json emits `\u0001`-style escapes
+    // for control characters, which Starlark's lexer rejects) would brick
+    // every previously-accumulated rule at load time. Round-trip the
+    // generated line through the parser before it reaches disk.
+    super::parser::PolicyParser::new()
+        .parse("amend-roundtrip", &rule)
+        .map_err(|source| AmendError::RuleRoundTrip { source })?;
 
     let dir = policy_path
         .parent()
@@ -156,6 +169,7 @@ fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError> 
 
 #[cfg(test)]
 mod tests {
+    use super::super::PolicyParser;
     use super::*;
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
@@ -177,6 +191,59 @@ mod tests {
             r#"prefix_rule(pattern=["echo", "Hello, world!"], decision="allow")
 "#
         );
+    }
+
+    #[test]
+    fn rejects_empty_and_empty_first_token_prefixes() {
+        let tmp = tempdir().expect("create temp dir");
+        let policy_path = tmp.path().join("rules").join("default.rules");
+
+        for prefix in [
+            vec![],
+            vec![String::new()],
+            vec![String::new(), String::from("flag")],
+        ] {
+            let err = blocking_append_allow_prefix_rule(&policy_path, &prefix)
+                .expect_err("empty prefix must be rejected");
+            assert!(
+                matches!(err, AmendError::EmptyPrefix),
+                "expected EmptyPrefix, got {err:?}"
+            );
+        }
+        assert!(
+            !policy_path.exists(),
+            "nothing may be written for a rejected prefix"
+        );
+    }
+
+    #[test]
+    fn written_rules_stay_parseable_with_pathological_tokens() {
+        // The round-trip gate runs every generated line through the policy
+        // parser before it reaches disk, so the file can never accumulate
+        // an unparseable line. Control characters (serde-escaped as
+        // `\u0001`-style escapes), quotes, backslashes, and non-ASCII must
+        // either append cleanly — leaving the whole file loadable — or be
+        // rejected with `RuleRoundTrip` before any write.
+        let tmp = tempdir().expect("create temp dir");
+        let policy_path = tmp.path().join("rules").join("default.rules");
+        std::fs::create_dir_all(policy_path.parent().unwrap()).expect("policy dir");
+        std::fs::write(&policy_path, "").expect("seed empty file");
+
+        let tricky = vec![
+            String::from("git"),
+            String::from("quote\"back\\slash"),
+            String::from("bad\u{1}token"),
+            String::from("中文"),
+        ];
+        blocking_append_allow_prefix_rule(&policy_path, &tricky)
+            .expect("tricky tokens round-trip under the extended dialect");
+
+        // The load-time invariant: the whole file (seed + append) parses.
+        let contents = std::fs::read_to_string(&policy_path).unwrap();
+        PolicyParser::new()
+            .parse("amend-test", &contents)
+            .expect("accumulated policy file stays parseable");
+        assert!(contents.contains("git"), "{contents}");
     }
 
     #[test]

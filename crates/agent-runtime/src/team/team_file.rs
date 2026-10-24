@@ -42,10 +42,23 @@ pub fn team_lead_name() -> &'static str {
     TEAM_LEAD_NAME
 }
 
+/// Sanitized team directory segment, rejecting names that sanitize to
+/// empty: `Path::join("")` yields the parent, so an unvalidated `""` made
+/// `team_dir`/`team_task_dir` resolve to the shared `teams/`/`tasks/`
+/// roots — `create_team_file` would write into them and
+/// `delete_team_directories` would `remove_dir_all` EVERY team.
+fn sanitized_team_segment(team_name: &str) -> anyhow::Result<String> {
+    let sanitized = sanitize_name(team_name);
+    if sanitized.is_empty() {
+        anyhow::bail!("team name '{team_name}' sanitizes to an empty directory name");
+    }
+    Ok(sanitized)
+}
+
 /// Path to a team directory under `~/.codesmith/teams/`.
 pub fn team_dir(team_name: &str) -> anyhow::Result<PathBuf> {
     let base = codesmith_config::codesmith_home()?;
-    Ok(base.join("teams").join(sanitize_name(team_name)))
+    Ok(base.join("teams").join(sanitized_team_segment(team_name)?))
 }
 
 /// Path to the team config.json file.
@@ -56,7 +69,7 @@ pub fn team_config_path(team_name: &str) -> anyhow::Result<PathBuf> {
 /// Path to the team's task directory under `~/.codesmith/tasks/`.
 pub fn team_task_dir(team_name: &str) -> anyhow::Result<PathBuf> {
     let base = codesmith_config::codesmith_home()?;
-    Ok(base.join("tasks").join(sanitize_name(team_name)))
+    Ok(base.join("tasks").join(sanitized_team_segment(team_name)?))
 }
 
 /// An allowed path entry for team-level permission overrides.
@@ -318,6 +331,25 @@ pub fn active_teammate_count(team_file: &TeamFile) -> usize {
 mod tests {
     use super::*;
     use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+
+    #[test]
+    fn empty_sanitizing_names_are_rejected_at_path_resolution() {
+        // An empty name sanitizes to an empty segment, and
+        // `Path::join("")` yields the parent — without this guard every
+        // read/write/delete path resolved to the shared `teams/`/`tasks/`
+        // roots (and `delete_team_directories` would have removed EVERY
+        // team). Punctuation-only names sanitize to dashes (a valid, if
+        // ugly, directory name) and stay accepted.
+        assert!(
+            team_dir("").is_err(),
+            "team_dir(\"\") must reject an empty sanitized segment"
+        );
+        assert!(
+            team_task_dir("").is_err(),
+            "team_task_dir(\"\") must reject an empty sanitized segment"
+        );
+        assert!(team_dir("!!!").is_ok());
+    }
 
     fn member(name: &str) -> TeamMember {
         TeamMember {

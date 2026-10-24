@@ -258,10 +258,16 @@ fn ensure_parent_dir_private(path: &Path) -> Result<()> {
         {
             let mut dir = parent.to_path_buf();
             loop {
-                tighten_dir_mode_best_effort(&dir);
+                // Break BEFORE tightening the boundary: `deepest_existing`
+                // existed before this call, and the documented contract is
+                // that pre-existing ancestors further up are out of scope.
+                // Tightening it too chmod'ed `$HOME` (first run, no
+                // `~/.codesmith`) or even `/` (fully-missing
+                // `CODESMITH_CONFIG_PATH` chain, root containers).
                 if dir == deepest_existing {
                     break;
                 }
+                tighten_dir_mode_best_effort(&dir);
                 match dir.parent() {
                     Some(p) if !p.as_os_str().is_empty() => dir = p.to_path_buf(),
                     _ => break,

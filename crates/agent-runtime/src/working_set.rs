@@ -901,14 +901,15 @@ fn relativize_candidate(
     }
 
     let (rel_path, abs_path) = if candidate_path.is_absolute() {
-        let within_workspace = workspace_canon
-            .map(|ws| candidate_path.starts_with(ws))
-            .unwrap_or_else(|| candidate_path.starts_with(workspace));
-        if !within_workspace {
-            return None;
-        }
-        let rel = candidate_path.strip_prefix(workspace).ok()?.to_path_buf();
-        (rel, candidate_path.to_path_buf())
+        // Check and strip against the SAME prefix: comparing against the
+        // canonical workspace but stripping the raw spelling made
+        // symlinked roots (`/tmp` → `/private/tmp`) drop every absolute
+        // candidate — canonical ones failed the strip, lexical ones the
+        // check. Try the canonical prefix first, then the raw one.
+        let rel = workspace_canon
+            .and_then(|ws| candidate_path.strip_prefix(ws).ok())
+            .or_else(|| candidate_path.strip_prefix(workspace).ok())?;
+        (rel.to_path_buf(), candidate_path.to_path_buf())
     } else {
         if starts_with_parent_dir(candidate_path) {
             return None;
