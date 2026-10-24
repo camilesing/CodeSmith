@@ -117,6 +117,14 @@ impl ToolSpec for FimEditTool {
         let path = required_str(&input, "path")?;
         let prefix_anchor = required_str(&input, "prefix_anchor")?;
         let suffix_anchor = required_str(&input, "suffix_anchor")?;
+        // Empty anchors degenerate to "replace (nearly) the whole file with
+        // generated text": `""` matches at byte 0 / immediately after the
+        // prefix. Note both anchors match their FIRST occurrence.
+        if prefix_anchor.is_empty() || suffix_anchor.is_empty() {
+            return Err(ToolError::invalid_input(
+                "prefix_anchor and suffix_anchor must be non-empty; each matches its first occurrence",
+            ));
+        }
         let max_tokens = optional_u64(&input, "max_tokens", 1024)?;
 
         // 1. Read the file
@@ -194,6 +202,29 @@ impl ToolSpec for FimEditTool {
         let final_content = gated
             .as_ref()
             .map_or(new_content.as_str(), |o| o.content.as_str());
+        // TOCTOU guard: the FIM round-trip may take seconds, and writing
+        // from the pre-await snapshot would silently clobber any concurrent
+        // edit (user, formatter, another tool). Re-read and refuse on drift.
+        {
+            let check_path = resolved.clone();
+            let snapshot = content.clone();
+            let current = tokio::task::spawn_blocking(move || fs::read_to_string(&check_path))
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("FIM re-read task failed: {e}")))?
+                .map_err(|e| {
+                    ToolError::execution_failed(format!(
+                        "Failed to re-read {}: {}",
+                        resolved.display(),
+                        e
+                    ))
+                })?;
+            if current != snapshot {
+                return Err(ToolError::execution_failed(format!(
+                    "{} changed on disk while the FIM completion was running; re-try the edit",
+                    resolved.display()
+                )));
+            }
+        }
         let write_path = resolved.clone();
         let write_content = final_content.to_string();
         tokio::task::spawn_blocking(move || fs::write(&write_path, write_content))

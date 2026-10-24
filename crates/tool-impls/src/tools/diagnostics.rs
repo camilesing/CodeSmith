@@ -134,13 +134,31 @@ async fn probe_git(workspace: &Path) -> GitProbe {
                     error: Some(format!("unexpected git rev-parse output: {out}")),
                 };
             }
-            let branch = run_command("git", &["rev-parse", "--abbrev-ref", "HEAD"], workspace)
-                .await
-                .into_success();
-            GitProbe {
-                detected: true,
-                branch,
-                error: None,
+            // `--abbrev-ref HEAD` prints the literal `HEAD` on a detached
+            // HEAD — not a branch name. A failed lookup keeps its stderr so
+            // `git_repo: true, git_branch: null` is never silently
+            // indistinguishable from a real failure.
+            match run_command("git", &["rev-parse", "--abbrev-ref", "HEAD"], workspace).await {
+                CommandProbe::Success(name) if name == "HEAD" => GitProbe {
+                    detected: true,
+                    branch: None,
+                    error: None,
+                },
+                CommandProbe::Success(name) => GitProbe {
+                    detected: true,
+                    branch: Some(name),
+                    error: None,
+                },
+                CommandProbe::Failed { stderr } => GitProbe {
+                    detected: true,
+                    branch: None,
+                    error: stderr,
+                },
+                CommandProbe::Missing => GitProbe {
+                    detected: true,
+                    branch: None,
+                    error: Some("git is not installed or not in PATH".to_string()),
+                },
             }
         }
         CommandProbe::Failed { stderr, .. } => GitProbe {
@@ -213,7 +231,9 @@ async fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
     let cwd = cwd.to_path_buf();
     tokio::task::spawn_blocking(move || run_command_blocking(&program, &args, &cwd))
         .await
-        .unwrap_or(CommandProbe::Failed { stderr: None })
+        .unwrap_or_else(|err| CommandProbe::Failed {
+            stderr: Some(format!("probe task failed: {err}")),
+        })
 }
 
 fn run_command_blocking(program: &str, args: &[String], cwd: &Path) -> CommandProbe {
@@ -221,7 +241,13 @@ fn run_command_blocking(program: &str, args: &[String], cwd: &Path) -> CommandPr
     let output = match output {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return CommandProbe::Missing,
-        Err(_) => return CommandProbe::Failed { stderr: None },
+        // Keep the spawn error (EACCES, …): a silent `stderr: None` made
+        // "git refused to run" indistinguishable from "not a git repo".
+        Err(err) => {
+            return CommandProbe::Failed {
+                stderr: Some(format!("failed to spawn {program}: {err}")),
+            };
+        }
     };
 
     if output.status.success() {

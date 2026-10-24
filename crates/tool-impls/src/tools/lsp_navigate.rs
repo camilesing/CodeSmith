@@ -334,8 +334,17 @@ fn marked_string_text(value: &Value) -> Option<String> {
 /// helper, and dragging it into a shared crate for two callers would be
 /// the wrong direction.
 fn path_from_uri(uri: &str) -> Option<PathBuf> {
-    let stripped = uri.strip_prefix("file://")?;
-    Some(PathBuf::from(percent_decode_path(stripped)))
+    let rest = uri.strip_prefix("file://")?;
+    // RFC 8089: only an empty or `localhost` authority names a local file;
+    // a remote authority is not a local path, and accepting it silently
+    // decodes to a wrong (relative) path.
+    let path = match rest.split_once('/') {
+        Some(("", path)) | Some(("localhost", path)) => format!("/{path}"),
+        _ => return None,
+    };
+    // Drop any query/fragment before percent-decoding.
+    let path = path.split(['#', '?']).next().unwrap_or("");
+    Some(PathBuf::from(percent_decode_path(path)))
 }
 
 /// Best-effort `%XX` decoding; invalid escapes stay literal.

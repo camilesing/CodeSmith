@@ -55,6 +55,14 @@ impl ToolSpec for KnowledgeRetrievalTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let query = required_str(&input, "query")?;
+        // `required_str` validates presence, not content: an empty query
+        // makes `contains("")` true for every header, "matching" everything.
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(ToolError::invalid_input(
+                "'query' must be a non-empty keyword or phrase",
+            ));
+        }
         let query_lower = query.to_lowercase();
 
         let memory_dir = context.memory_dir.as_ref().ok_or_else(|| {
@@ -100,7 +108,21 @@ impl ToolSpec for KnowledgeRetrievalTool {
             format_matching_memories(&matching)
         })
         .await
-        .map_err(|e| ToolError::execution_failed(format!("memory scan failed: {e}")))?;
+        .map_err(|e| {
+            // A panicking scan closure is a code bug, not an I/O failure —
+            // keep the payload so it is not misread as a scan error.
+            if e.is_panic() {
+                let payload = e.into_panic();
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic payload".to_string());
+                ToolError::execution_failed(format!("memory recall task panicked: {msg}"))
+            } else {
+                ToolError::execution_failed(format!("memory recall task failed: {e}"))
+            }
+        })?;
 
         Ok(ToolResult::success(output.trim_end().to_string()))
     }

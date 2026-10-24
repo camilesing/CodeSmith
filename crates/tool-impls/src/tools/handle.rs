@@ -476,7 +476,13 @@ fn jsonpath_projection(
         "matches": matches,
         "truncated": false,
     });
-    let rendered = serde_json::to_string(&payload).unwrap_or_default();
+    // Propagate, don't default: an empty fallback would skip the bound and
+    // return the unbounded `matches` payload verbatim.
+    let rendered = serde_json::to_string(&payload).map_err(|e| {
+        ToolError::execution_failed(format!(
+            "handle_read: failed to render jsonpath payload: {e}"
+        ))
+    })?;
     if rendered.chars().count() > max_chars {
         payload["matches"] = json!([]);
         payload["preview"] = json!(truncate_chars(&rendered, max_chars));

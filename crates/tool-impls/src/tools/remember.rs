@@ -286,9 +286,11 @@ fn append_to_entrypoint(path: &std::path::Path, line: &str) -> std::io::Result<(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    // Check if the line already exists (dedup pointer lines).
+    // Check if the exact line already exists (dedup pointer lines). A
+    // substring check would also drop a new, distinct pointer line that
+    // happens to be contained in an earlier, longer one.
     if let Ok(existing) = std::fs::read_to_string(path)
-        && existing.contains(line)
+        && existing.lines().any(|l| l == line)
     {
         return Ok(());
     }

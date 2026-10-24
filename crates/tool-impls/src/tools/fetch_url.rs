@@ -34,12 +34,19 @@ const HARD_MAX_TIMEOUT_MS: u64 = 60_000;
 const MAX_REDIRECTS: usize = 5;
 
 static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
+static SCRIPT_OPEN_RE: OnceLock<Regex> = OnceLock::new();
 static STYLE_RE: OnceLock<Regex> = OnceLock::new();
 static TAG_RE: OnceLock<Regex> = OnceLock::new();
 static WHITESPACE_RE: OnceLock<Regex> = OnceLock::new();
 
 fn script_re() -> &'static Regex {
     SCRIPT_RE.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*?</script>").expect("script re"))
+}
+fn script_open_re() -> &'static Regex {
+    // Fallback for a malformed/minified page with an unclosed <script>: the
+    // pair regex never matches, and tag stripping alone would leave the raw
+    // JavaScript source (tokens, keys) in the model-visible text.
+    SCRIPT_OPEN_RE.get_or_init(|| Regex::new(r"(?is)<script[^>]*>.*\z").expect("script open re"))
 }
 fn style_re() -> &'static Regex {
     STYLE_RE.get_or_init(|| Regex::new(r"(?is)<style[^>]*>.*?</style>").expect("style re"))
@@ -207,7 +214,15 @@ impl ToolSpec for FetchUrlTool {
             .map_err(ToolError::from)?;
 
         let body_text = String::from_utf8_lossy(&outcome.body).to_string();
-        let fields = project_json_fields(&body_text, &outcome.content_type, &requested_fields)?;
+        // A truncated JSON body is cut mid-stream and fails the parse with a
+        // misleading "not valid JSON" — say what actually happened.
+        let fields = if outcome.truncated && !requested_fields.is_empty() {
+            return Err(ToolError::execution_failed(
+                "response body was truncated before `fields` could be applied; retry with a larger `max_bytes`",
+            ));
+        } else {
+            project_json_fields(&body_text, &outcome.content_type, &requested_fields)?
+        };
         let processed = match format {
             Format::Raw => body_text,
             Format::Text | Format::Markdown => {
@@ -299,7 +314,11 @@ fn project_json_fields(
 /// whitespace. Good enough for "let the model read this page" — not a full
 /// HTML-to-Markdown converter.
 fn html_to_text(html: &str) -> String {
-    let no_script = script_re().replace_all(html, "");
+    let closed_removed = script_re().replace_all(html, "");
+    // Unclosed <script> blocks (minified/malformed pages) run to end of
+    // input — without this pass their raw JS source would survive the
+    // tag-stripping below and reach the model.
+    let no_script = script_open_re().replace_all(&closed_removed, "");
     let no_style = style_re().replace_all(&no_script, "");
     let no_tags = tag_re().replace_all(&no_style, " ");
     let decoded = decode_entities(&no_tags);
@@ -311,14 +330,16 @@ fn html_to_text(html: &str) -> String {
 
 /// Decode the handful of HTML entities we expect to hit in stripped text.
 /// Pulling in `html-escape` for the long tail isn't worth the dep weight.
+/// `&amp;` is decoded LAST: decoding it first would double-decode
+/// already-escaped text (`&amp;lt;` → `&lt;` → `<`).
 fn decode_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
 }
 
 #[cfg(test)]
