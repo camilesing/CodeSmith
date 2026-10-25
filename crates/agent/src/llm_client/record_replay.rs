@@ -11,7 +11,7 @@
 //!
 //! [`ReplayClient`] loads the same file and feeds the recorded events back
 //! through the *real* turn loop — a recorded model stream drives the
-//! engine with zero network and zero API keys (the dsh `llm-replay`
+//! engine with zero network and zero API keys (the record/replay
 //! pattern).
 //!
 //! # Wiring

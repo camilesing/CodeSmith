@@ -3969,7 +3969,7 @@ impl HostAgentExecutor {
                         continue;
                     }
                 }
-                // TurnStopping (DSH serial turn-steer): the turn is about to
+                // TurnStopping (serial turn-steer): the turn is about to
                 // end on `NoToolCalls` — ask the extensions first. The
                 // question sits INSIDE the ending branch (same shape as the
                 // iteration-2 retry guard): no handler bound, all-abstain,
@@ -17428,7 +17428,7 @@ mod tests {
         );
     }
 
-    // === Iteration 4 — around-dispatch + Ask (DSH tool-chain sites) =========
+    // === Iteration 4 — around-dispatch + Ask (tool-chain sites) =============
 
     /// An around handler that optionally vetoes and otherwise stamps its
     /// label through the result, recording the calls it saw.

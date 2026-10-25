@@ -1270,7 +1270,7 @@ impl HostAgentExecutor {
                     }
                     // Stream died before any committed content — safe to
                     // retry transparently (no output billed, nothing shown).
-                    // The extension question (DSH request-error waterfall)
+                    // The extension question (request-error waterfall)
                     // sits INSIDE the guard: the default policy is computed
                     // first, then a handler may rewrite the plan
                     // (`Transform`) or give up (`Block`); with no handler
@@ -2236,7 +2236,7 @@ mod tests {
         assert_eq!(mock.call_counts().len(), 2, "initial attempt + one retry");
     }
 
-    // === Provider-request-error waterfall (DSH request-error seam) ==========
+    // === Provider-request-error waterfall (request-error seam) ==============
     //
     // The extension question sits INSIDE the transparent-retry guard: the
     // default policy is computed first, a handler may rewrite the plan or
@@ -2453,7 +2453,7 @@ mod tests {
         );
     }
 
-    // === Turn-stopping serial steer (DSH turn-stopping seam) ================
+    // === Turn-stopping serial steer (turn-stopping seam) ====================
     //
     // The question sits INSIDE the no-tool-calls ending branch: an
     // abstaining (or absent) handler must leave the default terminal

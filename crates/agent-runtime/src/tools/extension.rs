@@ -87,7 +87,7 @@ impl ToolSpec for ExtensionToolSpecAdapter {
 /// each wrapped in an [`ExtensionToolSpecAdapter`]. Called from
 /// `EngineHost::build_turn_dispatcher` after plugin-tools are configured.
 ///
-/// Registration scopes (DSH alignment): this resolves the runner's
+/// Registration scopes: this resolves the runner's
 /// **Global** view ([`ExtensionRunner::bound_tools`]) — an
 /// agent-type-scoped tool registration never enters the main-turn
 /// catalog (it shadows its global namesake only in that agent type's
@@ -299,7 +299,7 @@ mod tests {
         assert!(!registry.contains("echo_ext"));
     }
 
-    // === DSH registration scope — main-turn catalog resolves the Global view
+    // === Registration scope — main-turn catalog resolves the Global view
 
     /// A fixture tool carrying `(name, tag)` so same-name registrations
     /// under different scopes are distinguishable by `description()`.

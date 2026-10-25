@@ -583,8 +583,8 @@ pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
 
 /// Whether every `tool_use` in `messages` is answered by a `tool_result`
 /// and no `tool_result` orphans a missing call — the pairing invariant a
-/// provider-acceptable transcript (and every compaction cut) must hold
-/// (dsh `toolPairingBalanced` counterpart). Compaction paths enforce this
+/// provider-acceptable transcript (and every compaction cut) must hold.
+/// Compaction paths enforce this
 /// via [`enforce_tool_call_pairs`]; the session-load repair enforces it by
 /// appending `TOOL_OUTCOME_UNKNOWN` terminators. This predicate is the
 /// shared post-condition both are checked against.
@@ -2266,8 +2266,8 @@ mod tool_pairing_balance_tests {
         assert!(tool_call_pairs_balanced(&repaired));
     }
 
-    /// Compaction cut-point property (dsh `toolPairingBalanced`
-    /// counterpart): after the planner pins its keep-set and
+    /// Compaction cut-point property: after the planner pins its keep-set
+    /// and
     /// `enforce_tool_call_pairs` fixes the pin boundaries, the retained
     /// slice must be pair-balanced — a cut may never strand a call or a
     /// result on one side of the boundary without its counterpart.
