@@ -40,7 +40,7 @@
 //! # Decision record: model-writable orchestration is not built
 //!
 //! Some harnesses let the model write orchestration scripts and plugins at
-//! run time. CodeSmith deliberately does
+//! run time (deepseek-harness `workflow-ptc`). CodeSmith deliberately does
 //! not: the orchestration surface the model gets is the persistent sub-agent
 //! session (`agent_open` / `agent_eval` / `agent_close`) plus the external
 //! seam above, and the only model-driven code execution surface is the RLM

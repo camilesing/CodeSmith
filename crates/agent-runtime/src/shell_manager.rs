@@ -820,7 +820,7 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
 
 /// Compose the refusal (or explicitly-allowed fallback) reason for a policy
 /// that demands confinement no backend on this platform can enforce.
-/// Fail-closed sandbox-unavailable contract: diagnosable,
+/// Aligned with dsh's `SANDBOX_UNAVAILABLE` error contract: diagnosable,
 /// and naming the alternative modes instead of silently running unconfined.
 fn sandbox_refusal_reason(
     policy: &ExecutionSandboxPolicy,

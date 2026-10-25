@@ -58,7 +58,7 @@ impl RegistrationOrigin {
 /// `bind_core` flush into the host `ToolRegistry`.
 pub(crate) struct PendingTool {
     pub tool: Box<dyn ToolDefinition>,
-    /// Registration scope — keyed `(scope, name)` at flush, so a
+    /// DSH registration scope — keyed `(scope, name)` at flush, so a
     /// `Global` and an `AgentType(id)` registration of the same name
     /// coexist (the scoped one shadows the global one in that type's
     /// catalog view).
@@ -133,7 +133,7 @@ pub(crate) struct PendingCommand {
     pub command: Box<dyn CommandDefinition>,
 }
 
-/// Tool restriction — shared validation (stub-time and live
+/// DSH tool restriction — shared validation (stub-time and live
 /// registration paths): a usable scope + at least one non-blank tool
 /// name, none blank.
 pub(crate) fn validate_tool_restriction(
@@ -167,7 +167,7 @@ pub(crate) struct PendingHandler {
 }
 
 /// A bound handler + its variant filter (None = subscribe-to-all),
-/// registration scope (an `AgentType(id)` handler receives
+/// registration scope (DSH alignment: an `AgentType(id)` handler receives
 /// only `emit_scoped` dispatches at its scope; `emit` is Global), and
 /// origin (a `Dylib` handler is skipped at agent-type scopes — §F5d
 /// unload safety). §F2a T7 makes `ExtensionRunner::handlers` a
@@ -181,7 +181,7 @@ pub(crate) struct RegisteredHandler {
     pub origin: RegistrationOrigin,
 }
 
-/// A deny-only tool restriction:
+/// A deny-only tool restriction (DSH `ToolRestriction`, deny side only):
 /// `denied` names are pruned from the **global** extension-tool layer for
 /// every view `scope` covers. Never prunes scoped registrations. Used
 /// both as the pending queue entry and the bound storage shape.
@@ -217,7 +217,7 @@ pub(crate) struct Pending {
     pub tools: Vec<PendingTool>,
     pub commands: Vec<PendingCommand>,
     pub handlers: Vec<PendingHandler>,
-    /// Around-dispatch registrations (tools/execute) queued by the
+    /// DSH around-dispatch registrations (tools/execute) queued by the
     /// stub `ExtensionApi`, awaiting the `bind_core` flush.
     pub around_tools: Vec<Arc<dyn AroundToolHandler>>,
     pub providers: Vec<PendingProvider>,
@@ -231,7 +231,7 @@ pub(crate) struct Pending {
     /// Builtin command names the stub `ExtensionApi`'s `disable_command`
     /// queued during `configure`, awaiting the `bind_core` flush.
     pub disabled_commands: Vec<String>,
-    /// Tool restrictions queued by the stub `ExtensionApi`, awaiting
+    /// DSH tool restrictions queued by the stub `ExtensionApi`, awaiting
     /// the `bind_core` flush (deny-only; see [`ToolRestriction`]).
     pub tool_restrictions: Vec<ToolRestriction>,
 }
@@ -265,7 +265,7 @@ pub(crate) struct BoundTool {
 }
 
 /// The bound tool registry's storage shape: `(scope, name)` → bound tool
-/// (registration scope — see [`ExtensionRunner::bound_tools_scoped`]).
+/// (DSH registration scope — see [`ExtensionRunner::bound_tools_scoped`]).
 pub(crate) type BoundToolMap = HashMap<(Scope, String), BoundTool>;
 
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
@@ -282,14 +282,14 @@ pub struct ExtensionRunner {
     /// `&dyn ExtensionContext` via stable trait-upcasting (Rust 1.86+).
     context: Mutex<Option<Arc<dyn ExtensionCommandContext>>>,
     /// Bound at `bind_core` — the flushed tools, keyed `(scope, name)`
-    /// (registration scope): first-wins per key, so a `Global` and an
+    /// (DSH registration scope): first-wins per key, so a `Global` and an
     /// `AgentType(id)` tool of the same name coexist and the scoped one
     /// shadows the global one in that type's catalog view. Hosts resolve
     /// a view via [`bound_tools_scoped`](Self::bound_tools_scoped) —
     /// [`bound_tools`](Self::bound_tools) is the `Global` view.
     tools: Mutex<BoundToolMap>,
-    /// Bound at `bind_core` — deny-only tool restrictions,
-    /// intersecting; cleared with the other bound
+    /// Bound at `bind_core` — deny-only tool restrictions (DSH
+    /// `ToolRestriction`), intersecting; cleared with the other bound
     /// registrations on reload.
     tool_restrictions: Mutex<Vec<ToolRestriction>>,
     commands: Mutex<HashMap<String, Arc<dyn CommandDefinition>>>,
@@ -303,7 +303,7 @@ pub struct ExtensionRunner {
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
     handlers: Mutex<Vec<RegisteredHandler>>,
     /// Bound at `bind_core` — the flushed around-dispatch handlers
-    /// (tools/execute), in registration order (outermost first). The
+    /// (DSH tools/execute), in registration order (outermost first). The
     /// engine snapshots them per tool phase via
     /// [`around_tool_handlers`](Self::around_tool_handlers) and composes
     /// the `next()` chain; `clear_around_tools` / reload drop them.
@@ -459,8 +459,8 @@ impl ExtensionRunner {
             .clear();
     }
 
-    /// Clear the generation's around-dispatch registrations
-    /// (tools/execute). Same reload lifecycle as [`clear_handlers`]; safe
+    /// Clear the generation's around-dispatch registrations (DSH
+    /// tools/execute). Same reload lifecycle as [`clear_handlers`]; safe
     /// while an in-flight turn holds a snapshot — each handler is
     /// refcounted (`Arc`) and the engine composed its chain at dispatch
     /// time.
@@ -492,7 +492,7 @@ impl ExtensionRunner {
         self.tools.lock().expect("tools lock poisoned").clear();
     }
 
-    /// Tool restriction — append a deny-only name list for `scope`
+    /// DSH tool restriction — append a deny-only name list for `scope`
     /// (live path; the `bind_core` flush routes queued entries through
     /// here so stub-time and flush-time validation agree). Entries
     /// intersect; nothing re-admits a denied name. Fails loud on a blank
@@ -1166,7 +1166,7 @@ impl ExtensionRunner {
         self.emit_scoped(Scope::Global, event).await
     }
 
-    /// Emit `event` at an explicit registration scope (per-agent
+    /// Emit `event` at an explicit registration scope (DSH per-agent
     /// dispatch): handlers registered at `Global` always receive the
     /// event; a handler registered at `AgentType(id)` receives it only
     /// when `scope` is that same type. The main-turn sites call
@@ -1297,7 +1297,7 @@ impl ExtensionRunner {
         self.bound_tools_scoped(&Scope::Global)
     }
 
-    /// The extension-tool view for `scope`:
+    /// The extension-tool view for `scope` (DSH `ToolView` derivation):
     /// the `Global` registrations — minus every restriction whose scope
     /// covers `scope` — overlaid by `scope`'s own registrations when it is
     /// an agent type (same name ⇒ the scoped tool shadows the global
@@ -2528,7 +2528,7 @@ mod tests {
         );
     }
 
-    // === Registration scope (5a): views, restrict, dispatch filter ========
+    // === DSH registration scope (5a): views, restrict, dispatch filter ====
 
     #[test]
     fn restrict_tools_validation_fails_loud() {

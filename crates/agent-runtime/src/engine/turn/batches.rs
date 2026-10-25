@@ -178,7 +178,7 @@ impl HostAgentExecutor {
         let mut loop_guard_halt: Option<String> = None;
         let mut plan_approved = false;
         let n = tool_uses.len();
-        // Around-dispatch (tools/execute): the generation's around
+        // DSH around-dispatch (tools/execute): the generation's around
         // handlers wrap the dispatch terminal in BOTH arms below. An empty
         // snapshot (no runner / none registered) leaves the dispatch path
         // untouched — no-extension parity is structural, not a flag.
@@ -629,8 +629,8 @@ impl HostAgentExecutor {
                             .cloned()
                             .unwrap_or_else(|| plan.input.clone());
                         let index = plan.index;
-                        // Iteration 4 — the per-future around snapshot
-                        // (tools/execute); `Arc` clones only.
+                        // Iteration 4 — the per-future around snapshot (DSH
+                        // tools/execute); `Arc` clones only.
                         let around = around_handlers.clone();
                         futs.push(Box::pin(async move {
                             let blocked = guard.is_some() || ext_block_reason.is_some();
@@ -863,7 +863,7 @@ impl HostAgentExecutor {
                                 )
                                 .await;
                         }
-                        // Iteration 4 — the around chain (tools/execute)
+                        // Iteration 4 — the around chain (DSH tools/execute)
                         // wraps the serial dispatch terminal: the approval
                         // gate + run, i.e. the whole execution transaction (a
                         // veto skips the question too). An `Ask` forces the

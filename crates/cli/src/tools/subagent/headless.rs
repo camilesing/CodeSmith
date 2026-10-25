@@ -3,7 +3,7 @@
 //! `codesmith_agent_runtime::subagent`).
 //!
 //! A child runs as a **separate `codesmith exec --json` process** of the same
-//! binary (the "out-of-process own SDK" shape): the parent passes the
+//! binary (the dsh "out-of-process own SDK" shape): the parent passes the
 //! role instruction as `--append-system-prompt`, the rendered objective as
 //! the prompt, the resolved model, and the spawn-depth budget through the
 //! [`SPAWN_DEPTH_ENV`] / [`MAX_SPAWN_DEPTH_ENV`] environment variables, then

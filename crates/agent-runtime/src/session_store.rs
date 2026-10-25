@@ -19,7 +19,7 @@
 //! ## Format governance (dev-plan TODO-29)
 //!
 //! The persisted shape carries a monotonic [`CURRENT_SESSION_SCHEMA_VERSION`]
-//! in its header (`schema_version`). Doctrine:
+//! in its header (`schema_version`). Doctrine (dsh `SESSION_FORMAT_VERSION`):
 //! migrations are **adjacent** (v n → v n+1 only) and run **in memory at
 //! load** ([`migrate_session_format`]) — committed session files on disk are
 //! never rewritten by a migration; a newer-than-supported version refuses
@@ -340,7 +340,7 @@ impl SessionMetadata {
 /// hard fail) or surfaced billed partial content. Log-only bookkeeping —
 /// persisted on [`SavedSession::failed_attempts`] so a restart can answer
 /// "which turns failed, why, how many retries"; never enters the transcript
-/// or a model request (an attempt-summary contract, summary level).
+/// or a model request (the dsh `assistant/attempt` contract, summary level).
 ///
 /// Known limitations: summary only — no per-stream events (stream-level
 /// detail belongs to the opt-in record/replay path); only the main-session

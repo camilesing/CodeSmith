@@ -22,7 +22,7 @@
 //! points, and no wall-clock timeout for ordinary emits (only the
 //! hot-path events carry a dispatch budget, in `callback_bridge`); the
 //! engine registers no fs/net/process natives, so a script mod cannot do
-//! I/O — absence is the sandbox. `on_event` is the portable subset
+//! I/O — absence is the sandbox. `on_event` is the DSH-aligned subset
 //! (Emit/Serial kinds; a waterfall kind fails the mod's load at capture —
 //! its transforms stay on `on()`, its deny floor on `register_guard`);
 //! around-dispatch and `Ask` have no script form at all (async / UI
@@ -744,11 +744,11 @@ fn register_natives(
         },
     );
 
-    // on_event(kind, callback) — the portable registration: emit
+    // on_event(kind, callback) — the DSH-aligned registration: emit
     // listeners and serial vetoes only. The gate reads the contract
     // (`ExtensionEventKind::dispatch_mode`), so a waterfall kind fails
     // the mod's load here — its transform fold is the `on()` surface,
-    // its deny floor is `register_guard`; on_event is the portable
+    // its deny floor is `register_guard`; on_event is the DSH-portable
     // subset, not a second waterfall channel. The registration itself is
     // identical to `on`: same Handler cell entry, same `on_variant`
     // replay (Script origin, Global scope stamped by the load path).
@@ -932,7 +932,7 @@ fn register_natives(
     );
 
     // register_guard(callback) — route B (1.2 alignment): a deny-only tool
-    // guard. The closure takes the tool-call
+    // guard (dsh `ctx.tools.guard()`). The closure takes the tool-call
     // payload (`|e|` — `#{kind, id, name, input}`, same shape as a
     // `tool-call` handler's payload); returning a string denies the call
     // with that reason, anything else abstains. There is no allow or
@@ -1591,7 +1591,7 @@ mod tests {
         assert!(msg.contains("no-such-event"), "{msg}");
     }
 
-    // === on_event (portable Emit/Serial registration) =======================
+    // === on_event (DSH-aligned Emit/Serial registration) ====================
 
     /// An Emit-kind on_event callback runs at dispatch: the hook records
     /// the payload into the mod's KV, which outlives the runner. Without
