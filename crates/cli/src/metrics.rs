@@ -737,6 +737,26 @@ fn read_events_jsonl(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
                     rollup.compaction.ratio_samples += 1;
                 }
             }
+            // The thread runtime persists a compaction as a lifecycle item
+            // (`item.completed` with `payload.item.kind ==
+            // "context_compaction"`), not as a `compaction.completed`
+            // event — recognise that shape or the rollup stays at zero.
+            "item.completed"
+                if v.pointer("/payload/item/kind").and_then(|k| k.as_str())
+                    == Some("context_compaction") =>
+            {
+                rollup.compaction.events += 1;
+                if let (Some(before), Some(after)) = (
+                    v.pointer("/payload/messages_before")
+                        .and_then(|n| n.as_u64()),
+                    v.pointer("/payload/messages_after")
+                        .and_then(|n| n.as_u64()),
+                ) && before > 0
+                {
+                    rollup.compaction.ratio_sum += 1.0 - (after as f64 / before as f64);
+                    rollup.compaction.ratio_samples += 1;
+                }
+            }
             "agent.spawned" | "subagent.spawned" => {
                 rollup.agents.spawns += 1;
             }
@@ -1206,5 +1226,64 @@ mod tests {
         assert_eq!(rollup.projects.len(), 1);
         assert_eq!(rollup.models.len(), 1);
         assert_eq!(rollup.tokens, 4_200, "an anonymous session adds no tokens");
+    }
+
+    /// The thread runtime writes a compaction as `item.completed` with
+    /// `payload.item.kind == "context_compaction"` (the
+    /// `EngineEvent::CompactionCompleted` arm in `runtime_threads`); no
+    /// writer emits a `compaction.completed` event. Without the item-shape
+    /// arm the rollup read only the never-written name and `/insights`
+    /// reported zero compactions on every machine. Pins: the completed
+    /// compaction item counts and yields a message-count reduction ratio;
+    /// a same-name event of another kind and an `item.started` do not.
+    #[test]
+    fn runtime_events_count_context_compaction_items() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let record = |event: &str, payload: serde_json::Value| {
+            serde_json::json!({
+                "schema_version": 1,
+                "seq": 1,
+                "timestamp": "2026-10-25T12:00:00Z",
+                "thread_id": "thr",
+                "event": event,
+                "payload": payload,
+            })
+        };
+        let lines = [
+            record(
+                "item.completed",
+                serde_json::json!({
+                    "item": { "kind": "context_compaction" },
+                    "auto": true,
+                    "messages_before": 40,
+                    "messages_after": 10,
+                }),
+            ),
+            record(
+                "item.completed",
+                serde_json::json!({ "item": { "kind": "tool_call" } }),
+            ),
+            record(
+                "item.started",
+                serde_json::json!({ "item": { "kind": "context_compaction" }, "auto": true }),
+            ),
+        ];
+        let body = lines
+            .iter()
+            .map(|l| serde_json::to_string(l).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dir.path().join("thr.jsonl"), body).unwrap();
+
+        let mut rollup = Rollup::default();
+        read_runtime_events(dir.path(), None, &mut rollup);
+
+        assert_eq!(
+            rollup.compaction.events, 1,
+            "only the completed compaction item counts"
+        );
+        assert_eq!(rollup.compaction.ratio_samples, 1);
+        // 1 − 10/40 = 0.75 message-count reduction.
+        assert!((rollup.compaction.ratio_sum - 0.75).abs() < 1e-9);
     }
 }
