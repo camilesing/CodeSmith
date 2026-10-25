@@ -19,7 +19,8 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
      splits this file on `## ` headings, so a trailing link block would be
      printed as part of v0.1.0's body. -->
 
-[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/camilesing/CodeSmith/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/camilesing/CodeSmith/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/camilesing/CodeSmith/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/camilesing/CodeSmith/compare/v0.7.0...v0.8.0
@@ -33,31 +34,38 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-25
+
 ### Added
 
-- Sandbox enforcement that fails closed (Landlock on Linux, per-root seatbelt
-  grants, escalation behind approval); MCP over Streamable HTTP; ACP as both an
-  external sub-agent provider and a session host (resume, permission prompts);
-  a content-addressed attachment store; `search_sessions`, `lsp_navigate`,
-  `/feedback`, a durable inbox journal, and one web service behind the search
-  and fetch tools.
+- Sandbox enforcement that fails closed (Landlock and seatbelt, escalation
+  behind approval); MCP over Streamable HTTP; ACP as sub-agent provider and
+  session host; an attachment store; `search_sessions`, `lsp_navigate`,
+  `/feedback`, an inbox journal, and one web service for search and fetch.
 
-- The policy seam: mods resolve `compact-policy`, `large-output-route`, and
-  `working-set` values with last-wins precedence; session-scoped ephemeral mods
-  bind inline sources; one mod unloads without disturbing the survivors.
+- The policy seam (`compact-policy`, `large-output-route`, `working-set`;
+  last-wins, `/mods show` names the winner), registration scopes, `on_event`,
+  ephemeral session mods, and single-mod load/unload.
 
 ### Changed
 
-- Plan approval is a three-way gate — approve dispatches the implementation,
-  refuse steers it, `[r] <feedback>` asks for a revision; `[a]` covers the tool
-  for the session, and a shell approval names every segment of a chained line.
+- Plan approval is a three-way gate (approve, refuse-and-steer,
+  `[r] <feedback>` revises); `[a]` covers a tool for the session; independent
+  calls and sub-agent spawns fan out concurrently.
 
 ### Fixed
 
-- Every approval decision reaches the session file; a call truncated
-  mid-arguments replays as an object; poisoned mutexes recover; config defaults
-  fail closed (`allow_shell = false`); tool I/O is bounded; framing-tag closers
-  are defused at every injection site.
+- Every approval decision reaches the session file; a truncated call replays
+  as an object; poisoned mutexes recover; config defaults fail closed; tool I/O
+  is bounded; framing-tag closers are defused.
+
+### Security
+
+- Manifests reject unsafe ids and entry paths at parse; `register_provider`
+  rejects header injection; a guard that cannot bind fails the load rather than
+  silently bypassing. Credentials are scrubbed from logs, argv, and dumps;
+  audit writes take an fd-lock; `~/.codesmith` is created `0700`; the npm
+  installer is https-only with checksums.
 
 > **Alpha, up to and including v0.10.0.** Every release in this file through
 > v0.10.0 is an alpha. Interfaces, config keys, session-file formats, tool
