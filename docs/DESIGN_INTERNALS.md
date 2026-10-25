@@ -358,7 +358,7 @@ no channel ⇒ denied), and `Transform` at
 actionable field (`ToolResult` reorders emit→`on_tool_end`→propagate to
 `outcomes[idx]`); out-of-place outcomes map to `Continue`. Beside the
 outcome chain, `AroundToolHandler` (`ExtensionApi::register_around_tool`)
-composes a `next()`-wrapping chain around both tool-dispatch arms'
+composes a DSH `next()`-wrapping chain around both tool-dispatch arms'
 terminals in `turn::batches` (parallel early-reuse/run — whose approval
 questions are asked in a separate sequential pre-pass — and serial
 approval/run) — a handler that never awaits `next` vetoes. 25 of the 26

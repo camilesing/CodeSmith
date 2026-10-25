@@ -55,7 +55,7 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   (`/extension install` + reload). New pluggable behavior lands on one
   of these tiers — logic/data in Rhai, async/IO in a Rust extension —
   rather than a fresh compile-time wiring site. The registration surface
-  is scope-aware (`Scope::Global | Scope::AgentType(id)`):
+  is scope-aware (`Scope::Global | Scope::AgentType(id)`, DSH alignment):
   a scoped tool shadows its global namesake in that agent type's catalog
   view (`ExtensionRunner::bound_tools_scoped`), a deny-only
   `restrict_tools` list prunes the extension layer's global tools per

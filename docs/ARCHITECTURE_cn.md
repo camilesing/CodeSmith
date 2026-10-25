@@ -46,7 +46,7 @@
   （`inventory`）、安装的 Rust dylib（`/extension install` + reload）。
   新的可插拔行为落在其中一层上——逻辑/数据用 Rhai，异步/IO 用 Rust
   扩展——而不是新开一个编译期接线点。注册面是作用域感知的
-  （`Scope::Global | Scope::AgentType(id)`）：scoped 工具在该
+  （`Scope::Global | Scope::AgentType(id)`，DSH 对齐）：scoped 工具在该
   agent 类型的目录视图里遮蔽同名 global 工具
   （`ExtensionRunner::bound_tools_scoped`），deny-only 的
   `restrict_tools` 名单按视图剪掉扩展层的 global 工具，主轮目录

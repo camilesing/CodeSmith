@@ -158,25 +158,25 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 `tools-change` 在回合边界触发：当编译后的模型可见目录相对上一主回合发生变化（模式切换、mod 重载、选择变更）。首回合只建立基线、不触发；sub-agent 工具集不会触发；没有读取当前目录的 API——事件只携带差量。`/tools` 按来源（builtin / plugin / extension / mcp）分组展示当前基线。
 
 分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）
-—— 三态：**waterfall**、**serial**、**emit**：
+—— 三态命名对齐 DSH（deepseek-harness）模型：**waterfall**、**serial**、**emit**：
 
 - **waterfall**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
 - **waterfall + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）；`provider-request-error` —— 改写重试 `plan`，或 `block(reason)` 放弃
 - **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`、`turn-stopping`（倒置：`cancel(reason)` 让轮继续——提示即 steer）
 - **emit**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
-#### `on_event` —— 可移植的监听/否决形态
+#### `on_event` —— DSH 对齐的监听/否决形态
 
 `on_event("<event>", |e, ctx| { ... })` 的回调形态与 `on` 完全相同
 （同样的 payload、同样可省略的 `ctx`、同样的控制值），但只接受 **emit**
-与 **serial** 事件——可移植的子集。waterfall 事件（`input`、
+与 **serial** 事件——可直迁 DSH 的子集。waterfall 事件（`input`、
 `before-agent-start`、`before-provider-request`、`tool-result`、
 `tool-call`、`provider-request-error`）会让 mod **加载失败**，错误点名
 该事件：它的 transform 链属于 `on()`，拒绝底线属于 `register_guard`。
 emit 事件下一切返回值仅具参考性；serial 事件下 `cancel(reason)` 即否决。
-只监听或只否决的 mod 用 `on_event`——这样的 mod 保持在 emit/serial
-模型之内；需要完整 CodeSmith 表面（含 waterfall transform——刻意
-超出监听/否决脚本面的超集）时用 `on()`。
+只监听或只否决的 mod 用 `on_event`——这样的 mod 与 DSH 的 emit/serial
+模型一一对应；需要完整 CodeSmith 表面（含 waterfall transform——刻意
+超出 DSH 脚本面的超集）时用 `on()`。
 
 作用域：`on_event` 注册是 global 作用域、script 来源——global 注册覆盖
 所有分发作用域，但子代理循环（5b）只在自己的作用域分发
@@ -219,7 +219,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
 | `register_skill(spec)` | 向会话技能目录贡献一个内存技能（见下） |
 | `register_guard(callback)` | 注册 deny-only 的工具调用守卫（见下） |
-| `on_event(kind, callback)` | 注册可移植的钩子——仅 emit/serial 事件（waterfall 事件导致加载失败；见上） |
+| `on_event(kind, callback)` | 注册 DSH 对齐的钩子——仅 emit/serial 事件（waterfall 事件导致加载失败；见上） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 | `register_policy(kind, config)` | 覆盖宿主机制策略（见下） |
