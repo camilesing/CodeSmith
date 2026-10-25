@@ -333,7 +333,7 @@ steer 至多 3 次）；在 `ToolCall` 处还遵守 `Ask`（无视分类把调�
 `Transform`（改写可操作字段；`ToolResult` 把 emit→`on_tool_end`→传播到
 `outcomes[idx]` 的顺序重新安排）；错位的结果映射为 `Continue`。在结果
 链之外，`AroundToolHandler`（`ExtensionApi::register_around_tool`）在
-`turn::batches` 两条工具分发臂的终端之外组合 DSH 式 `next()` 包裹链
+`turn::batches` 两条工具分发臂的终端之外组合 `next()` 包裹链
 （并行的"复用早启/新跑"——其审批问题在一个独立的串行预派发环节里询问
 ——与串行的"审批/执行"）—— 从不 `await next` 的
 handler 即否决。26 种事件

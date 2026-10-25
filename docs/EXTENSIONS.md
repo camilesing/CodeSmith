@@ -100,7 +100,7 @@ Everything an extension can register, and what the host does with it:
   (5b: child loops dispatch `ToolCall` at their agent-type scope;
   script-origin handlers ride along); a script error abstains with a warn.
 - **Event handlers (`on` / `on_variant`; Rhai shapes: `on(event, cb)` for
-  any kind, `on_event(kind, cb)` for the DSH-aligned emit/serial subset —
+  any kind, `on_event(kind, cb)` for the portable emit/serial subset —
   a waterfall kind fails the mod's load)** — see
   [Handlers](#handlers-outcomes--per-variant-subscription).
 
@@ -264,7 +264,7 @@ so a single crate gives them both the traits and the runtime helpers.
   stale-context guard, plus the route-A/B registrations above and the
   scoped variants (`register_tool_scoped` / `on_variant_scoped` /
   `restrict_tools` — see
-  [Registration scopes](#registration-scopes-dsh-alignment)).
+  [Registration scopes](#registration-scopes)).
 - **`ExtensionContext`** — read-mostly host state handed to handlers:
   `cwd() / mode() / is_idle() / signal() / generation()` are live;
   `abort() / shutdown() / compact() / get_context_usage()` return
@@ -272,7 +272,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 26 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer):
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 26 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added as the retry waterfall; `turn-stopping` as the serial steer):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -304,7 +304,7 @@ so a single crate gives them both the traits and the runtime helpers.
   ignored (treated as `Continue`). `emit` chains handlers in
   registration order so a `Transform` is visible to the next handler;
   `Cancel`/`Block`/`Ask` short-circuit.
-- **`AroundToolHandler`** — DSH around-dispatch (tools/execute):
+- **`AroundToolHandler`** — around-dispatch (tools/execute):
   `async fn call(&self, call: ToolCallEvent, next: ToolCallNext<'_>) ->
   Result<ToolResult, ToolError>`. Register via
   `ExtensionApi::register_around_tool`; handlers compose in registration
@@ -370,9 +370,9 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 }
 ```
 
-## Registration scopes (DSH alignment)
+## Registration scopes
 
-Registrations carry a **scope** — the DSH per-agent scope key, reduced to
+Registrations carry a **scope** — a per-agent scope key, reduced to
 two states: `Scope::Global` (the default; what every plain
 `register_tool` / `on` / `on_variant` uses) and
 `Scope::AgentType(id)` (a sub-agent type string: `general`, `explore`,
@@ -393,7 +393,7 @@ two states: `Scope::Global` (the default; what every plain
   deny: there is no allow form, entries intersect, and nothing re-admits
   a denied name. Restrictions never prune scoped registrations (what an
   agent type declares for itself cannot be voted away by a deployment
-  restriction — DSH: "restrictions do not affect scoped registrations"),
+  restriction — restrictions do not affect scoped registrations),
   and they prune only the extension layer's own tools — denying a builtin
   is `GuardHandler` (execution-time deny) or config `disabled_tools`
   territory.
@@ -419,26 +419,25 @@ main-turn-only. The scoped surface is also not offered to
 script mods. Denying a builtin by name is not this list's job (see
 above).
 
-## Dispatch three-states (DSH alignment) + host seam mapping
+## Dispatch three-states + host seam mapping
 
 Every `ExtensionEventKind` declares its dispatch mode
-(`dispatch_mode()`) — one of three states, named after the
-deepseek-harness (DSH) extension model so both frameworks share one
-vocabulary:
+(`dispatch_mode()`) — one of three states:
 
-| CodeSmith `DispatchMode` | DSH term | Semantics |
-|---|---|---|
-| `Emit` | emit | broadcast: handlers run in subscription order, outcomes are advisory (`Transform`/`Cancel`/`Block` ignored) |
-| `Serial` | serial | ordered listeners with veto: a `Cancel` aborts the pending host operation and short-circuits the chain (`SessionBefore*` seams; `TurnStopping` — where the pending operation is the stop itself, so `Cancel { reason }` continues the turn: the steer, `reason` becoming the model-visible note) |
-| `Waterfall { can_deny: false }` | waterfall | transform fold: each handler's `Transform` folds into the running event (visible to the next handler); the terminal field applies at the seam (`Input`, `BeforeAgentStart`, `BeforeProviderRequest`, `ToolResult`) |
-| `Waterfall { can_deny: true }` | waterfall + deny | the fold plus `Block`: a handler may rewrite the event's actionable field (`ToolCall`: the call's `input` — the rewritten input is what approval gates, what runs, and what is recorded; `ProviderRequestError`: the retry `plan`) or deny the operation outright; the deny is monotonic (`ToolCall`, `ProviderRequestError`). At `ToolCall` the fold additionally honors `Ask { reason }` — approval-channel routing, fail-closed (see the seam table) |
+| `DispatchMode` | Semantics |
+|---|---|
+| `Emit` | broadcast: handlers run in subscription order, outcomes are advisory (`Transform`/`Cancel`/`Block` ignored) |
+| `Serial` | ordered listeners with veto: a `Cancel` aborts the pending host operation and short-circuits the chain (`SessionBefore*` seams; `TurnStopping` — where the pending operation is the stop itself, so `Cancel { reason }` continues the turn: the steer, `reason` becoming the model-visible note) |
+| `Waterfall { can_deny: false }` | transform fold: each handler's `Transform` folds into the running event (visible to the next handler); the terminal field applies at the seam (`Input`, `BeforeAgentStart`, `BeforeProviderRequest`, `ToolResult`) |
+| `Waterfall { can_deny: true }` | the fold plus `Block`: a handler may rewrite the event's actionable field (`ToolCall`: the call's `input` — the rewritten input is what approval gates, what runs, and what is recorded; `ProviderRequestError`: the retry `plan`) or deny the operation outright; the deny is monotonic (`ToolCall`, `ProviderRequestError`). At `ToolCall` the fold additionally honors `Ask { reason }` — approval-channel routing, fail-closed (see the seam table) |
 
 The match is exhaustive like `kind()` and pinned by the
 `event_dispatch_contract_table` test, so the declared contract cannot
-drift silently. CodeSmith does **not** adopt DSH's
-everything-is-a-plugin kernel — the kernel (turn loop, provider
-registry, session log) stays compile-time assembled; only the dispatch
-vocabulary is shared. Nor does `Waterfall` wrap the operation DSH-style
+drift silently. Parallel fan-out and first-value-wins dispatch are
+intentionally not built — add one only with a real consumer. CodeSmith
+does **not** adopt an everything-is-a-plugin kernel — the kernel (turn
+loop, provider registry, session log) stays compile-time assembled. Nor
+does `Waterfall` wrap the operation
 with `next()` — it stays a fold chain, each transform visible to the
 next handler; the `next()`-wrapping form exists only for tool execution
 (`AroundToolHandler`, section below). The capability graph
@@ -455,13 +454,13 @@ returns the wrong capability for its variant is a no-op, not an error.
 The Rhai bridge: script mods register emit listeners and serial vetoes
 with `on_event(kind, callback)` — the gate is `dispatch_mode()` itself,
 so a waterfall kind fails the mod's load pointing at `on()` (the
-pre-alignment full surface, waterfall transforms included — a deliberate
+full surface, waterfall transforms included — a deliberate
 CodeSmith superset) or `register_guard` (the deny floor). Around-dispatch
 and `Ask` have no script form in any channel (async / UI decision
 channel; no `ask()` control value exists, so a script can never produce
 an `Ask` outcome).
 
-### Around-dispatch (DSH tools/execute)
+### Around-dispatch (tools/execute)
 
 The `next()`-wrapping form exists only for tool execution, as the
 `AroundToolHandler` trait (registered via `ExtensionApi::register_around_tool`)
@@ -469,8 +468,7 @@ The `next()`-wrapping form exists only for tool execution, as the
 as a fold. `wrap_tool_dispatch` composes the registration-ordered chain
 (outermost first) around the dispatch terminal of BOTH arms in
 `turn::batches` — the parallel arm's early-reuse-or-run and the serial
-arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
-`tools/execute` middleware and this seam are one vocabulary; the
+arm's approval-gate-plus-run. Never awaiting `next` vetoes. The
 `Waterfall` fold above stays a fold.
 
 | Variant | Emit site | Honored outcome | Effect |
@@ -479,17 +477,17 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `SessionShutdown` | `engine/mod.rs` post-MCP-shutdown | emit | — |
 | `TurnStart` | `host_executor` turn entry | emit | — |
 | `TurnEnd` | `host_executor` turn exit (interrupted + no-tool-calls) | emit | — |
-| `TurnStopping(TurnStoppingEvent)` | `host_executor` no-tool-calls arm — after the steer flush + sub-agent drain resume branches, before the terminal path | **Cancel** | the DSH turn-stopping serial steer: asked before the turn ends on `NoToolCalls`; `Continue` (or no handler) abstains — the default stop; the first `Cancel { reason }` steers — `reason` is appended verbatim as a `user`-role message (model-visible ⇒ session-recorded; append-only, prefix cache untouched) and the turn resumes on a fresh step. Steers are capped at 3 per turn by the loop guard — a capped steer is dropped (`tracing` warn, no note) and the turn ends. `reason` is why the turn would end (`no-tool-calls` at the only emit site); the `MaxSteps`/`Interrupted`/`Error` terminal paths do not ask |
+| `TurnStopping(TurnStoppingEvent)` | `host_executor` no-tool-calls arm — after the steer flush + sub-agent drain resume branches, before the terminal path | **Cancel** | the turn-stopping serial steer: asked before the turn ends on `NoToolCalls`; `Continue` (or no handler) abstains — the default stop; the first `Cancel { reason }` steers — `reason` is appended verbatim as a `user`-role message (model-visible ⇒ session-recorded; append-only, prefix cache untouched) and the turn resumes on a fresh step. Steers are capped at 3 per turn by the loop guard — a capped steer is dropped (`tracing` warn, no note) and the turn ends. `reason` is why the turn would end (`no-tool-calls` at the only emit site); the `MaxSteps`/`Interrupted`/`Error` terminal paths do not ask |
 | `Input(InputEvent)` | `host_executor::run_inner` (user-turn seed) | **Transform** | rewrites the submitted `text` |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` top | **Transform** | injects `inject_message` (history push) + overrides `system_prompt` if set |
 | `AgentStart` | `host_executor::run_inner` (emit) | emit | — |
 | `BeforeProviderHeaders(BeforeProviderHeadersEvent)` | `host_executor` before `request` build | emit | payload = the provider client's extra HTTP headers as a JSON object, credential-bearing values masked; the transport's auth headers (from the api key) are not listed — they never leave the client |
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` after `request` built, before stream | **Transform** | rewrites `request.messages` |
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | emit | payload = the assembled `MessageResponse` serialized (streaming synthesis: `id` is empty — no wire response object reaches the reducer; `content`/`stop_reason`/`usage` come from the stream reduction) |
-| `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the DSH request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
+| `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
 | `AssistantStream(AssistantStreamEvent)` | callback-bridge stream-delta path (`agent-runtime/src/callback_bridge.rs`) | emit | one incremental assistant **text** chunk per wire delta; dispatch runs off-thread under a 250 ms per-delta + 1 s cumulative-per-turn budget — an over-budget handler is detached (runs to completion, outcome discarded, never cancelled mid-flight) and later deltas that turn skip dispatch; no dispatch at all when nothing subscribes; thinking deltas stay UI-only |
 | `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch + **sub-agent loops** (5b: every child tool call dispatches at the child's `AgentType` scope — script/compiled-in handlers only, dylib handlers skipped) | **Transform + Block + Ask** | a handler may rewrite the call's `input`, deny it, or ask the user. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. `Ask { reason }` routes the call through the approval decision channel regardless of its static classification — on the serial arm it forces the gate (fail-closed: no channel ⇒ denied); on the parallel arm the batch's sequential pre-dispatch loop asks inline (a read-only call becomes user-gated), a denial records like a block and an approved escalation logs + runs with the fixed context. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input. Around-dispatch (`AroundToolHandler`) wraps the dispatch terminal of both arms — see the section above. In a sub-agent loop: `Block` denies (error-string result), `Ask` fails closed (the child attaches no approval ask channel — denied, reason fed back), a transform's rewritten input is what executes and what the child transcript records |
-| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` + **sub-agent loops** (5b: after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the DSH post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
+| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` + **sub-agent loops** (5b: after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the post-execute accept/replace seam — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
 | `ToolExecutionStart` | `host_executor` tool closure (before `tool.run`) | emit | — |
 | `ToolExecutionEnd` | `host_executor` tool closure (after `tool.run`) | emit | — |
 | `AgentEnd` | `host_executor::run_inner` each `return Ok(...)` | emit | — |
@@ -565,7 +563,7 @@ so the invariant — not a Miri run — is the proof.
   script mods get neither (async / UI decision channel); see
   `docs/MODS.md`. Around-chain results count toward the loop-guard
   failure escalation, unlike `Block` interventions.
-- The script-side DSH surface is `on_event` (emit/serial kinds only) +
+- The script-side portable surface is `on_event` (emit/serial kinds only) +
   `register_guard`; waterfall participation from scripts stays on the
   older `on()` full surface, and scripts see no registration scopes (no
   `on_event_scoped`).
