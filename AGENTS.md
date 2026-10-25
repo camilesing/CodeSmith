@@ -249,7 +249,7 @@ Edition 2024 (`let_chains` is used throughout); the toolchain is pinned in
 `rust-toolchain.toml`. Workspace default-members are `cli` and
 `app-server`, so a bare `cargo build` covers the user-facing binaries
 (the single `codesmith` binary lives in `crates/cli`; the ratatui TUI was
-removed in 0.9.0). CI lives in `.github/workflows/`; which lanes run where —
+removed in 0.10.0). CI lives in `.github/workflows/`; which lanes run where —
 including the stalled CNB mirror and the Linux-coverage gap it leaves — is
 owned by `docs/RELEASE_RUNBOOK.md` ("CNB Cool mirror"), not here.
 

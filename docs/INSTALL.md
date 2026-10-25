@@ -50,7 +50,7 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 > Linux, Raspberry Pi, AWS Graviton, etc. saw `Unsupported architecture: arm64`
 > from `npm i -g codesmith`. v0.8.8 published both `codesmith-linux-arm64`
 > and `codesmith-tui-linux-arm64`, so a plain `npm i -g codesmith` worked
-> on any glibc-based ARM64 Linux from that release on (0.9.0 ships the
+> on any glibc-based ARM64 Linux from that release on (0.10.0 ships the
 > single `codesmith` binary). If you're stuck on v0.8.7, jump to
 > [Build from source](#7-build-from-source) — `cargo install` works fine.
 
@@ -453,10 +453,10 @@ binaries. Either upgrade (`npm i -g codesmith@latest`) or use
 
 ### `MISSING_COMPANION_BINARY` at runtime
 
-Pre-0.9.0 releases shipped two binaries: the dispatcher (`codesmith`) required
-the TUI runtime (`codesmith-tui`) to be on the same `PATH`. Since 0.9.0 the
+Pre-0.10.0 releases shipped two binaries: the dispatcher (`codesmith`) required
+the TUI runtime (`codesmith-tui`) to be on the same `PATH`. Since 0.10.0 the
 single `codesmith` binary is self-contained and this error can no longer occur.
-If you still see it, you are running a pre-0.9.0 install — upgrade:
+If you still see it, you are running a pre-0.10.0 install — upgrade:
 
 ```bash
 cargo install codesmith-cli --locked

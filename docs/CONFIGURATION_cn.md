@@ -613,14 +613,14 @@ stderr 或 stdout 可以提供在 REPL 中显示的状态消息。其他非零�
 
 输入框暂存（Ctrl+S 存入 `~/.codesmith/composer_stash.jsonl`、
 `/stash list`/`pop`/`clear`）是 ratatui 输入框的功能，已随 TUI 在
-v0.9.0 中移除。在基于行的 REPL 中，`/stash` 会打印一条提示，
+v0.10.0 中移除。在基于行的 REPL 中，`/stash` 会打印一条提示，
 说明目前尚无行模式等价物。
 
 ## 设置文件（持久化 UI 偏好）
 
 codesmith 还将用户偏好存储在：
 
-- `~/.config/deepseek/settings.toml`
+- 平台配置目录下的 `deepseek/settings.toml`（Linux：`~/.config/deepseek/settings.toml`；macOS：`~/Library/Application Support/deepseek/settings.toml`）
 
 值得注意的设置包括 `auto_compact`（默认 `true`，provider 中立）：
 接近当前模型上限时会自动进行替换式压缩。需要保留稳定消息前缀以
@@ -642,17 +642,18 @@ codesmith 还将用户偏好存储在：
   `dark`/`light` 使用内置深色调色板，`grayscale`
   是极简的黑/白主题，具名社区预设则应用于整个 UI。接受诸如
   `mono`、`black-white`、`tokyonight` 和 `gruvbox` 之类的别名。
-- `[sandbox] auto_allow`（shell 命令前缀数组，默认空）：永不弹出审批的命令。
+- `[sandbox] auto_allow`（config.toml 键，非 settings.toml；shell 命令前缀数组，默认空）：永不弹出审批的命令。
   在启动时读取并按会话授权应用，因此改列表在下次启动生效；`/permissions`
   展示当前生效项，`/permissions allow` 则把授权写进
   `~/.codesmith/approvals.toml`。条目按 arity 词典匹配
   （`"git status"` 覆盖 `git status -s`，不覆盖 `git push`）。
 - `auto_compact`（开/关，默认开）
-- `mention_menu_limit`（整数，默认 `128`）：输入框渲染可见窗口之前
-  保留的 `@`-提及弹出候选的最大数量。可见行数仍取决于终端高度。
+- `mention_menu_limit`（整数，默认 `128`）：从工作区索引保留的
+  `@`-提及补全候选的最大数量。`Tab` 候选列表按终端高度分页显示。
 - `mention_walk_depth`（整数，默认 `6`）：`@`-提及补全遍历的最大
   工作区深度。在深度嵌套的工作区中可设为 `0` 以获得无限深度；在超大
-  仓库中除非必要否则保持默认值。
+  仓库中除非必要否则保持默认值。遍历遵循 `.gitignore`、跳过隐藏文件，
+  并缓存 10 秒，因此刚创建的文件要在下一次重建后才会出现在补全中。
 - `show_thinking`（开/关）
 - `is_simple`（开/关，默认关）：以最大压缩的"简单"（caveman）会话
   风格作答——短句，没有填充词或客套话——同时代码、命令和错误消息
@@ -681,8 +682,6 @@ codesmith 还将用户偏好存储在：
 - `max_input_history`（保存的已提交输入历史条目数，默认 `500`）。历史按
   **工作区**保存（`~/.codesmith/history/<workspace>`）；升级前那份单一文件
   `~/.codesmith/history` 会在某工作区还没有自己的历史时读取一次，之后留在原地。
-  `/config` 中显示为 `max_history`；被清除的草稿也会在本地保留，
-  用于输入框历史搜索）
 - `default_model`（模型名称覆盖）
 
 ### 附属文件
@@ -740,8 +739,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   自托管和环回端点不会读取密钥存储，除非显式要求密钥。各 provider 表
   （`[providers.<name>].auth_mode`）接受相同的值；环境变量
   `CODESMITH_AUTH_MODE` 可覆盖。
-- `base_url`（字符串，可选）：对 DeepSeek 的 OpenAI 兼容 Chat Completions API 默认为 `https://api.deepseek.com/beta`，包括旧版 `provider = "deepseek-cn"` 配置。其他默认值：`nvidia-nim` 为 `https://integrate.api.nvidia.com/v1`，`openai` 为 `https://api.openai.com/v1`，`atlascloud` 为 `https://api.atlascloud.ai/v1`，`wanjie-ark` 为 `https://maas-openapi.wanjiedata.com/api/v1`，`openrouter` 为 `https://openrouter.ai/api/v1`，`xiaomi-mimo` 为 `https://api.xiaomimimo.com/v1`，`novita` 为 `https://api.novita.ai/v1`，`fireworks` 为 `https://api.fireworks.ai/inference/v1`，`siliconflow` 为 `https://api.siliconflow.com/v1`，`moonshot` 为 `https://api.moonshot.ai/v1`，`sglang` 为 `http://localhost:30000/v1`，`vllm` 为 `http://localhost:8000/v1`，`ollama` 为 `http://localhost:11434/v1`。显式设置 `https://api.deepseek.com` 或 `https://api.deepseek.com/v1` 可退出 DeepSeek beta 功能。
-- `default_text_model`（字符串，可选）：DeepSeek 默认为 `deepseek-v4-pro`，`openai` 为 `gpt-5`，`[[providers.custom]]` 条目以 `deepseek-v4-pro` 作为通用回退（带自定义 `base_url` 且未显式指定模型的 `openai` provider 会启动失败），NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。`deepseek-chat` 和 `deepseek-reasoner` 是 `deepseek-v4-flash` 的兼容别名，但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项。
+- `base_url`（字符串，可选）：对 DeepSeek 的 OpenAI 兼容 Chat Completions API 默认为 `https://api.deepseek.com/beta`，包括旧版 `provider = "deepseek-cn"` 配置。其他默认值：`nvidia-nim` 为 `https://integrate.api.nvidia.com/v1`，`openai` 为 `https://api.openai.com/v1`，`atlascloud` 为 `https://api.atlascloud.ai/v1`，`wanjie-ark` 为 `https://maas-openapi.wanjiedata.com/api/v1`，`openrouter` 为 `https://openrouter.ai/api/v1`，`xiaomi-mimo` 为 `https://api.xiaomimimo.com/v1`，`novita` 为 `https://api.novita.ai/v1`，`fireworks` 为 `https://api.fireworks.ai/inference/v1`，`siliconflow` 为 `https://api.siliconflow.com/v1`，`moonshot` 为 `https://api.moonshot.ai/v1`，`sglang` 为 `http://localhost:30000/v1`，`vllm` 为 `http://localhost:8000/v1`，`ollama` 为 `http://localhost:11434/v1`，`volcengine` 为 `https://ark.cn-beijing.volces.com/api/coding/v3`。显式设置 `https://api.deepseek.com` 或 `https://api.deepseek.com/v1` 可退出 DeepSeek beta 功能。
+- `default_text_model`（字符串，可选）：DeepSeek 默认为 `deepseek-v4-pro`，`openai` 为 `gpt-5`，`[[providers.custom]]` 条目以 `deepseek-v4-pro` 作为通用回退（带自定义 `base_url` 且未显式指定模型的 `openai` provider 会启动失败），NVIDIA NIM 为 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 为 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 为 `deepseek-reasoner`，OpenRouter 和 Novita 为 `deepseek/deepseek-v4-pro`，小米 MiMo 为 `mimo-v2.5-pro`，Fireworks 为 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 为 `deepseek-ai/DeepSeek-V4-Pro`，Moonshot 为 `kimi-k2.6`，SGLang/vLLM 为 `deepseek-ai/DeepSeek-V4-Pro`，Ollama 为 `deepseek-coder:1.3b`，Volcengine 为 `DeepSeek-V4-Pro`。当前公开的 DeepSeek ID 是 `deepseek-v4-pro` 和 `deepseek-v4-flash`，两者都具有 1M 上下文窗口、384K 最大输出，并且默认启用思考模式。`deepseek-chat` 和 `deepseek-reasoner` 是 `deepseek-v4-flash` 的兼容别名，但 SiliconFlow 除外：它将 `deepseek-reasoner` 和 `deepseek-r1` 映射到其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 映射到 Flash。Provider 专属映射会在支持的情况下将 `deepseek-v4-pro` / `deepseek-v4-flash` 转换为各 provider 的模型 ID。OpenRouter 还识别较新的大型 ID，如 `arcee-ai/trinity-large-thinking`、`qwen/qwen3.7-max`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-35b-a3b`、`google/gemma-4-31b-it` 和 `moonshotai/kimi-k2.6`。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo` 以及 Ollama 的模型 ID 会原样透传。带有自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也会保留显式模型值，这使得 OpenAI 兼容网关可以接受裸模型 ID。使用 `/models` 或 `codesmith models` 从你配置的端点发现可用 ID。`CODESMITH_MODEL` 可为单个进程覆盖此项。
 - `model`（字符串，可选）：通用模型覆盖槽位，由项目
   overlay 消费；其环境变量等价物是 `CODESMITH_MODEL`。
   手写配置中优先使用明确的 `default_text_model` 或
@@ -996,7 +995,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   - `[capacity].deepseek_v4_pro_prior`（浮点，默认 `3.5`）
   - `[capacity].deepseek_v4_flash_prior`（浮点，默认 `4.2`）
   - `[capacity].fallback_default_prior`（浮点，默认 `3.8`）
-- 通知：`[notifications]` 表和所有 `tui.*` 键已随 ratatui TUI 在 v0.9.0
+- 通知：`[notifications]` 表和所有 `tui.*` 键已随 ratatui TUI 在 v0.10.0
   中移除。桌面通知现在只通过模型可调用的 `notify` 工具发出，它会自动
   检测终端协议（OSC 9、Kitty OSC 99、Ghostty OSC 777 或 BEL）；不再
   存在轮次完成通知配置。
@@ -1120,7 +1119,7 @@ enabled = true
 
 ### 通知
 
-`[notifications]` 表已随 ratatui TUI 在 v0.9.0 中移除。通知现在只通过
+`[notifications]` 表已随 ratatui TUI 在 v0.10.0 中移除。通知现在只通过
 模型可调用的 `notify` 工具发出——模型在认为有必要时（例如长任务完成时）
 发送桌面通知，该工具会自动检测终端协议（OSC 9、Kitty OSC 99、
 Ghostty OSC 777 或 BEL）。没有任何需要配置的内容；如果你的终端没有
@@ -1330,15 +1329,16 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
 `codesmith doctor --json` 输出机器可读的报告，并跳过实时 API
 连通性探测。顶层键有：`version`、`config_path`、`config_present`、
 `workspace`、`api_key.source`、`base_url`、`default_text_model`、
-`mcp`、`skills`、`tools`、`plugins`、`sandbox`、`platform`、
+`strict_tool_mode`、`search_provider`、`memory`、`mcp`、`skills`、
+`tools`、`plugins`、`storage`、`sandbox`、`platform`、
 `api_connectivity`、`capability`。CI 使用方应依赖 `api_key.source`
 （`env`/`config`/`missing`），而不是解析人类可读的 `doctor` 文本。
 
 `capability` 键包含按 provider 的能力信息，这些信息派生自静态知识
 （发布文档、API 指南）而不是实时 API 探测。顶层子键有：
 `resolved_provider`、`resolved_model`、`context_window`、`max_output`、
-`thinking_supported`、`cache_telemetry_supported` 和
-`request_payload_mode`。显式设置的 `[providers.<id>] context_window`
+`thinking_supported`、`cache_telemetry_supported`、`alias_deprecation`
+和 `request_payload_mode`。显式设置的 `[providers.<id>] context_window`
 （或 `[[providers.custom]]`）会替换 `context_window`；未设置时保持静态
 值，包括已废弃别名的映射（DeepSeek `deepseek-chat` → V4 的窗口）。
 

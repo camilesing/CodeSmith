@@ -6,7 +6,7 @@ and the `codesmith` npm wrapper.
 Current packaging note:
 - `codesmith-cli` is the single end-user crate; it ships the one `codesmith`
   binary (interactive REPL + headless subcommands). The former `codesmith-tui`
-  companion crate was removed in 0.9.0.
+  companion crate was removed in 0.10.0.
 
 ## Canonical Publish Targets
 

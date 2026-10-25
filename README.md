@@ -5,7 +5,7 @@
 
 ````bash
 ➜  CodeSmith git:(main) ✗ codesmith
-CodeSmith 0.9.0 (4fe017cfcc60) —  GLM5.3 · AGENT mode · preset middle
+CodeSmith 0.10.0 (4fe017cfcc60) —  GLM5.3 · AGENT mode · preset middle
 workspace /Users/camile/Work/Rust/CodeSmith · /help lists commands (Tab completes, Shift+Tab cycles the mode) · ? shows the keyboard shortcuts · Ctrl+C cancels a turn
 ● idle │ middle │ 🧭 0% (48/200k) │ 🚥agent │ 🤖0 │ GLM5.3 │ 🧠high
 ❯ What the project?
@@ -57,7 +57,7 @@ works, `ARCHITECTURE.md` for crate boundaries
 . Note the install channels (npm/Home
 brew/Docker) aren't live yet; build
 from source with `cargo install --path crates/cli --locked`.
-● idle │ middle │ 🧭 8% (15k/200k) │ 🚥agent │ 🤖0 │ claude-sonnet-4-5 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+● idle │ middle │ 🧭 8% (15k/200k) │ 🚥agent │ 🤖0 │ claude-sonnet-4-5 │ 🧠high │ v0.10.0 (4fe017cfcc60)
 ````
 
 ## Install

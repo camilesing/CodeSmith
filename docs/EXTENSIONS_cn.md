@@ -160,15 +160,26 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 
 ```rust
 use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use codesmith_agent::extension::*;
 use codesmith_tools::{ToolCapability, ToolResult};
-use serde_json::{json, Value};
-use crate::discovery::ExtensionRegistration;
+use serde_json::{Value, json};
+
 use crate::ExtensionMetadata;
+use crate::discovery::ExtensionRegistration;
 
-static SCRATCH: Mutex<Option<String>> = Mutex::new(None);
+/// Instance-scoped scratchpad string: created once per `ScratchpadExtension`
+/// in `configure` and shared by that instance's tool + command, so concurrent
+/// sessions never read or overwrite each other's scratch data (a real
+/// per-session store scoped via [`ExtensionContext`] is §F2). Guarded by a
+/// `std::sync::Mutex` because extension handlers/tools may be called from any
+/// runtime worker.
+type Scratch = Arc<Mutex<Option<String>>>;
 
+/// The sample extension. [`Extension::configure`] registers all three
+/// contribution kinds against the (stub) [`ExtensionApi`]; the runner flushes
+/// them into the live registries at `bind_core`.
 pub struct ScratchpadExtension;
 
 #[async_trait]
@@ -178,14 +189,17 @@ impl Extension for ScratchpadExtension {
         &M
     }
     async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
-        api.register_tool(Box::new(ScratchTool))?;
-        api.register_command(Box::new(ScratchCommand))?;
+        let scratch: Scratch = Arc::new(Mutex::new(None));
+        api.register_tool(Box::new(ScratchTool {
+            scratch: Arc::clone(&scratch),
+        }))?;
+        api.register_command(Box::new(ScratchCommand { scratch }))?;
         api.on(Arc::new(TurnStartLogger))?;
         Ok(())
     }
 }
 
-// ScratchTool: impl ToolDefinition (name/description/input_schema/execute)
+// ScratchTool: impl ToolDefinition (name/description/input_schema/capabilities/execute)
 // ScratchCommand: impl CommandDefinition (name/description/run)
 // TurnStartLogger: impl Handler (handle)
 
@@ -422,10 +436,10 @@ UI 决策通道；不存在 `ask()` 控制值，脚本永远产生不了 `Ask` �
 | `SessionBeforeCompact` | `host_executor::run_compaction` 在 `should_compact` 门控之后 | **Cancel** | 跳过压缩（`return`） |
 | `SessionCompact` | `host_executor::run_compaction` 在摘要应用之后 | emit | — |
 | `SessionBeforeSwitch` | `/cd` REPL 命令（`crates/cli/src/interactive/commands/dir_cmds.rs`）——其唯一触发点，`cd_allowed` 信任检查之后、工作区赋值 + `Op::SyncSession` 重根之前 | **Cancel** | mod 否决则会话留在原目录（原因回显用户、归因到 mod）；`Continue`（或无 handler）放行切换 |
-| `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.9.0 移除 | emit | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
+| `ProjectTrust` | `HostServices::build_turn_dispatcher`（`crates/cli/src/core/engine/runtime_traits.rs`；+ `spawn_subagent`）在 `build_tool_context_for` 之后（每轮 `Trusted`/`Untrusted`）；`FirstLoad` 当前无 emit 位点 —— onboarding 信任提示的发出随 TUI 在 0.10.0 移除 | emit | 来自 `session.trust_mode` 的每轮 `Trusted`/`Untrusted`；`FirstLoad` 为 onboarding 信任接受（`TrustReason::FirstLoad`）而定义，但已无活跃 emit 位点 —— 运行时 `trust_mode` 开关（`/trust on`）、YOLO 进入和持久化信任启动在每轮表现为 `Trusted`/`Untrusted`，而不是 `FirstLoad` |
 | `ToolsChange { added, removed }` | `HostServices::build_turn_dispatcher` 在所有选择源应用之后 | emit | 最终模型可见目录与上一主回合基线的差量；首次构建静默建立基线；子代理工具集不经过此接缝 |
 | `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
-| `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`，任意深度——runner 随 `SubAgentRuntime` 传递，孙代 fork 也可否决）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn。深度 ≥ 1 的上下文里该 veto 按子代理类型作用域分发，dylib 来源处理器在那里被跳过（§F5d——detached 子代理可能活得比 reload 的 `Library` drop 更久）；深度 0 与引擎内部路径保持 Global emit（主执行器在轮内持有 `Library` 存活）。Global 的 script/compiled-in 处理器在任意深度都收到该 veto |
+| `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run`，任意深度——runner 随 `SubAgentRuntime` 传递，孙代 fork 也可否决）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn。深度 ≥ 1 的上下文里该 veto 按子代理类型作用域分发，dylib 来源处理器在那里被跳过（§F5d——detached 子代理可能活得比 reload 的 `Library` drop 更久）；深度 0 与引擎内部路径保持 Global emit（主执行器在轮内持有 `Library` 存活）。Global 的 script/compiled-in 处理器在任意深度都收到该 veto |
 | `ToolExecutionUpdate` | `exec_shell`（前台）/ `exec_shell_wait` 轮询循环 → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | 命令运行期间的节流检查点（间隔 ≥1s、仅有新输出时）：`id` = shell 任务 id，`message` = 自上一检查点以来的输出（尾部截至 4 KiB）；同一检查点以 `Event::ToolCallProgress` 到达 UI；按 AssistantStream 的预算/断路器派发；仅主回合；沙箱后端与交互式运行不报 |
 
 > `Transform` 载荷的可执行字段在完整处理器链运行之后才于接缝处应用
@@ -441,7 +455,7 @@ CodeSmith **不**对扩展做沙箱隔离。扩展与 agent 循环运行在同�
 拥有完整的宿主访问权 —— **信任其来源**。对于不受信任的扩展，请将
 整个 CodeSmith 进程容器化。项目本地 dylib 安装在首次加载前要求工作区
 受信任（见上文信任门）；`ProjectTrust` 的每轮 emit 是扩展处理器看到的
-会话信任状态的仅 emit 信号（`FirstLoad` 自 0.9.0 移除 TUI 后已无活跃
+会话信任状态的仅 emit 信号（`FirstLoad` 自 0.10.0 移除 TUI 后已无活跃
 emit 位点）。
 
 扩展安装期间的 `cargo build` 会运行源码的 `build.rs` ——

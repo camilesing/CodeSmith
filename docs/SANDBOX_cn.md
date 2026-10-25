@@ -11,33 +11,19 @@ CodeSmith 执行由 AI 推理派生的 shell 命令。沙箱模块限制这些�
 | Seatbelt | macOS | 强制访问控制 | 已强制执行 |
 | Landlock | Linux | 文件系统访问控制 | 已强制执行（内核 5.13+，仅文件系统） |
 | seccomp BPF | Linux | 系统调用过滤 | 已移除 |
-| 进程加固 | Linux | 内核 prctl / rlimit | 存在但未被调用 |
+| 进程加固 | Linux | 内核 prctl / rlimit | 已移除 |
 | Bubblewrap (bwrap) | Linux | 命名空间隔离 | 安装即强制执行 |
 | Windows 沙箱 | Windows | — | 未实现（存根）；失败关闭拒绝 |
 
 ## 威胁模型：每一层针对什么
 
-### 1. 进程加固（仅 Linux）
+### 1. 进程加固（仅 Linux）——已移除
 
-**状态：** 已在 `process_hardening.rs` 中实现，但未接入启动流程——
-`apply_process_hardening()` 没有任何调用点，以下加固从不会作用于
-运行中的进程。
-
-**该模块做什么（被调用时）：**
-
-- `PR_SET_DUMPABLE=0` — 阻止 ptrace，使 `/proc/<pid>/` 归 root 所有
-- `PR_SET_NO_NEW_PRIVS=1` — 不可逆；任何子进程都无法再获得特权
-- `RLIMIT_CORE=0` — 不产生核心转储，敏感数据永不落盘
-
-**防御什么：**
-- 通过 ptrace/strace/gdb 进行的进程检查
-- 通过 setuid/setgid/fscaps 的提权
-- 泄露 API 密钥、令牌、提示内容的核心转储
-
-**不防御什么：**
-- 被攻陷的子进程读取其父进程的 `/proc/<pid>/mem`（已由
-  `PR_SET_DUMPABLE=0` 使 `/proc/<pid>/` 归 root 所有而阻断）
-- 绕过 prctl 的内核漏洞利用
+prctl/rlimit 进程加固模块（原 `process_hardening.rs`：`PR_SET_DUMPABLE=0`
+阻止 ptrace、`PR_SET_NO_NEW_PRIVS=1` 阻止提权、`RLIMIT_CORE=0` 阻止核心
+转储）已随同批死代码清理从代码库删除：删除时它没有任何调用点，上述加固
+从不作用于运行中的进程。Linux 上真正的防线是 Landlock + bwrap（见第 2 节
+与第 4 节）。
 
 ### 2. Landlock（Linux，内核 5.13+）
 
@@ -142,7 +128,10 @@ CodeSmith 不会内置（vendor）bwrap。
 - 系统调用级攻击
 
 **检测：** `detect_denial()` 检查 stderr 中的 `Operation not
-permitted`、`sandbox-exec`、`deny(` 和 `Sandbox: `。（`file-write` 和
+permitted`、`deny(` 和 `Sandbox: `。裸二进制名 `sandbox-exec` 被刻意
+排除——它会对任何提及该二进制名的 stderr 行（如 usage 消息）误报；
+`was_denied()` 已先确认命令确实运行在 sandbox-exec 之下，EPERM
+（`Operation not permitted`）由此保持可佐证。（`file-write` 和
 `network` 只出现在人类可读的拒绝消息中，不用于检测。）
 
 ### 6. Windows——未实现
@@ -190,7 +179,7 @@ CodeSmith 不提供进程内 Windows 沙箱。`windows.rs` 是一个存根：
 
 Linux 上两个本地后端都强制执行——bwrap（挂载命名空间）在已安装时，
 Landlock（文件系统规则，内核 5.13+）作为后备。prctl/rlimit 进程
-加固模块存在于代码库但未接入启动流程，seccomp 过滤器已移除：
+加固模块与 seccomp 过滤器均已从代码库移除：
 
 ```
 bwrap (namespaces + network + subpaths)  ← 优先，已安装时
@@ -270,7 +259,7 @@ sandbox_api_key = "YOUR_API_KEY"
 
 | 平台 | 拒绝机制 | 退出码 | Stderr 模式 |
 |---|---|---|---|
-| macOS Seatbelt | sandbox-exec 违规 | 非零 | `Operation not permitted`、`sandbox-exec`、`deny(`、`Sandbox: ` |
+| macOS Seatbelt | sandbox-exec 违规 | 非零 | `Operation not permitted`、`deny(`、`Sandbox: ` |
 | Linux Landlock | EACCES / EPERM | 非零 | `Permission denied`、`Operation not permitted`、`EACCES`、`EPERM` |
 | Linux SIGSYS 启发式 | seccomp 时代遗留的检测（Linux 共用路径） | 31 | `Bad system call`、`bad system call`、`SIGSYS`、`seccomp` |
 | Linux bwrap | 挂载/命名空间失败 | 非零 | 不定 |
@@ -315,7 +304,7 @@ sandbox_api_key = "YOUR_API_KEY"
 ## 相关
 
 - `crates/cli/src/sandbox/` — 宿主侧策略准备、运行时接线、外部后端（`opensandbox.rs`）
-- `crates/agent-runtime/src/sandbox/` — 强制执行辅助程序（`seatbelt.rs`、`landlock.rs`、`windows.rs`、`bwrap.rs`、`process_hardening.rs`；由 `crates/cli/src/sandbox/` 垫片重导出）
+- `crates/agent-runtime/src/sandbox/` — 强制执行辅助程序（`seatbelt.rs`、`landlock.rs`、`windows.rs`、`bwrap.rs`；由 `crates/cli/src/sandbox/` 垫片重导出）
 - `crates/config/src/lib.rs` — 配置键
 - `crates/tool-impls/src/tools/diagnostics.rs` — `diagnostics` 工具报告
   `sandbox_available`、`sandbox_type`、`bwrap_available`、

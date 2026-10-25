@@ -29,7 +29,7 @@ CodeSmith 为以下平台/架构组合提供预构建的 `codesmith` 二进制�
 
 Linux release 资产是 glibc 构建，而不是 musl 构建。它们动态链接常规的 Linux 运行时库，例如 `libdbus-1` 和 `libc`；SQLite 目前通过 `rusqlite` 打包进二进制，因此对于官方 release 资产，用户不需要单独安装 `libsqlite3` 运行时包。基于 musl 的系统（如 Alpine）应使用[从源码构建](#7-从源码构建)。
 
-> **Linux ARM64 说明（v0.8.7 及更早版本）。** v0.8.7 及更早版本**不**发布 Linux ARM64 预构建；使用 HarmonyOS 轻薄本、Asahi Linux、树莓派、AWS Graviton 等的用户在 `npm i -g codesmith` 时会看到 `Unsupported architecture: arm64`。v0.8.8 发布了 `codesmith-linux-arm64` 和 `codesmith-tui-linux-arm64`，因此从该版本起在任何基于 glibc 的 ARM64 Linux 上直接 `npm i -g codesmith` 即可（0.9.0 起只发布单一的 `codesmith` 二进制）。如果你停留在 v0.8.7，请跳到[从源码构建](#7-从源码构建) —— `cargo install` 可以正常工作。
+> **Linux ARM64 说明（v0.8.7 及更早版本）。** v0.8.7 及更早版本**不**发布 Linux ARM64 预构建；使用 HarmonyOS 轻薄本、Asahi Linux、树莓派、AWS Graviton 等的用户在 `npm i -g codesmith` 时会看到 `Unsupported architecture: arm64`。v0.8.8 发布了 `codesmith-linux-arm64` 和 `codesmith-tui-linux-arm64`，因此从该版本起在任何基于 glibc 的 ARM64 Linux 上直接 `npm i -g codesmith` 即可（0.10.0 起只发布单一的 `codesmith` 二进制）。如果你停留在 v0.8.7，请跳到[从源码构建](#7-从源码构建) —— `cargo install` 可以正常工作。
 
 ---
 
@@ -367,7 +367,7 @@ cargo build --release
 
 ### 运行时出现 `MISSING_COMPANION_BINARY`
 
-0.9.0 之前的版本交付两个二进制：调度器（`codesmith`）要求 TUI 运行时（`codesmith-tui`）位于同一 `PATH` 上。0.9.0 起单一的 `codesmith` 二进制自包含，该错误不再可能出现。如果你仍然看到它，说明运行的是 0.9.0 之前的安装——请升级：
+0.10.0 之前的版本交付两个二进制：调度器（`codesmith`）要求 TUI 运行时（`codesmith-tui`）位于同一 `PATH` 上。0.10.0 起单一的 `codesmith` 二进制自包含，该错误不再可能出现。如果你仍然看到它，说明运行的是 0.10.0 之前的安装——请升级：
 
 ```bash
 cargo install codesmith-cli --locked

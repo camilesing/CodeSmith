@@ -60,7 +60,7 @@ The registry carries stable message IDs for the historical terminal chrome:
 - slash-command descriptions, onboarding gate screens, and the context menu
 - keybinding labels for the retired TUI surface
 
-Since the 0.9.0 TUI removal the interactive frontend is a line-based REPL:
+Since the 0.10.0 TUI removal the interactive frontend is a line-based REPL:
 it resolves the locale (`/config locale`, `settings.toml`) and applies it to
 the prompt-side locale signal, but renders only a small subset of the chrome
 IDs above; the keybinding/context-menu strings are no longer displayed.

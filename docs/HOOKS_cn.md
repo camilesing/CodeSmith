@@ -354,9 +354,9 @@ stdout 上每行一个 `KEY=VALUE`；接受可选的 `export ` 前缀。变量�
 不发出的路径，记录在已交付实现所持有行为的旁边：
 
 - **子代理覆盖面。** `subagent_spawn` / `subagent_complete` 只在后台
-  生命周期上触发（`agent_open` / `agent_spawn` / `run_in_background`
-  的 `subagent_run`、引擎派生的子代理、恢复的代理）。同步
-  `subagent_run` 路径、team-pane 队友以及被取消/中止的代理（没有
+  生命周期上触发（`agent_open` / `agent_spawn` / 带 `run_in_background`
+  的 `agent_run`、引擎派生的子代理、恢复的代理）。同步
+  `agent_run` 路径、team-pane 队友以及被取消/中止的代理（没有
   尾声）不触发任何事件。子代理负载中 `session_id` / `thread_id` /
   `mode` 为 `null`——工具上下文不携带它们。
 - **`on_error` 范围。** 只有失败的*回合*触发它；回合中可恢复的流错误

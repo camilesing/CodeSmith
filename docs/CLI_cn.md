@@ -174,7 +174,8 @@ transcript viewer 按键，以及 `/pr-comments`（Claude Code 在 v2.1.91 删�
 其余若干条及其"本地没有"的原因：`/artifact-capabilities` 与
 `/artifact-diagramming`（Anthropic 托管的 artifact，已在上表排除）、
 `/advisor [model|off]`（第二模型咨询是接在 Claude 回合循环里的；本地对应的第二模型面是
-`[subagents] model_overrides` 加 `agent_open`）、`/claude-api`（Anthropic API 参考）、
+`[subagents]` 的角色模型键（`default_model` / `worker_model` / `explorer_model` / `awaiter_model` /
+`review_model` / `custom_model` 与 `[subagents.models]`）加 `agent_open`）、`/claude-api`（Anthropic API 参考）、
 `/dataviz`（附带给颜色校验脚本的技能包，本构建没有这些脚本）、
 `/setup-bedrock` 与 `/setup-vertex`（Anthropic 自家 Bedrock/Vertex 路径的鉴权向导；
 CodeSmith 用 `/provider` 与 `codesmith login` 配置 provider）、

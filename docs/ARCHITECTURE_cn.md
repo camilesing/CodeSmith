@@ -4,7 +4,7 @@
 深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
 [DESIGN_INTERNALS_cn.md](DESIGN_INTERNALS_cn.md)。
 
-当前边界说明（v0.9.0）：
+当前边界说明（v0.10.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
   `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的 turn 循环、
   引擎、压缩）—— 与实现群：其余全部（`providers`、`tool-impls`、`cli`、
@@ -56,7 +56,7 @@
   drop 更久）。turn 循环、唯一的 `BASE_PROMPT` 与子代理工具注册表的内建
   表面是契约声明的核心，不做插件化（逐表面地图见 MODS_cn.md"该用哪一
   层"）。
-- `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.9.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
+- `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.10.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
 - LSP 子系统（`crates/cli/src/lsp/`）已完全接入引擎的工具执行后路径
@@ -129,7 +129,7 @@
 - **`crates/agent-runtime/src/engine/`** - Agent 执行引擎（已从终端用户前端迁出）
   - `mod.rs` - `Engine` 结构体 + 事件循环（`Engine::run`、`handle_send_message`）、系统提示词刷新、图片块组装
   - `host_executor.rs` - `HostAgentExecutor`，生产环境的 LLM↔工具 turn 循环，吸收了全部护栏（loop-guard、LSP flush、透明重试、steer、审批、压缩、容量、early-tool-start、子代理、cycle）
-  - `turn/` - 从 `host_executor.rs` 按阶段拆出的每步机制模块：`stream.rs`（流式归约 + 透明重试）、`batches.rs`（工具批次规划/执行）、`approval.rs`（逐工具审批门控）、`seams.rs`（取消检查点 + steer 排空）、`postprocess.rs`（子代理收割门控、thinking-only 状态、LSP 收集/刷新）
+  - `turn/` - 从 `host_executor.rs` 按阶段拆出的每步机制模块：`stream.rs`（流式归约 + 透明重试）、`batches.rs`（工具批次规划/执行）、`approval.rs`（逐工具审批门控）、`seams.rs`（取消检查点 + steer 排空）、`postprocess.rs`（子代理收割门控、thinking-only 状态、LSP 收集/刷新）、`truncation.rs`（输出截断/工具输出限界）
   - `capacity_flow.rs` - 容量护栏检查点和干预
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard 状态、工具输入解析 + 批次规划、延迟工具目录策略、MCP 分发扇出、编辑后 LSP 钩子
 - **`crates/cli/src/core/`** - 指向引擎 crate 的薄重导出 + 构造桥接层
@@ -150,7 +150,7 @@
 - **`crates/config`** - 配置加载、profile、环境变量优先级、CLI 运行时覆盖。
 - **`crates/core`** - 核心运行时边界。
 - **`crates/execpolicy`** - 用于工具执行决策的审批/沙箱策略引擎。
-- **`crates/extensions`** + **`crates/extensions-fixture-dylib`** - 扩展运行时（发现、加载、事件分发）及其测试夹具 dylib。
+- **`crates/extensions`** + **`crates/extensions-fixture-dylib`** - 扩展运行时（发现、加载、事件分发）及其测试夹具 dylib。同时承载 Rhai script-mod 层（`src/script/` —— 同一 `Extension` 契约的脚本载体；见 [MODS_cn.md](MODS_cn.md)）。
 - **`crates/hooks`** - 用于工具事件前/后钩子的生命周期钩子（stdout、jsonl、webhook）。
 - **`crates/index`** - 按工作区持久化的代码索引（见下方"代码索引"一节）。
 - **`crates/mcp`** - 用于 Model Context Protocol 工具服务器的 MCP 客户端 + stdio 服务器。
@@ -237,7 +237,7 @@ Chat Completions 驱动 turn。
   - `seatbelt.rs` - macOS Seatbelt profile 生成（已启用）
   - `landlock.rs` - Linux Landlock 规则集应用（已强制执行：规则集由 `prepare_landlock` 在父进程构建，经 `install_sandbox_preexec` 在 fork 与 exec 之间应用；仅文件系统——见其已知局限）
   - `windows.rs` - Windows 沙箱辅助程序契约桩（不宣传任何进程内 Windows 沙箱；要求沙箱的策略以 `SANDBOX_UNAVAILABLE` 失败关闭）
-  - `bwrap.rs` / `process_hardening.rs` - 可选 bubblewrap 直通；`PR_SET_DUMPABLE`/核心转储加固
+  - `bwrap.rs` - 可选 bubblewrap 直通（`[sandbox] prefer_bwrap = true`，见其模块文档）
 - **`crates/cli/src/sandbox/`** - 宿主侧沙箱策略准备和拒绝报告（`mod.rs`、`policy.rs`、`runtime.rs`、外部 OpenSandbox 的 `backend.rs`、`opensandbox.rs`）
 
 ### 工具库
@@ -385,6 +385,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
    （`SANDBOX_UNAVAILABLE`）（平台矩阵见 `docs/SANDBOX.md`）。
 5. **最小依赖**：精心选择依赖以保证构建速度
 6. **本地优先的运行时 API**：HTTP/SSE 端点面向受信任的 localhost 访问，目前由 `crates/cli` 运行时提供
+7. **三区 prompt 契约**：每个请求划分为 `PinnedPrefix`（系统提示词 + 工具目录，每步由 `prompt_zones::PinnedPrefix::freeze` 指纹化、由 `prefix_cache::PrefixStabilityManager` 漂移检查）、`AppendLog`（`Session` 转录存储——`push` 是该类型唯一日常可表达的变更；整体替换必须通过 `RebuildReason` 自我声明并落入日志的审计记录，以 `Event::TranscriptRebuilt` 浮出）与 `TurnScratch`（每轮的组合暂存区，在请求循环前提交进日志、在每个轮次边界清空）。每步的 `MessageRequest` 经 `engine/host_executor.rs` 中的 `ThreeZoneRequest` 组装——`messages` 只能是日志切片加暂存尾部，因此在别处用任意 `Vec<Message>` 手工拼装请求正是该契约要杜绝的模式（与旧式直接构造逐字节一致；见 `three_zone_assembly_sends_verbatim_log_snapshot` 回归测试）
 
 ## 配置文件
 

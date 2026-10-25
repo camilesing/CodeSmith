@@ -6,28 +6,31 @@ npm 包装器的权威依据。
 当前打包说明：
 - `codesmith-cli` 是唯一的面向最终用户的 crate；它交付单一的 `codesmith`
   二进制（交互式 REPL + 无头子命令）。此前的 `codesmith-tui` 伴随 crate
-  已在 0.9.0 中移除。
+  已在 0.10.0 中移除。
 
 ## 规范发布目标
 
 - 面向最终用户的 crate：
   - `codesmith-cli`
-- 从本工作区发布的支撑 crate（顺序与 `scripts/release/crates.sh` 一致）：
+- 从本工作区发布的支撑 crate（顺序与 `scripts/release/crates.sh` 一致，
+  该列表由 `publish-crates.sh` 对照工作区成员强制校验，缺一即拒绝运行）：
   - `codesmith-secrets`
-  - `codesmith-config`
   - `codesmith-protocol`
-  - `codesmith-state`
-  - `codesmith-agent`
+  - `codesmith-mcp`
+  - `codesmith-release`
+  - `codesmith-config`
   - `codesmith-execpolicy`
   - `codesmith-hooks`
-  - `codesmith-mcp`
   - `codesmith-tools`
+  - `codesmith-agent`
+  - `codesmith-state`
+  - `codesmith-extensions`
+  - `codesmith-agent-runtime`
+  - `codesmith-providers`
   - `codesmith-core`
   - `codesmith-app-server`
-- 其余工作区 crate（`codesmith-agent-runtime`、`codesmith-providers`、
-  `codesmith-tool-impls`、`codesmith-index`、`codesmith-extensions`、
-  `codesmith-release`）**不**发布——它们以路径依赖的形式被已发布的
-  二进制消费。
+  - `codesmith-index`
+  - `codesmith-tool-impls`
 
 ## 版本协调
 
@@ -125,16 +128,22 @@ npm 包装器冒烟的 Linux 腿在同一个 `npm-wrapper-smoke` 作业中运行
    的要求，见下文 npm 包装器发布一节）。
 4. 按以下顺序使用 `./scripts/release/publish-crates.sh publish` 发布 crate：
    - `codesmith-secrets`
-   - `codesmith-config`
    - `codesmith-protocol`
-   - `codesmith-state`
-   - `codesmith-agent`
+   - `codesmith-mcp`
+   - `codesmith-release`
+   - `codesmith-config`
    - `codesmith-execpolicy`
    - `codesmith-hooks`
-   - `codesmith-mcp`
    - `codesmith-tools`
+   - `codesmith-agent`
+   - `codesmith-state`
+   - `codesmith-extensions`
+   - `codesmith-agent-runtime`
+   - `codesmith-providers`
    - `codesmith-core`
    - `codesmith-app-server`
+   - `codesmith-index`
+   - `codesmith-tool-impls`
    - `codesmith-cli`
 5. 等待每个已发布的 crate 版本出现在 crates.io 上，再发布其依赖者。
 

@@ -142,8 +142,7 @@ docker run --rm -it \
 
 ## 项目引导脚本
 
-CodeSmith 不会自动执行 `.codesmith/setup.sh` 或遗留的
-`.deepseek/setup.sh`。如果你将其中一个文件保留为本地项目配方，
+CodeSmith 不会自动执行 `.codesmith/setup.sh`。如果你将这样一个文件保留为本地项目配方，
 请显式运行它。对于团队共享的环境搭建，优先使用提交到仓库的项目
 脚本或 toolbox Dockerfile，这样环境才可以被审查和重建。
 

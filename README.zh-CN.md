@@ -5,7 +5,7 @@
 
 ````bash
 ➜  CodeSmith git:(main) ✗ codesmith
-CodeSmith 0.9.0 (4fe017cfcc60) — GLM5.3 · AGENT mode · preset middle
+CodeSmith 0.10.0 (4fe017cfcc60) — GLM5.3 · AGENT mode · preset middle
 workspace /Users/camile/Work/Rust/CodeSmith · /help lists commands (Tab completes, Shift+Tab cycles the mode) · ? shows the keyboard shortcuts · Ctrl+C cancels a turn
 ● idle │ middle │ 🧭 0% (48/200k) │ 🚥agent │ 🤖0 │ GLM5.3 │ 🧠high
 ❯ 这是什么项目？
@@ -55,7 +55,7 @@ codesmith                                # 交互式 REPL
 ，目前需从源码构建（`cargo install --path crates/cli --locked`）。文档在 `docs/` 下 —— 入
 门看 `GUIDE.md`，机制看 `HARNESS.md`
 ，crate 边界看 `ARCHITECTURE.md`。
-● idle │ middle │ 🧭 8% (16k/200k) │ 🚥agent │ 🤖0 │ claude-sonnet-4-5 │ 🧠high │ v0.9.0 (4fe017cfcc60)
+● idle │ middle │ 🧭 8% (16k/200k) │ 🚥agent │ 🤖0 │ claude-sonnet-4-5 │ 🧠high │ v0.10.0 (4fe017cfcc60)
 ❯
 ````
 
@@ -105,7 +105,7 @@ codesmith preset show        # 档位矩阵 + 你当前生效的预设
 
 配置：[配置参考](docs/CONFIGURATION_cn.md) · [提供商](docs/PROVIDERS_cn.md) · [安装](docs/INSTALL_cn.md) · [Docker](docs/DOCKER_cn.md)
 
-原理与扩展：[运行框架](docs/HARNESS_cn.md) · [架构](docs/ARCHITECTURE_cn.md) · [设计细节](docs/DESIGN_INTERNALS_cn.md) · [沙箱](docs/SANDBOX_cn.md) · [子智能体](docs/SUBAGENTS_cn.md) · [MCP](docs/MCP_cn.md) · [钩子](docs/HOOKS_cn.md) · [运行时 API 与 Zed ACP](docs/RUNTIME_API_cn.md) · [运维手册](docs/OPERATIONS_RUNBOOK_cn.md) · [发布流程](docs/RELEASE_RUNBOOK_cn.md) · [更新日志](CHANGELOG.md)
+原理与扩展：[运行框架](docs/HARNESS_cn.md) · [架构](docs/ARCHITECTURE_cn.md) · [设计细节](docs/DESIGN_INTERNALS_cn.md) · [沙箱](docs/SANDBOX_cn.md) · [子智能体](docs/SUBAGENTS_cn.md) · [MCP](docs/MCP_cn.md) · [钩子](docs/HOOKS_cn.md) · [脚本 mods](docs/MODS_cn.md) · [运行时 API 与 Zed ACP](docs/RUNTIME_API_cn.md) · [运维手册](docs/OPERATIONS_RUNBOOK_cn.md) · [发布流程](docs/RELEASE_RUNBOOK_cn.md) · [更新日志](CHANGELOG.md)
 
 ## 项目
 

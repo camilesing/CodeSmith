@@ -377,7 +377,7 @@ both the REPL's `state.extension_runner` and the Engine's field see the
 update.
 
 Not implemented yet: the `SessionBeforeSwitch` emitter (the in-process
-workspace switch went with the TUI in 0.9.0), `registerProvider`,
+workspace switch went with the TUI in 0.10.0), `registerProvider`,
 `registerShortcut`/`registerFlag`/
 renderers, install-source implementations, and the embed API. Extension-to-
 extension pub/sub is not planned — its §F3 `EventBus` skeleton was deleted

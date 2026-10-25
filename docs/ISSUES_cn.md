@@ -79,12 +79,12 @@ Tag 块）。设计参考：
 <https://embracethered.com/blog/posts/2024/hiding-and-finding-text-with-unicode-tags/>
 
 - `crates/agent-runtime/src/sanitization.rs:6`
-- `crates/agent-runtime/src/sanitization.rs:192`（U+E0001 向量）
+- `crates/agent-runtime/src/sanitization.rs:218`（U+E0001 向量）
 - `crates/agent-runtime/src/engine/context.rs:322`
 - `crates/agent-runtime/src/engine/host_executor.rs:372`
-- `crates/agent-runtime/src/engine/host_executor.rs:1949`
-- `crates/agent-runtime/src/engine/host_executor.rs:9791`
-- `crates/agent-runtime/src/mcp.rs:3155`
+- `crates/agent-runtime/src/engine/host_executor.rs:2219`
+- `crates/agent-runtime/src/engine/host_executor.rs:11094`
+- `crates/agent-runtime/src/mcp.rs:3350`
 - `docs/rfcs/extra-findings-01-unicode-sanitization.md:12`（文件已删除；
   记录在此保留）
 - `docs/legacy/CHANGELOG-upstream.md:64`（Unreleased 清理条目）
@@ -96,10 +96,10 @@ Tag 块）。设计参考：
 契约：`allow_shell` / shell 访问必须显式 opt-in，省略可选字段不得静默开启
 shell。
 
-- `crates/cli/src/config.rs:2372`
-- `crates/cli/src/config.rs:4552`（回归测试）
-- `crates/cli/src/task_manager.rs:577`
-- `crates/cli/src/task_manager.rs:1595`（回归测试）
+- `crates/cli/src/config.rs:2574`
+- `crates/cli/src/config.rs:4760`（回归测试）
+- `crates/cli/src/task_manager.rs:694`
+- `crates/cli/src/task_manager.rs:1774`（回归测试）
 - `docs/legacy/CHANGELOG-upstream.md:2690`
 
 （这些守卫随单二进制合并并入 `crates/cli`；原引用指向已移除的
@@ -107,11 +107,11 @@ shell。
 
 ### GHSA-88gh-2526-gfrr — `fetch_url` 网络目标校验
 
-加固 `fetch_url` 工具的网络目标校验（v0.8.26 修复）。回归覆盖钉住方括号
-IPv6 字面量的解析。
+加固 `fetch_url` 工具的网络目标校验（v0.8.26 修复）。当前实现把 URL
+经 `host_from_url` 解析出主机后交给 `network_policy` 判定审批要求。
 
-- `crates/tool-impls/src/tools/fetch_url.rs:369`
-- `crates/tool-impls/src/tools/fetch_url.rs:720`（回归测试）
+- `crates/tool-impls/src/tools/fetch_url.rs:156`（审批要求判定）
+- `crates/agent-runtime/src/network_policy.rs:622`（`host_from_url`）
 - `docs/legacy/CHANGELOG-upstream.md:2688`
 
 ### 依赖侧通告（为完整起见记录）
@@ -137,11 +137,11 @@ Whalescale 编号；与之成对的上游 tracker 编号 `#561`–`#564` 现存�
 窗口，之后 tokio 的 `kill_on_drop` 才发 SIGKILL；drop 兜底覆盖从未显式
 shutdown 的连接池与没有子进程的 transport。
 
-- `crates/agent-runtime/src/mcp.rs:739`
-- `crates/agent-runtime/src/mcp.rs:880`（以 `#420` 引用）
-- `crates/agent-runtime/src/mcp.rs:3294`
-- `crates/agent-runtime/src/mcp.rs:5227`（以 `#420` 引用）
-- `crates/agent-runtime/src/engine/mod.rs:962`（以 `#420` 引用）
+- `crates/agent-runtime/src/mcp.rs:796`
+- `crates/agent-runtime/src/mcp.rs:937`（以 `#420` 引用）
+- `crates/agent-runtime/src/mcp.rs:3486`
+- `crates/agent-runtime/src/mcp.rs:5679`（以 `#420` 引用）
+- `crates/agent-runtime/src/engine/mod.rs:873`（以 `#420` 引用）
 
 ### Whalescale#439 — toast 栈队列一致性
 
@@ -165,13 +165,13 @@ runtime API 为 Whalescale 桌面桥接增加可配置的 CORS 来源：`config.
 在内置 dev origin 之上扩展，并保持首次出现的顺序。（注释将其与上游
 tracker `#561` 并记。）
 
-- `crates/cli/src/runtime_api.rs:78`（与 `#561` 成对）
-- `crates/cli/src/runtime_api.rs:2054`
-- `crates/cli/src/runtime_api.rs:3705`（与 `#561` 成对）
-- `crates/cli/src/config.rs:850`（与 `#561` 成对）
-- `crates/cli/src/config.rs:881`（与 `#561` 成对）
-- `crates/cli/src/main_root.rs:711`
-- `crates/cli/src/main_root.rs:1859`（与 `#561` 成对）
+- `crates/cli/src/runtime_api.rs:80`（与 `#561` 成对）
+- `crates/cli/src/runtime_api.rs:2139`
+- `crates/cli/src/runtime_api.rs:3804`（与 `#561` 成对）
+- `crates/cli/src/config.rs:898`（与 `#561` 成对）
+- `crates/cli/src/config.rs:929`（与 `#561` 成对）
+- `crates/cli/src/main_root.rs:712`
+- `crates/cli/src/main_root.rs:1866`（与 `#561` 成对）
 - `docs/legacy/CHANGELOG-upstream.md:3766`（runtime API 四件套条目）
 
 ### whalescale#260 — `archived_only` 线程过滤
@@ -179,10 +179,10 @@ tracker `#561` 并记。）
 线程列表接受 `archived` / `status` / `archived_only` 查询参数，桌面 UI
 可请求"仅已归档"视图。（注释将其与上游 tracker `#563` 并记。）
 
-- `crates/cli/src/runtime_api.rs:216`（与 `#563` 成对）
-- `crates/cli/src/runtime_api.rs:226`（与 `#563` 成对）
-- `crates/cli/src/runtime_api.rs:3878`（与 `#563` 成对）
-- `crates/cli/src/runtime_threads.rs:600`（与 `#563` 成对）
+- `crates/cli/src/runtime_api.rs:218`（与 `#563` 成对）
+- `crates/cli/src/runtime_api.rs:228`（与 `#563` 成对）
+- `crates/cli/src/runtime_api.rs:3972`（与 `#563` 成对）
+- `crates/cli/src/runtime_threads.rs:599`（与 `#563` 成对）
 
 ### whalescale#256 — `PATCH /v1/threads/{id}`
 
@@ -190,17 +190,17 @@ runtime API 提供 PATCH 端点，UI 可翻转持久线程状态（标题、归�
 无需整体重写，并伴随 `schema_version` 升版。（注释将其与上游 tracker
 `#562` 并记。）
 
-- `crates/cli/src/runtime_api.rs:3791`（与 `#562` 成对）
-- `crates/cli/src/runtime_threads.rs:631`（与 `#562` 成对）
+- `crates/cli/src/runtime_api.rs:3885`（与 `#562` 成对）
+- `crates/cli/src/runtime_threads.rs:630`（与 `#562` 成对）
 
 ### whalescale#261 — `GET /v1/usage` 聚合
 
 usage 端点按天/模型聚合计费回合的 token 与成本，供桌面 UI 使用。（注释
 将其与上游 tracker `#564` 并记。）
 
-- `crates/cli/src/runtime_api.rs:3989`（与 `#564` 成对）
-- `crates/cli/src/runtime_threads.rs:676`（与 `#564` 成对）
-- `crates/cli/src/runtime_threads.rs:1040`（与 `#564` 成对）
+- `crates/cli/src/runtime_api.rs:4083`（与 `#564` 成对）
+- `crates/cli/src/runtime_threads.rs:675`（与 `#564` 成对）
+- `crates/cli/src/runtime_threads.rs:1039`（与 `#564` 成对）
 
 ### 上游 tracker `#561`–`#564` — runtime API 四件套
 
@@ -213,25 +213,25 @@ integration"（`docs/legacy/CHANGELOG-upstream.md:3762`–`3778`，还点名
 
 - **#561**（= whalescale#255，CORS 白名单）— 解析优先级为 `--cors-origin`
   flag > `CODESMITH_CORS_ORIGINS` 环境变量 > `[runtime_api]
-  cors_origins`（`crates/cli/src/config.rs:881`）；额外 origin 叠加在内置
+  cors_origins`（`crates/cli/src/config.rs:929`）；额外 origin 叠加在内置
   dev 默认值之上，非法 origin 被跳过、不中断 layer 构建
-  （`crates/cli/src/runtime_api.rs:3777`，回归测试见 `:3705` 与
-  `:3777`）。
+  （`crates/cli/src/runtime_api.rs:3871`，回归测试见 `:3804` 与
+  `:3874`）。
 - **#562**（= whalescale#256，`PATCH /v1/threads/{id}`）— PATCH 接受扩展
   字段集（`allow_shell`、`trust_mode`、`auto_approve`、`model`、
   `mode`、`title`、`system_prompt`），各字段独立可选，空字符串将
   `title` / `system_prompt` 清回 None
-  （`crates/cli/src/runtime_api.rs:3791`）；线程记录上新增的 `title`
+  （`crates/cli/src/runtime_api.rs:3885`）；线程记录上新增的 `title`
   字段自 v0.8.10 起存在、未升 schema 版本
-  （`crates/cli/src/runtime_threads.rs:146`）。
+  （`crates/cli/src/runtime_threads.rs:145`）。
 - **#563**（= whalescale#260，`archived_only`）— `archived_only=true`
   只返回已归档线程，区别于返回两者的 `include_archived=true`
-  （`crates/cli/src/runtime_api.rs:3878`），由 `ThreadListFilter` 枚举
-  支撑（`crates/cli/src/runtime_threads.rs:600`）。
+  （`crates/cli/src/runtime_api.rs:3972`），由 `ThreadListFilter` 枚举
+  支撑（`crates/cli/src/runtime_threads.rs:599`）。
 - **#564**（= whalescale#261，`GET /v1/usage`）— 按天/模型聚合每回合
   token + 成本；空区间产生空 buckets，绝不返回 404
-  （`crates/cli/src/runtime_api.rs:3989`、
-  `crates/cli/src/runtime_threads.rs:676`、`:1040`）。
+  （`crates/cli/src/runtime_api.rs:4083`、
+  `crates/cli/src/runtime_threads.rs:675`、`:1039`）。
 
 ## 4. 源码中无编号的已知问题与待办
 
@@ -287,8 +287,8 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 被单层 `read_dir` 扫描静默丢弃——它只会发现 `<root>/<skill>/SKILL.md`，
 忽略 `<root>/<vendor>/<skill>/SKILL.md`。
 
-- `crates/agent-runtime/src/skills/mod.rs:1776`（缺陷描述）
-- `crates/agent-runtime/src/skills/mod.rs:1782`（回归测试）
+- `crates/agent-runtime/src/skills/mod.rs:1881`（缺陷描述）
+- `crates/agent-runtime/src/skills/mod.rs:1886`（回归测试）
 
 ### 待输入预览中超长 token 的行溢出
 
@@ -356,7 +356,7 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
 
 ### docs/EXTENSIONS.md — 禁用在 reload 时生效
 
-- `docs/EXTENSIONS.md:134` — `/extension disable <id>` 会标记扩展为禁用，
+- `docs/EXTENSIONS.md:148` — `/extension disable <id>` 会标记扩展为禁用，
   但效果在下一次 `/extension reload` 才落地（同一 reload 注意事项）。
 
 ### 扩展系统交接（源自已删除的 `docs/superpowers/todo.md`）
@@ -377,10 +377,15 @@ composer 文本；PTY dump 中出现任一信号即说明 bug 触发。
   （2026-10-11）：`tui/src/compaction/`、`tui/src/prompts.rs`、
   `tui/src/mcp.rs`、`tui/src/sandbox/`、`tui/src/execpolicy/` 已不复
   存在——整个 `crates/tui` crate 被移除而非合并。
-- 约 12 个已废弃的子代理
-  工具（`agent_spawn`、`agent_result`、`agent_wait`、`delegate_to_agent`
-  等）仍注册在目录中，占用工具面与提示词预算。已验证仍然存活：
-  `crates/cli/src/tools/subagent/mod.rs:2191` 注册 `agent_spawn`。
+- 旧的一次性子代理扇出名称（`agent_wait`、`agent_result`、
+  `agent_send_input`、`agent_assign`、`agent_resume`、`agent_list`、
+  `spawn_agent`、`delegate_to_agent`、`send_input`、`close_agent`）
+  已随提示词与工具面清理解决：提示词不再宣传它们——
+  `crates/cli/src/prompts.rs:1400`–`1412` 的测试钉住"提示词不得包含
+  退役名称"。`agent_spawn` 是唯一幸存者：仍注册在工具注册表
+  （`crates/cli/src/tools/subagent/mod.rs:2358` 的 `AgentSpawnTool`
+  注册点）作为后台一次性 spawn 入口，但同样不再被提示词宣传；
+  `DelegateToAgentTool` 仅存类型定义、已无注册点。
 
 ### docs/legacy/ROADMAP-upstream.md — 已知缺口与延期 re-wire
 

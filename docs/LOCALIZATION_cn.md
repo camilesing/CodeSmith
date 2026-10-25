@@ -58,7 +58,7 @@ locale = "es-419"
 - 斜杠命令描述、onboarding 门控屏与右键菜单
 - 已退役 TUI 界面的按键绑定标签
 
-自 0.9.0 移除 TUI 后，交互前端是基于行的 REPL：它会解析 locale
+自 0.10.0 移除 TUI 后，交互前端是基于行的 REPL：它会解析 locale
 （`/config locale`、`settings.toml`）并应用到提示词侧的 locale 信号，
 但只渲染上述框架 ID 中的一小部分；按键绑定/右键菜单字符串不再显示。
 

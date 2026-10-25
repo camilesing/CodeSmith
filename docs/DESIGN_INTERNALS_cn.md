@@ -66,7 +66,7 @@ schema 与加载器）。
   ─────────                       ──────────────                   ───────────────────
   Config ──▶ resolve_llm_client
                  │ builds ProviderConfig
-                 │ (6 neutral fields + on_retry)
+                 │ (provider + 5 neutral fields)
                  ▼
                ProviderRegistry::build(&cfg)
                  │ resolves factory by cfg.provider
@@ -79,8 +79,8 @@ schema 与加载器）。
 
 - **`ProviderId`** —— 开放联合类型：已知 provider 用 `Builtin(ProviderKind)`，
   其余任何东西用 `Custom(String)`。镜像 pi-ai 的 `KnownProvider | string`。
-- **`ProviderConfig`** —— 中立的构造输入（`api_key`、`base_url`、
-  `default_model`、`retry`、`http_headers`、`on_retry`）。不依赖宿主的
+- **`ProviderConfig`** —— 中立的构造输入（`provider`、`api_key`、`base_url`、
+  `default_model`、`retry`、`http_headers`）。不依赖宿主的
   `Config`，因此 provider crate 保持宿主无关。
 - **`ProviderFactory`** —— `id()` + `build(&cfg) -> LlmClientHandle`。在
   `codesmith-providers`（或你自己的 crate）中实现并注册它。
@@ -238,7 +238,7 @@ Invariants"（被推翻的假设与不变量）小节 —— 模型从自身失�
 流前连接错误（`create_message_stream` 的 `Err`）不重试（它们属于上下文
 恢复 / 硬失败，一个独立的护栏）；cancel-token 短路
 （`should_transparently_retry_stream` 检查 `!cancelled`）已接线（见
-`host_executor.rs` 模块文档）；有界预算（`MAX_STREAM_RETRIES = 3`）不会
+`host_executor.rs` 模块文档）；有界预算（`MAX_TRANSPARENT_STREAM_RETRIES = 3`）不会
 永远循环。
 
 流式增量（`MessageDelta`/`ThinkingDelta`）经 `Callback::on_stream_delta`
@@ -350,7 +350,7 @@ runner `Arc`；由 `manage_mods` 工具的 reload 动作触发，且由于 runne
 看到更新。
 
 尚未实现：`SessionBeforeSwitch` 的发射点（进程内工作区切换随 TUI 在
-0.9.0 移除）、`registerProvider`、
+0.10.0 移除）、`registerProvider`、
 `registerShortcut`/`registerFlag`/渲染器、install-source 实现与 embed
 API。扩展间发布/订阅不在计划内 —— 其 §F3 `EventBus` 骨架已在零消费者时
 删除。热加载永久排除；只有 install + reload。

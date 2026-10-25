@@ -263,6 +263,7 @@ MCP 工具以 `mcp__<server>__<tool>` 的形式暴露（双下划线；旧的单
 - `-c, --continue`：恢复该工作区最近的会话
 - `--max-subagents <N>`：限制为 `1..=20`
 - `--profile <NAME>`：选择配置 profile
+- `--preset <NAME>`：选择配置预设（simple | middle | all | experiment | plan | 自定义名）；见上文[配置预设](#配置预设preset-name)一节。改名前的 `--mode` 写法仍有效。
 - `--config <PATH>`：配置文件路径
 - `-v, --verbose`：详细日志
 
