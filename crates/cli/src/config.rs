@@ -9083,6 +9083,26 @@ display_model = "behind-the-gateway"
             Some(65_536)
         );
         assert_eq!(config.model_display_name(), Some("behind-the-gateway"));
+
+        // A large override drives the proportional trigger: a 500K gateway
+        // window compacts at 4/5 of the window (400_000), not window − 33K.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model = "claude-sonnet-4-5"
+context_window = 500000
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert_eq!(
+            config.effective_context_window("claude-sonnet-4-5"),
+            Some(500_000)
+        );
+        assert_eq!(config.compaction_threshold("claude-sonnet-4-5"), 400_000);
         Ok(())
     }
 

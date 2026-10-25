@@ -78,7 +78,8 @@ impl Default for CompactionConfig {
             enabled: true,
             // Provider-neutral default: near the effective context window after
             // reserving summary output and a safety buffer. Real call sites
-            // override this via `compaction_threshold_for_model_and_effort`.
+            // override this via `compaction_threshold_for_model_and_effort`,
+            // which caps windows >=400K at 4/5 of the window.
             token_threshold: 967_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
             cache_summary: true,

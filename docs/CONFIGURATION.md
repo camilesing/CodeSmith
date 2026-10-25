@@ -666,10 +666,12 @@ codesmith also stores user preferences in:
 
 Notable settings include `auto_compact` (default `true`, provider-neutral):
 near the active model limit the transcript is replacement-compacted
-automatically. Set `auto_compact = off` for cache-first workflows that need
-the stable message prefix preserved; manual `/compact` always remains
-available. You can inspect or update these from the REPL with
-`/settings` and `/config` (interactive editor).
+automatically. On context windows of 400K tokens or larger the automatic
+trigger fires at four-fifths of the window, so the remaining headroom scales
+with the window instead of staying a fixed buffer. Set `auto_compact = off`
+for cache-first workflows that need the stable message prefix preserved;
+manual `/compact` always remains available. You can inspect or update these
+from the REPL with `/settings` and `/config` (interactive editor).
 
 Common settings keys:
 

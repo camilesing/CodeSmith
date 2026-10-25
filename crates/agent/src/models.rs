@@ -26,9 +26,22 @@ pub const SMALL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
 /// compaction trigger divides by the same factor (see
 /// [`compaction_threshold_for_model`]) so it fires while the conservative
 /// estimate still fits the preflight budget. Agent-runtime's estimators share
-/// these constants so the two directions cannot drift apart.
+/// these constants so the two directions cannot drift apart. The large-window
+/// compaction cap below lives here for the same reason: one shared policy
+/// constant instead of per-crate copies.
 pub const CONSERVATIVE_ESTIMATE_NUMERATOR: usize = 3;
 pub const CONSERVATIVE_ESTIMATE_DENOMINATOR: usize = 2;
+/// Windows at or above this size cap the automatic-compaction trigger at a
+/// proportional ratio of the window (`LARGE_WINDOW_THRESHOLD_RATIO_*`): the
+/// fixed summary-reserve + buffer (33K) does not scale with the window, so
+/// on very large windows the post-trigger remaining budget is too thin for
+/// one large tool result or estimator drift.
+pub const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 400_000;
+/// Proportional cap for the large-window tier: trigger at ≤ 4/5 of the raw
+/// window on [`LARGE_CONTEXT_WINDOW_TOKENS`]+ windows. Integer pair, same
+/// style as `CONSERVATIVE_ESTIMATE_*`, so the cap stays exact without f32.
+pub const LARGE_WINDOW_THRESHOLD_RATIO_NUMERATOR: usize = 4;
+pub const LARGE_WINDOW_THRESHOLD_RATIO_DENOMINATOR: usize = 5;
 
 // === Core Message Types ===
 
@@ -433,8 +446,10 @@ fn auto_compact_effective_window(window: u32, model: &str) -> u32 {
 /// compares a `raw × 3/2` estimate against `window − reserved_output −
 /// headroom`, so a raw-unit trigger above that budget would let emergency
 /// recovery (or the provider's context-length rejection) do the work instead
-/// of clean automatic compaction. At or above the cutoff the formula is
-/// unchanged — mid and large windows keep the fixed 13K buffer.
+/// of clean automatic compaction. At or above the cutoff the fixed-buffer
+/// formula applies, and windows at or above [`LARGE_CONTEXT_WINDOW_TOKENS`]
+/// additionally cap the trigger at 4/5 of the window so the post-trigger
+/// headroom scales with the window.
 #[must_use]
 pub fn compaction_threshold_for_model(model: &str) -> usize {
     let Some(window) = context_window_for_model(model) else {
@@ -449,16 +464,26 @@ pub fn compaction_threshold_for_model(model: &str) -> usize {
 /// whose backend model the name heuristics cannot see — so the override drives
 /// the trigger instead of [`context_window_for_model`]'s guess. `model` still
 /// feeds [`max_output_tokens_for_model`] (the summary reserve) and nothing else.
+///
+/// Windows at or above [`LARGE_CONTEXT_WINDOW_TOKENS`] are capped at 4/5 of
+/// the raw window: the fixed 33K reserve + buffer does not scale, so an
+/// uncapped 1M window would leave only 33K of post-trigger headroom.
 #[must_use]
 pub fn compaction_threshold_for_window(window: u32, model: &str) -> usize {
     let effective_window = auto_compact_effective_window(window, model);
     let base = usize::try_from(effective_window.saturating_sub(AUTO_COMPACT_BUFFER_TOKENS))
         .unwrap_or(DEFAULT_COMPACTION_TOKEN_THRESHOLD);
-    if window < SMALL_CONTEXT_WINDOW_TOKENS {
+    let threshold = if window < SMALL_CONTEXT_WINDOW_TOKENS {
         base * CONSERVATIVE_ESTIMATE_DENOMINATOR / CONSERVATIVE_ESTIMATE_NUMERATOR
     } else {
         base
+    };
+    if window >= LARGE_CONTEXT_WINDOW_TOKENS {
+        let cap = window as usize * LARGE_WINDOW_THRESHOLD_RATIO_NUMERATOR
+            / LARGE_WINDOW_THRESHOLD_RATIO_DENOMINATOR;
+        return threshold.min(cap);
     }
+    threshold
 }
 
 /// Compaction threshold keyed by model and caller-supplied effort tier.
@@ -661,14 +686,39 @@ mod tests {
 
     #[test]
     fn mid_and_large_window_models_keep_compaction_threshold() {
-        // 1M and 200K+ windows: formula unchanged (default deepseek behavior).
-        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 967_000);
+        // Mid-band windows keep the fixed-buffer formula; the 1M window is
+        // capped at 4/5 of the window (next test).
+        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
         assert_eq!(
             compaction_threshold_for_model("claude-sonnet-4-20250514"),
             167_000
         );
         // 202,752 window sits in the 200K..500K mid band — fixed buffer only.
         assert_eq!(compaction_threshold_for_model("z-ai/glm-5.1"), 169_752);
+    }
+
+    #[test]
+    fn large_window_compaction_threshold_caps_at_four_fifths() {
+        // >=400K windows cap the trigger at 4/5 of the raw window: the fixed
+        // 33K summary-reserve + buffer does not scale with the window, so an
+        // uncapped 1M window would leave only 33K of post-trigger headroom —
+        // one large tool result or estimator drift could reach provider
+        // rejection before clean auto-compaction fires.
+        assert_eq!(
+            compaction_threshold_for_window(400_000, "claude-sonnet-4-5"),
+            320_000
+        );
+        assert_eq!(
+            compaction_threshold_for_window(1_000_000, "deepseek-v4-pro"),
+            800_000
+        );
+        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
+        // One token below the cutoff keeps the fixed-buffer formula:
+        // 399_999 − 20_000 reserve − 13_000 buffer.
+        assert_eq!(
+            compaction_threshold_for_window(399_999, "claude-sonnet-4-5"),
+            366_999
+        );
     }
 
     #[test]
@@ -712,22 +762,22 @@ mod tests {
             auto_compact_effective_window_for_model("deepseek-v4-pro"),
             Some(980_000)
         );
-        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 967_000);
+        assert_eq!(compaction_threshold_for_model("deepseek-v4-pro"), 800_000);
     }
 
     #[test]
     fn replacement_compaction_uses_provider_neutral_threshold_for_effort() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("off")),
-            967_000
+            800_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("high")),
-            967_000
+            800_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("max")),
-            967_000
+            800_000
         );
     }
 
@@ -751,11 +801,11 @@ mod tests {
     fn replacement_compaction_defaults_to_effective_window_when_effort_unknown() {
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", None),
-            967_000
+            800_000
         );
         assert_eq!(
             compaction_threshold_for_model_and_effort("deepseek-v4-pro", Some("unknown")),
-            967_000
+            800_000
         );
     }
 

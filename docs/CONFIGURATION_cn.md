@@ -623,10 +623,11 @@ codesmith 还将用户偏好存储在：
 - 平台配置目录下的 `deepseek/settings.toml`（Linux：`~/.config/deepseek/settings.toml`；macOS：`~/Library/Application Support/deepseek/settings.toml`）
 
 值得注意的设置包括 `auto_compact`（默认 `true`，provider 中立）：
-接近当前模型上限时会自动进行替换式压缩。需要保留稳定消息前缀以
-复用缓存的缓存优先工作流可设置 `auto_compact = off`；手动 `/compact`
-始终可用。你可以在 REPL 中使用 `/settings` 和 `/config`
-（交互式编辑器）查看或更新这些设置。
+接近当前模型上限时会自动进行替换式压缩。上下文窗口 ≥400K 时，
+自动压缩按窗口的 4/5 触发，使触发后的剩余余量随窗口等比放大，
+而非固定不变。需要保留稳定消息前缀以复用缓存的缓存优先工作流可
+设置 `auto_compact = off`；手动 `/compact` 始终可用。你可以在 REPL
+中使用 `/settings` 和 `/config`（交互式编辑器）查看或更新这些设置。
 
 常用设置键：
 
