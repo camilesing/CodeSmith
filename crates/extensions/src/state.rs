@@ -69,7 +69,12 @@ impl ExtensionContext for HostExtensionContext {
     /// and clones the inner token (§F2c Layer 2) — so a handler calling this
     /// after a per-turn `reset_cancel_token` sees the new token, not the
     /// build-time one. The returned `CancellationToken` is itself a snapshot;
-    /// a handler that needs always-live behavior should re-call `signal()`.
+    /// note that re-calling `signal()` alone does NOT give always-live
+    /// behavior: a handler that snapshots just before the engine swaps the
+    /// inner token will await an orphaned token (`reset_cancel_token` swaps
+    /// without cancelling the old one, so nothing wakes it to re-call).
+    /// Always-live handlers must pair the snapshot with the `generation()`
+    /// guard in a re-snapshot loop.
     fn signal(&self) -> CancellationToken {
         self.signal
             .lock()

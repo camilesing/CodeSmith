@@ -115,7 +115,7 @@ register_command("calls", "Show the tool-call count", |args, ctx| {
 **What you'll see**:
 
 - Typing `/calls some args` in the REPL dispatches through the extension runner: `message(...)` prints its text, `send(...)` submits it into the conversation. Mod commands sit between user commands and the built-in table (user commands shadow them; they shadow built-ins), appear in `/help` under "mod commands", and Tab completes their names live.
-- Now **edit `mod.rhai`, save, and reload** with `/mods reload`; it re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation (`/mods list` shows per-mod activation state and the resolved policy layer; the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.9.0; reloading is explicit.)
+- Now **edit `mod.rhai`, save, and reload** with `/mods reload`; it re-runs discovery, no re-approval for the same id. `/mods status` confirms which mods are loaded and the runner generation (`/mods list` shows per-mod activation state and the resolved policy layer; the startup notice also lists discovered-but-not-activated mods). (The automatic file watcher and its `[mods] watch` switch were removed in 0.10.0; reloading is explicit.)
 
 You've now touched all four registration surfaces: event hooks, tools, commands, KV. The full `/mods` command set is `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`; the model-facing `manage_mods` tool mirrors it with actions `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`, plus the session lane `session_write` / `session_remove` (ephemeral experiments — see below).
 
@@ -153,8 +153,8 @@ only (the sub-agent progress sink stays unwired — 5b gave sub-agent loops
 report no checkpoints. The same checkpoint reaches the UI as `ToolCallProgress`.
 `resources-discover` was removed in 0.11.0 (never had an emitter or a consumer).
 `session-before-fork` fires at
-every spawn — the spawn-family tools (`agent_open` / `agent_spawn` / `subagent_run` /
-`delegate_to_agent`) at every depth (the runner rides the sub-agent runtime, so
+every spawn — the spawn-family tools (`agent_open` / `agent_spawn` /
+`agent_run`) at every depth (the runner rides the sub-agent runtime, so
 grandchildren forks are vetoable too) and the engine-internal spawn path — before the child
 forks session state; `cancel()` vetoes the fork. Since 5b the runner is more than the veto
 carrier on the child side: sub-agent registries mount the child type's extension-tool view
@@ -398,7 +398,10 @@ register_guard(|e| {
 A guard is a **deny-only** tool-call policy. The closure takes the
 tool-call payload (`|e|` — same shape as a `tool-call` handler's payload);
 returning a string denies the call with that reason, anything else
-(including `()`) abstains. There is no allow or transform vocabulary by
+(including `()`) abstains. The callback must be a single-parameter function
+defined in the mod itself — a `|e, ctx|`-arity callback or an unresolvable
+name fails the mod's **load** (a guard that can never bind must not load
+as a silent permanent bypass). There is no allow or transform vocabulary by
 design: a denial maps to a chain-short-circuiting block, so neither
 registration order nor another handler can resurrect a denied call, and
 the blocked result is attributed (`guard (mod: <mod-id>): <reason>`). Use
@@ -508,7 +511,7 @@ The `[mods]` section of `config.toml` (defaults to true):
 enabled = true   # master switch: discovery, manage_mods tool
 ```
 
-The `watch` hot-reload file watcher was removed in 0.9.0; use
+The `watch` hot-reload file watcher was removed in 0.10.0; use
 `manage_mods(action="reload")` to pick up edits.
 
 ## Implementation Index

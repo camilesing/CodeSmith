@@ -140,6 +140,15 @@ impl LoadedDylib {
 /// drops strictly before the `Library`). Errors →
 /// [`ExtensionError::Load`] (integrity / open / symbol lookup / null
 /// return).
+///
+/// Known limitation — the trust gate is a caller convention, not a
+/// type-level invariant: nothing at this signature forces sources through
+/// [`apply_trust_gate`](crate::apply_trust_gate) /
+/// [`apply_mod_trust_gate`](crate::apply_mod_trust_gate) before untrusted
+/// native code is mapped. Callers MUST filter discovered sources through
+/// the gate first (a capability-token parameter that encodes "gated" in the
+/// type would make this compile-time, at the cost of an API break across
+/// every consumer; deliberately not built).
 pub fn load_dylib(path: &Path) -> Result<LoadedDylib, ExtensionError> {
     let expected = verify_dylib_integrity(path)?;
     let library = unsafe { Library::new(path) }.map_err(|e| {

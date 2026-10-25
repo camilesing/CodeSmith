@@ -28,41 +28,51 @@ use super::rhai_mod::{
 };
 
 /// Call a script callback with `(payload, ctx)`, falling back to `(payload)`
-/// when the closure declares a single parameter.
+/// when the callback declares a single parameter.
 ///
-/// Rhai surfaces an arity mismatch as a TOP-LEVEL
-/// [`ErrorFunctionNotFound`](rhai::EvalAltResult::ErrorFunctionNotFound)
-/// whose signature string names the callback itself (e.g. `"fn (2 args)"`)
-/// — the closure body never ran, so the retry cannot duplicate side
-/// effects. A same-named function overloaded by arity can run side effects
-/// and then fail on a missing *inner* function; if that inner failure ever
-/// surfaces unwrapped as `ErrorFunctionNotFound` naming some other
-/// function, it must propagate verbatim, not re-execute the callback.
-/// Errors from inside a successfully-bound call arrive wrapped in
-/// `ErrorInFunctionCall` (or as runtime errors) and are returned verbatim.
+/// The declared arity is resolved from the AST up front (named functions and
+/// anonymous closures are both compiled into it), so the call binds directly
+/// and the callback body can never run twice. Only when the name has no AST
+/// metadata — a native engine function — does the legacy
+/// try-2-args-then-retry-1-arg path run, where a not-found error naming the
+/// callback is a bind-time arity mismatch (the body never ran).
 fn call_with_optional_ctx(
     runtime: &ScriptRuntime,
     callback: &rhai::FnPtr,
     payload: Dynamic,
     ctx: Dynamic,
 ) -> Result<Dynamic, Box<rhai::EvalAltResult>> {
-    match callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload.clone(), ctx)) {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            // Single-parameter form (`|e|` without ctx): retry only when the
-            // not-found function IS this callback — an arity mismatch at
-            // bind time, before the body ran.
-            let names_this_callback = match *e {
-                rhai::EvalAltResult::ErrorFunctionNotFound(ref sig, _) => sig
-                    .split('(')
-                    .next()
-                    .is_some_and(|name| name.trim() == callback.fn_name()),
-                _ => false,
-            };
-            if names_this_callback {
-                callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,))
-            } else {
-                Err(e)
+    let declared_params = runtime
+        .ast
+        .iter_functions()
+        .filter(|m| m.name == callback.fn_name())
+        .map(|m| m.params.len())
+        .max();
+    match declared_params {
+        Some(n) if n >= 2 => {
+            callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload, ctx))
+        }
+        Some(1) => callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,)),
+        _ => {
+            match callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload.clone(), ctx)) {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    // Native fn (no AST metadata): retry only when the not-found
+                    // function IS this callback — an arity mismatch at bind time,
+                    // before any script body ran.
+                    let names_this_callback = match *e {
+                        rhai::EvalAltResult::ErrorFunctionNotFound(ref sig, _) => sig
+                            .split('(')
+                            .next()
+                            .is_some_and(|name| name.trim() == callback.fn_name()),
+                        _ => false,
+                    };
+                    if names_this_callback {
+                        callback.call::<Dynamic>(&runtime.engine, &runtime.ast, (payload,))
+                    } else {
+                        Err(e)
+                    }
+                }
             }
         }
     }
@@ -112,10 +122,16 @@ fn interpret_handler_outcome(
         return match control.as_str() {
             "proceed" => HandlerOutcome::Continue,
             "block" => HandlerOutcome::Block {
-                reason: value.try_cast::<String>().unwrap_or_default(),
+                reason: value
+                    .clone()
+                    .try_cast::<String>()
+                    .unwrap_or_else(|| stringify_dynamic(&value)),
             },
             "cancel" => HandlerOutcome::Cancel {
-                reason: value.try_cast::<String>().unwrap_or_default(),
+                reason: value
+                    .clone()
+                    .try_cast::<String>()
+                    .unwrap_or_else(|| stringify_dynamic(&value)),
             },
             "transform" => merge_transform(event, &value),
             other => {
@@ -227,13 +243,19 @@ impl CommandDefinition for ScriptCommandDefinition {
         let ctx_map = ctx_to_dynamic(ctx);
         match call_with_optional_ctx(&self.runtime, &self.callback, payload, ctx_map) {
             Ok(ret) => Ok(match split_control(&ret) {
-                Some((control, value)) if control == "send" => {
-                    CommandOutput::SendMessage(value.try_cast().unwrap_or_default())
-                }
+                Some((control, value)) if control == "send" => CommandOutput::SendMessage(
+                    value
+                        .clone()
+                        .try_cast()
+                        .unwrap_or_else(|| stringify_dynamic(&value)),
+                ),
                 // `message(...)` — and any bare string — display to the user.
-                Some((control, value)) if control == "message" => {
-                    CommandOutput::Message(value.try_cast().unwrap_or_default())
-                }
+                Some((control, value)) if control == "message" => CommandOutput::Message(
+                    value
+                        .clone()
+                        .try_cast()
+                        .unwrap_or_else(|| stringify_dynamic(&value)),
+                ),
                 _ => CommandOutput::Message(
                     ret.clone()
                         .try_cast()

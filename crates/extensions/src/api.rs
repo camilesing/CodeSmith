@@ -2,14 +2,18 @@
 //!
 //! The stub (constructed at load time by `ExtensionRunner::load`) queues
 //! registrations into the runner's `pending_*`; the runner drains `pending_*`
-//! at `bind_core`. The real impl (flushes directly into the bound
-//! registries) is defined here for the §F2 long-lived-`Arc<dyn
-//! ExtensionApi>` case (extensions that retain the api for lazy
-//! registration); slice 1 does not construct it.
+//! at `bind_core`. The real impl (flushes directly into the bound registries)
+//! is defined here for the §F2 long-lived-`Arc<dyn ExtensionApi>` case
+//! (extensions that retain the api for lazy registration); slice 1 does not
+//! construct it.
 //!
 //! The generation guard (`assert_live`) is the stable contract: a captured
 //! `ExtensionApi` whose `captured_gen` no longer matches the live
-//! `generation.load()` returns [`ExtensionError::StaleContext`].
+//! `generation.load()` returns [`ExtensionError::StaleContext`]. Every stub
+//! enqueue checks the generation while holding the `pending` lock, and
+//! [`ExtensionRunner::invalidate`](crate::ExtensionRunner::invalidate) bumps
+//! the generation under the same lock — so a registration can never be
+//! checked live and then queued after an invalidation (§7.3).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +28,9 @@ use codesmith_agent::provider::{
 use crate::runner::{Pending, RegistrationOrigin};
 
 /// Return `Ok(())` if the runtime generation still matches `captured`, else
-/// `StaleContext`. The stable stale-context guard (spec §7.3).
+/// `StaleContext`. The stable stale-context guard (spec §7.3). Callers must
+/// hold the queue/registry lock the result will push into, so the check and
+/// the enqueue are one atomic step against `invalidate()`'s generation bump.
 fn assert_live(generation: &Arc<AtomicU64>, captured: u64) -> Result<(), ExtensionError> {
     if generation.load(Ordering::Acquire) == captured {
         Ok(())
@@ -87,16 +93,13 @@ impl ExtensionApi for StubExtensionApi {
         self.generation.load(Ordering::Acquire)
     }
     fn register_tool(&self, tool: Box<dyn ToolDefinition>) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending
-            .lock()
-            .unwrap()
-            .tools
-            .push(crate::runner::PendingTool {
-                tool,
-                scope: Scope::Global,
-                origin: self.origin,
-            });
+        pending.tools.push(crate::runner::PendingTool {
+            tool,
+            scope: Scope::Global,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn register_tool_scoped(
@@ -104,31 +107,26 @@ impl ExtensionApi for StubExtensionApi {
         scope: Scope,
         tool: Box<dyn ToolDefinition>,
     ) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         scope.validate()?;
         reject_dylib_scoped(self.origin, "tools")?;
-        self.pending
-            .lock()
-            .unwrap()
-            .tools
-            .push(crate::runner::PendingTool {
-                tool,
-                scope,
-                origin: self.origin,
-            });
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending.tools.push(crate::runner::PendingTool {
+            tool,
+            scope,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending
-            .lock()
-            .unwrap()
+        pending
             .commands
             .push(crate::runner::PendingCommand { command });
         Ok(())
     }
     fn disable_command(&self, name: String) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         // The framework stores the name opaquely; the host resolves it
         // against its builtin table (warn + no-op on an unknown name — the
         // script-bug posture, mirroring bad policy knobs). Only an empty
@@ -138,21 +136,20 @@ impl ExtensionApi for StubExtensionApi {
                 "disable_command(): name must be a built-in command name".into(),
             ));
         }
-        self.pending.lock().unwrap().disabled_commands.push(name);
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending.disabled_commands.push(name);
         Ok(())
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending
-            .lock()
-            .unwrap()
-            .handlers
-            .push(crate::runner::PendingHandler {
-                handler,
-                kind_filter: None,
-                scope: Scope::Global,
-                origin: self.origin,
-            });
+        pending.handlers.push(crate::runner::PendingHandler {
+            handler,
+            kind_filter: None,
+            scope: Scope::Global,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn on_variant(
@@ -160,17 +157,14 @@ impl ExtensionApi for StubExtensionApi {
         kind: ExtensionEventKind,
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending
-            .lock()
-            .unwrap()
-            .handlers
-            .push(crate::runner::PendingHandler {
-                handler,
-                kind_filter: Some(kind),
-                scope: Scope::Global,
-                origin: self.origin,
-            });
+        pending.handlers.push(crate::runner::PendingHandler {
+            handler,
+            kind_filter: Some(kind),
+            scope: Scope::Global,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn on_variant_scoped(
@@ -179,29 +173,25 @@ impl ExtensionApi for StubExtensionApi {
         scope: Scope,
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         scope.validate()?;
         reject_dylib_scoped(self.origin, "handlers")?;
-        self.pending
-            .lock()
-            .unwrap()
-            .handlers
-            .push(crate::runner::PendingHandler {
-                handler,
-                kind_filter: Some(kind),
-                scope,
-                origin: self.origin,
-            });
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending.handlers.push(crate::runner::PendingHandler {
+            handler,
+            kind_filter: Some(kind),
+            scope,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn restrict_tools(&self, scope: Scope, names: Vec<String>) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         // Validate against the runner's rules now so a bad restriction
         // fails its load (fail loud), not at the next catalog build.
         crate::runner::validate_tool_restriction(&scope, &names)?;
-        self.pending
-            .lock()
-            .unwrap()
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending
             .tool_restrictions
             .push(crate::runner::ToolRestriction {
                 scope,
@@ -213,21 +203,20 @@ impl ExtensionApi for StubExtensionApi {
         &self,
         handler: Arc<dyn codesmith_agent::extension::AroundToolHandler>,
     ) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().around_tools.push(handler);
+        pending.around_tools.push(handler);
         Ok(())
     }
     fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending
-            .lock()
-            .unwrap()
+        pending
             .providers
             .push(crate::runner::PendingProvider { factory });
         Ok(())
     }
     fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         // Build + validate here so a bad alias (shadowing id, non-builtin
         // target) fails its load — misconfiguration fails loud — instead of
         // surfacing at the first client build.
@@ -236,23 +225,20 @@ impl ExtensionApi for StubExtensionApi {
                 .into_factory(self.shared.clone())
                 .map_err(ExtensionError::Config)?,
         );
-        self.pending
-            .lock()
-            .unwrap()
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending
             .providers
             .push(crate::runner::PendingProvider { factory });
         Ok(())
     }
     fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         // Validate against the runner's rules now so a bad section fails
         // its load (fail loud), not at first prompt assembly.
         crate::runner::validate_prompt_section(&id, &text)?;
-        self.pending
-            .lock()
-            .unwrap()
-            .prompt_sections
-            .push((id, text));
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending.prompt_sections.push((id, text));
         Ok(())
     }
 
@@ -260,11 +246,12 @@ impl ExtensionApi for StubExtensionApi {
         &self,
         skill: codesmith_agent::extension::SkillRegistration,
     ) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         // Validate now so a bad skill fails its load (fail loud), not at
         // first catalogue render.
         crate::runner::validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
-        self.pending.lock().unwrap().skills.push(skill);
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending.skills.push(skill);
         Ok(())
     }
 
@@ -275,15 +262,16 @@ impl ExtensionApi for StubExtensionApi {
         init: serde_json::Value,
         fold: MessageFoldFn,
     ) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        self.pending.lock().unwrap().message_projections.push(
-            crate::runner::PendingMessageProjection {
+        pending
+            .message_projections
+            .push(crate::runner::PendingMessageProjection {
                 owner,
                 key,
                 init,
                 fold,
-            },
-        );
+            });
         Ok(())
     }
 
@@ -293,7 +281,6 @@ impl ExtensionApi for StubExtensionApi {
         kind: codesmith_agent::policy::PolicyKind,
         config: serde_json::Value,
     ) -> Result<(), ExtensionError> {
-        assert_live(&self.generation, self.captured_gen)?;
         // A policy is data: require a JSON object so a malformed
         // registration fails its load (fail loud), not at first read.
         if !config.is_object() {
@@ -302,9 +289,9 @@ impl ExtensionApi for StubExtensionApi {
                 kind.kebab_name()
             )));
         }
-        self.pending
-            .lock()
-            .unwrap()
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending
             .policies
             .push(codesmith_agent::policy::ResolvedPolicy {
                 kind,
@@ -327,6 +314,11 @@ impl ExtensionApi for StubExtensionApi {
 pub struct RealExtensionApi {
     generation: Arc<AtomicU64>,
     captured_gen: u64,
+    /// The load-path stamp (§F5d unload-safety tier) carried onto every
+    /// registration — supplied by the constructor like the stub's, never a
+    /// baked-in default (a wrong tier would silently grant dylib
+    /// registrations the most-privileged unload-safety level).
+    origin: RegistrationOrigin,
     tools: Arc<Mutex<crate::runner::BoundToolMap>>,
     commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
     handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
@@ -350,6 +342,7 @@ impl RealExtensionApi {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         generation: Arc<AtomicU64>,
+        origin: RegistrationOrigin,
         tools: Arc<Mutex<crate::runner::BoundToolMap>>,
         commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
         handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
@@ -363,6 +356,7 @@ impl RealExtensionApi {
         Self {
             generation,
             captured_gen,
+            origin,
             tools,
             commands,
             handlers,
@@ -385,9 +379,7 @@ impl ExtensionApi for RealExtensionApi {
         let name = tool.name().to_string();
         let bound = crate::runner::BoundTool {
             def: Arc::from(tool),
-            // The real api carries no load-path stamp (never constructed
-            // today); compiled-in is the safe default.
-            origin: RegistrationOrigin::CompiledIn,
+            origin: self.origin,
         };
         self.tools
             .lock()
@@ -409,14 +401,12 @@ impl ExtensionApi for RealExtensionApi {
         assert_live(&self.generation, self.captured_gen)?;
         self.handlers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .push(crate::runner::RegisteredHandler {
                 handler,
                 kind_filter: None,
                 scope: Scope::Global,
-                // The real api carries no load-path stamp (it is never
-                // constructed today); compiled-in is the safe default.
-                origin: RegistrationOrigin::CompiledIn,
+                origin: self.origin,
             });
         Ok(())
     }
@@ -428,19 +418,22 @@ impl ExtensionApi for RealExtensionApi {
         assert_live(&self.generation, self.captured_gen)?;
         self.handlers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .push(crate::runner::RegisteredHandler {
                 handler,
                 kind_filter: Some(kind),
                 scope: Scope::Global,
-                origin: RegistrationOrigin::CompiledIn,
+                origin: self.origin,
             });
         Ok(())
     }
     fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         let guard = self.shared.register(factory);
-        self.providers.lock().unwrap().push(guard);
+        self.providers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(guard);
         Ok(())
     }
     fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError> {
@@ -455,10 +448,21 @@ impl ExtensionApi for RealExtensionApi {
     fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         crate::runner::validate_prompt_section(&id, &text)?;
-        let mut sections = self.prompt_sections.lock().unwrap();
+        let mut sections = self
+            .prompt_sections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(slot) = sections.iter_mut().find(|(existing, _)| *existing == id) {
             slot.1 = text;
         } else {
+            // Same cap the runner's flush path enforces — the real api
+            // writes the shared store directly, so the limit holds here too.
+            if sections.len() >= crate::runner::MAX_PROMPT_SECTIONS {
+                return Err(ExtensionError::Config(format!(
+                    "too many prompt sections (>{})",
+                    crate::runner::MAX_PROMPT_SECTIONS
+                )));
+            }
             sections.push((id, text));
         }
         Ok(())
@@ -470,7 +474,7 @@ impl ExtensionApi for RealExtensionApi {
     ) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         crate::runner::validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
-        let mut skills = self.skills.lock().unwrap();
+        let mut skills = self.skills.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = skills
             .iter()
             .find(|s| s.name == skill.name && s.owner != skill.owner)
@@ -483,6 +487,15 @@ impl ExtensionApi for RealExtensionApi {
         if let Some(slot) = skills.iter_mut().find(|s| s.name == skill.name) {
             *slot = skill;
         } else {
+            // Same cap the runner's flush path enforces (see above).
+            if skills.len() >= codesmith_agent::extension::MAX_REGISTERED_SKILLS {
+                return Err(ExtensionError::Config(format!(
+                    "too many registered skills (>{}), rejecting {:?} from mod {:?}",
+                    codesmith_agent::extension::MAX_REGISTERED_SKILLS,
+                    skill.name,
+                    skill.owner
+                )));
+            }
             skills.push(skill);
         }
         Ok(())

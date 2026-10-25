@@ -437,8 +437,12 @@ impl ExtensionRunner {
 
     /// Invalidate the runtime (spec §7.3): bumps generation so any
     /// previously-captured `ExtensionApi`/`ExtensionContext` reads stale.
-    /// Called by `reload` / session-replace / fork / switch.
+    /// Called by `reload` / session-replace / fork / switch. The bump runs
+    /// under the `pending` queue lock so the stub api's lock-held
+    /// check-generation-then-enqueue step is atomic against it — a stale
+    /// registration can never be checked live and then queued.
     pub fn invalidate(&self) {
+        let _guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
 

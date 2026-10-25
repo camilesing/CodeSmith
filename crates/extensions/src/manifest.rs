@@ -37,10 +37,36 @@ impl std::str::FromStr for ExtensionManifest {
     type Err = ExtensionError;
 
     /// Parse an `extension.toml` document. Returns
-    /// [`ExtensionError::Load`] on malformed TOML or a missing required
-    /// field (`id`/`version`).
+    /// [`ExtensionError::Load`] on malformed TOML, a missing required field
+    /// (`id`/`version`), or an unsafe `id`/`entry`: both feed filesystem
+    /// paths downstream (`entry` is joined onto the extension dir, `id`
+    /// builds the default dylib filename), so traversal-safety is a property
+    /// of the parsed type, not a per-call-site convention — `id` must be a
+    /// single safe path component and `entry` must be a non-empty relative
+    /// path without `..` components.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        toml::from_str(text).map_err(|e| ExtensionError::Load(format!("manifest parse: {e}")))
+        let manifest: ExtensionManifest = toml::from_str(text)
+            .map_err(|e| ExtensionError::Load(format!("manifest parse: {e}")))?;
+        if !crate::installer::is_safe_id(&manifest.id) {
+            return Err(ExtensionError::Load(format!(
+                "manifest id {:?} is not a single safe path component",
+                manifest.id
+            )));
+        }
+        if let Some(entry) = &manifest.entry {
+            let entry_path = Path::new(entry);
+            if entry.is_empty()
+                || entry_path.is_absolute()
+                || entry_path
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(ExtensionError::Load(format!(
+                    "manifest entry {entry:?} is empty, absolute, or contains '..'"
+                )));
+            }
+        }
+        Ok(manifest)
     }
 }
 
@@ -96,5 +122,33 @@ version = "0.1.0"
     fn manifest_parse_malformed_is_load_error() {
         let m = ExtensionManifest::from_str("id = \n broken [");
         assert!(matches!(m, Err(ExtensionError::Load(_))), "got {m:?}");
+    }
+
+    #[test]
+    fn manifest_rejects_unsafe_entry_at_parse() {
+        for entry in [
+            "",
+            "/abs/evil.dylib",
+            "../sibling.dylib",
+            "sub/../../evil.dylib",
+        ] {
+            let text = format!("id = \"x\"\nversion = \"1\"\nentry = \"{entry}\"\n");
+            let m = ExtensionManifest::from_str(&text);
+            assert!(
+                matches!(m, Err(ExtensionError::Load(_))),
+                "{entry:?}: {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_rejects_unsafe_id_at_parse() {
+        // Unsafe ids must be rejected even when `entry` is present (the
+        // downstream default-filename guard never runs on that branch).
+        for id in ["", ".", "..", "../evil", "a/../../evil", "a b"] {
+            let text = format!("id = \"{id}\"\nversion = \"1\"\nentry = \"libx.dylib\"\n");
+            let m = ExtensionManifest::from_str(&text);
+            assert!(matches!(m, Err(ExtensionError::Load(_))), "{id:?}: {m:?}");
+        }
     }
 }

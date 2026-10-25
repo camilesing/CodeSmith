@@ -111,7 +111,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 **预期效果**：
 
 - 在 REPL 里敲 `/calls some args` 即经扩展运行时分发：`message(...)` 直接打印文本，`send(...)` 将内容送入会话。mod 命令位于用户命令与内建表之间（用户命令可遮蔽它们，它们可遮蔽内建命令），`/help` 的 "mod commands" 节会列出，Tab 补全实时提供其名字。
-- 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 会重新执行发现流程，同 id 免审批。`/mods status` 确认哪些 mod 已加载及运行时代数（`/mods list` 显示各 mod 的激活状态与已解析策略层；启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.9.0 移除，重载改为显式触发。）
+- 现在**改 `mod.rhai`、保存，然后重载**——`/mods reload` 会重新执行发现流程，同 id 免审批。`/mods status` 确认哪些 mod 已加载及运行时代数（`/mods list` 显示各 mod 的激活状态与已解析策略层；启动提示也会列出已发现但未激活的 mod）。（自动文件 watcher 及其 `[mods] watch` 开关已在 0.10.0 移除，重载改为显式触发。）
 
 到此你已经用过全部四种注册面：事件钩子、工具、命令、KV。`/mods` 的完整命令集为 `list` / `status` / `info <id>` / `activate <id>` / `enable|disable <id>` / `remove <id>` / `reload`；模型侧 `manage_mods` 工具与之对应，动作为 `list` / `write` / `activate` / `disable` / `enable` / `remove` / `reload`，另有会话实验线 `session_write` / `session_remove`（见下文）。
 
@@ -147,7 +147,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 不报检查点。同一检查点也以 `ToolCallProgress`
 到达 UI。`resources-discover` 已在 0.11.0 移除（从未有发射方，也没有消费者）。
 `session-before-fork` 在每次 spawn 前触发——spawn 工具族（`agent_open` / `agent_spawn` /
-`subagent_run` / `delegate_to_agent`）在任意深度（runner 随子代理运行时传递，
+`agent_run`）在任意深度（runner 随子代理运行时传递，
 故孙代 fork 同样可否决）以及引擎内部 spawn 路径——在 fork 会话状态前触发；`cancel()` 否决
 该次 fork。自 5b 起，runner 在子代理侧不再只是否决载体：子代理注册表会挂载该子代理类型
 的扩展工具视图（仅 script/compiled-in 来源——因此 mod 的 guard 同样把关子代理工具
@@ -455,7 +455,7 @@ mod 在发现阶段即被跳过（日志有告警），不会进入激活流程�
 enabled = true   # 总开关：发现、manage_mods 工具
 ```
 
-`watch` 热重载文件 watcher 已在 0.9.0 移除；用
+`watch` 热重载文件 watcher 已在 0.10.0 移除；用
 `manage_mods(action="reload")` 来加载改动。
 
 ## 实现索引

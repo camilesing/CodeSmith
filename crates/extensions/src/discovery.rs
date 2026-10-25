@@ -8,7 +8,7 @@
 
 use crate::manifest::ExtensionManifest;
 use codesmith_agent::extension::ExtensionMetadata;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// A compiled-in extension registration. `factory` constructs a fresh
 /// `Box<dyn Extension>` per load (so a reload gets clean state). Mirrors
@@ -61,9 +61,11 @@ pub(crate) fn default_dylib_filename(id: &str) -> String {
 /// Each root may be a container directory of extension subdirectories, a single
 /// manifest dir (containing `extension.toml`), or a bare `.dylib`/`.so`/`.dll`
 /// file. Dedups by canonicalized `dylib_path` so a source reached via two
-/// roots loads once. Best-effort: malformed manifests / unreadable dirs are
-/// skipped (surfacing them to extensions would need a notification
-/// channel this crate deliberately does not ship).
+/// roots loads once, merging `global` conservatively (any project-root
+/// reachability ⇒ `global == false`, so the trust gate stays authoritative
+/// under overlapping or symlinked roots). Best-effort: malformed manifests /
+/// unreadable dirs are skipped (surfacing them to extensions would need a
+/// notification channel this crate deliberately does not ship).
 pub fn discover_dylib(
     global_roots: &[PathBuf],
     project_roots: &[PathBuf],
@@ -119,50 +121,28 @@ fn discover_in_root(root: &Path, global: bool, out: &mut Vec<DiscoveredSource>) 
 /// Parse `extension.toml` under `dir` and resolve the dylib `entry` (default
 /// filename when absent). Yields regardless of dylib-file existence (the loader
 /// reports a missing file as `ExtensionError::Load`). Returns `None` on parse
-/// failure (best-effort skip).
+/// failure (best-effort skip; `ExtensionManifest::from_str` rejects unsafe
+/// `id`/`entry`, so a crafted manifest dies here).
 fn discover_manifest_dir(dir: &Path, global: bool) -> Option<DiscoveredSource> {
-    let manifest = ExtensionManifest::parse(&dir.join("extension.toml")).ok()?;
+    let manifest_path = dir.join("extension.toml");
+    let manifest = match ExtensionManifest::parse(&manifest_path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                "skipping extension manifest {}: {e}",
+                manifest_path.display()
+            );
+            return None;
+        }
+    };
     let dylib_path = match &manifest.entry {
-        Some(entry) => {
-            // The manifest `entry` is untrusted data from disk: an absolute
-            // path or a `..` component would point the loader outside the
-            // extension's own dir. Reject and skip the manifest, matching
-            // the best-effort handling of parse failures above.
-            let entry_path = Path::new(entry);
-            if entry_path.is_absolute()
-                || entry_path
-                    .components()
-                    .any(|component| matches!(component, Component::ParentDir))
-            {
-                tracing::warn!(
-                    "skipping extension manifest {}: entry {:?} is absolute or contains '..'",
-                    dir.join("extension.toml").display(),
-                    entry
-                );
-                return None;
-            }
-            dir.join(entry_path)
-        }
-        None => {
-            // The manifest-supplied `id` builds the default dylib filename.
-            // It is untrusted data from disk: anything but a single safe
-            // component (`../x`, `x/../../evil`, a Windows drive-relative
-            // `C:evil`) would point the loader outside the extension dir.
-            if !crate::installer::is_safe_id(&manifest.id) {
-                tracing::warn!(
-                    "skipping extension manifest {}: id {:?} is not a single safe path component",
-                    dir.join("extension.toml").display(),
-                    manifest.id
-                );
-                return None;
-            }
-            dir.join(default_dylib_filename(&manifest.id))
-        }
+        Some(entry) => dir.join(Path::new(entry)),
+        None => dir.join(default_dylib_filename(&manifest.id)),
     };
     Some(DiscoveredSource {
         id: manifest.id,
         version: manifest.version,
-        config_path: Some(dir.join("extension.toml")),
+        config_path: Some(manifest_path),
         dylib_path,
         global,
     })
@@ -194,17 +174,36 @@ fn is_dylib_file(path: &Path) -> bool {
 }
 
 /// Drop later occurrences of a source whose canonicalized `dylib_path` was
-/// already seen (a source reached via two roots loads once). Falls back to
-/// the raw path when `canonicalize` fails (file not yet built) so dedup still
-/// works.
+/// already seen (a source reached via two roots loads once), merging `global`
+/// conservatively: a dylib reachable from ANY project root keeps
+/// `global == false` even when a global root was scanned first — a
+/// project-reachable dylib must never be treated as global (the trust gate
+/// would otherwise retain it in an untrusted workspace via an overlapping or
+/// symlinked global root). Falls back to the raw path when `canonicalize`
+/// fails (file not yet built) so dedup still works.
 fn dedup_by_dylib_path(out: &mut Vec<DiscoveredSource>) {
+    let project_keys: std::collections::HashSet<PathBuf> = out
+        .iter()
+        .filter(|s| !s.global)
+        .map(|s| {
+            s.dylib_path
+                .canonicalize()
+                .unwrap_or_else(|_| s.dylib_path.clone())
+        })
+        .collect();
     let mut seen = std::collections::HashSet::new();
-    out.retain(|s| {
+    out.retain_mut(|s| {
         let key = s
             .dylib_path
             .canonicalize()
             .unwrap_or_else(|_| s.dylib_path.clone());
-        seen.insert(key)
+        if !seen.insert(key.clone()) {
+            return false;
+        }
+        if project_keys.contains(&key) {
+            s.global = false;
+        }
+        true
     });
 }
 
@@ -350,6 +349,30 @@ mod dylib_tests {
         // Same root passed twice → same dylib_path → dedup to 1.
         let found = discover_dylib(&[root.clone(), root], &[]);
         assert_eq!(found.len(), 1, "expected dedup to 1, got {found:?}");
+    }
+
+    #[test]
+    fn discover_dylib_project_reachability_downgrades_global() {
+        // The same dylib reachable via a global root AND a project root must
+        // keep `global == false` after dedup — first-wins would otherwise
+        // retain the global flag and slip the source past the trust gate in
+        // an untrusted workspace (overlapping/symlinked roots).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ext_dir = dir.path().join("demo");
+        std::fs::create_dir(&ext_dir).expect("mkdir");
+        std::fs::write(
+            ext_dir.join("extension.toml"),
+            "id = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write manifest");
+        let root = dir.path().to_path_buf();
+        let roots = std::slice::from_ref(&root);
+        let found = discover_dylib(roots, roots);
+        assert_eq!(found.len(), 1, "expected dedup to 1, got {found:?}");
+        assert!(
+            !found[0].global,
+            "project reachability must downgrade global"
+        );
     }
 
     #[test]

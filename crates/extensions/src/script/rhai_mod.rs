@@ -531,10 +531,28 @@ pub(crate) fn merge_transform(
         ExtensionEvent::BeforeProviderRequest(_) => {
             if let Some(d) = map.get("messages") {
                 match dynamic_to_json(d) {
-                    Ok(messages) => {
+                    // `messages` flows into provider serialization: require
+                    // an array of role-bearing message maps so a wrong shape
+                    // is rejected at this seam, not far downstream.
+                    Ok(messages)
+                        if messages.is_array()
+                            && messages.as_array().is_some_and(|ms| {
+                                ms.iter().all(|m| {
+                                    m.is_object() && m.get("role").is_some_and(|r| r.is_string())
+                                })
+                            }) =>
+                    {
                         HandlerOutcome::Transform(ExtensionEvent::BeforeProviderRequest(
                             codesmith_agent::extension::BeforeProviderRequestEvent { messages },
                         ))
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            target: "codesmith_mods",
+                            "before-provider-request transform: `messages` must be an array of \
+                             role-bearing message maps — ignored"
+                        );
+                        HandlerOutcome::Continue
                     }
                     Err(e) => {
                         tracing::warn!(target: "codesmith_mods", "provider-request transform: {e}");
@@ -607,12 +625,21 @@ pub(crate) fn merge_transform(
             // host applies it before approval + execution.
             if let Some(d) = map.get("input") {
                 match dynamic_to_json(d) {
-                    Ok(input) => {
+                    // The rewritten input feeds tool execution: require an
+                    // object map so a wrong shape is rejected at this seam.
+                    Ok(input) if input.is_object() => {
                         HandlerOutcome::Transform(ExtensionEvent::ToolCall(ToolCallEvent {
                             id: cur.id.clone(),
                             name: cur.name.clone(),
                             input,
                         }))
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            target: "codesmith_mods",
+                            "tool-call transform: `input` must be an object map — ignored"
+                        );
+                        HandlerOutcome::Continue
                     }
                     Err(e) => {
                         tracing::warn!(target: "codesmith_mods", "tool-call transform: {e}");
@@ -1037,6 +1064,25 @@ fn register_natives(
                                 key
                             ))
                         })?;
+                        // Validation fails loud at capture (the site this
+                        // block's doc names): header names/values are
+                        // replayed verbatim into the alias factory's HTTP
+                        // client, so reject anything that could corrupt a
+                        // request — empty/oversized names, non-graphical
+                        // bytes, or CR/LF/control characters in values.
+                        if key.is_empty()
+                            || key.len() > 256
+                            || !key.bytes().all(|b| b.is_ascii_graphic())
+                            || value.len() > 8 * 1024
+                            || value
+                                .bytes()
+                                .any(|b| b == b'\r' || b == b'\n' || !(b.is_ascii_graphic() || b == b' '))
+                        {
+                            return Err(script_error(format!(
+                                "register_provider(): header {:?} has an invalid name or value",
+                                key
+                            )));
+                        }
                         headers.insert(key.to_string(), value);
                     }
                     Some(headers)
@@ -1379,20 +1425,26 @@ impl Extension for RhaiMod {
                 ScriptRegistration::Guard { callback } => {
                     // Guards are deny-only controls invoked with exactly one
                     // argument; a `|e, ctx|`-arity callback can never bind and
-                    // would abstain silently forever (fail-open hole). Fail the
-                    // mod's load instead when the AST metadata names a wrong
-                    // arity (an unresolvable name falls through to the
-                    // runtime error log below).
-                    let arity_ok = self
+                    // would abstain silently forever (fail-open hole). Named
+                    // functions and anonymous closures are both compiled into
+                    // this AST, so a metadata miss means the name cannot bind
+                    // at call time either — fail the mod's load in both cases
+                    // (loud at load) instead of leaving a permanently-bypassed
+                    // deny control behind a `tracing::error!` line.
+                    let fn_meta = self
                         .runtime
                         .ast
                         .iter_functions()
-                        .find(|m| m.name == callback.fn_name())
-                        .is_none_or(|m| m.params.len() == 1);
+                        .find(|m| m.name == callback.fn_name());
+                    let arity_ok = match fn_meta {
+                        None => false,
+                        Some(m) => m.params.len() == 1,
+                    };
                     if !arity_ok {
                         return Err(codesmith_agent::extension::ExtensionError::Load(
-                            "register_guard(): callback must take a single parameter (|e|) — \
-                             guards receive the tool-call payload only"
+                            "register_guard(): callback must be a single-parameter (|e|) \
+                             function defined in this mod — guards receive the tool-call \
+                             payload only"
                                 .to_string(),
                         ));
                     }
@@ -1881,6 +1933,27 @@ mod tests {
         );
         let msg = m.unwrap_err().to_string();
         assert!(msg.contains("not a builtin provider"), "{msg}");
+    }
+
+    #[test]
+    fn register_provider_rejects_header_injection_shapes() {
+        for (label, headers) in [
+            ("crlf in value", r#""X-Gw": "acme\r\nEvil: 1""#),
+            ("empty name", r#""": "v""#),
+            ("space in name", r#""X Gw": "v""#),
+        ] {
+            let dir = TempDir::new().unwrap();
+            let script = format!(
+                r#"register_provider(#{{ id: "gw", kind: "openai", base_url: "https://gw.example.test/v1", headers: #{{ {headers} }} }});"#
+            );
+            let m = RhaiMod::load(
+                &discovered_for(&dir, "hdr-guard", &script),
+                kv_for(&dir, "hdr-guard"),
+                hub(),
+            );
+            let msg = m.unwrap_err().to_string();
+            assert!(msg.contains("invalid name or value"), "{label}: {msg}");
+        }
     }
 
     #[test]
@@ -2577,6 +2650,46 @@ mod tests {
             m.registrations().first(),
             Some(ScriptRegistration::Guard { .. })
         ));
+    }
+
+    #[test]
+    fn guard_with_ctx_arity_fails_load() {
+        // A `|e, ctx|` guard can never bind (guards receive one argument);
+        // it must fail the configure replay, not abstain silently forever.
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "two-param-guard",
+                r#"register_guard(|e, ctx| { if e.name == "exec_shell" { "no" } });"#,
+            ),
+            kv_for(&dir, "two-param-guard"),
+            hub(),
+        )
+        .expect("compile + capture");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let msg = rt
+            .block_on(runner.load(&m))
+            .expect_err("configure must fail")
+            .to_string();
+        assert!(msg.contains("single-parameter"), "{msg}");
+    }
+
+    #[test]
+    fn guard_with_unresolvable_name_fails_load() {
+        // A string FnPtr name cannot be coerced at the native call site, so
+        // a typo'd guard already fails loud at capture — the deny control
+        // never loads. (The configure-time metadata check additionally
+        // rejects any FnPtr whose name is absent from the AST.)
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(&dir, "typo-guard", r#"register_guard("no_such_guard_fn");"#),
+            kv_for(&dir, "typo-guard"),
+            hub(),
+        );
+        let msg = m.expect_err("load must fail").to_string();
+        assert!(msg.contains("Function not found"), "{msg}");
     }
 
     /// Route B end-to-end: script guard → runner load → `bind_core` →
