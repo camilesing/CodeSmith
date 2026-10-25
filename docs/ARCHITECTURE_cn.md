@@ -4,7 +4,7 @@
 深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
 [DESIGN_INTERNALS_cn.md](DESIGN_INTERNALS_cn.md)。
 
-当前边界说明（v0.10.0）：
+当前边界说明（v0.11.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
   `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的 turn 循环、
   引擎、压缩）—— 与实现群：其余全部（`providers`、`tool-impls`、`cli`、
@@ -63,7 +63,7 @@
   （`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`），在每次 edit_file/apply_patch/write_file 之后提供内联诊断。
 - 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`）。
   活跃代码库中不再保留任何模型可见的 swarm 工具。
-- 子代理默认在进程内运行；**外部子代理接缝**让子代理在进程外运行而不改变模型可见面。定义：`crates/agent-runtime/src/subagent.rs` 中的 `ExternalSubagentProvider`（及请求/结果类型）；首个 provider：`crates/cli/src/tools/subagent/headless.rs` 的自身 headless provider（每个非 team 子代理变成一个 `codesmith exec --json` 子进程，spawn 深度预算经 `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承）；消费者：CLI 的 spawn 路径（`run_subagent_task`），由 `[subagents] external_provider` 选用。fork 上下文、`agent_send_input` 以及 team/coordinator 子代理按设计留在进程内（接缝定义处有文档）。ACP / Codex / Claude Code provider 是该接缝的未来槽位，未建。
+- 子代理默认在进程内运行；**外部子代理接缝**让子代理在进程外运行而不改变模型可见面。定义：`crates/agent-runtime/src/subagent.rs` 中的 `ExternalSubagentProvider`（及请求/结果类型）；两个 provider，均在 `crates/cli/src/tools/subagent/`：自身 headless provider（`headless.rs` —— 每个非 team 子代理变成一个 `codesmith exec --json` 子进程，spawn 深度预算经 `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承）和 ACP provider（`acp.rs`，v0.11.0 —— 把每次子代理运行委托给 `[subagents.acp]` 下配置的任意 Agent-Client-Protocol stdio agent，走与本仓库自身 `--acp` 服务端适配器相同的 JSON-RPC 基线；只返回一个终态结果、中途进度不回流、外来 agent 不继承 spawn 深度预算、`session/request_permission` 按父方 `auto_approve` 姿态自动应答 —— 完整清单见该模块）；消费者：CLI 的 spawn 路径（`run_subagent_task`），由 `[subagents] external_provider = "headless" | "acp"` 选用（`headless.rs` 的 `provider_from_config`；未知名称、或 `"acp"` 缺少 `[subagents.acp] command`，都在配置加载时即报错）。fork 上下文、`agent_send_input` 以及 team/coordinator 子代理按设计留在进程内（接缝定义处有文档）。Codex / Claude Code provider 仍是该接缝未建的槽位。
 
 ## 高层概览
 

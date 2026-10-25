@@ -4,7 +4,7 @@ This document provides an overview of the codesmith architecture for developers 
 For the deep design narrative (provider seam, framework-core agent executor, guardrail
 absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 
-Current boundary note (v0.9.0):
+Current boundary note (v0.11.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
   `extensions`, `agent-runtime` (the kernel: one turn loop, engine,
@@ -67,14 +67,14 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   `BASE_PROMPT`, and sub-agent tool registries' built-in surface are
   core by contract, not plugins (per-surface map: MODS.md "Which tier
   when").
-- `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.9.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
+- `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.10.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.
 - The LSP subsystem (`crates/cli/src/lsp/`) is fully wired into the engine's post-tool-execution path
   (`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
 - The orchestration surface is persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`).
   No model-visible swarm tool remains in the active codebase.
-- Sub-agents run in-process by default; the **external sub-agent seam** lets a child run out of process without changing the model-visible surface. Definition: `ExternalSubagentProvider` (+ request/outcome types) in `crates/agent-runtime/src/subagent.rs`; first provider: the headless self-provider in `crates/cli/src/tools/subagent/headless.rs` (each non-team child becomes a `codesmith exec --json` subprocess, with the spawn-depth budget inherited through `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH`); consumer: the CLI spawn path (`run_subagent_task`), selected by `[subagents] external_provider`. Forked contexts, `agent_send_input`, and team/coordinator children stay in-process by design (documented on the seam). ACP / Codex / Claude Code providers are future slots of this seam, not built.
+- Sub-agents run in-process by default; the **external sub-agent seam** lets a child run out of process without changing the model-visible surface. Definition: `ExternalSubagentProvider` (+ request/outcome types) in `crates/agent-runtime/src/subagent.rs`; two providers, both in `crates/cli/src/tools/subagent/`: the headless self-provider (`headless.rs` — each non-team child becomes a `codesmith exec --json` subprocess, with the spawn-depth budget inherited through `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH`) and the ACP provider (`acp.rs`, v0.11.0 — delegates each child run to any Agent-Client-Protocol stdio agent configured under `[subagents.acp]`, speaking the same JSON-RPC baseline as the repo's own `--acp` server adapter; one terminal outcome with no mid-run streaming, no spawn-depth inheritance for a foreign agent, `session/request_permission` auto-answered from the parent's `auto_approve` posture — the full list is on the module); consumer: the CLI spawn path (`run_subagent_task`), selected by `[subagents] external_provider = "headless" | "acp"` (`provider_from_config` in `headless.rs`; an unknown name, or `"acp"` without a `[subagents.acp] command`, fails at config load). Forked contexts, `agent_send_input`, and team/coordinator children stay in-process by design (documented on the seam). Codex / Claude Code providers remain unbuilt slots of this seam.
 
 ## High-Level Overview
 
