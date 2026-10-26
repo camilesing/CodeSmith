@@ -8,7 +8,9 @@
 //! [`crate::repl::runtime::PythonRuntime`] (the RLM REPL protocol carries
 //! the workflow RPCs as new `RpcRequest` variants), and the concrete
 //! engine + CLI sub-agent spawner live in the implementation group
-//! (`codesmith-cli::tools::workflow`).
+//! (`codesmith-cli::tools::workflow`), whose `workflow` tool is the
+//! consumer — it invokes each per-call engine through
+//! `Arc<dyn WorkflowEngine>`.
 //!
 //! The script text is tool *input*, so the model-visible script is
 //! reconstructable from the session transcript by construction (repo rule

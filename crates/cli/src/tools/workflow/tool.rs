@@ -86,7 +86,7 @@ impl WorkflowTool {
         self
     }
 
-    fn engine(&self, context: &ToolContext) -> PythonWorkflowEngine {
+    fn engine(&self, context: &ToolContext) -> Arc<PythonWorkflowEngine> {
         let spawner: Arc<dyn SubAgentSpawner> = match &self.spawner_override {
             Some(spawner) => Arc::clone(spawner),
             None => Arc::new(
@@ -98,16 +98,18 @@ impl WorkflowTool {
                 .with_extension_runner(self.extension_runner.clone()),
             ),
         };
-        PythonWorkflowEngine::new(spawner)
-            .with_timeout(self.runtime.workflow_timeout)
-            // Workflow lifecycle emissions (observe-only Emit family) —
-            // same runner the fork-veto threading attached.
-            .with_extension_runner(self.extension_runner.clone())
-            .with_default_max_agents(
-                self.runtime
-                    .workflow_max_agents
-                    .unwrap_or(crate::config::DEFAULT_MAX_SUBAGENTS as u32),
-            )
+        Arc::new(
+            PythonWorkflowEngine::new(spawner)
+                .with_timeout(self.runtime.workflow_timeout)
+                // Workflow lifecycle emissions (observe-only Emit family) —
+                // same runner the fork-veto threading attached.
+                .with_extension_runner(self.extension_runner.clone())
+                .with_default_max_agents(
+                    self.runtime
+                        .workflow_max_agents
+                        .unwrap_or(crate::config::DEFAULT_MAX_SUBAGENTS as u32),
+                ),
+        )
     }
 }
 
@@ -204,7 +206,16 @@ impl ToolSpec for WorkflowTool {
             max_agents,
             timeout: engine.timeout(),
         };
-        match engine.run(script).await {
+        // The run is invoked through the `WorkflowEngine` seam, held as a
+        // trait object (`Arc<dyn WorkflowEngine>`), so this tool is the
+        // seam's consumer (the capability graph's consumer role). The
+        // pre-run `timeout()` read above and the post-failure receipt
+        // getters below stay on the concrete `PythonWorkflowEngine` —
+        // host-side read-backs the trait deliberately does not carry (same
+        // two-handle constraint as the engine's `Arc<dyn AgentExecutor>`
+        // main-turn binding).
+        let dyn_engine: Arc<dyn WorkflowEngine> = engine.clone();
+        match dyn_engine.run(script).await {
             Ok(outcome) => {
                 let logs_total = outcome.logs.len();
                 let logs_tail: Vec<&str> = outcome
