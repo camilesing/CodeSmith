@@ -2199,8 +2199,39 @@ mod tests {
                 },
                 K::ToolsChange,
             ),
+            // Workflow lifecycle (observe-only, Emit family — same values
+            // the W2 engine emits: `status` per the documented vocabulary,
+            // `error: None` on success).
+            (ExtensionEvent::WorkflowStart, K::WorkflowStart),
+            (
+                ExtensionEvent::WorkflowLog(WorkflowLogEvent {
+                    message: "m".into(),
+                }),
+                K::WorkflowLog,
+            ),
+            (
+                ExtensionEvent::WorkflowAgentStart(WorkflowAgentStartEvent {
+                    objective: "o".into(),
+                }),
+                K::WorkflowAgentStart,
+            ),
+            (
+                ExtensionEvent::WorkflowAgentEnd(WorkflowAgentEndEvent {
+                    status: "completed".into(),
+                    steps: 1,
+                }),
+                K::WorkflowAgentEnd,
+            ),
+            (
+                ExtensionEvent::WorkflowEnd(WorkflowEndEvent {
+                    status: "completed".into(),
+                    error: None,
+                    agent_calls: 1,
+                }),
+                K::WorkflowEnd,
+            ),
         ];
-        assert_eq!(cases.len(), 26, "all variants covered");
+        assert_eq!(cases.len(), 31, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }
