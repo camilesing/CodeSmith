@@ -166,11 +166,15 @@ in an implementation crate, consumer — and lands in
   `crates/agent-runtime/src/prompts/base.md`) is the sole base prompt by
   convention; `crates/cli/src/prompts.rs` has tests asserting required tags.
   Same rule: move the code, not the prose, if that changes.
-- There is one turn loop, in `crates/agent-runtime/src/engine/` (turn phases
-  in `engine/turn/`). `crates/cli/src/core/` is a thin re-export and
-  construction bridge (`EngineHost`/`build_engine`), not a second loop;
-  `crates/core` is a separate crate and runs no turns. The boundary note at
-  the top of `docs/ARCHITECTURE.md` is the live reference.
+- There is one production turn loop, `HostAgentExecutor` behind the
+  `AgentExecutor` seam: the engine invokes it through `Arc<dyn AgentExecutor>`,
+  and an alternate loop lands as a new provider on that seam (compile-time
+  registered), not as a second in-tree loop. The loop lives in
+  `crates/agent-runtime/src/engine/` (turn phases in `engine/turn/`).
+  `crates/cli/src/core/` is a thin re-export and construction bridge
+  (`EngineHost`/`build_engine`), not a second loop; `crates/core` is a separate
+  crate and runs no turns. The boundary note at the top of
+  `docs/ARCHITECTURE.md` is the live reference.
 - The system prompt + tool catalog are a session-pinned cache prefix
   (`crates/agent-runtime/src/prefix_cache.rs`); the static system prompt
   stays cache-friendly. Any new session-context contributor must state its

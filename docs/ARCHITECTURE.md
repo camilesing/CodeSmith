@@ -7,8 +7,9 @@ absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 Current boundary note (v0.11.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
-  `extensions`, `agent-runtime` (the kernel: one turn loop, engine,
-  compaction) — and an implementation group: everything else (`providers`,
+  `extensions`, `agent-runtime` (the kernel: one production turn loop behind
+  the `AgentExecutor` seam, engine, compaction) — and an implementation
+  group: everything else (`providers`,
   `tool-impls`, `cli`, `app-server`, `mcp`, `state`, `execpolicy`,
   `hooks`, `index`, `core`, `release`, test fixtures). Framework
   crates must not depend, in the build graph, on any workspace crate outside

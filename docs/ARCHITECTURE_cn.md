@@ -6,8 +6,9 @@
 
 当前边界说明（v0.11.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
-  `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的 turn 循环、
-  引擎、压缩）—— 与实现群：其余全部（`providers`、`tool-impls`、`cli`、
+  `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的、位于
+  `AgentExecutor` 接缝之后的生产 turn 循环、引擎、压缩）—— 与实现群：
+  其余全部（`providers`、`tool-impls`、`cli`、
   `app-server`、`mcp`、`state`、`execpolicy`、`hooks`、`index`、`core`、
   `release`、测试 fixture）。框架群 crate 在构建图中不得依赖框架群
   之外的任何 workspace crate；实现群可以自由依赖框架群。该规则由
