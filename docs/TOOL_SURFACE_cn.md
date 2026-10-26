@@ -233,6 +233,31 @@ v0.8.33 开始将大型工具输出迁移到符号句柄：工具返回小型 `v
 会尽可能逐字节保留父级 prefill/提示前缀，以便复用 DeepSeek 的前缀
 缓存，然后再追加子级角色指令和任务。
 
+### Workflow 编排
+
+`workflow` 工具是模型可写的编排：模型写一段 Python 脚本，它跑在一个
+一次性沙箱内核上，通过注入（在脚本之前）的辅助函数协调子代理。
+
+| 工具 | 定位 |
+|---|---|
+| `workflow` | 在一次性内核上运行一段 Python 编排脚本；脚本驱动子代理，其 `finalize(...)` 值作为工具回执返回。 |
+
+脚本 API：`run_agent(objective, *, role=None, model=None, timeout_s=None)`
+运行一个子代理至完成并返回 `{"result", "steps", "status"}`；
+`agents([{objective, ...}, ...])` 并发扇出一个列表（受 `max_agents` 约
+束，按整次运行计总量）；`log(message)` 向运行日志追加一行；
+`finalize(value)` 设置运行的返回值。失败的子级以 `status: "failed"`、
+错误文本在 `result` 中返回——那是脚本处理的数据，不是异常；超出代理
+预算或脚本自身出错则整次运行带 traceback 失败。子级走与 `agent_run`
+相同的一次性路径，继承其并发上限、spawn 深度预算、审批天花板与
+`SessionBeforeFork` fork 否决。
+
+回执是结构化 JSON：`return_value`（脚本传给 `finalize` 的值）、
+`agent_calls`、`elapsed_ms`，以及最近 20 行 `log(...)` 的 `logs_tail`
+（`logs_total` 计其余收集到的行）。整次运行有墙钟上限——默认 600s，
+`[workflow] timeout_secs` 最高 1800s；到点即杀内核、取消在途子级，
+其部分转录不予记录。超过 16 KiB 的回执在字符边界截断并带显式标记。
+
 ### 递归 LM 会话
 
 RLM 现在同样是持久化的：

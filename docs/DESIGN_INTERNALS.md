@@ -340,7 +340,7 @@ bind_core → emit path.
               codesmith_cli (build_extension_runtime + StateStore + manage_mods reload)
 ```
 
-The contract and runtime core carry the full 26-variant `ExtensionEvent` set
+The contract and runtime core carry the full 31-variant `ExtensionEvent` set
 plus `ExtensionEventKind`/`kind()`, the `HandlerOutcome`
 (`Continue`/`Cancel`/`Block`/`Transform`) cross-handler chain
 (`Handler::handle` returns `Result<HandlerOutcome, _>`), per-variant
@@ -361,13 +361,15 @@ outcome chain, `AroundToolHandler` (`ExtensionApi::register_around_tool`)
 composes a DSH `next()`-wrapping chain around both tool-dispatch arms'
 terminals in `turn::batches` (parallel early-reuse/run — whose approval
 questions are asked in a separate sequential pre-pass — and serial
-approval/run) — a handler that never awaits `next` vetoes. 25 of the 26
+approval/run) — a handler that never awaits `next` vetoes. All 31
 event kinds are emitted from production seams (`ToolExecutionUpdate` from
 the shell tools' poll loops through `ToolContext::progress`,
 `SessionBeforeFork` from every spawn path, `ProjectTrust` per turn and per
-sub-agent spawn, `TurnStopping` from the host_executor no-tool-calls arm);
-the one un-emitted kind is `SessionBeforeSwitch` (no
-runtime emitter — see the seam table in `EXTENSIONS.md`).
+sub-agent spawn, `TurnStopping` from the host_executor no-tool-calls arm,
+the five workflow lifecycle events from the `workflow` engine and RPC
+bridge). `SessionBeforeSwitch` — for a long time the one un-emitted kind —
+is wired to the `/cd` REPL command, its only trigger point (see the seam
+table in `EXTENSIONS.md`).
 
 Live reload re-populates the shared runner `Arc` via
 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
@@ -376,8 +378,7 @@ tool's reload action triggers it, and because the runner `Arc` is shared,
 both the REPL's `state.extension_runner` and the Engine's field see the
 update.
 
-Not implemented yet: the `SessionBeforeSwitch` emitter (the in-process
-workspace switch went with the TUI in 0.10.0), `registerProvider`,
+Not implemented yet: `registerProvider`,
 `registerShortcut`/`registerFlag`/
 renderers, install-source implementations, and the embed API. Extension-to-
 extension pub/sub is not planned — its §F3 `EventBus` skeleton was deleted

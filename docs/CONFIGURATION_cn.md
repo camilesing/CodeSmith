@@ -880,6 +880,14 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   （`[subagents] external_provider = "headless"`）通过
   `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承*剩余*预算，
   子进程内该继承值优先于本配置。
+- `workflow.*`（可选）：模型可写 `workflow` 工具的边界（见
+  [TOOL_SURFACE.md](TOOL_SURFACE.md)）。`workflow.timeout_secs`（整数，
+  可选，默认 600）是一次 workflow 运行的墙钟上限，覆盖从内核拉起到
+  关闭的全程；`0` 或超过 `1800` 的值在配置加载时即报错——绝不静默
+  钳制。`workflow.max_agents`（整数，可选）是单次运行允许派生子代理
+  的上限（并发 + 总量）；未设置时回退到子代理默认值（10），`0` 或
+  超过 `20` 的值在加载时报错。`[workflow]` 表内的未知键在加载时即
+  报错（`deny_unknown_fields`）。
 - `skills_dir`（字符串，可选）：默认为 `~/.codesmith/skills`（每个
   skill 是一个包含 `SKILL.md` 的目录）。如果存在工作区本地的
   `.agents/skills` 或 `./skills` 则优先使用；运行时还会发现全局的

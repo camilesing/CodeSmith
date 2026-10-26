@@ -272,7 +272,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 26 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer):
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 31 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer; the five workflow lifecycle events with the model-writable `workflow` tool):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -280,7 +280,9 @@ so a single crate gives them both the traits and the runtime helpers.
   `AssistantStream` / `ToolExecutionStart` / `ToolExecutionUpdate` /
   `ToolExecutionEnd` / `AgentEnd` / `AgentSettled` /
   `SessionBeforeSwitch` / `SessionBeforeFork` / `SessionBeforeCompact` /
-  `SessionCompact` / `ToolsChange` / `TurnStopping`. `ExtensionEvent::kind()` maps each
+  `SessionCompact` / `ToolsChange` / `TurnStopping` / `WorkflowStart` /
+  `WorkflowLog` / `WorkflowAgentStart` / `WorkflowAgentEnd` /
+  `WorkflowEnd`. `ExtensionEvent::kind()` maps each
   variant to an `ExtensionEventKind` discriminant for per-variant
   dispatch.
 - **`Handler`** — outcome-returning:
@@ -504,6 +506,11 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `—` (dylib LOAD, not an event) | `populate_extension_runtime` (`crates/cli/src/core/engine.rs`) after `discover_static` | n/a (load phase) | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` drops project-local (`global == false`) → `state.is_enabled` reconcile → `ExtensionRunner::load_dylib` on the OS-thread load runtime; reload picks up via `reload_extension_runtime`→`populate`. `ExtensionRunner.libraries` holds `Library` handles; on a runtime reload they `drain_libraries_to_pending` to `pending_drop` (alongside the clears) + the engine op-loop `drop_pending`s them at the next turn boundary. Lockstep `*mut dyn Extension` via `codesmith_register_extension`. |
 | `SessionBeforeFork` | spawn-family tools (`agent_open` / `agent_spawn` / `agent_run` / `delegate_to_agent`, every depth — the runner rides `SubAgentRuntime`, so grandchildren forks are vetoable too) + `HostServices::spawn_subagent` (`crates/cli/src/tools/subagent/mod.rs`, `core/engine/runtime_traits.rs`) | **Cancel** | emitted before a child forks session state; `Cancel` aborts the spawn with a model-visible error. From a depth ≥ 1 context the veto dispatches at the child's agent-type scope, so dylib-origin handlers are skipped there (§F5d — a detached child can outlive a reload's `Library` drop); at depth 0 and on the engine-internal path it stays the Global emit (the main executor holds the `Library` alive through the turn). Global script/compiled-in handlers receive the veto at every depth |
 | `ToolExecutionUpdate` | `exec_shell` (foreground) / `exec_shell_wait` poll loops → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | throttled checkpoints while a command runs (≥1s apart, new output only): `id` = shell task id, `message` = output since the previous checkpoint (tail-capped at 4 KiB); the same checkpoint rides the UI as `Event::ToolCallProgress`; dispatched under the AssistantStream budget/breaker; main turns only; sandboxed-backend and interactive runs report none |
+| `WorkflowStart` | `workflow` engine (`crates/cli/src/tools/workflow/engine.rs`) before the one-shot kernel spawns | emit | a workflow run began; a budget-rejected request emits nothing (the run never began) |
+| `WorkflowLog(WorkflowLogEvent)` | workflow RPC bridge, per `log(...)` helper call | emit | `message` = one bounded log entry (the same entry the run's own buffer retains) |
+| `WorkflowAgentStart(WorkflowAgentStartEvent)` | workflow RPC bridge (`spawn_with_events`), after the run's agent budget admitted the child | emit | `objective` = the child's objective text |
+| `WorkflowAgentEnd(WorkflowAgentEndEvent)` | workflow RPC bridge, when one child finished | emit | `status` + `steps`; a child dropped by the run-level wall-clock bound emits `WorkflowAgentStart` with no matching End — the run-level `WorkflowEnd` (timeout) is the terminal signal there |
+| `WorkflowEnd(WorkflowEndEvent)` | `workflow` engine, terminal outcome (success or failure) | emit | `status` (`completed`/`failed`), `error` kind on failure (`timeout`/`script_error`/`kernel_spawn`), `agent_calls`; carries no return value — the transcript's tool result is the record |
 
 > The `Transform` payload's actionable field is applied at the seam AFTER
 > the full handler chain runs (so a `Transform` from handler N is visible

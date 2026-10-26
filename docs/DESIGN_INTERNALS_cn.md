@@ -316,7 +316,7 @@ thinking-only / capacity / early-tool-start / subagent）请直接查看模块�
               codesmith_cli (build_extension_runtime + StateStore + manage_mods reload)
 ```
 
-契约与运行时核心携带完整的 26 变体 `ExtensionEvent` 集合 +
+契约与运行时核心携带完整的 31 变体 `ExtensionEvent` 集合 +
 `ExtensionEventKind`/`kind()`、`HandlerOutcome`
 （`Continue`/`Cancel`/`Block`/`Transform`）跨处理器链（`Handler::handle`
 返回 `Result<HandlerOutcome, _>`）、逐变体的 `ExtensionApi::on_variant`
@@ -336,12 +336,14 @@ steer 至多 3 次）；在 `ToolCall` 处还遵守 `Ask`（无视分类把调�
 `turn::batches` 两条工具分发臂的终端之外组合 DSH 式 `next()` 包裹链
 （并行的"复用早启/新跑"——其审批问题在一个独立的串行预派发环节里询问
 ——与串行的"审批/执行"）—— 从不 `await next` 的
-handler 即否决。26 种事件
-中 25 种从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
+handler 即否决。全部 31 种事件
+都从生产接缝发射（`ToolExecutionUpdate` 由 shell 工具的轮询循环经
 `ToolContext::progress` 发出，`SessionBeforeFork` 由每条 spawn 路径发出，
 `ProjectTrust` 每回合与每次子代理 spawn 发出，`TurnStopping` 由
-host_executor 的无工具调用分支发出）；唯一未发射的是
-`SessionBeforeSwitch`（无运行时发射点——见 `EXTENSIONS.md` 接缝表）。
+host_executor 的无工具调用分支发出，五个 workflow 生命周期事件由
+`workflow` 引擎与 RPC 桥发出）。`SessionBeforeSwitch`——曾长期是唯一
+未发射的一种——已接线到 `/cd` REPL 命令，那是它唯一的触发点（见
+`EXTENSIONS.md` 接缝表）。
 
 热重载经 `ExtensionRunner::clear_handlers` + `reload_extension_runtime`
 （clear→invalidate→discover→reconcile→load→bind_core）重新填充共享的
@@ -349,8 +351,7 @@ runner `Arc`；由 `manage_mods` 工具的 reload 动作触发，且由于 runne
 `Arc` 是共享的，REPL 的 `state.extension_runner` 与 Engine 的字段都会
 看到更新。
 
-尚未实现：`SessionBeforeSwitch` 的发射点（进程内工作区切换随 TUI 在
-0.10.0 移除）、`registerProvider`、
+尚未实现：`registerProvider`、
 `registerShortcut`/`registerFlag`/渲染器、install-source 实现与 embed
 API。扩展间发布/订阅不在计划内 —— 其 §F3 `EventBus` 骨架已在零消费者时
 删除。热加载永久排除；只有 install + reload。

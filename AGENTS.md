@@ -159,9 +159,13 @@ in an implementation crate, consumer — and lands in
 `docs/CAPABILITY_GRAPH.md`; CI checks freshness).
 - The model-facing sub-agent surface is `agent_open`/`agent_eval`/
   `agent_close` (implementation in `crates/cli/src/tools/subagent/`) plus
-  persistent RLM sessions (`crates/tool-impls/src/tools/rlm.rs`); no
-  model-visible swarm tool remains. If the shape must move, move the code
-  and update the boundary note in `docs/ARCHITECTURE.md`.
+  persistent RLM sessions (`crates/tool-impls/src/tools/rlm.rs`);
+  model-writable orchestration is the `workflow` tool
+  (`crates/cli/src/tools/workflow/`, synchronous script over sub-agent
+  sessions on a one-shot RLM Python kernel — re-opened by founder
+  decision 2026-10-26). No swarm-style peer-mesh tool exists. If the shape
+  must move, move the code and update the boundary note in
+  `docs/ARCHITECTURE.md`.
 - `BASE_PROMPT` in `crates/agent-runtime/src/prompts.rs` (prose in
   `crates/agent-runtime/src/prompts/base.md`) is the sole base prompt by
   convention; `crates/cli/src/prompts.rs` has tests asserting required tags.

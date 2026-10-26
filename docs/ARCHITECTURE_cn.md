@@ -62,8 +62,8 @@
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
 - LSP 子系统（`crates/cli/src/lsp/`）已完全接入引擎的工具执行后路径
   （`crates/agent-runtime/src/engine/lsp_hooks.rs` + `engine/turn/postprocess.rs`），在每次 edit_file/apply_patch/write_file 之后提供内联诊断。
-- 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`）。
-  活跃代码库中不再保留任何模型可见的 swarm 工具。
+- 编排面是持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`），再加上模型可写编排的 `workflow` 工具（2026-10-26 创始人决策重新开启）：一段 Python 脚本跑在一次性的 RLM 内核上，经注入的辅助函数（`run_agent` / `agents` / `log`）同步驱动子代理；接缝三元组——定义在 `agent-runtime/src/workflow.rs`（`WorkflowEngine` + `SubAgentSpawner`），provider 与消费者在 `crates/cli/src/tools/workflow/`。已知限制：没有回注运行中回合的异步结算/唤醒（脚本在自己的工具调用内等待子级）；墙钟上限（默认 600s、上限 1800s）到点即杀内核并取消在途子级；子代理的并发上限、spawn 深度预算、审批天花板与 `SessionBeforeFork` fork 否决均继承自其复用的子代理运行路径。
+  不再保留 swarm 式对等网状工具。
 - 子代理默认在进程内运行；**外部子代理接缝**让子代理在进程外运行而不改变模型可见面。定义：`crates/agent-runtime/src/subagent.rs` 中的 `ExternalSubagentProvider`（及请求/结果类型）；两个 provider，均在 `crates/cli/src/tools/subagent/`：自身 headless provider（`headless.rs` —— 每个非 team 子代理变成一个 `codesmith exec --json` 子进程，spawn 深度预算经 `CODESMITH_SUBAGENT_DEPTH` / `CODESMITH_MAX_SPAWN_DEPTH` 继承）和 ACP provider（`acp.rs`，v0.11.0 —— 把每次子代理运行委托给 `[subagents.acp]` 下配置的任意 Agent-Client-Protocol stdio agent，走与本仓库自身 `--acp` 服务端适配器相同的 JSON-RPC 基线；只返回一个终态结果、中途进度不回流、外来 agent 不继承 spawn 深度预算、`session/request_permission` 按父方 `auto_approve` 姿态自动应答 —— 完整清单见该模块）；消费者：CLI 的 spawn 路径（`run_subagent_task`），由 `[subagents] external_provider = "headless" | "acp"` 选用（`headless.rs` 的 `provider_from_config`；未知名称、或 `"acp"` 缺少 `[subagents.acp] command`，都在配置加载时即报错）。fork 上下文、`agent_send_input` 以及 team/coordinator 子代理按设计留在进程内（接缝定义处有文档）。Codex / Claude Code provider 仍是该接缝未建的槽位。
 
 ## 高层概览

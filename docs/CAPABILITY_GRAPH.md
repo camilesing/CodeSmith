@@ -30,4 +30,6 @@ explaining.
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
 | `SandboxBackend` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `SessionStore` | `agent-runtime` | `agent-runtime` | `cli` |
+| `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |
 | `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
+| `WorkflowEngine` | `agent-runtime` | `cli` | `—` |

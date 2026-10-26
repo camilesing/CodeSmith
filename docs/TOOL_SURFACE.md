@@ -247,6 +247,35 @@ that should inherit the parent's context. In fork mode, the runtime preserves
 the parent prefill/prompt prefix byte-identically where available so DeepSeek's
 prefix cache can be reused, then appends the child role instructions and task.
 
+### Workflow orchestration
+
+The `workflow` tool is model-writable orchestration: the model writes one
+Python script, it runs on a one-shot sandboxed kernel, and it coordinates
+sub-agents through helpers injected before the script.
+
+| Tool | Niche |
+|---|---|
+| `workflow` | Run one Python orchestration script on a one-shot kernel; the script drives sub-agents and its `finalize(...)` value comes back as the tool receipt. |
+
+Script API: `run_agent(objective, *, role=None, model=None, timeout_s=None)`
+runs one sub-agent to completion and returns `{"result", "steps", "status"}`;
+`agents([{objective, ...}, ...])` fans out over a list concurrently (bounded
+by `max_agents`, total across the run); `log(message)` appends a line to the
+run's logs; `finalize(value)` sets the run's return value. A failed child
+comes back with `status: "failed"` and its error text in `result` — data the
+script handles, not an exception — while exceeding the agent budget or a bug
+in the script fails the whole run with the traceback. Children run on the
+same one-shot path as `agent_run` and inherit its caps, spawn-depth budget,
+approval ceiling, and `SessionBeforeFork` fork veto.
+
+The receipt is structured JSON: `return_value` (what the script passed to
+`finalize`), `agent_calls`, `elapsed_ms`, plus a `logs_tail` of the last 20
+`log(...)` lines (`logs_total` counts what else was collected). The whole
+run is wall-clock bounded — 600s by default, `[workflow] timeout_secs` up to
+1800s; when the bound fires the kernel is killed, in-flight children are
+cancelled mid-run, and their partial transcripts are not recorded. Receipts
+larger than 16 KiB are truncated at a char boundary with an explicit marker.
+
 ### Recursive LM sessions
 
 RLM is now persistent as well:

@@ -111,9 +111,11 @@ pub struct SubAgentObjective {
 /// `run_agent`/`agents` helpers. `status` uses the sub-agent run path's
 /// own vocabulary (`"completed" | "failed" | "interrupted" | "cancelled"`);
 /// on failure `result` carries the error text — a failed child is data the
-/// script sees honestly, not a raised exception. A child dropped mid-run
-/// (its per-child `timeout_s`, or the run's wall-clock bound) reports
-/// `"cancelled"`, matching the run path's own cancellation status.
+/// script sees honestly, not a raised exception. Only the per-child
+/// `timeout_s` path synthesizes `"cancelled"`; a child dropped by the
+/// run's wall-clock bound produces no `SubAgentRunResult` at all — the
+/// run fails `WorkflowError::Timeout` and the in-flight result is
+/// discarded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentRunResult {
     pub result: String,
@@ -126,8 +128,9 @@ pub struct SubAgentRunResult {
 /// `agent_open`/`agent_eval`/`agent_close` family uses, so children
 /// inherit caps, spawn-depth budget, and the parent's approval ceiling.
 /// Dropping the returned future is the cancellation path — an
-/// implementation must tear down whatever it started (the CLI
-/// implementation rides the run path's cooperative cancellation token).
+/// implementation must tear down whatever it started. No cancellation
+/// token fires on drop: dropping the future simply stops the wrapped
+/// one-shot sub-agent run from being polled.
 pub trait SubAgentSpawner: Send + Sync {
     /// Spawn one child and run it to completion (dyn-safe boxed future,
     /// matching the [`crate::repl::runtime::RpcDispatcher`] idiom).

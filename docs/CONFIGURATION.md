@@ -978,6 +978,15 @@ and the capacity controller remains disabled unless configured.
   the *remaining* budget via `CODESMITH_SUBAGENT_DEPTH` /
   `CODESMITH_MAX_SPAWN_DEPTH`, which takes precedence over this value inside
   the child.
+- `workflow.*` (optional): bounds for the model-writable `workflow` tool
+  (see [TOOL_SURFACE.md](TOOL_SURFACE.md)). `workflow.timeout_secs`
+  (integer, optional, default 600) is the wall-clock bound for one workflow
+  run, kernel spawn to shutdown; values of `0` or above `1800` are rejected
+  at config load — never silently clamped. `workflow.max_agents` (integer,
+  optional) is the per-run cap on sub-agents a workflow may spawn
+  (concurrent + total); unset falls back to the sub-agent default (10), and
+  values of `0` or above `20` are rejected at load. Unknown keys inside the
+  `[workflow]` table fail at load (`deny_unknown_fields`).
 - `skills_dir` (string, optional): defaults to `~/.codesmith/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global
