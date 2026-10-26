@@ -100,6 +100,9 @@ impl WorkflowTool {
         };
         PythonWorkflowEngine::new(spawner)
             .with_timeout(self.runtime.workflow_timeout)
+            // Workflow lifecycle emissions (observe-only Emit family) —
+            // same runner the fork-veto threading attached.
+            .with_extension_runner(self.extension_runner.clone())
             .with_default_max_agents(
                 self.runtime
                     .workflow_max_agents
@@ -619,6 +622,212 @@ mod tests {
                 .any(|k| k.contains("SessionBeforeFork")),
             "the fork seam fired for the workflow child: {:?}",
             seen.lock().unwrap()
+        );
+    }
+
+    // === workflow lifecycle events (observe-only, Emit) =====================
+
+    /// The lifecycle family observes the whole run in order — Start before
+    /// the kernel spawns, AgentStart/AgentEnd around the child, Log per
+    /// `log(...)` call, End on the success path. The recording runner's
+    /// handler subscribes to every event, so this also proves nothing
+    /// else leaks through the tool path.
+    #[tokio::test]
+    async fn lifecycle_events_follow_the_run_sequence() {
+        let (runner, seen) = crate::tools::subagent::tests::runner_with_fork_handler(false).await;
+        let (tool, context) = tool_with(Arc::new(RecordedSpawner {
+            calls: Mutex::new(Vec::new()),
+        }));
+        let tool = tool.with_extension_runner(runner);
+
+        let result = tool
+            .execute(
+                json!({
+                    "script": concat!(
+                        "one = run_agent('map the repo')\n",
+                        "log('first done')\n",
+                        "finalize({'answer': one['result']})"
+                    )
+                }),
+                &context,
+            )
+            .await
+            .expect("workflow tool run");
+
+        assert!(result.success, "the run itself must still succeed");
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [
+                "WorkflowStart",
+                "WorkflowAgentStart",
+                "WorkflowAgentEnd",
+                "WorkflowLog",
+                "WorkflowEnd",
+            ],
+            "the lifecycle family must observe the run in order"
+        );
+    }
+
+    /// A run rejected before it began (out-of-range `max_agents`) emits
+    /// nothing — no `WorkflowStart`, none of the family. Handler authors
+    /// rely on the Start/End pairing wrapping only runs that began.
+    #[tokio::test]
+    async fn budget_rejected_run_emits_no_lifecycle_events() {
+        let (runner, seen) = crate::tools::subagent::tests::runner_with_fork_handler(false).await;
+        let (tool, context) = tool_with(Arc::new(RecordedSpawner {
+            calls: Mutex::new(Vec::new()),
+        }));
+        let tool = tool.with_extension_runner(runner);
+
+        let err = tool
+            .execute(json!({"script": "pass", "max_agents": 0}), &context)
+            .await
+            .expect_err("out-of-range max_agents must be rejected");
+        assert!(
+            err.to_string().contains("max_agents"),
+            "sanity: the rejection names max_agents, got {err}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a run that never began emits nothing: {:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    /// Minimal `ExtensionContext` for binding a recording runner (same
+    /// shape as the sub-agent tests' `ForkCtx`, which is private to that
+    /// module).
+    struct WorkflowEventsCtx;
+    #[async_trait]
+    impl codesmith_agent::extension::ExtensionContext for WorkflowEventsCtx {
+        fn cwd(&self) -> &std::path::Path {
+            std::path::Path::new(".")
+        }
+        fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+            codesmith_agent::extension::ExtensionMode::Interactive
+        }
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn signal(&self) -> tokio_util::sync::CancellationToken {
+            tokio_util::sync::CancellationToken::new()
+        }
+        fn generation(&self) -> u64 {
+            1
+        }
+    }
+    impl codesmith_agent::extension::ExtensionCommandContext for WorkflowEventsCtx {}
+
+    /// Records every `WorkflowEnd` payload as `"{status} {error}
+    /// {agent_calls}"` — enough to pin the success shape, the failure
+    /// error kind, and the spawn count without freezing the whole map.
+    struct EndRecorder {
+        ends: Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl codesmith_agent::extension::Handler for EndRecorder {
+        async fn handle(
+            &self,
+            event: &codesmith_agent::extension::ExtensionEvent,
+            _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+        ) -> Result<
+            codesmith_agent::extension::HandlerOutcome,
+            codesmith_agent::extension::ExtensionError,
+        > {
+            if let codesmith_agent::extension::ExtensionEvent::WorkflowEnd(e) = event {
+                let error = e.error.as_deref().unwrap_or("none");
+                self.ends
+                    .lock()
+                    .unwrap()
+                    .push(format!("{} {error} {}", e.status, e.agent_calls));
+            }
+            Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+        }
+    }
+
+    struct EndRecorderExt {
+        handler: Arc<EndRecorder>,
+    }
+    #[async_trait]
+    impl codesmith_agent::extension::Extension for EndRecorderExt {
+        fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+            static M: std::sync::OnceLock<codesmith_agent::extension::ExtensionMetadata> =
+                std::sync::OnceLock::new();
+            M.get_or_init(|| {
+                codesmith_agent::extension::ExtensionMetadata::from_strings(
+                    "workflow-end-recorder".to_string(),
+                    "workflow-end-recorder".to_string(),
+                    "0.1.0".to_string(),
+                )
+            })
+        }
+        async fn configure(
+            &self,
+            api: &dyn codesmith_agent::extension::ExtensionApi,
+        ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+            api.on_variant(
+                codesmith_agent::extension::ExtensionEventKind::WorkflowEnd,
+                self.handler.clone(),
+            )?;
+            Ok(())
+        }
+    }
+
+    async fn runner_with_end_recorder()
+    -> (Arc<codesmith_extensions::ExtensionRunner>, Arc<EndRecorder>) {
+        let recorder = Arc::new(EndRecorder {
+            ends: Mutex::new(Vec::new()),
+        });
+        let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+        runner
+            .load(
+                &(EndRecorderExt {
+                    handler: Arc::clone(&recorder),
+                }),
+            )
+            .await
+            .expect("configure EndRecorderExt");
+        runner.bind_core(Arc::new(WorkflowEventsCtx));
+        (runner, recorder)
+    }
+
+    /// `WorkflowEnd` carries the terminal outcome without the return
+    /// value: success is `completed`/no error with the spawn count, a
+    /// raising script fails with the `script_error` kind (and only
+    /// children that actually ran are counted).
+    #[tokio::test]
+    async fn workflow_end_payload_carries_outcome_and_error_kind() {
+        let (runner, recorder) = runner_with_end_recorder().await;
+        let (tool, context) = tool_with(Arc::new(RecordedSpawner {
+            calls: Mutex::new(Vec::new()),
+        }));
+        let tool = tool.with_extension_runner(runner);
+
+        let ok = tool
+            .execute(
+                json!({"script": "one = run_agent('map it')\nfinalize(one['status'])"}),
+                &context,
+            )
+            .await
+            .expect("successful run");
+        assert!(ok.success);
+        let failed = tool
+            .execute(
+                json!({"script": "log('about to fall')\nraise ValueError('boom')"}),
+                &context,
+            )
+            .await
+            .expect_err("raising script fails the run");
+        assert!(
+            failed.to_string().contains("ValueError"),
+            "sanity: the tool error carries the traceback"
+        );
+
+        let ends = recorder.ends.lock().unwrap();
+        assert_eq!(
+            ends.as_slice(),
+            ["completed none 1", "failed script_error 0"],
+            "one End per run: success shape then failure kind"
         );
     }
 }

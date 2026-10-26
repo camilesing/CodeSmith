@@ -26,8 +26,11 @@
 //!   fires per child (the provider threads the extension runner into every
 //!   one-shot run it composes, so a fork-vetoing extension cancels workflow
 //!   children exactly like `agent_run` children), and the child's in-run
-//!   seams fire from inside its own loop. The workflow layer itself emits
-//!   no extension events.
+//!   seams fire from inside its own loop. The workflow layer's own events
+//!   are the observe-only lifecycle family `WorkflowStart` / `WorkflowLog`
+//!   / `WorkflowAgentStart` / `WorkflowAgentEnd` / `WorkflowEnd` — all
+//!   `DispatchMode::Emit` (advisory; handler outcomes are ignored at these
+//!   seams), emitted from the CLI engine/RPC bridge, never here.
 //! - There is no `runtime_threads` persistence item: the tool result in
 //!   the transcript (return value + `agent_calls` + `elapsed_ms` + logs
 //!   tail) is the record of a run.

@@ -15,12 +15,23 @@
 //! message — never a silent partial result. When the bound fires,
 //! in-flight children are cancelled mid-run (their futures are dropped)
 //! and their partial transcripts are not recorded.
+//!
+//! The workflow lifecycle events (`WorkflowStart` / `WorkflowLog` /
+//! `WorkflowAgentStart` / `WorkflowAgentEnd` / `WorkflowEnd`) are emitted
+//! here — run begin/end in the engine, per-child and per-log at the RPC
+//! bridge — through the same `runner.emit(...)` idiom the `ToolsChange`
+//! seam uses (observe-only `Emit`: the outcome is discarded). No runner
+//! attached ⇒ no emissions; the tool works without extensions.
 
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use codesmith_agent::extension::ExtensionEvent;
+use codesmith_agent::extension::{
+    WorkflowAgentEndEvent, WorkflowAgentStartEvent, WorkflowEndEvent, WorkflowLogEvent,
+};
 use futures_util::future::join_all;
 use serde_json::Value;
 
@@ -107,11 +118,40 @@ def log(message):
     return None
 "#;
 
+/// Emit one workflow lifecycle event (all `DispatchMode::Emit` — the
+/// outcome is advisory and discarded, the `ToolsChange` idiom). No-op
+/// without a runner: the tool must work with extensions absent.
+async fn emit_workflow_event(
+    runner: &Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    event: ExtensionEvent,
+) {
+    if let Some(runner) = runner {
+        let _ = runner.emit(event).await;
+    }
+}
+
+/// The error-kind tag a failed run's [`WorkflowEndEvent`] payload carries
+/// (the tool error carries the full text — the event notes only the kind).
+fn workflow_error_kind(error: &WorkflowError) -> &'static str {
+    match error {
+        WorkflowError::ScriptError(_) => "script_error",
+        WorkflowError::Timeout(_) => "timeout",
+        WorkflowError::KernelSpawn(_) => "kernel_spawn",
+        // Unreachable at the emit sites (rejected before `WorkflowStart`
+        // fires); the arm keeps the match exhaustive.
+        WorkflowError::TooManyAgents { .. } => "too_many_agents",
+    }
+}
+
 /// Services the workflow RPCs coming back from the kernel. One bridge per
 /// run; owns the run's agent budget and log buffer.
 pub(crate) struct WorkflowRpcBridge {
     spawner: Arc<dyn SubAgentSpawner>,
     max_agents: u32,
+    /// Workflow lifecycle emissions (`WorkflowAgentStart`/`WorkflowAgentEnd`
+    /// around each child, `WorkflowLog` per `log(...)` call) — `None` ⇒
+    /// no emissions.
+    extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     /// Monotonic reservation ledger: every slot asked for, consumed via
     /// `fetch_add` BEFORE the cap check (reserve-before-spawn ordering).
     /// A rejection consumes its slots too, so every later attempt in the
@@ -125,10 +165,15 @@ pub(crate) struct WorkflowRpcBridge {
 }
 
 impl WorkflowRpcBridge {
-    pub(crate) fn new(spawner: Arc<dyn SubAgentSpawner>, max_agents: u32) -> Self {
+    pub(crate) fn new(
+        spawner: Arc<dyn SubAgentSpawner>,
+        max_agents: u32,
+        extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    ) -> Self {
         Self {
             spawner,
             max_agents,
+            extension_runner,
             reserved: AtomicU32::new(0),
             issued: AtomicU32::new(0),
             logs: StdMutex::new(Vec::new()),
@@ -154,7 +199,7 @@ impl WorkflowRpcBridge {
         Ok(())
     }
 
-    fn push_log(&self, message: String) {
+    fn push_log(&self, message: String) -> String {
         let mut logs = self.logs.lock().unwrap_or_else(|p| p.into_inner());
         if logs.len() >= LOG_ENTRIES_KEPT {
             logs.remove(0);
@@ -165,7 +210,31 @@ impl WorkflowRpcBridge {
         } else {
             message
         };
-        logs.push(entry);
+        logs.push(entry.clone());
+        entry
+    }
+
+    /// Spawn one child with the `WorkflowAgentStart` / `WorkflowAgentEnd`
+    /// emissions around it. Budget-rejected attempts never reach here — a
+    /// child that never began emits nothing.
+    async fn spawn_with_events(&self, objective: SubAgentObjective) -> SubAgentRunResult {
+        emit_workflow_event(
+            &self.extension_runner,
+            ExtensionEvent::WorkflowAgentStart(WorkflowAgentStartEvent {
+                objective: objective.objective.clone(),
+            }),
+        )
+        .await;
+        let result = self.spawner.spawn_and_run(objective).await;
+        emit_workflow_event(
+            &self.extension_runner,
+            ExtensionEvent::WorkflowAgentEnd(WorkflowAgentEndEvent {
+                status: result.status.clone(),
+                steps: result.steps,
+            }),
+        )
+        .await;
+        result
     }
 
     pub(crate) fn agent_calls(&self) -> u32 {
@@ -215,8 +284,7 @@ impl RpcDispatcher for WorkflowRpcBridge {
                     }),
                     Ok(()) => {
                         let result = self
-                            .spawner
-                            .spawn_and_run(SubAgentObjective {
+                            .spawn_with_events(SubAgentObjective {
                                 objective,
                                 role,
                                 model,
@@ -249,7 +317,7 @@ impl RpcDispatcher for WorkflowRpcBridge {
                     }
                     let futures = objectives
                         .into_iter()
-                        .map(|objective| self.spawner.spawn_and_run(objective));
+                        .map(|objective| self.spawn_with_events(objective));
                     let results = join_all(futures)
                         .await
                         .into_iter()
@@ -261,7 +329,15 @@ impl RpcDispatcher for WorkflowRpcBridge {
                     RpcResponse::Batch(BatchResp { results })
                 }
                 RpcRequest::WorkflowLog { message } => {
-                    self.push_log(message);
+                    // The event carries the same bounded entry the run's
+                    // own buffer keeps, so the live emission and the
+                    // recorded log agree.
+                    let entry = self.push_log(message);
+                    emit_workflow_event(
+                        &self.extension_runner,
+                        ExtensionEvent::WorkflowLog(WorkflowLogEvent { message: entry }),
+                    )
+                    .await;
                     RpcResponse::Single(SingleResp {
                         text: String::new(),
                         error: None,
@@ -291,6 +367,9 @@ pub struct PythonWorkflowEngine {
     spawner: Arc<dyn SubAgentSpawner>,
     timeout: Duration,
     default_max_agents: u32,
+    /// Workflow lifecycle emissions (`WorkflowStart`/`WorkflowEnd` here,
+    /// the child/log events at the bridge) — `None` ⇒ no emissions.
+    extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     /// Receipt of the most recent run — recorded even on failure so the
     /// tool can tell the model how far a failed run got. The tool builds
     /// one engine per call, so "last" is "the" run.
@@ -307,9 +386,21 @@ impl PythonWorkflowEngine {
                 codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
             ),
             default_max_agents: DEFAULT_MAX_AGENTS,
+            extension_runner: None,
             last_agent_calls: AtomicU32::new(0),
             last_logs: StdMutex::new(Vec::new()),
         }
+    }
+
+    /// Attach the extension runner for the workflow lifecycle events
+    /// (observe-only `Emit` family; the outcome is discarded).
+    #[must_use]
+    pub fn with_extension_runner(
+        mut self,
+        runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    ) -> Self {
+        self.extension_runner = runner;
+        self
     }
 
     /// Wall-clock bound for the whole run (kernel spawn to shutdown).
@@ -348,18 +439,57 @@ impl PythonWorkflowEngine {
             .clone()
     }
 
+    /// Terminal `WorkflowEnd` emission — success shape.
+    async fn emit_end_success(&self, agent_calls: u32) {
+        emit_workflow_event(
+            &self.extension_runner,
+            ExtensionEvent::WorkflowEnd(WorkflowEndEvent {
+                status: "completed".to_string(),
+                error: None,
+                agent_calls,
+            }),
+        )
+        .await;
+    }
+
+    /// Terminal `WorkflowEnd` emission — failure shape (the payload notes
+    /// the error kind, not the full text).
+    async fn emit_end_failure(&self, agent_calls: u32, error: &WorkflowError) {
+        emit_workflow_event(
+            &self.extension_runner,
+            ExtensionEvent::WorkflowEnd(WorkflowEndEvent {
+                status: "failed".to_string(),
+                error: Some(workflow_error_kind(error).to_string()),
+                agent_calls,
+            }),
+        )
+        .await;
+    }
+
     async fn run_inner(&self, script: WorkflowScript) -> Result<WorkflowOutcome, WorkflowError> {
         let max_agents = script.max_agents.unwrap_or(self.default_max_agents);
         if max_agents == 0 || max_agents > MAX_WORKFLOW_AGENTS {
+            // Rejected before the run began: no Start/End pair fires.
             return Err(WorkflowError::TooManyAgents {
                 requested: max_agents,
             });
         }
         let timeout = script.timeout;
-        let mut kernel = PythonRuntime::spawn_unbounded()
-            .await
-            .map_err(WorkflowError::KernelSpawn)?;
-        let bridge = WorkflowRpcBridge::new(Arc::clone(&self.spawner), max_agents);
+        // Run begin — before the kernel spawns.
+        emit_workflow_event(&self.extension_runner, ExtensionEvent::WorkflowStart).await;
+        let mut kernel = match PythonRuntime::spawn_unbounded().await {
+            Ok(kernel) => kernel,
+            Err(err) => {
+                let error = WorkflowError::KernelSpawn(err);
+                self.emit_end_failure(0, &error).await;
+                return Err(error);
+            }
+        };
+        let bridge = WorkflowRpcBridge::new(
+            Arc::clone(&self.spawner),
+            max_agents,
+            self.extension_runner.clone(),
+        );
         let started = Instant::now();
         let code = format!("{WORKFLOW_PRELUDE}\n{}", script.source);
 
@@ -374,14 +504,22 @@ impl PythonWorkflowEngine {
         *self.last_logs.lock().unwrap_or_else(|p| p.into_inner()) = logs.clone();
 
         match executed {
-            Err(_elapsed) => Err(WorkflowError::Timeout(timeout)),
-            Ok(Err(protocol_error)) => Err(WorkflowError::ScriptError(format!(
-                "workflow kernel round failed: {protocol_error}"
-            ))),
+            Err(_elapsed) => {
+                let error = WorkflowError::Timeout(timeout);
+                self.emit_end_failure(agent_calls, &error).await;
+                Err(error)
+            }
+            Ok(Err(protocol_error)) => {
+                let error = WorkflowError::ScriptError(format!(
+                    "workflow kernel round failed: {protocol_error}"
+                ));
+                self.emit_end_failure(agent_calls, &error).await;
+                Err(error)
+            }
             Ok(Ok(round)) => {
                 if round.has_error {
                     let stderr = round.stderr.trim();
-                    return Err(WorkflowError::ScriptError(format!(
+                    let error = WorkflowError::ScriptError(format!(
                         "{}{}",
                         round.stdout.trim_end(),
                         if stderr.is_empty() {
@@ -389,8 +527,11 @@ impl PythonWorkflowEngine {
                         } else {
                             format!("\nstderr:\n{stderr}")
                         }
-                    )));
+                    ));
+                    self.emit_end_failure(agent_calls, &error).await;
+                    return Err(error);
                 }
+                self.emit_end_success(agent_calls).await;
                 Ok(WorkflowOutcome {
                     return_value: round.final_json.unwrap_or(Value::Null),
                     agent_calls,
