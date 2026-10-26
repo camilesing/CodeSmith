@@ -846,6 +846,8 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         subagent_model_overrides: config.subagent_model_overrides(),
         auto_route: config.auto_route_context(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
+        workflow_timeout: std::time::Duration::from_secs(config.workflow_timeout_secs()),
+        workflow_max_agents: config.workflow_max_agents(),
         stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
         stream_idle_retry_increment: std::time::Duration::from_secs(
             config.stream_idle_retry_increment_secs(),

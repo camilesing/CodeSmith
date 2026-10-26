@@ -666,6 +666,15 @@ pub struct SubAgentRuntime {
     /// this runtime is dispatched through it (see [`external_provider_for`]);
     /// propagated verbatim to descendants.
     pub external_provider: Option<Arc<dyn ExternalSubagentProvider>>,
+    /// Wall-clock bound for one `workflow` tool run. Resolved from
+    /// `[workflow] timeout_secs` (default 600) at engine construction;
+    /// propagated to descendants via `child_runtime()` /
+    /// `background_runtime()` so the limit holds at every spawn depth.
+    pub workflow_timeout: Duration,
+    /// Per-run default cap on sub-agents spawned by one `workflow` run
+    /// (`[workflow] max_agents`; `None` = the engine's built-in default).
+    /// Propagated like `workflow_timeout`.
+    pub workflow_max_agents: Option<u32>,
 }
 
 impl SubAgentRuntime {
@@ -709,6 +718,10 @@ impl SubAgentRuntime {
             child_subset_basis: None,
             capability_disabled_tools: std::collections::HashSet::new(),
             external_provider: None,
+            workflow_timeout: Duration::from_secs(
+                codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
+            ),
+            workflow_max_agents: None,
         }
     }
 
@@ -868,6 +881,16 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Attach the resolved `[workflow]` limits (run timeout + default
+    /// agent cap) from the engine config so the `workflow` tool sees the
+    /// same bounds at every spawn depth.
+    #[must_use]
+    pub fn with_workflow_limits(mut self, timeout: Duration, max_agents: Option<u32>) -> Self {
+        self.workflow_timeout = timeout;
+        self.workflow_max_agents = max_agents;
+        self
+    }
+
     /// Preserve whether the parent session is using per-turn model routing.
     #[must_use]
     pub fn with_auto_model(mut self, auto_model: bool) -> Self {
@@ -948,6 +971,8 @@ impl SubAgentRuntime {
             child_subset_basis: self.child_subset_basis.clone(),
             capability_disabled_tools: self.capability_disabled_tools.clone(),
             external_provider: self.external_provider.clone(),
+            workflow_timeout: self.workflow_timeout,
+            workflow_max_agents: self.workflow_max_agents,
         }
     }
 
@@ -7439,4 +7464,4 @@ pub const WORKER_EXCLUDED_TOOLS: &[&str] = &["team_create", "team_delete", "send
 // === Tests ===
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

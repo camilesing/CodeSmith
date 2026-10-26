@@ -2512,6 +2512,10 @@ fn stub_runtime() -> SubAgentRuntime {
         child_subset_basis: None,
         capability_disabled_tools: std::collections::HashSet::new(),
         external_provider: None,
+        workflow_timeout: std::time::Duration::from_secs(
+            codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
+        ),
+        workflow_max_agents: None,
     }
 }
 
@@ -3340,7 +3344,10 @@ impl codesmith_agent::extension::Extension for ForkExt {
     }
 }
 
-async fn runner_with_fork_handler(
+/// Build an `ExtensionRunner` whose handler records every event and
+/// optionally cancels on `SessionBeforeFork`. Shared with the workflow
+/// tool tests (the veto there must behave identically).
+pub(crate) async fn runner_with_fork_handler(
     cancel_fork: bool,
 ) -> (
     std::sync::Arc<codesmith_extensions::ExtensionRunner>,
