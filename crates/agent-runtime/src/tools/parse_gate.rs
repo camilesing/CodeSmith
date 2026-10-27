@@ -21,15 +21,24 @@
 //! without it compile a pass-through [`gate`]: the switch exists so hosts
 //! that never register write tools can drop the parser from their graph.
 
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::OnceLock;
-use std::time::Duration;
-
-use wait_timeout::ChildExt;
+use std::path::Path;
 
 use crate::tools::spec::ToolError;
+
+// The remaining imports feed only parse-gate-gated code below; gating them
+// keeps the pass-through build free of unused-import errors.
+#[cfg(feature = "parse-gate")]
+use std::io::{Read, Write};
+#[cfg(feature = "parse-gate")]
+use std::path::PathBuf;
+#[cfg(feature = "parse-gate")]
+use std::process::{Command, Stdio};
+#[cfg(feature = "parse-gate")]
+use std::sync::OnceLock;
+#[cfg(feature = "parse-gate")]
+use std::time::Duration;
+#[cfg(feature = "parse-gate")]
+use wait_timeout::ChildExt;
 
 /// Final content the caller must persist, plus an optional note for the
 /// tool result when rustfmt re-normalization changed the write.
@@ -89,6 +98,7 @@ fn pass_through(new: &str) -> GateOutcome {
     }
 }
 
+#[cfg(feature = "parse-gate")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lang {
     Rust,
@@ -96,6 +106,7 @@ enum Lang {
     Json,
 }
 
+#[cfg(feature = "parse-gate")]
 fn gated_language(path: &Path) -> Option<Lang> {
     if path
         .file_name()
@@ -112,6 +123,7 @@ fn gated_language(path: &Path) -> Option<Lang> {
     }
 }
 
+#[cfg(feature = "parse-gate")]
 struct ParseFailure {
     line: usize,
     column: usize,
@@ -184,6 +196,7 @@ fn parse_json(src: &str) -> Result<(), ParseFailure> {
         })
 }
 
+#[cfg(feature = "parse-gate")]
 fn line_col_from_offset(src: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut line_start = 0;
@@ -226,6 +239,7 @@ fn reject(path: &Path, lang: Lang, new: &str, failure: ParseFailure) -> ToolErro
     ))
 }
 
+#[cfg(feature = "parse-gate")]
 fn truncate_line(line: &str) -> String {
     const MAX_LINE_LEN: usize = 200;
     if line.len() <= MAX_LINE_LEN {
@@ -239,13 +253,16 @@ fn truncate_line(line: &str) -> String {
     }
 }
 
+#[cfg(feature = "parse-gate")]
 const RUSTFMT_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(feature = "parse-gate")]
 static RUSTFMT_BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Resolve the rustfmt binary once per process. `None` when it is not on
 /// PATH — normalization then silently disables itself. The probe is
 /// time-bounded: a wedged `rustfmt --version` must not block this
 /// `OnceLock` (and with it the whole write path) indefinitely.
+#[cfg(feature = "parse-gate")]
 fn rustfmt_binary() -> Option<&'static PathBuf> {
     RUSTFMT_BIN
         .get_or_init(|| {
@@ -275,10 +292,12 @@ fn rustfmt_binary() -> Option<&'static PathBuf> {
 /// Re-normalize `new` when `old` was rustfmt-clean. `None` means "write
 /// `new` verbatim": rustfmt unavailable, `old` not clean, or the format
 /// run failed — never a rejection.
+#[cfg(feature = "parse-gate")]
 fn normalize_rustfmt(old: &str, new: &str) -> Option<String> {
     normalize_rustfmt_with(rustfmt_binary().map(PathBuf::as_path), old, new)
 }
 
+#[cfg(feature = "parse-gate")]
 fn normalize_rustfmt_with(bin: Option<&Path>, old: &str, new: &str) -> Option<String> {
     let formatted_old = format_rustfmt_content(bin, old)?;
     if formatted_old != old {
@@ -290,6 +309,7 @@ fn normalize_rustfmt_with(bin: Option<&Path>, old: &str, new: &str) -> Option<St
 /// Run `rustfmt --edition 2024` over `content` via stdin and capture the
 /// formatted stdout. `None` on spawn failure, non-zero exit, timeout, or
 /// non-UTF-8 output.
+#[cfg(feature = "parse-gate")]
 fn format_rustfmt_content(bin: Option<&Path>, content: &str) -> Option<String> {
     let bin = bin?;
     let mut child = Command::new(bin)
