@@ -1664,14 +1664,14 @@ fn apply_turn_accounting(
 /// re-plan path: the refused call never ran, so plan mode stays active and the
 /// plan file is still there to rewrite.
 ///
-/// Known limitation, beside the behaviour it owns: `exit_plan_mode` has no
-/// arguments to discriminate on, so its grouping key is the bare tool name — `[a]`
-/// at that gate covers every later `exit_plan_mode` in this session, and a
-/// revised plan is then approved without a question. A steer is drained at the
-/// turn's next step boundary; if the turn ends before one arrives, the host's
-/// stale-drain discards it — the same edge the composer's queued messages
-/// carry, and the reason the confirmation line says the turn was told, not
-/// that the model acted on it.
+/// The plan gate is deliberately one-shot: `[a]`/`[o]` still answer "approve"
+/// (generic-gate muscle memory must not fall through to `Revise`), but
+/// [`parse_plan_approval_answer`] maps them to [`ApprovalAnswer::RunOnce`] —
+/// no session grant is recorded, so a revised plan is asked about again. A
+/// steer is drained at the turn's next step boundary; if the turn ends before
+/// one arrives, the host's stale-drain discards it — the same edge the
+/// composer's queued messages carry, and the reason the confirmation line says
+/// the turn was told, not that the model acted on it.
 #[allow(clippy::too_many_arguments)]
 async fn handle_approval(
     state: &mut ReplState,
@@ -2645,8 +2645,14 @@ mod tests {
         assert!(!plan.contains("[a]"), "{plan}");
     }
 
+    /// The plan gate answers once and records nothing: `a`/`always` is accepted
+    /// (so muscle memory approves rather than steering a bare letter at the
+    /// model), but it must map to `RunOnce`, not the generic gate's
+    /// `AlwaysSession` — a revised plan has to be asked about again.
     #[test]
-    fn plan_gate_maps_answers_without_remember_keys() {
+    fn plan_gate_approves_once_and_never_records_a_session_grant() {
+        // Contrast: the generic gate still remembers `a`.
+        assert_eq!(parse_approval_answer("a"), ApprovalAnswer::AlwaysSession);
         for raw in ["y", "yes", "a", "always", "o", "yolo"] {
             assert_eq!(
                 parse_plan_approval_answer(raw),
