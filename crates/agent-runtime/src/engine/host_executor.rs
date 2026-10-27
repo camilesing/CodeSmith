@@ -1200,6 +1200,15 @@ pub struct HostAgentExecutor {
     /// Routed rather than a bare receiver since sub-agents ask through the
     /// same channel: see [`super::approval::ApprovalRouter`].
     pub(crate) approval: Option<Arc<super::approval::ApprovalRouter>>,
+    /// Optional `request_user_input` answer receiver. `None` (embeds/tests
+    /// that skip [`Self::with_user_input`]) ⇒ the tool refuses with an
+    /// actionable error instead of running. `tokio::sync::Mutex` for the same
+    /// reason as `approval`: the guard must cross `recv().await`. A single
+    /// consumer (the main turn; sub-agents cannot register the tool), and the
+    /// receiver persists across `run` invocations like
+    /// `Engine.rx_user_input`.
+    pub(crate) user_input:
+        Option<Arc<tokio::sync::Mutex<mpsc::Receiver<super::approval::UserInputDecision>>>>,
     /// Optional compaction probe (§E). `None` ⇒ micro-compact + auto-compact
     /// are no-ops. The probe carries interior-mutable `micro_state` +
     /// `circuit_breaker` (both `Arc<std::sync::Mutex<…>>`, matching the
@@ -1528,6 +1537,7 @@ impl HostAgentExecutor {
             lsp,
             steer,
             approval,
+            user_input: None,
             compaction,
             capacity,
             subagent,
@@ -1576,6 +1586,21 @@ impl HostAgentExecutor {
         tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
     ) -> Self {
         self.tool_dispatcher = tool_dispatcher;
+        self
+    }
+
+    /// Attach the host's `request_user_input` answer receiver. The production
+    /// wire-in passes `Engine.rx_user_input` (an `Arc` clone, so the receiver
+    /// survives across turns); embeds/tests that skip it keep the tool's
+    /// "no interactive prompt" refusal. Consumes and returns `self`.
+    #[must_use]
+    pub fn with_user_input(
+        mut self,
+        user_input: Option<
+            Arc<tokio::sync::Mutex<mpsc::Receiver<super::approval::UserInputDecision>>>,
+        >,
+    ) -> Self {
+        self.user_input = user_input;
         self
     }
 

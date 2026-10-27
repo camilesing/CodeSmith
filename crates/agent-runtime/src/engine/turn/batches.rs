@@ -880,6 +880,16 @@ impl HostAgentExecutor {
                         // block still read them.
                         let plan = &plan;
                         let terminal: ToolCallNext = Box::pin(async move {
+                            // `request_user_input` is answered by the host, not
+                            // by its (error-only) tool body: emit the question,
+                            // wait for the answer, validate it. The batch
+                            // classifier keeps interactive calls serial, so this
+                            // is the only dispatch path for it.
+                            if plan.name == crate::engine::tool_catalog::REQUEST_USER_INPUT_NAME {
+                                return self
+                                    .request_user_input(&plan.id, &run_input_terminal)
+                                    .await;
+                            }
                             match tool {
                                 Some(tool) => {
                                     let approval = match &ext_ask {

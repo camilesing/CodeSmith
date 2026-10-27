@@ -6195,6 +6195,12 @@ pub(crate) async fn run_exec_agent(
                     let _ = engine_handle.deny_tool_call(id).await;
                 }
             }
+            // Headless run has no interactive prompt: answer the question with
+            // a cancellation so the tool result tells the model to ask in
+            // plain text. Skipping this arm would hang the turn.
+            Event::UserInputRequired { id, .. } => {
+                let _ = engine_handle.cancel_user_input(id).await;
+            }
             // Headless run: no human to ask about the path, so the answer
             // mirrors `ApprovalRequired` — `--auto` allows it, otherwise the
             // call stays refused. Skipping this arm would hang the turn: the
@@ -6552,6 +6558,12 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
                     // model gets a tool error it can react to.
                     let _ = engine_handle.deny_tool_call(id).await;
                 }
+            }
+            // Headless teammate: no interactive prompt, so answer the
+            // question with a cancellation (the tool result tells the model to
+            // ask in plain text). Without this arm the turn waits forever.
+            Event::UserInputRequired { id, .. } => {
+                let _ = engine_handle.cancel_user_input(id).await;
             }
             // Same rule for a path outside the workspace: no human in the loop
             // to grant it.

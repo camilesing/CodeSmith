@@ -4473,6 +4473,151 @@ async fn model_tool_catalog_includes_session_search() {
     );
 }
 
+/// How a test host answers one `request_user_input` prompt.
+enum TestUserInputAnswer {
+    Submit(Vec<codesmith_agent_runtime::user_input::UserInputAnswer>),
+    Cancel,
+}
+
+/// Drive one turn whose only tool call is `request_user_input`, answering the
+/// prompt with `answer`. Returns whether the prompt was surfaced and the
+/// model's captured requests (round 2 carries the tool result).
+async fn drive_user_input_turn(answer: TestUserInputAnswer) -> (bool, Arc<MockLlmClient>) {
+    use codesmith_agent_runtime::user_input::UserInputResponse;
+
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "ask_1",
+            "request_user_input",
+            r#"{"questions":[{"header":"Pick","id":"choice","question":"Which?","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}"#,
+        ),
+        canned::simple_text_turn("done"),
+    ]);
+    let (handle, mock) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+    handle.send(make_send_op("ask me")).await.expect("send op");
+
+    let mut saw_prompt = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = rx.recv().await {
+        if let Event::UserInputRequired { id, .. } = &event {
+            saw_prompt = true;
+            match &answer {
+                TestUserInputAnswer::Submit(answers) => handle
+                    .submit_user_input(
+                        id.clone(),
+                        UserInputResponse {
+                            answers: answers.clone(),
+                        },
+                    )
+                    .await
+                    .expect("submit answer"),
+                TestUserInputAnswer::Cancel => handle
+                    .cancel_user_input(id.clone())
+                    .await
+                    .expect("cancel prompt"),
+            }
+        }
+        if matches!(event, Event::TurnComplete { .. }) {
+            break;
+        }
+    }
+    drop(rx);
+    (saw_prompt, mock)
+}
+
+/// The tool result the model saw on the follow-up round.
+fn user_input_tool_result(mock: &MockLlmClient) -> (String, Option<bool>) {
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 2, "tool round + follow-up round");
+    requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .find_map(|block| match block {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .expect("the follow-up request carries the tool result")
+}
+
+fn answer(id: &str, label: &str) -> codesmith_agent_runtime::user_input::UserInputAnswer {
+    codesmith_agent_runtime::user_input::UserInputAnswer {
+        id: id.to_string(),
+        label: label.to_string(),
+        value: label.to_string(),
+    }
+}
+
+/// P1 — `request_user_input` is a host question, not a tool body: the engine
+/// must emit `Event::UserInputRequired`, take the host's
+/// `UserInputDecision::Submitted`, validate it against the request, and feed
+/// the answers back to the model as the tool result.
+#[tokio::test]
+async fn request_user_input_round_trips_through_the_host() {
+    let _env = HermeticEnv::new();
+    let (saw_prompt, mock) =
+        drive_user_input_turn(TestUserInputAnswer::Submit(vec![answer("choice", "B")])).await;
+
+    assert!(
+        saw_prompt,
+        "the engine must surface the question as Event::UserInputRequired"
+    );
+    let (tool_result, is_error) = user_input_tool_result(&mock);
+    assert_eq!(is_error, Some(false), "a valid answer is not a tool error");
+    assert!(
+        tool_result.contains("\"choice\"") && tool_result.contains("\"B\""),
+        "the model must receive the submitted answer, got: {tool_result}"
+    );
+    assert!(
+        !tool_result.contains("must be handled by the engine"),
+        "the tool must not fall through to its placeholder execute body: {tool_result}"
+    );
+}
+
+/// A host answer that was never offered is rejected by
+/// `UserInputResponse::validate_against` and fed back as a tool error the
+/// model can react to — the turn itself keeps going.
+#[tokio::test]
+async fn request_user_input_rejects_an_unoffered_answer() {
+    let _env = HermeticEnv::new();
+    let (saw_prompt, mock) =
+        drive_user_input_turn(TestUserInputAnswer::Submit(vec![answer("choice", "C")])).await;
+
+    assert!(saw_prompt, "the prompt must be surfaced before validation");
+    let (tool_result, is_error) = user_input_tool_result(&mock);
+    assert_eq!(is_error, Some(true), "an invalid answer is a tool error");
+    assert!(
+        tool_result.contains("was not offered"),
+        "the rejection must name the reason, got: {tool_result}"
+    );
+}
+
+/// Cancelling the prompt (a REPL user declining, or a headless host with no
+/// prompt) ends the question without failing the turn.
+#[tokio::test]
+async fn request_user_input_cancellation_reaches_the_model() {
+    let _env = HermeticEnv::new();
+    let (saw_prompt, mock) = drive_user_input_turn(TestUserInputAnswer::Cancel).await;
+
+    assert!(
+        saw_prompt,
+        "the prompt must be surfaced before cancellation"
+    );
+    let (tool_result, is_error) = user_input_tool_result(&mock);
+    assert_eq!(
+        is_error,
+        Some(false),
+        "cancellation is an answer, not a tool failure"
+    );
+    assert!(
+        tool_result.contains("cancelled"),
+        "the model must learn the request was cancelled, got: {tool_result}"
+    );
+}
+
 /// `[tools] include` (what the preset tiers set) must narrow the *request*
 /// the model receives, not only the catalog reported on `TurnComplete`. A
 /// turn whose allowlist is `["read_file"]` sends `read_file` plus the

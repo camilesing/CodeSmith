@@ -256,6 +256,13 @@ pub fn tool_plan_is_parallel_safe(plan: &ToolExecutionPlan) -> bool {
     if plan.interactive || plan.destructive {
         return false;
     }
+    // A host question is a prompt, not a read: it must never be asked from a
+    // concurrent batch (the answer channel has one waiter and the asks would
+    // interleave). The dispatcher's `is_interactive` covers the production
+    // registry; the name check keeps embeds without a dispatcher correct too.
+    if plan.name == crate::engine::tool_catalog::REQUEST_USER_INPUT_NAME {
+        return false;
+    }
     // A writer that does not name its targets is never eligible: `exec_shell`
     // can write anywhere, and an `apply_patch` whose diff failed to parse
     // resolves no path. Both stay serial rather than race.

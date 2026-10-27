@@ -11,6 +11,8 @@
 //!   (`execute_tool_batches`).
 //! - [`approval`] — the per-tool approval gate (`request_approval` + the
 //!   static capability gate / intent-summary helpers).
+//! - [`user_input`] — the `request_user_input` host-question gate (emit
+//!   `UserInputRequired`, wait for the host's answer, validate it).
 //! - [`seams`] — the cross-cutting seams: the cancel-token checkpoint helper
 //!   and the steer push / drain methods (the checkpoint map lives in its
 //!   module docs).
@@ -35,6 +37,7 @@ mod postprocess;
 mod seams;
 mod stream;
 mod truncation;
+mod user_input;
 
 pub(crate) use approval::approval_intent_summary;
 pub(crate) use postprocess::{

@@ -156,22 +156,13 @@ impl UserInputResponse {
     ///
     /// # Wiring status
     ///
-    /// Currently exercised only by tests. The intended call site — pairing
-    /// a `UserInputDecision::Submitted` response with the pending
-    /// `request_user_input` request — is not reachable today: the response
-    /// channel's consumer was retired with the legacy turn loop
-    /// (`Engine::rx_user_input` is dead code, and no code matches
-    /// `UserInputDecision::Submitted`), `Event::UserInputRequired` is never
-    /// emitted, and `RequestUserInputTool::validate_input` drops the parsed
-    /// `UserInputRequest` (`.map(|_| ())`) while its `execute` errors out
-    /// with "must be handled by the engine". Wiring this up needs an API
-    /// change: the engine-side special-case for `request_user_input` should
-    /// keep the parsed request (keyed by tool-call id), emit
-    /// `Event::UserInputRequired { id, request }`, and call
-    /// `response.validate_against(&pending)` when the matching
-    /// `UserInputDecision::Submitted` arrives — treating an `Err` as an
-    /// invalid submission surfaced to the model (reject the answer, never
-    /// panic).
+    /// Called by the turn loop's `request_user_input` gate
+    /// (`engine/turn/user_input.rs`): the serial dispatch path keeps the
+    /// parsed request, emits `Event::UserInputRequired { id, request }`, waits
+    /// for the matching `UserInputDecision`, and validates a `Submitted`
+    /// response here before it reaches the model. An `Err` is fed back as an
+    /// invalid-input tool result — never a panic and never a turn abort. Hosts
+    /// that cannot prompt (`codesmith exec`) answer with `Cancelled`.
     pub fn validate_against(&self, request: &UserInputRequest) -> Result<(), ToolError> {
         let mut answered = std::collections::HashSet::new();
         for answer in &self.answers {

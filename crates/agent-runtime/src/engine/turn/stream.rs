@@ -862,7 +862,16 @@ impl HostAgentExecutor {
                                         &finalized_input,
                                         &caps,
                                     );
-                                    if early_start_safe(&caps) && !approval_gated {
+                                    // Same rule the batch classifier applies:
+                                    // an interactive tool must not run
+                                    // speculatively — its answer comes from the
+                                    // host, and the serial dispatch path is
+                                    // where the question is asked.
+                                    let interactive = self
+                                        .tool_dispatcher
+                                        .as_ref()
+                                        .is_some_and(|d| d.is_interactive(name, &finalized_input));
+                                    if early_start_safe(&caps) && !approval_gated && !interactive {
                                         let tool = Arc::clone(tool);
                                         let input = finalized_input.clone();
                                         let handle =

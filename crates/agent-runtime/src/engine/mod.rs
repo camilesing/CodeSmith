@@ -143,11 +143,11 @@ pub struct Engine {
     /// is retired with the legacy turn loop). The router lets a sub-agent ask
     /// through the same channel without stealing another waiter's answer.
     pub(crate) rx_approval: Arc<approval::ApprovalRouter>,
-    /// Write-only after the legacy turn-loop retirement: its consumer
-    /// (`await_user_input`) retired with it; the executor owns its own user-input path.
-    /// Retained for the `tx_user_input` sender's paired receiver lifetime.
-    #[allow(dead_code)]
-    pub(crate) rx_user_input: mpsc::Receiver<UserInputDecision>,
+    /// `request_user_input` answers from the host. `Arc<tokio::sync::Mutex<…>>`
+    /// for the same reason as `rx_steer`: the executor's question gate holds
+    /// the guard across `recv().await`, and the receiver persists across turns
+    /// (the `tx_user_input` half lives on `EngineHandle`).
+    pub(crate) rx_user_input: Arc<AsyncMutex<mpsc::Receiver<UserInputDecision>>>,
     /// Wrapped in `Arc<tokio::sync::Mutex<…>>` (slice 20 §E); cloned per turn
     /// into the executor's `steer` field for the stale-drain + mid-stream drain.
     pub(crate) rx_steer: Arc<AsyncMutex<mpsc::Receiver<String>>>,
@@ -1454,6 +1454,9 @@ impl Engine {
             progressive_disclosure_active(catalog, self.config.progressive_disclosure)
         }))
         .with_tool_dispatcher(plan.tool_registry().cloned())
+        // `request_user_input` answers: the same receiver every turn, so a
+        // decision queued between turns is still matched by its wire id.
+        .with_user_input(Some(Arc::clone(&self.rx_user_input)))
         .with_turn_meta(Some(turn_meta_probe))
         .with_reinject(Some(reinject_probe))
         .with_extension_runner(self.extension_runner.clone())
@@ -3372,7 +3375,7 @@ impl Engine {
             mcp_pool: None,
             rx_op,
             rx_approval,
-            rx_user_input,
+            rx_user_input: Arc::new(AsyncMutex::new(rx_user_input)),
             rx_steer: Arc::new(AsyncMutex::new(rx_steer)),
             tx_event,
             tx_subagent_completion,
