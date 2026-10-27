@@ -522,14 +522,15 @@ fn parse_plan_approval_answer(raw: &str) -> ApprovalAnswer {
 }
 
 /// The plan-approval question — [`approval_frame`]'s shape for the one gate
-/// that decides about a plan, not a tool call. Three choices, no remember-keys:
-/// an approval that outlives the plan it answered would silence the review of
-/// every revised plan after it. Ends at the unterminated prompt, like
+/// that decides about a plan, not a tool call. Two rows: the question alone,
+/// then the legend, so the question is not read as part of the options. Three
+/// choices, no remember-keys: an approval that outlives the plan it answered
+/// would silence the review of every revised plan after it. The `[r]` key still
+/// reads the rest of the line as feedback ([`parse_feedback_answer`]); the
+/// legend just no longer spells that out. Ends at the unterminated prompt, like
 /// [`approval_frame`].
 fn plan_approval_frame() -> String {
-    "approve this plan? [y] approve and implement · [n] reject (plan mode stays) · \
-     [r] <feedback> revise: "
-        .to_string()
+    "approve this plan?\n[y] approve and implement · [n] reject · [r] revise: ".to_string()
 }
 
 /// Steered into the running turn when the plan gate rejects: a bare
@@ -2616,8 +2617,12 @@ mod tests {
         let frame = plan_approval_frame();
         assert!(!frame.ends_with('\n'), "{frame}");
         assert!(frame.ends_with(": "), "{frame}");
-        for scoped in ["approve and implement", "reject", "<feedback> revise"] {
-            assert!(frame.contains(scoped), "missing {scoped:?} in {frame:?}");
+        // The question is its own row; the legend is the row under it.
+        let (question, legend) = frame.split_once('\n').expect("question on its own row");
+        assert_eq!(question, "approve this plan?", "{frame}");
+        assert!(!legend.contains('\n'), "one legend row: {frame}");
+        for scoped in ["approve and implement", "[n] reject", "[r] revise"] {
+            assert!(legend.contains(scoped), "missing {scoped:?} in {legend:?}");
         }
         assert!(
             !frame.contains("[a]"),

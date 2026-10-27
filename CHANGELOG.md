@@ -34,6 +34,13 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **The plan-approval question sits on its own line** — `exit_plan_mode` prints
+  the plan body and then asks `approve this plan?` on a row of its own, with the
+  three keys on the row under it (`[y] approve and implement · [n] reject ·
+  [r] revise`), so the question is no longer read as part of the option list.
+  Keys and meanings are unchanged: `[r]` still takes your reason on the same
+  line, and a bare `[r]` still asks for it on the next one.
+
 ## [0.11.0] - 2026-10-25
 
 ### Added
