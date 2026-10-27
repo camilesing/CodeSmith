@@ -41,7 +41,8 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
   asks on a row of its own; a bare `[r]` re-asks with the question's own keys
   under it, minus `[r]` itself. Sandbox elevation swaps `[y/N]` and the "(mode
   policy)" jargon for a question plus the same key shape, and a model question
-  numbers its options `[1]` instead of `1)`.
+  numbers its options `[1]` instead of `1)` and says that any other answer
+  cancels the request.
 
 ## [0.11.0] - 2026-10-25
 

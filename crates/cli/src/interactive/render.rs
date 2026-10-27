@@ -2084,7 +2084,10 @@ async fn handle_user_input(
             );
         }
         keys.suspend();
-        let answer = read_stdin_line("choice: ").await;
+        // The hint is the whole answer space: one of the numbers above, or the
+        // request is cancelled without a word — including for the questions
+        // already answered in this batch.
+        let answer = read_stdin_line("choice (any other input cancels the request): ").await;
         keys.resume();
         let picked = answer
             .parse::<usize>()
