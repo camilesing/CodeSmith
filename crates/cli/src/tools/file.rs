@@ -832,8 +832,14 @@ impl ToolSpec for EditFileTool {
             let indent_matches = leading_whitespace_fuzzy_matches(&contents, &search);
             match indent_matches.as_slice() {
                 [(start, end)] => {
+                    // The match is the file's own span; the model's
+                    // `replace` was written against its copy of `search`.
+                    // Rebuild it from the span so a drifting snippet only
+                    // fixes the hit rate, never rewrites untouched lines.
+                    let reindented =
+                        reindent_fuzzy_replacement(&contents[*start..*end], &search, replace);
                     let mut updated = contents.clone();
-                    updated.replace_range(*start..*end, replace);
+                    updated.replace_range(*start..*end, &reindented);
                     (updated, 1, Some("indentation"), None)
                 }
                 [] => {
@@ -1118,6 +1124,94 @@ fn leading_whitespace_fuzzy_matches(contents: &str, search: &str) -> Vec<(usize,
         cursor = norm_end;
     }
     matches
+}
+
+/// Rebuild a fuzzy replacement against the file's matched span.
+///
+/// [`leading_whitespace_fuzzy_matches`] locates the span in the file, but
+/// `replace` is the model's text, written against its copy of `search` — which
+/// is exactly where the indentation drift lives. Applying it verbatim
+/// re-indents lines the edit never meant to touch (case1's 8→9/10-space
+/// template churn). Line-align `search` → `replace` and use the file's own
+/// leading whitespace for every line that corresponds to one in the span:
+///
+/// - unchanged lines use the file's line verbatim;
+/// - a changed line keeps the file's indentation and the model's content;
+/// - inserted lines keep their indentation relative to the snippet's first
+///   line, shifted by the first-line indent delta.
+///
+/// Falls back to `replace` unchanged when the span's line count no longer
+/// matches `search` (the matcher guarantees it does; this is defensive).
+fn reindent_fuzzy_replacement(original: &str, search: &str, replace: &str) -> String {
+    let original_lines: Vec<&str> = original.split_inclusive('\n').collect();
+    let search_lines: Vec<&str> = search.split_inclusive('\n').collect();
+    let replace_lines: Vec<&str> = replace.split_inclusive('\n').collect();
+    if original_lines.len() != search_lines.len() {
+        return replace.to_string();
+    }
+    // The model's snippet base indent vs the file's. An empty snippet indent
+    // carries no relative signal (there is nothing to strip), so it leaves
+    // inserted lines alone.
+    let search_base = leading_whitespace(search_lines.first().copied().unwrap_or(""));
+    let original_base = leading_whitespace(original_lines.first().copied().unwrap_or(""));
+    let shift = (!search_base.is_empty()).then_some((search_base, original_base));
+    let shifted = |line: &str| match shift {
+        Some((from, to)) => match line.strip_prefix(from) {
+            Some(rest) => format!("{to}{rest}"),
+            None => line.to_string(),
+        },
+        None => line.to_string(),
+    };
+
+    let diff = similar::TextDiff::from_lines(search, replace);
+    let mut out = String::with_capacity(replace.len());
+    for op in diff.ops() {
+        match *op {
+            similar::DiffOp::Equal { old_index, len, .. } => {
+                for offset in 0..len {
+                    // The span's final line can be partial (the match ends
+                    // mid-line); taking the file's line for an equal one is
+                    // still exact, since equality covers that line's whole
+                    // matched content.
+                    out.push_str(original_lines[old_index + offset]);
+                }
+            }
+            similar::DiffOp::Delete { .. } => {}
+            similar::DiffOp::Insert {
+                new_index, new_len, ..
+            } => {
+                for offset in 0..new_len {
+                    out.push_str(&shifted(replace_lines[new_index + offset]));
+                }
+            }
+            similar::DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => {
+                if old_len == new_len {
+                    for offset in 0..new_len {
+                        out.push_str(leading_whitespace(original_lines[old_index + offset]));
+                        out.push_str(
+                            replace_lines[new_index + offset].trim_start_matches([' ', '\t']),
+                        );
+                    }
+                } else {
+                    for offset in 0..new_len {
+                        out.push_str(&shifted(replace_lines[new_index + offset]));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The leading run of spaces/tabs on `line` (empty when it starts with
+/// content). Returned as a slice so callers can prepend it verbatim.
+fn leading_whitespace(line: &str) -> &str {
+    &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
 }
 
 /// Normalize typographic punctuation to its ASCII counterpart:
@@ -2501,6 +2595,46 @@ mod tests {
         assert_eq!(
             edited,
             "fn main() {\n    if true {\n        let value = 2;\n    }\n}\n"
+        );
+    }
+
+    /// A whitespace-tolerant match must only fix the hit rate — untouched
+    /// lines keep the file's own indentation. Before the fix, the whole
+    /// located span was replaced with the model's `replace` text, so a
+    /// snippet written one space off spread that drift onto every line it
+    /// covered (case1's 8→9/10-space template churn).
+    #[tokio::test]
+    async fn test_edit_file_fuzzy_indent_preserves_untouched_lines() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("template.vue");
+        fs::write(
+            &test_file,
+            "<template>\n        <el-table-column\n          prop=\"a\"\n          label=\"A\">\n        </el-table-column>\n</template>\n",
+        )
+        .expect("write");
+
+        let tool = EditFileTool;
+        let result = tool
+            .execute(
+                json!({
+                    "path": "template.vue",
+                    "search": "         <el-table-column\n          prop=\"a\"\n          label=\"A\">\n         </el-table-column>",
+                    "replace": "         <el-table-column\n          prop=\"a\"\n          label=\"B\">\n         </el-table-column>"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert!(result.content.contains("fuzzy indentation match"));
+        let edited = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(
+            edited,
+            "<template>\n        <el-table-column\n          prop=\"a\"\n          label=\"B\">\n        </el-table-column>\n</template>\n",
+            "only the edited line may change; fuzzy matching must not re-indent the rest"
         );
     }
 
