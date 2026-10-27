@@ -394,9 +394,35 @@ fn approval_always_scope(tool_name: &str, grouping_key: &str) -> String {
     }
 }
 
+/// The keys a gate offers, in the one shape every prompt prints them:
+/// `[key] what it does`, ` · `-separated, with no question and no trailing
+/// prompt of its own — a caller puts it under whatever it is asking.
+///
+/// One function because the re-ask repeats the keys that are still live under
+/// it ([`feedback_needed_frame`] takes this string), and a legend described a
+/// second time is a legend that can disagree with itself. `[r]` is never part of
+/// it: the plan gate does not offer it, and at a re-ask it is the slot the user
+/// already took.
+///
+/// `always_scope` is what `[a]` would cover; `None` is the plan gate, whose
+/// legend has no remember-keys at all — an approval that outlived the plan it
+/// answered would silence every revision of it.
+fn gate_legend(always_scope: Option<&str>) -> String {
+    let Some(always_scope) = always_scope else {
+        return "[y] approve and implement · [n] reject".to_string();
+    };
+    format!(
+        "[y] run it once · [a] always allow {always_scope} for this session \
+         · [o] yolo · [n] skip · [e] never this call"
+    )
+}
+
 /// The approval question, whole: what is being asked, why, and what each answer
 /// scopes to. Ends at the unterminated prompt — the answer echoes on that row,
 /// and [`read_stdin_line`] decides whether the row still needs terminating.
+///
+/// `[o]` carries a bare label: what the posture turns on is printed once, as
+/// that answer's own confirmation line, not twice.
 fn approval_frame(
     tool_name: &str,
     description: &str,
@@ -414,20 +440,20 @@ fn approval_frame(
         frame.push_str(&format!("{}\n", format!("  intent: {intent}").dimmed()));
     }
     frame.push_str(&format!(
-        "allow? [y] run it once · [a] always allow {always_scope} for this session \
-         · [o] yolo — shell + trust + auto-approve for the rest of this session \
-         · [e] never this exact call · [r] <feedback> deny and tell the model why: "
+        "allow? {} · [r] <feedback>: ",
+        gate_legend(Some(always_scope))
     ));
     frame
 }
 
 /// The re-ask after a bare `[r]`: the introducer said "I want to refuse with a
 /// reason", so the next line is read for the reason. Repeating the whole
-/// question would bury that one instruction; this is the shortest line that
-/// says what to type next. Ends at the unterminated prompt, like
-/// [`approval_frame`].
-fn feedback_needed_frame() -> String {
-    "feedback? type what should change (y/a/o/e still answer the question above): ".to_string()
+/// question would bury that one instruction, so the instruction gets its own
+/// row and the keys of the question above — `gate_keys`, that gate's own
+/// [`gate_legend`] — come back under it, minus `[r]`. Ends at the unterminated
+/// prompt, like [`approval_frame`].
+fn feedback_needed_frame(gate_keys: &str) -> String {
+    format!("feedback? type what should change\n{gate_keys}: ")
 }
 
 /// What an approval answer does. Split from the prompt for the same reason as
@@ -523,14 +549,12 @@ fn parse_plan_approval_answer(raw: &str) -> ApprovalAnswer {
 
 /// The plan-approval question — [`approval_frame`]'s shape for the one gate
 /// that decides about a plan, not a tool call. Two rows: the question alone,
-/// then the legend, so the question is not read as part of the options. Three
-/// choices, no remember-keys: an approval that outlives the plan it answered
-/// would silence the review of every revised plan after it. The `[r]` key still
-/// reads the rest of the line as feedback ([`parse_feedback_answer`]); the
-/// legend just no longer spells that out. Ends at the unterminated prompt, like
-/// [`approval_frame`].
+/// then the legend, so the question is not read as part of the options. The
+/// `[r]` key still reads the rest of the line as feedback
+/// ([`parse_feedback_answer`]); the legend just no longer spells that out. Ends
+/// at the unterminated prompt, like [`approval_frame`].
 fn plan_approval_frame() -> String {
-    "approve this plan?\n[y] approve and implement · [n] reject · [r] revise: ".to_string()
+    format!("approve this plan?\n{} · [r] revise: ", gate_legend(None))
 }
 
 /// Steered into the running turn when the plan gate rejects: a bare
@@ -1741,6 +1765,14 @@ async fn handle_approval(
     // and ask the plan gate's own three-way question — the decision is about
     // the plan, not this tool call.
     let plan_gate = tool_name == "exit_plan_mode";
+    let always_scope = approval_always_scope(&tool_name, &approval_grouping_key);
+    // Built once: the re-ask below repeats this exact legend, so the keys that
+    // are still live under it cannot drift from the question's own.
+    let gate_keys = if plan_gate {
+        gate_legend(None)
+    } else {
+        gate_legend(Some(&always_scope))
+    };
     if plan_gate {
         print!("{}", plan_approval_block(state).await);
         print!("{}", plan_approval_frame());
@@ -1752,7 +1784,7 @@ async fn handle_approval(
                 &description,
                 args_summary.as_deref(),
                 intent_summary.as_deref(),
-                &approval_always_scope(&tool_name, &approval_grouping_key),
+                &always_scope,
             )
         );
     }
@@ -1768,7 +1800,7 @@ async fn handle_approval(
     let answer = loop {
         match parse(&read_stdin_line("").await) {
             ApprovalAnswer::NeedFeedback => {
-                print!("{}", feedback_needed_frame());
+                print!("{}", feedback_needed_frame(&gate_keys));
                 let _ = std::io::stdout().flush();
             }
             answer => break answer,
@@ -2045,7 +2077,7 @@ async fn handle_user_input(
         println!("{} {}", "?".cyan(), question.question);
         for (idx, option) in question.options.iter().enumerate() {
             println!(
-                "  {}) {} {}",
+                "  [{}] {} {}",
                 idx + 1,
                 option.label,
                 format!("— {}", option.description).dimmed()
@@ -2124,7 +2156,8 @@ async fn handle_elevation(
         command.as_deref().unwrap_or(&tool_name)
     );
     keys.suspend();
-    let answer = read_stdin_line("retry with elevated sandbox (mode policy)? [y/N]: ").await;
+    let answer =
+        read_stdin_line("retry with an elevated sandbox? [y] retry · [n] keep it denied: ").await;
     keys.resume();
     if answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
         let policy = sandbox_policy_for_mode(state.mode, &state.workspace);
@@ -2563,27 +2596,50 @@ mod tests {
         for scoped in [
             "[y] run it once",
             "[a] always allow this command family for this session",
-            "[o] yolo — shell + trust + auto-approve for the rest of this session",
-            "[e] never this exact call",
-            "[r] <feedback> deny and tell the model why",
+            "[o] yolo",
+            // The cheap "no" is on the legend now: without it the only visible
+            // refusal was `[e]`, which is a remembered denial — heavier than the
+            // single call a user pressing it usually means to skip.
+            "[n] skip",
+            "[e] never this call",
+            "[r] <feedback>",
         ] {
             assert!(frame.contains(scoped), "missing {scoped:?} in {frame:?}");
         }
         assert!(
-            !frame.contains("[n]"),
-            "skip is the empty line, not a legend key: {frame}"
+            !frame.contains("auto-approve"),
+            "what yolo turns on is printed as the answer's confirmation line, \
+             not a second time in the legend: {frame}"
         );
     }
 
-    /// The re-ask after a bare `[r]` is a question too: it must leave the
-    /// answer on its own row, end at the unterminated prompt, and say what the
-    /// line it is about to read is for.
+    /// The re-ask after a bare `[r]` is a question too: the instruction owns its
+    /// row, the gate's own keys come back under it word for word — minus `[r]`,
+    /// which is the slot the user just took — and the answer still echoes on the
+    /// unterminated prompt row.
     #[test]
-    fn feedback_needed_frame_is_a_prompt_row() {
-        let frame = feedback_needed_frame();
+    fn feedback_needed_frame_repeats_the_gate_keys_without_revise() {
+        let keys = gate_legend(Some("this command family"));
+        let frame = feedback_needed_frame(&keys);
         assert!(!frame.ends_with('\n'), "{frame}");
         assert!(frame.ends_with(": "), "{frame}");
-        assert!(frame.contains("what should change"), "{frame}");
+        let (instruction, keys_row) = frame
+            .split_once('\n')
+            .expect("the instruction is its own row");
+        assert!(instruction.contains("what should change"), "{frame}");
+        assert_eq!(keys_row, format!("{keys}: "), "{frame}");
+        assert!(
+            !frame.contains("[r]"),
+            "the re-ask *is* the revise slot: {frame}"
+        );
+
+        // The plan gate's re-ask repeats the plan question's keys instead.
+        let plan = feedback_needed_frame(&gate_legend(None));
+        assert!(
+            plan.contains("[y] approve and implement · [n] reject: "),
+            "{plan}"
+        );
+        assert!(!plan.contains("[a]"), "{plan}");
     }
 
     #[test]
@@ -2788,7 +2844,7 @@ mod tests {
         );
 
         // The deny side is exact-call scoped for every tool, and its label says so.
-        assert!(frame.contains("[e] never this exact call"), "{frame}");
+        assert!(frame.contains("[e] never this call"), "{frame}");
     }
 
     /// `[a]` records one grant per family, and a later call is covered only

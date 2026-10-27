@@ -34,12 +34,14 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
-- **The plan-approval question sits on its own line** — `exit_plan_mode` prints
-  the plan body and then asks `approve this plan?` on a row of its own, with the
-  three keys on the row under it (`[y] approve and implement · [n] reject ·
-  [r] revise`), so the question is no longer read as part of the option list.
-  Keys and meanings are unchanged: `[r]` still takes your reason on the same
-  line, and a bare `[r]` still asks for it on the next one.
+- **Every approval question now shares one key legend** — `[key] what it does`,
+  with the answer read on the same row. The tool gate lists `[n] skip` at last
+  (an empty line still skips silently, and a bare `n` still works) and stops
+  repeating the `[o]` explanation its own confirmation line prints; the plan gate
+  asks on a row of its own; a bare `[r]` re-asks with the question's own keys
+  under it, minus `[r]` itself. Sandbox elevation swaps `[y/N]` and the "(mode
+  policy)" jargon for a question plus the same key shape, and a model question
+  numbers its options `[1]` instead of `1)`.
 
 ## [0.11.0] - 2026-10-25
 
