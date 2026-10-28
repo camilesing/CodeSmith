@@ -1411,9 +1411,24 @@ only; it does not add a Baidu model provider.
 or one of the `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
 environment variables.
 
+**`provider_native`** uses the active model provider's own server-side web
+search tool (Anthropic-compatible `web_search`) instead of a separate search
+backend. It needs no `[search] api_key`: the provider's `base_url`, `api_key`,
+and model are reused, so an Anthropic-compatible gateway that offers
+server-side search — for example BigModel's `/api/anthropic` endpoint — works
+with the key you already have. This is the path that keeps working when search
+engines bot-block plain HTML scraping. The active provider must be
+Anthropic-compatible (`provider = "anthropic"`); any other provider fails loud
+at startup instead of silently scraping.
+
 ```toml
 [search]
-provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine
+provider = "provider_native"
+```
+
+```toml
+[search]
+provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine | provider_native
 # api_key = "YOUR_KEY" # required for tavily, bocha, metaso, and baidu
 ```
 

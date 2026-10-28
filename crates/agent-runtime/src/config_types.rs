@@ -54,6 +54,16 @@ pub enum SearchProvider {
         alias = "volc-ark"
     )]
     Volcengine,
+    /// The active model provider's own server-side search tool
+    /// (Anthropic-compatible `web_search_*`). Reuses the provider's
+    /// base_url / API key / model, so no `[search] api_key` is needed.
+    #[serde(
+        rename = "provider_native",
+        alias = "provider-native",
+        alias = "native",
+        alias = "anthropic"
+    )]
+    ProviderNative,
 }
 
 impl SearchProvider {
@@ -69,6 +79,9 @@ impl SearchProvider {
                 Some(Self::Baidu)
             }
             "volcengine" | "ark" | "volc" | "volcengine-ark" => Some(Self::Volcengine),
+            "provider_native" | "provider-native" | "native" | "anthropic" => {
+                Some(Self::ProviderNative)
+            }
             _ => None,
         }
     }
@@ -83,6 +96,7 @@ impl SearchProvider {
             Self::Metaso => "metaso",
             Self::Baidu => "baidu",
             Self::Volcengine => "volcengine",
+            Self::ProviderNative => "provider_native",
         }
     }
 }

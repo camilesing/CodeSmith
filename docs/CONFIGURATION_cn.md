@@ -1260,9 +1260,23 @@ Tavily、Bocha、Metaso 或 Baidu。
 或 `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`
 环境变量之一。
 
+**`provider_native`** 使用当前模型 provider 自带的**服务端网页搜索工具**
+（Anthropic 兼容的 `web_search`），而不是独立的搜索后端。它不需要
+`[search] api_key`：直接复用 provider 的 `base_url`、`api_key` 和模型，
+因此在支持服务端搜索的 Anthropic 兼容网关上（例如 BigModel 的
+`/api/anthropic` 端点）用你已有的 key 就能工作。搜索引擎对纯 HTML 抓取
+做反爬拦截时，这条链路仍然可用。当前 provider 必须是 Anthropic 兼容的
+（`provider = "anthropic"`）；其他 provider 会在启动时直接报错，而不是
+悄悄回退到抓取。
+
 ```toml
 [search]
-provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine
+provider = "provider_native"
+```
+
+```toml
+[search]
+provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine | provider_native
 # api_key = "YOUR_KEY" # required for tavily, bocha, metaso, and baidu
 ```
 

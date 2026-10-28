@@ -6,8 +6,9 @@
 //!
 //! - **search** dispatches on the configured [`SearchProvider`] (from
 //!   `[search] provider` in config.toml — switching backends is config-only):
-//!   the API providers (Tavily / Bocha / Metaso / Baidu / Volcengine) and the
-//!   DuckDuckGo / Bing HTML scrape, ported from
+//!   the API providers (Tavily / Bocha / Metaso / Baidu / Volcengine), the
+//!   active provider's own server-side `web_search` tool
+//!   (`provider_native`), and the DuckDuckGo / Bing HTML scrape, ported from
 //!   `crates/cli/src/tools/web_search.rs`.
 //! - **fetch** is anonymous HTTP with the SSRF validation (restricted-IP
 //!   block, DNS resolution check, DNS-pinning against rebinding) and the
@@ -31,6 +32,9 @@
 //! - Client instances are built per request (pre-seam behavior kept); there
 //!   is no connection pooling across calls.
 //! - `web.run`'s `image_query` scrape is not routed through this service.
+//! - `provider_native` reads the provider's own search-result envelope and
+//!   ignores the assistant's prose summary; a gateway that renames or drops
+//!   that envelope yields "no parseable results" rather than a best guess.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -39,7 +43,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use codesmith_agent_runtime::config_types::SearchProvider;
-use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicyDecider};
+use codesmith_agent_runtime::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use codesmith_agent_runtime::utils::url_encode;
 use codesmith_agent_runtime::web_service::{
     FetchOutcome, FetchRequest, SearchHit, SearchOutcome, SearchRequest, WebError, WebErrorKind,
@@ -57,8 +61,29 @@ const BOCHA_ENDPOINT: &str = "https://api.bochaai.com/v1/ai/search";
 const METASO_ENDPOINT: &str = "https://metaso.cn/api/v1";
 const BAIDU_ENDPOINT: &str = "https://qianfan.baidubce.com/v2/ai_search/web_search";
 const VOLCENGINE_RESPONSES_ENDPOINT: &str = "https://ark.cn-beijing.volces.com/api/v3/responses";
+/// Server-side search tool declared to an Anthropic-compatible Messages API
+/// (the same tool type ZCode sends). Gateways that predate it answer with an
+/// `unknown tool` error, which the tool surfaces verbatim.
+const PROVIDER_NATIVE_TOOL_TYPE: &str = "web_search_20260209";
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// The provider-native path pays for a search *and* a generation, so it keeps
+/// a floor above the 15 s tool default; a short connect timeout still surfaces
+/// a dead endpoint quickly.
+const PROVIDER_NATIVE_MIN_TIMEOUT: Duration = Duration::from_secs(60);
 const ERROR_BODY_PREVIEW_BYTES: usize = 512;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+/// Connection details for `provider_native` search: the active model
+/// provider's Anthropic-compatible endpoint, resolved by the host from the
+/// `[providers.*]` table (see `Config::web_service`). The tool never reads
+/// `[search] api_key` for this backend — the provider key is the only key
+/// that authenticates this route.
+#[derive(Debug, Clone)]
+pub struct NativeSearchConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
 
 /// Reqwest-backed [`WebService`]: config-selected search provider + anonymous
 /// HTTP fetch. Constructed by the host from `[search]` config and attached to
@@ -67,6 +92,7 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 pub struct HttpWebService {
     provider: SearchProvider,
     api_key: Option<String>,
+    native: Option<NativeSearchConfig>,
 }
 
 impl HttpWebService {
@@ -75,7 +101,20 @@ impl HttpWebService {
     /// at request time (Metaso / Baidu / Volcengine).
     #[must_use]
     pub fn new(provider: SearchProvider, api_key: Option<String>) -> Self {
-        Self { provider, api_key }
+        Self {
+            provider,
+            api_key,
+            native: None,
+        }
+    }
+
+    /// Attach the provider-native transport used by
+    /// [`SearchProvider::ProviderNative`]; without it that backend fails
+    /// closed with a configuration error.
+    #[must_use]
+    pub fn with_native_search(mut self, native: NativeSearchConfig) -> Self {
+        self.native = Some(native);
+        self
     }
 }
 
@@ -90,6 +129,16 @@ impl WebService for HttpWebService {
     }
 
     fn search_hosts(&self) -> Vec<String> {
+        if self.provider == SearchProvider::ProviderNative {
+            // The endpoint is the operator's own gateway, not a fixed vendor
+            // host — the approval gate must see whatever `base_url` names.
+            return self
+                .native
+                .as_ref()
+                .and_then(|native| host_from_url(native.base_url.trim()))
+                .into_iter()
+                .collect();
+        }
         let hosts: &[&str] = match self.provider {
             SearchProvider::Tavily => &["api.tavily.com"],
             SearchProvider::Bocha => &["api.bochaai.com"],
@@ -99,6 +148,7 @@ impl WebService for HttpWebService {
             // The scrape providers can fall through to each other.
             SearchProvider::Bing => &[BING_HOST, DUCKDUCKGO_HOST],
             SearchProvider::DuckDuckGo => &[DUCKDUCKGO_HOST],
+            SearchProvider::ProviderNative => unreachable!("handled above"),
         };
         hosts.iter().map(|h| (*h).to_string()).collect()
     }
@@ -112,6 +162,7 @@ impl HttpWebService {
             SearchProvider::Metaso => self.run_metaso_search(req).await,
             SearchProvider::Baidu => self.run_baidu_search(req).await,
             SearchProvider::Volcengine => self.run_volcengine_search(req).await,
+            SearchProvider::ProviderNative => self.run_provider_native_search(req).await,
             SearchProvider::Bing | SearchProvider::DuckDuckGo => self.run_scrape_search(req).await,
         }
     }
@@ -571,6 +622,111 @@ impl HttpWebService {
                 "Volcengine search: unexpected retry exit",
             )
         }))
+    }
+
+    // === Provider-native search ==========================================
+
+    /// Search through the active provider's own server-side `web_search`
+    /// tool (Anthropic-compatible Messages API) — the ZCode approach: the
+    /// vendor runs the search, so there is no SERP to be bot-blocked and no
+    /// third-party search key.
+    ///
+    /// One non-streaming `/v1/messages` call, one server-side tool. Results
+    /// are read from `content[]`: BigModel stringifies them (`tool_result`
+    /// holding a repr of a list of dicts), Anthropic returns
+    /// `web_search_result` objects — [`parse_provider_native_results`]
+    /// accepts both. The assistant text is deliberately not parsed; it is a
+    /// summary of the results, not the result set.
+    async fn run_provider_native_search(
+        &self,
+        req: &SearchRequest,
+    ) -> Result<SearchOutcome, WebError> {
+        let native = self.native.as_ref().ok_or_else(|| {
+            WebError::new(
+                WebErrorKind::Config,
+                "`[search] provider = \"provider_native\"` needs an Anthropic-compatible \
+                 model provider: set `provider = \"anthropic\"` with `[providers.anthropic]` \
+                 `base_url` and `api_key`, or pick another `[search] provider`.",
+            )
+        })?;
+
+        let host = host_from_url(native.base_url.trim()).unwrap_or_default();
+        check_policy(req.policy.as_ref(), &host, req.tool)?;
+
+        let endpoint = messages_endpoint(&native.base_url);
+        let client = search_client(
+            req.timeout.max(PROVIDER_NATIVE_MIN_TIMEOUT),
+            Some(Duration::from_secs(10)),
+            None,
+        )?;
+        let payload = json!({
+            "model": native.model,
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": format!("Perform a web search for the query: {}", req.query),
+            }],
+            "tools": [{
+                "type": PROVIDER_NATIVE_TOOL_TYPE,
+                "name": "web_search",
+                "max_uses": 2,
+            }],
+        });
+
+        let resp = client
+            .post(&endpoint)
+            .header("x-api-key", &native.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| reqwest_web_error("Provider-native web search request failed", &e))?;
+        let (status, body) =
+            read_body("Failed to read provider-native search response", resp).await?;
+        if !status.is_success() {
+            let msg = match status.as_u16() {
+                401 | 403 => "Provider-native web search rejected the provider API key — \
+                              check the active `[providers.*] api_key`."
+                    .to_string(),
+                429 => "Provider-native web search is rate-limited or this plan has no search \
+                        quota — retry later, or pick another `[search] provider`."
+                    .to_string(),
+                _ => format!(
+                    "Provider-native web search failed: HTTP {} — {}",
+                    status.as_u16(),
+                    truncate_error_body(&body)
+                ),
+            };
+            return Err(WebError::new(WebErrorKind::Status(status.as_u16()), msg));
+        }
+
+        let parsed: Value = serde_json::from_str(&body).map_err(|e| {
+            WebError::new(
+                WebErrorKind::Body,
+                format!("Failed to parse provider-native search response: {e}"),
+            )
+        })?;
+        if let Some(error) = provider_native_error_message(&parsed) {
+            return Err(WebError::new(WebErrorKind::Status(status.as_u16()), error));
+        }
+
+        let results = parse_provider_native_results(&parsed, req.max_results);
+        if results.is_empty() {
+            return Err(WebError::new(
+                WebErrorKind::Body,
+                format!(
+                    "Provider-native search returned no parseable results — the provider may not \
+                     support the `{PROVIDER_NATIVE_TOOL_TYPE}` tool. Response preview: {}",
+                    truncate_error_body(&body)
+                ),
+            ));
+        }
+        Ok(SearchOutcome {
+            results,
+            source: "provider_native".to_string(),
+            warnings: Vec::new(),
+        })
     }
 
     // === DuckDuckGo / Bing scrape =========================================
@@ -1146,6 +1302,197 @@ fn extract_json_block(text: &str) -> Option<&str> {
         return Some(&text[start..=end]);
     }
     None
+}
+
+// === Provider-native result parsing =======================================
+
+/// Search results from a provider-native response, in either wire shape:
+/// Anthropic returns objects with `title`/`url` (plus `citations` entries on
+/// the answer blocks); BigModel returns one `tool_result` whose `content` is
+/// a stringified list of dicts (`{'title': …, 'link': …, 'content': …}`).
+fn parse_provider_native_results(parsed: &Value, max_results: usize) -> Vec<SearchHit> {
+    let mut hits: Vec<SearchHit> = Vec::new();
+    collect_native_hits(parsed, &mut hits, max_results);
+    hits.truncate(max_results);
+    hits
+}
+
+fn collect_native_hits(value: &Value, hits: &mut Vec<SearchHit>, max_results: usize) {
+    if hits.len() >= max_results {
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_native_hits(item, hits, max_results);
+            }
+        }
+        Value::Object(map) => {
+            let title = map.get("title").and_then(Value::as_str);
+            let url = map
+                .get("url")
+                .or_else(|| map.get("link"))
+                .and_then(Value::as_str);
+            if let (Some(title), Some(url)) = (title, url)
+                && is_http_url(url)
+            {
+                let snippet = map
+                    .get("content")
+                    .or_else(|| map.get("snippet"))
+                    .and_then(Value::as_str);
+                push_native_hit(hits, title, url, snippet);
+                return;
+            }
+            for value in map.values() {
+                collect_native_hits(value, hits, max_results);
+            }
+        }
+        Value::String(text) => scan_stringified_hits(text, hits, max_results),
+        _ => {}
+    }
+}
+
+/// Read `title`/`link`/`content` triples out of a stringified list of dicts.
+/// Records are ordered title → link → content, so the title is the last one
+/// before the link and the snippet is the first one after it.
+fn scan_stringified_hits(text: &str, hits: &mut Vec<SearchHit>, max_results: usize) {
+    let mut cursor = 0;
+    while hits.len() < max_results {
+        let Some((link_at, link)) = find_quoted_field(text, "link", cursor) else {
+            break;
+        };
+        cursor = link_at + 1;
+        if !is_http_url(&link) {
+            continue;
+        }
+        let title = last_quoted_field_before(text, "title", link_at).unwrap_or_default();
+        let snippet = find_quoted_field(text, "content", link_at + 1).map(|(_, value)| value);
+        push_native_hit(hits, &title, &link, snippet.as_deref());
+    }
+}
+
+fn push_native_hit(hits: &mut Vec<SearchHit>, title: &str, url: &str, snippet: Option<&str>) {
+    let url = url.trim();
+    if url.is_empty() || hits.iter().any(|hit| hit.url == url) {
+        return;
+    }
+    let title = title.trim();
+    hits.push(SearchHit {
+        title: if title.is_empty() {
+            url.to_string()
+        } else {
+            title.to_string()
+        },
+        url: url.to_string(),
+        snippet: snippet
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+    });
+}
+
+fn is_http_url(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+/// Find `'key': 'value'` (or the double-quoted JSON form) at or after `from`,
+/// returning the key's byte offset and the unescaped value. Both quote styles
+/// occur: Python's repr switches quotes when the value contains the other one.
+fn find_quoted_field(hay: &str, key: &str, from: usize) -> Option<(usize, String)> {
+    let bytes = hay.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        let quote = bytes[i];
+        if (quote == b'\'' || quote == b'"')
+            && bytes.get(i + 1..i + 1 + key.len()) == Some(key.as_bytes())
+            && bytes.get(i + 1 + key.len()) == Some(&quote)
+        {
+            let mut j = i + 2 + key.len();
+            while matches!(bytes.get(j), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+                j += 1;
+            }
+            if bytes.get(j) == Some(&b':') {
+                j += 1;
+                while matches!(bytes.get(j), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+                    j += 1;
+                }
+                let value_quote = *bytes.get(j)?;
+                if value_quote == b'\'' || value_quote == b'"' {
+                    j += 1;
+                    let mut value = String::new();
+                    let mut segment_start = j;
+                    while j < bytes.len() {
+                        if bytes[j] == b'\\' && bytes.get(j + 1).is_some_and(|b| b.is_ascii()) {
+                            value.push_str(&hay[segment_start..j]);
+                            match bytes[j + 1] {
+                                b'n' => value.push('\n'),
+                                b't' => value.push('\t'),
+                                b'r' => value.push('\r'),
+                                other => value.push(char::from(other)),
+                            }
+                            j += 2;
+                            segment_start = j;
+                        } else if bytes[j] == value_quote {
+                            value.push_str(&hay[segment_start..j]);
+                            return Some((i, value));
+                        } else {
+                            j += 1;
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn last_quoted_field_before(hay: &str, key: &str, limit: usize) -> Option<String> {
+    let mut found = None;
+    let mut from = 0;
+    while let Some((at, value)) = find_quoted_field(hay, key, from) {
+        if at >= limit {
+            break;
+        }
+        found = Some(value);
+        from = at + 1;
+    }
+    found
+}
+
+/// `https://host/api/anthropic` → `…/api/anthropic/v1/messages`. A base that
+/// already ends in `/v1` (or the full path) is not doubled.
+fn messages_endpoint(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.ends_with("/v1/messages") {
+        base.to_string()
+    } else if base.ends_with("/v1") {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/v1/messages")
+    }
+}
+
+/// Anthropic errors are `{"type":"error","error":{"type","message"}}`;
+/// BigModel adds `{"error":{"code","message"}}` business errors on top.
+fn provider_native_error_message(parsed: &Value) -> Option<String> {
+    let error = parsed.get("error")?;
+    let message = error.get("message").and_then(Value::as_str)?;
+    if message.trim().is_empty() {
+        return None;
+    }
+    let code = ["type", "code"].iter().find_map(|key| {
+        let value = error.get(*key)?;
+        value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_i64().map(|number| number.to_string()))
+    });
+    Some(match code {
+        Some(code) => format!("Provider-native web search error ({code}): {message}"),
+        None => format!("Provider-native web search error: {message}"),
+    })
 }
 
 // === SERP HTML scrape parsing ==============================================
@@ -2181,5 +2528,126 @@ mod tests {
             volcengine_extract_text(&body).as_deref(),
             Some("{\"results\":[]}")
         );
+    }
+
+    // === provider_native =================================================
+
+    #[tokio::test]
+    async fn provider_native_without_native_config_fails_loud() {
+        // The backend speaks the provider's Messages API; without the host's
+        // connection details it must not quietly fall back to a scrape.
+        let svc = HttpWebService::new(SearchProvider::ProviderNative, None);
+        let err = svc
+            .search(SearchRequest::new("anything"))
+            .await
+            .expect_err("missing native config must surface");
+        assert_eq!(err.kind(), WebErrorKind::Config);
+        assert!(
+            err.to_string().contains("provider_native"),
+            "error must name the backend; got `{err}`"
+        );
+    }
+
+    #[test]
+    fn provider_native_hosts_follow_the_configured_base_url() {
+        let svc = HttpWebService::new(SearchProvider::ProviderNative, None).with_native_search(
+            NativeSearchConfig {
+                base_url: "https://open.bigmodel.cn/api/anthropic".into(),
+                api_key: "k".into(),
+                model: "glm-5.3".into(),
+            },
+        );
+        assert_eq!(svc.search_hosts(), vec!["open.bigmodel.cn".to_string()]);
+    }
+
+    #[test]
+    fn messages_endpoint_does_not_double_v1() {
+        assert_eq!(
+            messages_endpoint("https://open.bigmodel.cn/api/anthropic"),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
+        assert_eq!(
+            messages_endpoint("https://api.anthropic.com/v1"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            messages_endpoint("https://host/v1/messages/"),
+            "https://host/v1/messages"
+        );
+    }
+
+    #[test]
+    fn provider_native_parses_bigmodel_stringified_results() {
+        // Real BigModel shape: content[] carries a `tool_result` whose
+        // `content` is a repr of a list of dicts. Python switches to double
+        // quotes when a title contains an apostrophe, so both styles appear.
+        let body = json!({
+            "content": [
+                {"type": "thinking", "thinking": "searching"},
+                {"type": "tool_result", "tool_use_id": "call_1", "content":
+                    "[{'text': [{'title': 'Tokio - An asynchronous Rust runtime', 'link': 'https://tokio.rs', 'content': 'Tokio is a runtime for writing reliable applications.', 'refer': 'ref_1'}, {\"title\": \"Tokio's tutorial\", 'link': 'https://tokio.rs/tokio/tutorial', 'content': 'An in-depth tutorial.', 'refer': 'ref_2'}]}]"},
+                {"type": "text", "text": "Tokio is a runtime (source: https://tokio.rs)."}
+            ]
+        });
+        let hits = parse_provider_native_results(&body, 5);
+        assert_eq!(hits.len(), 2, "one hit per distinct link; got {hits:?}");
+        assert_eq!(hits[0].title, "Tokio - An asynchronous Rust runtime");
+        assert_eq!(hits[0].url, "https://tokio.rs");
+        assert_eq!(
+            hits[0].snippet.as_deref(),
+            Some("Tokio is a runtime for writing reliable applications.")
+        );
+        assert_eq!(hits[1].title, "Tokio's tutorial");
+        assert_eq!(hits[1].url, "https://tokio.rs/tokio/tutorial");
+    }
+
+    #[test]
+    fn provider_native_parses_anthropic_result_objects_and_dedupes() {
+        let body = json!({
+            "content": [
+                {"type": "web_search_tool_result", "content": [
+                    {"type": "web_search_result", "title": "Tokio", "url": "https://tokio.rs"},
+                    {"type": "web_search_result", "title": "Docs", "url": "https://docs.rs/tokio"}
+                ]},
+                {"type": "text", "text": "summary", "citations": [
+                    {"type": "web_search_result_location", "title": "Tokio", "url": "https://tokio.rs"}
+                ]}
+            ]
+        });
+        let hits = parse_provider_native_results(&body, 10);
+        assert_eq!(
+            hits.len(),
+            2,
+            "citation duplicate of a result URL is dropped"
+        );
+        assert_eq!(hits[0].url, "https://tokio.rs");
+        assert_eq!(hits[1].url, "https://docs.rs/tokio");
+    }
+
+    #[test]
+    fn provider_native_caps_results_to_request_max() {
+        let body = json!({"content": [{"type": "web_search_tool_result", "content": [
+            {"title": "a", "url": "https://a.example"},
+            {"title": "b", "url": "https://b.example"},
+            {"title": "c", "url": "https://c.example"}
+        ]}]});
+        assert_eq!(parse_provider_native_results(&body, 2).len(), 2);
+    }
+
+    #[test]
+    fn provider_native_error_message_reads_anthropic_and_business_errors() {
+        assert_eq!(
+            provider_native_error_message(&json!({
+                "error": {"type": "invalid_request_error", "message": "unknown tool"}
+            })),
+            Some("Provider-native web search error (invalid_request_error): unknown tool".into())
+        );
+        assert_eq!(
+            provider_native_error_message(&json!({
+                "error": {"code": "1113", "message": "insufficient balance"}
+            })),
+            Some("Provider-native web search error (1113): insufficient balance".into())
+        );
+        assert_eq!(provider_native_error_message(&json!({"content": []})), None);
     }
 }

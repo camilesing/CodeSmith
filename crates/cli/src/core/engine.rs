@@ -1944,12 +1944,7 @@ pub(crate) fn headless_engine_config(
             .tag()
             .to_string(),
         workshop: config.workshop.clone(),
-        web_service: Some(std::sync::Arc::new(
-            codesmith_tool_impls::web_service::HttpWebService::new(
-                config.search_provider(),
-                config.search.as_ref().and_then(|s| s.api_key.clone()),
-            ),
-        )),
+        web_service: Some(config.web_service()?),
         index_enabled: config.index_tools_enabled(),
         tools_always_load: config.tools_always_load(),
         progressive_disclosure: config.tools_progressive_disclosure(),

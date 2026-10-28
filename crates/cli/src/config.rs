@@ -435,7 +435,7 @@ pub struct SearchProviderResolution {
 /// Web search provider configuration (`[search]` table in config.toml).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SearchConfig {
-    /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `baidu` | `volcengine`. Default: `duckduckgo`.
+    /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `baidu` | `volcengine` | `provider_native`. Default: `duckduckgo`.
     #[serde(default)]
     pub provider: Option<SearchProvider>,
     /// API key for Tavily, Bocha, Metaso, Baidu, or Volcengine. Not required for Bing or DuckDuckGo.
@@ -1302,6 +1302,57 @@ impl Config {
     #[must_use]
     pub fn search_provider(&self) -> SearchProvider {
         self.search_provider_resolution().provider
+    }
+
+    /// Build the session-wide web service from `[search]`, adding the active
+    /// provider's connection details for `provider_native`.
+    ///
+    /// `provider_native` fails loud here rather than at the first search:
+    /// that backend speaks the Anthropic Messages API, and quietly falling
+    /// back to a scrape would hide a misconfigured provider.
+    pub fn web_service(
+        &self,
+    ) -> Result<std::sync::Arc<dyn codesmith_agent_runtime::web_service::WebService>> {
+        let provider = self.search_provider();
+        let search_key = self
+            .search
+            .as_ref()
+            .and_then(|search| search.api_key.clone());
+        let mut service =
+            codesmith_tool_impls::web_service::HttpWebService::new(provider, search_key);
+        if provider == SearchProvider::ProviderNative {
+            service = service.with_native_search(self.provider_native_search_config()?);
+        }
+        Ok(std::sync::Arc::new(service))
+    }
+
+    fn provider_native_search_config(
+        &self,
+    ) -> Result<codesmith_tool_impls::web_service::NativeSearchConfig> {
+        let provider = self.api_provider();
+        anyhow::ensure!(
+            self.custom_provider().is_none() && provider == ApiProvider::Anthropic,
+            "`[search] provider = \"provider_native\"` requires the Anthropic API; the active \
+             provider is `{}`. Set `provider = \"anthropic\"` (with `[providers.anthropic]` \
+             base_url and api_key), or choose another `[search] provider`.",
+            provider.as_str()
+        );
+        let base_url = self.provider_base_url();
+        anyhow::ensure!(
+            !base_url.trim().is_empty(),
+            "`[search] provider = \"provider_native\"` needs `[providers.anthropic] base_url`."
+        );
+        let api_key = self.provider_api_key()?;
+        anyhow::ensure!(
+            !api_key.trim().is_empty(),
+            "`[search] provider = \"provider_native\"` needs `[providers.anthropic] api_key` \
+             (or ANTHROPIC_API_KEY / CLAUDE_API_KEY)."
+        );
+        Ok(codesmith_tool_impls::web_service::NativeSearchConfig {
+            base_url,
+            api_key,
+            model: self.default_model(),
+        })
     }
 
     /// Effective `[index]` configuration: config table over built-in
@@ -4988,6 +5039,79 @@ mod tests {
         assert_eq!(
             config.search.and_then(|search| search.provider),
             Some(SearchProvider::Volcengine)
+        );
+    }
+
+    #[test]
+    fn provider_native_search_provider_parses_and_deserializes() {
+        for raw in ["provider_native", "provider-native", "native", "anthropic"] {
+            assert_eq!(
+                SearchProvider::parse(raw),
+                Some(SearchProvider::ProviderNative),
+                "`{raw}` must select the provider-native backend"
+            );
+        }
+
+        let config: Config = toml::from_str(
+            r#"
+            [search]
+            provider = "provider_native"
+            "#,
+        )
+        .expect("provider_native search config");
+
+        assert_eq!(
+            config.search.and_then(|search| search.provider),
+            Some(SearchProvider::ProviderNative)
+        );
+    }
+
+    #[test]
+    fn web_service_provider_native_reuses_provider_connection_details() {
+        let _guard = lock_test_env();
+        let config: Config = toml::from_str(
+            r#"
+            provider = "anthropic"
+
+            [providers.anthropic]
+            api_key = "test-key"
+            base_url = "https://open.bigmodel.cn/api/anthropic"
+            model = "glm-5.3"
+
+            [search]
+            provider = "provider_native"
+            "#,
+        )
+        .expect("native search config");
+
+        let service = config.web_service().expect("native web service");
+        assert_eq!(
+            service.search_hosts(),
+            vec!["open.bigmodel.cn".to_string()],
+            "the approval gate must see the provider's own host"
+        );
+    }
+
+    #[test]
+    fn web_service_provider_native_fails_loud_on_non_anthropic_provider() {
+        let _guard = lock_test_env();
+        let config: Config = toml::from_str(
+            r#"
+            provider = "deepseek"
+
+            [search]
+            provider = "provider_native"
+            "#,
+        )
+        .expect("native search config");
+
+        let err = match config.web_service() {
+            Ok(_) => panic!("a non-Anthropic provider cannot serve web_search"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("provider_native"),
+            "error must name the setting; got `{err}`"
         );
     }
 
