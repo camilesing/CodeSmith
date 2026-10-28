@@ -161,6 +161,12 @@
 //!    has no goal-continuation / REPL resume branches (thinking-only is now
 //!    handled as a terminal status — slice 39 §E — not a resume), so this single
 //!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
+//!    A second, pre-request drain
+//!    ([`drain_subagent_completions`](HostAgentExecutor::drain_subagent_completions),
+//!    in the step-top seam) delivers completions parked between steps or
+//!    between turns ahead of the next request, so a settled child is read on
+//!    this request rather than after the model's next reply; the post-stream
+//!    arm keeps completions that land during inference and the blocking hold.
 //!    The receiver is
 //!    `Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>` —
 //!    `tokio::sync::Mutex` (not `std::sync::Mutex`) because the blocking hold's
@@ -514,6 +520,19 @@
 //!   post-stream resume gap). Batched completions behind the first `recv()` are
 //!   drained by a `try_recv` loop after the `select!` (mirrors
 //!   the retired turn handler).
+//! - **pre-request delivery absorbed ✅** — completions that land between
+//!   steps (a child settling while a tool batch runs) or between turns (a
+//!   cancelled / step-capped turn left children running) are delivered by
+//!   [`drain_subagent_completions`](HostAgentExecutor::drain_subagent_completions)
+//!   at the step-top seam, ahead of the request snapshot — DSH's pre-step
+//!   settlement delivery. Before this they waited for the post-stream
+//!   no-tool-calls drain, so the model answered a new user message first and
+//!   read the settled child only on the resume round. The post-stream drain
+//!   and the blocking hold are unchanged: they cover completions that land
+//!   during inference and children still running. A parent that is idle
+//!   (no turn running) is still not woken — after a cancel that is the
+//!   user's call, and after `MaxSteps` the cap is the point; the completion
+//!   rides the next turn's first request instead.
 //! - **`ContextPatch` apply deferred** — production drains each completion's
 //!   `context_patch` and applies them **tighten-only** (`auto_approve` /
 //!   `trust_mode` → `false`; loosen attempts rejected) to `Session` +
@@ -1248,11 +1267,14 @@ pub struct HostAgentExecutor {
     /// consumer, no contention). The receiver persists across `run`
     /// invocations on the same executor, matching the production
     /// `Engine.rx_subagent_completion` field — a completion that arrives
-    /// between turns is surfaced on the next turn's post-stream drain.
+    /// between steps or between turns is delivered by the next request's
+    /// pre-request drain ([`Self::drain_subagent_completions`]); the
+    /// post-stream drain covers completions that land during inference.
     /// `ContextPatch` apply (tighten-only `auto_approve`/`trust_mode`) is
     /// deferred — it mutates `Session` state not reachable through
     /// `ChatHistory`, and production hardcodes `context_patch: None` today.
-    subagent: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
+    pub(crate) subagent:
+        Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
     /// Optional sub-agent manager handle (§E). `None` ⇒ the blocking hold is
     /// disabled (no `running_count` to check). Injected as `Arc<dyn
     /// SubAgentApi>` — the minimal surface (mirrors [`LspProbe`]'s `Arc<dyn
@@ -3456,6 +3478,14 @@ impl HostAgentExecutor {
             // appended before the request snapshot so the model reconciles
             // its earlier claim with the re-run's exit code.
             self.flush_pending_result_verifications(history);
+            // Sub-agent completions that landed since the last request —
+            // between steps while a tool batch ran, or between turns after a
+            // cancelled / step-capped turn left children running — ride THIS
+            // request, so the model reads a settled child alongside the tool
+            // results instead of after its next reply. Non-blocking; the
+            // post-stream arm keeps completions that land during inference
+            // and the blocking hold for children still running.
+            self.drain_subagent_completions(history).await;
             // W2 P1-1: deliverables watchdog — cadence-gated disk check of
             // the output paths named in the task instruction; a gap is
             // pushed as a runtime note so the agent closes it before the
@@ -3812,8 +3842,9 @@ impl HostAgentExecutor {
                 // Mirrors the retired turn handler's non-blocking completion drain
                 // (main + late drain sites):
                 // when the model finishes a step with no tool calls, surface any
-                // child completions that arrived (queued during inference or
-                // between turns) as `<codesmith:runtime_event
+                // child completions that arrived during inference (those parked
+                // between steps or between turns were already delivered by the
+                // step-top `drain_subagent_completions`) as `<codesmith:runtime_event
                 // kind="subagent_completion">` user messages and resume the turn
                 // instead of ending it — fulfilling the sentinel contract the
                 // model was promised in `prompts/base.md`. The executor has no
@@ -7570,6 +7601,44 @@ mod tests {
                     .contains("kind=\"subagent_completion\""))
             })
         })
+    }
+
+    /// A `ToolSpec` that emits a sub-agent completion on the executor's
+    /// completion channel while it runs — stands in for a background child
+    /// settling while the parent is busy with a tool batch.
+    struct SettlingSpec {
+        tx: mpsc::UnboundedSender<SubAgentCompletion>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for SettlingSpec {
+        fn name(&self) -> &str {
+            "settle"
+        }
+        fn description(&self) -> &str {
+            "Emits a sub-agent completion while running."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let _ = self
+                .tx
+                .send(completion("child settled during the tool batch"));
+            Ok(ToolResult {
+                canonical: None,
+                content: "settled".to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
     }
 
     #[tokio::test]
@@ -15521,10 +15590,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subagent_drain_injects_queued_completions_and_resumes() {
-        // Two completions queued before run. Round 1: model returns no tool
-        // calls ⇒ drain finds 2 completions ⇒ inject 2 sentinel user messages
-        // ⇒ resume. Round 2: model returns no tool calls ⇒ drain empty ⇒ end.
+    async fn subagent_completions_queued_before_run_ride_first_request() {
+        // Two completions parked on the receiver before the run — children
+        // that settled between turns. The step-top drain delivers both ahead
+        // of the first request: the model reads them on round 1 and the turn
+        // ends on NoToolCalls with no resume round. (Before the pre-request
+        // drain they waited for the post-stream drain: two rounds, sentinels
+        // visible only on the second.)
         let tools = Arc::new(ToolSet::new());
         let mut sess = fresh_session();
         let mut history = SessionChatHistory::new(&mut sess);
@@ -15536,17 +15608,9 @@ mod tests {
         tx_sub.send(completion("child-a finished")).unwrap();
         tx_sub.send(completion("child-b finished")).unwrap();
 
-        let call1 = {
-            let mut c = text_block(0, "let me wait for children");
-            c.extend(finish("end_turn"));
-            c
-        };
-        let call2 = {
-            let mut c = text_block(0, "resuming, all done");
-            c.extend(finish("end_turn"));
-            c
-        };
-        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        let mut call1 = text_block(0, "both children are done, synthesizing");
+        call1.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1]));
 
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -15570,33 +15634,11 @@ mod tests {
             .expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
 
-        // Two stream rounds — the turn resumed after the first drain.
-        assert_eq!(mock.requests().len(), 2, "drain resumed the turn");
-
-        // The injected sentinels reached the transcript. Layout:
-        // [user(seed), assistant(text), user(sentinel-a), user(sentinel-b),
-        //  assistant(text)]
-        assert!(
-            history.len() >= 5,
-            "expected ≥5 messages, got {}",
-            history.len()
-        );
-        // Both sentinel messages are present in the session transcript.
-        let sentinel_msgs: Vec<&Message> = sess
-            .messages
-            .iter()
-            .filter(|m| {
-                m.content.iter().any(|b| {
-                    matches!(b, ContentBlock::Text { text, .. } if text
-                        .contains("kind=\"subagent_completion\""))
-                })
-            })
-            .collect();
-        assert_eq!(sentinel_msgs.len(), 2, "expected 2 sentinel messages");
-        // The second stream request saw the sentinels (they were pushed before
-        // the resume, so the request snapshot includes them).
+        // One stream round — the sentinels rode the first request, so no
+        // resume was needed.
         let reqs = mock.requests();
-        let second_req_has_sentinels = reqs[1]
+        assert_eq!(reqs.len(), 1, "no resume round: {reqs:?}");
+        let first_req_sentinels = reqs[0]
             .iter()
             .filter(|m| {
                 m.content.iter().any(|b| {
@@ -15606,25 +15648,33 @@ mod tests {
             })
             .count();
         assert_eq!(
-            second_req_has_sentinels, 2,
-            "second request must include both sentinels"
+            first_req_sentinels, 2,
+            "first request must carry both sentinels: {reqs:?}"
         );
 
-        // Status surfaced the resume count.
+        // Transcript layout: [user(seed), user(sentinel-a), user(sentinel-b),
+        //  assistant(text)] — both sentinels precede the model's only reply.
+        assert_eq!(history.len(), 4);
+        assert_eq!(sess.messages[0].role.as_str(), "user");
+        assert!(has_subagent_completion_msg(&sess.messages.as_slice()[1..2]));
+        assert!(has_subagent_completion_msg(&sess.messages.as_slice()[2..3]));
+        assert_eq!(sess.messages[3].role.as_str(), "assistant");
+
+        // Status surfaced the delivery count.
         let msgs = statuses(&drain(&mut rx));
         assert!(
             msgs.iter()
-                .any(|m| m.contains("Resuming turn with 2 sub-agent completion(s)")),
-            "expected resume status, got {msgs:?}"
+                .any(|m| m.contains("Delivered 2 sub-agent completion(s) before the next request")),
+            "expected delivery status, got {msgs:?}"
         );
     }
 
     #[tokio::test]
     async fn subagent_picks_up_completion_queued_between_runs() {
         // Cross-run persistence: the `Arc<Mutex<Receiver>>` lives on the
-        // executor struct, so a completion queued between runs is surfaced on
-        // the next run's post-stream drain — a per-run local receiver could
-        // not do this.
+        // executor struct, so a completion queued between runs is delivered
+        // ahead of the next run's first request — a per-run local receiver
+        // could not do this.
         let tools = Arc::new(ToolSet::new());
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
@@ -15671,8 +15721,9 @@ mod tests {
             .send(completion("child finished between turns"))
             .unwrap();
 
-        // run2: SAME executor (+ new Session). Post-stream drain surfaces the
-        // queued completion → resume → second round ends.
+        // run2: SAME executor (+ new Session). The step-top drain delivers
+        // the parked completion ahead of run2's first request — one round,
+        // no resume.
         let mut sess2 = fresh_session();
         let mut history2 = SessionChatHistory::new(&mut sess2);
         let reason2 = executor
@@ -15680,24 +15731,98 @@ mod tests {
             .await
             .expect("run2");
         assert_eq!(reason2, StopReason::NoToolCalls);
-        // The completion was drained on run2 (2 stream rounds in run2 alone:
-        // round1 resumes, round2 ends). Total rounds across both runs = 3.
-        assert_eq!(mock.requests().len(), 3, "run2 resumed after draining");
+        // One round in run2; total rounds across both runs = 2.
+        assert_eq!(
+            mock.requests().len(),
+            2,
+            "run2 read the completion on its first request"
+        );
         assert!(
             has_subagent_completion_msg(sess2.messages.as_slice()),
             "run2 transcript must contain the completion drained from the shared receiver"
         );
-        // The run2 resume request (the 3rd overall, the 2nd of run2) saw the sentinel.
+        // run2's only request (the 2nd overall) saw the sentinel.
         let reqs = mock.requests();
         assert!(
-            reqs[2].iter().any(|m| {
-                m.content.iter().any(|b| {
-                    matches!(b, ContentBlock::Text { text, .. } if text
-                        .contains("kind=\"subagent_completion\""))
-                })
-            }),
-            "run2's second request must include the sentinel"
+            has_subagent_completion_msg(&reqs[1]),
+            "run2's first request must include the sentinel: {reqs:?}"
         );
+    }
+
+    /// Pre-request delivery (DSH pre-step settlement): a child that settles
+    /// while the parent runs a tool batch is read on the NEXT request —
+    /// alongside the tool result — not after the model's next reply. Without
+    /// the step-top drain the completion waited for the post-stream
+    /// no-tool-calls drain: three rounds (tool step, reply, resume) and no
+    /// sentinel on the second request.
+    #[tokio::test]
+    async fn subagent_completion_during_tool_batch_rides_next_request() {
+        let tmp = tempdir().expect("tempdir");
+        let (tx_sub, rx_sub) = subagent_channel();
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(SettlingSpec { tx: tx_sub }));
+        let tools = Arc::new(registry.to_framework_tool_set());
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        // Round 1: a tool call (the tool settles a child mid-batch).
+        // Round 2: text only → NoToolCalls.
+        let mut call1 = text_block(0, "kicking off");
+        call1.extend(tool_use_block(1, "t1", "settle", "{}"));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "child is done, wrapping up");
+        call2.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(rx_sub),
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let reqs = mock.requests();
+        assert_eq!(
+            reqs.len(),
+            2,
+            "the completion rode request 2; no post-stream resume round"
+        );
+        assert!(
+            !has_subagent_completion_msg(&reqs[0]),
+            "request 1 predates the completion"
+        );
+        assert!(
+            has_subagent_completion_msg(&reqs[1]),
+            "request 2 must carry the sentinel: {reqs:?}"
+        );
+
+        // Transcript: [user(seed), assistant(text+tool_use), user(tool_result),
+        //  user(sentinel), assistant(text)] — the sentinel sits after the tool
+        // result and before the reply that acts on it.
+        assert_eq!(history.len(), 5);
+        assert!(matches!(
+            sess.messages[2].content[0],
+            ContentBlock::ToolResult { .. }
+        ));
+        assert!(has_subagent_completion_msg(&sess.messages.as_slice()[3..4]));
+        assert_eq!(sess.messages[4].role.as_str(), "assistant");
     }
 
     // === §E subagent blocking hold =========================================
@@ -16906,17 +17031,11 @@ mod tests {
         let (tx_sub, rx_sub) = subagent_channel();
         tx_sub.send(completion("child-a finished")).unwrap();
 
-        let call1 = {
-            let mut c = text_block(0, "let me wait for children");
-            c.extend(finish("end_turn"));
-            c
-        };
-        let call2 = {
-            let mut c = text_block(0, "resuming, all done");
-            c.extend(finish("end_turn"));
-            c
-        };
-        let mock = Arc::new(MockLlm::new(vec![call1, call2]));
+        // The parked completion rides the first request (step-top drain), so
+        // one round ends the turn.
+        let mut call1 = text_block(0, "child is done, synthesizing");
+        call1.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![call1]));
 
         let executor = HostAgentExecutor::new(
             mock.clone(),
@@ -16941,8 +17060,8 @@ mod tests {
             .expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
 
-        // Two stream rounds — the turn resumed after draining the sentinel.
-        assert_eq!(mock.requests().len(), 2, "sentinel drain resumed the turn");
+        // One stream round — the sentinel was delivered ahead of the request.
+        assert_eq!(mock.requests().len(), 1, "sentinel rode the first request");
 
         // The sentinel message is present and PLAIN: a single Text block with
         // the runtime-event payload, NO `<turn_meta>` block anywhere.

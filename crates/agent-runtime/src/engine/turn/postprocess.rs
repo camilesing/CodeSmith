@@ -15,6 +15,9 @@
 //!   non-blocking drain found nothing but children may still be running).
 //! - `subagent_completion_runtime_message` — the sentinel user message
 //!   injected per drained completion.
+//! - [`HostAgentExecutor::drain_subagent_completions`] (seam 1,
+//!   pre-request) — the non-blocking drain that delivers completions parked
+//!   between steps or between turns ahead of the next request.
 //! - `should_emit_thinking_only_status` — the clean-end gate for the
 //!   thinking-only status.
 //! - [`HostAgentExecutor::collect_lsp_diagnostics`] (seam 3, post-edit) and
@@ -54,6 +57,7 @@ use codesmith_agent::models::{ContentBlock, Message};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::lsp_hooks::edit_file_paths;
 use crate::lsp_diagnostics::render_blocks as render_lsp_blocks;
+use crate::subagent::SubAgentCompletion;
 
 /// Decide whether the turn should hold (block) for still-running sub-agents
 /// when the non-blocking completion drain found nothing (mirrors
@@ -123,6 +127,44 @@ XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 }
 
 impl HostAgentExecutor {
+    /// (1) per-step pre-request seam — deliver sub-agent completions that
+    /// landed since the last request: between steps (a child settling while
+    /// a tool batch ran) or between turns (a cancelled or step-capped turn
+    /// left children running). Each becomes a
+    /// `<codesmith:runtime_event kind="subagent_completion">` user message
+    /// ahead of the request snapshot, so the model reads a settled child on
+    /// THIS request instead of after its next reply — the pre-step delivery
+    /// DSH's inbox gives its parent agents. Non-blocking (`try_recv`); the
+    /// lock is held only for the synchronous drain, never across the
+    /// `history.push`. Completions that land during inference, and the
+    /// blocking hold for children still running, stay in the post-stream
+    /// no-tool-calls arm of `run_inner`. Returns the number delivered.
+    pub(crate) async fn drain_subagent_completions(&self, history: &mut dyn ChatHistory) -> usize {
+        let Some(probe) = &self.subagent else {
+            return 0;
+        };
+        let completions: Vec<SubAgentCompletion> = {
+            let mut rx = probe.lock().await;
+            let mut drained = Vec::new();
+            while let Ok(c) = rx.try_recv() {
+                drained.push(c);
+            }
+            drained
+        };
+        if completions.is_empty() {
+            return 0;
+        }
+        let count = completions.len();
+        for c in completions {
+            history.push(subagent_completion_runtime_message(&c.payload));
+        }
+        self.emit_status(format!(
+            "Delivered {count} sub-agent completion(s) before the next request"
+        ))
+        .await;
+        count
+    }
+
     /// (3) per-tool post-edit seam — collect LSP diagnostics after a successful
     /// edit. Mirrors `Engine::run_post_edit_lsp_hook` (`lsp_hooks.rs`): gate on
     /// the master switch, derive the edited path, fetch diagnostics, push onto
