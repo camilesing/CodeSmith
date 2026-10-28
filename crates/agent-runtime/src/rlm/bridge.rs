@@ -333,6 +333,21 @@ impl RpcDispatcher for RlmBridge {
                     self.dispatch_rlm_batch(prompts, model, dependency_mode)
                         .await,
                 ),
+                // Workflow helpers ride the same REPL protocol but are
+                // serviced by the workflow engine's bridge (which binds a
+                // SubAgentSpawner), never by the RLM LLM bridge. Fail loud
+                // instead of silently misrouting an agent spawn to an LLM
+                // completion.
+                RpcRequest::WorkflowAgent { .. }
+                | RpcRequest::WorkflowAgents { .. }
+                | RpcRequest::WorkflowLog { .. } => RpcResponse::Single(SingleResp {
+                    text: String::new(),
+                    error: Some(
+                        "workflow RPCs (run_agent/agents/log) are serviced only by the \
+                         workflow engine's bridge, not an RLM turn"
+                            .to_string(),
+                    ),
+                }),
             }
         })
     }

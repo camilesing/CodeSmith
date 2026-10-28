@@ -137,7 +137,7 @@ pub enum ScriptRegistration {
 
 type RegistrationCell = Arc<Mutex<Vec<ScriptRegistration>>>;
 
-// === Event-name mapping (26 kinds, kebab-case) =============================
+// === Event-name mapping (31 kinds, kebab-case) =============================
 
 /// Parse a script-side event name (kebab-case) into its
 /// [`ExtensionEventKind`]. `None` for unknown names (surfaced as a script
@@ -170,6 +170,11 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
         "session-before-compact" => ExtensionEventKind::SessionBeforeCompact,
         "session-compact" => ExtensionEventKind::SessionCompact,
         "tools-change" => ExtensionEventKind::ToolsChange,
+        "workflow-start" => ExtensionEventKind::WorkflowStart,
+        "workflow-log" => ExtensionEventKind::WorkflowLog,
+        "workflow-agent-start" => ExtensionEventKind::WorkflowAgentStart,
+        "workflow-agent-end" => ExtensionEventKind::WorkflowAgentEnd,
+        "workflow-end" => ExtensionEventKind::WorkflowEnd,
         _ => return None,
     })
 }
@@ -204,8 +209,13 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::SessionBeforeCompact => "session-before-compact",
         ExtensionEventKind::SessionCompact => "session-compact",
         ExtensionEventKind::ToolsChange => "tools-change",
+        ExtensionEventKind::WorkflowStart => "workflow-start",
+        ExtensionEventKind::WorkflowLog => "workflow-log",
+        ExtensionEventKind::WorkflowAgentStart => "workflow-agent-start",
+        ExtensionEventKind::WorkflowAgentEnd => "workflow-agent-end",
+        ExtensionEventKind::WorkflowEnd => "workflow-end",
         // `ExtensionEventKind` is `#[non_exhaustive]`; the wildcard is
-        // unreachable while this crate tracks every variant (the 26-entry
+        // unreachable while this crate tracks every variant (the 31-entry
         // round-trip test guards that).
         _ => "unknown-event",
     }
@@ -417,6 +427,25 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
                         .collect::<Vec<_>>(),
                 ),
             ),
+        ],
+        ExtensionEvent::WorkflowStart => vec![],
+        ExtensionEvent::WorkflowLog(e) => {
+            vec![("message", Dynamic::from(e.message.clone()))]
+        }
+        ExtensionEvent::WorkflowAgentStart(e) => {
+            vec![("objective", Dynamic::from(e.objective.clone()))]
+        }
+        ExtensionEvent::WorkflowAgentEnd(e) => vec![
+            ("status", Dynamic::from(e.status.clone())),
+            ("steps", Dynamic::from(i64::from(e.steps))),
+        ],
+        ExtensionEvent::WorkflowEnd(e) => vec![
+            ("status", Dynamic::from(e.status.clone())),
+            (
+                "error",
+                e.error.clone().map(Dynamic::from).unwrap_or(Dynamic::UNIT),
+            ),
+            ("agent_calls", Dynamic::from(i64::from(e.agent_calls))),
         ],
         // `ExtensionEvent` is `#[non_exhaustive]` — wildcard required; the
         // kind round-trip test keeps the explicit arms in lockstep.
@@ -738,7 +767,7 @@ fn register_natives(
                     Ok(())
                 }
                 None => Err(script_error(format!(
-                    "on(): unknown event name '{event}' (see docs/MODS.md for the 26 event names)"
+                    "on(): unknown event name '{event}' (see docs/MODS.md for the 31 event names)"
                 ))),
             }
         },
@@ -758,7 +787,7 @@ fn register_natives(
         move |event: &str, callback: rhai::FnPtr| -> Result<(), Box<rhai::EvalAltResult>> {
             let kind = event_kind_from_name(event).ok_or_else(|| {
                 script_error(format!(
-                    "on_event(): unknown event name '{event}' (see docs/MODS.md for the 26 event names)"
+                    "on_event(): unknown event name '{event}' (see docs/MODS.md for the 31 event names)"
                 ))
             })?;
             if matches!(kind.dispatch_mode(), DispatchMode::Waterfall { .. }) {
@@ -2325,8 +2354,13 @@ mod tests {
             ExtensionEventKind::ToolsChange,
             ExtensionEventKind::ProviderRequestError,
             ExtensionEventKind::TurnStopping,
+            ExtensionEventKind::WorkflowStart,
+            ExtensionEventKind::WorkflowLog,
+            ExtensionEventKind::WorkflowAgentStart,
+            ExtensionEventKind::WorkflowAgentEnd,
+            ExtensionEventKind::WorkflowEnd,
         ];
-        assert_eq!(kinds.len(), 26);
+        assert_eq!(kinds.len(), 31);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");

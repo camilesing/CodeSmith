@@ -600,6 +600,29 @@ pub struct RuntimeConfig {
     pub max_spawn_depth: Option<u32>,
 }
 
+/// `[workflow]` table — bounds for the model-writable `workflow` tool.
+///
+/// Unknown keys inside the table fail at load (`deny_unknown_fields`,
+/// the fail-loud serde posture; see `crates/config/src/presets.rs` for the
+/// precedent) and out-of-range values fail `validate` at startup — never a
+/// silent clamp.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowConfig {
+    /// Wall-clock bound for one workflow run, in seconds. Default
+    /// [`codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS`]
+    /// (600); values of 0 or above
+    /// [`codesmith_agent_runtime::workflow::MAX_WORKFLOW_TIMEOUT_SECS`]
+    /// (1800) are rejected at load.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Per-run cap on sub-agents a workflow may spawn (concurrent +
+    /// total). Unset → the engine default (`DEFAULT_MAX_SUBAGENTS` = 10);
+    /// values of 0 or above `MAX_SUBAGENTS` (20) are rejected at load.
+    #[serde(default)]
+    pub max_agents: Option<u32>,
+}
+
 /// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
 ///
 /// `cost_saving` (#1207): the full cheap-routing opt-in. When `true`, the
@@ -893,6 +916,11 @@ pub struct Config {
     /// documented defaults apply.
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
+
+    /// Bounds for the model-writable `workflow` tool (`[workflow]`
+    /// table). When absent, the documented defaults apply.
+    #[serde(default)]
+    pub workflow: Option<WorkflowConfig>,
 
     /// Runtime API server tuning (`codesmith serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
@@ -1763,6 +1791,26 @@ impl Config {
             {
                 anyhow::bail!(
                     "Invalid capacity.severe_violation_ratio '{v}': expected a value in [0.0, 1.0]."
+                );
+            }
+        }
+        // Workflow bounds fail loud at startup, never silently clamp: a
+        // typo'd timeout would otherwise wedge every workflow run at an
+        // unintended bound (or kill legitimate long runs).
+        if let Some(workflow) = &self.workflow {
+            let max_timeout = codesmith_agent_runtime::workflow::MAX_WORKFLOW_TIMEOUT_SECS;
+            if let Some(timeout) = workflow.timeout_secs
+                && (timeout == 0 || timeout > max_timeout)
+            {
+                anyhow::bail!(
+                    "Invalid workflow.timeout_secs '{timeout}': expected 1..={max_timeout}."
+                );
+            }
+            if let Some(max_agents) = workflow.max_agents
+                && (max_agents == 0 || max_agents as usize > MAX_SUBAGENTS)
+            {
+                anyhow::bail!(
+                    "Invalid workflow.max_agents '{max_agents}': expected 1..={MAX_SUBAGENTS}."
                 );
             }
         }
@@ -2771,6 +2819,28 @@ impl Config {
             .as_ref()
             .and_then(|runtime| runtime.max_spawn_depth)
             .unwrap_or(crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH)
+    }
+
+    /// Resolved wall-clock bound for one `workflow` tool run, in seconds.
+    /// Reads `[workflow] timeout_secs`; unset falls back to
+    /// `DEFAULT_WORKFLOW_TIMEOUT_SECS` (600). Out-of-range values are
+    /// rejected by `validate`, not clamped here.
+    #[must_use]
+    pub fn workflow_timeout_secs(&self) -> u64 {
+        self.workflow
+            .as_ref()
+            .and_then(|workflow| workflow.timeout_secs)
+            .unwrap_or(codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS)
+    }
+
+    /// Resolved per-run agent cap for workflow runs. `None` lets the
+    /// engine apply its built-in default; an explicit value was already
+    /// range-checked by `validate`.
+    #[must_use]
+    pub fn workflow_max_agents(&self) -> Option<u32> {
+        self.workflow
+            .as_ref()
+            .and_then(|workflow| workflow.max_agents)
     }
 
     /// Resolved per-step DeepSeek API timeout for sub-agents, in seconds.
@@ -4187,6 +4257,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         },
         subagents: override_cfg.subagents.or(base.subagents),
         runtime: override_cfg.runtime.or(base.runtime),
+        workflow: override_cfg.workflow.or(base.workflow),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),
@@ -5814,6 +5885,86 @@ mod tests {
         assert_eq!(parsed.base.max_spawn_depth(), 0);
         // A negative value fails loud at load, not silently at spawn time.
         assert!(toml::from_str::<Config>("[runtime]\nmax_spawn_depth = -1\n").is_err());
+    }
+
+    #[test]
+    fn workflow_config_defaults_and_parses() {
+        use codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS;
+        assert_eq!(
+            Config::default().workflow_timeout_secs(),
+            DEFAULT_WORKFLOW_TIMEOUT_SECS
+        );
+        assert_eq!(Config::default().workflow_max_agents(), None);
+
+        let parsed: Config =
+            toml::from_str("[workflow]\ntimeout_secs = 900\nmax_agents = 6\n").unwrap();
+        assert_eq!(parsed.workflow_timeout_secs(), 900);
+        assert_eq!(parsed.workflow_max_agents(), Some(6));
+        parsed.validate().expect("in-range values are valid");
+
+        // The real load path goes through ConfigFile's flatten — the table
+        // must survive that hop too.
+        let parsed: ConfigFile = toml::from_str("[workflow]\ntimeout_secs = 1200\n").unwrap();
+        assert_eq!(parsed.base.workflow_timeout_secs(), 1200);
+
+        // The framework engine's hard cap mirrors the CLI sub-agent
+        // ceiling. If they drift, config-accepted values would be
+        // engine-rejected (or vice versa) — fail the test, not the user.
+        assert_eq!(
+            codesmith_agent_runtime::workflow::MAX_WORKFLOW_AGENTS as usize,
+            MAX_SUBAGENTS,
+            "MAX_WORKFLOW_AGENTS must mirror MAX_SUBAGENTS"
+        );
+    }
+
+    #[test]
+    fn workflow_config_rejects_unknown_keys_at_load() {
+        let err = toml::from_str::<Config>("[workflow]\ntimeout_sec = 900\n");
+        assert!(
+            err.is_err(),
+            "a typo'd key must fail loud, not be ignored: {err:?}"
+        );
+        let err = toml::from_str::<Config>("[workflow]\nbogus = true\n");
+        assert!(err.is_err(), "unknown keys must fail loud: {err:?}");
+    }
+
+    #[test]
+    fn workflow_config_rejects_out_of_range_values() {
+        for bad in [0u64, 1801, 9999] {
+            let config = Config {
+                workflow: Some(WorkflowConfig {
+                    timeout_secs: Some(bad),
+                    max_agents: None,
+                }),
+                ..Config::default()
+            };
+            assert!(
+                config.validate().is_err(),
+                "workflow.timeout_secs {bad} must be rejected at load"
+            );
+        }
+        for bad in [0u32, 21, 100] {
+            let config = Config {
+                workflow: Some(WorkflowConfig {
+                    timeout_secs: None,
+                    max_agents: Some(bad),
+                }),
+                ..Config::default()
+            };
+            assert!(
+                config.validate().is_err(),
+                "workflow.max_agents {bad} must be rejected at load"
+            );
+        }
+        // The boundary values themselves are valid.
+        let edge = Config {
+            workflow: Some(WorkflowConfig {
+                timeout_secs: Some(1800),
+                max_agents: Some(MAX_SUBAGENTS as u32),
+            }),
+            ..Config::default()
+        };
+        edge.validate().expect("boundary values are valid");
     }
 
     #[test]

@@ -379,11 +379,58 @@ pub struct ToolExecutionUpdateEvent {
     pub message: String,
 }
 
+// --- workflow lifecycle (§W2: observe-only Emit family) ====================
+
+/// Payload for [`ExtensionEvent::WorkflowLog`] — one `log(...)` helper
+/// call inside a `workflow` run (the same bounded entry the run's own log
+/// buffer retains). Emit-only.
+#[derive(Debug, Clone)]
+pub struct WorkflowLogEvent {
+    pub message: String,
+}
+
+/// Payload for [`ExtensionEvent::WorkflowAgentStart`] — one workflow child
+/// spawn beginning. `objective` is the child's objective text. Emit-only.
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentStartEvent {
+    pub objective: String,
+}
+
+/// Payload for [`ExtensionEvent::WorkflowAgentEnd`] — one workflow child
+/// finished. `status` uses the sub-agent run path's own vocabulary
+/// (`"completed" | "failed" | "interrupted" | "cancelled"`); a failed
+/// child is data the script sees, and this event says only that it ended.
+/// A child dropped by the run-level wall-clock bound emits
+/// `WorkflowAgentStart` with no matching End — the run-level
+/// `WorkflowEnd` (timeout) is the terminal signal there.
+/// Emit-only.
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentEndEvent {
+    pub status: String,
+    pub steps: u32,
+}
+
+/// Payload for [`ExtensionEvent::WorkflowEnd`] — a workflow run's terminal
+/// outcome. Deliberately carries no return value: it can be huge and the
+/// transcript's tool result is already the record. `error` is the error
+/// *kind* (`"timeout" | "script_error" | "kernel_spawn"`), not the full
+/// text — the tool error carries the text. Emit-only.
+#[derive(Debug, Clone)]
+pub struct WorkflowEndEvent {
+    /// `"completed" | "failed"`.
+    pub status: String,
+    /// Error classification on failure; `None` on success.
+    pub error: Option<String>,
+    /// Children the run actually spawned.
+    pub agent_calls: u32,
+}
+
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 26 variants total (23 §F2a + `AssistantStream` +
+/// §10.2 + §4): 31 variants total (23 §F2a + `AssistantStream` +
 /// `ToolsChange`, minus the removed `ResourcesDiscover`, plus the
-/// DSH-alignment `ProviderRequestError` + `TurnStopping`),
-/// `#[non_exhaustive]` so future
+/// DSH-alignment `ProviderRequestError` + `TurnStopping`, plus the
+/// 5-variant workflow lifecycle family — all `Emit`), `#[non_exhaustive]`
+/// so future
 /// slices can add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
 /// `on_variant`). Variant-specific outcome semantics are part of the
@@ -448,6 +495,22 @@ pub enum ExtensionEvent {
         added: Vec<String>,
         removed: Vec<String>,
     },
+    // --- workflow lifecycle (observe-only, Emit) ---
+    /// A `workflow` run began (before the one-shot kernel spawns; a
+    /// budget-rejected request emits nothing — the run never began).
+    /// Emit-only — outcomes are advisory at this seam.
+    WorkflowStart,
+    /// One `log(...)` helper call inside a workflow run. Emit-only.
+    WorkflowLog(WorkflowLogEvent),
+    /// One workflow child spawn began (after the run's agent budget
+    /// admitted it). Emit-only.
+    WorkflowAgentStart(WorkflowAgentStartEvent),
+    /// One workflow child finished. Emit-only.
+    WorkflowAgentEnd(WorkflowAgentEndEvent),
+    /// A workflow run reached its terminal outcome, success or failure
+    /// (see [`WorkflowEndEvent`] for what it deliberately does not carry).
+    /// Emit-only.
+    WorkflowEnd(WorkflowEndEvent),
 }
 
 /// Discriminant of an [`ExtensionEvent`], for per-variant handler subscription
@@ -482,6 +545,11 @@ pub enum ExtensionEventKind {
     SessionBeforeCompact,
     SessionCompact,
     ToolsChange,
+    WorkflowStart,
+    WorkflowLog,
+    WorkflowAgentStart,
+    WorkflowAgentEnd,
+    WorkflowEnd,
 }
 
 impl ExtensionEvent {
@@ -517,6 +585,11 @@ impl ExtensionEvent {
             ExtensionEvent::SessionBeforeCompact => ExtensionEventKind::SessionBeforeCompact,
             ExtensionEvent::SessionCompact => ExtensionEventKind::SessionCompact,
             ExtensionEvent::ToolsChange { .. } => ExtensionEventKind::ToolsChange,
+            ExtensionEvent::WorkflowStart => ExtensionEventKind::WorkflowStart,
+            ExtensionEvent::WorkflowLog(_) => ExtensionEventKind::WorkflowLog,
+            ExtensionEvent::WorkflowAgentStart(_) => ExtensionEventKind::WorkflowAgentStart,
+            ExtensionEvent::WorkflowAgentEnd(_) => ExtensionEventKind::WorkflowAgentEnd,
+            ExtensionEvent::WorkflowEnd(_) => ExtensionEventKind::WorkflowEnd,
         }
     }
 }
@@ -596,7 +669,12 @@ impl ExtensionEventKind {
             | ExtensionEventKind::AgentSettled
             | ExtensionEventKind::SessionShutdown
             | ExtensionEventKind::SessionCompact
-            | ExtensionEventKind::ToolsChange => DispatchMode::Emit,
+            | ExtensionEventKind::ToolsChange
+            | ExtensionEventKind::WorkflowStart
+            | ExtensionEventKind::WorkflowLog
+            | ExtensionEventKind::WorkflowAgentStart
+            | ExtensionEventKind::WorkflowAgentEnd
+            | ExtensionEventKind::WorkflowEnd => DispatchMode::Emit,
         }
     }
 }
@@ -1666,10 +1744,10 @@ mod tests {
     /// declared mode; the exhaustive `dispatch_mode` match makes a new
     /// variant a compile error without an arm, and this table makes
     /// CHANGING an existing kind's mode a test failure — the contract
-    /// cannot drift silently. 26 rows = the full §F2a set +
+    /// cannot drift silently. 31 rows = the full §F2a set +
     /// assistant-stream + tools-change (minus the removed
     /// `ResourcesDiscover`) + provider-request-error + turn-stopping
-    /// (DSH alignment).
+    /// (DSH alignment) + the 5 workflow lifecycle events (Emit-only).
     #[test]
     fn event_dispatch_contract_table() {
         use DispatchMode as M;
@@ -1705,12 +1783,18 @@ mod tests {
             (K::SessionShutdown, M::Emit),
             (K::SessionCompact, M::Emit),
             (K::ToolsChange, M::Emit),
+            // Workflow lifecycle (observe-only, advisory).
+            (K::WorkflowStart, M::Emit),
+            (K::WorkflowLog, M::Emit),
+            (K::WorkflowAgentStart, M::Emit),
+            (K::WorkflowAgentEnd, M::Emit),
+            (K::WorkflowEnd, M::Emit),
         ];
         assert_eq!(
             contract.len(),
-            26,
+            31,
             "the full §F2a set + assistant-stream + tools-change + provider-request-error \
-             + turn-stopping"
+             + turn-stopping + the workflow lifecycle family"
         );
         for (kind, mode) in contract {
             assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
@@ -2115,8 +2199,39 @@ mod tests {
                 },
                 K::ToolsChange,
             ),
+            // Workflow lifecycle (observe-only, Emit family — same values
+            // the W2 engine emits: `status` per the documented vocabulary,
+            // `error: None` on success).
+            (ExtensionEvent::WorkflowStart, K::WorkflowStart),
+            (
+                ExtensionEvent::WorkflowLog(WorkflowLogEvent {
+                    message: "m".into(),
+                }),
+                K::WorkflowLog,
+            ),
+            (
+                ExtensionEvent::WorkflowAgentStart(WorkflowAgentStartEvent {
+                    objective: "o".into(),
+                }),
+                K::WorkflowAgentStart,
+            ),
+            (
+                ExtensionEvent::WorkflowAgentEnd(WorkflowAgentEndEvent {
+                    status: "completed".into(),
+                    steps: 1,
+                }),
+                K::WorkflowAgentEnd,
+            ),
+            (
+                ExtensionEvent::WorkflowEnd(WorkflowEndEvent {
+                    status: "completed".into(),
+                    error: None,
+                    agent_calls: 1,
+                }),
+                K::WorkflowEnd,
+            ),
         ];
-        assert_eq!(cases.len(), 26, "all variants covered");
+        assert_eq!(cases.len(), 31, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }

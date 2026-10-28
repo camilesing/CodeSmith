@@ -86,7 +86,8 @@ use crate::host_services::{
 // four probe structs carry the host-coupled collaborators (LSP, compaction,
 // capacity, sub-agent). `CallbackBridge` + `SessionChatHistory` close the
 // framework ↔ host bridge. `AgentExecutor` (trait) is in scope so `.run()`
-// resolves on the executor.
+// resolves on the executor. The main turn is invoked through
+// `Arc<dyn AgentExecutor>`, so the engine itself is the seam's consumer.
 use crate::callback_bridge::CallbackBridge;
 use crate::session_history::SessionChatHistory;
 use capacity_flow::CapacityGateProbe;
@@ -1386,113 +1387,120 @@ impl Engine {
                     .as_deref(),
             );
         }
-        let executor = HostAgentExecutor::new(
-            client,
-            tools,
-            callback,
-            executor_config,
-            Some(self.tx_event.clone()),
-            lsp,
-            Some(Arc::clone(&self.rx_steer)),
-            Some(Arc::clone(&self.rx_approval)),
-            Some(
-                CompactionProbe::new(
-                    self.config.compaction.clone(),
-                    self.session.workspace.clone(),
-                )
-                .with_fact_ledger(Some(Arc::clone(&self.session.fact_ledger))),
-            ),
-            Some(
-                CapacityProbe::new(
-                    self.api_provider,
-                    self.session.model.clone(),
-                    self.config.compaction.clone(),
-                    self.session.workspace.clone(),
-                )
-                .with_fact_ledger(Some(Arc::clone(&self.session.fact_ledger))),
-            ),
-            Some(Arc::clone(&self.rx_subagent_completion)),
-            Some(self.cancel_token.clone()),
-            Some(self.host.subagents()),
-        )
-        // Slice 33 §E: construct the opt-in CapacityController (Gate A) probe
-        // from `Arc` clones of `self.capacity_controller` +
-        // `session.working_set` (snapshotted before the `&mut self.session`
-        // borrow held by `SessionChatHistory`) + the session model / workspace
-        // + the capacity profile-window + the turn index. The probe observes +
-        // decides mid-loop (seam 1 / seam 4) and signals via
-        // `pending_capacity_decision`; the host applies the intervention
-        // cascade post-`run` (Step 8 block above).
-        .with_capacity_gate(Some(CapacityGateProbe::new(
-            Arc::clone(&self.capacity_controller),
-            self.session.model.clone(),
-            self.session.workspace.clone(),
-            Arc::clone(&self.session.working_set),
-            self.config.capacity.profile_window,
-            self.turn_counter,
-        )))
-        // The mode the registry above was built from, so the post-batch seam
-        // can end a Plan turn once its plan is approved (a Plan registry has
-        // no write tools to continue with).
-        .with_turn_mode(mode)
-        // The plan reminder's Phase 1 advertises the session's real sub-agent
-        // cap (preset `max_subagents` / `[subagents].max_concurrent`) rather
-        // than a hard-coded ceiling; the pre-request seam still gates the
-        // mandate on the request surface carrying `agent_open`.
-        .with_subagent_cap(self.config.max_subagents)
-        // The other plan axis: the session a *model* opens with
-        // `enter_plan_mode`. The gate reads this live, so an approved exit
-        // unblocks writes in the same turn.
-        .with_plan_mode_state(Some(self.config.plan_mode_state.clone()))
-        // The catalog the model receives: the host's per-turn catalog with
-        // selection applied, so an allowlist actually narrows the request
-        // (the dispatch ToolSet keeps the full registry).
-        .with_request_catalog(request_catalog)
-        // Withholding takes effect only when a withheld tool exists (the host's
-        // catalog says so) — the setting alone must not pay for a search step.
-        .with_progressive_disclosure(tool_catalog_for_event.as_deref().is_some_and(|catalog| {
-            progressive_disclosure_active(catalog, self.config.progressive_disclosure)
-        }))
-        .with_tool_dispatcher(plan.tool_registry().cloned())
-        // `request_user_input` answers: the same receiver every turn, so a
-        // decision queued between turns is still matched by its wire id.
-        .with_user_input(Some(Arc::clone(&self.rx_user_input)))
-        .with_turn_meta(Some(turn_meta_probe))
-        .with_reinject(Some(reinject_probe))
-        .with_extension_runner(self.extension_runner.clone())
-        // P0-1: stream idle watchdog — abort a stream that stays silent for
-        // the configured per-event budget into the transparent-retry path.
-        // `ZERO` (explicitly disabled in config) maps to `None`.
-        .with_stream_idle_timeout(if self.config.stream_idle_timeout.is_zero() {
-            None
-        } else {
-            Some(self.config.stream_idle_timeout)
-        })
-        // P0-1 adaptive retry: widen the idle window per transparent retry so
-        // a silence gap longer than the base window doesn't kill every retry
-        // in the same silent stretch.
-        .with_stream_idle_retry_increment(self.config.stream_idle_retry_increment)
-        // P0-3: shadow-mode prefix-cache stability checks. `Arc` clone of the
-        // session-scoped manager (before the `&mut self.session` borrow held
-        // by `SessionChatHistory` below) so per-step fingerprint re-pins
-        // persist across turns. None ⇒ no checks (pre-P0-3 behavior).
-        .with_prefix_stability(self.session.prefix_stability.clone())
-        // P3-8: the engine-held pending verdict buffer — the post-turn
-        // background check pushes verdicts here, and each turn's executor
-        // flushes them as a synthetic runtime_event message before the
-        // turn's first API request (mirrors the LSP probe wire-in above).
-        .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)))
-        // P3-8 replay cost bound: per-tool-call durations recorded at the
-        // transcript chokepoint, read by the post-turn claim verifier.
-        .with_tool_durations(Arc::clone(&self.tool_durations))
-        // Round-4 TODO-44: session id for spillover artifacts written at the
-        // transcript chokepoint (`turn::batches`) — `Some` restores the full
-        // `apply_spillover_with_artifact` variant (session artifact +
-        // `[artifact: …]` reference block).
-        .with_session_id(Some(self.session.id.clone()))
-        // W2 P1-1: the engine-held deliverables probe (see the lazy init
-        // above) — clone shares the re-note schedule across turns.
-        .with_deliverables(self.deliverables_probe.clone());
+        let executor = Arc::new(
+            HostAgentExecutor::new(
+                client,
+                tools,
+                callback,
+                executor_config,
+                Some(self.tx_event.clone()),
+                lsp,
+                Some(Arc::clone(&self.rx_steer)),
+                Some(Arc::clone(&self.rx_approval)),
+                Some(
+                    CompactionProbe::new(
+                        self.config.compaction.clone(),
+                        self.session.workspace.clone(),
+                    )
+                    .with_fact_ledger(Some(Arc::clone(&self.session.fact_ledger))),
+                ),
+                Some(
+                    CapacityProbe::new(
+                        self.api_provider,
+                        self.session.model.clone(),
+                        self.config.compaction.clone(),
+                        self.session.workspace.clone(),
+                    )
+                    .with_fact_ledger(Some(Arc::clone(&self.session.fact_ledger))),
+                ),
+                Some(Arc::clone(&self.rx_subagent_completion)),
+                Some(self.cancel_token.clone()),
+                Some(self.host.subagents()),
+            )
+            // Slice 33 §E: construct the opt-in CapacityController (Gate A) probe
+            // from `Arc` clones of `self.capacity_controller` +
+            // `session.working_set` (snapshotted before the `&mut self.session`
+            // borrow held by `SessionChatHistory`) + the session model / workspace
+            // + the capacity profile-window + the turn index. The probe observes +
+            // decides mid-loop (seam 1 / seam 4) and signals via
+            // `pending_capacity_decision`; the host applies the intervention
+            // cascade post-`run` (Step 8 block above).
+            .with_capacity_gate(Some(CapacityGateProbe::new(
+                Arc::clone(&self.capacity_controller),
+                self.session.model.clone(),
+                self.session.workspace.clone(),
+                Arc::clone(&self.session.working_set),
+                self.config.capacity.profile_window,
+                self.turn_counter,
+            )))
+            // The mode the registry above was built from, so the post-batch seam
+            // can end a Plan turn once its plan is approved (a Plan registry has
+            // no write tools to continue with).
+            .with_turn_mode(mode)
+            // The plan reminder's Phase 1 advertises the session's real sub-agent
+            // cap (preset `max_subagents` / `[subagents].max_concurrent`) rather
+            // than a hard-coded ceiling; the pre-request seam still gates the
+            // mandate on the request surface carrying `agent_open`.
+            .with_subagent_cap(self.config.max_subagents)
+            // The other plan axis: the session a *model* opens with
+            // `enter_plan_mode`. The gate reads this live, so an approved exit
+            // unblocks writes in the same turn.
+            .with_plan_mode_state(Some(self.config.plan_mode_state.clone()))
+            // The catalog the model receives: the host's per-turn catalog with
+            // selection applied, so an allowlist actually narrows the request
+            // (the dispatch ToolSet keeps the full registry).
+            .with_request_catalog(request_catalog)
+            // Withholding takes effect only when a withheld tool exists (the host's
+            // catalog says so) — the setting alone must not pay for a search step.
+            .with_progressive_disclosure(tool_catalog_for_event.as_deref().is_some_and(|catalog| {
+                progressive_disclosure_active(catalog, self.config.progressive_disclosure)
+            }))
+            .with_tool_dispatcher(plan.tool_registry().cloned())
+            // `request_user_input` answers: the same receiver every turn, so a
+            // decision queued between turns is still matched by its wire id.
+            .with_user_input(Some(Arc::clone(&self.rx_user_input)))
+            .with_turn_meta(Some(turn_meta_probe))
+            .with_reinject(Some(reinject_probe))
+            .with_extension_runner(self.extension_runner.clone())
+            // P0-1: stream idle watchdog — abort a stream that stays silent for
+            // the configured per-event budget into the transparent-retry path.
+            // `ZERO` (explicitly disabled in config) maps to `None`.
+            .with_stream_idle_timeout(if self.config.stream_idle_timeout.is_zero() {
+                None
+            } else {
+                Some(self.config.stream_idle_timeout)
+            })
+            // P0-1 adaptive retry: widen the idle window per transparent retry so
+            // a silence gap longer than the base window doesn't kill every retry
+            // in the same silent stretch.
+            .with_stream_idle_retry_increment(self.config.stream_idle_retry_increment)
+            // P0-3: shadow-mode prefix-cache stability checks. `Arc` clone of the
+            // session-scoped manager (before the `&mut self.session` borrow held
+            // by `SessionChatHistory` below) so per-step fingerprint re-pins
+            // persist across turns. None ⇒ no checks (pre-P0-3 behavior).
+            .with_prefix_stability(self.session.prefix_stability.clone())
+            // P3-8: the engine-held pending verdict buffer — the post-turn
+            // background check pushes verdicts here, and each turn's executor
+            // flushes them as a synthetic runtime_event message before the
+            // turn's first API request (mirrors the LSP probe wire-in above).
+            .with_result_verifications(Some(Arc::clone(&self.pending_result_verifications)))
+            // P3-8 replay cost bound: per-tool-call durations recorded at the
+            // transcript chokepoint, read by the post-turn claim verifier.
+            .with_tool_durations(Arc::clone(&self.tool_durations))
+            // Round-4 TODO-44: session id for spillover artifacts written at the
+            // transcript chokepoint (`turn::batches`) — `Some` restores the full
+            // `apply_spillover_with_artifact` variant (session artifact +
+            // `[artifact: …]` reference block).
+            .with_session_id(Some(self.session.id.clone()))
+            // W2 P1-1: the engine-held deliverables probe (see the lazy init
+            // above) — clone shares the re-note schedule across turns.
+            .with_deliverables(self.deliverables_probe.clone()),
+        );
+        // The main turn is invoked through the `AgentExecutor` seam, held as
+        // a trait object (`Arc<dyn AgentExecutor>`), so the engine itself is
+        // the seam's consumer. The post-run harvest (`drain_stale_steers` +
+        // the `take_*` reads below) stays on the concrete `HostAgentExecutor`.
+        let main_turn_executor: Arc<dyn AgentExecutor> = executor.clone();
         let projection_hub = self.message_projection_hub();
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()))
@@ -1500,7 +1508,7 @@ impl Engine {
         // Drain steers queued between turns (mirrors the retired pre-turn
         // `while rx_steer.try_recv().is_ok() {}`).
         executor.drain_stale_steers().await;
-        let stop_reason = executor.run(&mut history, String::new()).await;
+        let stop_reason = main_turn_executor.run(&mut history, String::new()).await;
         // Release the `&mut self.session` borrow before the post-turn logic
         // (cwd sync / `maybe_advance_cycle` / usage / `TurnComplete` / snapshot)
         // touches `self.session` again.

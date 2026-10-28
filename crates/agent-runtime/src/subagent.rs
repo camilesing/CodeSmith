@@ -37,20 +37,19 @@
 //! `max_spawn_depth - spawn_depth` locally, so recursion stays bounded across
 //! process hops exactly as it is in-process.
 //!
-//! # Decision record: model-writable orchestration is not built
+//! # Decision record: model-writable orchestration
 //!
-//! Some harnesses let the model write orchestration scripts and plugins at
-//! run time (deepseek-harness `workflow-ptc`). CodeSmith deliberately does
-//! not: the orchestration surface the model gets is the persistent sub-agent
-//! session (`agent_open` / `agent_eval` / `agent_close`) plus the external
-//! seam above, and the only model-driven code execution surface is the RLM
-//! sandboxed Python REPL (`rlm_open` / `rlm_eval`), which covers computation,
-//! not orchestration. Rhai mods stay user-trust-only (no fs/net/process
-//! natives, not model-writable). Known limitation, by decision (2026-10-17,
-//! plan TODO-32): there is no workflow engine the model can program; a
-//! multi-step plan is expressed as a sequence of sub-agent sessions driven by
-//! the parent turn. Re-open only by founder decision, with `workflow-ptc` as
-//! the reference shape.
+//! Re-opened by founder decision (2026-10-26), with deepseek-harness
+//! `workflow-ptc` as the reference shape. The `workflow` tool lets the model
+//! write a Python orchestration script executed on a one-shot RLM kernel
+//! (`agent-runtime/src/workflow.rs` seam; provider in
+//! `crates/cli/src/tools/workflow/`). The script is a *synchronous*
+//! orchestrator — it awaits its `run_agent` children inside one tool call, so
+//! settlement/wake delivery is deliberately absent. Rhai mods stay
+//! user-trust-only (not model-writable); `js_execution` stays computation-only
+//! (unsandboxed Node, documented). Sub-agent fan-out inherits the existing
+//! caps, spawn-depth budget, approval ceiling, and the `SessionBeforeFork`
+//! veto — no new approval surface.
 
 use std::fmt;
 use std::path::PathBuf;

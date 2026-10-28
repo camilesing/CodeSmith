@@ -5,15 +5,16 @@
 //! [`crate::tools::Tool`]s → feeds [`ToolResult`]s back into the conversation
 //! history, with a step cap. This is the **framework-core** executor — minimal
 //! and host-agnostic (no compaction, capacity, steer, or sub-agent branches);
-//! the production `Engine` in `codesmith-agent-runtime` carries those guardrails
-//! and is migrated onto this trait in a later ROADMAP §E slice.
+//! the production loop, `HostAgentExecutor` in `codesmith-agent-runtime`,
+//! carries those guardrails: it implements this trait, and the engine invokes
+//! its main turn through `Arc<dyn AgentExecutor>`.
 //!
 //! The reference impl [`DefaultAgentExecutor`] is validated against an inline
 //! mock LLM + mock tool in the tests below — no `codesmith-providers`
 //! dependency required, mirroring how the provider foundation slice validated
 //! against `mock`.
 //!
-//! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
+//! See `DESIGN_INTERNALS.md` ("The framework-core agent seam").
 
 use std::future::Future;
 use std::pin::Pin;

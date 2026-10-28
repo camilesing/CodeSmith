@@ -226,8 +226,9 @@ skill package with palette-validation scripts this build does not ship),
 `/setup-bedrock` and `/setup-vertex` (provider auth for Anthropic's own
 Bedrock/Vertex paths — CodeSmith configures providers with `/provider` and
 `codesmith login`), `/workflows` and `/workflow-authoring` (CodeSmith has no
-dynamic-workflow engine; `/tasks`, `/loop`, and `/subtask` are its background
-work), `/auto-mode-setup` (same allowlist work as
+dynamic-workflow engine; the model-facing `workflow` tool (see
+TOOL_SURFACE.md) is a different surface; `/tasks`, `/loop`, and `/subtask`
+are its background work), `/auto-mode-setup` (same allowlist work as
 `/fewer-permission-prompts`), and `/ultraplan` (removed in Claude Code;
 plan mode is `/plan` here too).
 

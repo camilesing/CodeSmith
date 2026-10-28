@@ -239,7 +239,7 @@ inventory::submit! {
 - **`ExtensionCommandContext: ExtensionContext`** —— 交给命令处理器
   的严格子 trait；它不携带任何会话变更方法（这一拆分是为了类型
   安全）。
-- **`ExtensionEvent`** —— `#[non_exhaustive]`，26 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入；`turn-stopping` 随 DSH 串行 steer 加入）：
+- **`ExtensionEvent`** —— `#[non_exhaustive]`，31 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入；`turn-stopping` 随 DSH 串行 steer 加入；五个 workflow 生命周期事件随模型可写的 `workflow` 工具加入）：
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -247,7 +247,9 @@ inventory::submit! {
   `AssistantStream` / `ToolExecutionStart` / `ToolExecutionUpdate` /
   `ToolExecutionEnd` / `AgentEnd` / `AgentSettled` /
   `SessionBeforeSwitch` / `SessionBeforeFork` / `SessionBeforeCompact` /
-  `SessionCompact` / `ToolsChange` / `TurnStopping`。`ExtensionEvent::kind()` 将每个
+  `SessionCompact` / `ToolsChange` / `TurnStopping` / `WorkflowStart` /
+  `WorkflowLog` / `WorkflowAgentStart` / `WorkflowAgentEnd` /
+  `WorkflowEnd`。`ExtensionEvent::kind()` 将每个
   变体映射到一个 `ExtensionEventKind` 判别值，用于按变体分发。
 - **`Handler`** —— 返回结果：
   `async fn handle(&self, event: &ExtensionEvent, ctx: &dyn ExtensionContext)
@@ -443,6 +445,11 @@ UI 决策通道；不存在 `ask()` 控制值，脚本永远产生不了 `Ask` �
 | `—`（dylib LOAD，不是事件） | `populate_extension_runtime`（`crates/cli/src/core/engine.rs`）在 `discover_static` 之后 | n/a（加载阶段） | `discover_dylib(&global_roots, &project_roots)` → `apply_trust_gate(discovered, !is_workspace_trusted(workspace))` 丢弃项目本地（`global == false`）→ `state.is_enabled` 对账 → 在 OS 线程加载运行时上执行 `ExtensionRunner::load_dylib`；重载经 `reload_extension_runtime`→`populate` 拾取。`ExtensionRunner.libraries` 持有 `Library` 句柄；运行时重载时它们 `drain_libraries_to_pending` 到 `pending_drop`（与各 clear 一并执行）+ 引擎 op-loop 在下一个轮边界对它们执行 `drop_pending`。经 `codesmith_register_extension` 实现 lockstep `*mut dyn Extension`。 |
 | `SessionBeforeFork` | spawn 工具族（`agent_open` / `agent_spawn` / `agent_run`，任意深度——runner 随 `SubAgentRuntime` 传递，孙代 fork 也可否决）+ `HostServices::spawn_subagent`（`crates/cli/src/tools/subagent/mod.rs`、`core/engine/runtime_traits.rs`） | **Cancel** | 在子代理 fork 会话状态前发出；`Cancel` 以模型可见错误中止该次 spawn。深度 ≥ 1 的上下文里该 veto 按子代理类型作用域分发，dylib 来源处理器在那里被跳过（§F5d——detached 子代理可能活得比 reload 的 `Library` drop 更久）；深度 0 与引擎内部路径保持 Global emit（主执行器在轮内持有 `Library` 存活）。Global 的 script/compiled-in 处理器在任意深度都收到该 veto |
 | `ToolExecutionUpdate` | `exec_shell`（前台）/ `exec_shell_wait` 轮询循环 → `ToolContext::progress` → `callback_bridge::RunnerProgressSink` | emit | 命令运行期间的节流检查点（间隔 ≥1s、仅有新输出时）：`id` = shell 任务 id，`message` = 自上一检查点以来的输出（尾部截至 4 KiB）；同一检查点以 `Event::ToolCallProgress` 到达 UI；按 AssistantStream 的预算/断路器派发；仅主回合；沙箱后端与交互式运行不报 |
+| `WorkflowStart` | `workflow` 引擎（`crates/cli/src/tools/workflow/engine.rs`），一次性内核拉起之前 | emit | 一次 workflow 运行开始；预算被拒的请求不触发（运行从未开始） |
+| `WorkflowLog(WorkflowLogEvent)` | workflow RPC 桥，每次 `log(...)` 辅助调用 | emit | `message` = 一条有界日志（与运行自身缓冲保留的同一条目） |
+| `WorkflowAgentStart(WorkflowAgentStartEvent)` | workflow RPC 桥（`spawn_with_events`），在运行的代理预算放行该子级之后 | emit | `objective` = 子级的 objective 文本 |
+| `WorkflowAgentEnd(WorkflowAgentEndEvent)` | workflow RPC 桥，一个子级结束时 | emit | `status` + `steps`；被运行级墙钟上限丢弃的子级只有 `WorkflowAgentStart` 而无配对的 End——那里的终态信号是运行级的 `WorkflowEnd`（超时） |
+| `WorkflowEnd(WorkflowEndEvent)` | `workflow` 引擎，终态结果（成功或失败） | emit | `status`（`completed`/`failed`）、失败时的 `error` 类别（`timeout`/`script_error`/`kernel_spawn`）、`agent_calls`；不携带返回值——转录中的工具结果即记录 |
 
 > `Transform` 载荷的可执行字段在完整处理器链运行之后才于接缝处应用
 > （因此来自处理器 N 的 `Transform` 会作为正在运行的事件对处理器

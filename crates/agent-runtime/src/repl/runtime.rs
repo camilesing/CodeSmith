@@ -102,6 +102,27 @@ pub enum RpcRequest {
         #[serde(default)]
         safety_note: Option<String>,
     },
+    /// `run_agent(objective, role=None, model=None, timeout_s=None)` —
+    /// one-shot sub-agent spawn, serviced by the workflow engine's bridge
+    /// through [`crate::workflow::SubAgentSpawner`]. The RLM bridge rejects
+    /// these; only the workflow engine binds a spawner.
+    WorkflowAgent {
+        objective: String,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        timeout_s: Option<u64>,
+    },
+    /// `agents([{objective, role?, model?, timeout_s?}, ...])` — concurrent
+    /// fan-out; one RPC carries the whole batch so the host side can run
+    /// the children concurrently inside the synchronous REPL protocol.
+    WorkflowAgents {
+        objectives: Vec<crate::workflow::SubAgentObjective>,
+    },
+    /// `log(message)` — appends one line to the workflow run's logs.
+    WorkflowLog { message: String },
 }
 
 /// Response for one RPC request.
@@ -214,6 +235,14 @@ impl PythonRuntime {
     /// RLM turn loop.
     pub async fn spawn_with_context(context_path: &Path) -> Result<Self, String> {
         Self::spawn_inner(Some(context_path), None).await
+    }
+
+    /// Spawn a REPL with no `context` and **no per-round timeout**: the
+    /// caller owns the wall-clock bound (the workflow engine wraps its
+    /// whole run in one hard deadline). Used by the one-shot workflow
+    /// kernel.
+    pub async fn spawn_unbounded() -> Result<Self, String> {
+        Self::spawn_inner(None, None).await
     }
 
     async fn spawn_inner(
@@ -1218,6 +1247,14 @@ mod tests {
                             .collect();
                         RpcResponse::Batch(BatchResp { results })
                     }
+                    // The stub never services workflow RPCs (no spawner);
+                    // report that honestly like the RLM bridge does.
+                    RpcRequest::WorkflowAgent { .. }
+                    | RpcRequest::WorkflowAgents { .. }
+                    | RpcRequest::WorkflowLog { .. } => RpcResponse::Single(SingleResp {
+                        text: String::new(),
+                        error: Some("workflow RPCs are not serviced by this bridge".to_string()),
+                    }),
                 }
             })
         }

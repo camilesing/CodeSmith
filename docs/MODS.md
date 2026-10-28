@@ -123,7 +123,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 26 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 31 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
@@ -140,6 +140,11 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `assistant-stream` | `text` (one incremental chunk; fires per text delta, emit-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
 | `tools-change` | `added`, `removed` (tool-name arrays) |
+| `workflow-start` | (`kind` only) — a `workflow` run began (budget-rejected runs emit nothing) |
+| `workflow-log` | `message` (one bounded `log(...)` entry from a workflow run) |
+| `workflow-agent-start` | `objective` (one workflow child spawn began) |
+| `workflow-agent-end` | `status`, `steps` (one workflow child finished) |
+| `workflow-end` | `status`, `error` (error kind on failure), `agent_calls` (a workflow run's terminal outcome; no return value — the transcript's tool result is the record) |
 | `project-trust` / `session-start` | `reason` |
 | `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
 

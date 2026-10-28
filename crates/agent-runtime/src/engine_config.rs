@@ -241,6 +241,16 @@ pub struct EngineConfig {
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,
+    /// Wall-clock bound for one `workflow` tool run. Resolved from
+    /// `[workflow] timeout_secs` (default 600, rejected above 1800 at
+    /// config load) once at engine construction, then threaded onto every
+    /// `SubAgentRuntime` the engine builds so the workflow tool sees the
+    /// same limit at every spawn depth.
+    pub workflow_timeout: Duration,
+    /// Per-run default cap on sub-agents spawned by one `workflow` run.
+    /// Resolved from `[workflow] max_agents`; `None` lets the engine use
+    /// its built-in default (`DEFAULT_MAX_SUBAGENTS` in the CLI layer).
+    pub workflow_max_agents: Option<u32>,
     /// Idle watchdog for streaming responses (P0-1): the maximum silence
     /// between two consecutive stream events before the stream is declared
     /// silently stalled (connection open, data flow stopped) and aborted into
@@ -397,6 +407,8 @@ impl Default for EngineConfig {
             web_service: None,
             index_enabled: true,
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
+            workflow_timeout: Duration::from_secs(crate::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS),
+            workflow_max_agents: None,
             stream_idle_timeout: Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
             stream_idle_retry_increment: Duration::from_secs(
                 DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS,

@@ -45,7 +45,9 @@ SEAMS = [
     "ProviderFactory",
     "SandboxBackend",
     "SessionStore",
+    "SubAgentSpawner",
     "ToolDefinition",
+    "WorkflowEngine",
 ]
 
 HEADER = """\

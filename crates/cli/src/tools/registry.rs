@@ -856,7 +856,8 @@ impl ToolRegistryBuilder {
 
         let spawn_runner = extension_runner.clone();
         let open_runner = extension_runner.clone();
-        let run_runner = extension_runner;
+        let run_runner = extension_runner.clone();
+        let workflow_runner = extension_runner;
         let mut open = AgentOpenTool::new(manager.clone(), runtime.clone());
         if let Some(r) = open_runner {
             open = open.with_extension_runner(r);
@@ -879,7 +880,20 @@ impl ToolRegistryBuilder {
                 }
                 run
             }))
-            .with_tool(std::sync::Arc::new(AgentCloseTool::new(manager)))
+            .with_tool(std::sync::Arc::new(AgentCloseTool::new(manager.clone())))
+            // The model-writable orchestration tool rides the same family:
+            // its children are one-shot runs on this runtime, so caps,
+            // depth budget, approval ceiling, and the SessionBeforeFork
+            // veto are this machinery's. Registers unconditionally like
+            // the RLM family — a missing Python interpreter fails loud at
+            // tool execution time.
+            .with_tool(std::sync::Arc::new({
+                let mut workflow = super::workflow::tool::WorkflowTool::new(manager, runtime);
+                if let Some(r) = workflow_runner {
+                    workflow = workflow.with_extension_runner(r);
+                }
+                workflow
+            }))
     }
 
     /// Include Task V2 tools when a manager is available.

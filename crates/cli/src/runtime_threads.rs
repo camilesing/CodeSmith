@@ -2118,6 +2118,8 @@ impl RuntimeThreadManager {
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
             ),
+            workflow_timeout: std::time::Duration::from_secs(self.config.workflow_timeout_secs()),
+            workflow_max_agents: self.config.workflow_max_agents(),
             stream_idle_timeout: std::time::Duration::from_secs(
                 self.config.stream_idle_timeout_secs(),
             ),

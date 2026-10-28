@@ -119,7 +119,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 26 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 31 种：
 
 | 事件 | payload 字段 |
 |---|---|
@@ -136,6 +136,11 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅 emit） |
 | `tool-execution-update` | `id`、`name`、`message` |
 | `tools-change` | `added`、`removed`（工具名数组） |
+| `workflow-start` | （仅 `kind`）——一次 workflow 运行开始（预算被拒的运行不触发） |
+| `workflow-log` | `message`（workflow 运行中一条有界的 `log(...)` 日志） |
+| `workflow-agent-start` | `objective`（一个 workflow 子级开始派生） |
+| `workflow-agent-end` | `status`、`steps`（一个 workflow 子级结束） |
+| `workflow-end` | `status`、`error`（失败时的错误类别）、`agent_calls`（workflow 运行的终态结果；不携带返回值——转录中的工具结果即记录） |
 | `project-trust` / `session-start` | `reason` |
 | `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
 

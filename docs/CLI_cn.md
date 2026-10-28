@@ -182,7 +182,8 @@ transcript viewer 按键，以及 `/pr-comments`（Claude Code 在 v2.1.91 删�
 `/dataviz`（附带给颜色校验脚本的技能包，本构建没有这些脚本）、
 `/setup-bedrock` 与 `/setup-vertex`（Anthropic 自家 Bedrock/Vertex 路径的鉴权向导；
 CodeSmith 用 `/provider` 与 `codesmith login` 配置 provider）、
-`/workflows` 与 `/workflow-authoring`（CodeSmith 没有动态 workflow 引擎；它的后台工作
+`/workflows` 与 `/workflow-authoring`（CodeSmith 没有动态 workflow 引擎；模型侧的
+`workflow` 工具是另一个面（见 TOOL_SURFACE.md），不受影响；它的后台工作
 是 `/tasks`、`/loop`、`/subtask`）、`/auto-mode-setup`（与
 `/fewer-permission-prompts` 同一份 allowlist 工作）、以及 `/ultraplan`
 （Claude Code 已删除；计划模式在这里同样是 `/plan`）。
