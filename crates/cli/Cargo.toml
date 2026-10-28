@@ -13,6 +13,14 @@ description = "Agentic terminal coding agent for open-weight models"
 name = "codesmith"
 path = "src/main.rs"
 
+# Shorthand alias for the same product. A launcher rather than a second copy
+# of the CLI: `cargo install` and buildRustPackage install one executable per
+# `[[bin]]`, and a duplicate would double both the release archive and the
+# installed size.
+[[bin]]
+name = "codes"
+path = "src/bin/codes.rs"
+
 [dependencies]
 anyhow.workspace = true
 async-stream = "0.3.6"

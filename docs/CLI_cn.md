@@ -35,6 +35,9 @@ codesmith docker                                  # print the container quick st
 
 ## Prompt 与子命令
 
+`codes` 是 `codesmith` 的简写别名：同一个可执行文件、同一套旗标、同样的
+退出码，下文每个示例都可以把 `codesmith` 换成 `codes`。
+
 顶层第一个裸词按子命令名解析：`codesmith docker`、`codesmith version` 都是
 命令；无法识别的词会以 `unrecognized subcommand '<word>'`（退出码 2）
 报错，并提示改用 `-p`。顶层不存在位置参数形式的 prompt：加引号

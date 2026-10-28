@@ -94,9 +94,12 @@ codesmith
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)
-cargo install codesmith-cli --locked   # provides `codesmith`
+cargo install codesmith-cli --locked   # provides `codesmith` and `codes`
 codesmith --version
 ```
+
+`codes` 是同一个二进制的启动器别名：参数与退出码原样转发，因此直接运行
+`codes` 进入 REPL，`codes doctor` 等价于 `codesmith doctor`。
 
 ### 中国 / 镜像友好的安装
 
@@ -272,7 +275,7 @@ curl -L -o /tmp/codesmith-artifacts-sha256.txt \
 git clone https://github.com/camilesing/CodeSmith.git
 cd CodeSmith
 
-cargo install --path crates/cli --locked   # provides `codesmith`
+cargo install --path crates/cli --locked   # provides `codesmith` and `codes`
 
 codesmith --version
 ```

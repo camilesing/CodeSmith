@@ -66,8 +66,11 @@ codesmith                                # 交互式 REPL
 
 ```bash
 git clone https://github.com/camilesing/CodeSmith.git && cd CodeSmith
-cargo install --path crates/cli --locked   # 提供 `codesmith`
+cargo install --path crates/cli --locked   # 提供 `codesmith`（以及 `codes`）
 ```
+
+`codes` 是同一个可执行文件的简写别名：直接运行 `codes` 进入 REPL，
+`codes <子命令>` 等价于 `codesmith <子命令>`。
 
 平台矩阵、国内镜像、校验和：[docs/INSTALL_cn.md](docs/INSTALL_cn.md)。
 

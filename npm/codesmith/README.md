@@ -20,7 +20,7 @@ npx codesmith --help
 ```
 
 `postinstall` tries to download platform binaries into `bin/downloads/` and
-exposes `codesmith` and `codesmith` commands. If GitHub release assets are
+exposes the `codesmith` and `codes` commands. If GitHub release assets are
 temporarily unreachable, install continues and the wrapper retries the download
 on first run.
 

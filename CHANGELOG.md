@@ -34,6 +34,14 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **`codes` is a shorthand for `codesmith`** — every install channel that ships
+  the CLI now also provides `codes`: `cargo install` and Nix get a launcher
+  binary, the npm wrapper registers a second bin name, and the release install
+  scripts create the alias. It forwards every argument and the exit status, so
+  `codes` opens the REPL and `codes <subcommand>` matches `codesmith
+  <subcommand>`; self-update still writes the real binary, so the two names
+  cannot drift.
+
 - **Every approval question now shares one key legend** — `[key] what it does`,
   with the answer read on the same row. The tool gate lists `[n] skip` at last
   (an empty line still skips silently, and a bare `n` still works) and stops

@@ -16,8 +16,21 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
+:: `codes` shorthand: a shim rather than a second full copy of the binary.
+:: %%~dp0 and %%* are emitted literally and resolve when the shim runs.
+:: cmd.exe may ask "Terminate batch job?" after a console Ctrl+C during a
+:: headless run; the interactive REPL handles Ctrl+C itself in raw mode.
+(
+    echo @echo off
+    echo "%%~dp0codesmith.exe" %%*
+) > "%BIN_DIR%\codes.cmd"
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Failed to write codes.cmd
+    exit /b 1
+)
+
 echo.
-echo Done. codesmith installed to %BIN_DIR%.
+echo Done. codesmith (and its codes alias) installed to %BIN_DIR%.
 echo.
 echo Add %BIN_DIR% to your PATH:
 echo   1. Open Start, search "environment variables"

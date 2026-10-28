@@ -130,9 +130,13 @@ install from crates.io directly.
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)
-cargo install codesmith-cli --locked   # provides `codesmith`
+cargo install codesmith-cli --locked   # provides `codesmith` and `codes`
 codesmith --version
 ```
+
+`codes` is a launcher alias for the same binary: it forwards every argument
+and the exit status, so `codes` alone opens the REPL and `codes doctor` is
+`codesmith doctor`.
 
 ### China / mirror-friendly install
 
@@ -333,7 +337,7 @@ LoongArch, FreeBSD, and pre-2024 ARM64 distros.
 git clone https://github.com/camilesing/CodeSmith.git
 cd CodeSmith
 
-cargo install --path crates/cli --locked   # provides `codesmith`
+cargo install --path crates/cli --locked   # provides `codesmith` and `codes`
 
 codesmith --version
 ```

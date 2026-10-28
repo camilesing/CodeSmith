@@ -22,6 +22,10 @@ use std::io::Write;
 pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Result<()> {
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
+    // macOS reports the invoked path, so a symlinked `codes` alias would
+    // otherwise be replaced by the downloaded file while `codesmith` went
+    // stale. Update the real binary; the link keeps pointing at it.
+    let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     let targets = update_targets_for_exe(&current_exe);
     let channel = ReleaseChannel::from_beta_flag(beta);
     let current_version = env!("CARGO_PKG_VERSION");

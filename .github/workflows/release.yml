@@ -458,7 +458,7 @@ jobs:
               ghcr.io/camilesing/codesmith:${{ needs.resolve.outputs.tag }}
             ```
 
-            The image ships the single `codesmith` binary. The `latest` tag is also updated on release.
+            The image ships the `codesmith` binary and the `codes` alias. The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 
@@ -466,11 +466,11 @@ jobs:
             cargo install codesmith-cli --locked
             ```
 
-            The crate produces the single `codesmith` binary: REPL frontend, headless subcommands, and servers in one executable.
+            The crate produces the `codesmith` binary (REPL frontend, headless subcommands, and servers in one executable) plus the `codes` shorthand alias.
 
             ### Manual download — platform archives (recommended)
 
-            Each archive below contains the `codesmith` binary plus an install script:
+            Each archive below contains the `codesmith` binary plus an install script (the script also installs the `codes` alias):
 
             | Platform | Archive | Install script |
             |---|---|---|

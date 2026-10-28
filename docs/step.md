@@ -4,7 +4,7 @@
 
 ## 背景
 
-`cargo install --path crates/cli --locked` 会把单一的 `codesmith` 二进制安装到 `~/.cargo/bin/`。自 0.10.0 起 `codesmith` 就是完整产品：交互 REPL 与 `exec`、`doctor`、`init`、`serve` 等全部子命令都由这一个二进制直接提供，不再有伴生二进制（旧版的 `codesmith-tui` 已在 0.10.0 移除）。
+`cargo install --path crates/cli --locked` 会把 `codesmith` 及其简写别名 `codes` 安装到 `~/.cargo/bin/`（`codes` 是一个只做转发的启动器，参数与退出码原样交给 `codesmith`）。自 0.10.0 起 `codesmith` 就是完整产品：交互 REPL 与 `exec`、`doctor`、`init`、`serve` 等全部子命令都由这一个二进制直接提供，不再有伴生二进制（旧版的 `codesmith-tui` 已在 0.10.0 移除）。
 
 ## 步骤 1：验证二进制就位
 

@@ -23,8 +23,14 @@ for bin in codesmith; do
     echo "  $dst"
 done
 
+# `codes` shorthand: a relative symlink, so it keeps pointing at `codesmith`
+# when `codesmith update` replaces the real file. (macOS reports the link path
+# from current_exe, which the updater canonicalizes before writing.)
+ln -sf codesmith "$BIN_DIR/codes"
+echo "  $BIN_DIR/codes -> codesmith"
+
 echo ""
-echo "Done. codesmith installed to $BIN_DIR."
+echo "Done. codesmith (and its codes alias) installed to $BIN_DIR."
 
 # Check if BIN_DIR is on PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -43,4 +49,4 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 fi
 
 echo ""
-echo "Then run: codesmith"
+echo "Then run: codesmith   (shorthand: codes)"

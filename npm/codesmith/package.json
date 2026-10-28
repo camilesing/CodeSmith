@@ -28,8 +28,8 @@
   ],
   "type": "commonjs",
   "bin": {
-    "codesmith": "bin/codesmith.js"
-    
+    "codesmith": "bin/codesmith.js",
+    "codes": "bin/codesmith.js"
   },
   "scripts": {
     "release:check": "node scripts/verify-release-assets.js",

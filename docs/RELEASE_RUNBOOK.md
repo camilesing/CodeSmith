@@ -4,9 +4,10 @@ This runbook is the source of truth for shipping Rust crates, GitHub release ass
 and the `codesmith` npm wrapper.
 
 Current packaging note:
-- `codesmith-cli` is the single end-user crate; it ships the one `codesmith`
-  binary (interactive REPL + headless subcommands). The former `codesmith-tui`
-  companion crate was removed in 0.10.0.
+- `codesmith-cli` is the single end-user crate; it ships the `codesmith`
+  binary (interactive REPL + headless subcommands) plus the `codes` launcher
+  alias (`src/bin/codes.rs`, which re-executes `codesmith`). The former
+  `codesmith-tui` companion crate was removed in 0.10.0.
 
 ## Canonical Publish Targets
 

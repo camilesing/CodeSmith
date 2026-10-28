@@ -36,6 +36,10 @@ codesmith docker                                  # print the container quick st
 
 ## Prompts and subcommands
 
+`codes` is a shorthand alias for `codesmith`: same executable, same flags, same
+exit status, so every example below also works with `codes` in place of
+`codesmith`.
+
 A bare first word is read as a subcommand name: `codesmith docker` and
 `codesmith version` are commands, and an unrecognized word fails with
 `unrecognized subcommand '<word>'` (exit code 2) and a tip pointing at `-p`.

@@ -4,9 +4,10 @@
 npm 包装器的权威依据。
 
 当前打包说明：
-- `codesmith-cli` 是唯一的面向最终用户的 crate；它交付单一的 `codesmith`
-  二进制（交互式 REPL + 无头子命令）。此前的 `codesmith-tui` 伴随 crate
-  已在 0.10.0 中移除。
+- `codesmith-cli` 是唯一的面向最终用户的 crate；它交付 `codesmith`
+  二进制（交互式 REPL + 无头子命令）以及 `codes` 启动器别名
+  （`src/bin/codes.rs`，负责转交给 `codesmith`）。此前的 `codesmith-tui`
+  伴随 crate 已在 0.10.0 中移除。
 
 ## 规范发布目标
 

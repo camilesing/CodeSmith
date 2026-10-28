@@ -67,8 +67,11 @@ from source with `cargo install --path crates/cli --locked`.
 
 ```bash
 git clone https://github.com/camilesing/CodeSmith.git && cd CodeSmith
-cargo install --path crates/cli --locked   # provides `codesmith`
+cargo install --path crates/cli --locked   # provides `codesmith` (and `codes`)
 ```
+
+`codes` is a shorthand alias for the same executable: `codes` alone opens the
+REPL, and `codes <subcommand>` matches `codesmith <subcommand>`.
 
 ## What Is It?
 

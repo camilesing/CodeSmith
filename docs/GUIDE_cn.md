@@ -35,7 +35,7 @@ before editing files.
 
 ## 2. 首次启动
 
-选择适合你机器的方式安装 CodeSmith。每个受支持的安装路径都提供同一个 `codesmith` 二进制文件，它同时承载无头（headless）子命令和基于行的交互式 REPL。
+选择适合你机器的方式安装 CodeSmith。每个受支持的安装路径都提供同一个 `codesmith` 二进制文件（以及 `codes` 简写别名），它同时承载无头（headless）子命令和基于行的交互式 REPL。
 
 ```bash
 # npm

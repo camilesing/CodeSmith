@@ -46,8 +46,8 @@ runtime model.
 ## 2. First Launch
 
 Install CodeSmith with the path that fits your machine. Each supported install
-path provides the single `codesmith` binary, which hosts both the headless
-subcommands and the line-based interactive REPL.
+path provides the `codesmith` binary (plus the `codes` shorthand alias), which
+hosts both the headless subcommands and the line-based interactive REPL.
 
 ```bash
 # npm

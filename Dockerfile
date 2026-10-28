@@ -67,6 +67,7 @@ RUN --mount=type=cache,id=codesmith-target-${TARGETARCH},target=/build/target,sh
       -p codesmith-cli -p codesmith-app-server \
     && mkdir -p /out \
     && cp target/$(cat /rust-target)/release/codesmith /out/ \
+    && cp target/$(cat /rust-target)/release/codes /out/ \
     && cp target/$(cat /rust-target)/release/codesmith-app-server /out/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────
@@ -85,10 +86,12 @@ USER codesmith
 WORKDIR /home/codesmith
 
 COPY --from=builder --chown=codesmith:codesmith /out/codesmith /usr/local/bin/codesmith
+COPY --from=builder --chown=codesmith:codesmith /out/codes /usr/local/bin/codes
 COPY --from=builder --chown=codesmith:codesmith /out/codesmith-app-server /usr/local/bin/codesmith-app-server
 
-# The dispatcher expects to find its companion binary next to it.
-# Both are in /usr/local/bin — no further path setup needed.
+# `codes` re-executes the sibling `codesmith`; the dispatcher expects its
+# companion binaries next to it. All are in /usr/local/bin — no further path
+# setup needed.
 
 ENTRYPOINT ["codesmith"]
 CMD []
