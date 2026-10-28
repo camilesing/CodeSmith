@@ -325,7 +325,12 @@ pub async fn run_repl(
         let ring = state.coordinator_in_ring();
         let prompt_row = {
             let mut cell = Bindings::lock(&bindings);
-            cell.set_prompt_row(&status_row, state.mode, ring);
+            cell.set_prompt_row(
+                &status_row,
+                state.mode,
+                ring,
+                &state.settings.status_icons.mode,
+            );
             cell.padded_prompt_row()
         };
         // The hint reports these without holding `ReplState`.

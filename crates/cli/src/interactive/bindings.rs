@@ -194,15 +194,20 @@ pub struct Bindings {
     pub queue_pending: usize,
     pub tool_detail: bool,
     /// The status row rustyline is showing as the prompt's first row, the
-    /// mode it was rendered for, and whether `coordinator` is in the ring.
-    /// `Shift+Tab` advances `prompt_mode`; [`Self::repainted_prompt`]
-    /// rebuilds the row from these three, so a relabel needs no terminal.
+    /// mode it was rendered for, whether `coordinator` is in the ring, and
+    /// the mode glyph the row carries. `Shift+Tab` advances `prompt_mode`;
+    /// [`Self::repainted_prompt`] rebuilds the row from these four, so a
+    /// relabel needs no terminal.
     prompt_row: String,
     prompt_mode: Option<AppMode>,
     /// The mode the REPL last applied — what the composed row still shows.
     applied_mode: Option<AppMode>,
     /// Whether `coordinator` is one of the ring's stops this session.
     coordinator_in_ring: bool,
+    /// The glyph the composed row's mode segment carries
+    /// (`[status_icons] mode`), so a relabel reproduces it and the
+    /// `replacen` guard still matches the stored row.
+    mode_icon: String,
 }
 
 impl Bindings {
@@ -282,12 +287,20 @@ impl Bindings {
     /// [`Self::repainted_prompt`] both pad it to the widest label the ring
     /// can show, which is what keeps a relabelled row the same width as the
     /// one the layout was computed from.
-    pub fn set_prompt_row(&mut self, row: &str, mode: AppMode, coordinator_in_ring: bool) {
+    pub fn set_prompt_row(
+        &mut self,
+        row: &str,
+        mode: AppMode,
+        coordinator_in_ring: bool,
+        mode_icon: &str,
+    ) {
         self.prompt_row.clear();
         self.prompt_row.push_str(row);
         self.prompt_mode = Some(mode);
         self.applied_mode = Some(mode);
         self.coordinator_in_ring = coordinator_in_ring;
+        self.mode_icon.clear();
+        self.mode_icon.push_str(mode_icon);
     }
 
     /// The status row as the prompt carries it: padded to the widest label
@@ -350,12 +363,15 @@ impl Bindings {
         // user-controlled segment happens to contain the mode text. A
         // padded-but-stale row would change the width this function exists
         // to preserve, so report failure instead.
-        if !self.prompt_row.contains(&status::mode_segment(applied)) {
+        if !self
+            .prompt_row
+            .contains(&status::mode_segment(applied, &self.mode_icon))
+        {
             return None;
         }
         let row = self.prompt_row.replacen(
-            &status::mode_segment(applied),
-            &status::mode_segment(mode),
+            &status::mode_segment(applied, &self.mode_icon),
+            &status::mode_segment(mode, &self.mode_icon),
             1,
         );
         if row == self.prompt_row {
@@ -614,6 +630,11 @@ pub fn help_panel() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::StatusIcons;
+
+    fn icons() -> StatusIcons {
+        StatusIcons::default()
+    }
 
     fn state(line: &str) -> EditState<'_> {
         EditState {
@@ -780,6 +801,7 @@ mod tests {
             "GLM5.3",
             crate::app_state::ReasoningEffort::Auto,
             "0.10.0",
+            &icons(),
         )
     }
 
@@ -807,7 +829,12 @@ mod tests {
     #[test]
     fn shift_tab_repaints_the_status_row_without_leaving_readline() {
         let mut b = Bindings::default();
-        b.set_prompt_row(&status_row(AppMode::Agent), AppMode::Agent, false);
+        b.set_prompt_row(
+            &status_row(AppMode::Agent),
+            AppMode::Agent,
+            false,
+            &icons().mode,
+        );
         assert_eq!(
             b.take_prompt_mode(),
             None,
@@ -831,7 +858,12 @@ mod tests {
     #[test]
     fn shift_tab_walks_the_ring_and_skips_coordinator_unless_enabled() {
         let mut b = Bindings::default();
-        b.set_prompt_row(&status_row(AppMode::Agent), AppMode::Agent, false);
+        b.set_prompt_row(
+            &status_row(AppMode::Agent),
+            AppMode::Agent,
+            false,
+            &icons().mode,
+        );
         for expected in [AppMode::Plan, AppMode::Yolo, AppMode::Agent] {
             assert_eq!(
                 decide(Bind::ShiftTab, state(""), &mut b, Instant::now()),
@@ -840,7 +872,12 @@ mod tests {
             assert_eq!(b.take_prompt_mode(), Some(expected));
         }
         let mut b = Bindings::default();
-        b.set_prompt_row(&status_row(AppMode::Yolo), AppMode::Yolo, true);
+        b.set_prompt_row(
+            &status_row(AppMode::Yolo),
+            AppMode::Yolo,
+            true,
+            &icons().mode,
+        );
         assert_eq!(
             decide(Bind::ShiftTab, state(""), &mut b, Instant::now()),
             Edit::Repaint
@@ -856,7 +893,7 @@ mod tests {
         for coordinator_in_ring in [false, true] {
             for from in [AppMode::Agent, AppMode::Plan, AppMode::Yolo] {
                 let mut b = Bindings::default();
-                b.set_prompt_row(&status_row(from), from, coordinator_in_ring);
+                b.set_prompt_row(&status_row(from), from, coordinator_in_ring, &icons().mode);
                 // What the REPL hands rustyline, padding included.
                 let prompt = format!("{}\n❯ typed", b.padded_prompt_row());
                 let composed_row = prompt.split_once('\n').unwrap().0.to_string();
@@ -881,7 +918,7 @@ mod tests {
                                 head.replace(' ', "·")
                             );
                             assert!(
-                                head.contains(&status::mode_segment(mode)),
+                                head.contains(&status::mode_segment(mode, &icons().mode)),
                                 "{from:?} → {mode:?}: the row still says {head:?}"
                             );
                             assert!(repainted.ends_with("\n❯ typed"), "the line is untouched");
@@ -901,7 +938,12 @@ mod tests {
     #[test]
     fn a_prompt_this_cell_does_not_own_is_left_alone() {
         let mut b = Bindings::default();
-        b.set_prompt_row(&status_row(AppMode::Agent), AppMode::Agent, false);
+        b.set_prompt_row(
+            &status_row(AppMode::Agent),
+            AppMode::Agent,
+            false,
+            &icons().mode,
+        );
         decide(Bind::ShiftTab, state(""), &mut b, Instant::now());
         // rustyline's own reverse-search prompt: one row, not ours.
         assert_eq!(b.repainted_prompt("(reverse-i-search)`foo': "), None);

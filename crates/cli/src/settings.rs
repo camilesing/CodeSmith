@@ -31,6 +31,54 @@ pub(crate) fn normalize_theme_name(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Glyphs prefixed to the four emoji-bearing status-line segments, persisted
+/// under `[status_icons]` in settings.toml.
+///
+/// Every slot falls back to the built-in emoji when absent, and an empty
+/// string hides the glyph. Only these four are configurable: the
+/// running-state dot (`●`/`◉`), the segment labels, the `│`/`·` separators,
+/// the `v` version prefix, and the `❯` prompt marker stay fixed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusIcons {
+    /// Context-window occupancy (`🧭 42%`).
+    pub context: String,
+    /// Run mode (`🚥agent`).
+    pub mode: String,
+    /// Running sub-agent count (`🤖2`).
+    pub agents: String,
+    /// Reasoning effort (`🧠auto`).
+    pub effort: String,
+}
+
+impl Default for StatusIcons {
+    fn default() -> Self {
+        Self {
+            context: "🧭".to_string(),
+            mode: "🚥".to_string(),
+            agents: "🤖".to_string(),
+            effort: "🧠".to_string(),
+        }
+    }
+}
+
+impl StatusIcons {
+    /// One-line form for `/settings` and `/config status_icons`, with hidden
+    /// slots named so an empty string does not read as a rendering bug.
+    pub fn summary(&self) -> String {
+        fn shown(icon: &str) -> &str {
+            if icon.is_empty() { "(hidden)" } else { icon }
+        }
+        format!(
+            "context={} mode={} agents={} effort={}",
+            shown(&self.context),
+            shown(&self.mode),
+            shown(&self.agents),
+            shown(&self.effort),
+        )
+    }
+}
+
 /// User settings with defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,6 +114,9 @@ pub struct Settings {
     /// Prompt-bar color (`/color`), one of the eight names Claude Code
     /// accepts. `None` follows the theme's accent.
     pub prompt_color: Option<String>,
+    /// Glyphs for the four status-line segments (`[status_icons]`); each
+    /// missing slot keeps its built-in emoji.
+    pub status_icons: StatusIcons,
     /// A shell command whose stdout is appended to the status line
     /// (`/statusline`), refreshed at most every [`STATUSLINE_TTL`] seconds.
     pub statusline_command: Option<String>,
@@ -129,6 +180,7 @@ impl Default for Settings {
             locale: "auto".to_string(),
             theme: "terminal".to_string(),
             prompt_color: None,
+            status_icons: StatusIcons::default(),
             statusline_command: None,
             respond_to_shell_commands: true,
             composer_vim_mode: "normal".to_string(),
@@ -237,6 +289,10 @@ impl Settings {
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  locale:            {}", self.locale));
         lines.push(format!("  theme:              {}", self.theme));
+        lines.push(format!(
+            "  status_icons:       {}",
+            self.status_icons.summary()
+        ));
         lines.push(format!("  composer_vim_mode:  {}", self.composer_vim_mode));
         lines.push(format!(
             "  prefer_external_pdftotext: {}",
@@ -319,6 +375,54 @@ mod tests {
     fn default_settings_enable_provider_neutral_auto_compact() {
         let settings = Settings::default();
         assert!(settings.auto_compact);
+    }
+
+    #[test]
+    fn status_icons_default_to_the_builtin_emoji() {
+        let icons = StatusIcons::default();
+        assert_eq!(icons.context, "🧭");
+        assert_eq!(icons.mode, "🚥");
+        assert_eq!(icons.agents, "🤖");
+        assert_eq!(icons.effort, "🧠");
+        assert_eq!(icons.summary(), "context=🧭 mode=🚥 agents=🤖 effort=🧠");
+
+        let hidden = StatusIcons {
+            effort: String::new(),
+            ..StatusIcons::default()
+        };
+        assert_eq!(
+            hidden.summary(),
+            "context=🧭 mode=🚥 agents=🤖 effort=(hidden)"
+        );
+    }
+
+    #[test]
+    fn missing_status_icon_slots_keep_their_defaults() {
+        // A partial table (or no table at all) must render exactly like an
+        // unconfigured install: every slot absent here keeps its emoji.
+        let partial: Settings =
+            toml::from_str("[status_icons]\nmode = \"⛵\"\n").expect("partial table parses");
+        assert_eq!(partial.status_icons.mode, "⛵");
+        assert_eq!(partial.status_icons.context, "🧭");
+        assert_eq!(partial.status_icons.agents, "🤖");
+        assert_eq!(partial.status_icons.effort, "🧠");
+
+        let empty: Settings = toml::from_str("").expect("empty settings parse");
+        assert_eq!(empty.status_icons, StatusIcons::default());
+    }
+
+    #[test]
+    fn status_icons_round_trip_through_the_settings_file() {
+        // `Settings::save` serializes the whole struct: a nested table that
+        // trips the serializer's value-after-table rule would break every
+        // `/config ... --save`, not just this key.
+        let mut settings = Settings::default();
+        settings.status_icons.mode = "⛵".to_string();
+        settings.status_icons.effort = String::new();
+        let body = toml::to_string_pretty(&settings).expect("settings serialize");
+        assert!(body.contains("[status_icons]"), "{body}");
+        let back: Settings = toml::from_str(&body).expect("serialized settings parse");
+        assert_eq!(back.status_icons, settings.status_icons);
     }
 
     #[test]

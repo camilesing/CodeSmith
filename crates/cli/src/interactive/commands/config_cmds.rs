@@ -72,6 +72,7 @@ fn show_single_setting(state: &ReplState, key: &str) {
         "reasoning_effort" | "effort" => Some(state.reasoning_effort_display_label()),
         "show_thinking" | "thinking" => Some(state.show_thinking.to_string()),
         "is_simple" | "simple" => Some(state.is_simple.to_string()),
+        "status_icons" | "icons" => Some(state.settings.status_icons.summary()),
         "editor_mode" | "composer_vim_mode" => Some(state.settings.composer_vim_mode.clone()),
         "preset" | "mode" => Some(
             state
@@ -241,6 +242,41 @@ pub fn set_config_value(state: &mut ReplState, key: &str, value: &str, persist: 
                 persist_setting_string("reasoning_effort", effort.as_setting());
             }
             println!("reasoning_effort = {}", effort.short_label());
+        }
+        _ if key.starts_with("status_icons.") => {
+            let slot = &key["status_icons.".len()..];
+            // An empty value is a read above, so hiding a glyph needs a
+            // word: `off` (or its aliases) means "no glyph".
+            let next = match value.trim().to_ascii_lowercase().as_str() {
+                "off" | "none" | "hide" | "-" => String::new(),
+                _ => value.to_string(),
+            };
+            let field = match slot {
+                "context" => &mut state.settings.status_icons.context,
+                "mode" => &mut state.settings.status_icons.mode,
+                "agents" => &mut state.settings.status_icons.agents,
+                "effort" => &mut state.settings.status_icons.effort,
+                _ => {
+                    println!(
+                        "{} unknown status icon slot {slot:?} — use context, mode, agents, or effort",
+                        "✗".red()
+                    );
+                    return;
+                }
+            };
+            *field = next;
+            if persist {
+                persist_setting_string(&format!("status_icons.{slot}"), field.as_str());
+            }
+            println!(
+                "status_icons.{slot} = {:?} (applies at the next prompt{})",
+                field,
+                if persist {
+                    ""
+                } else {
+                    "; add --save to keep it"
+                }
+            );
         }
         _ => {
             // A closed list of root keys `/config` may persist verbatim:
@@ -745,6 +781,10 @@ pub(crate) fn persist_setting_string(key: &str, value: &str) {
                 "composer_vim_mode" => settings.composer_vim_mode = value.to_string(),
                 "auto_compact" => settings.auto_compact = value == "true",
                 "theme" => settings.theme = value.to_string(),
+                "status_icons.context" => settings.status_icons.context = value.to_string(),
+                "status_icons.mode" => settings.status_icons.mode = value.to_string(),
+                "status_icons.agents" => settings.status_icons.agents = value.to_string(),
+                "status_icons.effort" => settings.status_icons.effort = value.to_string(),
                 _ => {}
             }
             if let Err(err) = settings.save() {

@@ -14,19 +14,25 @@
 //!
 //! - state dot: idle / working / waiting-approval / compacting
 //! - preset: the active runtime profile tier (simple | middle | all | ...)
-//! - 🧭: session context-window occupancy (estimate-first, see
+//! - ctx: session context-window occupancy (estimate-first, see
 //!   [`context_usage`])
-//! - 🚥: `AppMode`
-//! - 🤖: running sub-agent count
+//! - mode: `AppMode`
+//! - agents: running sub-agent count
 //! - model: display label
-//! - 🧠: reasoning-effort tier (off | low | med | high | max | auto)
+//! - effort: reasoning-effort tier (off | low | med | high | max | auto)
 //! - version: build version
+//!
+//! The four emoji above are only the defaults: [`StatusIcons`] (settings.toml
+//! `[status_icons]`) replaces or hides each one, and an empty slot drops the
+//! glyph. The state dot, labels, separators, version prefix, and the `❯`
+//! prompt marker are fixed.
 
 use colored::Colorize;
 
 use super::state::ReplState;
 use crate::app_state::{AppMode, ReasoningEffort};
 use crate::compaction::estimate_input_tokens_conservative;
+use crate::settings::StatusIcons;
 
 /// Context-warning thresholds (mirrors the retired header widget).
 pub const CONTEXT_WARN_PCT: f64 = 85.0;
@@ -144,12 +150,15 @@ fn state_segment(run: RunState) -> String {
     format!("{dot} {label}")
 }
 
-fn ctx_percent_text(percent: f64) -> String {
-    format!("🧭 {:.0}%", percent)
+fn ctx_percent_text(percent: f64, icon: &str) -> String {
+    match icon {
+        "" => format!("{:.0}%", percent),
+        icon => format!("{icon} {:.0}%", percent),
+    }
 }
 
-fn ctx_percent_segment(percent: f64) -> String {
-    let text = ctx_percent_text(percent);
+fn ctx_percent_segment(percent: f64, icon: &str) -> String {
+    let text = ctx_percent_text(percent, icon);
     match context_level(percent) {
         ContextLevel::Normal => text.normal().to_string(),
         ContextLevel::Warn => text.yellow().to_string(),
@@ -157,10 +166,10 @@ fn ctx_percent_segment(percent: f64) -> String {
     }
 }
 
-fn ctx_segment(used: i64, max: u32, percent: f64) -> String {
+fn ctx_segment(used: i64, max: u32, percent: f64, icon: &str) -> String {
     let text = format!(
         "{} ({}/{})",
-        ctx_percent_text(percent),
+        ctx_percent_text(percent, icon),
         format_token_count_compact(used),
         format_token_count_compact(i64::from(max)),
     );
@@ -172,13 +181,13 @@ fn ctx_segment(used: i64, max: u32, percent: f64) -> String {
 }
 
 /// The mode segment, shared by the idle status line and the live line.
-pub fn mode_segment(mode: AppMode) -> String {
-    format!("🚥{}", mode.label().to_lowercase())
+pub fn mode_segment(mode: AppMode, icon: &str) -> String {
+    format!("{icon}{}", mode.label().to_lowercase())
 }
 
 /// The mode label's width, in terminal columns.
 ///
-/// The `🚥` badge is the same in every mode, so a relabel moves the row by
+/// The mode glyph is the same in every mode, so a relabel moves the row by
 /// the difference between two of these — the glyph cancels out. The labels
 /// are ASCII, so their byte length is their width.
 pub fn mode_label_columns(mode: AppMode) -> usize {
@@ -203,19 +212,20 @@ pub fn widest_mode_label_columns(include_coordinator: bool) -> usize {
 
 /// The sub-agent count segment (dimmed at zero, cyan when running), shared
 /// by the idle status line and the live line.
-fn agents_segment(agents: usize) -> String {
+fn agents_segment(agents: usize, icon: &str) -> String {
     match agents {
-        0 => "🤖0".dimmed().to_string(),
-        n => format!("🤖{n}").cyan().to_string(),
+        0 => format!("{icon}0").dimmed().to_string(),
+        n => format!("{icon}{n}").cyan().to_string(),
     }
 }
 
 /// The reasoning-effort segment: the tier `/config reasoning_effort` writes
 /// and the engine receives, one of `🧠off` / `🧠low` / `🧠med` / `🧠high` /
-/// `🧠max` / `🧠auto`. Under `auto` routing the segment stays `🧠auto` instead
-/// of tracking the per-turn pick; `/status` prints the resolved tier.
-fn effort_segment(effort: ReasoningEffort) -> String {
-    format!("🧠{}", effort.short_label())
+/// `🧠max` / `🧠auto` (the `🧠` being the default `[status_icons] effort`).
+/// Under `auto` routing the segment stays `🧠auto` instead of tracking the
+/// per-turn pick; `/status` prints the resolved tier.
+fn effort_segment(effort: ReasoningEffort, icon: &str) -> String {
+    format!("{icon}{}", effort.short_label())
 }
 
 /// Compose the full status line for a state snapshot. Kept as one `String`
@@ -230,6 +240,7 @@ pub fn render_status_line(
     model: &str,
     effort: ReasoningEffort,
     version: &str,
+    icons: &StatusIcons,
 ) -> String {
     let separator = " │ ".dimmed().to_string();
     let mut segments = Vec::with_capacity(8);
@@ -240,13 +251,16 @@ pub fn render_status_line(
             .unwrap_or_else(|| "no-preset".dimmed().to_string()),
     );
     segments.push(match ctx {
-        Some((used, max, percent)) => ctx_segment(used, max, percent),
-        None => "🧭 —".dimmed().to_string(),
+        Some((used, max, percent)) => ctx_segment(used, max, percent, &icons.context),
+        None => match icons.context.as_str() {
+            "" => "—".dimmed().to_string(),
+            icon => format!("{icon} —").dimmed().to_string(),
+        },
     });
-    segments.push(mode_segment(mode));
-    segments.push(agents_segment(agents));
+    segments.push(mode_segment(mode, &icons.mode));
+    segments.push(agents_segment(agents, &icons.agents));
     segments.push(model.to_string());
-    segments.push(effort_segment(effort));
+    segments.push(effort_segment(effort, &icons.effort));
     segments.push(format!("v{version}").dimmed().to_string());
     segments.join(&separator)
 }
@@ -277,6 +291,7 @@ pub fn status_line(state: &ReplState) -> String {
         &state.model_display_label(),
         state.reasoning_effort,
         env!("CODESMITH_BUILD_VERSION"),
+        &state.settings.status_icons,
     );
     // `/statusline <command>`: the user's own segment, refreshed by the REPL
     // loop (this renderer stays synchronous and never spawns anything).
@@ -305,10 +320,11 @@ pub fn live_line(state: &ReplState, current_tool: Option<&str>) -> String {
         parts.push(tool.to_string());
     }
     parts.push(format!("{elapsed}s").dimmed().to_string());
-    parts.push(mode_segment(state.mode));
-    parts.push(agents_segment(state.running_agent_count()));
+    let icons = &state.settings.status_icons;
+    parts.push(mode_segment(state.mode, &icons.mode));
+    parts.push(agents_segment(state.running_agent_count(), &icons.agents));
     if let Some((_, _, percent)) = ctx {
-        parts.push(ctx_percent_segment(percent));
+        parts.push(ctx_percent_segment(percent, &icons.context));
     }
     parts.join(&" · ".dimmed().to_string())
 }
@@ -376,8 +392,11 @@ mod tests {
             "deepseek-chat",
             ReasoningEffort::High,
             "0.9.0",
+            &StatusIcons::default(),
         );
         // Strip ANSI for assertions; the exact string pins the segment order.
+        // It is also the proof that the built-in icons are the default: a
+        // config-free install renders byte-for-byte this line.
         assert_eq!(
             strip_ansi(&line),
             "◉ working │ Full │ 🧭 42% (72k/171k) │ 🚥agent │ 🤖2 │ deepseek-chat │ 🧠high │ v0.9.0"
@@ -395,8 +414,79 @@ mod tests {
             "m",
             ReasoningEffort::Max,
             "0.9.0",
+            &StatusIcons::default(),
         );
         assert!(strip_ansi(&line).contains("🧭 —"));
+    }
+
+    #[test]
+    fn custom_status_icons_replace_every_glyph() {
+        let icons = StatusIcons {
+            context: "ctx".to_string(),
+            mode: "M:".to_string(),
+            agents: "A:".to_string(),
+            effort: "E:".to_string(),
+        };
+        let line = strip_ansi(&render_status_line(
+            RunState::Working,
+            Some("Full"),
+            Some((72_000, 171_000, 42.0)),
+            AppMode::Agent,
+            2,
+            "deepseek-chat",
+            ReasoningEffort::High,
+            "0.9.0",
+            &icons,
+        ));
+        assert_eq!(
+            line,
+            "◉ working │ Full │ ctx 42% (72k/171k) │ M:agent │ A:2 │ deepseek-chat │ E:high │ v0.9.0"
+        );
+        for glyph in ['🧭', '🚥', '🤖', '🧠'] {
+            assert!(
+                !line.contains(glyph),
+                "{glyph} survived the override: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_status_icons_hide_their_glyphs() {
+        let hidden = StatusIcons {
+            context: String::new(),
+            mode: String::new(),
+            agents: String::new(),
+            effort: String::new(),
+        };
+        let line = strip_ansi(&render_status_line(
+            RunState::Idle,
+            None,
+            Some((72_000, 171_000, 42.0)),
+            AppMode::Agent,
+            0,
+            "m",
+            ReasoningEffort::Auto,
+            "0.9.0",
+            &hidden,
+        ));
+        assert_eq!(
+            line,
+            "● idle │ no-preset │ 42% (72k/171k) │ agent │ 0 │ m │ auto │ v0.9.0"
+        );
+
+        // No known window: the em dash stands alone, not after a space.
+        let unknown = strip_ansi(&render_status_line(
+            RunState::Idle,
+            None,
+            None,
+            AppMode::Agent,
+            0,
+            "m",
+            ReasoningEffort::Auto,
+            "0.9.0",
+            &hidden,
+        ));
+        assert_eq!(unknown.split(" │ ").nth(2), Some("—"), "{unknown}");
     }
 
     #[test]
@@ -409,7 +499,8 @@ mod tests {
             (ReasoningEffort::Max, "🧠max"),
             (ReasoningEffort::Auto, "🧠auto"),
         ] {
-            assert_eq!(strip_ansi(&effort_segment(effort)), expected);
+            let icon = &StatusIcons::default().effort;
+            assert_eq!(strip_ansi(&effort_segment(effort, icon)), expected);
         }
     }
 
@@ -417,10 +508,17 @@ mod tests {
     fn live_line_segments_show_mode_agents_and_ctx() {
         // The segments `live_line` composes with (a full `ReplState` is not
         // constructible here without loading real user settings): the mode
-        // segment, the always-on zero-agent segment, and the 🧭 percent text.
-        assert_eq!(strip_ansi(&mode_segment(AppMode::Agent)), "🚥agent");
-        assert_eq!(strip_ansi(&agents_segment(0)), "🤖0");
-        assert_eq!(strip_ansi(&ctx_percent_segment(42.0)), "🧭 42%");
+        // segment, the always-on zero-agent segment, and the context percent.
+        let icons = StatusIcons::default();
+        assert_eq!(
+            strip_ansi(&mode_segment(AppMode::Agent, &icons.mode)),
+            "🚥agent"
+        );
+        assert_eq!(strip_ansi(&agents_segment(0, &icons.agents)), "🤖0");
+        assert_eq!(
+            strip_ansi(&ctx_percent_segment(42.0, &icons.context)),
+            "🧭 42%"
+        );
     }
 
     #[test]

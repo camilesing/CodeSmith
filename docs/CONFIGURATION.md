@@ -675,8 +675,9 @@ from the REPL with `/settings` and `/config` (interactive editor).
 
 Common settings keys:
 
-The line-based REPL renders with your terminal's own colors and a fixed
-status line; `theme` and `prompt_color` only pick the accent.
+The line-based REPL renders with your terminal's own colors; `theme` and
+`prompt_color` only pick the accent, and `[status_icons]` picks the four
+segment glyphs.
 
 - `theme` (`terminal`, `system`, `dark`, `light`, `grayscale`,
   `catppuccin-mocha`, `tokyo-night`, `dracula`, `gruvbox-dark`, `claude`,
@@ -689,6 +690,15 @@ status line; `theme` and `prompt_color` only pick the accent.
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the UI. Aliases such as `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
+- `[status_icons]` (table; defaults are the built-in emoji): the glyph
+  prefixed to four status-line segments — `context` (`🧭`, the context-window
+  percent), `mode` (`🚥`, the run mode), `agents` (`🤖`, the running sub-agent
+  count), and `effort` (`🧠`, the reasoning tier). Any short string works
+  (e.g. `ctx` or `[ctx]` on a terminal without emoji), and an empty string
+  hides the glyph. The rest of the line — state dot, labels, `│` separators,
+  `v` version, and `❯` prompt — is fixed. Set live with
+  `/config status_icons.<slot> <value>` (add `--save` to persist; `off`
+  hides), or edit the file and restart.
 - `[sandbox] auto_allow` (array of shell command prefixes, default empty):
   commands that never prompt for approval. Read at startup and applied as
   approval grants for the session, so editing the list takes effect on the

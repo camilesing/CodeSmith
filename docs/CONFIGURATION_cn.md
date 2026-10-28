@@ -631,8 +631,8 @@ codesmith 还将用户偏好存储在：
 
 常用设置键：
 
-基于行的 REPL 使用终端自身的颜色和固定的状态行渲染；`theme` 和
-`prompt_color` 只决定强调色。
+基于行的 REPL 使用终端自身的颜色渲染；`theme` 和 `prompt_color` 只决定
+强调色，`[status_icons]` 决定四个片段的图标。
 
 - `theme`（`terminal`、`system`、`dark`、`light`、`grayscale`、
   `catppuccin-mocha`、`tokyo-night`、`dracula`、`gruvbox-dark`、`claude`、
@@ -643,6 +643,14 @@ codesmith 还将用户偏好存储在：
   `dark`/`light` 使用内置深色调色板，`grayscale`
   是极简的黑/白主题，具名社区预设则应用于整个 UI。接受诸如
   `mono`、`black-white`、`tokyonight` 和 `gruvbox` 之类的别名。
+- `[status_icons]`（表；默认即内置 emoji）：状态行四个片段前缀的图标 ——
+  `context`（`🧭`，上下文窗口占用百分比）、`mode`（`🚥`，运行模式）、
+  `agents`（`🤖`，运行中的子 agent 数）、`effort`（`🧠`，推理档位）。
+  可以填任意短字符串（例如不支持 emoji 的终端用 `ctx` 或 `[ctx]`），
+  空字符串表示隐藏该图标。状态行的其余部分 —— 状态点、文字标签、`│`
+  分隔符、`v` 版本号与 `❯` 提示符 —— 保持不变。用
+  `/config status_icons.<槽位> <值>` 即时修改（加 `--save` 持久化，
+  `off` 表示隐藏）；直接改文件则下次启动生效。
 - `[sandbox] auto_allow`（config.toml 键，非 settings.toml；shell 命令前缀数组，默认空）：永不弹出审批的命令。
   在启动时读取并按会话授权应用，因此改列表在下次启动生效；`/permissions`
   展示当前生效项，`/permissions allow` 则把授权写进
