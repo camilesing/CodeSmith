@@ -73,10 +73,14 @@ pub enum ToolError {
     // therefore also the one place carrying the remedy — a reader who only
     // learns "path escapes workspace" has no way to continue
     // (`/trust add <path>` is a REPL command the model cannot run itself).
+    // YOLO is named as the broader remedy: entering it sets `trust_mode`
+    // (`interactive/state.rs`), which is the flag `resolve_path` checks to
+    // skip containment, so the hint is true rather than aspirational.
     #[error(
         "Failed to resolve path '{}': path escapes workspace. File tools stay inside the \
-         workspace tree; the user can allow it with `/trust add {}` in the REPL (or use a \
-         workspace-relative path).",
+         workspace tree; the user can allow it with `/trust add {}` in the REPL, switch to \
+         YOLO mode (`/mode yolo`, which allows any path and auto-approves all tools), or use \
+         a workspace-relative path.",
         path.display(),
         path.display()
     )]
@@ -805,7 +809,7 @@ mod tests {
     /// exit is a REPL command the model cannot run — a message that stops at
     /// "path escapes workspace" leaves both parties stuck (reported from a
     /// cross-repository session: the model gave up instead of asking for
-    /// `/trust add`).
+    /// `/trust add`). YOLO is the other exit, so it has to be named too.
     #[test]
     fn path_escape_display_names_the_trust_opt_in() {
         let err = ToolError::PathEscape {
@@ -817,5 +821,6 @@ mod tests {
             message.contains("`/trust add /Users/dev/other-repo`"),
             "{message}"
         );
+        assert!(message.contains("`/mode yolo`"), "{message}");
     }
 }
