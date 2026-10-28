@@ -339,7 +339,9 @@ fn is_rule(line: &str) -> bool {
 /// A table row split into cells, or `None` when the row isn't one.
 fn table_cells(line: &str) -> Option<Vec<String>> {
     let trimmed = line.trim();
-    if !trimmed.contains('|') {
+    // A pipe in prose, a heading, or a bullet is not a table. This mirrors
+    // the retired TUI renderer, which required the row's leading `|`.
+    if !trimmed.starts_with('|') {
         return None;
     }
     let core = trimmed.strip_prefix('|').unwrap_or(trimmed);
@@ -385,10 +387,11 @@ fn bullet_content(line: &str) -> Option<String> {
 /// emphasis.
 fn parse_inline(text: &str) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
-    let mut rest = text;
+    // Only the run's own leading whitespace is dropped: whitespace beside a
+    // marker belongs to the sentence (`a **b** c`, `` `x` y ``).
+    let mut rest = text.trim_start();
 
     while let Some((before, marked, kind, after)) = take_marked(rest) {
-        let before = before.trim_start();
         if !before.is_empty() {
             spans.push(Span::plain(before));
         }
@@ -398,7 +401,6 @@ fn parse_inline(text: &str) -> Vec<Span> {
         });
         rest = after;
     }
-    let rest = rest.trim_start();
     if !rest.is_empty() {
         spans.push(Span::plain(rest));
     }
@@ -778,6 +780,43 @@ mod tests {
         let rendered = render_plan_at_width(paragraph, 80);
         assert_eq!(rendered.len(), 1, "soft breaks join into one paragraph");
         assert!(display(&rendered[0]).1.contains("第一行文字 第二行文字"));
+    }
+
+    #[test]
+    fn spaces_around_inline_markers_survive() {
+        for (row, expected) in [
+            ("a **b** c", "a b c"),
+            ("run `cargo test` now", "run cargo test now"),
+            (
+                "把 `online` 改成 **三态筛选**（`null` 全量）",
+                "把 online 改成 三态筛选（null 全量）",
+            ),
+            ("- 用 `foo` 和 `bar` 两个键", "• 用 foo 和 bar 两个键"),
+        ] {
+            let rendered = render_plan_at_width(row, 200);
+            let plain: Vec<String> = rendered.iter().map(|l| display(l).1).collect();
+            assert!(
+                plain.iter().any(|line| line.contains(expected)),
+                "expected {expected:?} in {plain:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipes_outside_a_table_are_not_a_table() {
+        let prose = render_plan_at_width("正文里用 a | b 表示或", 200);
+        let line = display(&prose[0]).1;
+        assert!(line.contains("a | b"), "prose keeps its pipe: {line:?}");
+
+        let bullet = render_plan_at_width("- cat foo | grep bar", 200);
+        let line = display(&bullet[0]).1;
+        assert!(line.contains('•'), "bullet keeps its marker: {line:?}");
+        assert!(line.contains("cat foo | grep bar"), "{line:?}");
+
+        let heading = render_plan_at_width("## a | b", 200);
+        let line = display(&heading[0]).1;
+        assert!(!line.contains('#'), "heading is rendered: {line:?}");
+        assert!(line.contains("a | b"), "{line:?}");
     }
 
     #[test]
