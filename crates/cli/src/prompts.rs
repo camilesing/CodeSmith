@@ -146,6 +146,7 @@ mod tests {
             "<act_dont_ask>",
             "<verification>",
             "<missing_context>",
+            "<workspace_boundary>",
         ] {
             assert!(
                 BASE_PROMPT.contains(tag),
@@ -159,6 +160,26 @@ mod tests {
         assert!(
             BASE_PROMPT.contains("may be answered directly in prose"),
             "BASE_PROMPT missing the trivial-arithmetic exception (single-step math like 1+1 must not open a tool)"
+        );
+    }
+
+    /// The path-escape `Display` is deliberately one line, so the remedy list
+    /// lives in the prompt. Order is the product decision: YOLO sits between
+    /// the narrow "copy the file in" and the "paste it" fallback.
+    #[test]
+    fn workspace_boundary_guidance_orders_the_remedies() {
+        let find = |needle: &str| {
+            BASE_PROMPT
+                .find(needle)
+                .unwrap_or_else(|| panic!("BASE_PROMPT missing {needle:?}"))
+        };
+        let trust = find("/trust add <path>");
+        let copy = find("copy the file into the workspace");
+        let yolo = find("/mode yolo");
+        let paste = find("paste the content into the conversation");
+        assert!(
+            trust < copy && copy < yolo && yolo < paste,
+            "remedy order must be trust add → copy → YOLO → paste"
         );
     }
 

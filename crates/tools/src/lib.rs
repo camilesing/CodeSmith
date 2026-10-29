@@ -69,21 +69,11 @@ pub enum ToolError {
     MissingField { field: String },
     // This `Display` is the one rendering of the refusal: the model-visible
     // transcript (`engine/turn/batches.rs`), the REPL line
-    // (`interactive/render.rs`), and the logs all print it verbatim. It is
-    // therefore also the one place carrying the remedy — a reader who only
-    // learns "path escapes workspace" has no way to continue
-    // (`/trust add <path>` is a REPL command the model cannot run itself).
-    // YOLO is named as the broader remedy: entering it sets `trust_mode`
-    // (`interactive/state.rs`), which is the flag `resolve_path` checks to
-    // skip containment, so the hint is true rather than aspirational.
-    #[error(
-        "Failed to resolve path '{}': path escapes workspace. File tools stay inside the \
-         workspace tree; the user can allow it with `/trust add {}` in the REPL, switch to \
-         YOLO mode (`/mode yolo`, which allows any path and auto-approves all tools), or use \
-         a workspace-relative path.",
-        path.display(),
-        path.display()
-    )]
+    // (`interactive/render.rs`), and the logs all print it verbatim. Terse on
+    // purpose — the remedies (`/trust add`, copying the file in, YOLO,
+    // pasting) are model guidance in `agent-runtime/src/prompts/base.md`
+    // (`<workspace_boundary>`), so the refusal line stays one sentence.
+    #[error("Failed to resolve path '{}': path escapes workspace.", path.display())]
     PathEscape { path: PathBuf },
     #[error("Failed to execute tool: {message}")]
     ExecutionFailed { message: String },
@@ -804,23 +794,17 @@ mod tests {
         );
     }
 
-    /// A workspace-escape refusal must name the way out. The `Display` is
-    /// what the model transcript and the REPL line both render, and the only
-    /// exit is a REPL command the model cannot run — a message that stops at
-    /// "path escapes workspace" leaves both parties stuck (reported from a
-    /// cross-repository session: the model gave up instead of asking for
-    /// `/trust add`). YOLO is the other exit, so it has to be named too.
+    /// The refusal stays one line: remedies live in the base prompt
+    /// (`<workspace_boundary>`), not in the error text, so the transcript
+    /// shows the fact without a paragraph around it.
     #[test]
-    fn path_escape_display_names_the_trust_opt_in() {
+    fn path_escape_display_stays_terse() {
         let err = ToolError::PathEscape {
             path: PathBuf::from("/Users/dev/other-repo"),
         };
-        let message = err.to_string();
-        assert!(message.contains("path escapes workspace"), "{message}");
-        assert!(
-            message.contains("`/trust add /Users/dev/other-repo`"),
-            "{message}"
+        assert_eq!(
+            err.to_string(),
+            "Failed to resolve path '/Users/dev/other-repo': path escapes workspace."
         );
-        assert!(message.contains("`/mode yolo`"), "{message}");
     }
 }
