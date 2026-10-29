@@ -51,6 +51,93 @@ impl std::fmt::Debug for UtilityLlm {
     }
 }
 
+impl UtilityLlm {
+    /// One-shot assist call: `prompt` is the sole user message and
+    /// `max_tokens` caps the reply.
+    ///
+    /// Best-effort by contract, matching workshop synthesis: `None` on
+    /// timeout (30s), transport error, an empty reply, or a reply cut off by
+    /// the token cap. Callers fall back to raw data rather than failing the
+    /// tool. Usage is reported to the cost side-channel (#526) as soon as a
+    /// response arrives — before content validation — so the assist always
+    /// shows up in the session cost.
+    pub async fn complete(&self, prompt: String, max_tokens: u32) -> Option<String> {
+        use crate::models::{ContentBlock, Message, MessageRequest};
+
+        let request = MessageRequest {
+            model: self.model.clone(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: prompt,
+                    cache_control: None,
+                }],
+            }],
+            max_tokens,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(false),
+            temperature: Some(0.1),
+            top_p: None,
+        };
+
+        let response = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.client.create_message(request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    model = %self.model,
+                    error = %err,
+                    "utility-model assist failed; caller falls back to raw data"
+                );
+                return None;
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    model = %self.model,
+                    "utility-model assist timed out after 30s; caller falls back to raw data"
+                );
+                return None;
+            }
+        };
+
+        crate::cost_status::report(&self.model, &response.usage);
+
+        // A length-capped reply was cut mid-sentence: accepting it as a
+        // faithful answer would silently replace the raw data with a
+        // truncated one. Bail so the caller keeps its fallback instead.
+        if response.stop_reason.as_deref().is_some_and(|reason| {
+            reason.eq_ignore_ascii_case("length") || reason.eq_ignore_ascii_case("max_tokens")
+        }) {
+            return None;
+        }
+
+        let mut text = String::new();
+        for block in &response.content {
+            if let ContentBlock::Text { text: chunk, .. } = block
+                && !chunk.trim().is_empty()
+            {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(chunk);
+            }
+        }
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(text)
+    }
+}
+
 // ── Token estimation ──────────────────────────────────────────────────────────
 
 /// Estimate the number of tokens in `text`.
@@ -167,94 +254,23 @@ impl LargeOutputRouter {
     ///
     /// Returns `None` on timeout (30s), transport error, or an empty
     /// synthesis so the caller keeps its truncation-preview fallback — the
-    /// tool result is never blocked or failed by the synthesis step. The
-    /// usage is reported to the cost side-channel (#526) as soon as a
-    /// response arrives — before any content validation — so the assist
-    /// always shows up in the session cost.
+    /// tool result is never blocked or failed by the synthesis step.
     pub async fn synthesise_via_utility_llm(
         utility: &UtilityLlm,
         tool_name: &str,
         raw_output: &str,
         estimated_tokens: usize,
     ) -> Option<String> {
-        use crate::models::{ContentBlock, Message, MessageRequest};
-
-        let request = MessageRequest {
-            model: utility.model.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: Self::synthesis_prompt(tool_name, raw_output, estimated_tokens),
-                    cache_control: None,
-                }],
-            }],
-            // ~800 words (the prompt's own budget) already tokenize to
-            // roughly 1,050-1,300 tokens — more when the summary preserves
-            // code and paths, which the prompt demands — so 1,024 routinely
-            // cut the synthesis mid-sentence.
-            max_tokens: 2_048,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            metadata: None,
-            thinking: None,
-            reasoning_effort: None,
-            stream: Some(false),
-            temperature: Some(0.1),
-            top_p: None,
-        };
-
-        let response = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            utility.client.create_message(request),
-        )
-        .await
-        {
-            Ok(Ok(response)) => response,
-            Ok(Err(err)) => {
-                tracing::warn!(
-                    tool = tool_name,
-                    error = %err,
-                    "utility-model synthesis failed; falling back to truncation preview"
-                );
-                return None;
-            }
-            Err(_elapsed) => {
-                tracing::warn!(
-                    tool = tool_name,
-                    "utility-model synthesis timed out after 30s; falling back to truncation preview"
-                );
-                return None;
-            }
-        };
-
-        crate::cost_status::report(&utility.model, &response.usage);
-
-        // A length-capped synthesis was cut mid-sentence: accept it as a
-        // faithful summary and it silently replaces the raw output in the
-        // parent context. Bail so the caller keeps its
-        // truncation-preview fallback instead.
-        if response.stop_reason.as_deref().is_some_and(|reason| {
-            reason.eq_ignore_ascii_case("length") || reason.eq_ignore_ascii_case("max_tokens")
-        }) {
-            return None;
-        }
-
-        let mut text = String::new();
-        for block in &response.content {
-            if let ContentBlock::Text { text: chunk, .. } = block
-                && !chunk.trim().is_empty()
-            {
-                if !text.is_empty() {
-                    text.push('\n');
-                }
-                text.push_str(chunk);
-            }
-        }
-        if text.trim().is_empty() {
-            return None;
-        }
-        Some(text)
+        // ~800 words (the prompt's own budget) already tokenize to roughly
+        // 1,050-1,300 tokens — more when the summary preserves code and
+        // paths, which the prompt demands — so 1,024 routinely cut the
+        // synthesis mid-sentence.
+        utility
+            .complete(
+                Self::synthesis_prompt(tool_name, raw_output, estimated_tokens),
+                2_048,
+            )
+            .await
     }
 
     /// Wrap a synthesis result with a workshop provenance header and a hint

@@ -1255,6 +1255,12 @@ Tavily、Bocha、Metaso 或 Baidu。
 请求共享同一条超时/取消/错误分类路径；按域网络策略（`[network]`）
 按主机生效，重定向的每一跳都会重新检查。
 
+`fetch_url` 接受可选的 `prompt`：抓取页面、剥离 HTML 后，由会话辅助模型
+只针对该页面回答这个问题，返回基于页面内容、简洁的 `answer`，而不是整页
+正文。辅助模型优先使用配置的 `[utility_model]`，否则使用会话模型。两者
+都不可用时（注入的 client 或构建失败），工具仍然成功，返回页面正文并注明
+抽取不可用。
+
 **Metaso**（[metaso.cn](https://metaso.cn)）为自有 key 提供每天 100 次
 免费搜索额度；设置 `METASO_API_KEY` 或 `[search] api_key`。旧版本内置的
 社区共享 key 已移除——所有安装共用一把 key 会把额度一起耗尽。

@@ -141,6 +141,24 @@ pub(super) fn build_tool_context_for(
         ctx = ctx.with_utility_llm(utility);
     }
 
+    // The assist handle backs tool-internal model calls that must work out
+    // of the box (`fetch_url`'s `prompt` extraction). Prefer the configured
+    // `[utility_model]`; otherwise use the session model through the main
+    // client. Distinct from `utility_llm` above: welding the main client
+    // into that field would silently change large-output routing's
+    // "no background model" fallback.
+    let assist = host.utility_llm.clone().or_else(|| {
+        host.main_llm.clone().map(|client| {
+            codesmith_agent_runtime::tools::large_output_router::UtilityLlm {
+                client,
+                model: session.model.clone(),
+            }
+        })
+    });
+    if let Some(assist) = assist {
+        ctx = ctx.with_assist_llm(assist);
+    }
+
     // Wire the LSP manager (round-4 TODO-45): the read-only `lsp_navigate`
     // tool issues definition/references/hover requests through it. Edit
     // tools keep using the engine-side LspProbe for post-edit diagnostics,

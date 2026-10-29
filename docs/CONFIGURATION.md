@@ -1406,6 +1406,14 @@ Requests share one timeout/cancellation/error-classification path and the
 per-domain network policy (`[network]`) applies per host, including each
 redirect hop.
 
+`fetch_url` accepts an optional `prompt`: the page is fetched, stripped, and
+then answered against that question by the session assist model, returning a
+concise `answer` grounded only in the page instead of the whole body. The
+assist model is the configured `[utility_model]` when present, otherwise the
+session model. Without either (an injected or failed client), the tool still
+succeeds and returns the page text with a note that extraction was
+unavailable.
+
 **Metaso** ([metaso.cn](https://metaso.cn)) offers a 100 searches/day free
 quota with your own key; set `METASO_API_KEY` or `[search] api_key`. The
 built-in community key that earlier versions fell back to was removed — one

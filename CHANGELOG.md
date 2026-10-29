@@ -34,6 +34,18 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **The agent verifies external systems against their documentation** — the
+  base prompt now treats cloud services, databases, libraries, CLIs, and APIs
+  as documented rather than remembered: when a claim depends on how one
+  behaves, the agent searches for the official page, reads it, and cites the
+  URL instead of asserting from training data. `fetch_url` gained the matching
+  capability, `prompt`: the page text and one exact question go to the session
+  assist model (`[utility_model]` when configured, otherwise the session
+  model), which returns a concise answer grounded only in that page — the body
+  stays out of the context. `web_search` and `fetch_url` descriptions now name
+  this workflow, and the stale claim that `web_search` returns `ref_id`s is
+  gone.
+
 - **`codes` is a shorthand for `codesmith`** — every install channel that ships
   the CLI now also provides `codes`: `cargo install` and Nix get a launcher
   binary, the npm wrapper registers a second bin name, and the release install

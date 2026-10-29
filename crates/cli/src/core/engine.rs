@@ -250,6 +250,10 @@ pub struct EngineHost {
     /// or when a dedicated client could not be built — assists then use the
     /// main model.
     pub utility_llm: Option<codesmith_agent_runtime::tools::large_output_router::UtilityLlm>,
+    /// The main-turn LLM client (recorder/retry wrapped), kept so per-turn
+    /// tool contexts can build an assist handle when `[utility_model]` is
+    /// unset. `None` for embeds/tests with an injected or failed client.
+    pub main_llm: Option<LlmClientHandle>,
     /// External sandbox backend (#516). `None` when no backend is configured.
     pub sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
     /// §F2c — bound extension runner, set by `build_engine` (alongside the
@@ -343,6 +347,7 @@ impl Default for EngineHost {
             subagent_manager,
             workshop_vars: None,
             utility_llm: None,
+            main_llm: None,
             sandbox_backend: None,
             extension_runner: None,
             mod_reload: None,
@@ -1619,6 +1624,7 @@ pub fn build_engine(
     )));
     host.workshop_vars = workshop_vars;
     host.utility_llm = utility_llm;
+    host.main_llm = llm_client.clone();
     host.sandbox_backend = sandbox_backend;
 
     let api_provider = api_config.api_provider();

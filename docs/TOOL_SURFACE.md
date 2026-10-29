@@ -39,8 +39,8 @@ chosen over the available shell equivalent. Companion to `crates/agent-runtime/s
 | `symbol_search` | Search the persistent workspace symbol index (functions, structs, traits, classes, …) by name substring. Indexed, so faster and more precise than `grep_files` for "where is X defined?". Registered only when the session enabled the code index. |
 | `find_references` | Definition sites plus every lexical occurrence of an exact symbol name, via the same persistent code index. Faster than repeated `grep_files` on large repos. |
 | `lsp_navigate` | Type-aware definition / references / hover at a 1-based position via the session's LSP server — resolves the symbol at a call site (trait methods, re-exports) more precisely than the name-based `symbol_search`. Fails closed when LSP is disabled or no server exists for the language. |
-| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, Baidu, and `provider_native` (the active Anthropic-compatible provider's own server-side search) are selectable in config. Ranked snippets + `ref_id` for citation. |
-| `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. |
+| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, Baidu, and `provider_native` (the active Anthropic-compatible provider's own server-side search) are selectable in config. Returns ranked results with title, URL, and snippet; cite the URLs you used. Locate official documentation here, then read it with `fetch_url` + `prompt`. |
+| `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. Pass `prompt` to get a concise answer grounded only in that page (session assist model) instead of the whole body — the cheap way to verify one documented claim. |
 | `web.run` | Browse the web (search/open/click/find/screenshot/image_query) and return structured results with `ref_id`s for citations. |
 | `finance` | Live market quote for a stock, ETF, or crypto ticker via Yahoo Finance-style public endpoints. |
 

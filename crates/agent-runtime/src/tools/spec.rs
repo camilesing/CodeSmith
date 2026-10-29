@@ -316,6 +316,14 @@ pub struct ToolContext {
     /// preview.
     pub utility_llm: Option<crate::tools::large_output_router::UtilityLlm>,
 
+    /// Assist handle for tool-internal model calls that must not be inert by
+    /// default (currently `fetch_url`'s `prompt` extraction). The host fills
+    /// this always: the configured `[utility_model]` when present, otherwise
+    /// the session model through the main client. Distinct from
+    /// [`Self::utility_llm`], whose absence is a meaningful "no background
+    /// model" signal for large-output routing.
+    pub assist_llm: Option<crate::tools::large_output_router::UtilityLlm>,
+
     /// Unified web retrieval service (TODO-49): `search`/`fetch` behind one
     /// seam, provider-selected from `[search]` config by the host. `None`
     /// (embeds, tests that use no web tools) makes the web-facing tools fail
@@ -372,6 +380,7 @@ impl ToolContext {
             lsp_manager: None,
             large_output_router: None,
             utility_llm: None,
+            assist_llm: None,
             web_service: None,
             workshop_vars: None,
             registered_skills: Vec::new(),
@@ -853,6 +862,19 @@ impl ToolContext {
         utility: crate::tools::large_output_router::UtilityLlm,
     ) -> Self {
         self.utility_llm = Some(utility);
+        self
+    }
+
+    /// Attach the assist handle for tool-internal model calls. The host
+    /// supplies the `[utility_model]` when configured, otherwise the session
+    /// model — so `fetch_url`'s `prompt` extraction works without extra
+    /// configuration.
+    #[must_use]
+    pub fn with_assist_llm(
+        mut self,
+        assist: crate::tools::large_output_router::UtilityLlm,
+    ) -> Self {
+        self.assist_llm = Some(assist);
         self
     }
 }

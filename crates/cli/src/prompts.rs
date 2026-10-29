@@ -146,6 +146,7 @@ mod tests {
             "<act_dont_ask>",
             "<verification>",
             "<missing_context>",
+            "<external_research>",
             "<workspace_boundary>",
         ] {
             assert!(
