@@ -67,11 +67,13 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   tools stay main-turn-only — a detached background child can outlive a
   reload's two-phase dylib drop). The sole `BASE_PROMPT` and sub-agent tool
   registries' built-in surface are core by contract, not plugins; the main
-  turn loop is a composed kernel service — the engine resolves a
-  config-selected factory (`turn_executor`, default `builtin`) from the
-  process-shared `TurnExecutorRegistry`
+  turn loop is a composed kernel service (DSH kernel-composition model) —
+  the engine resolves a config-selected factory (`turn_executor`, default
+  `builtin`) from the process-shared `TurnExecutorRegistry`
   (`engine/executor_composition.rs`), with alternates as crate-compiled
-  registry entries (per-surface map: MODS.md "Which tier when").
+  registry entries, and wraps the run with the `AroundTurnHandler` chain
+  (`register_around_turn`, DSH `next()`, Rust extensions, main turn only)
+  (per-surface map: MODS.md "Which tier when").
 - `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.10.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.

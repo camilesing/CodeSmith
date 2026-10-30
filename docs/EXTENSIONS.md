@@ -319,6 +319,21 @@ so a single crate gives them both the traits and the runtime helpers.
   results: they count toward the loop-guard failure escalation (unlike a
   `Block` intervention). Not offered to script mods (async seam — see
   `docs/MODS.md`).
+- **`AroundTurnHandler`** — kernel composition, runtime half (DSH
+  `next()` over the whole main turn): `async fn call(&self, turn:
+  TurnAroundEvent, next: TurnNext<'_>) -> anyhow::Result<StopReason>`.
+  Register via `ExtensionApi::register_around_turn`; handlers compose in
+  registration order (outermost first) around the composed executor's
+  `AgentExecutor::run` — pre/post phases around the loop, or a veto by
+  returning your own `StopReason` without awaiting `next`. `next` is a
+  single-shot future (awaiting it runs the inner turn once; "re-run the
+  loop" is not expressible here). Takes effect at the next turn's
+  assembly; reload clears it with the generation. Main turns only —
+  sub-agent loops never wrap — and the chain sits INSIDE the engine's turn
+  bookkeeping (`TurnStarted` / `TurnComplete`, harvest), so a vetoed turn
+  still completes with the handler's reason. Pairs with the selection
+  half, the `turn_executor` config key (`docs/CONFIGURATION.md`). Not
+  offered to script mods (async seam).
 - **`ToolDefinition`** — extension-side tool contract: `name / description /
   input_schema / capabilities / async execute(input, ctx)`. `execute`
   receives an `ExtensionContext` (NOT the host's `ToolContext`) — keeping

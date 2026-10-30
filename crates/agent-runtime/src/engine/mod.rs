@@ -1468,6 +1468,14 @@ impl Engine {
         // `take_*` reads below) rides the dyn-safe `TurnHarvest` handle the
         // factory returned alongside the executor.
         let main_turn_executor: Arc<dyn AgentExecutor> = built.executor.clone();
+        // Kernel composition, runtime half: snapshot the around-turn chain
+        // at assembly (registration-effective-next-turn, the tools-change
+        // discipline). Main turns only — sub-agent loops never read this.
+        let around_turn_handlers = self
+            .extension_runner
+            .as_ref()
+            .map(|runner| runner.around_turn_handlers())
+            .unwrap_or_default();
         let projection_hub = self.message_projection_hub();
         let mut history =
             SessionChatHistory::new_with_event_tx(&mut self.session, Some(self.tx_event.clone()))
@@ -1475,7 +1483,24 @@ impl Engine {
         // Drain steers queued between turns (mirrors the retired pre-turn
         // `while rx_steer.try_recv().is_ok() {}`).
         built.harvest.drain_stale_steers().await;
-        let stop_reason = main_turn_executor.run(&mut history, String::new()).await;
+        let stop_reason = {
+            let terminal = main_turn_executor.run(&mut history, String::new());
+            if around_turn_handlers.is_empty() {
+                // No-extension parity is structural: an empty chain is the
+                // bare run, not a wrapper around it.
+                terminal.await
+            } else {
+                let event = codesmith_agent::extension::TurnAroundEvent {
+                    turn_id: turn.id.clone(),
+                };
+                codesmith_agent::extension::wrap_turn_dispatch(
+                    &around_turn_handlers,
+                    event,
+                    terminal,
+                )
+                .await
+            }
+        };
         // Release the `&mut self.session` borrow before the post-turn logic
         // (cwd sync / `maybe_advance_cycle` / usage / `TurnComplete` / snapshot)
         // touches `self.session` again.

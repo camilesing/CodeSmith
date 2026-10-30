@@ -276,6 +276,18 @@ inventory::submit! {
   `Err(ToolError::permission_denied(reason))`，与审批拒绝同一反馈形状。
   around 链的结果是执行结果：计入 loop guard 失败升级（不同于 `Block`
   干预）。不对脚本 mod 开放（异步接缝——见 `docs/MODS.md`）。
+- **`AroundTurnHandler`** —— 内核组合的运行期半边（DSH 的 `next()`
+  包裹整个主 turn）：`async fn call(&self, turn: TurnAroundEvent, next:
+  TurnNext<'_>) -> anyhow::Result<StopReason>`。经
+  `ExtensionApi::register_around_turn` 注册；handler 按注册顺序组合
+  （最外层在前），包住已组合执行器的 `AgentExecutor::run` —— 在循环
+  前后加阶段，或不 `await next` 直接返回自己的 `StopReason` 即否决。
+  `next` 是单次 future（await 一次跑一次内层 turn；「重跑循环」在此
+  不可表达）。下一 turn 装配时生效；reload 随本代一并清除。仅主 turn
+  —— 子代理循环从不包裹 —— 且链位于引擎 turn 记账（`TurnStarted` /
+  `TurnComplete`、收割）之内，因此被否决的 turn 仍以 handler 的理由
+  正常收尾。与选择半边——`turn_executor` 配置键（`docs/CONFIGURATION_cn.md`）
+  ——配对。不对脚本 mod 开放（异步接缝）。
 - **`ToolDefinition`** —— 扩展侧工具契约：`name / description /
   input_schema / capabilities / async execute(input, ctx)`。`execute`
   接收一个 `ExtensionContext`（而不是宿主的 `ToolContext`）—— 使

@@ -7,7 +7,8 @@ a trait object). This script scans the workspace for the curated seam list
 and regenerates docs/CAPABILITY_GRAPH.md so a missing role is visible.
 
 Heuristics (a starting point, deliberately dumb):
-- definition  = crate containing `pub trait <Name>`
+- definition  = crate containing `pub trait <Name>` (or `pub(crate) trait`
+                for an intra-crate seam such as `TurnExecutorFactory`)
 - providers   = crates containing an `impl ... <Name> for` block
 - consumers   = crates referencing `dyn <Name>` (trait-object use)
 
@@ -31,6 +32,7 @@ OUT_PATH = REPO_ROOT / "docs" / "CAPABILITY_GRAPH.md"
 SEAMS = [
     "AgentExecutor",
     "AroundToolHandler",
+    "AroundTurnHandler",
     "ChatHistory",
     "CommandDefinition",
     "Extension",
@@ -135,7 +137,7 @@ def scan() -> list[tuple[str, str, list[str], list[str]]]:
         # `impl<T: Fn() -> U> Seam for`); the optional `<…>` after the seam
         # name catches trait generic arguments (`impl Seam<X> for`).
         impl_re = re.compile(rf"\bimpl\s*(?:<[\s\S]*?>\s*)?{esc}(?:<[^>]*>)?\s+for\b")
-        def_re = re.compile(rf"\bpub trait {esc}\b")
+        def_re = re.compile(rf"\bpub(?:\(crate\))? trait {esc}\b")
         dyn_re = re.compile(rf"\bdyn {esc}\b")
         for crate, text in sources:
             if def_re.search(text):

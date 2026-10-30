@@ -56,11 +56,13 @@
   解析自己的视图（5b：script/compiled-in 工具可挂载进子代理，dylib 工具
   保持仅主轮——detached 后台子代理可能活得比一次 reload 的两阶段 dylib
   drop 更久）。唯一的 `BASE_PROMPT` 与子代理工具注册表的内建表面是
-  契约声明的核心，不做插件化；主 turn 循环是可组合的内核服务——引擎
-  从进程共享的 `TurnExecutorRegistry`（`engine/executor_composition.rs`）
-  解析按配置选择的 factory（`turn_executor`，默认 `builtin`），替代循环
-  以 crate 内编译的注册条目落地（逐表面地图见 MODS_cn.md"该用哪一
-  层"）。
+  契约声明的核心，不做插件化；主 turn 循环是可组合的内核服务（DSH 内核
+  组合模型）——引擎从进程共享的 `TurnExecutorRegistry`
+  （`engine/executor_composition.rs`）解析按配置选择的 factory
+  （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目
+  落地，并以 `AroundTurnHandler` 链（`register_around_turn`，DSH
+  `next()`，Rust 扩展，仅主 turn）包裹 run（逐表面地图见 MODS_cn.md
+  "该用哪一层"）。
 - `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.10.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。

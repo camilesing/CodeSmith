@@ -208,6 +208,15 @@ impl ExtensionApi for StubExtensionApi {
         pending.around_tools.push(handler);
         Ok(())
     }
+    fn register_around_turn(
+        &self,
+        handler: Arc<dyn codesmith_agent::extension::AroundTurnHandler>,
+    ) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending.around_turns.push(handler);
+        Ok(())
+    }
     fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;

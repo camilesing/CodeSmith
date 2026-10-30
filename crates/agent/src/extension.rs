@@ -19,23 +19,41 @@
 //! extension pub/sub (the former §F3 EventBus skeleton) was deleted with
 //! zero consumers; it returns only when an extension actually needs it.
 //!
-//! ## Dispatch vocabulary (DSH alignment)
+//! ## Kernel composition (DSH alignment)
+//!
+//! CodeSmith adopts DSH's kernel-composition model at two seams, by
+//! founder decision (2026-10-30), replacing the earlier stance that the
+//! kernel stayed compile-time assembled with the extension surface as a
+//! seam onto it:
+//!
+//! - **Selection** — the main turn loop is a composed kernel service: the
+//!   engine resolves a config-selected factory (`turn_executor`, default
+//!   `builtin`) from the process-shared `TurnExecutorRegistry`
+//!   (`codesmith-agent-runtime`, `engine/executor_composition.rs`) at
+//!   every turn assembly; alternates land as registry entries.
+//! - **Composition** — [`AroundTurnHandler`] wraps the whole main turn
+//!   with DSH's `next()` form ([`ExtensionApi::register_around_turn`]),
+//!   so an extension composes behaviour around whichever loop runs, with
+//!   generation-scoped unload.
+//!
+//! What stays core by contract: the provider registry *mechanism* (its
+//! factories are extension-contributed, route A), the session log format,
+//! the compaction algorithm (its knobs are policy), `BASE_PROMPT`, and the
+//! sub-agent loops (children run the builtin machinery; neither seam
+//! reaches them). Known limitations (deliberate): `Waterfall` remains a
+//! fold chain (each handler's `Transform` is visible to the next);
+//! `next()`-wrapping exists for tool execution ([`AroundToolHandler`])
+//! and the main turn ([`AroundTurnHandler`]) — not as a general event
+//! form — and parallel fan-out / first-value-wins dispatch are not built;
+//! add one only with a real consumer. A dylib cannot yet ship a
+//! from-scratch loop implementation (the factory contract would have to
+//! name runtime-side types across this crate's boundary) — it wraps.
 //!
 //! [`DispatchMode`] names its three states after the deepseek-harness
 //! (DSH) extension model — `Emit` (broadcast, advisory outcomes),
 //! `Serial` (ordered listeners, veto short-circuits), `Waterfall
 //! { can_deny }` (transform fold, optionally deny) — so both frameworks
 //! share one vocabulary for the same dispatch semantics.
-//!
-//! Known limitations (deliberate, not gaps to fill silently): CodeSmith
-//! does not adopt DSH's "everything is a plugin" kernel — the kernel
-//! (single turn loop, provider registry, session log) stays compile-time
-//! assembled, and the extension surface is a seam onto that kernel, not
-//! its composition mechanism. `Waterfall` remains a fold chain (each
-//! handler's `Transform` is visible to the next); DSH's `next()`-wrapping
-//! around-dispatch exists only for tool execution — [`AroundToolHandler`]
-//! — not as a general event form, and parallel fan-out / first-value-wins
-//! dispatch are not built at all; add one only with a real consumer.
 //! Registration scopes ([`Scope`]) are
 //! resolved per origin tier: sub-agent registries mount only script /
 //! compiled-in extension tools, and sub-agent loops dispatch only script /
@@ -67,6 +85,7 @@ use codesmith_tools::{ToolCapability, ToolError, ToolResult};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::callback::StopReason;
 use crate::provider::{ProviderAlias, ProviderFactory};
 
 // === Error type ============================================================
@@ -1016,6 +1035,67 @@ pub fn wrap_tool_dispatch<'a>(
     next
 }
 
+// === Around-turn (DSH waterfall next() over the whole main turn) ==========
+
+/// The boxed continuation an [`AroundTurnHandler`] receives: awaiting it
+/// runs the next around-turn handler, or — after the last one — the
+/// composed executor's `AgentExecutor::run`. Never awaiting it is the veto.
+pub type TurnNext<'a> = Pin<Box<dyn Future<Output = anyhow::Result<StopReason>> + Send + 'a>>;
+
+/// The payload an [`AroundTurnHandler`] receives — enough to correlate with
+/// the turn lifecycle events (`TurnStarted` / `TurnComplete` carry the same
+/// id). Deliberately lean: the transcript is not exposed here (a handler
+/// that needs to shape the turn's input or stop decision has the
+/// `Input` / `TurnStopping` seams); this seam composes *whole turns*.
+#[derive(Debug, Clone)]
+pub struct TurnAroundEvent {
+    pub turn_id: String,
+}
+
+/// DSH-style around-dispatch for the whole main turn ("waterfall with
+/// next" over `AgentExecutor::run`): `call` receives the turn payload and
+/// `next`, and may run pre/post phases around the loop or veto by
+/// returning its own `StopReason` without awaiting `next`. Handlers
+/// compose in registration order — the first registered is outermost; the
+/// last one's `next` is the composed executor's run. Together with the
+/// turn-executor registry (selection) this is the kernel-composition
+/// surface: selection says which loop runs, around-turn composes
+/// behaviour around it at runtime.
+///
+/// Known limitations: `next` is a single-shot future — awaiting it runs
+/// the inner turn once, so "re-run the loop" (DSH's callable `next()`)
+/// is not expressible here (a handler wanting retries needs a factory
+/// form; add it with a real consumer); main-turn only (sub-agent loops
+/// never wrap); the chain wraps the executor run INSIDE the engine's turn
+/// bookkeeping (TurnStarted / TurnComplete, harvest, snapshots), so a
+/// vetoed turn still completes its bookkeeping with the handler's returned
+/// `StopReason`; and the seam is not offered to script mods (async
+/// boundary — see `docs/MODS.md`).
+#[async_trait]
+pub trait AroundTurnHandler: Send + Sync {
+    async fn call(&self, turn: TurnAroundEvent, next: TurnNext<'_>) -> anyhow::Result<StopReason>;
+}
+
+/// Compose `handlers` (registration order, outermost first) around
+/// `terminal` (the composed executor's run). Same shape as
+/// [`wrap_tool_dispatch`]: each layer's `next` is the boxed future of the
+/// layers below; a handler that never awaits its `next` vetoes.
+#[must_use]
+pub fn wrap_turn_dispatch<'a>(
+    handlers: &[Arc<dyn AroundTurnHandler>],
+    turn: TurnAroundEvent,
+    terminal: TurnNext<'a>,
+) -> TurnNext<'a> {
+    let mut next = terminal;
+    for handler in handlers.iter().rev() {
+        let handler = Arc::clone(handler);
+        let turn = turn.clone();
+        let inner = next;
+        next = Box::pin(async move { handler.call(turn, inner).await });
+    }
+    next
+}
+
 // === Registration scope (DSH alignment) ===================================
 
 /// Where a registration applies — the DSH per-agent scope key, reduced to
@@ -1185,6 +1265,25 @@ pub trait ExtensionApi: Send + Sync {
     ) -> Result<(), ExtensionError> {
         Err(ExtensionError::Load(
             "around-tool registration not supported by this api".into(),
+        ))
+    }
+
+    /// Kernel composition, runtime half — wrap the whole main turn
+    /// (`AgentExecutor::run`) with a `next()`-style [`AroundTurnHandler`].
+    /// Registration order composes outermost-first; the registration takes
+    /// effect at the next turn's assembly and reload clears it with the
+    /// generation's other bound registrations. Main-turn only; not offered
+    /// to script mods (async seam).
+    ///
+    /// Default: hosts that do not support it get a loud error, keeping
+    /// the trait implementable (source- and binary-compatible) for api
+    /// surfaces that predate this method.
+    fn register_around_turn(
+        &self,
+        _handler: Arc<dyn AroundTurnHandler>,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "around-turn registration not supported by this api".into(),
         ))
     }
 
@@ -2662,5 +2761,139 @@ mod tests {
             vec!["outer"],
             "the inner handler + terminal never run past a veto"
         );
+    }
+
+    // === Around-turn (DSH waterfall next() over the main turn) ===========
+
+    /// An around-turn handler that records its pre phase, optionally
+    /// vetoes (returning its own `StopReason` without awaiting `next`),
+    /// and otherwise records its post phase after the inner turn.
+    struct RecordingAroundTurn {
+        label: &'static str,
+        seen: Arc<Mutex<Vec<String>>>,
+        veto: bool,
+    }
+
+    impl RecordingAroundTurn {
+        fn passthrough(label: &'static str, seen: &Arc<Mutex<Vec<String>>>) -> Arc<Self> {
+            Arc::new(Self {
+                label,
+                seen: Arc::clone(seen),
+                veto: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl AroundTurnHandler for RecordingAroundTurn {
+        async fn call(
+            &self,
+            turn: TurnAroundEvent,
+            next: TurnNext<'_>,
+        ) -> anyhow::Result<StopReason> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:pre:{}", self.label, turn.turn_id));
+            if self.veto {
+                return Ok(StopReason::Error(format!("{}: vetoed", self.label)));
+            }
+            let reason = next.await?;
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:post", self.label));
+            Ok(reason)
+        }
+    }
+
+    fn turn_terminal(seen: &Arc<Mutex<Vec<String>>>) -> TurnNext<'static> {
+        let seen = Arc::clone(seen);
+        Box::pin(async move {
+            seen.lock().unwrap().push("loop".to_string());
+            Ok(StopReason::NoToolCalls)
+        })
+    }
+
+    fn turn_event() -> TurnAroundEvent {
+        TurnAroundEvent {
+            turn_id: "t1".to_string(),
+        }
+    }
+
+    /// Outermost-first pre phases, the loop once, then post phases unwind
+    /// innermost-first; the inner `StopReason` passes through.
+    #[test]
+    fn around_turn_chain_wraps_the_loop_outermost_first() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let handlers: Vec<Arc<dyn AroundTurnHandler>> = vec![
+            RecordingAroundTurn::passthrough("outer", &seen),
+            RecordingAroundTurn::passthrough("inner", &seen),
+        ];
+        let reason = rt
+            .block_on(wrap_turn_dispatch(
+                &handlers,
+                turn_event(),
+                turn_terminal(&seen),
+            ))
+            .expect("pass-through chain reaches the loop");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "outer:pre:t1",
+                "inner:pre:t1",
+                "loop",
+                "inner:post",
+                "outer:post"
+            ]
+        );
+    }
+
+    /// A veto returns the handler's own reason; the loop never runs.
+    #[test]
+    fn around_turn_veto_never_runs_the_loop() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let vetoing = Arc::new(RecordingAroundTurn {
+            label: "outer",
+            seen: Arc::clone(&seen),
+            veto: true,
+        });
+        let handlers: Vec<Arc<dyn AroundTurnHandler>> = vec![
+            vetoing as Arc<dyn AroundTurnHandler>,
+            RecordingAroundTurn::passthrough("inner", &seen),
+        ];
+        let reason = rt
+            .block_on(wrap_turn_dispatch(
+                &handlers,
+                turn_event(),
+                turn_terminal(&seen),
+            ))
+            .expect("a veto is a normal StopReason, not an Err");
+        assert_eq!(reason, StopReason::Error("outer: vetoed".to_string()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["outer:pre:t1"],
+            "the inner handler + loop never run past a veto"
+        );
+    }
+
+    /// No handlers: the chain IS the terminal (no-extension parity).
+    #[test]
+    fn around_turn_empty_chain_is_the_loop() {
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let handlers: Vec<Arc<dyn AroundTurnHandler>> = Vec::new();
+        let reason = rt
+            .block_on(wrap_turn_dispatch(
+                &handlers,
+                turn_event(),
+                turn_terminal(&seen),
+            ))
+            .expect("terminal");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(*seen.lock().unwrap(), vec!["loop"]);
     }
 }

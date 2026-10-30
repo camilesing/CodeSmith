@@ -220,6 +220,9 @@ pub(crate) struct Pending {
     /// DSH around-dispatch registrations (tools/execute) queued by the
     /// stub `ExtensionApi`, awaiting the `bind_core` flush.
     pub around_tools: Vec<Arc<dyn AroundToolHandler>>,
+    /// Around-turn registrations (the kernel-composition runtime half)
+    /// queued by the stub `ExtensionApi`, awaiting the `bind_core` flush.
+    pub around_turns: Vec<Arc<dyn AroundTurnHandler>>,
     pub providers: Vec<PendingProvider>,
     pub prompt_sections: Vec<(String, String)>,
     pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
@@ -308,6 +311,14 @@ pub struct ExtensionRunner {
     /// [`around_tool_handlers`](Self::around_tool_handlers) and composes
     /// the `next()` chain; `clear_around_tools` / reload drop them.
     around_tools: Mutex<Vec<Arc<dyn AroundToolHandler>>>,
+    /// Bound at `bind_core` — the flushed around-turn handlers (the
+    /// kernel-composition runtime half), in registration order (outermost
+    /// first). The engine snapshots them once per main-turn assembly via
+    /// [`around_turn_handlers`](Self::around_turn_handlers) and composes
+    /// the `next()` chain around the executor's run; `clear_around_turns`
+    /// / reload drop them. Main-turn only — sub-agent loops never read
+    /// this, so a dylib-origin handler needs no origin tiering here.
+    around_turns: Mutex<Vec<Arc<dyn AroundTurnHandler>>>,
     /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`. On
     /// reload, [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
     /// (§F5d T4) MOVES these to `pending_drop` (the `Library` stays alive —
@@ -406,6 +417,7 @@ impl ExtensionRunner {
             disabled_builtin_commands: Mutex::new(HashSet::new()),
             handlers: Mutex::new(Vec::new()),
             around_tools: Mutex::new(Vec::new()),
+            around_turns: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
             pending_drop: Mutex::new(Vec::new()),
             shared: Mutex::new(SharedProviderRegistry::new()),
@@ -479,6 +491,28 @@ impl ExtensionRunner {
         self.around_tools
             .lock()
             .expect("around-tools lock poisoned")
+            .clone()
+    }
+
+    /// Clear the generation's around-turn registrations. Same reload
+    /// lifecycle as [`clear_around_tools`](Self::clear_around_tools); safe
+    /// while an in-flight turn holds a snapshot — each handler is
+    /// refcounted (`Arc`) and the engine composed its chain at assembly.
+    pub fn clear_around_turns(&self) {
+        self.around_turns
+            .lock()
+            .expect("around-turns lock poisoned")
+            .clear();
+    }
+
+    /// Snapshot the bound around-turn handlers in registration order
+    /// (outermost first). The engine reads this once per main-turn
+    /// assembly; an empty snapshot leaves the run path untouched.
+    #[must_use]
+    pub fn around_turn_handlers(&self) -> Vec<Arc<dyn AroundTurnHandler>> {
+        self.around_turns
+            .lock()
+            .expect("around-turns lock poisoned")
             .clone()
     }
 
@@ -774,6 +808,7 @@ impl ExtensionRunner {
     pub fn clear_bound_registrations(&self) {
         self.clear_handlers();
         self.clear_around_tools();
+        self.clear_around_turns();
         self.clear_tools();
         self.clear_tool_restrictions();
         self.clear_commands();
@@ -1074,6 +1109,13 @@ impl ExtensionRunner {
                 .lock()
                 .expect("around-tools lock poisoned");
             around.extend(drained.around_tools);
+        }
+        {
+            let mut around = self
+                .around_turns
+                .lock()
+                .expect("around-turns lock poisoned");
+            around.extend(drained.around_turns);
         }
         for (id, text) in drained.prompt_sections {
             if let Err(e) = self.register_prompt_section(id, text) {
@@ -1592,6 +1634,69 @@ mod tests {
         let _ = runner.emit(ExtensionEvent::SessionShutdown).await;
         let s = seen.lock().unwrap();
         assert_eq!(*s, vec!["TurnStart", "SessionShutdown"]);
+    }
+
+    /// Around-turn plumbing: a registration queued during `configure`
+    /// flushes at `bind_core`, composes around a terminal through
+    /// `wrap_turn_dispatch`, and `clear_bound_registrations` (reload)
+    /// drops it with the generation.
+    #[tokio::test]
+    async fn around_turn_registration_flushes_composes_and_clears() {
+        struct Tagging;
+        #[async_trait::async_trait]
+        impl AroundTurnHandler for Tagging {
+            async fn call(
+                &self,
+                turn: TurnAroundEvent,
+                next: TurnNext<'_>,
+            ) -> anyhow::Result<codesmith_agent::callback::StopReason> {
+                let inner = next.await?;
+                Ok(codesmith_agent::callback::StopReason::Error(format!(
+                    "wrapped:{}:{inner:?}",
+                    turn.turn_id
+                )))
+            }
+        }
+        struct AroundExt;
+        #[async_trait::async_trait]
+        impl Extension for AroundExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("around-turn");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.register_around_turn(Arc::new(Tagging))
+            }
+        }
+
+        let runner = ExtensionRunner::new();
+        runner.load(&AroundExt).await.unwrap();
+        assert!(
+            runner.around_turn_handlers().is_empty(),
+            "queued, not bound, before bind_core"
+        );
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+        let handlers = runner.around_turn_handlers();
+        assert_eq!(handlers.len(), 1);
+
+        let terminal: TurnNext<'static> =
+            Box::pin(async { Ok(codesmith_agent::callback::StopReason::NoToolCalls) });
+        let out = wrap_turn_dispatch(
+            &handlers,
+            TurnAroundEvent {
+                turn_id: "t9".into(),
+            },
+            terminal,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out,
+            codesmith_agent::callback::StopReason::Error("wrapped:t9:NoToolCalls".into())
+        );
+
+        runner.clear_bound_registrations();
+        assert!(runner.around_turn_handlers().is_empty(), "reload clears");
     }
 
     #[tokio::test]

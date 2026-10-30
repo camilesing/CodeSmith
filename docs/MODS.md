@@ -32,7 +32,8 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
-| Turn loop, compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (one turn loop, sole base prompt, built-in-only sub-agent registries) |
+| Turn loop (main turn) | — | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (default `builtin`); *composition*: a Rust extension wraps the run with DSH `next()`; main turn only, async seam (no script form) |
+| Compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries; compaction *knobs* are policy, the algorithm is not) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
 sandboxed by the absence of I/O natives); **async, filesystem, network, or

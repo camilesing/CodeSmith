@@ -242,9 +242,9 @@ registry exists so an alternate loop can land as a crate-compiled registry
 entry instead of a forked engine. An unknown id fails loud at startup
 (`turn_executor: no turn executor registered for '…'` with the registered
 ids and the remedy), and at turn assembly if a registration disappears
-mid-session. Script mods cannot implement a loop (no async); wrapping or
-steering a running turn from extensions is the extension-event surface
-(`input`, `turn-stopping`), not this key.
+mid-session. Script mods cannot implement a loop (no async); wrapping the
+run from a Rust extension is the composition half, `register_around_turn`
+(`docs/EXTENSIONS.md`), not this key.
 
 
 Third-party OpenAI-compatible gateways that need extra request headers can set

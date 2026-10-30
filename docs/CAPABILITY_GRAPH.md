@@ -16,6 +16,7 @@ explaining.
 |---|---|---|---|
 | `AgentExecutor` | `agent` | `agent`, `agent-runtime` | `agent-runtime` |
 | `AroundToolHandler` | `agent` | `agent`, `agent-runtime` | `agent`, `extensions` |
+| `AroundTurnHandler` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |
@@ -32,6 +33,6 @@ explaining.
 | `SessionStore` | `agent-runtime` | `agent-runtime` | `cli` |
 | `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |
 | `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
-| `TurnExecutorFactory` | `—` | `agent-runtime` | `agent-runtime` |
+| `TurnExecutorFactory` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `TurnHarvest` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `WorkflowEngine` | `agent-runtime` | `cli` | `cli` |

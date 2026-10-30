@@ -31,7 +31,8 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
-| turn 循环、压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一 turn 循环、唯一基础提示词、子代理注册表仅内建） |
+| turn 循环（主 turn） | — | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（默认 `builtin`）；*组合*：Rust 扩展以 DSH `next()` 包裹 run；仅主 turn，异步接缝（无脚本形态） |
+| 压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建；压缩的*旋钮*是 policy，算法不是） |
 
 经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
 函数"为沙箱）；**异步、文件、网络或完整生态 → Rust 扩展**（dylib 安装 +

@@ -225,8 +225,8 @@ turn_executor = "builtin"   # 默认值；生产的 HostAgentExecutor 循环
 循环能以 crate 内编译的注册条目落地，而不是分叉引擎。未知 id 在启动时
 即刻报错（`turn_executor: no turn executor registered for '…'`，带已注册
 id 与补救说明）；会话中途注册消失则在 turn 装配时报错。脚本 mod 无法
-实现循环（无 async）；从扩展侧包裹或引导一个运行中的 turn 走的是扩展
-事件面（`input`、`turn-stopping`），不是这个键。
+实现循环（无 async）；从 Rust 扩展侧包裹 run 是组合半边
+`register_around_turn`（`docs/EXTENSIONS_cn.md`），不是这个键。
 
 
 需要额外请求头的第三方 OpenAI 兼容网关，可以在顶层或 provider 表
