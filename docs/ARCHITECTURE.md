@@ -7,8 +7,9 @@ absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 Current boundary note (v0.11.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
-  `extensions`, `agent-runtime` (the kernel: one production turn loop behind
-  the `AgentExecutor` seam, engine, compaction) — and an implementation
+  `extensions`, `agent-runtime` (the kernel: the turn loop composed through
+  the `TurnExecutorRegistry` behind the `AgentExecutor` seam, engine,
+  compaction) — and an implementation
   group: everything else (`providers`,
   `tool-impls`, `cli`, `app-server`, `mcp`, `state`, `execpolicy`,
   `hooks`, `index`, `core`, `release`, test fixtures). Framework
@@ -64,10 +65,13 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   Global view, and sub-agent registries resolve their own view per
   origin tier (5b: script/compiled-in tools mount in children, dylib
   tools stay main-turn-only — a detached background child can outlive a
-  reload's two-phase dylib drop). The turn loop, the sole
-  `BASE_PROMPT`, and sub-agent tool registries' built-in surface are
-  core by contract, not plugins (per-surface map: MODS.md "Which tier
-  when").
+  reload's two-phase dylib drop). The sole `BASE_PROMPT` and sub-agent tool
+  registries' built-in surface are core by contract, not plugins; the main
+  turn loop is a composed kernel service — the engine resolves a
+  config-selected factory (`turn_executor`, default `builtin`) from the
+  process-shared `TurnExecutorRegistry`
+  (`engine/executor_composition.rs`), with alternates as crate-compiled
+  registry entries (per-surface map: MODS.md "Which tier when").
 - `crates/cli` (package `codesmith-cli`, binary `codesmith`) is the live end-user runtime: it hosts both the headless subcommands and the line-based interactive REPL frontend (`crates/cli/src/interactive/` — the ratatui TUI was removed in v0.10.0), plus the runtime API, task manager, and tool registry wiring. The agent execution engine itself (turn loop, compaction, sandbox helpers, prompts) now lives in `crates/agent-runtime`; `crates/cli/src/core/` is a thin re-export + construction bridge (`engine.rs` defines `EngineHost`/`build_engine`).
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - Startup trust-boundary details are tracked in `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md`; that audit is the current reference for pre-trust versus post-trust initialization follow-ups.
@@ -141,6 +145,7 @@ change, and every `ExtensionEventKind` declares its dispatch mode
 - **`crates/agent-runtime/src/engine/`** - The agent execution engine (moved out of the end-user frontend)
   - `mod.rs` - `Engine` struct + event loop (`Engine::run`, `handle_send_message`), system-prompt refresh, image-block assembly
   - `host_executor.rs` - `HostAgentExecutor`, the production LLM↔tool turn loop with the absorbed guardrails (loop-guard, LSP flush, transparent-retry, steer, approval, compaction, capacity, early-tool-start, subagent, cycle)
+  - `executor_composition.rs` - turn-executor composition (the kernel composition point): per-turn `TurnDeps` snapshot, config-selected `TurnExecutorFactory` from the process-shared `TurnExecutorRegistry` (default `builtin` = the `host_executor.rs` assembly), and the dyn-safe `TurnHarvest` post-run take_* surface
   - `turn/` - per-step phase modules split out of `host_executor.rs`: `stream.rs` (stream reduction + transparent retry), `batches.rs` (tool-batch planning/execution), `approval.rs` (per-tool approval gate), `seams.rs` (cancel checkpoints + steer drain), `postprocess.rs` (sub-agent reap gate, thinking-only status, LSP collect/flush)
   - `capacity_flow.rs` - Capacity guardrail checkpoints and interventions
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard state, tool-input parsing + batch planning, deferred tool catalog policy, MCP dispatch fanout, post-edit LSP hook

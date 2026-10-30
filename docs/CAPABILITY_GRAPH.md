@@ -26,10 +26,12 @@ explaining.
 | `IndexBackendFactory` | `index` | `index` | `index` |
 | `IndexServiceApi` | `tools` | `index`, `tool-impls` | `cli`, `index` |
 | `KeyringStore` | `secrets` | `cli`, `secrets` | `secrets` |
-| `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers` | `agent`, `agent-runtime` |
+| `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers`, `tool-impls` | `agent`, `agent-runtime` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
 | `SandboxBackend` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `SessionStore` | `agent-runtime` | `agent-runtime` | `cli` |
 | `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |
 | `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
+| `TurnExecutorFactory` | `—` | `agent-runtime` | `agent-runtime` |
+| `TurnHarvest` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `WorkflowEngine` | `agent-runtime` | `cli` | `cli` |

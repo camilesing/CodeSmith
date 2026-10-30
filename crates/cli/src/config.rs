@@ -711,6 +711,12 @@ pub struct Config {
     /// `provider` and selects the matching `[[providers.custom]]` entry by id.
     /// The host maps this to `ProviderId::Custom(id)` for `resolve_llm_client`.
     pub custom_provider: Option<String>,
+    /// Selected main-turn executor id (kernel composition,
+    /// `engine::executor_composition`). Kept as a raw string because the id
+    /// space is open: the always-present `builtin` plus any factory a host
+    /// registers on the process-shared turn-executor registry. An unknown id
+    /// fails loud at startup.
+    pub turn_executor: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     /// Optional extra HTTP headers sent to model API requests.
@@ -1626,6 +1632,19 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
+        // Kernel composition — turn-executor selection. Fail loud at
+        // startup: the engine's per-turn resolution would otherwise surface
+        // an unregistered id only at the first turn. The registry carries
+        // the builtin loop plus any host-registered alternates.
+        if let Some(id) = self
+            .turn_executor
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            codesmith_agent_runtime::engine::validate_turn_executor_id(id)
+                .map_err(|err| anyhow::anyhow!("turn_executor: {err}"))?;
+        }
         // §D2 — custom provider escape hatch. When `custom_provider` is set,
         // it overrides the builtin `provider` field: validate the id and its
         // matching `[[providers.custom]]` entry, then skip the builtin-specific
@@ -1912,6 +1931,19 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
+    }
+
+    /// Selected main-turn executor id (kernel composition,
+    /// `engine::executor_composition`); defaults to the builtin production
+    /// loop. Validated against the process-shared registry at startup by
+    /// [`validate`](Self::validate).
+    pub fn turn_executor_id(&self) -> String {
+        self.turn_executor
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID)
+            .to_string()
     }
 
     /// The `[[providers.custom]]` entry matching [`custom_provider`](Self::custom_provider),
@@ -4159,6 +4191,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         automations: override_cfg.automations.or(base.automations),
         provider: override_cfg.provider.or(base.provider),
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
+        turn_executor: override_cfg.turn_executor.or(base.turn_executor),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         edit: override_cfg.edit.or(base.edit),
@@ -7064,6 +7097,32 @@ api_key = "old-openrouter-key"
 
         let config = Config {
             personality: Some("playful".to_string()),
+            ..Default::default()
+        };
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn turn_executor_selects_builtin_and_rejects_unknown_id() -> Result<()> {
+        // Default resolves to the builtin loop.
+        assert_eq!(Config::default().turn_executor_id(), "builtin".to_string());
+
+        // An unknown id fails loud at validate time, naming the id, the
+        // registered ids, and the remedy (the registry-seeded error).
+        let config = Config {
+            turn_executor: Some("does-not-exist".to_string()),
+            ..Default::default()
+        };
+        let err = config.validate().expect_err("unknown turn executor id");
+        let msg = err.to_string();
+        assert!(msg.contains("does-not-exist"), "names the id: {msg}");
+        assert!(msg.contains("builtin"), "names registered ids: {msg}");
+        assert!(msg.contains("turn_executor"), "names the remedy: {msg}");
+
+        // The builtin id passes.
+        let config = Config {
+            turn_executor: Some("builtin".to_string()),
             ..Default::default()
         };
         config.validate()?;

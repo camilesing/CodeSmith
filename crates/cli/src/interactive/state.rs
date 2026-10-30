@@ -815,6 +815,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         // shipped).
         max_steps: u32::MAX,
         max_subagents: state.max_subagents,
+        turn_executor: config.turn_executor_id(),
         features: config.features(),
         parse_gate: config.edit_config().parse_gate_enabled(),
         compaction: state.compaction_config(),

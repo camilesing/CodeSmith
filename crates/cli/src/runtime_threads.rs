@@ -2058,6 +2058,7 @@ impl RuntimeThreadManager {
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,
             trust_mode: thread.trust_mode,
+            turn_executor: self.config.turn_executor_id(),
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),
             skills_dir: self.config.skills_dir(),

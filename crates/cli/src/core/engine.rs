@@ -1877,6 +1877,7 @@ pub(crate) fn headless_engine_config(
         workspace,
         allow_shell: auto_approve || config.allow_shell(),
         trust_mode,
+        turn_executor: config.turn_executor_id(),
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: config.skills_dir(),

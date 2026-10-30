@@ -226,6 +226,27 @@ are also accepted as-is for self-hosted or LAN runtimes (for example a vLLM
 box at `http://192.168.0.110:8000/v1`) — there is no opt-in env var for
 insecure HTTP. Use `https://` for internet-facing gateways.
 
+#### Turn-executor selection (`turn_executor`)
+
+The main turn loop is a composed kernel service: at every turn the engine
+resolves the selected factory from the turn-executor registry
+(`crates/agent-runtime/src/engine/executor_composition.rs`). The top-level
+selector is
+
+```toml
+turn_executor = "builtin"   # default; the production HostAgentExecutor loop
+```
+
+Only ids registered in the process are valid — currently `builtin`; the
+registry exists so an alternate loop can land as a crate-compiled registry
+entry instead of a forked engine. An unknown id fails loud at startup
+(`turn_executor: no turn executor registered for '…'` with the registered
+ids and the remedy), and at turn assembly if a registration disappears
+mid-session. Script mods cannot implement a loop (no async); wrapping or
+steering a running turn from extensions is the extension-event surface
+(`input`, `turn-stopping`), not this key.
+
+
 Third-party OpenAI-compatible gateways that need extra request headers can set
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
 level or under a provider table such as `[providers.deepseek]`. When configured,

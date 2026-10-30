@@ -481,6 +481,11 @@ pub struct ConfigToml {
     /// Kept as a raw string (not `ProviderKind`) because the id space is open:
     /// any host-registered factory (e.g. `mock`) or user-declared endpoint.
     pub custom_provider: Option<String>,
+    /// Selected main-turn executor id (kernel composition). Kept as a raw
+    /// string because the id space is open: the always-present `builtin`
+    /// plus any factory a host registers on the turn-executor registry. An
+    /// unknown id fails loud at startup. Defaults to `builtin`.
+    pub turn_executor: Option<String>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,

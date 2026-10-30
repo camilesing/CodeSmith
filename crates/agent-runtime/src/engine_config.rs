@@ -298,6 +298,13 @@ pub struct EngineConfig {
     /// `tool_search` instead. Off by default (`[tools].progressive_disclosure`):
     /// an undeclared tool is resident, so the off state is the safe one.
     pub progressive_disclosure: bool,
+    /// Selected main-turn executor id — the kernel composition point
+    /// (`engine::executor_composition`). Kept as a raw string because the id
+    /// space is open: any factory registered on the process-shared
+    /// `TurnExecutorRegistry`. Default `builtin` = `HostAgentExecutor`;
+    /// an unknown id fails loud at startup (host validation) and at turn
+    /// assembly. Resolved from the `turn_executor` config key.
+    pub turn_executor: String,
     /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     #[allow(dead_code)] // Wired through ShellManager in follow-up PR
@@ -418,6 +425,7 @@ impl Default for EngineConfig {
             subagent_external_provider: None,
             tools_always_load: HashSet::new(),
             progressive_disclosure: false,
+            turn_executor: crate::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
             prefer_bwrap: false,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,

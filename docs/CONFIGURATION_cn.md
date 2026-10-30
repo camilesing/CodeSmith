@@ -211,6 +211,24 @@ model = "glm-5"
 接受——不存在 insecure-HTTP 的开关环境变量。面向互联网的网关请使用
 `https://`。
 
+#### Turn 执行器选择（`turn_executor`）
+
+主 turn 循环是可组合的内核服务：引擎在每个 turn 从 turn-executor
+注册表（`crates/agent-runtime/src/engine/executor_composition.rs`）解析
+选定的 factory。顶层选择键为
+
+```toml
+turn_executor = "builtin"   # 默认值；生产的 HostAgentExecutor 循环
+```
+
+只有进程内已注册的 id 才有效——目前是 `builtin`；注册表的存在让替代
+循环能以 crate 内编译的注册条目落地，而不是分叉引擎。未知 id 在启动时
+即刻报错（`turn_executor: no turn executor registered for '…'`，带已注册
+id 与补救说明）；会话中途注册消失则在 turn 装配时报错。脚本 mod 无法
+实现循环（无 async）；从扩展侧包裹或引导一个运行中的 turn 走的是扩展
+事件面（`input`、`turn-stopping`），不是这个键。
+
+
 需要额外请求头的第三方 OpenAI 兼容网关，可以在顶层或 provider 表
 （如 `[providers.deepseek]`）下设置
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }`。

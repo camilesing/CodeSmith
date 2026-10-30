@@ -598,6 +598,7 @@ use super::context::{
     estimate_input_tokens_conservative,
 };
 use super::deliverables::DeliverablesProbe;
+use super::executor_composition::TurnHarvest;
 use super::loop_guard::LoopGuard;
 use super::summarize_text;
 use super::turn::{
@@ -2160,7 +2161,44 @@ impl HostAgentExecutor {
             .expect("pending_targeted_refresh_outcome mutex poisoned")
             .take()
     }
+}
 
+/// The dyn-safe harvest surface of the production loop — the engine reads
+/// post-run state through [`TurnHarvest`] (see `executor_composition`)
+/// instead of the concrete type, so a composed-in alternate executor owes
+/// only the defaults. Every method delegates to the inherent one above;
+/// `drain_stale_steers` delegates to the inherent method in `turn::seams`.
+impl TurnHarvest for HostAgentExecutor {
+    fn drain_stale_steers<'a>(&'a self) -> Pin<Box<dyn Future<Output = usize> + Send + 'a>> {
+        Box::pin(HostAgentExecutor::drain_stale_steers(self))
+    }
+    fn take_usage(&self) -> Usage {
+        HostAgentExecutor::take_usage(self)
+    }
+    fn take_reported_model(&self) -> Option<String> {
+        HostAgentExecutor::take_reported_model(self)
+    }
+    fn take_failed_attempts(&self) -> Vec<crate::session_store::AttemptRecord> {
+        HostAgentExecutor::take_failed_attempts(self)
+    }
+    fn take_pending_compaction_summary(&self) -> Option<SystemPrompt> {
+        HostAgentExecutor::take_pending_compaction_summary(self)
+    }
+    fn take_pending_post_compact_cleanup(&self) -> bool {
+        HostAgentExecutor::take_pending_post_compact_cleanup(self)
+    }
+    fn take_pending_capacity_decision(&self) -> Option<CapacityDecision> {
+        HostAgentExecutor::take_pending_capacity_decision(self)
+    }
+    fn take_pending_replay_outcome(&self) -> Option<ReplayOutcome> {
+        HostAgentExecutor::take_pending_replay_outcome(self)
+    }
+    fn take_pending_targeted_refresh_outcome(&self) -> Option<TargetedRefreshOutcome> {
+        HostAgentExecutor::take_pending_targeted_refresh_outcome(self)
+    }
+}
+
+impl HostAgentExecutor {
     /// Add one completed stream's usage to the per-turn total (slice 21 §E).
     /// Mirrors `TurnContext::add_usage` (`turn.rs:106`):
     /// `input_tokens` / `output_tokens` saturating-add, the optional cache /

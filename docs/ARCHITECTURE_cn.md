@@ -6,8 +6,9 @@
 
 当前边界说明（v0.11.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
-  `config`、`secrets`、`extensions`、`agent-runtime`（内核：唯一的、位于
-  `AgentExecutor` 接缝之后的生产 turn 循环、引擎、压缩）—— 与实现群：
+  `config`、`secrets`、`extensions`、`agent-runtime`（内核：经
+  `TurnExecutorRegistry` 组合、位于 `AgentExecutor` 接缝之后的 turn 循环、
+  引擎、压缩）—— 与实现群：
   其余全部（`providers`、`tool-impls`、`cli`、
   `app-server`、`mcp`、`state`、`execpolicy`、`hooks`、`index`、`core`、
   `release`、测试 fixture）。框架群 crate 在构建图中不得依赖框架群
@@ -54,8 +55,11 @@
   （`register_extension_tools`）解析 Global 视图，子代理注册表按来源分层
   解析自己的视图（5b：script/compiled-in 工具可挂载进子代理，dylib 工具
   保持仅主轮——detached 后台子代理可能活得比一次 reload 的两阶段 dylib
-  drop 更久）。turn 循环、唯一的 `BASE_PROMPT` 与子代理工具注册表的内建
-  表面是契约声明的核心，不做插件化（逐表面地图见 MODS_cn.md"该用哪一
+  drop 更久）。唯一的 `BASE_PROMPT` 与子代理工具注册表的内建表面是
+  契约声明的核心，不做插件化；主 turn 循环是可组合的内核服务——引擎
+  从进程共享的 `TurnExecutorRegistry`（`engine/executor_composition.rs`）
+  解析按配置选择的 factory（`turn_executor`，默认 `builtin`），替代循环
+  以 crate 内编译的注册条目落地（逐表面地图见 MODS_cn.md"该用哪一
   层"）。
 - `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.10.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
@@ -130,6 +134,7 @@
 - **`crates/agent-runtime/src/engine/`** - Agent 执行引擎（已从终端用户前端迁出）
   - `mod.rs` - `Engine` 结构体 + 事件循环（`Engine::run`、`handle_send_message`）、系统提示词刷新、图片块组装
   - `host_executor.rs` - `HostAgentExecutor`，生产环境的 LLM↔工具 turn 循环，吸收了全部护栏（loop-guard、LSP flush、透明重试、steer、审批、压缩、容量、early-tool-start、子代理、cycle）
+  - `executor_composition.rs` - turn 执行器组合（内核组合点）：每 turn 的 `TurnDeps` 快照、从进程共享 `TurnExecutorRegistry` 按配置解析的 `TurnExecutorFactory`（默认 `builtin` = `host_executor.rs` 的装配），以及 dyn-safe 的 `TurnHarvest` 收割（take_*）面
   - `turn/` - 从 `host_executor.rs` 按阶段拆出的每步机制模块：`stream.rs`（流式归约 + 透明重试）、`batches.rs`（工具批次规划/执行）、`approval.rs`（逐工具审批门控）、`seams.rs`（取消检查点 + steer 排空）、`postprocess.rs`（子代理收割门控、thinking-only 状态、LSP 收集/刷新）、`truncation.rs`（输出截断/工具输出限界）
   - `capacity_flow.rs` - 容量护栏检查点和干预
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard 状态、工具输入解析 + 批次规划、延迟工具目录策略、MCP 分发扇出、编辑后 LSP 钩子

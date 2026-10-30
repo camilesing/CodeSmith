@@ -47,6 +47,8 @@ SEAMS = [
     "SessionStore",
     "SubAgentSpawner",
     "ToolDefinition",
+    "TurnExecutorFactory",
+    "TurnHarvest",
     "WorkflowEngine",
 ]
 

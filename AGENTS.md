@@ -170,10 +170,15 @@ in an implementation crate, consumer — and lands in
   `crates/agent-runtime/src/prompts/base.md`) is the sole base prompt by
   convention; `crates/cli/src/prompts.rs` has tests asserting required tags.
   Same rule: move the code, not the prose, if that changes.
-- There is one production turn loop, `HostAgentExecutor` behind the
-  `AgentExecutor` seam: the engine invokes it through `Arc<dyn AgentExecutor>`,
-  and an alternate loop lands as a new provider on that seam (compile-time
-  registered), not as a second in-tree loop. The loop lives in
+- The main turn is a composed kernel service: at every turn assembly the
+  engine snapshots its kernel services into `TurnDeps` and resolves the
+  configured factory from the process-shared `TurnExecutorRegistry`
+  (`crates/agent-runtime/src/engine/executor_composition.rs`, config key
+  `turn_executor`, default `builtin`). `HostAgentExecutor` is the default
+  production loop behind the `AgentExecutor` seam (`Arc<dyn AgentExecutor>`
+  for the run, `Arc<dyn TurnHarvest>` for the post-run take_* family); an
+  alternate loop lands as a crate-compiled registry entry, not as a second
+  engine loop or a fork of the wire-in. The loop lives in
   `crates/agent-runtime/src/engine/` (turn phases in `engine/turn/`).
   `crates/cli/src/core/` is a thin re-export and construction bridge
   (`EngineHost`/`build_engine`), not a second loop; `crates/core` is a separate
