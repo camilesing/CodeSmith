@@ -335,11 +335,12 @@ pub struct ExtensionRunner {
     /// [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
     /// (a safe `Arc`-free MOVE under one lock — the `Library` stays alive)
     /// and drained+dropped by [`drop_pending`](Self::drop_pending) at the
-    /// engine op-loop top (the one moment the main-thread
-    /// `HostAgentExecutor` — the only in-flight dylib `Arc` holder between
-    /// turns — is already dropped). Never dropped on the UI thread: doing so
-    /// while an in-flight turn holds a dylib `Arc` would be UAF (dangling
-    /// vtable). See spec §4a/§4b.
+    /// engine op-loop top, which calls it only after the turn-lease
+    /// dlclose gate (agent-runtime `turn_lease::stale_dylib_holders`)
+    /// reports no in-flight holder assembled under a retired generation.
+    /// Never dropped on the UI thread: doing so while an in-flight turn
+    /// holds a dylib `Arc` would be UAF (dangling vtable). See spec
+    /// §4a/§4b.
     pending_drop: Mutex<Vec<Library>>,
     /// Route A — the shared provider registry extension factories flush
     /// into at `bind_core`. Defaults to a private instance; hosts that
@@ -775,12 +776,26 @@ impl ExtensionRunner {
         pending.extend(drained);
     }
 
+    /// Whether `pending_drop` holds `Library`s awaiting the engine
+    /// op-loop's `drop_pending`. The engine pairs this with the turn-lease
+    /// dlclose gate (`turn_lease::stale_dylib_holders`) so a deferred
+    /// unload is only logged when there is actually something to defer.
+    pub fn has_pending_drop(&self) -> bool {
+        !self
+            .pending_drop
+            .lock()
+            .expect("pending_drop lock poisoned")
+            .is_empty()
+    }
+
     /// §F5d T4 — DROP the pending `Library`s. Called ONLY from the engine
     /// op-loop top (agent-runtime `engine/mod.rs`) before `match op`, at the
-    /// one moment the main-thread `HostAgentExecutor` (the only in-flight
-    /// dylib `Arc` holder) is already dropped between turns. Dropping here
-    /// unloads the dylibs safely. Idempotent (empty pending → no-op). NEVER
-    /// call this from the UI thread — see the `pending_drop` field.
+    /// one moment the main turn's in-flight lease is released between turns
+    /// and no lease assembled under a retired generation holds dylib
+    /// handles (the engine checks the turn-lease registry before calling;
+    /// sub-agents declare no dylib exposure). Dropping here unloads the
+    /// dylibs safely. Idempotent (empty pending → no-op). NEVER call this
+    /// from the UI thread — see the `pending_drop` field.
     pub fn drop_pending(&self) {
         // Release the lock before dropping the `Library`s: `Library::drop`
         // runs dylib cleanup (`dlclose`/`FreeLibrary`) which may be slow, and

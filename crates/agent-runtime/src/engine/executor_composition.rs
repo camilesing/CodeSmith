@@ -16,9 +16,11 @@
 //! identity-checked RAII guard whose drop un-registers, and
 //! effect-at-next-chokepoint semantics — a registration takes effect at the
 //! next turn's assembly, never mid-turn (the in-flight executor is
-//! refcounted). The builtin factory (`HostAgentExecutorFactory`) carries
-//! exactly the construction the engine used to inline, so the default path
-//! is the same assembly.
+//! refcounted). Replacing an id is refused while turns are in flight on it
+//! (the [`crate::turn_lease`] registry; DSH `setFactory` conflict
+//! semantics) — the error names the count. The builtin factory
+//! (`HostAgentExecutorFactory`) carries exactly the construction the
+//! engine used to inline, so the default path is the same assembly.
 //!
 //! Known limitations (deliberate):
 //! - **Alternate implementations are compiled-in registrations in this
@@ -29,8 +31,10 @@
 //!   `codesmith-agent-runtime` boundary. Wrapping an existing turn from a
 //!   dylib is the around-turn seam (`crates/agent/src/extension.rs`).
 //! - **Main turns only.** Sub-agent loops build their own in-loop dispatch
-//!   and do not consult this registry; a session's children run the builtin
-//!   machinery regardless of the selected main-turn executor.
+//!   and do not consult this registry for *selection*; a session's
+//!   children run the builtin machinery regardless of the selected
+//!   main-turn executor. They do hold [`crate::turn_lease`] leases on the
+//!   builtin id, so the replacement guard counts them.
 //! - **Approval is loop discipline, not dispatcher-enforced.** A factory
 //!   receives the approval router and the cancel/steer channels in
 //!   `TurnDeps` and is contractually required to gate tool calls through
@@ -208,33 +212,80 @@ pub trait TurnHarvest: Send + Sync {
 /// Process-shared registry of turn-executor factories, selected by the
 /// `turn_executor` config id. Mirrors `SharedProviderRegistry`: upsert by
 /// id, identity-checked RAII unregister, lock held only for the map
-/// operation (`build` always runs outside it).
-#[derive(Default)]
+/// operation (`build` always runs outside it). The paired
+/// [`TurnLeaseRegistry`](crate::turn_lease::TurnLeaseRegistry) carries the
+/// registry's in-flight accounting (DSH: the agent registry owns both the
+/// factory slot and the live agents), so `register` can refuse to replace
+/// an id that still has turns running on it.
 pub(crate) struct TurnExecutorRegistry {
     inner: Arc<RwLock<HashMap<String, Arc<dyn TurnExecutorFactory>>>>,
+    leases: crate::turn_lease::TurnLeaseRegistry,
 }
 
 impl TurnExecutorRegistry {
+    /// Build a registry over `leases` — the shared registry pairs with
+    /// [`shared_turn_leases`](crate::turn_lease::shared_turn_leases);
+    /// tests pair with their own instance so parallel tests' leases do
+    /// not leak into each other's counts.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(leases: crate::turn_lease::TurnLeaseRegistry) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            leases,
+        }
     }
 
-    /// Register (or replace) a factory, keyed by its id. Returns the
-    /// registration guard: dropping it removes the factory unless a newer
-    /// registration for the same id has since replaced it.
+    /// A registry seeded with the builtin factory. The seed is a first
+    /// registration, never a replacement, so the in-flight guard does not
+    /// apply — the shared registry initializes lazily and can do so from
+    /// inside the first turn, after that turn's own `builtin` lease exists.
+    /// The builtin's guard is leaked: the builtin is process-lifetime and
+    /// has nothing to unwind.
     #[must_use]
-    pub fn register(&self, factory: Arc<dyn TurnExecutorFactory>) -> TurnExecutorRegistration {
+    pub fn with_builtin(leases: crate::turn_lease::TurnLeaseRegistry) -> Self {
+        let registry = Self::new(leases);
+        let guard = registry
+            .register(Arc::new(HostAgentExecutorFactory))
+            .expect("a first registration is never refused");
+        std::mem::forget(guard);
+        registry
+    }
+
+    /// Register (or replace) a factory, keyed by its id. Replacing an
+    /// incumbent fails loud while any turn is still in flight on that id
+    /// (DSH `setFactory` conflict: a replacement never takes the old
+    /// factory's live handles away) — let the turns finish (or drain the
+    /// sub-agents via a reload) and retry. A first registration of an id
+    /// is not a replacement and is never refused, which is what lets the
+    /// shared registry seed the builtin lazily from inside a turn that
+    /// already holds a `builtin` lease. Returns the registration guard:
+    /// dropping it removes the factory unless a newer registration for
+    /// the same id has since replaced it.
+    pub fn register(
+        &self,
+        factory: Arc<dyn TurnExecutorFactory>,
+    ) -> Result<TurnExecutorRegistration, String> {
         let id = factory.id().to_string();
-        self.inner
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.clone(), factory.clone());
-        TurnExecutorRegistration {
+        // Lock order: executor map (write) → lease entries; nothing takes
+        // them in the other order (`acquire` never touches this map).
+        let mut map = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        if map.contains_key(&id) {
+            let in_flight = self.leases.in_flight_for_executor(&id);
+            if in_flight > 0 {
+                return Err(format!(
+                    "cannot replace turn executor '{id}': {in_flight} turn(s) in flight on it — \
+                     wait for them to finish (a /extension reload drains in-flight sub-agents) \
+                     and retry"
+                ));
+            }
+        }
+        map.insert(id.clone(), factory.clone());
+        drop(map);
+        Ok(TurnExecutorRegistration {
             registry: self.clone_handle(),
             id,
             factory,
-        }
+        })
     }
 
     /// Remove `factory` from `id` only if it is still the registered one
@@ -275,6 +326,7 @@ impl TurnExecutorRegistry {
     fn clone_handle(&self) -> TurnExecutorRegistry {
         TurnExecutorRegistry {
             inner: Arc::clone(&self.inner),
+            leases: self.leases.clone(),
         }
     }
 }
@@ -297,17 +349,13 @@ impl Drop for TurnExecutorRegistration {
 
 /// The process-shared turn-executor registry, seeded with the builtin
 /// factory. Hosts resolve here at turn assembly and validate config against
-/// it at startup.
+/// it at startup. Paired with the process-shared lease registry
+/// (`turn_lease::shared_turn_leases`) so the in-flight guard sees every
+/// engine's turns.
 pub(crate) fn shared_turn_executors() -> &'static TurnExecutorRegistry {
     static SHARED: OnceLock<TurnExecutorRegistry> = OnceLock::new();
     SHARED.get_or_init(|| {
-        let registry = TurnExecutorRegistry::new();
-        // The builtin's guard must never drop — it would un-register the
-        // builtin at the end of this statement. Leak it: the builtin is
-        // process-lifetime by design and has nothing to unwind.
-        let guard = registry.register(Arc::new(HostAgentExecutorFactory));
-        std::mem::forget(guard);
-        registry
+        TurnExecutorRegistry::with_builtin(crate::turn_lease::shared_turn_leases().clone())
     })
 }
 
@@ -468,17 +516,88 @@ mod tests {
     /// newer factory → dropping the live guard un-registers.
     #[test]
     fn registry_replace_and_identity_checked_unregister() {
-        let registry = TurnExecutorRegistry::new();
-        let guard_a = registry.register(Arc::new(NoopFactory));
+        let registry = TurnExecutorRegistry::new(crate::turn_lease::TurnLeaseRegistry::new());
+        let guard_a = registry
+            .register(Arc::new(NoopFactory))
+            .expect("register a");
         assert_eq!(registry.ids(), vec!["noop-test".to_string()]);
 
-        let guard_b = registry.register(Arc::new(NoopFactory));
+        let guard_b = registry
+            .register(Arc::new(NoopFactory))
+            .expect("register b");
         drop(guard_a); // stale guard: must NOT remove the newer factory
         assert!(registry.resolve("noop-test").is_some());
 
         drop(guard_b);
         assert!(registry.resolve("noop-test").is_none());
         assert!(registry.ids().is_empty());
+    }
+
+    /// DSH `setFactory` conflict semantics: an incumbent id with in-flight
+    /// leases is not replaceable; the error names the count (fail loud).
+    /// Releasing the leases unblocks the replacement.
+    #[test]
+    fn register_rejects_replacement_while_turns_are_in_flight() {
+        let leases = crate::turn_lease::TurnLeaseRegistry::new();
+        let registry = TurnExecutorRegistry::new(leases.clone());
+        // The incumbent stays registered for the whole test.
+        let _incumbent = registry
+            .register(Arc::new(NoopFactory))
+            .expect("first registration goes through");
+
+        let in_flight = leases.acquire(crate::turn_lease::TurnLeaseSpec {
+            key: crate::turn_lease::TurnLeaseKey {
+                agent: "session-x".to_string(),
+                generation: 0,
+                executor: "noop-test".to_string(),
+            },
+            depth: 0,
+            cancel: CancellationToken::new(),
+            dylib_exposed: false,
+            scope: None,
+        });
+        let second = match registry.register(Arc::new(NoopFactory)) {
+            Err(message) => message,
+            Ok(_) => panic!("in-flight id must not be replaceable"),
+        };
+        assert!(
+            second.contains("cannot replace turn executor 'noop-test'"),
+            "{second}"
+        );
+        assert!(second.contains("1 turn(s) in flight"), "{second}");
+        assert!(second.contains("retry"), "names the remedy: {second}");
+
+        drop(in_flight);
+        registry
+            .register(Arc::new(NoopFactory))
+            .expect("registration goes through once the turns finish");
+    }
+
+    /// Regression: the builtin seed is a first registration and must never
+    /// be refused by the in-flight guard. The shared registry initializes
+    /// lazily — possibly from inside the first turn, after that turn's own
+    /// `builtin` lease exists — and an unconditional guard refused the
+    /// seed there (panicking the init and killing the turn). Only
+    /// replacing an incumbent is guarded.
+    #[test]
+    fn builtin_seed_ignores_in_flight_guard() {
+        let leases = crate::turn_lease::TurnLeaseRegistry::new();
+        let _turn_already_running = leases.acquire(crate::turn_lease::TurnLeaseSpec {
+            key: crate::turn_lease::TurnLeaseKey {
+                agent: "session-first-turn".to_string(),
+                generation: 0,
+                executor: BUILTIN_TURN_EXECUTOR_ID.to_string(),
+            },
+            depth: 0,
+            cancel: CancellationToken::new(),
+            dylib_exposed: true,
+            scope: None,
+        });
+        let registry = TurnExecutorRegistry::with_builtin(leases);
+        assert!(
+            registry.resolve(BUILTIN_TURN_EXECUTOR_ID).is_some(),
+            "the builtin seeds even with a builtin turn in flight"
+        );
     }
 
     /// The process-shared registry always carries the builtin factory.

@@ -185,7 +185,16 @@ in an implementation crate, consumer — and lands in
   The loop lives in `crates/agent-runtime/src/engine/` (turn phases in
   `engine/turn/`). `crates/cli/src/core/` is a thin re-export and
   construction bridge (`EngineHost`/`build_engine`), not a second loop;
-  `crates/core` is a separate crate and runs no turns. The boundary note
+  `crates/core` is a separate crate and runs no turns. Structural
+  ownership (DSH): every running turn holds a `TurnLease`
+  (`crates/agent-runtime/src/turn_lease.rs`; key = agent id + extension
+  generation + executor id, runner-scoped; main turn at assembly,
+  in-process sub-agents via `run_subagent_task`) — a reload drains the
+  runtime's in-flight sub-agents (reason-tagged cancel, deepest first,
+  bounded wait) before the two-phase dylib unload, an executor id with
+  in-flight leases refuses replacement, and the engine op-loop defers
+  `drop_pending` while a lease assembled under a retired generation
+  declares dylib exposure. The boundary note
   at the top of `docs/ARCHITECTURE.md` is the live reference.
 - The system prompt + tool catalog are a session-pinned cache prefix
   (`crates/agent-runtime/src/prefix_cache.rs`); the static system prompt

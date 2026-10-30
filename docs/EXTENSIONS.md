@@ -158,7 +158,20 @@ Runtime reload mechanics (shared by `/extension reload`, `/mods reload`,
 and the `manage_mods` tool — `crates/cli/src/mod_ops.rs` →
 `reload_extension_runtime`, `crates/cli/src/core/engine.rs`):
 
-- It re-populates the **shared runner `Arc`**: the runner's clear suite
+- It re-populates the **shared runner `Arc`**, and first drains the
+  runtime's in-flight sub-agent turns (structural ownership, DSH
+  alignment — `agent-runtime/src/turn_lease.rs`): each lease gets a
+  reason-tagged cancel (`extension reload`, the DSH `disposed` analog),
+  deepest spawn depth first, and a bounded wait (`RELOAD_DRAIN_TIMEOUT`,
+  5s) for the runs to settle; a lease that outlives the bound is
+  reported in the reload message and the reload continues (children hold
+  no dylib handles, so the unload below stays safe). The main turn
+  (depth 0) is never drained — from the REPL no main turn is in flight,
+  and from the `manage_mods` tool the main turn is the reload's
+  initiator (the DSH self-lineage exclusion; draining it would be a
+  self-wait). A turn-executor id with in-flight leases also refuses
+  replacement (`TurnExecutorRegistry::register` fails loud with the
+  count). Then: the runner's clear suite
   (`clear_bound_registrations`: handlers, tools, commands, disabled
   builtin commands, providers (drops registration guards), prompt
   sections, skills, message projections, policies) →
@@ -566,16 +579,24 @@ tools mount in children freely; the capability-manifest removal and the
 read-only narrowing govern them like any other tool (an ext tool joins
 an explore child's surface by declaring the `ReadOnly` capability).
 
-Safe unload rests on a two-phase `Library` drop: reload on the UI
-thread MOVES orphaned `Library`s to `pending_drop`
-(`drain_libraries_to_pending`); the engine op-loop top DROPs them
-(`drop_pending`) at the one moment the main-thread `HostAgentExecutor`
-(the only in-flight dylib `Arc` holder) is already dropped between
-turns. This makes runtime reload + uninstall safe concurrent with
-in-flight turns. The safety is proven by that invariant + the
-single-call-site discipline; dylib+Miri is unreliable (libloading's
-`Library::drop` runs `dlclose`/`FreeLibrary`, which Miri doesn't model),
-so the invariant — not a Miri run — is the proof.
+Safe unload rests on a two-phase `Library` drop plus in-flight turn
+leases (structural ownership, `agent-runtime/src/turn_lease.rs`): every
+running turn — the main turn at assembly, each in-process sub-agent for
+its run — holds a `TurnLease` (keyed agent + extension generation +
+turn-executor id, runner-scoped) whose registry answers "who runs what,
+under which generation". Reload on the UI thread MOVES orphaned
+`Library`s to `pending_drop` (`drain_libraries_to_pending`) **after**
+draining the runtime's in-flight sub-agents (above); the engine op-loop
+top DROPs them (`drop_pending`) only when no lease assembled under a
+retired generation declares dylib exposure — the main turn's lease is
+released between turns, and sub-agent leases declare none (5b) —
+deferring with a logged reason otherwise (the safety net; the normal
+path never triggers it). This makes runtime reload + uninstall safe
+concurrent with in-flight turns. The safety is proven by that
+lease-checked invariant + the single-call-site discipline; dylib+Miri is
+unreliable (libloading's `Library::drop` runs `dlclose`/`FreeLibrary`,
+which Miri doesn't model), so the invariant — not a Miri run — is the
+proof.
 
 ## Known limitations
 

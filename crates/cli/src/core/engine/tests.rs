@@ -5855,6 +5855,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
         )),
+        std::time::Duration::from_millis(50),
     );
     assert_eq!(runner.generation(), 1, "reload must bump generation");
 
@@ -5867,6 +5868,128 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         vec!["SessionShutdown"],
         "reload must clear the previously-bound handler (no duplication)"
     );
+}
+
+// === Structural ownership (DSH, iteration A) — reload drain ===============
+//
+// A reload drains the runner's in-flight sub-agent turns before the
+// two-phase dylib unload: reason-tagged cancel, deepest first, bounded
+// wait; a lease that outlives the bound is reported and the reload
+// continues (sub-agents hold no dylib handles, 5b). Proven here with a
+// fake child lease registered directly on the shared lease registry,
+// scoped to this test's runner — other tests' leases are out of scope.
+
+/// A fake in-flight child lease that cooperatively releases once its
+/// token fires (the std thread plays the sub-agent loop's cancel arm).
+#[test]
+fn reload_drains_in_flight_child_lease_before_continuing() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let leases = codesmith_agent_runtime::turn_lease::shared_turn_leases();
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let lease = leases.acquire(codesmith_agent_runtime::turn_lease::TurnLeaseSpec {
+        key: codesmith_agent_runtime::turn_lease::TurnLeaseKey {
+            agent: "agent_fake_child".to_string(),
+            generation: runner.generation(),
+            executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+        },
+        depth: 1,
+        cancel: token.clone(),
+        dylib_exposed: false,
+        scope: Some(std::sync::Arc::downgrade(&runner)),
+    });
+    let holder = std::thread::spawn(move || {
+        while !token.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            lease.cancel_reason(),
+            Some(super::EXTENSION_RELOAD_DRAIN_REASON),
+            "the drain latches its reason before the token fires"
+        );
+        drop(lease);
+    });
+
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let report = super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &state,
+        &mod_state,
+        true,
+        std::sync::Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
+        std::time::Duration::from_secs(5),
+    );
+    holder.join().expect("holder thread");
+
+    let drain = report.drain.expect("a reload reports its drain");
+    assert!(
+        drain.outstanding.is_empty(),
+        "the cooperative child settles: {drain:?}"
+    );
+    assert_eq!(drain.drained.len(), 1, "{drain:?}");
+    assert_eq!(drain.drained[0].agent, "agent_fake_child");
+    assert_eq!(runner.generation(), 1, "the reload itself completed");
+}
+
+/// A stuck child lease: cancelled + reported outstanding when the bound
+/// elapses, and the reload still completes (honest continue, not a hang
+/// and not an unload that ignores the child).
+#[test]
+fn reload_times_out_drain_and_continues() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let leases = codesmith_agent_runtime::turn_lease::shared_turn_leases();
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let stuck = leases.acquire(codesmith_agent_runtime::turn_lease::TurnLeaseSpec {
+        key: codesmith_agent_runtime::turn_lease::TurnLeaseKey {
+            agent: "agent_stuck_child".to_string(),
+            generation: runner.generation(),
+            executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+        },
+        depth: 1,
+        cancel: token.clone(),
+        dylib_exposed: false,
+        scope: Some(std::sync::Arc::downgrade(&runner)),
+    });
+
+    let state = crate::extension_state::ExtensionStateStore::load_default().unwrap_or_default();
+    let mod_state = crate::mod_state::ModStateStore::load_default().unwrap_or_default();
+    let report = super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &state,
+        &mod_state,
+        true,
+        std::sync::Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
+        std::time::Duration::from_millis(100),
+    );
+
+    assert!(
+        token.is_cancelled(),
+        "the drain still cancels the stuck child"
+    );
+    let drain = report.drain.expect("a reload reports its drain");
+    assert!(drain.drained.is_empty(), "{drain:?}");
+    assert_eq!(drain.outstanding.len(), 1, "{drain:?}");
+    assert_eq!(drain.outstanding[0].agent, "agent_stuck_child");
+    assert_eq!(
+        runner.generation(),
+        1,
+        "the reload continued past the timeout"
+    );
+    drop(stuck);
 }
 
 // === §F script mod layer — e2e: discover → pending gate → activate → live ==//
@@ -5976,6 +6099,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &mod_state,
         true,
         cancel.clone(),
+        std::time::Duration::from_millis(50),
     );
     assert_eq!(report.loaded_mods, 1);
     assert!(report.pending_mods.is_empty());
@@ -6012,6 +6136,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &mod_state,
         true,
         cancel.clone(),
+        std::time::Duration::from_millis(50),
     );
     assert!(
         !runner.bound_tools().iter().any(|(n, _)| n == "e2e_greet"),
@@ -6035,8 +6160,15 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         "register_tool(#{name: \"e2e_evil\", description: \"tampered\"}, |input| { ok(\"no\") });",
     )
     .expect("tampered entry");
-    let report =
-        super::reload_extension_runtime(&runner, &workspace, &ext_state, &mod_state, true, cancel);
+    let report = super::reload_extension_runtime(
+        &runner,
+        &workspace,
+        &ext_state,
+        &mod_state,
+        true,
+        cancel,
+        std::time::Duration::from_millis(50),
+    );
     assert_eq!(report.loaded_mods, 0, "changed content must not load");
     assert_eq!(report.pending_mods.len(), 1, "{:?}", report.pending_mods);
     assert!(

@@ -4908,7 +4908,32 @@ async fn run_subagent_task(task: SubAgentTask) {
             .await
         }
         None => {
-            run_subagent(
+            // Structural ownership (DSH, `turn_lease`): this in-process child
+            // holds its in-flight lease for the run's lifetime, so a reload
+            // of the extension runtime it was assembled under can drain it
+            // (reason-tagged cancel + bounded wait) before the two-phase
+            // dylib unload. Runs the builtin loop today, so the executor id
+            // is `builtin`; `dylib_exposed: false` is the 5b rule —
+            // dylib-origin contributions never enter sub-agent dispatch.
+            let lease = codesmith_agent_runtime::turn_lease::shared_turn_leases().acquire(
+                codesmith_agent_runtime::turn_lease::TurnLeaseSpec {
+                    key: codesmith_agent_runtime::turn_lease::TurnLeaseKey {
+                        agent: task.agent_id.clone(),
+                        generation: task
+                            .runtime
+                            .extension_runner
+                            .as_ref()
+                            .map_or(0, |r| r.generation()),
+                        executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID
+                            .to_string(),
+                    },
+                    depth: task.runtime.spawn_depth,
+                    cancel: task.runtime.cancel_token.clone(),
+                    dylib_exposed: false,
+                    scope: task.runtime.extension_runner.as_ref().map(Arc::downgrade),
+                },
+            );
+            let result = run_subagent(
                 &task.runtime,
                 task.agent_id.clone(),
                 task.agent_type,
@@ -4921,7 +4946,19 @@ async fn run_subagent_task(task: SubAgentTask) {
                 task.max_steps,
                 task.input_rx,
             )
-            .await
+            .await;
+            // A drain cancels the token and latches its reason first; make
+            // the reason visible in the parent's progress feed so a
+            // reload-stopped child explains itself.
+            if let Some(reason) = lease.cancel_reason() {
+                emit_agent_progress(
+                    task.runtime.event_tx.as_ref(),
+                    task.runtime.mailbox.as_ref(),
+                    &task.agent_id,
+                    format!("cancelled: {reason}"),
+                );
+            }
+            result
         }
     };
 

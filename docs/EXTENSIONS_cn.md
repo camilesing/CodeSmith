@@ -122,12 +122,21 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 工具共用 —— `crates/cli/src/mod_ops.rs` →
 `reload_extension_runtime`，`crates/cli/src/core/engine.rs`）：
 
-- 它会重新填充**共享的 runner `Arc`**：先执行 runner 的清除套件
-  （`clear_bound_registrations`：handlers、tools、commands、已停用的
-  内建命令、providers（丢弃注册 guard）、prompt sections、skills、
-  消息投影、policies）→ `drain_libraries_to_pending` →
-  `invalidate`（递增 generation）→ 发现（静态 + dylib）→ 与状态对账 →
-  逐个 `load` → `bind_core`（全新的 `HostExtensionContext`）。
+- 它会重新填充**共享的 runner `Arc`**，且在此之前先排空该运行时的在飞
+  子代理 turn（结构性所有权，DSH 对齐 ——
+  `agent-runtime/src/turn_lease.rs`）：每个租约收到带原因的取消
+  （`extension reload`，DSH `disposed` 的类比），按 spawn 深度从深到浅，
+  并有界等待其结束（`RELOAD_DRAIN_TIMEOUT`，5 秒）；超过界限仍未释放的
+  租约会写进 reload 消息并继续重载（子代理不持有 dylib 句柄，因此下面的
+  卸载仍然安全）。主 turn（深度 0）永不排空——REPL 路径没有在飞主 turn，
+  `manage_mods` 工具路径里主 turn 就是重载发起者（DSH 的发起者血缘排除；
+  排空它会自等死锁）。有在飞租约的 turn-executor id 同样拒绝被替换
+  （`TurnExecutorRegistry::register` 带在飞数 fail loud）。随后：执行
+  runner 的清除套件（`clear_bound_registrations`：handlers、tools、
+  commands、已停用的内建命令、providers（丢弃注册 guard）、prompt
+  sections、skills、消息投影、policies）→ `drain_libraries_to_pending`
+  → `invalidate`（递增 generation）→ 发现（静态 + dylib）→ 与状态对账
+  → 逐个 `load` → `bind_core`（全新的 `HostExtensionContext`）。
   `App.extension_runner` 和 Engine 的字段都会实时更新（没有 `Arc`
   交换 —— 它们共享引擎构建的那一个）。被排空的 `Library` 会在引擎
   op-loop 的下一次顶部（轮边界）被 `drop_pending`。重载前绑定的
@@ -495,12 +504,18 @@ agent 类型的视图，它会过滤掉 **dylib 来源**工具——detached 后
 移除与 read-only 收窄像治理其他工具一样治理它们（扩展工具声明
 `ReadOnly` 能力即可加入 explore 子代理的表面）。
 
-安全卸载依赖两阶段 `Library` drop：UI 线程上的重载将孤儿 `Library`
-移动到 `pending_drop`（`drain_libraries_to_pending`）；引擎 op-loop
-顶部在主线程 `HostAgentExecutor`（唯一持有在飞 dylib `Arc` 的角色）
-已在轮间被 drop 的那一刻将其 DROP（`drop_pending`）。这使得
+安全卸载依赖两阶段 `Library` drop 加上在飞 turn 租约（结构性所有权，
+`agent-runtime/src/turn_lease.rs`）：每个运行中的 turn——装配时的主
+turn、每个进程内子代理的整个运行——都持有一份 `TurnLease`（键为
+agent + 扩展代次 + turn-executor id，按 runner 作用域），其登记表回答
+「谁在哪个代次下跑着什么」。UI 线程上的重载在排空该运行时的在飞子代理
+（见上）之后，将孤儿 `Library` 移动到 `pending_drop`
+（`drain_libraries_to_pending`）；引擎 op-loop 顶部仅在没有任何「在
+已退役代次下装配、声明了 dylib 暴露」的租约时才将其 DROP
+（`drop_pending`）——主 turn 的租约在轮间释放，子代理租约声明零暴露
+（5b）——否则带日志推迟（安全网；正常路径不触发）。这使得
 运行时重载 + 卸载可以与在飞的轮安全并发。其安全性由该
-不变量 + 单调用点纪律证明；dylib+Miri 不可靠（libloading 的
+租约校验的不变量 + 单调用点纪律证明；dylib+Miri 不可靠（libloading 的
 `Library::drop` 会运行 `dlclose`/`FreeLibrary`，而 Miri 不对其建模），
 因此证明来自不变量 —— 而不是一次 Miri 运行。
 

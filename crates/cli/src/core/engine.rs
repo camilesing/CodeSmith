@@ -748,6 +748,10 @@ pub struct PopulateReport {
     /// extension/mod with its terminal status. Failures keep the original
     /// error string; `failed_audit_lines` is the shared diagnostic format.
     pub audit: Vec<StartupAuditEntry>,
+    /// The in-flight-turn drain a RELOAD performed before clearing (DSH
+    /// structural ownership, `turn_lease`). `None` on startup populate —
+    /// a fresh runtime has nothing in flight to drain.
+    pub drain: Option<codesmith_agent_runtime::turn_lease::DrainOutcome>,
 }
 
 /// One extension-layer startup entry (discipline 5). `populate_extension_runtime`
@@ -1238,24 +1242,45 @@ fn populate_extension_runtime(
             "startup audit: {failed} extension(s) failed to load — fix and /extension reload"
         );
     }
-    PopulateReport {
+    let report = PopulateReport {
         loaded_mods: loaded_mods_cell.load(std::sync::atomic::Ordering::Relaxed),
         pending_mods,
         audit,
+        drain: None,
+    };
+    if failed > 0 {
+        tracing::warn!(
+            target: "codesmith_extensions",
+            "startup audit: {failed} extension(s) failed to load — fix and /extension reload"
+        );
     }
+    report
 }
+
+/// The reason a reload drain writes onto every lease it cancels (the DSH
+/// `disposed` analog) — the stopped sub-agent surfaces it as its progress
+/// line.
+pub const EXTENSION_RELOAD_DRAIN_REASON: &str = "extension reload";
+
+/// How long a reload waits for its drained sub-agents to settle before
+/// proceeding without them (they stay cancelled and stop at their next
+/// checkpoint). Generous against a mid-tool call (a 30s tool bound), short
+/// enough that `/extension reload` never feels hung.
+pub const RELOAD_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// §F2b T7 — live reload: re-discover + re-load + re-bind on the **shared**
 /// runner `Arc` (every holder — `App.extension_runner` + the Engine's per-turn
 /// `HostAgentExecutor` clone — sees the update, since it's the same `Arc`).
-/// Clears handlers first so `bind_core`'s append-drain doesn't duplicate, +
-/// bumps generation so any previously-captured `ExtensionApi`/`ExtensionContext`
-/// reads stale (spec §7.3). Called by `/extension reload`
-/// (`extension_commands`). `shared_cancel_token` is the engine's shared
-/// cancel-token `Arc` — §F2c Layer 2 passes the **live** engine token (not a
-/// fresh one) so a handler's `ctx.signal()` reflects the engine's per-turn
-/// `reset_cancel_token` (no handler reads it yet; this is forward-looking
-/// infra).
+/// First drains the runner's in-flight sub-agent turns (DSH structural
+/// ownership; see below), then clears handlers so `bind_core`'s append-drain
+/// doesn't duplicate, + bumps generation so any previously-captured
+/// `ExtensionApi`/`ExtensionContext` reads stale (spec §7.3). Called by
+/// `/extension reload` (`extension_commands`). `shared_cancel_token` is the
+/// engine's shared cancel-token `Arc` — §F2c Layer 2 passes the **live**
+/// engine token (not a fresh one) so a handler's `ctx.signal()` reflects the
+/// engine's per-turn `reset_cancel_token` (no handler reads it yet; this is
+/// forward-looking infra). `drain_timeout` bounds the drain wait (production
+/// callers pass [`RELOAD_DRAIN_TIMEOUT`]; tests pass short bounds).
 pub fn reload_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
@@ -1263,7 +1288,38 @@ pub fn reload_extension_runtime(
     mod_state: &crate::mod_state::ModStateStore,
     mods_enabled: bool,
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
+    drain_timeout: std::time::Duration,
 ) -> PopulateReport {
+    // Structural ownership (DSH), before anything is cleared: cancel the
+    // in-flight sub-agent turns assembled under this runner — reason
+    // latched, deepest spawn depth first — and wait a bounded time for
+    // them to release. Depth 0 (the main turn) is never selected: from
+    // the REPL no main turn is in flight, and from the `manage_mods` tool
+    // the main turn is the reload's initiator (draining it would be a
+    // self-wait). A lease that outlives the bound is reported, not fatal
+    // — sub-agents hold no dylib-origin handles (5b), so the two-phase
+    // unload below stays safe either way. Blocking: both production
+    // callers run this under `spawn_blocking`.
+    let drain = codesmith_agent_runtime::turn_lease::shared_turn_leases().drain(
+        runner,
+        |_, depth| depth >= 1,
+        EXTENSION_RELOAD_DRAIN_REASON,
+        drain_timeout,
+    );
+    if !drain.outstanding.is_empty() {
+        let stuck: Vec<String> = drain
+            .outstanding
+            .iter()
+            .map(|key| key.agent.clone())
+            .collect();
+        tracing::warn!(
+            target: "codesmith_extensions",
+            "{} sub-agent(s) [{}] did not settle within the reload drain bound ({drain_timeout:?}); \
+             they stay cancelled and stop at their next checkpoint",
+            drain.outstanding.len(),
+            stuck.join(", ")
+        );
+    }
     // Whole-layer reload: drop every bound registration (the runner's clear
     // suite — handlers/tools/tool restrictions/commands/providers/prompt
     // sections/skills/message projections) AND the retained script-mod
@@ -1274,21 +1330,25 @@ pub fn reload_extension_runtime(
     runner.clear_mod_slots();
     // §F5d T4 — move the live dylib `Library`s into `pending_drop` (UI-thread
     // MOVE: `mem::take` under one lock, the `Library` stays alive). The engine
-    // op-loop top then `drop_pending`s them at the one moment the main-thread
-    // `HostAgentExecutor` (the only in-flight dylib `Arc` holder) is already
-    // dropped between turns — see agent-runtime `engine/mod.rs` op-loop +
-    // spec §4a/§4b. `populate_extension_runtime` loads fresh dylibs into
-    // `libraries` below. Idempotent + safe concurrent with an in-flight turn.
+    // op-loop top then `drop_pending`s them at the first moment the
+    // turn-lease dlclose gate reports no in-flight holder assembled under a
+    // retired generation (the main turn's lease is released between turns;
+    // sub-agents declare no dylib exposure — see agent-runtime
+    // `engine/mod.rs` op-loop + `turn_lease`, spec §4a/§4b).
+    // `populate_extension_runtime` loads fresh dylibs into `libraries`
+    // below. Idempotent + safe concurrent with an in-flight turn.
     runner.drain_libraries_to_pending();
     runner.invalidate();
-    populate_extension_runtime(
+    let mut report = populate_extension_runtime(
         runner,
         workspace,
         state,
         mod_state,
         mods_enabled,
         shared_cancel_token,
-    )
+    );
+    report.drain = Some(drain);
+    report
 }
 
 /// Assemble an [`Engine`] from CLI-coupled construction state.

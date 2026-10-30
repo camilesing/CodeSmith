@@ -3830,3 +3830,112 @@ fn child_runtime_propagates_external_provider() {
     let runtime = runtime_with_external_provider(provider);
     assert!(runtime.child_runtime().external_provider.is_some());
 }
+
+// === Structural ownership (DSH, iteration A) — sub-agent lease + drain ===
+
+/// A client that never answers: the child parks in its per-step
+/// `create_message` race until its cancel token fires, which is exactly
+/// the state a reload drain walks into.
+struct HangingClient;
+
+impl crate::llm_client::LlmClient for HangingClient {
+    fn provider_name(&self) -> &'static str {
+        "hanging"
+    }
+
+    fn model(&self) -> &str {
+        "hanging-model"
+    }
+
+    fn create_message(
+        &self,
+        _request: MessageRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::models::MessageResponse>> + Send + '_>,
+    > {
+        Box::pin(std::future::pending())
+    }
+
+    fn create_message_stream(
+        &self,
+        _request: MessageRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<crate::llm_client::StreamEventBox>> + Send + '_,
+        >,
+    > {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// An in-process child holds its turn lease for the run's lifetime and a
+/// reload drain of its runner cancels + awaits it. The mailbox `started`
+/// envelope is the deterministic "the lease is now held" signal (it is
+/// sent inside `run_subagent`, which `run_subagent_task` only enters
+/// after acquiring the lease).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_subagent_holds_a_lease_and_drains_on_reload() {
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let (mailbox, mut mailbox_rx) = Mailbox::new(CancellationToken::new());
+    let mut runtime = stub_runtime().background_runtime();
+    runtime.client = Arc::new(HangingClient);
+    runtime.extension_runner = Some(runner.clone());
+    runtime.mailbox = Some(mailbox);
+    let manager_handle = runtime.manager.clone();
+
+    let spawn = {
+        let mut manager = manager_handle.write().await;
+        manager.spawn_background_with_assignment(
+            manager_handle.clone(),
+            runtime,
+            SubAgentType::General,
+            "drain me".to_string(),
+            SubAgentAssignment::new("drain me".to_string(), None),
+            None,
+        )
+    };
+    let spawned = spawn.expect("spawn in-process child");
+
+    // Wait for the child's loop to start (⇒ the lease is held).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let envelope = mailbox_rx
+            .recv_timeout(Duration::from_secs(10))
+            .await
+            .expect("mailbox envelope");
+        if matches!(envelope.message, MailboxMessage::Started { .. }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "child never started");
+    }
+
+    // Drain the runner's in-flight children exactly like
+    // `reload_extension_runtime` does (blocking on a worker-capable
+    // runtime via spawn_blocking; the child runs on the other workers).
+    let leases = codesmith_agent_runtime::turn_lease::shared_turn_leases();
+    let outcome = tokio::task::spawn_blocking({
+        let runner = runner.clone();
+        move || {
+            leases.drain(
+                &runner,
+                |_, depth| depth >= 1,
+                "extension reload",
+                Duration::from_secs(5),
+            )
+        }
+    })
+    .await
+    .expect("drain thread");
+    assert!(outcome.outstanding.is_empty(), "{outcome:?}");
+    assert_eq!(outcome.drained.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.drained[0].agent, spawned.agent_id);
+    assert_eq!(
+        outcome.drained[0].executor,
+        codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID
+    );
+
+    // The child reached its cancelled terminal state through the normal
+    // loop path (not an abort).
+    let settled = wait_until_terminal(&manager_handle, &spawned.agent_id).await;
+    assert_eq!(settled.status, SubAgentStatus::Cancelled);
+}

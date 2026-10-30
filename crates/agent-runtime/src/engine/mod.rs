@@ -562,15 +562,31 @@ impl Engine {
         }
         while let Some(op) = self.rx_op.recv().await {
             // §F5d T4 — drop any `Library`s orphaned by a UI-thread reload.
-            // This is the safe moment: the main-thread `HostAgentExecutor`
-            // from the previous turn was dropped at that turn's return
-            // (constructed fresh each turn), so no in-flight dylib `Arc`
-            // lives on the main thread here. Sub-agents never hold dylib
-            // `Arc`s either (§4b — structural: `SubAgentRuntime` has no
-            // `extension_runner` field). Idempotent (empty pending → no-op).
-            // See spec §4a/§4b.
-            if let Some(runner) = &self.extension_runner {
-                runner.drop_pending();
+            // This is the safe moment: the main turn's in-flight lease
+            // (structural ownership, `turn_lease`) was released when
+            // `handle_send_message` returned — same task as this loop —
+            // and sub-agent leases declare no dylib exposure (5b:
+            // dylib-origin contributions never enter sub-agent dispatch),
+            // so no lease assembled under a retired generation holds
+            // dylib handles here. The lease check is the safety net for a
+            // holder that breaks those rules: defer the `dlclose` and say
+            // so, rather than dangle a vtable. Idempotent (empty pending
+            // → no-op, and the lock is only taken when there is something
+            // to drop). See spec §4a/§4b.
+            if let Some(runner) = &self.extension_runner
+                && runner.has_pending_drop()
+            {
+                let stale = crate::turn_lease::shared_turn_leases()
+                    .stale_dylib_holders(runner, runner.generation());
+                if stale == 0 {
+                    runner.drop_pending();
+                } else {
+                    tracing::warn!(
+                        target: "codesmith_extensions",
+                        "deferring dylib unload: {stale} in-flight turn(s) assembled under a \
+                         retired extension generation may still hold dylib-origin handles"
+                    );
+                }
             }
             match op {
                 Op::SendMessage {
@@ -1436,8 +1452,9 @@ impl Engine {
             subagents: self.host.subagents(),
             session_id: Some(self.session.id.clone()),
         };
-        let built = match executor_composition::resolve_turn_executor(&self.config.turn_executor) {
-            Ok(factory) => factory.build(deps),
+        let factory = match executor_composition::resolve_turn_executor(&self.config.turn_executor)
+        {
+            Ok(factory) => factory,
             Err(message) => {
                 // Misconfiguration fails loud: the turn aborts with the
                 // registered ids and the remedy (startup validation in the
@@ -1461,6 +1478,32 @@ impl Engine {
                 return;
             }
         };
+        // Structural ownership (DSH, `turn_lease`): hold this turn's
+        // in-flight lease for the executor's lifetime — the reload drain,
+        // the executor-replacement guard and the dlclose safety net all
+        // read the registry. Taken after the factory resolved (a
+        // misconfigured turn holds nothing) and declared BEFORE `built` so
+        // it drops after the executor it covers. Depth 0 is what a reload
+        // drain leaves alone (from the REPL no main turn is in flight; from
+        // the `manage_mods` tool the main turn is the reload's initiator).
+        // `dylib_exposed` whenever a runner is bound: the turn's
+        // catalog/around chains may be dylib-origin.
+        let _turn_lease =
+            crate::turn_lease::shared_turn_leases().acquire(crate::turn_lease::TurnLeaseSpec {
+                key: crate::turn_lease::TurnLeaseKey {
+                    agent: self.session.id.clone(),
+                    generation: self
+                        .extension_runner
+                        .as_ref()
+                        .map_or(0, |runner| runner.generation()),
+                    executor: self.config.turn_executor.clone(),
+                },
+                depth: 0,
+                cancel: self.cancel_token.clone(),
+                dylib_exposed: self.extension_runner.is_some(),
+                scope: self.extension_runner.as_ref().map(Arc::downgrade),
+            });
+        let built = factory.build(deps);
         // The main turn is invoked through the `AgentExecutor` seam, held as
         // a trait object (`Arc<dyn AgentExecutor>`), composed via the
         // turn-executor registry above — the engine itself is the seam's

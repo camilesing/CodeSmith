@@ -625,12 +625,31 @@ pub fn reload_mods(
         &mod_state,
         mods_enabled,
         shared_cancel_token,
+        crate::core::engine::RELOAD_DRAIN_TIMEOUT,
     );
     let mut msg = format!(
         "Extension layer reloaded (generation {gen_before} → {}). {} mod(s) loaded.",
         runner.generation(),
         report.loaded_mods
     );
+    // Structural ownership (DSH): the reload drained in-flight sub-agents
+    // first — say so, so a cancelled child is never a surprise.
+    if let Some(drain) = &report.drain {
+        if !drain.drained.is_empty() {
+            msg.push_str(&format!(
+                " Drained {} in-flight sub-agent(s) first (cancelled: extension reload).",
+                drain.drained.len()
+            ));
+        }
+        if !drain.outstanding.is_empty() {
+            msg.push_str(&format!(
+                " {} sub-agent(s) did not settle within {}s — cancelled, stopping at their next \
+                 checkpoint.",
+                drain.outstanding.len(),
+                crate::core::engine::RELOAD_DRAIN_TIMEOUT.as_secs(),
+            ));
+        }
+    }
     if !report.pending_mods.is_empty() {
         let ids: Vec<String> = report
             .pending_mods

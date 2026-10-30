@@ -57,12 +57,19 @@
   保持仅主轮——detached 后台子代理可能活得比一次 reload 的两阶段 dylib
   drop 更久）。唯一的 `BASE_PROMPT` 与子代理工具注册表的内建表面是
   契约声明的核心，不做插件化；主 turn 循环是可组合的内核服务（DSH 内核
-  组合模型）——引擎从进程共享的 `TurnExecutorRegistry`
+  组合模型）——引擎从进程共享 `TurnExecutorRegistry`
   （`engine/executor_composition.rs`）解析按配置选择的 factory
   （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目
   落地，并以 `AroundTurnHandler` 链（`register_around_turn`，DSH
   `next()`，Rust 扩展，仅主 turn）包裹 run（逐表面地图见 MODS_cn.md
-  "该用哪一层"）。
+  "该用哪一层"）。结构性所有权（DSH，
+  `agent-runtime/src/turn_lease.rs`）：每个运行中的 turn 都持有一份
+  `TurnLease`（键：agent id + 扩展代次 + 执行器 id，按 runner 作用域）
+  ——主 turn 在装配时持有、每个进程内子代理在整个运行期持有——因此
+  reload 在两阶段 dylib 卸载之前先排空该运行时的在飞子代理（带原因
+  取消、由深及浅、有界等待），有在飞租约的执行器 id 拒绝替换，且引擎
+  op-loop 在存在「已退役代次下装配且声明 dylib 暴露」的租约时推迟
+  `drop_pending`。
 - `crates/cli`（包 `codesmith-cli`，二进制 `codesmith`）是活跃的终端用户运行时：既承载无头（headless）子命令，也承载基于行的交互式 REPL 前端（`crates/cli/src/interactive/` —— ratatui TUI 已在 v0.10.0 移除），并负责运行时 API、任务管理器和工具注册表接线。Agent 执行引擎本身（turn 循环、压缩、沙箱辅助程序、提示词）现在位于 `crates/agent-runtime`；`crates/cli/src/core/` 是一个薄的重导出 + 构造桥接层（`engine.rs` 定义 `EngineHost`/`build_engine`）。
 - 其他工作区 crate 正在逐步拆分，但它们尚不是唯一的运行时事实来源。
 - 启动信任边界的细节记录在 `docs/STARTUP_TRUST_BOUNDARY_AUDIT.md` 中；该审计是信任前与信任后初始化跟进事项的当前参考。
