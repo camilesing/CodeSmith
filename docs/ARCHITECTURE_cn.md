@@ -6,7 +6,8 @@
 
 当前边界说明（v0.11.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
-  `config`、`secrets`、`extensions`、`agent-runtime`（内核：经
+  `config`、`secrets`、`extensions`、`session`（会话数据面：转写分区、日志、
+  会话存储）、`agent-runtime`（内核：经
   `TurnExecutorRegistry` 组合、位于 `AgentExecutor` 接缝之后的 turn 循环、
   引擎、压缩）—— 与实现群：
   其余全部（`providers`、`tool-impls`、`cli`、
@@ -35,7 +36,8 @@
   Schema（协议、配置）由测试钉在对应类型上。
 - **会话持久化接缝。** 持久会话记录（`SavedSession`）、格式治理解码
   管线（schema 门禁、相邻内存迁移、未知块容忍、中断回合修复）与
-  `SessionStore` 接缝位于 `agent-runtime/src/session_store.rs`；文件
+  `SessionStore` 接缝位于 `codesmith-session`（`session/src/store.rs`，
+  以 `agent_runtime::session_store` 再导出；第九轮拆分）；文件
   提供者（`FileSessionStore`，每会话一个 JSON 文件 + 崩溃检查点）同
   模块——按 `FileKeyringStore` 先例允许提供者留在框架 crate。消费者：
   CLI REPL 恢复流程与 runtime API 的会话端点（dyn 分发）。已知限制：
@@ -46,7 +48,7 @@
   从保存会话恢复的能力，且 core/app-server 目前没有对 agent-runtime 的
   依赖边）。
   REPL / ACP 转写的持久记录是只追加的**会话日志**
-  （`agent-runtime/src/session_journal.rs`，接缝 `SessionJournal`，文件
+  （`session/src/journal.rs`，接缝 `SessionJournal`，文件
   提供者 `FileSessionJournal` → `<sessions>/<id>.journal.jsonl`）：引擎在
   每次 `TurnComplete` 之前和每个 op 之后，把转写的每次追加与每次重建
   ——包括压缩、`/purge`、`/edit` 丢弃的历史——发给日志，因此任一时刻的
@@ -190,6 +192,7 @@
 - **`crates/providers`** - 位于 Cargo feature 之后的可插拔 LLM 客户端实现（openai-compat、anthropic、mock；rig 适配器）。
 - **`crates/release`** - 发布发现 / 版本比较。
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
+- **`crates/session`** - 会话数据面（对应 DSH `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。以历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 再导出。
 - **`crates/state`** - SQLite 线程/会话持久化层。
 - **`crates/tool-impls`** - 具体的模型可见工具实现。
 - **`crates/tools`** - 共享工具调用原语，包括 CLI 运行时使用的工具结果/错误/能力类型。

@@ -7,7 +7,8 @@ absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 Current boundary note (v0.11.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
-  `extensions`, `agent-runtime` (the kernel: the turn loop composed through
+  `extensions`, `session` (the session data plane: transcript zones,
+  journal, saved-session store), `agent-runtime` (the kernel: the turn loop composed through
   the `TurnExecutorRegistry` behind the `AgentExecutor` seam, engine,
   compaction) — and an implementation
   group: everything else (`providers`,
@@ -41,7 +42,8 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
 - **Session persistence seam.** Durable session records (`SavedSession`),
   the format-governance decode pipeline (schema gate, adjacent in-memory
   migrations, unknown-block tolerance, interrupted-turn repair), and the
-  `SessionStore` seam live in `agent-runtime/src/session_store.rs`; the
+  `SessionStore` seam live in `codesmith-session` (`session/src/store.rs`,
+  re-exported as `agent_runtime::session_store`; round-9 split); the
   file provider (`FileSessionStore`, one JSON file per session +
   crash checkpoints) lives in the same module — provider-in-framework by
   the `FileKeyringStore` precedent. Consumers: the CLI REPL resume flow
@@ -54,7 +56,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   serves resume-from-session, and core/app-server have no
   agent-runtime edge today).
   The durable record of a REPL / ACP transcript is the append-only
-  **session journal** (`agent-runtime/src/session_journal.rs`, seam
+  **session journal** (`session/src/journal.rs`, seam
   `SessionJournal`, file provider `FileSessionJournal` →
   `<sessions>/<id>.journal.jsonl`): the engine sends every transcript
   append and every rebuild — including the history a compaction, `/purge`,
@@ -207,6 +209,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
 - **`crates/providers`** - Pluggable LLM client implementations (openai-compat, anthropic, mock; rig adapter) behind Cargo features.
 - **`crates/release`** - Release discovery / version comparison.
 - **`crates/secrets`** - OS keyring integration for API key storage.
+- **`crates/session`** - Session data plane (DSH `core/session` counterpart, split out of `agent-runtime` in round 9): the `AppendLog` / three-zone request contract, the append-only session journal, the saved-session store and its format governance, the artifact registry and fact ledger. Re-exported under the historical `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` paths.
 - **`crates/state`** - SQLite thread/session persistence layer.
 - **`crates/tool-impls`** - Concrete model-visible tool implementations.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the CLI runtime.

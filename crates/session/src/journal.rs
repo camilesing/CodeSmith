@@ -2,12 +2,12 @@
 //! session's transcript (round-9 TODO-58).
 //!
 //! Recording-layer role: while the session runs, the
-//! [`AppendLog`](crate::prompt_zones::AppendLog) is the authoritative
+//! [`AppendLog`](crate::zones::AppendLog) is the authoritative
 //! transcript; the journal is its durable, append-only copy — every append
 //! and every wholesale replacement, in order — so history that compaction,
 //! `/purge`, `/edit`, or a reset removed from the live transcript stays on
 //! disk, and the transcript at any point is a fold of a journal prefix. The
-//! session snapshot file ([`SavedSession`](crate::session_store::SavedSession))
+//! session snapshot file ([`SavedSession`](crate::store::SavedSession))
 //! is a load cache of that fold: it records the journal size it was written
 //! against, and a load whose journal has grown since (a crash between the
 //! journal append and the snapshot write, or an op that changed the
@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{Message, MessageRequest, SystemPrompt, Tool};
-use crate::session_store::AttemptRecord;
+use crate::store::AttemptRecord;
 
 /// Version of the journal line format this build writes and reads.
 pub const JOURNAL_FORMAT_VERSION: u32 = 1;
@@ -64,7 +64,7 @@ pub enum JournalEntry {
     /// Messages appended to the transcript, in order.
     Append { messages: Vec<Message> },
     /// The transcript was replaced wholesale by `messages`. `reason` is the
-    /// [`RebuildReason`](crate::prompt_zones::RebuildReason) display text and
+    /// [`RebuildReason`](crate::zones::RebuildReason) display text and
     /// `before` the replaced transcript's length — its content is the fold
     /// of every line above this one.
     Rebuild {
@@ -159,7 +159,7 @@ impl SessionJournal for FileSessionJournal {
                 reason, messages, ..
             }) = entries.first()
         {
-            let resync = crate::prompt_zones::RebuildReason::SessionSync.to_string();
+            let resync = crate::zones::RebuildReason::SessionSync.to_string();
             if *reason == resync
                 && read_journal(&path)
                     .and_then(|on_disk| fold_transcript(&on_disk))
@@ -436,7 +436,7 @@ mod tests {
                 }],
             )
             .expect("append");
-        let resync = crate::prompt_zones::RebuildReason::SessionSync.to_string();
+        let resync = crate::zones::RebuildReason::SessionSync.to_string();
         journal
             .append(
                 "s2",

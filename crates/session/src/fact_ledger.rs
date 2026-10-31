@@ -5,7 +5,7 @@
 //! re-folded from the transcript once compaction drops the source
 //! messages, so it persists as a snapshot field of the session file
 //! instead of registering as a transcript projection
-//! (`crate::projections`). That foldability boundary is the deciding
+//! (`(see crate docs: projections live in the engine crate)`). That foldability boundary is the deciding
 //! test: foldable state becomes a projection, non-foldable state a
 //! snapshot.
 //!
@@ -50,8 +50,8 @@ use std::path::Path;
 
 use crate::models::{ContentBlock, Message};
 
-use super::compact::{ERROR_MARKERS, extract_paths_from_message};
-use super::estimate_text_tokens_conservative;
+use crate::primitives::estimate_text_tokens_conservative;
+use crate::transcript::{ERROR_MARKERS, extract_paths_from_message};
 
 /// Soft cap on the ledger's rendered size. When exceeded, the oldest
 /// `FailureCause` entries are evicted first; `TaskConstraint` entries are

@@ -34,6 +34,7 @@ FRAMEWORK = {
     "codesmith-config",  # config schema + precedence; framework needs it
     "codesmith-secrets",  # secret-store facade; config and engine need it
     "codesmith-extensions",  # extension runtime: loading, dispatch, reload
+    "codesmith-session",  # session data plane: store, journal, zones (DSH core/session)
     "codesmith-agent-runtime",  # the kernel: one turn loop, engine, compaction
 }
 

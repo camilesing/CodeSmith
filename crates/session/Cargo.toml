@@ -1,0 +1,28 @@
+[package]
+name = "codesmith-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords = ["agent", "session", "persistence", "journal"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Session data plane for CodeSmith: transcript store, append-only journal, snapshot store and format governance"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+codesmith-agent.workspace = true
+codesmith-config.workspace = true
+regex = "1.11"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

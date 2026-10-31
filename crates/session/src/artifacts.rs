@@ -11,7 +11,7 @@
 // `TEST_ARTIFACT_SESSIONS_GUARD`) are compiled unconditionally and exposed
 // `pub` (not `cfg(test)`-gated) so dependent crates' test builds can reach
 // them — dependencies are never built with `cfg(test)` (see
-// `crate::test_support` for the same convention). They are only ever invoked
+// `codesmith_agent_runtime::test_support` for the same convention). They are only ever invoked
 // from test contexts.
 
 use std::io;
@@ -188,7 +188,7 @@ pub fn write_session_artifact(
     if let Some(parent) = absolute_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::utils::write_atomic(&absolute_path, content.as_bytes())?;
+    crate::primitives::write_atomic(&absolute_path, content.as_bytes())?;
     Ok((absolute_path, relative_path))
 }
 

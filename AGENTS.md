@@ -143,7 +143,7 @@ because they did anything wrong. Treat their time as more expensive than ours.
 ## Current contracts
 
 - The workspace is split into a **framework group** (`protocol`, `tools`,
-  `agent`, `config`, `secrets`, `extensions`, `agent-runtime`) and an
+  `agent`, `config`, `secrets`, `extensions`, `session`, `agent-runtime`) and an
   **implementation group** (everything else: `providers`, `tool-impls`,
   `cli`, `app-server`, ...). Framework crates must not depend, in the
   build graph, on workspace crates outside the framework group; the rule is
@@ -206,7 +206,8 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   cache effect: frozen prefix vs. append-only history. Never splice a
   volatile fact into the prefix; append it as a user-role message.
 - Verify consumers before removing "looks-dead" modules; standing live
-  examples: `agent-runtime/src/prompt_zones.rs` and
+  examples: `session/src/zones.rs` (re-exported as
+  `agent_runtime::prompt_zones`) and
   `tool-impls/src/tools/remember.rs`. Persistent memory lives in
   `agent-runtime/src/agent_memory/` (+ `memory.rs`); `remember.rs` is its
   capture path. The model/provider registry lives in `crates/agent/src/`

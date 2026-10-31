@@ -16,6 +16,7 @@ members = [
     "crates/providers",
     "crates/release",
     "crates/secrets",
+    "crates/session",
     "crates/state",
     "crates/tools",
     "crates/tool-impls",
@@ -64,6 +65,7 @@ codesmith-protocol = { path = "crates/protocol", version = "0.11.0" }
 codesmith-providers = { path = "crates/providers", version = "0.11.0", default-features = false }
 codesmith-release = { path = "crates/release", version = "0.11.0" }
 codesmith-secrets = { path = "crates/secrets", version = "0.11.0" }
+codesmith-session = { path = "crates/session", version = "0.11.0" }
 codesmith-state = { path = "crates/state", version = "0.11.0" }
 codesmith-tools = { path = "crates/tools", version = "0.11.0" }
 codesmith-tool-impls = { path = "crates/tool-impls", version = "0.11.0" }

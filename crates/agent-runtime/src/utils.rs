@@ -9,7 +9,6 @@ use crate::models::{ContentBlock, ImageSource, Message};
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 // === Home Directory Resolution ===
 
@@ -283,55 +282,7 @@ pub fn preserve_corrupt_state_file(path: &Path) {
     let _ = std::fs::copy(path, &backup);
 }
 
-/// Atomically write `contents` to `path` using a temporary file + fsync + rename.
-///
-/// 1. Creates a `NamedTempFile` in the same directory as `path` (same filesystem).
-/// 2. Writes `contents` to the temp file.
-/// 3. Calls `sync_all()` on the temp file for durability.
-/// 4. Atomically renames (persists) the temp file over `path`.
-///
-/// On filesystems that support it (`ext4`, `apfs`, `ntfs`), the rename is
-/// atomic — a concurrent reader sees either the old content or the new, never
-/// a partial write. `sync_all` ensures the data is on stable storage before
-/// the metadata change so an OS crash mid-rename doesn't lose data.
-///
-/// # Errors
-/// Returns `io::Error` if the parent directory cannot be determined, the temp
-/// file cannot be created, the write fails, or the rename fails.
-pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("path has no parent directory: {}", path.display()),
-        )
-    })?;
-    // Use parent directory so the rename is on the same filesystem.
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    // `NamedTempFile` is created 0600 on Unix, so persisting over an existing
-    // target would silently reset its permissions (a 0644 file drifts to 0600
-    // after one atomic write). Copy the target's mode onto the temp file
-    // before the rename; a missing target keeps the default 0600.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(path) {
-            let _ = tmp
-                .as_file()
-                .set_permissions(std::fs::Permissions::from_mode(
-                    meta.permissions().mode() & 0o7777,
-                ));
-        }
-    }
-    std::io::Write::write_all(&mut tmp, contents)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path)?;
-    // Make the rename itself durable (best-effort where dir fsync is
-    // unsupported).
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
-}
+pub use codesmith_session::primitives::write_atomic;
 
 /// Returns true if `component` is safe to join as a single path component:
 /// non-empty, no path separators, no `..`/`.`, and only `[A-Za-z0-9._-]`
@@ -850,16 +801,7 @@ fn image_source_chars(source: &ImageSource) -> usize {
 
 // === Hashing ===
 
-/// Compute the SHA-256 hex digest of a byte slice.
-///
-/// Single source for the prompt-cache / inspect / rlm paths (ROADMAP §A
-/// slice 42) — previously byte-duplicated across `prefix_cache`,
-/// `prompt_zones`, `tools/handle`, `rlm/session`, and `prompt_inspect`.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
+pub use codesmith_session::primitives::sha256_hex;
 
 #[cfg(test)]
 mod prompt_escape_tests {

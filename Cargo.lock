@@ -791,6 +791,7 @@ dependencies = [
  "codesmith-config",
  "codesmith-extensions",
  "codesmith-secrets",
+ "codesmith-session",
  "codesmith-tools",
  "dirs",
  "fd-lock",
@@ -1102,6 +1103,25 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "codesmith-session"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "codesmith-agent",
+ "codesmith-config",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

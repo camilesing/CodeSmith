@@ -16,6 +16,7 @@ release_crates=(
   codesmith-agent
   codesmith-state
   codesmith-extensions
+  codesmith-session
   codesmith-agent-runtime
   codesmith-providers
   codesmith-core

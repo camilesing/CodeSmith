@@ -48,7 +48,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::models::{Message, MessageRequest, SystemPrompt, Tool};
-use crate::utils::sha256_hex;
+use crate::primitives::sha256_hex;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -295,7 +295,7 @@ pub struct RebuildRecord {
 /// stream, the SQLite query index) is downstream of it. Nothing downstream
 /// holds authority over it. With journaling enabled, every push and every
 /// rebuild — including the history a rebuild drops — reaches the durable
-/// journal (`crate::session_journal`) in order.
+/// journal (`crate::journal`) in order.
 ///
 /// `push` is the only everyday mutation this type expresses. Wholesale
 /// replacement exists solely through [`rebuild`](Self::rebuild), which
@@ -347,7 +347,7 @@ impl Clone for AppendLog {
 #[derive(Debug, Default)]
 struct JournalCursor {
     mark: usize,
-    pending: Vec<crate::session_journal::JournalEntry>,
+    pending: Vec<crate::journal::JournalEntry>,
     /// The system prompt / tool catalog of the last journaled request
     /// (`None` before the first), so a request entry records them only
     /// when they changed.
@@ -360,10 +360,9 @@ impl JournalCursor {
     /// next lands at the transcript position it describes.
     fn seal_tail(&mut self, messages: &[Message]) {
         if self.mark < messages.len() {
-            self.pending
-                .push(crate::session_journal::JournalEntry::Append {
-                    messages: messages[self.mark..].to_vec(),
-                });
+            self.pending.push(crate::journal::JournalEntry::Append {
+                messages: messages[self.mark..].to_vec(),
+            });
             self.mark = messages.len();
         }
     }
@@ -407,7 +406,7 @@ impl AppendLog {
     /// the last request entry, messages only when they are not exactly the
     /// transcript prefix. No-op when journaling is off.
     pub fn record_request(&mut self, request: &crate::models::MessageRequest) {
-        use crate::session_journal::{JournalEntry, Recorded};
+        use crate::journal::{JournalEntry, Recorded};
         let Some(cursor) = self.journal.as_mut() else {
             return;
         };
@@ -444,26 +443,26 @@ impl AppendLog {
 
     /// Journal a failed model round at the current transcript position
     /// (round-9 TODO-59). No-op when journaling is off.
-    pub fn record_attempt(&mut self, record: crate::session_store::AttemptRecord) {
+    pub fn record_attempt(&mut self, record: crate::store::AttemptRecord) {
         let Some(cursor) = self.journal.as_mut() else {
             return;
         };
         cursor.seal_tail(&self.messages);
         cursor
             .pending
-            .push(crate::session_journal::JournalEntry::Attempt { record });
+            .push(crate::journal::JournalEntry::Attempt { record });
     }
 
     /// Drain the journal entries recorded since the last drain, in order:
     /// whatever rebuilds sealed, then the messages appended since. Empty
     /// when journaling is off or nothing changed.
-    pub fn take_journal_entries(&mut self) -> Vec<crate::session_journal::JournalEntry> {
+    pub fn take_journal_entries(&mut self) -> Vec<crate::journal::JournalEntry> {
         let Some(cursor) = self.journal.as_mut() else {
             return Vec::new();
         };
         let mut entries = std::mem::take(&mut cursor.pending);
         if cursor.mark < self.messages.len() {
-            entries.push(crate::session_journal::JournalEntry::Append {
+            entries.push(crate::journal::JournalEntry::Append {
                 messages: self.messages[cursor.mark..].to_vec(),
             });
         }
@@ -499,13 +498,11 @@ impl AppendLog {
             // Seal the not-yet-journaled tail before it leaves the log, then
             // the replacement: the replaced history stays on record.
             cursor.seal_tail(&self.messages);
-            cursor
-                .pending
-                .push(crate::session_journal::JournalEntry::Rebuild {
-                    reason: reason.to_string(),
-                    before,
-                    messages: messages.clone(),
-                });
+            cursor.pending.push(crate::journal::JournalEntry::Rebuild {
+                reason: reason.to_string(),
+                before,
+                messages: messages.clone(),
+            });
             cursor.mark = messages.len();
         }
         self.messages = messages;
@@ -904,7 +901,7 @@ mod tests {
 
     #[test]
     fn journal_records_pushes_and_rebuilds_in_order_and_keeps_dropped_history() {
-        use crate::session_journal::{JournalEntry, fold_transcript};
+        use crate::journal::{JournalEntry, fold_transcript};
         let mut log = AppendLog::from_messages(vec![text_message("user", "restored")]);
         log.enable_journal();
         log.push(text_message("user", "one"));
@@ -957,7 +954,7 @@ mod tests {
 
     #[test]
     fn journal_records_requests_with_changed_fields_only_and_reconstructs_them() {
-        use crate::session_journal::{JournalEntry, Recorded, reconstruct_requests};
+        use crate::journal::{JournalEntry, Recorded, reconstruct_requests};
         let mut log = AppendLog::new();
         log.enable_journal();
         log.push(text_message("user", "one"));
