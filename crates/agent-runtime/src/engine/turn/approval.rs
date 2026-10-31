@@ -237,7 +237,7 @@ impl HostAgentExecutor {
         input: &serde_json::Value,
         tool: &Arc<dyn Tool>,
         intent_summary: &Option<String>,
-    ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
+    ) -> Result<Option<codesmith_sandbox::runtime::SandboxPolicy>, String> {
         self.approval_gate(tool_id, name, input, tool, intent_summary, None)
             .await
     }
@@ -260,7 +260,7 @@ impl HostAgentExecutor {
         tool: &Arc<dyn Tool>,
         intent_summary: &Option<String>,
         ask_reason: &str,
-    ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
+    ) -> Result<Option<codesmith_sandbox::runtime::SandboxPolicy>, String> {
         self.approval_gate(tool_id, name, input, tool, intent_summary, Some(ask_reason))
             .await
     }
@@ -276,7 +276,7 @@ impl HostAgentExecutor {
         tool: &Arc<dyn Tool>,
         intent_summary: &Option<String>,
         force_ask: Option<&str>,
-    ) -> Result<Option<crate::sandbox::SandboxPolicy>, String> {
+    ) -> Result<Option<codesmith_sandbox::runtime::SandboxPolicy>, String> {
         // Path-access question (the user trusts, or refuses, an
         // out-of-workspace directory) instead of a bare refusal. The registry
         // merges this into `Required`; asking is kept unconditional here so a

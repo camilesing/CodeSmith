@@ -160,7 +160,8 @@ fn tool_result_metadata_summary(metadata: Option<&serde_json::Value>) -> Option<
             // hidden-character scrub (HackerOne #3086545) as
             // `output.content` — `summarize_text` only strips control
             // characters, not zero-width/format characters.
-            let sanitized = crate::sanitization::partially_sanitize_unicode(text.trim());
+            let sanitized =
+                codesmith_sandbox::sanitization::partially_sanitize_unicode(text.trim());
             if !sanitized.is_empty() {
                 return Some(summarize_text(
                     &sanitized,
@@ -296,7 +297,7 @@ fn compact_subagent_tool_result_for_context(
     }
     // The canonical path skips the rendering-side Unicode sanitization, so
     // re-sanitize here; for the fallback path this is an identity pass.
-    Some(crate::sanitization::partially_sanitize_unicode(
+    Some(codesmith_sandbox::sanitization::partially_sanitize_unicode(
         out.trim_end(),
     ))
 }
@@ -327,7 +328,7 @@ pub fn compact_tool_result_for_context(
 ) -> String {
     // Sanitize the tool output against Unicode hidden-character attacks
     // (HackerOne #3086545) before it enters the model context / transcript.
-    let raw = crate::sanitization::partially_sanitize_unicode(output.content.trim());
+    let raw = codesmith_sandbox::sanitization::partially_sanitize_unicode(output.content.trim());
     if raw.is_empty() {
         return String::new();
     }

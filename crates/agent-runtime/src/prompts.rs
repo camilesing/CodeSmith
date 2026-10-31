@@ -275,7 +275,7 @@ language, follow that explicit request for the current turn."
 pub fn render_environment_block(workspace: &Path, locale_tag: &str) -> String {
     let codesmith_version = env!("CARGO_PKG_VERSION");
     let platform = std::env::consts::OS;
-    let shell = crate::shell_dispatcher::global_dispatcher()
+    let shell = codesmith_sandbox::shell_dispatcher::global_dispatcher()
         .kind()
         .binary()
         .to_string();

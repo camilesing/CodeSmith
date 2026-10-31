@@ -31,6 +31,7 @@ chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 codesmith-agent.workspace = true
+codesmith-sandbox.workspace = true
 codesmith-agent-runtime = { workspace = true, features = ["hf-tokenizer", "parse-gate"] }
 codesmith-session.workspace = true
 codesmith-app-server.workspace = true

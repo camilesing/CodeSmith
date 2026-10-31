@@ -76,11 +76,11 @@ fn make_shared_shell_manager(workspace: std::path::PathBuf) -> SharedShellManage
 struct StubSandboxBackend;
 
 #[async_trait::async_trait]
-impl codesmith_agent_runtime::sandbox::SandboxBackend for StubSandboxBackend {
+impl codesmith_sandbox::runtime::SandboxBackend for StubSandboxBackend {
     async fn exec(
         &self,
-        _request: codesmith_agent_runtime::sandbox::SandboxExecRequest,
-    ) -> anyhow::Result<codesmith_agent_runtime::sandbox::SandboxOutput> {
+        _request: codesmith_sandbox::runtime::SandboxExecRequest,
+    ) -> anyhow::Result<codesmith_sandbox::runtime::SandboxOutput> {
         unimplemented!("approval_requirement_for_input does not exec")
     }
 }
@@ -1756,10 +1756,7 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
     fn clear_foreground_background_request(&self) {
         unimplemented!("spill test only")
     }
-    fn set_sandbox_runtime(
-        &self,
-        _runtime: codesmith_agent_runtime::sandbox::SandboxRuntimeConfig,
-    ) {
+    fn set_sandbox_runtime(&self, _runtime: codesmith_sandbox::runtime::SandboxRuntimeConfig) {
         unimplemented!("spill test only")
     }
     fn execute_with_options_env(
@@ -1770,7 +1767,7 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
         _background: bool,
         _stdin_data: Option<&str>,
         _tty: bool,
-        _policy_override: Option<codesmith_agent_runtime::sandbox::SandboxPolicy>,
+        _policy_override: Option<codesmith_sandbox::runtime::SandboxPolicy>,
         _extra_env: std::collections::HashMap<String, String>,
     ) -> anyhow::Result<ShellResult> {
         unimplemented!("spill test only")
@@ -1780,7 +1777,7 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
         _command: &str,
         _working_dir: Option<&str>,
         _timeout_ms: u64,
-        _policy_override: Option<codesmith_agent_runtime::sandbox::SandboxPolicy>,
+        _policy_override: Option<codesmith_sandbox::runtime::SandboxPolicy>,
         _extra_env: std::collections::HashMap<String, String>,
     ) -> anyhow::Result<ShellResult> {
         unimplemented!("spill test only")

@@ -339,7 +339,7 @@ checks. The `denial_message()` method returns a human-readable explanation.
 ## Related
 
 - `crates/cli/src/sandbox/` — host-side policy preparation, runtime wiring, external backend (`opensandbox.rs`)
-- `crates/agent-runtime/src/sandbox/` — enforcement helpers (`seatbelt.rs`, `landlock.rs`, `windows.rs`, `bwrap.rs`, `process_hardening.rs`; re-exported by the `crates/cli/src/sandbox/` shim)
+- `crates/sandbox/src/runtime/` — enforcement helpers (`seatbelt.rs`, `landlock.rs`, `windows.rs`, `bwrap.rs`; the `codesmith-sandbox` crate since round 9, re-exported as `agent_runtime::sandbox`); command safety, execpolicy patterns, and network policy live in the same crate
 - `crates/config/src/lib.rs` — config keys
 - `crates/tool-impls/src/tools/diagnostics.rs` — `diagnostics` tool reports
   `sandbox_available`, `sandbox_type`, `bwrap_available`, `cgroup_version`

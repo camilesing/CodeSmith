@@ -87,7 +87,7 @@ impl ToolSpec for DiagnosticsTool {
 
         let git = probe_git(&context.workspace).await;
         let sandbox_type =
-            codesmith_agent_runtime::sandbox::get_platform_sandbox().map(|s| s.to_string());
+            codesmith_sandbox::runtime::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
         // Bubblewrap availability (#2184).
@@ -177,7 +177,7 @@ async fn probe_git(workspace: &Path) -> GitProbe {
 fn probe_bwrap_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        codesmith_agent_runtime::sandbox::bwrap::is_available()
+        codesmith_sandbox::runtime::bwrap::is_available()
     }
     #[cfg(not(target_os = "linux"))]
     {

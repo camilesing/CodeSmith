@@ -66,7 +66,7 @@ fn ensure_secure_endpoint(url: &str) -> Result<()> {
     }
     if scheme.eq_ignore_ascii_case("http") {
         let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-        if crate::network_policy::authority_is_loopback(authority) {
+        if codesmith_sandbox::network_policy::authority_is_loopback(authority) {
             return Ok(());
         }
     }

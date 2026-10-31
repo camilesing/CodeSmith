@@ -14,19 +14,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use codesmith_agent_runtime::sandbox::{
-    CommandSpec,
-    SandboxExecRequest,
-    SandboxManager,
-    SandboxPolicy as ExecutionSandboxPolicy, // Rename to avoid conflict with spec::SandboxPolicy
-    SandboxRuntimeConfig,
-};
 use codesmith_agent_runtime::tools::git_env::merge_git_scrub_env;
 use codesmith_agent_runtime::tools::shell_output::{
     ShellSpillInfo, needs_spill, spill_full_shell_output, spillover_footer, summarize_output,
     truncate_with_meta,
 };
 use codesmith_agent_runtime::tools::tool_catalog::EXEC_SHELL_NAME;
+use codesmith_sandbox::runtime::{
+    CommandSpec,
+    SandboxExecRequest,
+    SandboxManager,
+    SandboxPolicy as ExecutionSandboxPolicy, // Rename to avoid conflict with spec::SandboxPolicy
+    SandboxRuntimeConfig,
+};
 
 // Shell result/view data types live in the runtime crate so they can cross the
 // `Arc<dyn HostServices>` boundary once `ShellManager` is trait-erased.

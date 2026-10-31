@@ -5,7 +5,7 @@
 //! The sandbox data types, `SandboxManager`, the platform detection helpers
 //! (`get_platform_sandbox` / `is_sandbox_available`), and the per-platform
 //! executors (seatbelt / landlock / bwrap / windows) now live in
-//! `codesmith_agent_runtime::sandbox`. This
+//! `codesmith_sandbox::runtime`. This
 //! module keeps the CLI-local `backend` / `opensandbox` / `policy` /
 //! `runtime` submodules (which depend on `crate::config::Config` and
 //! `crate::command_safety`) and re-exports everything else so historical
@@ -16,8 +16,8 @@ pub mod opensandbox;
 pub mod policy;
 pub mod runtime;
 
-pub use codesmith_agent_runtime::sandbox::{CommandSpec, SandboxManager, get_platform_sandbox};
 pub use codesmith_agent_runtime::shell_manager::install_sandbox_preexec;
+pub use codesmith_sandbox::runtime::{CommandSpec, SandboxManager, get_platform_sandbox};
 pub use policy::SandboxPolicy;
 pub use runtime::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,

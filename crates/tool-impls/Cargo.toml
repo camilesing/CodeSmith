@@ -11,6 +11,7 @@ description = "Model-visible tool implementations for CodeSmith (concrete impl T
 
 [dependencies]
 codesmith-agent.workspace = true
+codesmith-sandbox.workspace = true
 codesmith-agent-runtime = { workspace = true, features = ["parse-gate"] }
 codesmith-session.workspace = true
 codesmith-config.workspace = true

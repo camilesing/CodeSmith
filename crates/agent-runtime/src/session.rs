@@ -409,7 +409,7 @@ pub(crate) fn record_read_file_result_into(
     let Some(path) = input.get("path").and_then(Value::as_str) else {
         return;
     };
-    let sanitized = crate::sanitization::partially_sanitize_unicode(output_for_context);
+    let sanitized = codesmith_sandbox::sanitization::partially_sanitize_unicode(output_for_context);
     let preview = summarize_chars(&sanitized, recent_read_file_snippet_chars());
     let mut files = files.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = files.iter().position(|entry| entry.path == path) {
@@ -502,7 +502,7 @@ pub fn rebuild_recent_read_files_from_messages(
                 // additionally runs model-dependent head/tail compaction
                 // (`compact_tool_result_for_context`); the projection rebuild
                 // has no model in scope and applies only the sanitize step.
-                let sanitized = crate::sanitization::partially_sanitize_unicode(&text);
+                let sanitized = codesmith_sandbox::sanitization::partially_sanitize_unicode(&text);
                 record_read_file_result_into(&files, input, &sanitized);
             }
         }

@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use codesmith_agent_runtime::command_safety::SafetyLevel;
 
-pub use codesmith_agent_runtime::sandbox::SandboxPolicy;
+pub use codesmith_sandbox::runtime::SandboxPolicy;
 // Only the test module below consumes this re-export today; the cfg gate
 // keeps the non-test bin pass from flagging it as an unused import.
 #[cfg(test)]
-pub use codesmith_agent_runtime::sandbox::WritableRoot;
+pub use codesmith_sandbox::runtime::WritableRoot;
 
 /// Map a command safety classification to the appropriate sandbox policy (#2186).
 ///

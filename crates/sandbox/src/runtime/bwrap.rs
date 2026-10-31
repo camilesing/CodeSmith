@@ -158,7 +158,7 @@ pub fn build_bwrap_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::SandboxPolicy;
+    use crate::runtime::SandboxPolicy;
 
     #[test]
     fn test_is_available_does_not_panic() {

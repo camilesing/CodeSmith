@@ -17,13 +17,13 @@ use crate::features::Features;
 use crate::host_services::ShellManagerApi;
 use crate::host_services::{AutomationManagerHost, LspManagerApi, TaskManagerHost};
 use crate::mode::AppMode;
-use crate::network_policy::NetworkPolicyDecider;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
-use crate::sandbox::SandboxBackend;
-use crate::sandbox::SandboxRuntimeConfig;
 use crate::shell_manager::{new_shared_shell_manager, wrap_shell_manager};
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
+use codesmith_sandbox::network_policy::NetworkPolicyDecider;
+use codesmith_sandbox::runtime::SandboxBackend;
+use codesmith_sandbox::runtime::SandboxRuntimeConfig;
 #[allow(unused_imports)]
 pub use codesmith_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
@@ -203,7 +203,7 @@ pub struct ToolContext {
     pub mcp_config_path: PathBuf,
     /// Elevated sandbox policy override (used when retrying after sandbox denial).
     /// This overrides the default sandbox behavior for shell commands.
-    pub elevated_sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    pub elevated_sandbox_policy: Option<codesmith_sandbox::runtime::SandboxPolicy>,
     /// Optional user-facing hint for shell commands that fail because the
     /// active sandbox policy intentionally denies outbound network access.
     pub shell_network_denied_hint: Option<String>,
@@ -820,7 +820,10 @@ impl ToolContext {
     ///
     /// This is used when retrying a tool after a sandbox denial, to run
     /// with elevated permissions.
-    pub fn with_elevated_sandbox_policy(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+    pub fn with_elevated_sandbox_policy(
+        mut self,
+        policy: codesmith_sandbox::runtime::SandboxPolicy,
+    ) -> Self {
         self.elevated_sandbox_policy = Some(policy);
         self
     }

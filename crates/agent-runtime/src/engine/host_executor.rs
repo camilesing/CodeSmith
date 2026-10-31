@@ -8473,7 +8473,7 @@ mod tests {
         tx_approval
             .send(ApprovalDecision::RetryWithPolicy {
                 id: "call_1".to_string(),
-                policy: crate::sandbox::SandboxPolicy::default(),
+                policy: codesmith_sandbox::runtime::SandboxPolicy::default(),
             })
             .await
             .unwrap();
@@ -8596,7 +8596,7 @@ mod tests {
         tx_approval
             .send(ApprovalDecision::RetryWithPolicy {
                 id: "call_1".to_string(),
-                policy: crate::sandbox::SandboxPolicy::DangerFullAccess,
+                policy: codesmith_sandbox::runtime::SandboxPolicy::DangerFullAccess,
             })
             .await
             .unwrap();
@@ -8634,8 +8634,9 @@ mod tests {
             1,
             "the elevated retry must dispatch through the override wire-in exactly once"
         );
-        let expected = serde_json::to_value(crate::sandbox::SandboxPolicy::DangerFullAccess)
-            .expect("serialize approved policy");
+        let expected =
+            serde_json::to_value(codesmith_sandbox::runtime::SandboxPolicy::DangerFullAccess)
+                .expect("serialize approved policy");
         assert_eq!(
             recorded[0],
             Some(expected),

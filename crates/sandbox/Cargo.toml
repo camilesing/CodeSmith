@@ -1,0 +1,40 @@
+[package]
+name = "codesmith-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords = ["sandbox", "security", "agent"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Execution-policy and sandbox plane for CodeSmith: command safety analysis, execpolicy patterns, OS sandboxes, network policy"
+
+[dependencies]
+anyhow.workspace = true
+codesmith-config.workspace = true
+codesmith-tools.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+toml.workspace = true
+chrono.workspace = true
+clap.workspace = true
+fd-lock = "4.0.4"
+multimap = "0.10.0"
+unicode-normalization.workspace = true
+unicode-properties.workspace = true
+async-trait.workspace = true
+libc.workspace = true
+regex = "1.11"
+serde.workspace = true
+serde_json.workspace = true
+shlex.workspace = true
+starlark.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+tempfile.workspace = true

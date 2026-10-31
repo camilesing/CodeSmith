@@ -39,7 +39,6 @@ use crate::mode::AppMode;
 use crate::models::{Message, Tool};
 use crate::ops::Op;
 use crate::runtime_ui::RuntimeUi;
-use crate::sandbox::{SandboxPolicy, SandboxRuntimeConfig};
 use crate::session::Session;
 use crate::subagent::{SubAgentCompletion, SubAgentResult, SubAgentType};
 use crate::tool_dispatch::ToolDispatcher;
@@ -51,6 +50,7 @@ use crate::tools::automation_types::{
 use crate::tools::shell_types::{ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult};
 use crate::tools::task_types::{NewTaskRequest, TaskRecord, TaskSummary};
 use crate::working_set::WorkingSet;
+use codesmith_sandbox::runtime::{SandboxPolicy, SandboxRuntimeConfig};
 
 /// Terminal-agnostic LSP manager surface.
 ///

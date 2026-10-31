@@ -33,8 +33,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::mode::AppMode;
-
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 
@@ -298,33 +296,6 @@ impl Default for SandboxPolicy {
             exclude_tmpdir: true,
             exclude_slash_tmp: true,
         }
-    }
-}
-
-/// Pick the sandbox policy that gates shell commands for a given UI mode.
-///
-/// - **Plan** (#1077): `ReadOnly` — no writes, no network. The previous
-///   `WorkspaceWrite` policy let `python -c "open('f','w').write('x')"` mutate
-///   files inside the workspace because it whitelisted the workspace as
-///   writable. Plan mode is investigation only; if the user wants to change
-///   files they should switch to Agent.
-/// - **Coordinator**: `ReadOnly` — same rationale as Plan; the coordinator
-///   cannot directly execute or write, so no sandbox writes needed.
-/// - **Agent**: `WorkspaceWrite` with workspace as writable root and network
-///   on. Approval flow gates risky individual commands; the sandbox handles
-///   the rest. Network is allowed because cargo / npm / curl-style commands
-///   are normal during agent work and DNS-deny breaks them silently.
-/// - **YOLO**: `DangerFullAccess` — explicit no-guardrails contract.
-pub fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
-    match mode {
-        AppMode::Plan | AppMode::Coordinator => SandboxPolicy::ReadOnly,
-        AppMode::Agent => SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![workspace.to_path_buf()],
-            network_access: true,
-            exclude_tmpdir: true,
-            exclude_slash_tmp: true,
-        },
-        AppMode::Yolo => SandboxPolicy::DangerFullAccess,
     }
 }
 
@@ -1178,9 +1149,9 @@ impl SandboxManager {
 
     /// Test seam: force `select_sandbox` to report no backend, so
     /// platform-independent tests can exercise the unavailable/fail-closed
-    /// decision path (`decide_sandbox`) on any host.
-    #[cfg(test)]
-    pub(crate) fn force_no_backend(&mut self) {
+    /// decision path (`decide_sandbox`) on any host. Public because the
+    /// engine crate's shell-manager tests drive it cross-crate.
+    pub fn force_no_backend(&mut self) {
         self.forced_sandbox = Some(SandboxType::None);
     }
 
@@ -1463,39 +1434,6 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::Duration;
-
-    #[test]
-    fn sandbox_policy_for_mode_plan_is_readonly() {
-        let policy = sandbox_policy_for_mode(AppMode::Plan, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::ReadOnly));
-    }
-
-    #[test]
-    fn sandbox_policy_for_mode_coordinator_is_readonly() {
-        let policy = sandbox_policy_for_mode(AppMode::Coordinator, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::ReadOnly));
-    }
-
-    #[test]
-    fn sandbox_policy_for_mode_agent_is_workspace_write() {
-        let policy = sandbox_policy_for_mode(AppMode::Agent, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::WorkspaceWrite { .. }));
-        if let SandboxPolicy::WorkspaceWrite {
-            writable_roots,
-            network_access,
-            ..
-        } = policy
-        {
-            assert_eq!(writable_roots, vec![PathBuf::from("/repo")]);
-            assert!(network_access);
-        }
-    }
-
-    #[test]
-    fn sandbox_policy_for_mode_yolo_is_danger_full_access() {
-        let policy = sandbox_policy_for_mode(AppMode::Yolo, Path::new("/repo"));
-        assert!(matches!(policy, SandboxPolicy::DangerFullAccess));
-    }
 
     #[test]
     fn command_exclusion_is_word_anchored() {
@@ -1906,7 +1844,7 @@ mod tests {
         let env = manager.prepare(&spec).expect("prepare");
         #[cfg(target_os = "linux")]
         {
-            if crate::sandbox::bwrap::is_available() {
+            if crate::runtime::bwrap::is_available() {
                 let marker = env.env.get("DEEPSEEK_SANDBOX");
                 assert_eq!(marker.map(String::as_str), Some("bwrap"));
             }

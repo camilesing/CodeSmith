@@ -27,7 +27,7 @@ pub enum ApprovalDecision {
     /// Retry a tool with an elevated sandbox policy.
     RetryWithPolicy {
         id: String,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codesmith_sandbox::runtime::SandboxPolicy,
     },
 }
 

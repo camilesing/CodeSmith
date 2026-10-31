@@ -43,14 +43,14 @@ use std::os::unix::process::CommandExt;
 
 use crate::child_env;
 use crate::host_services::ShellManagerApi;
-use crate::sandbox::{
-    CommandSpec, ExecEnv, SandboxDecision, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy,
-    SandboxRuntimeConfig, SandboxType,
-};
 use crate::tools::git_env::merge_git_scrub_env;
 use crate::tools::shell_output::truncate_with_meta;
 use crate::tools::shell_types::{
     ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus,
+};
+use codesmith_sandbox::runtime::{
+    CommandSpec, ExecEnv, SandboxDecision, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy,
+    SandboxRuntimeConfig, SandboxType,
 };
 
 /// Terminal raw-mode control for shell execution.
@@ -788,7 +788,7 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
     #[cfg(target_os = "macos")]
     {
         let _ = prefer_bwrap;
-        if !crate::sandbox::seatbelt::is_available() {
+        if !codesmith_sandbox::runtime::seatbelt::is_available() {
             return "macOS sandbox-exec is unavailable".to_string();
         }
     }
@@ -797,7 +797,9 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
         // Backend selection prefers bwrap automatically; a missing bwrap
         // with Landlock present is NOT unavailability.
         let _ = prefer_bwrap;
-        if !crate::sandbox::landlock::is_available() && !crate::sandbox::bwrap::is_available() {
+        if !codesmith_sandbox::runtime::landlock::is_available()
+            && !codesmith_sandbox::runtime::bwrap::is_available()
+        {
             return "no Linux sandbox backend is available (install bubblewrap, e.g. \
                     'apt install bubblewrap', or run a Landlock-capable kernel, 5.13+)"
                 .to_string();
@@ -806,7 +808,7 @@ fn sandbox_unavailable_reason(prefer_bwrap: bool) -> String {
     #[cfg(target_os = "windows")]
     {
         let _ = prefer_bwrap;
-        if !crate::sandbox::windows::is_available() {
+        if !codesmith_sandbox::runtime::windows::is_available() {
             return "Windows sandbox helper is unavailable".to_string();
         }
     }
@@ -850,32 +852,32 @@ pub fn decide_sandbox(
     policy: &ExecutionSandboxPolicy,
     command: &str,
     program: &str,
-) -> crate::sandbox::SandboxDecision {
+) -> codesmith_sandbox::runtime::SandboxDecision {
     if !policy.should_sandbox() {
-        return crate::sandbox::SandboxDecision::unsandboxed(policy);
+        return codesmith_sandbox::runtime::SandboxDecision::unsandboxed(policy);
     }
     if !runtime.enabled {
-        return crate::sandbox::SandboxDecision::disabled(
+        return codesmith_sandbox::runtime::SandboxDecision::disabled(
             policy,
             "sandbox disabled by configuration",
         );
     }
     if !runtime.platform_enabled() {
-        return crate::sandbox::SandboxDecision::disabled(
+        return codesmith_sandbox::runtime::SandboxDecision::disabled(
             policy,
             format!(
                 "sandbox disabled for platform {}",
-                crate::sandbox::current_platform()
+                codesmith_sandbox::runtime::current_platform()
             ),
         );
     }
     if runtime.command_is_excluded(program, command) {
-        return crate::sandbox::SandboxDecision::excluded(policy, program.to_string());
+        return codesmith_sandbox::runtime::SandboxDecision::excluded(policy, program.to_string());
     }
 
     let sandbox_type = manager.select_sandbox(policy);
     if matches!(sandbox_type, SandboxType::None) {
-        return crate::sandbox::SandboxDecision::unavailable(
+        return codesmith_sandbox::runtime::SandboxDecision::unavailable(
             policy,
             sandbox_refusal_reason(
                 policy,
@@ -886,7 +888,7 @@ pub fn decide_sandbox(
         );
     }
 
-    crate::sandbox::SandboxDecision::enforcing(policy, sandbox_type)
+    codesmith_sandbox::runtime::SandboxDecision::enforcing(policy, sandbox_type)
 }
 
 /// Manages background shell processes with optional sandboxing.
@@ -1098,7 +1100,7 @@ impl ShellManager {
         extra_env: HashMap<String, String>,
     ) -> Result<ShellResult> {
         // Log execution via ShellDispatcher when SHELL_DISPATCHER_LOG is set.
-        crate::shell_dispatcher::ShellDispatcher::log_exec(command);
+        codesmith_sandbox::shell_dispatcher::ShellDispatcher::log_exec(command);
 
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
@@ -1222,7 +1224,7 @@ impl ShellManager {
         policy_override: Option<ExecutionSandboxPolicy>,
         extra_env: HashMap<String, String>,
     ) -> Result<ShellResult> {
-        crate::shell_dispatcher::ShellDispatcher::log_exec(command);
+        codesmith_sandbox::shell_dispatcher::ShellDispatcher::log_exec(command);
 
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
@@ -1300,7 +1302,7 @@ impl ShellManager {
         timeout_ms: u64,
         stdin_data: Option<&str>,
         exec_env: &ExecEnv,
-        decision: &crate::sandbox::SandboxDecision,
+        decision: &codesmith_sandbox::runtime::SandboxDecision,
         terminal: &Arc<dyn ShellTerminalControl>,
     ) -> Result<ShellResult> {
         let started = Instant::now();
@@ -1494,7 +1496,7 @@ impl ShellManager {
         working_dir: &std::path::Path,
         timeout_ms: u64,
         exec_env: &ExecEnv,
-        decision: &crate::sandbox::SandboxDecision,
+        decision: &codesmith_sandbox::runtime::SandboxDecision,
         terminal: &Arc<dyn ShellTerminalControl>,
     ) -> Result<ShellResult> {
         let started = Instant::now();
@@ -2312,7 +2314,7 @@ pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
 #[cfg(test)]
 mod decide_sandbox_tests {
     use super::decide_sandbox;
-    use crate::sandbox::{
+    use codesmith_sandbox::runtime::{
         SandboxManager, SandboxPolicy as ExecutionSandboxPolicy, SandboxRuntimeConfig,
     };
 

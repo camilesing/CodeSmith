@@ -749,7 +749,8 @@ impl ToolDispatcher for ToolRegistry {
     ) -> Result<ToolResult, ToolError> {
         let context_override = match sandbox_override {
             None => None,
-            Some(v) => match serde_json::from_value::<crate::sandbox::SandboxPolicy>(v) {
+            Some(v) => match serde_json::from_value::<codesmith_sandbox::runtime::SandboxPolicy>(v)
+            {
                 Ok(policy) => {
                     // The dispatcher contract (see `ToolDispatcher::execute`)
                     // requires aborting on override deserialization failure —
@@ -1062,7 +1063,7 @@ mod tests {
 
     fn probe_registry() -> ToolRegistry {
         let context = ToolContext::new(std::path::PathBuf::from("/tmp/ws"))
-            .with_elevated_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+            .with_elevated_sandbox_policy(codesmith_sandbox::runtime::SandboxPolicy::ReadOnly);
         let mut registry = ToolRegistry::new(context);
         registry.register(Arc::new(PolicyProbeTool));
         registry

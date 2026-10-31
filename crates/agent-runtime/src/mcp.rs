@@ -91,8 +91,8 @@ use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 
 use crate::child_env;
 use crate::mcp_oauth::{McpOAuthConfig, OAuthState};
-use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
+use codesmith_sandbox::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 
 pub use crate::mcp_oauth::{McpOAuthToken, default_secrets as oauth_default_secrets};
 
@@ -3610,7 +3610,7 @@ impl McpPool {
         // (HackerOne #3086545 — invisible Tag/zero-width chars that the model
         // still processes). Applied once here at the chokepoint so it covers
         // both `conn.call_tool` forwards below and the pseudo-tool readers.
-        let arguments = crate::sanitization::recursively_sanitize_unicode(arguments);
+        let arguments = codesmith_sandbox::sanitization::recursively_sanitize_unicode(arguments);
         if prefixed_name == "list_mcp_resources" {
             let server = arguments
                 .get("server")

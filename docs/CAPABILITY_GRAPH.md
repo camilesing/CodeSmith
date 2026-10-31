@@ -29,7 +29,7 @@ explaining.
 | `KeyringStore` | `secrets` | `cli`, `secrets` | `secrets` |
 | `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers`, `tool-impls` | `agent`, `agent-runtime` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
-| `SandboxBackend` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
+| `SandboxBackend` | `sandbox` | `cli` | `agent-runtime`, `cli` |
 | `SessionJournal` | `session` | `session` | `agent-runtime`, `cli` |
 | `SessionStore` | `session` | `session` | `cli` |
 | `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |

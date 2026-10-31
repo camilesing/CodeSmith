@@ -790,6 +790,7 @@ dependencies = [
  "codesmith-agent",
  "codesmith-config",
  "codesmith-extensions",
+ "codesmith-sandbox",
  "codesmith-secrets",
  "codesmith-session",
  "codesmith-tools",
@@ -812,7 +813,6 @@ dependencies = [
  "shellexpand",
  "shlex",
  "similar",
- "starlark",
  "syn 2.0.114",
  "tar",
  "tempfile",
@@ -825,8 +825,6 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
- "tree-sitter",
- "tree-sitter-bash",
  "unicode-normalization",
  "unicode-properties",
  "uuid",
@@ -882,6 +880,7 @@ dependencies = [
  "codesmith-protocol",
  "codesmith-providers",
  "codesmith-release",
+ "codesmith-sandbox",
  "codesmith-secrets",
  "codesmith-session",
  "codesmith-state",
@@ -1093,6 +1092,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "codesmith-sandbox"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "codesmith-config",
+ "codesmith-tools",
+ "fd-lock",
+ "libc",
+ "multimap",
+ "pretty_assertions",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shlex",
+ "starlark",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "unicode-normalization",
+ "unicode-properties",
+]
+
+[[package]]
 name = "codesmith-secrets"
 version = "0.11.0"
 dependencies = [
@@ -1152,6 +1182,7 @@ dependencies = [
  "codesmith-agent-runtime",
  "codesmith-config",
  "codesmith-index",
+ "codesmith-sandbox",
  "codesmith-session",
  "codesmith-tools",
  "dirs",

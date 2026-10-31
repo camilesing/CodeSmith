@@ -50,8 +50,8 @@ use std::time::Instant;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::command_safety::{SafetyLevel, analyze_command, classify_command};
-use crate::execpolicy::matcher::split_command_segments;
+use codesmith_sandbox::command_safety::{SafetyLevel, analyze_command, classify_command};
+use codesmith_sandbox::execpolicy::matcher::split_command_segments;
 
 /// The fingerprint of a tool call — stable enough to match repeated
 /// calls but specific enough to avoid privilege confusion.

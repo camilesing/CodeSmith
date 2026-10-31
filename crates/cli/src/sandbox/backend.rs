@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 
-pub use codesmith_agent_runtime::sandbox::{
+pub use codesmith_sandbox::runtime::{
     SandboxBackend, SandboxExecRequest, SandboxKind, SandboxOutput,
 };
 

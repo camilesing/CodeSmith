@@ -7,7 +7,8 @@
 当前边界说明（v0.11.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
   `config`、`secrets`、`extensions`、`session`（会话数据面：转写分区、日志、
-  会话存储）、`agent-runtime`（内核：经
+  会话存储）、`sandbox`（执行策略面：命令安全、execpolicy、OS 沙箱、网络
+  策略）、`agent-runtime`（内核：经
   `TurnExecutorRegistry` 组合、位于 `AgentExecutor` 接缝之后的 turn 循环、
   引擎、压缩）—— 与实现群：
   其余全部（`providers`、`tool-impls`、`cli`、
@@ -192,6 +193,7 @@
 - **`crates/providers`** - 位于 Cargo feature 之后的可插拔 LLM 客户端实现（openai-compat、anthropic、mock；rig 适配器）。
 - **`crates/release`** - 发布发现 / 版本比较。
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
+- **`crates/sandbox`** - 执行策略与沙箱面（对应 DSH `sandbox/*`，第九轮从 `agent-runtime` 拆出）：可移植的策略/后端类型与各平台执行器（Seatbelt、Landlock、bwrap、Windows 桩）、命令安全分析、execpolicy 模式语言、网络策略与不可信内容消毒。以 `agent_runtime::{sandbox, command_safety, execpolicy, bash_ast, network_policy, sanitization, shell_dispatcher}` 再导出。
 - **`crates/session`** - 会话数据面（对应 DSH `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。消费者直接从本 crate 导入（历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 与 CLI 的 `session_manager` 已随拆分移除）。
 - **`crates/state`** - SQLite 线程/会话持久化层。
 - **`crates/tool-impls`** - 具体的模型可见工具实现。
@@ -268,7 +270,7 @@ Chat Completions 驱动 turn。
 
 ### 安全
 
-- **`crates/agent-runtime/src/sandbox/`** - 平台沙箱强制执行辅助程序（经 `crates/cli/src/sandbox/` 重导出）
+- **`crates/sandbox/src/runtime/`** - 平台沙箱强制执行辅助程序（第九轮起属 `codesmith-sandbox`；以 `agent_runtime::sandbox` 再导出）
   - `seatbelt.rs` - macOS Seatbelt profile 生成（已启用）
   - `landlock.rs` - Linux Landlock 规则集应用（已强制执行：规则集由 `prepare_landlock` 在父进程构建，经 `install_sandbox_preexec` 在 fork 与 exec 之间应用；仅文件系统——见其已知局限）
   - `windows.rs` - Windows 沙箱辅助程序契约桩（不宣传任何进程内 Windows 沙箱；要求沙箱的策略以 `SANDBOX_UNAVAILABLE` 失败关闭）

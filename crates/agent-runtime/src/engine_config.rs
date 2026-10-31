@@ -48,9 +48,7 @@ pub const DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS: u64 = 30;
 use crate::cycle_manager::CycleConfig;
 use crate::features::Features;
 use crate::lsp_config::LspConfig;
-use crate::network_policy::NetworkPolicyDecider;
 use crate::prompt_sources::{InstructionSource, PromptAppendSource};
-use crate::sandbox::SandboxRuntimeConfig;
 use crate::skills;
 use crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT;
 use crate::subagent::{DEFAULT_MAX_SPAWN_DEPTH, ExternalSubagentProvider};
@@ -62,6 +60,8 @@ use crate::tool_state::task_v2::SharedTaskV2Manager;
 use crate::tool_state::team::SharedTeamContext;
 use crate::tool_state::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tool_state::worktree::{SharedWorktreeSessionState, new_shared_worktree_session_state};
+use codesmith_sandbox::network_policy::NetworkPolicyDecider;
+use codesmith_sandbox::runtime::SandboxRuntimeConfig;
 
 /// Configuration for the engine
 #[derive(Clone)]

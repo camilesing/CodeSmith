@@ -43,7 +43,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::network_policy::NetworkPolicyDecider;
+use codesmith_sandbox::network_policy::NetworkPolicyDecider;
 
 /// Default request timeout shared by the web tools (15 s, matching the
 /// pre-seam tool defaults).

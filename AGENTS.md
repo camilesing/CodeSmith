@@ -143,7 +143,8 @@ because they did anything wrong. Treat their time as more expensive than ours.
 ## Current contracts
 
 - The workspace is split into a **framework group** (`protocol`, `tools`,
-  `agent`, `config`, `secrets`, `extensions`, `session`, `agent-runtime`) and an
+  `agent`, `config`, `secrets`, `extensions`, `session`, `sandbox`,
+  `agent-runtime`) and an
   **implementation group** (everything else: `providers`, `tool-impls`,
   `cli`, `app-server`, ...). Framework crates must not depend, in the
   build graph, on workspace crates outside the framework group; the rule is

@@ -8,7 +8,9 @@ Current boundary note (v0.11.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
   `extensions`, `session` (the session data plane: transcript zones,
-  journal, saved-session store), `agent-runtime` (the kernel: the turn loop composed through
+  journal, saved-session store), `sandbox` (the execution-policy plane:
+  command safety, execpolicy, OS sandboxes, network policy), `agent-runtime`
+  (the kernel: the turn loop composed through
   the `TurnExecutorRegistry` behind the `AgentExecutor` seam, engine,
   compaction) — and an implementation
   group: everything else (`providers`,
@@ -286,7 +288,7 @@ live there).
 
 ### Security
 
-- **`crates/agent-runtime/src/sandbox/`** - Platform sandbox enforcement helpers (re-exported through `crates/cli/src/sandbox/`)
+- **`crates/sandbox/src/runtime/`** - Platform sandbox enforcement helpers (in the `codesmith-sandbox` crate since round 9; re-exported as `agent_runtime::sandbox`)
   - `seatbelt.rs` - macOS Seatbelt profile generation (enforced)
   - `landlock.rs` - Linux Landlock ruleset application (enforced: ruleset built in the parent by `prepare_landlock`, applied between fork and exec via `install_sandbox_preexec`; filesystem-only — see its known limitations)
   - `windows.rs` - Windows sandbox helper contract stub (no in-process Windows sandbox is advertised; sandbox-demanding policies fail closed with `SANDBOX_UNAVAILABLE`)

@@ -3,7 +3,7 @@
 //! Pulls user-authored skills from GitHub or direct tarball URLs, validates them
 //! against a path-traversal- and size-bounded extractor, and writes them into
 //! `<skills_dir>/<name>/`. No backend service, no auto-execution: every install
-//! is gated by the per-domain [`crate::network_policy::NetworkPolicy`] and
+//! is gated by the per-domain [`codesmith_sandbox::network_policy::NetworkPolicy`] and
 //! validation rejects any tarball entry that escapes the destination directory.
 //!
 //! Public surface:
@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::network_policy::{Decision, NetworkPolicy, host_from_url};
+use codesmith_sandbox::network_policy::{Decision, NetworkPolicy, host_from_url};
 
 /// Cache directory for registry-synced skills.
 ///

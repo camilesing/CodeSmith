@@ -5,7 +5,7 @@
 //! `Arc<dyn HostServices>` boundary. This file re-exports them so existing
 //! `crate::sandbox::runtime::*` paths keep resolving.
 
-pub use codesmith_agent_runtime::sandbox::{
+pub use codesmith_sandbox::runtime::{
     SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
     managed_domains,
 };

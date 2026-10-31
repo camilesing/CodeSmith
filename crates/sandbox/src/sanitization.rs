@@ -125,6 +125,73 @@ pub fn recursively_sanitize_unicode(value: Value) -> Value {
     }
 }
 
+/// Neutralize closing-tag sequences of every prompt framing element.
+///
+/// The framing-tag vocabulary is the engine's (prompt assembly owns it), so
+/// the host registers the defuser at startup
+/// ([`set_framing_tag_defuser`]); until then a local minimal set keeps the
+/// demotion wrapper safe to use.
+pub fn defuse_framing_tags(text: &str) -> String {
+    let mut out = text.to_string();
+    for tag in framing_tags() {
+        if out.contains("</") {
+            out = defuse_closing_tag(&out, tag);
+        }
+    }
+    out
+}
+
+/// Neutralize `</tag` sequences (case-insensitive prefix match) by escaping
+/// the opener — same scheme as the engine's `defuse_closing_tag`, kept
+/// byte-identical so a registered tag set behaves the same here.
+fn defuse_closing_tag(text: &str, tag: &str) -> String {
+    if tag.is_empty() || !text.contains("</") {
+        return text.to_string();
+    }
+    let tag_bytes = tag.as_bytes();
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            let rest = &bytes[i + 2..];
+            if rest.len() >= tag_bytes.len()
+                && rest[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
+            {
+                out.push_str("&lt;/");
+                i += 2;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap_or('<');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// The registered framing-tag vocabulary (engine-owned).
+static FRAMING_TAGS: std::sync::OnceLock<&'static [&'static str]> = std::sync::OnceLock::new();
+
+fn framing_tags() -> &'static [&'static str] {
+    FRAMING_TAGS.get().copied().unwrap_or(&[
+        "instructions",
+        "system_prompt_append",
+        "external_content",
+        "system-reminder",
+        "user_memory",
+        "agent_memory",
+        "diagnostics",
+    ])
+}
+
+/// Register the engine's prompt-framing tag vocabulary (its closing tags are
+/// what [`defuse_framing_tags`] neutralizes). Called once at host startup;
+/// first registration wins, mirroring the tokenizer registry.
+pub fn set_framing_tags(tags: &'static [&'static str]) {
+    let _ = FRAMING_TAGS.set(tags);
+}
+
 /// Wrap a tool result whose content originated from an external network
 /// source in an explicit provenance delimiter (P1-4).
 ///
@@ -161,7 +228,7 @@ pub fn wrap_external_tool_content(tool_name: &str, input: &Value, content: &str)
     // them all via the shared framing-tag set. The source label is
     // host/config-derived but still arbitrary enough to break out of the
     // attribute — strip the characters that could.
-    let neutral = crate::utils::defuse_prompt_framing_tags(content);
+    let neutral = defuse_framing_tags(content);
     // Unlike free-form prompt text, THIS wrapper always appends a closer of
     // its own, so a smuggled OPENING `<external_content …>` would be closed
     // by it — leaving the genuine wrapper unclosed, demoting everything

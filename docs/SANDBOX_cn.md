@@ -304,7 +304,7 @@ sandbox_api_key = "YOUR_API_KEY"
 ## 相关
 
 - `crates/cli/src/sandbox/` — 宿主侧策略准备、运行时接线、外部后端（`opensandbox.rs`）
-- `crates/agent-runtime/src/sandbox/` — 强制执行辅助程序（`seatbelt.rs`、`landlock.rs`、`windows.rs`、`bwrap.rs`；由 `crates/cli/src/sandbox/` 垫片重导出）
+- `crates/sandbox/src/runtime/` — 强制执行辅助程序（`seatbelt.rs`、`landlock.rs`、`windows.rs`、`bwrap.rs`；第九轮起属 `codesmith-sandbox` crate，以 `agent_runtime::sandbox` 再导出）；命令安全、execpolicy 模式与网络策略同在此 crate
 - `crates/config/src/lib.rs` — 配置键
 - `crates/tool-impls/src/tools/diagnostics.rs` — `diagnostics` 工具报告
   `sandbox_available`、`sandbox_type`、`bwrap_available`、
