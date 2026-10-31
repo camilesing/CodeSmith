@@ -41,8 +41,11 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
   conversation at any point can be rebuilt from the file. The snapshot
   records how much of the journal it covers; when a crash lands between the
   two writes, or an operation changed the conversation after the last save,
-  the next load recovers the transcript from the journal. Exec runs and
-  runtime-API threads keep no journal.
+  the next load recovers the transcript from the journal. The journal also
+  records each main-turn model request — the system prompt and tool catalog
+  whenever they change — and every failed model round, so any request the
+  session sent can be rebuilt from the file. Exec runs and runtime-API
+  threads keep no journal.
 
 - **Cancelling mid-answer keeps what you saw** — Ctrl+C (or Esc, an ACP
   `session/cancel`, a runtime-API interrupt) now stops the stream at once

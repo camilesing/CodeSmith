@@ -24,8 +24,19 @@
 //! dropped on read; any other unreadable line, or a header newer than this
 //! build, fails the read loud.
 //!
+//! Requests and attempts (round-9 TODO-59): every main-turn model request
+//! is journaled where it was sent ([`JournalEntry::Request`] — system prompt
+//! and tool catalog only when they change, messages only when they are not
+//! the transcript prefix), so [`reconstruct_requests`] rebuilds each request
+//! from the journal alone; failed model rounds land as
+//! [`JournalEntry::Attempt`]. Retries of one request are not repeated
+//! (their failures are the attempt entries), and per-chunk stream timing is
+//! not recorded — the committed content is.
+//!
 //! Known limitations: single writer per session (the snapshot store's own
-//! limit); appends are not fsynced (a power loss can drop trailing lines,
+//! limit); utility calls that share the client (compaction summaries, cycle
+//! briefings) are not journaled — their inputs are the journaled transcript
+//! plus fixed prompts; appends are not fsynced (a power loss can drop trailing lines,
 //! never reorder them); `codesmith exec` runs (their snapshot ids are minted
 //! independently of the engine's session id), the runtime API's threads
 //! (their own event stream is authoritative) and sub-agent transcripts keep
@@ -37,7 +48,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::Message;
+use crate::models::{Message, MessageRequest, SystemPrompt, Tool};
+use crate::session_store::AttemptRecord;
 
 /// Version of the journal line format this build writes and reads.
 pub const JOURNAL_FORMAT_VERSION: u32 = 1;
@@ -64,6 +76,33 @@ pub enum JournalEntry {
     /// fold (`len` messages); written instead of a `Rebuild` that would
     /// repeat a transcript already on record.
     Resume { len: usize },
+    /// One main-turn model request (round-9 TODO-59), at the transcript
+    /// position it was sent from. `envelope` is the request with `messages`
+    /// emptied and `system` / `tools` moved out; those two are recorded in
+    /// full only when they changed since the previous request entry.
+    /// `messages` is present only when the request's messages were not
+    /// exactly the transcript's first `message_count` messages (an
+    /// extension rewrote them); otherwise they are that fold prefix.
+    Request {
+        envelope: Box<MessageRequest>,
+        message_count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        messages: Option<Vec<Message>>,
+        system: Recorded<Option<SystemPrompt>>,
+        tools: Recorded<Option<Vec<Tool>>>,
+    },
+    /// A failed model round (round-9 TODO-59) — the same record the
+    /// snapshot's `failed_attempts` keeps, journaled in turn order.
+    Attempt { record: AttemptRecord },
+}
+
+/// A request field recorded only when it changed since the previous
+/// request entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Recorded<T> {
+    Unchanged,
+    Set(T),
 }
 
 /// One serialized journal line: the entry plus its write time.
@@ -267,9 +306,66 @@ pub fn fold_transcript(entries: &[JournalEntry]) -> std::io::Result<Vec<Message>
                     ));
                 }
             }
+            JournalEntry::Request { .. } | JournalEntry::Attempt { .. } => {}
         }
     }
     Ok(transcript)
+}
+
+/// Every main-turn model request the journal `entries` record, rebuilt in
+/// order: the envelope, the system prompt and tool catalog in force, and
+/// the messages (the transcript prefix at that point, or the recorded
+/// rewrite). A request recorded before any system/tool entry, or naming
+/// more messages than the fold holds, is `InvalidData`.
+pub fn reconstruct_requests(entries: &[JournalEntry]) -> std::io::Result<Vec<MessageRequest>> {
+    let invalid = |message: String| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
+    let mut transcript: Vec<Message> = Vec::new();
+    let mut system: Option<Option<SystemPrompt>> = None;
+    let mut tools: Option<Option<Vec<Tool>>> = None;
+    let mut requests = Vec::new();
+    for entry in entries {
+        match entry {
+            JournalEntry::Header { .. } | JournalEntry::Attempt { .. } => {}
+            JournalEntry::Append { messages } => transcript.extend(messages.iter().cloned()),
+            JournalEntry::Rebuild { messages, .. } => transcript.clone_from(messages),
+            JournalEntry::Resume { .. } => {}
+            JournalEntry::Request {
+                envelope,
+                message_count,
+                messages,
+                system: recorded_system,
+                tools: recorded_tools,
+            } => {
+                if let Recorded::Set(value) = recorded_system {
+                    system = Some(value.clone());
+                }
+                if let Recorded::Set(value) = recorded_tools {
+                    tools = Some(value.clone());
+                }
+                let mut request = (**envelope).clone();
+                request.system = system
+                    .clone()
+                    .ok_or_else(|| invalid("request entry before any system prompt".into()))?;
+                request.tools = tools
+                    .clone()
+                    .ok_or_else(|| invalid("request entry before any tool catalog".into()))?;
+                request.messages = match messages {
+                    Some(rewritten) => rewritten.clone(),
+                    None => transcript
+                        .get(..*message_count)
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "request names {message_count} messages but the fold holds {}",
+                                transcript.len()
+                            ))
+                        })?
+                        .to_vec(),
+                };
+                requests.push(request);
+            }
+        }
+    }
+    Ok(requests)
 }
 
 #[cfg(test)]

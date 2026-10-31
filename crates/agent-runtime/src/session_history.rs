@@ -191,6 +191,12 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
     fn len(&self) -> usize {
         self.session.messages.len()
     }
+
+    /// Journaled in order with the messages (round-9 TODO-59) when the
+    /// session keeps a journal; a no-op otherwise.
+    fn record_request(&mut self, request: &crate::models::MessageRequest) {
+        self.session.messages.record_request(request);
+    }
 }
 
 #[cfg(test)]

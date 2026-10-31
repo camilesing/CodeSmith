@@ -65,6 +65,10 @@ own recorder on the same path (append mode; whole-line writes keep the
 interleaved file parseable), so multi-model sessions record completely.
 For the recorded session, any historical provider
 request is a pure function of the log. A bad path aborts startup loudly.
+REPL and ACP sessions get the main-turn half of this without opting in:
+their session journal (`<id>.journal.jsonl`) records every main-turn
+request envelope in order with the transcript, and
+`session_journal::reconstruct_requests` rebuilds those requests from it.
 
 `ReplayClient::load(path)` / `ReplayClient::load_with_mode(path, mode)`
 (in `codesmith-agent`, `llm_client::record_replay`)

@@ -11,7 +11,7 @@
 //! wants auto-compaction backs [`ChatHistory`] with its `Session` and lets the
 //! executor see the (already-compacted) message list. See `ROADMAP.md` §E.
 
-use crate::models::Message;
+use crate::models::{Message, MessageRequest};
 
 /// Read/write view over the conversation transcript (LangChain `Memory` analog).
 ///
@@ -63,6 +63,16 @@ pub trait ChatHistory: Send + Sync {
     /// Whether the transcript is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Record the exact request the executor is about to send — after every
+    /// extension transform — at the transcript's current position. Log-only:
+    /// it never enters model history. A host with a durable record keeps it
+    /// in order with the messages so every model request is reconstructable
+    /// from that record ("model-visible means logged"). Default: dropped (a
+    /// history with no durable record).
+    fn record_request(&mut self, request: &MessageRequest) {
+        let _ = request;
     }
 }
 

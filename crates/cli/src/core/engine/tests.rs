@@ -5634,6 +5634,64 @@ async fn session_journal_folds_to_the_transcript_and_keeps_rolled_back_history()
     )));
 }
 
+/// "Model-visible means logged", checked mechanically: every main-turn
+/// request the engine handed the client (captured by the recorder) is
+/// rebuilt byte-for-byte from the session journal alone.
+#[tokio::test]
+async fn every_model_request_is_reconstructable_from_the_session_journal() {
+    use codesmith_agent::llm_client::record_replay::{RecordLine, RecordingClient};
+    use codesmith_agent_runtime::session_journal::{
+        FileSessionJournal, journal_path, read_journal, reconstruct_requests,
+    };
+
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    fs::write(tmp.path().join("notes.txt"), "a note\n").expect("seed");
+    let sessions = tmp.path().join("sessions");
+    let recording = tmp.path().join("calls.jsonl");
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_1", "read_file", r#"{"path":"notes.txt"}"#),
+        canned::simple_text_turn("done reading"),
+        canned::simple_text_turn("second turn"),
+    ]));
+    let client: LlmClientHandle =
+        std::sync::Arc::new(RecordingClient::new(mock, &recording).expect("recorder"));
+    let mut config = test_engine_config(tmp.path());
+    config.session_journal = Some(std::sync::Arc::new(FileSessionJournal::new(&sessions)));
+    let (engine, handle) = Engine::new_with_client(config, &Config::default(), client);
+    tokio::spawn(async move { engine.run().await });
+
+    let mut session_id = None;
+    for prompt in ["read notes.txt", "and again"] {
+        handle.send(make_send_op(prompt)).await.expect("send op");
+        for event in collect_until_turn_complete(&handle).await {
+            if let Event::SessionUpdated { session_id: id, .. } = event {
+                session_id = Some(id);
+            }
+        }
+    }
+
+    let recorded: Vec<codesmith_agent::models::MessageRequest> = fs::read_to_string(&recording)
+        .expect("recording")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<RecordLine>(line)
+                .expect("record line")
+                .request
+        })
+        .collect();
+    let entries =
+        read_journal(&journal_path(&sessions, &session_id.expect("session id")).expect("path"))
+            .expect("journal");
+    let rebuilt = reconstruct_requests(&entries).expect("reconstruct");
+    assert_eq!(recorded.len(), 3, "two steps in turn one, one in turn two");
+    assert_eq!(
+        rebuilt, recorded,
+        "the journal must rebuild exactly the requests the client received"
+    );
+}
+
 // === Test 2: Tool call round-trip ============================================
 
 #[tokio::test]

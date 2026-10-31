@@ -348,6 +348,25 @@ impl Clone for AppendLog {
 struct JournalCursor {
     mark: usize,
     pending: Vec<crate::session_journal::JournalEntry>,
+    /// The system prompt / tool catalog of the last journaled request
+    /// (`None` before the first), so a request entry records them only
+    /// when they changed.
+    last_system: Option<Option<crate::models::SystemPrompt>>,
+    last_tools: Option<Option<Vec<crate::models::Tool>>>,
+}
+
+impl JournalCursor {
+    /// Seal the not-yet-journaled tail of `messages` so an entry pushed
+    /// next lands at the transcript position it describes.
+    fn seal_tail(&mut self, messages: &[Message]) {
+        if self.mark < messages.len() {
+            self.pending
+                .push(crate::session_journal::JournalEntry::Append {
+                    messages: messages[self.mark..].to_vec(),
+                });
+            self.mark = messages.len();
+        }
+    }
 }
 
 impl AppendLog {
@@ -378,9 +397,61 @@ impl AppendLog {
         if self.journal.is_none() {
             self.journal = Some(JournalCursor {
                 mark: self.messages.len(),
-                pending: Vec::new(),
+                ..JournalCursor::default()
             });
         }
+    }
+
+    /// Journal `request` at the current transcript position (round-9
+    /// TODO-59): system prompt and tool catalog only when they changed since
+    /// the last request entry, messages only when they are not exactly the
+    /// transcript prefix. No-op when journaling is off.
+    pub fn record_request(&mut self, request: &crate::models::MessageRequest) {
+        use crate::session_journal::{JournalEntry, Recorded};
+        let Some(cursor) = self.journal.as_mut() else {
+            return;
+        };
+        cursor.seal_tail(&self.messages);
+        let message_count = request.messages.len();
+        let is_prefix = self
+            .messages
+            .get(..message_count)
+            .is_some_and(|prefix| prefix == request.messages.as_slice());
+        let system = if cursor.last_system.as_ref() == Some(&request.system) {
+            Recorded::Unchanged
+        } else {
+            cursor.last_system = Some(request.system.clone());
+            Recorded::Set(request.system.clone())
+        };
+        let tools = if cursor.last_tools.as_ref() == Some(&request.tools) {
+            Recorded::Unchanged
+        } else {
+            cursor.last_tools = Some(request.tools.clone());
+            Recorded::Set(request.tools.clone())
+        };
+        let mut envelope = request.clone();
+        let messages = std::mem::take(&mut envelope.messages);
+        envelope.system = None;
+        envelope.tools = None;
+        cursor.pending.push(JournalEntry::Request {
+            envelope: Box::new(envelope),
+            message_count,
+            messages: (!is_prefix).then_some(messages),
+            system,
+            tools,
+        });
+    }
+
+    /// Journal a failed model round at the current transcript position
+    /// (round-9 TODO-59). No-op when journaling is off.
+    pub fn record_attempt(&mut self, record: crate::session_store::AttemptRecord) {
+        let Some(cursor) = self.journal.as_mut() else {
+            return;
+        };
+        cursor.seal_tail(&self.messages);
+        cursor
+            .pending
+            .push(crate::session_journal::JournalEntry::Attempt { record });
     }
 
     /// Drain the journal entries recorded since the last drain, in order:
@@ -427,13 +498,7 @@ impl AppendLog {
         if let Some(cursor) = self.journal.as_mut() {
             // Seal the not-yet-journaled tail before it leaves the log, then
             // the replacement: the replaced history stays on record.
-            if cursor.mark < before {
-                cursor
-                    .pending
-                    .push(crate::session_journal::JournalEntry::Append {
-                        messages: self.messages[cursor.mark..].to_vec(),
-                    });
-            }
+            cursor.seal_tail(&self.messages);
             cursor
                 .pending
                 .push(crate::session_journal::JournalEntry::Rebuild {
@@ -871,6 +936,66 @@ mod tests {
         );
         assert_eq!(fold_transcript(&entries).unwrap(), log.to_vec());
         assert!(log.take_journal_entries().is_empty(), "drained");
+    }
+
+    fn request_over(messages: Vec<Message>, system: &str) -> MessageRequest {
+        MessageRequest {
+            model: "m".to_string(),
+            messages,
+            max_tokens: 64,
+            system: Some(SystemPrompt::Text(system.to_string())),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: Some(true),
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    #[test]
+    fn journal_records_requests_with_changed_fields_only_and_reconstructs_them() {
+        use crate::session_journal::{JournalEntry, Recorded, reconstruct_requests};
+        let mut log = AppendLog::new();
+        log.enable_journal();
+        log.push(text_message("user", "one"));
+        let first = request_over(log.to_vec(), "sys");
+        log.record_request(&first);
+        log.push(text_message("assistant", "two"));
+        log.push(text_message("user", "three"));
+        let second = request_over(log.to_vec(), "sys");
+        log.record_request(&second);
+        let rewritten = request_over(vec![text_message("user", "rewritten")], "sys v2");
+        log.record_request(&rewritten);
+
+        let entries = log.take_journal_entries();
+        let requests: Vec<&JournalEntry> = entries
+            .iter()
+            .filter(|entry| matches!(entry, JournalEntry::Request { .. }))
+            .collect();
+        assert!(matches!(
+            requests[1],
+            JournalEntry::Request {
+                system: Recorded::Unchanged,
+                messages: None,
+                message_count: 3,
+                ..
+            }
+        ));
+        assert!(matches!(
+            requests[2],
+            JournalEntry::Request {
+                system: Recorded::Set(_),
+                messages: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            reconstruct_requests(&entries).expect("reconstruct"),
+            vec![first, second, rewritten]
+        );
     }
 
     #[test]

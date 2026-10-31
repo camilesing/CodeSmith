@@ -48,7 +48,12 @@
   ——包括压缩、`/purge`、`/edit` 丢弃的历史——发给日志，因此任一时刻的
   转写都是日志某个前缀的折叠。快照是这一折叠的加载缓存：`save_session`
   记录它覆盖的日志大小（`journal_bytes`），加载时若日志已超出该大小，
-  就从日志恢复转写。exec 运行、runtime API 线程与子代理不记日志。
+  就从日志恢复转写。每个主 turn 模型请求都在发出的位置记入日志（system
+  提示与工具目录仅在变化时记录，消息仅在不等于转写前缀时记录），失败的
+  轮次记为 attempt 条目，因此 `session_journal::reconstruct_requests` 仅凭
+  日志即可还原每个请求——这是"模型可见即被记录"在会话日志层的形态。
+  exec 运行、runtime API 线程与子代理不记日志；共用客户端的工具性调用
+  （压缩摘要）不入日志。
 - **插件分层（已声明）。** 可插拔性统一走 `Extension` 契约
   （`crates/agent/src/extension.rs`）+ `ExtensionRunner`——共四层：用户
   Rhai mod（`~/.codesmith/mods/`，consent 门控）、内建 Rhai 层（内嵌脚本

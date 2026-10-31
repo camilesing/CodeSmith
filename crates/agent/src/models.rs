@@ -46,7 +46,7 @@ pub const LARGE_WINDOW_THRESHOLD_RATIO_DENOMINATOR: usize = 5;
 // === Core Message Types ===
 
 /// Request payload for sending a message to the API.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct MessageRequest {
     pub model: String,
     pub messages: Vec<Message>,

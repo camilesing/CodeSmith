@@ -57,8 +57,14 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   transcript at any point is a fold of a journal prefix. The snapshot is
   that fold's load cache: `save_session` stamps the journal size it covers
   (`journal_bytes`), and a load whose journal has grown past it recovers
-  the transcript from the journal. Exec runs, runtime-API threads, and
-  sub-agents keep no journal.
+  the transcript from the journal. Every main-turn model request is
+  journaled where it was sent (system prompt and tool catalog only when
+  they change, messages only when they are not the transcript prefix) and
+  failed rounds land as attempt entries, so
+  `session_journal::reconstruct_requests` rebuilds each request from the
+  journal alone — the session-log form of "model-visible means logged".
+  Exec runs, runtime-API threads, and sub-agents keep no journal; utility
+  calls sharing the client (compaction summaries) are not journaled.
 - **Plugin tiers (declared).** Pluggability rides the single `Extension`
   contract (`crates/agent/src/extension.rs`) + `ExtensionRunner` — four
   tiers: user Rhai mods (`~/.codesmith/mods/`, consent-gated), the

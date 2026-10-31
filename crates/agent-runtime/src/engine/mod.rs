@@ -1687,6 +1687,8 @@ impl Engine {
         let mut failed_attempts = built.harvest.take_failed_attempts();
         for record in &mut failed_attempts {
             record.turn_id.clone_from(&turn.id);
+            // Journaled in turn order beside the transcript (TODO-59).
+            self.session.messages.record_attempt(record.clone());
         }
         // Slice 25a/25c §E: apply the deferred compaction closure. The
         // executor recorded two post-`run` signals during `run`:

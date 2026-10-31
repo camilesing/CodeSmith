@@ -53,7 +53,9 @@ schema、采样参数），外加流式响应事件或非流式响应。跨 prov
 `[utility_model]` 客户端在同一路径上有自己的录制器（append 模式；
 整行写入保证交错后的文件仍可解析），因此多模型会话能完整录制。
 对于被录制的会话，任何历史 provider 请求都是日志的纯函数。无效路径
-会让启动当场报错中止。
+会让启动当场报错中止。REPL 与 ACP 会话无需开启即具备其中主 turn 的那一半：
+会话日志（`<id>.journal.jsonl`）按转写顺序记录每个主 turn 请求信封，
+`session_journal::reconstruct_requests` 可据此还原这些请求。
 
 `ReplayClient::load(path)` / `ReplayClient::load_with_mode(path, mode)`
 （位于 `codesmith-agent` 的

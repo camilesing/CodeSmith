@@ -3700,6 +3700,9 @@ impl HostAgentExecutor {
                 }
             }
 
+            // Model-visible means logged (round-9 TODO-59): the request goes
+            // on record, in order with the transcript, before it is sent.
+            history.record_request(&request);
             callback.on_llm_start(&request).await;
             // (2) per-step post-stream seam — ✅ transparent-retry (re-issue
             // when the stream dies mid-flight before any content commits);
