@@ -1,0 +1,5 @@
+#0 user: text "<turn_meta/>" | text "read a.txt and b.txt"
+#1 assistant: tool_use read_file id=call_pa {"path":"a.txt"} | tool_use read_file id=call_pb {"path":"b.txt"}
+#2 user: tool_result id=call_pa ok "alpha"
+#3 user: tool_result id=call_pb ok "bravo"
+#4 assistant: text "Golden: read both files."

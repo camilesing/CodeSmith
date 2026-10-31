@@ -85,7 +85,14 @@ exactly like the original run). The engine test
 `crates/cli/tests/fixtures/llm/` holds the committed golden suite driven
 by the `golden_fixture_*` engine tests — record a real session, redact,
 commit the JSONL, and extend `run_golden_fixture` calls to add a case.
-Fixtures contain full model I/O — never commit ones with secrets.
+Each case also compares the transcript the REPL would persist (the last
+`SessionUpdated` snapshot) against `<fixture>.transcript.txt`: one line per
+message with roles, block kinds, tool names/ids/inputs, result status, and
+text prefixes, with `<turn_meta>` bodies and the temp workspace path
+normalized. Run the suite with `CODESMITH_UPDATE_GOLDEN=1` to regenerate
+the expected files after a deliberate behavior change, and review the diff
+before committing. Fixtures contain full model I/O — never commit ones with
+secrets.
 
 ### Provider debug flags (opt-in, off by default)
 

@@ -1,0 +1,4 @@
+#0 user: text "<turn_meta/>" | text "read notes.txt"
+#1 assistant: tool_use read_file id=call_g1 {"path":"notes.txt"}
+#2 user: tool_result id=call_g1 ok "hello from the golden note"
+#3 assistant: text "Golden: the note says hello."

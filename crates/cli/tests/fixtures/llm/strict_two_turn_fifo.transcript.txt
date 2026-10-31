@@ -1,0 +1,4 @@
+#0 user: text "<turn_meta/>" | text "first"
+#1 assistant: text "Golden turn one."
+#2 user: text "<turn_meta/>" | text "second"
+#3 assistant: text "Golden turn two."

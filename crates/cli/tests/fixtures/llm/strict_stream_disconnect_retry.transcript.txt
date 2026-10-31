@@ -1,0 +1,2 @@
+#0 user: text "<turn_meta/>" | text "say something"
+#1 assistant: text "Golden: recovered after a retry."

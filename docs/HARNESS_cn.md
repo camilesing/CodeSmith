@@ -71,8 +71,12 @@ schema、采样参数），外加流式响应事件或非流式响应。跨 prov
 `record_then_replay_round_trip` 是现成的工作示例；`crates/cli/tests/
 fixtures/llm/` 存放由 `golden_fixture_*` 引擎测试驱动的已提交金样本
 套件 —— 录制真实会话、脱敏、提交 JSONL，并扩展 `run_golden_fixture`
-调用即可新增用例。Fixture 包含完整的
-模型 I/O —— 绝不要提交含密钥的 fixture。
+调用即可新增用例。每个用例还会把 REPL 将要落盘的转写（最后一次
+`SessionUpdated` 快照）与 `<fixture>.transcript.txt` 比对：每条消息一行，
+包含角色、块类型、工具名/id/输入、结果状态和文本前缀，`<turn_meta>`
+正文与临时工作区路径会被归一化。有意改变行为后，用
+`CODESMITH_UPDATE_GOLDEN=1` 运行套件重写期望文件，提交前审阅 diff。
+Fixture 包含完整的模型 I/O —— 绝不要提交含密钥的 fixture。
 
 ### Provider 调试标志（opt-in，默认关闭）
 

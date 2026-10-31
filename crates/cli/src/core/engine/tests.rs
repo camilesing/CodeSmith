@@ -4905,12 +4905,21 @@ fn golden_fixture_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/llm")
 }
 
-/// Drive the REAL engine over a committed fixture file and return the
-/// streamed text per turn. This is the keyless golden suite: no mock, no
-/// network — the recorded envelope is the entire model world, so any
-/// drift in the turn loop's request/response handling surfaces as a
-/// fixture mismatch instead of silence.
-async fn run_golden_fixture(name: &str, sends: &[&str]) -> Vec<String> {
+/// One golden run's observable outputs: the streamed text per turn and the
+/// normalized projection of the transcript the REPL would persist (the last
+/// `SessionUpdated` snapshot — `ReplState::api_messages` is exactly that).
+struct GoldenRun {
+    texts: Vec<String>,
+    transcript: String,
+}
+
+/// Drive the REAL engine over a committed fixture file. This is the keyless
+/// golden suite: no mock, no network — the recorded envelope is the entire
+/// model world, so any drift in the turn loop's request/response handling
+/// surfaces as a fixture mismatch instead of silence. `seed` files are
+/// written into the temp workspace before the first turn (tool fixtures
+/// address them by workspace-relative path).
+async fn run_golden_fixture(name: &str, seed: &[(&str, &str)], sends: &[&str]) -> GoldenRun {
     use codesmith_agent::llm_client::record_replay::{ReplayClient, ReplayMode};
 
     let path = golden_fixture_dir().join(name);
@@ -4918,11 +4927,15 @@ async fn run_golden_fixture(name: &str, sends: &[&str]) -> Vec<String> {
         .unwrap_or_else(|e| panic!("golden fixture {name} loads: {e}"));
     let replay = std::sync::Arc::new(replay);
     let tmp = tempdir().expect("tempdir");
+    for (file, contents) in seed {
+        fs::write(tmp.path().join(file), contents).expect("seed workspace file");
+    }
     let config = test_engine_config(tmp.path());
     let (engine, handle) = Engine::new_with_client(config, &Config::default(), replay.clone());
     tokio::spawn(async move { engine.run().await });
 
     let mut texts = Vec::new();
+    let mut transcript: Vec<Message> = Vec::new();
     for send in sends {
         handle.send(make_send_op(send)).await.expect("send op");
         let events = collect_until_turn_complete(&handle).await;
@@ -4936,6 +4949,11 @@ async fn run_golden_fixture(name: &str, sends: &[&str]) -> Vec<String> {
             )),
             "golden fixture {name}: turn for {send:?} must complete"
         );
+        for event in &events {
+            if let Event::SessionUpdated { messages, .. } = event {
+                transcript = messages.as_ref().clone();
+            }
+        }
         texts.push(
             events
                 .iter()
@@ -4951,27 +4969,174 @@ async fn run_golden_fixture(name: &str, sends: &[&str]) -> Vec<String> {
         0,
         "golden fixture {name}: every recorded line must be consumed"
     );
-    texts
+    GoldenRun {
+        texts,
+        transcript: transcript_projection(&transcript, tmp.path()),
+    }
+}
+
+/// Deterministic one-line-per-message rendering of a transcript: role plus
+/// each block's kind, tool name/id/input, result status, and a
+/// whitespace-collapsed text prefix. `<turn_meta>` bodies (clock, cwd) and
+/// the temp workspace path are normalized so the projection is stable
+/// across runs and machines.
+fn transcript_projection(messages: &[Message], workspace: &Path) -> String {
+    let mut roots = vec![workspace.display().to_string()];
+    if let Ok(canonical) = fs::canonicalize(workspace) {
+        roots.push(canonical.display().to_string());
+    }
+    let norm = |text: &str| -> String {
+        let mut s = text.to_string();
+        let mut cursor = 0;
+        while let Some(rel) = s[cursor..].find("<turn_meta>") {
+            let start = cursor + rel;
+            let Some(end) = s[start..].find("</turn_meta>") else {
+                break;
+            };
+            s.replace_range(start..start + end + "</turn_meta>".len(), "<turn_meta/>");
+            cursor = start + "<turn_meta/>".len();
+        }
+        for root in &roots {
+            s = s.replace(root.as_str(), "<WS>");
+        }
+        let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.chars().count() > 120 {
+            format!("{}…", collapsed.chars().take(120).collect::<String>())
+        } else {
+            collapsed
+        }
+    };
+    let mut out = String::new();
+    for (index, message) in messages.iter().enumerate() {
+        let blocks: Vec<String> = message
+            .content
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text { text, .. } => format!("text {:?}", norm(text)),
+                ContentBlock::Image { .. } => "image".to_string(),
+                ContentBlock::Thinking { thinking } => {
+                    format!("thinking({} chars)", thinking.chars().count())
+                }
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => format!("tool_use {name} id={id} {}", norm(&input.to_string())),
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    ..
+                } => format!(
+                    "tool_result id={tool_use_id} {} {:?}",
+                    if is_error.unwrap_or(false) {
+                        "error"
+                    } else {
+                        "ok"
+                    },
+                    norm(content)
+                ),
+                ContentBlock::ServerToolUse { id, name, .. } => {
+                    format!("server_tool_use {name} id={id}")
+                }
+                ContentBlock::ToolSearchToolResult { tool_use_id, .. } => {
+                    format!("tool_search_result id={tool_use_id}")
+                }
+                ContentBlock::CodeExecutionToolResult { tool_use_id, .. } => {
+                    format!("code_execution_result id={tool_use_id}")
+                }
+            })
+            .collect();
+        out.push_str(&format!(
+            "#{index} {}: {}\n",
+            message.role,
+            blocks.join(" | ")
+        ));
+    }
+    out
+}
+
+/// Compare `projection` with the committed `<fixture>.transcript.txt`.
+/// `CODESMITH_UPDATE_GOLDEN=1` rewrites the expected file instead (review
+/// the diff before committing it).
+fn assert_golden_transcript(fixture: &str, projection: &str) {
+    let path = golden_fixture_dir().join(fixture.replace(".jsonl", ".transcript.txt"));
+    if std::env::var_os("CODESMITH_UPDATE_GOLDEN").is_some() {
+        fs::write(&path, projection).expect("write golden transcript");
+        return;
+    }
+    let expected = fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "golden transcript {} is missing ({e}); run with CODESMITH_UPDATE_GOLDEN=1",
+            path.display()
+        )
+    });
+    assert_eq!(
+        projection, expected,
+        "golden transcript drift for {fixture}; rerun with CODESMITH_UPDATE_GOLDEN=1 after reviewing"
+    );
 }
 
 #[tokio::test]
 async fn golden_fixture_simple_text_turn_replays() {
     let _env = HermeticEnv::new();
-    let texts = run_golden_fixture("strict_simple_text_turn.jsonl", &["hello"]).await;
-    assert_eq!(texts, vec!["Golden replay: one.".to_string()]);
+    let run = run_golden_fixture("strict_simple_text_turn.jsonl", &[], &["hello"]).await;
+    assert_eq!(run.texts, vec!["Golden replay: one.".to_string()]);
+    assert_golden_transcript("strict_simple_text_turn.jsonl", &run.transcript);
 }
 
 #[tokio::test]
 async fn golden_fixture_two_turns_replay_in_fifo_order() {
     let _env = HermeticEnv::new();
-    let texts = run_golden_fixture("strict_two_turn_fifo.jsonl", &["first", "second"]).await;
+    let run = run_golden_fixture("strict_two_turn_fifo.jsonl", &[], &["first", "second"]).await;
     assert_eq!(
-        texts,
+        run.texts,
         vec![
             "Golden turn one.".to_string(),
             "Golden turn two.".to_string(),
         ]
     );
+    assert_golden_transcript("strict_two_turn_fifo.jsonl", &run.transcript);
+}
+
+#[tokio::test]
+async fn golden_fixture_tool_call_turn_replays() {
+    let _env = HermeticEnv::new();
+    let run = run_golden_fixture(
+        "strict_tool_call_turn.jsonl",
+        &[("notes.txt", "hello from the golden note\n")],
+        &["read notes.txt"],
+    )
+    .await;
+    assert_eq!(run.texts, vec!["Golden: the note says hello.".to_string()]);
+    assert_golden_transcript("strict_tool_call_turn.jsonl", &run.transcript);
+}
+
+#[tokio::test]
+async fn golden_fixture_parallel_tool_calls_replay() {
+    let _env = HermeticEnv::new();
+    let run = run_golden_fixture(
+        "strict_parallel_tool_calls.jsonl",
+        &[("a.txt", "alpha\n"), ("b.txt", "bravo\n")],
+        &["read a.txt and b.txt"],
+    )
+    .await;
+    assert_eq!(run.texts, vec!["Golden: read both files.".to_string()]);
+    assert_golden_transcript("strict_parallel_tool_calls.jsonl", &run.transcript);
+}
+
+#[tokio::test]
+async fn golden_fixture_stream_disconnect_retries_transparently() {
+    let _env = HermeticEnv::new();
+    let run = run_golden_fixture(
+        "strict_stream_disconnect_retry.jsonl",
+        &[],
+        &["say something"],
+    )
+    .await;
+    assert_eq!(
+        run.texts,
+        vec!["Golden: recovered after a retry.".to_string()]
+    );
+    assert_golden_transcript("strict_stream_disconnect_retry.jsonl", &run.transcript);
 }
 
 // === Test 1: Simple text turn ===============================================
