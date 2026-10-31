@@ -203,11 +203,21 @@ pub(crate) struct ConfigArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum ConfigCommand {
-    Get { key: String },
-    Set { key: String, value: String },
-    Unset { key: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: String,
+    },
+    Unset {
+        key: String,
+    },
     List,
     Path,
+    /// Print the effective configuration — every layer folded the way an
+    /// interactive session folds it — as TOML, secrets redacted.
+    Dump,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -971,6 +981,9 @@ pub(crate) fn run_config_command(store: &mut ConfigStore, command: ConfigCommand
             println!("{}", store.path().display());
             Ok(())
         }
+        // Needs the full layered load, not the raw file store; dispatched
+        // before the store opens (`main_root::dump_effective_config`).
+        ConfigCommand::Dump => bail!("`config dump` is dispatched with the layered load"),
     }
 }
 

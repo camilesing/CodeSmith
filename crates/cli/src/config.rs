@@ -283,7 +283,7 @@ pub struct SandboxNetworkConfigToml {
 }
 
 /// Raw retry configuration loaded from config files.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct RetryConfig {
     pub enabled: Option<bool>,
     pub max_retries: Option<u32>,
@@ -302,7 +302,7 @@ fn default_snapshot_max_workspace_gb() -> u64 {
 }
 
 /// Workspace side-git snapshot configuration (#137).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct SnapshotsConfig {
     /// Snapshot the workspace before and after each interactive agent
     /// turn. `None` inherits the active preset's baseline (default `true`).
@@ -345,7 +345,7 @@ fn default_parse_gate_enabled() -> bool {
 }
 
 /// File-editing configuration (P0-1 parse gate).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct EditConfig {
     /// Pre-write parse gate for file-editing tools: writes that would break
     /// a previously-parsing `.rs`/`.toml`/`.json` file are rejected before
@@ -373,7 +373,7 @@ impl EditConfig {
 /// (disable env > bare/simple > remote-without-storage > explicit setting >
 /// default on). Set `enabled = false` (or `CODESMITH_DISABLE_AUTO_MEMORY=1`) to
 /// opt out.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct MemoryConfig {
     /// When `true`, load the user memory file at `Config::memory_path()`
     /// into the system prompt as a `<user_memory>` block, and intercept
@@ -433,7 +433,7 @@ pub struct SearchProviderResolution {
 }
 
 /// Web search provider configuration (`[search]` table in config.toml).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct SearchConfig {
     /// Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `baidu` | `volcengine` | `provider_native`. Default: `duckduckgo`.
     #[serde(default)]
@@ -454,7 +454,7 @@ pub use codesmith_agent_runtime::config_types::{
 };
 
 /// Capacity-controller config loaded from config files/environment.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct CapacityConfig {
     pub enabled: Option<bool>,
     pub low_risk_max: Option<f64>,
@@ -476,7 +476,7 @@ pub struct CapacityConfig {
 // `RetryPolicy` and its `delay_for_attempt` impl now live in `codesmith_agent::retry`.
 
 /// Context management configuration (append-only layered context with Flash seams).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct ContextConfig {
     /// Master enable for layered context management. Default: false while
     /// v0.7.5 audits V4 prefix-cache behavior.
@@ -515,7 +515,7 @@ pub struct ContextConfig {
 /// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
 /// `explorer`, `awaiter`) or type names (`general`, `explore`, `plan`,
 /// `review`, `custom`). Per-call explicit model choices still win.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct SubagentsConfig {
     #[serde(default)]
     pub default_model: Option<String>,
@@ -567,7 +567,7 @@ pub struct SubagentsConfig {
 }
 
 /// `[subagents.acp]` — how to spawn and bound the ACP child agent.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct AcpSubagentConfig {
     /// Executable to spawn (required for the `acp` provider).
     #[serde(default)]
@@ -587,7 +587,7 @@ pub struct AcpSubagentConfig {
 /// `[runtime]` table — engine-wide limits shared by every engine root
 /// (REPL, `exec`, automation threads). The sub-agent depth-gate error
 /// ("Increase via [runtime] max_spawn_depth in config.toml") points here.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct RuntimeConfig {
     /// Maximum sub-agent spawn depth across the whole spawn tree
     /// (`spawn_depth + 1 > max_spawn_depth` rejects). Unset falls back to
@@ -606,7 +606,7 @@ pub struct RuntimeConfig {
 /// the fail-loud serde posture; see `crates/config/src/presets.rs` for the
 /// precedent) and out-of-range values fail `validate` at startup — never a
 /// silent clamp.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowConfig {
     /// Wall-clock bound for one workflow run, in seconds. Default
@@ -630,7 +630,7 @@ pub struct WorkflowConfig {
 /// and ambiguous requests resolve to the light tier. Default `false`: the
 /// classifier runs on the heavy tier — the strongest available brain decides
 /// who does the work — and ambiguous requests resolve to heavy.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct AutoConfig {
     #[serde(default)]
     pub cost_saving: Option<bool>,
@@ -704,7 +704,7 @@ fn heavy_model_for_provider(provider: ApiProvider) -> &'static str {
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct Config {
     /// Keys in the loaded config file that no config model reads — typos
     /// and stale keys (round-9 TODO-60). Filled by [`Config::load`]; never
@@ -958,7 +958,7 @@ pub struct Config {
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct RuntimeApiConfig {
     /// Additional CORS origins to allow on top of the built-in defaults
     /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
@@ -972,7 +972,7 @@ pub struct RuntimeApiConfig {
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct SkillsConfig {
     /// Curated registry index. `/skill install <name>` looks up the spec here.
     /// Defaults to [`codesmith_agent_runtime::skills::install::DEFAULT_REGISTRY_URL`].
@@ -1003,7 +1003,7 @@ impl SkillsConfig {
 
 /// `[verification]` table — post-turn claim checks (P3-8). See
 /// `config.example.toml` for documentation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct VerificationToml {
     /// When `true` (the default), a completed turn whose final assistant
     /// message claims "tests pass / build succeeds" triggers an engine-side
@@ -1015,7 +1015,7 @@ pub struct VerificationToml {
 
 /// `[doctor]` table — the `codesmith doctor` LLM fallback layer (P3-8
 /// step 2). See `config.example.toml` for documentation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct DoctorToml {
     /// When `true` (opt-in; the default is `false`), doctor's post-check
     /// advisory analysis runs when the deterministic checks collected
@@ -1029,7 +1029,7 @@ pub struct DoctorToml {
 /// CLI runtime can construct a [`codesmith_agent_runtime::network_policy::NetworkPolicy`]
 /// without reaching into the workspace config crate. See `config.example.toml`
 /// for documentation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct NetworkPolicyToml {
     /// Decision for hosts that are not in `allow` or `deny`. One of
     /// `"allow" | "deny" | "prompt"`. Defaults to `"prompt"`.
@@ -1127,13 +1127,13 @@ impl Config {
 }
 
 /// `[mods]` table (§F script mod layer).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct ModsConfig {
     pub enabled: Option<bool>,
 }
 
 /// `[commands]` table — built-in slash-command controls.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CommandsConfig {
     /// Builtin command names (or aliases) to disable.
     pub disabled: Option<Vec<String>>,
@@ -1147,7 +1147,7 @@ pub const AUTOMATION_DEFAULT_MAX_STEPS: u32 = 100;
 
 /// `[automations]` table — bounds for scheduled automation runs.
 /// Documented in `config.example.toml` + `docs/CLI.md`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct AutomationsConfig {
     /// Step cap per turn for scheduled (unattended) runs. Defaults to
     /// [`AUTOMATION_DEFAULT_MAX_STEPS`].
@@ -1157,7 +1157,7 @@ pub struct AutomationsConfig {
 /// `[lsp]` table — mirrors [`crate::lsp::LspConfig`]. Documented in
 /// `config.example.toml`. When omitted, defaults from `LspConfig::default()`
 /// apply (enabled, 5 s poll, 20 diagnostics/file, errors only, no overrides).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct LspConfigToml {
     /// Master switch. Defaults to `true`.
     #[serde(default)]
@@ -1198,7 +1198,7 @@ impl LspConfigToml {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -1231,7 +1231,7 @@ pub struct ProviderConfig {
 /// `id`. Selection + resolution is handled by [`Config::custom_provider_entry`]
 /// and `resolve_llm_client`; the builtin accessor path (`api_provider` /
 /// `provider_config_for`) is bypassed for custom providers.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct CustomProviderConfig {
     pub id: String,
     pub api_key: Option<String>,
@@ -1250,7 +1250,7 @@ pub struct CustomProviderConfig {
     pub context_window: Option<u32>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct ProvidersConfig {
     #[serde(default)]
     pub deepseek: ProviderConfig,
@@ -1297,14 +1297,14 @@ pub struct ProvidersConfig {
     pub custom: Vec<CustomProviderConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 struct ConfigFile {
     #[serde(flatten)]
     base: Config,
     profiles: Option<HashMap<String, Config>>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 struct RequirementsFile {
     #[serde(default)]
     allowed_approval_policies: Vec<String>,
@@ -3225,6 +3225,41 @@ pub(crate) fn unknown_config_keys(contents: &str) -> Vec<String> {
     unknown
 }
 
+/// `config` rendered as TOML for `codesmith config dump` (round-9 TODO-60),
+/// every string value under a secret-looking key replaced by
+/// `<redacted>` — by name, so a credential field added later is covered
+/// without touching this function.
+pub(crate) fn effective_config_toml(config: &Config) -> Result<String> {
+    let mut value = toml::Value::try_from(config).context("serialize the effective config")?;
+    redact_secret_values(&mut value);
+    toml::to_string_pretty(&value).context("render the effective config")
+}
+
+fn redact_secret_values(value: &mut toml::Value) {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, entry) in table.iter_mut() {
+                if entry.is_str() && is_secret_key(key) {
+                    *entry = toml::Value::String("<redacted>".to_string());
+                } else {
+                    redact_secret_values(entry);
+                }
+            }
+        }
+        toml::Value::Array(items) => items.iter_mut().for_each(redact_secret_values),
+        _ => {}
+    }
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    key == "key"
+        || key == "authorization"
+        || ["api_key", "apikey", "token", "secret", "password", "cookie"]
+            .iter()
+            .any(|needle| key.contains(needle))
+}
+
 fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = path {
         return Some(expand_pathbuf(path));
@@ -5060,6 +5095,27 @@ modle = "x"
                 "profiles.work.modle".to_string(),
             ]
         );
+    }
+
+    /// `config dump` renders the effective config as TOML that parses back,
+    /// with credentials redacted by key name — including a header map entry.
+    #[test]
+    fn effective_config_toml_redacts_secrets_and_round_trips() {
+        let mut config = Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("sk-live-secret".to_string()),
+            ..Config::default()
+        };
+        config
+            .http_headers
+            .get_or_insert_with(HashMap::new)
+            .insert("Authorization".to_string(), "Bearer hunter2".to_string());
+        let rendered = effective_config_toml(&config).expect("render");
+        assert!(!rendered.contains("sk-live-secret"), "{rendered}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        let parsed: toml::Table = toml::from_str(&rendered).expect("dump parses as TOML");
+        assert_eq!(parsed["provider"].as_str(), Some("deepseek"));
+        assert_eq!(parsed["api_key"].as_str(), Some("<redacted>"));
     }
 
     #[test]

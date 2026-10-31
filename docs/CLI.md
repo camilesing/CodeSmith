@@ -54,6 +54,15 @@ The prompt entry points are:
   turn. It is not one-shot; the session stays open for follow-ups.
 - `codesmith exec "<prompt>"` — the non-interactive one-shot form.
 
+`codesmith config get|set|unset|list|path` read and edit the config file
+itself. `codesmith config dump` prints the configuration a session in the
+current workspace (`--workspace` to pick another) would actually run with —
+the file and selected profile, env and managed overrides, the workspace
+`.env` and project overlay when the workspace is trusted, then the preset
+baseline — as TOML, with every value under a secret-looking key (`api_key`,
+`token`, `secret`, `password`, `authorization`, `cookie`) shown as
+`<redacted>`.
+
 Inside the REPL, `/help` is the live list of slash commands — typing `/`
 reports how many exist, `Tab` completes the name (press it twice to list the
 matches), and the dim text after the cursor previews what the match does. `/plan`,

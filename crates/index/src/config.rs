@@ -20,7 +20,7 @@ pub const DEFAULT_SYMBOLS_BACKEND: &str = crate::builtin::TREE_SITTER_BACKEND_ID
 pub const DEFAULT_REFRESH_BUDGET_MS: u64 = 2_000;
 
 /// `[index]` section in config.toml.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct IndexConfig {
     /// Master switch. `None` means enabled (default-on when a backend is
@@ -90,7 +90,7 @@ impl IndexConfig {
 
 /// `[index.files]` — file inventory cache. Built-in walk (`ignore` crate),
 /// no swappable backend, so the table only carries a switch.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct IndexFilesConfig {
     /// `None` means enabled (default).
@@ -106,7 +106,7 @@ impl IndexFilesConfig {
 }
 
 /// `[index.symbols]` — symbol index capability.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct IndexSymbolsConfig {
     /// `None` means enabled (default).
@@ -150,7 +150,7 @@ impl IndexSymbolsConfig {
 /// with enabled defaults. Unknown keys are rejected: a mistyped or
 /// not-yet-supported language name (`kotlin = true`) silently falling back
 /// to "not configured" contradicts the fail-fast validation goal.
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IndexLanguages {
     pub rust: Option<bool>,
@@ -163,7 +163,7 @@ pub struct IndexLanguages {
 /// `[index.semantic]` — reserved seam for embedding-based search. No
 /// built-in backend this cycle; enabling it with no capable backend fails
 /// [`IndexConfig::validate`].
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct IndexSemanticConfig {
     /// `None` / `false` means disabled (default).

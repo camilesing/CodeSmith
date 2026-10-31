@@ -40,6 +40,8 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
   listed by `codesmith doctor` (`config_unknown_keys` in `--json`), instead of
   being silently ignored. Keys that only the app server or the workspace-trust
   store read are not flagged. It is a warning for now; the run continues.
+  `codesmith config dump` prints the configuration a session in the current
+  workspace would actually run with — every layer folded, secrets redacted.
 
 - **Sessions keep an append-only journal** — every REPL and ACP session now
   writes `<id>.journal.jsonl` beside its snapshot: each appended message and

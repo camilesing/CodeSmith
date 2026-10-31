@@ -1063,6 +1063,9 @@ pub(crate) async fn real_main() -> Result<()> {
                 crate::run_logout_command(&mut store)
             }
             Commands::Config(args) => {
+                if matches!(args.command, crate::ConfigCommand::Dump) {
+                    return dump_effective_config(&cli);
+                }
                 let mut store = codesmith_config::ConfigStore::load(cli.config.clone())?;
                 crate::run_config_command(&mut store, args.command)
             }
@@ -4099,6 +4102,40 @@ pub(crate) fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &Works
     if boundary.allow_workspace_initialization {
         sink.attach();
     }
+}
+
+/// `codesmith config dump` (round-9 TODO-60): the configuration an
+/// interactive session in this workspace would run with — the user file and
+/// selected profile, env and managed overrides, requirements, the workspace
+/// `.env` and project overlay when the workspace is trusted, then the preset
+/// baseline — rendered as TOML with secret values redacted. Mirrors the
+/// interactive startup's fold order.
+fn dump_effective_config(cli: &Cli) -> Result<()> {
+    let mut config = load_config_from_cli(cli)?;
+    let workspace = cli
+        .workspace
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let startup_yolo = cli.yolo || config.yolo.unwrap_or(false);
+    let boundary = resolve_workspace_init_boundary(&workspace, cli.skip_onboarding, startup_yolo);
+    if load_workspace_dotenv_if_allowed(&workspace, &boundary) {
+        config = load_config_from_cli(cli)?;
+    }
+    if should_load_project_config(cli.no_project_config, &boundary) {
+        merge_project_config(&mut config, &workspace);
+    }
+    if config.preset_selection().is_none()
+        && let Some(persisted) = crate::presets::persisted_selection()
+    {
+        config.preset = Some(persisted);
+    }
+    crate::presets::apply_config_preset(&mut config, &workspace);
+    println!(
+        "# Effective configuration for {} (secrets redacted)",
+        workspace.display()
+    );
+    print!("{}", crate::config::effective_config_toml(&config)?);
+    Ok(())
 }
 
 /// Name config-file keys no config model reads, once per process, on stderr

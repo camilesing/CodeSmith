@@ -54,6 +54,8 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 5. requirements 校验（`requirements_path`，默认
    `/etc/codesmith/requirements.toml`），可在启动时拒绝最终结果
 
+`codesmith config dump` 打印当前工作区下整套叠加后的结果，密钥已脱敏。
+
 没人读取的键会被点名，而不是被静默丢弃：加载的文件（顶层、任一表或
 `[profiles.<name>]` 条目）里若有 CodeSmith 任何部分都不读取的键——例如拼写
 错误的 `aproval_mode`，或新旧版本使用过的键——启动时会在 stderr 输出一行

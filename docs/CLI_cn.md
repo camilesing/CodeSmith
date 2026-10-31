@@ -51,6 +51,13 @@ prompt 的入口有两个：
   会话会保持打开以便继续对话。
 - `codesmith exec "<prompt>"` —— 非交互的一次性形式。
 
+`codesmith config get|set|unset|list|path` 读取和编辑配置文件本身。
+`codesmith config dump` 打印当前工作区（可用 `--workspace` 指定其他工作区）
+中会话实际使用的配置——配置文件与选中的档案、环境变量与托管覆盖、工作区
+受信任时的 `.env` 与项目 overlay，最后叠加预设基线——以 TOML 输出，凡是
+看起来像密钥的键（`api_key`、`token`、`secret`、`password`、`authorization`、
+`cookie`）对应的值都显示为 `<redacted>`。
+
 在 REPL 内，`/help` 是斜杠命令的实时清单——输入 `/` 会显示命令数量，
 `Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色文字预览匹配命令
 的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式，也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。命令按

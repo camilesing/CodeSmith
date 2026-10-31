@@ -103,7 +103,7 @@ impl SearchProvider {
 
 /// Vision model configuration for the `image_analyze` tool.
 /// Uses an OpenAI-compatible vision model API.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct VisionModelConfig {
     /// Model identifier (e.g., "gemini-3.1-flash-lite-preview").
     pub model: String,
@@ -119,7 +119,7 @@ pub struct VisionModelConfig {
 /// assists (workshop large-output synthesis #548, auto-route classification,
 /// Flash seams). When the table is absent every assist falls back to the main
 /// model and behaviour is unchanged.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct UtilityModelConfig {
     /// Model identifier (e.g., "deepseek-v4-flash"). Setting the table
     /// enables the utility model.
@@ -141,7 +141,7 @@ pub struct UtilityModelConfig {
 pub const DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS: usize = 4_096;
 
 /// `[workshop]` section in `config.toml`.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct WorkshopConfig {
     /// Token threshold above which tool results are routed through the workshop
     /// synthesis sub-agent. Default: [`DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS`].
@@ -173,7 +173,7 @@ impl WorkshopConfig {
 }
 
 /// How a user wants to replace or disable a built-in tool.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolOverride {
     /// Run a local script file. The script receives the tool's JSON input
@@ -200,7 +200,7 @@ pub enum ToolOverride {
 }
 
 /// Model-visible tool catalog controls (`[tools]` table in config.toml).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default)]
 pub struct ToolsConfig {
     /// Native tool names to keep loaded even when they are outside the small
     /// default core catalog. Unknown names are harmless and simply never match.

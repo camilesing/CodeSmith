@@ -56,6 +56,9 @@ Consolidated resolution order (highest first):
    `/etc/codesmith/requirements.toml`), which can reject the final result
    at startup
 
+`codesmith config dump` prints the result of this whole fold for the
+current workspace, secrets redacted.
+
 Keys nothing reads are named, not silently dropped: when the loaded file
 (top level, any table, or a `[profiles.<name>]` entry) carries a key no
 part of CodeSmith reads — a typo such as `aproval_mode`, or a key a newer or
