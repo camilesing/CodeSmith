@@ -80,7 +80,7 @@ impl PrefixChange {
 ///
 /// The engine freezes one [`FrozenPrefix`] per step (via
 /// `prompt_zones::PinnedPrefix`) and calls [`check_and_update`](Self::check_and_update);
-/// drift emits [`crate::events::Event::PrefixCacheChange`] for the host UI.
+/// drift emits `Event::PrefixCacheChange` (the engine UI event) for the host UI.
 #[derive(Debug, Clone)]
 pub struct PrefixStabilityManager {
     /// The pinned fingerprint from session start or last stabilization.
@@ -219,7 +219,7 @@ impl PrefixStabilityManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{SystemPrompt, Tool};
+    use codesmith_agent::models::{SystemPrompt, Tool};
     use codesmith_session::zones::PinnedPrefix;
 
     fn make_tool(name: &str) -> Tool {

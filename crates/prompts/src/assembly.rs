@@ -23,7 +23,7 @@
 //!   cache-granularity / per-model price claims, which were wrong for every
 //!   non-DeepSeek model (a `claude-sonnet-4-5` session has a 200k window).
 //!   `reasoning_effort` is decided at runtime by config and
-//!   [`crate::auto_reasoning`], never by prose.
+//!   [``codesmith_agent_runtime::auto_reasoning``], never by prose.
 //! - **`base.md`'s own `## Context Management`** — [`context_management_prompt`]
 //!   (Agent/Yolo only) is the single copy, so Plan and Coordinator modes no
 //!   longer carry `/compact` advice.
@@ -34,16 +34,18 @@
 //! shorter, so the prefix fingerprint and `prompt_inspect` semantics are
 //! untouched.
 
-use crate::mode::AppMode;
-use crate::mode::ApprovalMode;
-use crate::models::SystemPrompt;
-use crate::project_context::{ProjectContext, load_project_context_with_parents};
-use crate::prompt_runtime::{
+use crate::runtime::{
     EffectiveSystemPromptInput, PromptBundle, PromptCachePolicy, PromptSection,
     PromptSectionSource, PromptSectionStability, build_effective_system_prompt,
 };
-pub use crate::prompt_sources::{InstructionSource, PromptAppendSource};
-use crate::utils::{defuse_prompt_framing_tags, escape_prompt_attr};
+pub use crate::sources::{InstructionSource, PromptAppendSource};
+use codesmith_agent::mode::AppMode;
+use codesmith_agent::mode::ApprovalMode;
+use codesmith_agent::models::SystemPrompt;
+use codesmith_context::project_docs::{ProjectContext, load_project_context_with_parents};
+use codesmith_sandbox::sanitization::{
+    defuse_framing_tags as defuse_prompt_framing_tags, escape_prompt_attr,
+};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -404,12 +406,62 @@ pub fn load_handoff_block(workspace: &Path) -> Option<String> {
 
 /// Core: task execution, tool-use rules, output format, toolbox reference,
 /// "When NOT to use" guidance, sub-agent sentinel protocol.
-pub const BASE_PROMPT: &str = include_str!("prompts/base.md");
+/// The default active native tool set — the core-tool taxonomy the base
+/// prompt teaches (moved to the prompts crate in the round-9 split; the
+/// engine re-exports it). Sorted and duplicate-free (prefix-cache
+/// stability, pinned by a test there).
+pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
+    "agent_close",
+    "agent_eval",
+    "agent_open",
+    "apply_patch",
+    "checklist_write",
+    "edit_file",
+    "exec_interact",
+    "exec_shell",
+    "exec_shell_interact",
+    "exec_shell_wait",
+    "exec_wait",
+    "fetch_url",
+    "file_search",
+    "find_references",
+    "git_diff",
+    "git_status",
+    "grep_files",
+    "list_dir",
+    "read_file",
+    "run_tests",
+    "symbol_search",
+    "task_create",
+    "task_list",
+    "task_read",
+    "task_shell_start",
+    "task_shell_wait",
+    "update_plan",
+    "web_search",
+    "write_file",
+];
+
+/// The sorted, duplicate-free active-tool-name list rendered into the
+/// base prompt's core-tool taxonomy (pinned by a test).
+#[must_use]
+pub fn default_active_native_tool_names() -> &'static [&'static str] {
+    DEFAULT_ACTIVE_NATIVE_TOOLS
+}
+
+/// Cycle-checkpoint handoff briefing template (engine `cycle_manager` owns
+/// its use; the asset lives here since the round-9 split).
+pub const CYCLE_HANDOFF_TEMPLATE: &str = include_str!("assets/cycle_handoff.md");
+
+/// Sub-agent final-output format template (engine `subagent` owns its use).
+pub const SUBAGENT_OUTPUT_FORMAT: &str = include_str!("assets/subagent_output_format.md");
+
+pub const BASE_PROMPT: &str = include_str!("assets/base.md");
 
 /// Conversation-style overlay appended when `PromptSessionContext::is_simple`
 /// is true (the `is_simple` user setting). Presentation-only: compressed
 /// sentences, byte-exact technical content.
-pub const SIMPLE_CONVERSATION_STYLE: &str = include_str!("prompts/styles/simple.md");
+pub const SIMPLE_CONVERSATION_STYLE: &str = include_str!("assets/styles/simple.md");
 
 // ── Embedder prompt overrides ──
 // Let an embedder replace these compile-time prompt constants at startup,
@@ -761,28 +813,28 @@ pub fn build_memory_extraction_prompt(
 }
 
 /// Personality overlays — voice and tone.
-pub const CALM_PERSONALITY: &str = include_str!("prompts/personalities/calm.md");
-pub const PLAYFUL_PERSONALITY: &str = include_str!("prompts/personalities/playful.md");
+pub const CALM_PERSONALITY: &str = include_str!("assets/personalities/calm.md");
+pub const PLAYFUL_PERSONALITY: &str = include_str!("assets/personalities/playful.md");
 
 /// Mode deltas — permissions, workflow expectations, mode-specific rules.
-pub const AGENT_MODE: &str = include_str!("prompts/modes/agent.md");
-pub const PLAN_MODE: &str = include_str!("prompts/modes/plan.md");
-pub const YOLO_MODE: &str = include_str!("prompts/modes/yolo.md");
-pub const COORDINATOR_MODE: &str = include_str!("prompts/modes/coordinator.md");
+pub const AGENT_MODE: &str = include_str!("assets/modes/agent.md");
+pub const PLAN_MODE: &str = include_str!("assets/modes/plan.md");
+pub const YOLO_MODE: &str = include_str!("assets/modes/yolo.md");
+pub const COORDINATOR_MODE: &str = include_str!("assets/modes/coordinator.md");
 
 /// Approval-policy overlays — whether tool calls are auto-approved,
 /// require confirmation, or are blocked.
-pub const AUTO_APPROVAL: &str = include_str!("prompts/approvals/auto.md");
-pub const SUGGEST_APPROVAL: &str = include_str!("prompts/approvals/suggest.md");
-pub const NEVER_APPROVAL: &str = include_str!("prompts/approvals/never.md");
+pub const AUTO_APPROVAL: &str = include_str!("assets/approvals/auto.md");
+pub const SUGGEST_APPROVAL: &str = include_str!("assets/approvals/suggest.md");
+pub const NEVER_APPROVAL: &str = include_str!("assets/approvals/never.md");
 
 /// Compaction relay template — written into the system prompt so the
 /// model knows the format to use when writing `.codesmith/handoff.md`.
-pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
+pub const COMPACT_TEMPLATE: &str = include_str!("assets/compact.md");
 
 /// Goal continuation audit template — injected by the engine when a runtime
 /// goal is active and the assistant tries to end a turn without closing it.
-pub const GOAL_CONTINUATION_PROMPT: &str = include_str!("prompts/continuation.md");
+pub const GOAL_CONTINUATION_PROMPT: &str = include_str!("assets/continuation.md");
 
 /// Memory hygiene guidance — appended to the system prompt only when the
 /// session has a non-empty user-memory block. Steers the model toward
@@ -790,17 +842,17 @@ pub const GOAL_CONTINUATION_PROMPT: &str = include_str!("prompts/continuation.md
 /// responses") rather than imperatives ("Always respond concisely"),
 /// because imperatives get re-read as directives in later sessions and
 /// can override the user's current request (#725).
-pub const MEMORY_GUIDANCE: &str = include_str!("prompts/memory_guidance.md");
+pub const MEMORY_GUIDANCE: &str = include_str!("assets/memory_guidance.md");
 
 /// KoD-specific guidance prompt — type taxonomy, save instructions,
 /// staleness warnings, and constitutional tier placement.
-pub const KNOWLEDGE_GUIDANCE: &str = include_str!("prompts/knowledge_guidance.md");
+pub const KNOWLEDGE_GUIDANCE: &str = include_str!("assets/knowledge_guidance.md");
 
 // ── Legacy prompt constants (kept for backwards compatibility) ────────
 
 /// Legacy base prompt (agent.txt — now decomposed into base.md + overlays).
 /// Still available for callers that haven't migrated to the layered API.
-pub const AGENT_PROMPT: &str = include_str!("prompts/agent.txt");
+pub const AGENT_PROMPT: &str = include_str!("assets/agent.txt");
 
 // ── Personality selection ─────────────────────────────────────────────
 
@@ -933,7 +985,7 @@ pub fn render_core_tool_taxonomy_block(mode: AppMode) -> String {
 }
 
 pub fn core_taxonomy_tools_for_mode(mode: AppMode) -> Vec<&'static str> {
-    let core_tools = crate::tools::default_active_native_tool_names();
+    let core_tools = default_active_native_tool_names();
     core_tools
         .iter()
         .copied()
@@ -1186,7 +1238,8 @@ pub fn default_prompt_bundle_for_mode_with_context_skills_session_and_approval(
     }
 
     if session_context.project_context_pack_enabled
-        && let Some(pack) = crate::project_context::generate_project_context_pack(workspace)
+        && let Some(pack) =
+            codesmith_context::project_docs::generate_project_context_pack(workspace)
     {
         append_section(
             &mut bundle,
@@ -1489,11 +1542,12 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
 
 /// Build a system prompt with explicit project context
 pub fn build_system_prompt(base: &str, project_context: Option<&ProjectContext>) -> SystemPrompt {
-    let full_prompt =
-        match project_context.and_then(super::project_context::ProjectContext::as_system_block) {
-            Some(project_block) => format!("{}\n\n{}", base.trim(), project_block),
-            None => base.trim().to_string(),
-        };
+    let full_prompt = match project_context
+        .and_then(codesmith_context::project_docs::ProjectContext::as_system_block)
+    {
+        Some(project_block) => format!("{}\n\n{}", base.trim(), project_block),
+        None => base.trim().to_string(),
+    };
     SystemPrompt::Text(full_prompt)
 }
 

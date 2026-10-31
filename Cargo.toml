@@ -19,6 +19,7 @@ members = [
     "crates/session",
     "crates/context",
     "crates/mcp-client",
+    "crates/prompts",
     "crates/sandbox",
     "crates/state",
     "crates/tools",
@@ -71,6 +72,7 @@ codesmith-secrets = { path = "crates/secrets", version = "0.11.0" }
 codesmith-session = { path = "crates/session", version = "0.11.0" }
 codesmith-context = { path = "crates/context", version = "0.11.0" }
 codesmith-mcp-client = { path = "crates/mcp-client", version = "0.11.0" }
+codesmith-prompts = { path = "crates/prompts", version = "0.11.0" }
 codesmith-sandbox = { path = "crates/sandbox", version = "0.11.0" }
 codesmith-state = { path = "crates/state", version = "0.11.0" }
 codesmith-tools = { path = "crates/tools", version = "0.11.0" }

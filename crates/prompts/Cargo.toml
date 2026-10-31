@@ -1,0 +1,33 @@
+[package]
+name = "codesmith-prompts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords = ["agent", "prompts", "context"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "System-prompt assembly for CodeSmith: base constitution, modes, personalities, skills, prefix-cache discipline"
+
+[dependencies]
+anyhow.workspace = true
+codesmith-agent.workspace = true
+dirs.workspace = true
+codesmith-config.workspace = true
+codesmith-context.workspace = true
+codesmith-sandbox.workspace = true
+codesmith-session.workspace = true
+flate2 = "1.1"
+regex = "1.11"
+reqwest = { workspace = true, features = ["json"] }
+tar = "0.4"
+tempfile.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

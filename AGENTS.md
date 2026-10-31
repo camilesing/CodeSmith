@@ -144,7 +144,7 @@ because they did anything wrong. Treat their time as more expensive than ours.
 
 - The workspace is split into a **framework group** (`protocol`, `tools`,
   `agent`, `config`, `secrets`, `extensions`, `session`, `sandbox`,
-  `context`, `mcp-client`, `agent-runtime`) and an
+  `context`, `mcp-client`, `prompts`, `agent-runtime`) and an
   **implementation group** (everything else: `providers`, `tool-impls`,
   `cli`, `app-server`, ...). Framework crates must not depend, in the
   build graph, on workspace crates outside the framework group; the rule is
@@ -171,8 +171,8 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   decision 2026-10-26). No swarm-style peer-mesh tool exists. If the shape
   must move, move the code and update the boundary note in
   `docs/ARCHITECTURE.md`.
-- `BASE_PROMPT` in `crates/agent-runtime/src/prompts.rs` (prose in
-  `crates/agent-runtime/src/prompts/base.md`) is the sole base prompt by
+- `BASE_PROMPT` in `codesmith-prompts` (`crates/prompts/src/assembly.rs`,
+  prose under `crates/prompts/src/assets/`) is the sole base prompt by
   convention; `crates/cli/src/prompts.rs` has tests asserting required tags.
   Same rule: move the code, not the prose, if that changes.
 - The main turn is a composed kernel service (DSH kernel-composition

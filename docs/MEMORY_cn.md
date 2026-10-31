@@ -227,7 +227,7 @@ export CODESMITH_MEMORY_EXCLUDES=~/work/secret/CLAUDE.md:/etc/sandbox-override.m
   跨会话记忆。
 - **对话片段** — 引用式的笔记属于笔记工具（`note`），不属于记忆。
 - **长指令** — 超过几句话的内容应放在 `AGENTS.md`（项目级）或
-  [技能](../crates/agent-runtime/src/skills/mod.rs)（可复用的指令包）中。
+  [技能](../crates/prompts/src/skills/mod.rs)（可复用的指令包）中。
 
 ## 隐私与范围
 

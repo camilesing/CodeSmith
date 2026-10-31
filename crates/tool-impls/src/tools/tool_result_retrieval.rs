@@ -154,7 +154,7 @@ impl ToolSpec for RetrieveToolResultTool {
 /// The error message on a miss enumerates which forms were tried so the
 /// model can correct course without a second blind guess.
 fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<PathBuf, ToolError> {
-    let root = codesmith_agent_runtime::tools::truncate::spillover_root().ok_or_else(|| {
+    let root = codesmith_session::spillover::spillover_root().ok_or_else(|| {
         ToolError::execution_failed("could not resolve ~/.codesmith/tool_outputs")
     })?;
     let root_canonical = root.canonicalize().ok();
@@ -249,10 +249,8 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         .or_else(|| stripped.strip_prefix("sha_"))
         .unwrap_or(stripped)
         .trim();
-    if codesmith_agent_runtime::tools::truncate::is_valid_sha256(
-        &sha_candidate.to_ascii_lowercase(),
-    ) && let Some(p) =
-        codesmith_agent_runtime::tools::truncate::sha_spillover_path(sha_candidate)
+    if codesmith_session::spillover::is_valid_sha256(&sha_candidate.to_ascii_lowercase())
+        && let Some(p) = codesmith_session::spillover::sha_spillover_path(sha_candidate)
         && let Some(found) = try_path(p, &mut tried)
     {
         return Ok(found);
@@ -285,7 +283,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
     }
 
     // Form 1: bare id → legacy `tool_outputs/<id>.txt`.
-    if let Some(p) = codesmith_agent_runtime::tools::truncate::spillover_path(stripped)
+    if let Some(p) = codesmith_session::spillover::spillover_path(stripped)
         && let Some(found) = try_path(p, &mut tried)
     {
         return Ok(found);
@@ -300,7 +298,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
                 return Ok(found);
             }
         }
-        if let Some(p) = codesmith_agent_runtime::tools::truncate::spillover_path(stripped_art)
+        if let Some(p) = codesmith_session::spillover::spillover_path(stripped_art)
             && let Some(found) = try_path(p, &mut tried)
         {
             return Ok(found);
@@ -681,12 +679,12 @@ mod tests {
 
     impl Drop for SpilloverRootGuard {
         fn drop(&mut self) {
-            codesmith_agent_runtime::tools::truncate::set_test_spillover_root(self.prior.take());
+            codesmith_session::spillover::set_test_spillover_root(self.prior.take());
         }
     }
 
     fn set_spillover_root(path: PathBuf) -> SpilloverRootGuard {
-        let prior = codesmith_agent_runtime::tools::truncate::set_test_spillover_root(Some(path));
+        let prior = codesmith_session::spillover::set_test_spillover_root(Some(path));
         SpilloverRootGuard { prior }
     }
 
@@ -696,7 +694,7 @@ mod tests {
     }
 
     fn test_lock() -> MutexGuard<'static, ()> {
-        codesmith_agent_runtime::tools::truncate::TEST_SPILLOVER_GUARD
+        codesmith_session::spillover::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner())
     }
@@ -714,7 +712,7 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        codesmith_agent_runtime::tools::truncate::write_spillover(
+        codesmith_session::spillover::write_spillover(
             "call-abc",
             "checking crate\nerror[E0425]: missing value\nwarning: unused import\nfinished",
         )
@@ -734,7 +732,7 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        codesmith_agent_runtime::tools::truncate::write_spillover(
+        codesmith_session::spillover::write_spillover(
             "call-query",
             "one\ntwo before\nneedle here\nafter\nlast",
         )
@@ -762,8 +760,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path().join("tool_outputs");
         let _guard = set_spillover_root(root.clone());
-        codesmith_agent_runtime::tools::truncate::write_spillover("call-lines", "a\nb\nc\nd")
-            .unwrap();
+        codesmith_session::spillover::write_spillover("call-lines", "a\nb\nc\nd").unwrap();
 
         let result = execute_tool(json!({
             "ref": "call-lines.txt",
@@ -817,7 +814,7 @@ mod tests {
             hasher.update(body.as_bytes());
             format!("{:x}", hasher.finalize())
         };
-        codesmith_agent_runtime::tools::truncate::write_sha_spillover(&sha, &body).unwrap();
+        codesmith_session::spillover::write_sha_spillover(&sha, &body).unwrap();
 
         // Form: `sha:<hex>`
         let result = execute_tool(json!({"ref": format!("sha:{sha}")})).unwrap();
@@ -837,11 +834,7 @@ mod tests {
         let _lock = test_lock();
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
-        codesmith_agent_runtime::tools::truncate::write_spillover(
-            "call_xyz",
-            "line1\nline2\nline3",
-        )
-        .unwrap();
+        codesmith_session::spillover::write_spillover("call_xyz", "line1\nline2\nline3").unwrap();
 
         let result = execute_tool(json!({"ref": "art_call_xyz"})).unwrap();
         assert!(result.success, "art_ prefix should resolve to legacy id");

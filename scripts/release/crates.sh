@@ -20,6 +20,7 @@ release_crates=(
   codesmith-sandbox
   codesmith-context
   codesmith-mcp-client
+  codesmith-prompts
   codesmith-agent-runtime
   codesmith-providers
   codesmith-core

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{SystemBlock, SystemPrompt};
+use codesmith_agent::models::{SystemBlock, SystemPrompt};
 
 pub const SECTION_SEPARATOR: &str = "\n\n";
 pub const SECTION_HEADER_PREFIX: &str = "<!-- prompt-section:";

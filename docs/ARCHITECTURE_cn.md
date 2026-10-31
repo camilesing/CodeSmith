@@ -10,7 +10,8 @@
   会话存储）、`sandbox`（执行策略面：命令安全、execpolicy、OS 沙箱、网络
   策略）、`context`（会话上下文面：项目文档、工作集、工作区信任、
   持久记忆）、`mcp-client`（MCP 客户端池：stdio/HTTP/SSE/WS 传输、工具
-  发现、OAuth）、`agent-runtime`（内核：经
+  发现、OAuth）、`prompts`（系统提示词组装：基础宪章、模式增量、人格、
+  技能目录、前缀缓存纪律）、`agent-runtime`（内核：经
   `TurnExecutorRegistry` 组合、位于 `AgentExecutor` 接缝之后的 turn 循环、
   引擎、压缩）—— 与实现群：
   其余全部（`providers`、`tool-impls`、`cli`、
@@ -196,6 +197,7 @@
 - **`crates/release`** - 发布发现 / 版本比较。
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
 - **`crates/sandbox`** - 执行策略与沙箱面（对应 DSH `sandbox/*`，第九轮从 `agent-runtime` 拆出）：可移植的策略/后端类型与各平台执行器（Seatbelt、Landlock、bwrap、Windows 桩）、命令安全分析、execpolicy 模式语言、网络策略与不可信内容消毒。以 `agent_runtime::{sandbox, command_safety, execpolicy, bash_ast, network_policy, sanitization, shell_dispatcher}` 再导出。
+- **`crates/prompts`** - 系统提示词组装（对应 DSH `core/system-prompt`，第九轮从 `agent-runtime` 拆出）：`BASE_PROMPT` 与全部提示词资产（模式、人格、审批、风格）、带稳定性/缓存注记的提示词分段注册、`/inspect` 提示词渲染、`PrefixStabilityManager` 漂移检查、默认活动工具分类，以及技能发现 + 模型可见目录 + 内建系统技能。以 `agent_runtime::{prompts, prompt_runtime, prompt_sources, prompt_inspect, prefix_cache, skills}` 再导出。工具输出溢写（`truncate`）移至 `codesmith_session::spillover`；`AppMode`/`ApprovalMode` 移至 `codesmith_agent::mode`。
 - **`crates/mcp-client`** - MCP 客户端池（对应 DSH `mcp/*`，第九轮从 `agent-runtime` 拆出）：stdio / Streamable-HTTP / SSE / WebSocket 传输上的连接池、工具发现、按调用超时、重连语义与 HTTP 服务器的 OAuth 设备流。以 `agent_runtime::{mcp, mcp_oauth}` 再导出。（`crates/mcp`——`codesmith-mcp`——是服务端，未改动。）
 - **`crates/context`** - 会话上下文面（对应 DSH `context/*`，第九轮从 `agent-runtime` 拆出）：AGENTS/CLAUDE.md 项目文档发现、渲染进 `<turn_meta>` 的工作集、工作区信任与引导状态、用户记忆（`MEMORY.md`）、KoD 知识与按代理记忆目录。以历史路径 `agent_runtime::{project_context, claudemd, working_set, workspace_trust, memory, knowledge, agent_memory, onboarding, settings_file, …}` 再导出。
 - **`crates/session`** - 会话数据面（对应 DSH `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。消费者直接从本 crate 导入（历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 与 CLI 的 `session_manager` 已随拆分移除）。

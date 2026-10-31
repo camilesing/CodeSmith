@@ -59,6 +59,7 @@
 //! [`LlmError`]: llm_client::LlmError
 
 pub mod callback;
+pub mod mode;
 // §F — extension system framework traits (pi-mono `Extension` model port).
 pub mod executor;
 pub mod extension;

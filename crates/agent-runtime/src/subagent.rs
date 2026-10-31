@@ -353,7 +353,7 @@ pub enum SubAgentStatus {
     Cancelled,
 }
 
-const SUBAGENT_OUTPUT_FORMAT: &str = include_str!("prompts/subagent_output_format.md");
+pub(crate) use codesmith_prompts::assembly::SUBAGENT_OUTPUT_FORMAT;
 
 const GENERAL_AGENT_INTRO: &str = concat!(
     "You are a general-purpose sub-agent spawned to handle a specific task autonomously.\n",

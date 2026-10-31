@@ -5,17 +5,19 @@ use std::fs;
 use std::path::Path;
 
 const BUNDLED_SKILL_VERSION: &str = "3";
-const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");
-const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md");
-const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");
-const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets/skills/plugin-creator/SKILL.md");
-const SKILL_INSTALLER_BODY: &str = include_str!("../../assets/skills/skill-installer/SKILL.md");
-const MCP_BUILDER_BODY: &str = include_str!("../../assets/skills/mcp-builder/SKILL.md");
-const DOCUMENTS_BODY: &str = include_str!("../../assets/skills/documents/SKILL.md");
-const PRESENTATIONS_BODY: &str = include_str!("../../assets/skills/presentations/SKILL.md");
-const SPREADSHEETS_BODY: &str = include_str!("../../assets/skills/spreadsheets/SKILL.md");
-const PDF_BODY: &str = include_str!("../../assets/skills/pdf/SKILL.md");
-const FEISHU_BODY: &str = include_str!("../../assets/skills/feishu/SKILL.md");
+const SKILL_CREATOR_BODY: &str = include_str!("../../assets-root/skills/skill-creator/SKILL.md");
+const DELEGATE_BODY: &str = include_str!("../../assets-root/skills/delegate/SKILL.md");
+const V4_BEST_PRACTICES_BODY: &str =
+    include_str!("../../assets-root/skills/v4-best-practices/SKILL.md");
+const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets-root/skills/plugin-creator/SKILL.md");
+const SKILL_INSTALLER_BODY: &str =
+    include_str!("../../assets-root/skills/skill-installer/SKILL.md");
+const MCP_BUILDER_BODY: &str = include_str!("../../assets-root/skills/mcp-builder/SKILL.md");
+const DOCUMENTS_BODY: &str = include_str!("../../assets-root/skills/documents/SKILL.md");
+const PRESENTATIONS_BODY: &str = include_str!("../../assets-root/skills/presentations/SKILL.md");
+const SPREADSHEETS_BODY: &str = include_str!("../../assets-root/skills/spreadsheets/SKILL.md");
+const PDF_BODY: &str = include_str!("../../assets-root/skills/pdf/SKILL.md");
+const FEISHU_BODY: &str = include_str!("../../assets-root/skills/feishu/SKILL.md");
 
 struct BundledSkill {
     name: &'static str,
@@ -140,7 +142,7 @@ fn install_one(
 
     if should_install {
         fs::create_dir_all(&target_dir)?;
-        crate::utils::write_atomic(&target_file, skill.body.as_bytes())?;
+        codesmith_session::primitives::write_atomic(&target_file, skill.body.as_bytes())?;
     }
     Ok(should_install)
 }
@@ -172,7 +174,7 @@ pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
 
     if changed {
         fs::create_dir_all(skills_dir)?;
-        crate::utils::write_atomic(&marker, BUNDLED_SKILL_VERSION.as_bytes())?;
+        codesmith_session::primitives::write_atomic(&marker, BUNDLED_SKILL_VERSION.as_bytes())?;
     }
     Ok(())
 }

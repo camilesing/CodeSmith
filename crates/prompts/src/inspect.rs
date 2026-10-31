@@ -13,11 +13,11 @@ use codesmith_agent::reasoning::should_replay_reasoning_content;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
-use crate::prompt_runtime::{
+use crate::runtime::{
     PromptCachePolicy, PromptSectionStability, parse_rendered_sections, system_prompt_to_text,
 };
-use crate::utils::sha256_hex;
+use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
+use codesmith_session::primitives::sha256_hex;
 
 fn to_api_tool_name(name: &str) -> String {
     let mut out = String::new();
@@ -569,7 +569,7 @@ fn persist_tool_result_for_sha(sha: &str, content: &str) -> bool {
     if content.chars().count() < TOOL_RESULT_SHA_PERSIST_MIN_CHARS {
         return true;
     }
-    match crate::tools::truncate::write_sha_spillover(sha, content) {
+    match codesmith_session::spillover::write_sha_spillover(sha, content) {
         Ok(_) => true,
         Err(err) => {
             tracing::warn!(
@@ -1264,17 +1264,17 @@ mod stream_decoder_tests {
     }
 
     fn with_tool_result_sha_spillover_root<T>(f: impl FnOnce() -> T) -> T {
-        let _guard = crate::tools::truncate::TEST_SPILLOVER_GUARD
+        let _guard = codesmith_session::spillover::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
-        let prior = crate::tools::truncate::set_test_spillover_root(Some(
+        let prior = codesmith_session::spillover::set_test_spillover_root(Some(
             tmp.path().join(".codesmith").join("tool_outputs"),
         ));
         struct Restore(Option<std::path::PathBuf>);
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::tools::truncate::set_test_spillover_root(self.0.take());
+                codesmith_session::spillover::set_test_spillover_root(self.0.take());
             }
         }
         let _restore = Restore(prior);
@@ -1384,7 +1384,7 @@ mod inspect_entry_tests {
     //! classification, and the cache-warmup request shape. Migrated from the
     //! former tui `client` module (ROADMAP §A slice 41).
     use super::*;
-    use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
+    use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
     use serde_json::{Value, json};
 
     fn test_tool(name: &str) -> Tool {

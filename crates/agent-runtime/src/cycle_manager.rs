@@ -220,7 +220,7 @@ pub fn cycle_trigger_floor(
 }
 
 /// Build the prompt the model uses to produce its `<carry_forward>` briefing.
-pub const CYCLE_HANDOFF_TEMPLATE: &str = include_str!("prompts/cycle_handoff.md");
+pub use codesmith_prompts::assembly::CYCLE_HANDOFF_TEMPLATE;
 
 /// Run the briefing turn. The caller drives this just before swapping the
 /// session message buffer. The returned text is the contents of the

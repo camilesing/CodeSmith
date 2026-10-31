@@ -792,6 +792,7 @@ dependencies = [
  "codesmith-context",
  "codesmith-extensions",
  "codesmith-mcp-client",
+ "codesmith-prompts",
  "codesmith-sandbox",
  "codesmith-secrets",
  "codesmith-session",
@@ -1110,6 +1111,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "codesmith-prompts"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "codesmith-agent",
+ "codesmith-config",
+ "codesmith-context",
+ "codesmith-sandbox",
+ "codesmith-session",
+ "dirs",
+ "flate2",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "codesmith-protocol"
 version = "0.11.0"
 dependencies = [
@@ -1201,6 +1226,8 @@ dependencies = [
  "chrono",
  "codesmith-agent",
  "codesmith-config",
+ "codesmith-tools",
+ "libc",
  "regex",
  "serde",
  "serde_json",

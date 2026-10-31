@@ -1230,7 +1230,7 @@ instructions when using a specific skill.\n\n",
     // Descriptions, `when_to_use` and warnings come from third-party
     // SKILL.md frontmatter — defuse framing closers before the block joins
     // the system prompt.
-    Some(crate::utils::defuse_prompt_framing_tags(&out))
+    Some(codesmith_sandbox::sanitization::defuse_framing_tags(&out))
 }
 
 fn truncate_for_prompt(value: &str, max_chars: usize) -> String {

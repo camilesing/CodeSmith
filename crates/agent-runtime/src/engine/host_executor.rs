@@ -19466,7 +19466,7 @@ mod tests {
 
     impl Drop for SpillRootsGuard {
         fn drop(&mut self) {
-            crate::tools::truncate::set_test_spillover_root(self.prior_spill.take());
+            codesmith_session::spillover::set_test_spillover_root(self.prior_spill.take());
             codesmith_session::artifacts::set_test_artifact_sessions_root(
                 self.prior_artifacts.take(),
             );
@@ -19475,7 +19475,7 @@ mod tests {
 
     fn set_spill_roots(spill_root: PathBuf, sessions_root: PathBuf) -> SpillRootsGuard {
         SpillRootsGuard {
-            prior_spill: crate::tools::truncate::set_test_spillover_root(Some(spill_root)),
+            prior_spill: codesmith_session::spillover::set_test_spillover_root(Some(spill_root)),
             prior_artifacts: codesmith_session::artifacts::set_test_artifact_sessions_root(Some(
                 sessions_root,
             )),
@@ -19527,7 +19527,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
     #[tokio::test]
     async fn oversized_tool_result_spills_at_transcript_chokepoint() {
-        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+        let _lock = codesmith_session::spillover::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempdir().expect("tempdir");
@@ -19603,7 +19603,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
     #[tokio::test]
     async fn oversized_tool_result_with_session_id_writes_artifact_ref() {
-        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+        let _lock = codesmith_session::spillover::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempdir().expect("tempdir");
@@ -19687,7 +19687,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
     #[tokio::test]
     async fn small_tool_result_passes_through_without_spill() {
-        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+        let _lock = codesmith_session::spillover::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempdir().expect("tempdir");
@@ -19752,7 +19752,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // the spillover-root guard must cover the whole run
     #[tokio::test]
     async fn oversized_error_result_passes_through_without_spill() {
-        let _lock = crate::tools::truncate::TEST_SPILLOVER_GUARD
+        let _lock = codesmith_session::spillover::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let tmp = tempdir().expect("tempdir");

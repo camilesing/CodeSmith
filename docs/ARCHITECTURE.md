@@ -12,7 +12,9 @@ Current boundary note (v0.11.0):
   command safety, execpolicy, OS sandboxes, network policy), `context` (the
   session context plane: project docs, working set, workspace trust,
   persistent memory), `mcp-client` (the MCP client pool: stdio/HTTP/SSE/WS
-  transports, tool discovery, OAuth), `agent-runtime`
+  transports, tool discovery, OAuth), `prompts` (system-prompt assembly:
+  the base constitution, mode deltas, personalities, the skills catalogue,
+  prefix-cache discipline), `agent-runtime`
   (the kernel: the turn loop composed through
   the `TurnExecutorRegistry` behind the `AgentExecutor` seam, engine,
   compaction) — and an implementation
@@ -214,6 +216,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
 - **`crates/providers`** - Pluggable LLM client implementations (openai-compat, anthropic, mock; rig adapter) behind Cargo features.
 - **`crates/release`** - Release discovery / version comparison.
 - **`crates/secrets`** - OS keyring integration for API key storage.
+- **`crates/prompts`** - System-prompt assembly (DSH `core/system-prompt` counterpart, split out of `agent-runtime` in round 9): `BASE_PROMPT` and all prompt assets (modes, personalities, approvals, styles), prompt-section registration with stability/cache annotations, the `/inspect` prompt render, the `PrefixStabilityManager` drift check, the default active-tool taxonomy, and skill discovery + the model-facing catalogue + built-in system skills. Re-exported as `agent_runtime::{prompts, prompt_runtime, prompt_sources, prompt_inspect, prefix_cache, skills}`. The tool-output spillover (`truncate`) moved to `codesmith_session::spillover`; `AppMode`/`ApprovalMode` to `codesmith_agent::mode`.
 - **`crates/mcp-client`** - MCP client pool (DSH `mcp/*` counterpart, split out of `agent-runtime` in round 9): the connection pool over stdio / Streamable-HTTP / SSE / WebSocket transports, tool discovery, per-call timeouts, reconnect semantics, and the OAuth device flow for HTTP servers. Re-exported as `agent_runtime::{mcp, mcp_oauth}`. (`crates/mcp` — `codesmith-mcp` — is the server side and is unchanged.)
 - **`crates/context`** - Session context plane (DSH `context/*` counterpart, split out of `agent-runtime` in round 9): AGENTS/CLAUDE.md project-doc discovery, the working set rendered into `<turn_meta>`, workspace trust and onboarding state, user memory (`MEMORY.md`), knowledge-on-demand, and per-agent memory directories. Re-exported under the historical `agent_runtime::{project_context, claudemd, working_set, workspace_trust, memory, knowledge, agent_memory, onboarding, settings_file, …}` paths.
 - **`crates/session`** - Session data plane (DSH `core/session` counterpart, split out of `agent-runtime` in round 9): the `AppendLog` / three-zone request contract, the append-only session journal, the saved-session store and its format governance, the artifact registry and fact ledger. Consumers import it directly (the historical `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` and CLI `session_manager` paths were removed with the split).

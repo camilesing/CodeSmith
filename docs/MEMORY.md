@@ -259,7 +259,7 @@ Memory is for **durable** signal. Things that should NOT live there:
 - **Conversation snippets** — quote-style notes belong in the notes
   tool (`note`), not memory.
 - **Long instructions** — anything over a few sentences should live
-  in `AGENTS.md` (project-level) or in a [skill](../crates/agent-runtime/src/skills/mod.rs)
+  in `AGENTS.md` (project-level) or in a [skill](../crates/prompts/src/skills/mod.rs)
   (reusable instruction packs).
 
 ## Privacy and scope

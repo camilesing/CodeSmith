@@ -1182,10 +1182,12 @@ impl HostAgentExecutor {
                 && r.success
             {
                 let spilled = match self.session_id.as_deref() {
-                    Some(session_id) => crate::tools::truncate::apply_spillover_with_artifact(
-                        r, &o.id, &o.name, session_id,
-                    ),
-                    None => crate::tools::truncate::apply_spillover(r, &o.id),
+                    Some(session_id) => {
+                        codesmith_session::spillover::apply_spillover_with_artifact(
+                            r, &o.id, &o.name, session_id,
+                        )
+                    }
+                    None => codesmith_session::spillover::apply_spillover(r, &o.id),
                 };
                 if let Some(path) = spilled {
                     tracing::info!(

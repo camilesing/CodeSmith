@@ -12,6 +12,8 @@
 //!   carries (large-output registry, compaction fact ledger).
 //! - [`transcript`] / [`primitives`]: dependency-free helpers (tool-pairing
 //!   predicates, path extraction, atomic writes, hashing, token estimates).
+//! - [`spillover`]: sha-addressed tool-output spillover (large results land
+//!   in the session-owned store and travel by reference).
 //!
 //! Consumers import from this crate directly; the historical
 //! `codesmith_agent_runtime::{session_store, session_journal, prompt_zones,
@@ -25,6 +27,7 @@ pub mod artifacts;
 pub mod fact_ledger;
 pub mod journal;
 pub mod primitives;
+pub mod spillover;
 pub mod store;
 pub mod transcript;
 pub mod zones;

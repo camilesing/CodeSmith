@@ -1548,7 +1548,7 @@ struct TestSpillRoot {
 
 impl TestSpillRoot {
     fn new(tmp: &std::path::Path) -> Self {
-        use codesmith_agent_runtime::tools::truncate as spill_store;
+        use codesmith_session::spillover as spill_store;
         let guard = spill_store::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1562,7 +1562,7 @@ impl TestSpillRoot {
 
 impl Drop for TestSpillRoot {
     fn drop(&mut self) {
-        use codesmith_agent_runtime::tools::truncate as spill_store;
+        use codesmith_session::spillover as spill_store;
         // Guard is still held here (struct fields drop after the Drop body).
         let _ = spill_store::set_test_spillover_root(self.prior.take());
     }
@@ -1871,7 +1871,7 @@ async fn test_spill_task_full_output_skips_stale_detail() {
 
     // Prime a FULL spill under the task id — what an earlier live poll wrote.
     let full = "x".repeat(40_000);
-    let path = codesmith_agent_runtime::tools::truncate::write_spillover("stale-task", &full)
+    let path = codesmith_session::spillover::write_spillover("stale-task", &full)
         .expect("prime full spill");
 
     let spill = spill_task_full_output(&ctx, "stale-task").await;
