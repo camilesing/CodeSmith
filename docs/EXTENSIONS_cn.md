@@ -444,7 +444,7 @@ UI 决策通道；不存在 `ask()` 控制值，脚本永远产生不了 `Ask` �
 | `TurnStart` | `host_executor` 轮入口 | emit | — |
 | `TurnEnd` | `host_executor` 轮退出（被中断 + 无工具调用） | emit | — |
 | `TurnStopping(TurnStoppingEvent)` | `host_executor` 无工具调用分支 —— 在 steer 冲刷 + 子代理回收的续轮分支之后、终态路径之前 | **Cancel** | DSH turn-stopping 串行 steer：轮即将以 `NoToolCalls` 结束时先问扩展；`Continue`（或无 handler）弃权 —— 默认停止；首个 `Cancel { reason }` steer —— `reason` 原样追加为 `user` 角色消息（模型可见 ⇒ 会话天然记录；只追加，前缀缓存不动），轮在新步上继续。steer 每轮上限 3 次（loop guard）—— 到顶的 steer 被丢弃（`tracing` warn，不追加提示），轮照常结束。`reason` 是轮即将结束的原因（唯一 emit 位点处为 `no-tool-calls`）；`MaxSteps`/`Interrupted`/`Error` 终态路径不询问 |
-| `Input(InputEvent)` | `host_executor::run_inner`（用户轮种子） | **Transform** | 重写已提交的 `text` |
+| `Input(InputEvent)` | 每个用户输入入口（`engine::input_through_extensions`）：`Engine::handle_send_message` 组装 turn 时（提交的 turn 文本——早于 `BeforeAgentStart` / `AgentStart`）、每条 turn 中途的 steer（`HostAgentExecutor::push_steer_message`：请求前排空、子代理等待、流中缓冲冲刷），以及执行器自己写入种子时的 `host_executor::run_inner`（嵌入场景） | **Transform** | 在输入被记录与发送之前重写 `text`；被改写成空白的 steer 会被丢弃。引擎以空种子运行执行器，所以主 turn 的文本在组装时经过该接缝——绝不会经过两次 |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` 顶部 | **Transform** | 注入 `inject_message`（history push）+ 若设置了 `system_prompt` 则覆盖 |
 | `AgentStart` | `host_executor::run_inner`（emit） | emit | — |
 | `BeforeProviderHeaders(BeforeProviderHeadersEvent)` | `host_executor` 在构建 `request` 之前 | emit | payload = provider 客户端的额外 HTTP 头（JSON 对象，含凭据性质的值已掩码）；传输层由 api key 生成的认证头不列出 —— 它们从不离开客户端 |
@@ -521,6 +521,9 @@ agent + 扩展代次 + turn-executor id，按 runner 作用域），其登记表
 
 ## 已知限制
 
+- `Input` 只携带文本——处理器无法区分提交的 turn 与 turn 中途的 steer，
+  也无法拒绝一条输入（该接缝是不可拒绝的 waterfall；把 steer 改写成空白
+  会将其丢弃）。子代理循环不派发 `Input`。
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` 返回 `ExtensionError::Unimplemented`。
 - `TurnStopping` 的 steer 每轮上限 3 次（loop guard）；只有 `NoToolCalls`

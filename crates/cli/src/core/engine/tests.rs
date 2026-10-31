@@ -6062,6 +6062,101 @@ impl codesmith_agent::extension::Handler for EngineLifecycleRecHandler {
     }
 }
 
+/// Prefixes every non-empty `Input` text with `[rewritten] `.
+struct PrefixInputHandler;
+
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Handler for PrefixInputHandler {
+    async fn handle(
+        &self,
+        event: &codesmith_agent::extension::ExtensionEvent,
+        _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+    ) -> Result<
+        codesmith_agent::extension::HandlerOutcome,
+        codesmith_agent::extension::ExtensionError,
+    > {
+        use codesmith_agent::extension::{ExtensionEvent, HandlerOutcome, InputEvent};
+        if let ExtensionEvent::Input(e) = event
+            && !e.text.is_empty()
+        {
+            return Ok(HandlerOutcome::Transform(ExtensionEvent::Input(
+                InputEvent {
+                    text: format!("[rewritten] {}", e.text),
+                },
+            )));
+        }
+        Ok(HandlerOutcome::Continue)
+    }
+}
+
+struct PrefixInputExt;
+
+#[async_trait::async_trait]
+impl codesmith_agent::extension::Extension for PrefixInputExt {
+    fn metadata(&self) -> &codesmith_agent::extension::ExtensionMetadata {
+        static M: codesmith_agent::extension::ExtensionMetadata =
+            codesmith_agent::extension::ExtensionMetadata::new("prefix-input");
+        &M
+    }
+    async fn configure(
+        &self,
+        api: &dyn codesmith_agent::extension::ExtensionApi,
+    ) -> Result<(), codesmith_agent::extension::ExtensionError> {
+        api.on(Arc::new(PrefixInputHandler))?;
+        Ok(())
+    }
+}
+
+/// Round-9 TODO-62 — on the production path the engine commits the user
+/// message itself and runs the executor with an empty seed, so the `Input`
+/// seam must run on the submitted text there: the rewrite replaces the
+/// user's text in the one committed user message (no second message, and
+/// the original never reaches the model).
+#[tokio::test]
+async fn input_seam_rewrites_the_submitted_turn_text_in_place() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock_arc = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")]));
+    let client: LlmClientHandle = mock_arc.clone();
+    let (engine, handle) =
+        Engine::new_with_client(test_engine_config(tmp.path()), &Config::default(), client);
+    let runner = handle
+        .extension_runner
+        .as_ref()
+        .expect("build_engine binds the runner on the handle");
+    runner.load(&PrefixInputExt).await.expect("load ext");
+    runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
+        tmp.path().to_path_buf(),
+        codesmith_agent::extension::ExtensionMode::Interactive,
+        Arc::new(std::sync::Mutex::new(true)),
+        Arc::new(std::sync::Mutex::new(
+            tokio_util::sync::CancellationToken::new(),
+        )),
+        runner.generation_arc(),
+    )));
+    tokio::spawn(async move { engine.run().await });
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    let request = mock_arc.last_request().expect("one request");
+    let user_messages: Vec<&Message> = request
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .collect();
+    assert_eq!(user_messages.len(), 1, "{:?}", request.messages);
+    let texts: Vec<&str> = user_messages[0]
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"[rewritten] hello"), "{texts:?}");
+    assert!(!texts.contains(&"hello"), "{texts:?}");
+}
+
 struct EngineLifecycleRecExt {
     seen: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }

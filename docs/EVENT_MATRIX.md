@@ -25,7 +25,7 @@ vocabularies are not covered.
 | `BeforeAgentStart` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |
 | `BeforeProviderHeaders` | Emit | `agent-runtime/engine/host_executor.rs` | — |
 | `BeforeProviderRequest` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |
-| `Input` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |
+| `Input` | Waterfall (can_deny: false) | `agent-runtime/engine/mod.rs` | — |
 | `ProjectTrust` | Emit | `cli/core/engine/runtime_traits.rs` ×2 | — |
 | `ProviderRequestError` | Waterfall (can_deny: true) | `agent-runtime/engine/turn/stream.rs` | — |
 | `SessionBeforeCompact` | Serial | `agent-runtime/engine/host_executor.rs` | — |

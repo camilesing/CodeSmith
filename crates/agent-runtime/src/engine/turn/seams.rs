@@ -87,11 +87,18 @@ impl HostAgentExecutor {
     /// the observe + enrich + push logic so the three push sites cannot drift.
     /// Validation lives here too (module invariant): a whitespace-only steer
     /// is dropped (`false`), so no intake site can forget the trim/skip-empty
-    /// guard and inject an empty `user` message. Sync:
-    /// [`ChatHistory::push`] is sync and `observe_user_message` /
-    /// `enrich_user_text_message` are sync (the lock on the shared working set
-    /// is never held across an `await`).
-    pub(crate) fn push_steer_message(&self, steer: String, history: &mut dyn ChatHistory) -> bool {
+    /// guard and inject an empty `user` message. The extension `Input` seam
+    /// runs first (round-9 TODO-62), so a handler rewrites mid-turn input
+    /// exactly as it rewrites the submitted turn text; a rewrite to
+    /// whitespace drops the steer. The only `await` is that emit — the lock
+    /// on the shared working set is taken after it and never held across
+    /// one.
+    pub(crate) async fn push_steer_message(
+        &self,
+        steer: String,
+        history: &mut dyn ChatHistory,
+    ) -> bool {
+        let steer = crate::engine::input_through_extensions(self.extension.as_ref(), steer).await;
         let steer = steer.trim().to_string();
         if steer.is_empty() {
             return false;
@@ -121,14 +128,14 @@ impl HostAgentExecutor {
     /// production's `pending_steers.drain(..)` at `handle_deepseek_turn`
     /// (post-stream no-tools — caller resumes on a fresh step) and
     /// `:2632-2637` (post-tool — caller falls through to the next step).
-    pub(crate) fn flush_pending_steers(
+    pub(crate) async fn flush_pending_steers(
         &self,
         pending: &mut Vec<String>,
         history: &mut dyn ChatHistory,
     ) -> usize {
         let mut pushed = 0usize;
-        for steer in pending.drain(..) {
-            if self.push_steer_message(steer, history) {
+        for steer in std::mem::take(pending) {
+            if self.push_steer_message(steer, history).await {
                 pushed += 1;
             }
         }
@@ -177,7 +184,7 @@ impl HostAgentExecutor {
             );
             // Trim/skip-empty lives in `push_steer_message` — the shared
             // push point enforces it for every intake site.
-            if self.push_steer_message(steer, history) {
+            if self.push_steer_message(steer, history).await {
                 self.emit_status(status).await;
             }
         }

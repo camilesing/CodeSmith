@@ -3286,22 +3286,16 @@ impl HostAgentExecutor {
                 .await;
         }
 
-        // §F2b T6 — `Input` (transform-capable): a handler may rewrite the
-        // user's submitted text before it seeds the transcript + reaches the
-        // provider. Fires after `AgentStart`, before the user-turn push.
-        let mut user_text = user_text;
-        if let Some(runner) = &extension {
-            let out = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::Input(
-                    codesmith_agent::extension::InputEvent {
-                        text: user_text.clone(),
-                    },
-                ))
-                .await;
-            if let codesmith_agent::extension::ExtensionEvent::Input(e) = out.event {
-                user_text = e.text;
-            }
-        }
+        // §F2b T6 — `Input` (transform-capable): when the executor seeds the
+        // transcript itself (embeds), a handler may rewrite the seed before
+        // it reaches the provider. The engine runs with an empty seed and
+        // applies the seam to the submitted text at turn assembly instead
+        // (`Engine::handle_send_message`), so an empty seed emits nothing.
+        let user_text = if user_text.is_empty() {
+            user_text
+        } else {
+            crate::engine::input_through_extensions(extension.as_ref(), user_text).await
+        };
 
         // Seed the transcript with the user turn. Empty `user_text` means
         // the host already pushed its own enriched user message (the engine
@@ -3912,7 +3906,9 @@ impl HostAgentExecutor {
                 // if steers arrived during streaming, flush them and resume the
                 // turn on a fresh step BEFORE checking for sub-agent
                 // completions — production checks `pending_steers` first.
-                let flushed = self.flush_pending_steers(&mut pending_steers, history);
+                let flushed = self
+                    .flush_pending_steers(&mut pending_steers, history)
+                    .await;
                 if flushed > 0 {
                     step += 1;
                     continue;
@@ -4041,8 +4037,9 @@ impl HostAgentExecutor {
                                             // against the working set and wrapped in
                                             // `<turn_meta>` when the probe is present
                                             // (production); plain text otherwise.
-                                            self.push_steer_message(trimmed, history);
-                                            self.emit_status(status).await;
+                                            if self.push_steer_message(trimmed, history).await {
+                                                self.emit_status(status).await;
+                                            }
                                         }
                                         step += 1;
                                         continue 'step;
@@ -4223,7 +4220,8 @@ impl HostAgentExecutor {
             // before the next step. Steers that arrive during the last step
             // before `MaxSteps` would otherwise be discarded by the next turn's
             // stale drain.
-            self.flush_pending_steers(&mut pending_steers, history);
+            self.flush_pending_steers(&mut pending_steers, history)
+                .await;
 
             // Opt-in CapacityController (Gate A) — seam 4 post-tool checkpoint
             // (slice 33 §E). Observe + decide + signal; the host applies the
@@ -18811,6 +18809,107 @@ mod tests {
         assert!(
             !saw_original,
             "original user text must NOT reach the provider when rewritten: {first_req:?}"
+        );
+    }
+
+    /// Rewrites only text that mentions "steer" (the seed passes through).
+    struct RewriteSteerHandler;
+
+    #[async_trait]
+    impl Handler for RewriteSteerHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::Input(e) = event
+                && e.text.contains("steer")
+            {
+                return Ok(HandlerOutcome::Transform(ExtensionEvent::Input(
+                    codesmith_agent::extension::InputEvent {
+                        text: "STEER-REWRITTEN".to_string(),
+                    },
+                )));
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    struct RewriteSteerExt;
+
+    #[async_trait]
+    impl Extension for RewriteSteerExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("rewrite-steer");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on(Arc::new(RewriteSteerHandler))?;
+            Ok(())
+        }
+    }
+
+    /// Round-9 TODO-62 — mid-turn input meets the same `Input` seam as the
+    /// submitted text: a queued steer is rewritten before it is recorded
+    /// and before the model sees it.
+    #[tokio::test]
+    async fn steer_passes_through_the_input_seam() {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&RewriteSteerExt).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Interactive,
+            Arc::new(Mutex::new(true)),
+            Arc::new(Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let (tx_steer, rx_steer) = steer_channel();
+        tx_steer
+            .send("please steer left".to_string())
+            .await
+            .unwrap();
+        let mut ok = text_block(0, "acknowledged");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok]));
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(Some(runner));
+
+        executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+
+        let texts: Vec<String> = mock.requests()[0]
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "start"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "STEER-REWRITTEN"), "{texts:?}");
+        assert!(
+            !texts.iter().any(|t| t.contains("steer left")),
+            "the original steer must not reach the model: {texts:?}"
         );
     }
 

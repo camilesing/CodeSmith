@@ -512,7 +512,7 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `TurnStart` | `host_executor` turn entry | emit | — |
 | `TurnEnd` | `host_executor` turn exit (interrupted + no-tool-calls) | emit | — |
 | `TurnStopping(TurnStoppingEvent)` | `host_executor` no-tool-calls arm — after the steer flush + sub-agent drain resume branches, before the terminal path | **Cancel** | the DSH turn-stopping serial steer: asked before the turn ends on `NoToolCalls`; `Continue` (or no handler) abstains — the default stop; the first `Cancel { reason }` steers — `reason` is appended verbatim as a `user`-role message (model-visible ⇒ session-recorded; append-only, prefix cache untouched) and the turn resumes on a fresh step. Steers are capped at 3 per turn by the loop guard — a capped steer is dropped (`tracing` warn, no note) and the turn ends. `reason` is why the turn would end (`no-tool-calls` at the only emit site); the `MaxSteps`/`Interrupted`/`Error` terminal paths do not ask |
-| `Input(InputEvent)` | `host_executor::run_inner` (user-turn seed) | **Transform** | rewrites the submitted `text` |
+| `Input(InputEvent)` | every user-input intake (`engine::input_through_extensions`): `Engine::handle_send_message` at turn assembly (the submitted turn text — before `BeforeAgentStart` / `AgentStart`), each mid-turn steer (`HostAgentExecutor::push_steer_message`: pre-request drain, sub-agent hold, mid-stream flush), and `host_executor::run_inner`'s seed when the executor seeds the transcript itself (embeds) | **Transform** | rewrites the input `text` before it is recorded and sent; a steer rewritten to whitespace is dropped. The engine runs the executor with an empty seed, so the main turn's text meets the seam at assembly — never twice |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` top | **Transform** | injects `inject_message` (history push) + overrides `system_prompt` if set |
 | `AgentStart` | `host_executor::run_inner` (emit) | emit | — |
 | `BeforeProviderHeaders(BeforeProviderHeadersEvent)` | `host_executor` before `request` build | emit | payload = the provider client's extra HTTP headers as a JSON object, credential-bearing values masked; the transport's auth headers (from the api key) are not listed — they never leave the client |
@@ -600,6 +600,10 @@ proof.
 
 ## Known limitations
 
+- `Input` carries the text only — a handler cannot tell a submitted turn
+  from a mid-turn steer, and it cannot reject an input (the seam is a
+  non-denying waterfall; rewriting a steer to whitespace drops it).
+  Sub-agent loops do not dispatch `Input`.
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` return `ExtensionError::Unimplemented`.
 - `TurnStopping` steers are capped at 3 per turn (loop guard); only the

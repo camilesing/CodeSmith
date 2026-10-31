@@ -34,6 +34,12 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **The `input` hook sees what you typed** — an extension or Rhai mod
+  subscribed to `input` now receives the text of each submitted message and
+  of each message typed while a turn runs, and its rewrite is what the model
+  gets. On the interactive and ACP paths the hook previously received an
+  empty string, so a rewrite never applied.
+
 - **Machine-readable contracts for config and the app-server protocol** —
   `docs/schemas/config.schema.json` describes every `config.toml` key the CLI
   reads (profiles included), so an editor with TOML schema support can

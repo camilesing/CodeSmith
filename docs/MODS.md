@@ -217,7 +217,7 @@ script can never produce an `Ask` outcome).
 
 Transform mutable fields (one handler's rewrite is immediately visible to the next):
 
-- `input`: `text`
+- `input`: `text` — the text of each submitted message and of each message typed while a turn runs (a steer); the rewrite is what is recorded and sent
 - `tool-call`: `input` (JSON value — the pre-execute rewrite; the host applies it before approval + execution and records it)
 - `before-agent-start`: `system_prompt`, `inject_message` (string = set, `()` = clear, absent = keep)
 - `before-provider-request`: `messages`

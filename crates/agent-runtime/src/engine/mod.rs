@@ -135,6 +135,31 @@ impl CancelReason {
     }
 }
 
+/// Run user input through the extension `Input` waterfall and return the
+/// text the handlers left (round-9 TODO-62) — the one place every user-input
+/// intake applies the seam: the submitted turn text (`handle_send_message`,
+/// before the user message is composed), every mid-turn steer
+/// (`HostAgentExecutor::push_steer_message`), and the executor's own seed
+/// when it seeds the transcript (embeds). `None` (no extension runtime)
+/// returns `text` unchanged.
+pub(crate) async fn input_through_extensions(
+    runner: Option<&Arc<codesmith_extensions::ExtensionRunner>>,
+    text: String,
+) -> String {
+    let Some(runner) = runner else {
+        return text;
+    };
+    let out = runner
+        .emit(codesmith_agent::extension::ExtensionEvent::Input(
+            codesmith_agent::extension::InputEvent { text: text.clone() },
+        ))
+        .await;
+    match out.event {
+        codesmith_agent::extension::ExtensionEvent::Input(event) => event.text,
+        _ => text,
+    }
+}
+
 /// The assistant message committing an interrupted response: the text the
 /// user saw plus the reason marker (a generic one when no reason was latched).
 pub(crate) fn interrupted_response_message(text: &str, reason: Option<CancelReason>) -> Message {
@@ -1270,6 +1295,11 @@ impl Engine {
             return;
         }
 
+        // `Input` seam: handlers rewrite the submitted text before the
+        // working set observes it and the user message is composed — the
+        // executor runs with an empty seed, so this is where the main turn's
+        // input meets the seam.
+        let content = input_through_extensions(self.extension_runner.as_ref(), content).await;
         self.session
             .working_set
             .lock()

@@ -204,7 +204,7 @@ emit 事件下一切返回值仅具参考性；serial 事件下 `cancel(reason)`
 
 Transform 可变字段（一个 handler 的改写对后续 handler 立即可见）：
 
-- `input`：`text`
+- `input`：`text`——每条提交的消息以及 turn 运行中输入的每条消息（steer）的文本；改写后的文本即被记录与发送的内容
 - `before-agent-start`：`system_prompt`、`inject_message`（字符串=设置，`()`=清除，缺省=保持）
 - `before-provider-request`：`messages`
 - `tool-result`：`content`、`success`、`is_error`、`canonical`（JSON 值——结果的机器可读值；仅改写 `content` 不动它，可显式替换）
