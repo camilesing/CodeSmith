@@ -37,6 +37,7 @@ FRAMEWORK = {
     "codesmith-session",  # session data plane: store, journal, zones (DSH core/session)
     "codesmith-sandbox",  # execution-policy and sandbox plane (DSH sandbox/*)
     "codesmith-context",  # session context plane: project docs, memory, trust (DSH context/*)
+    "codesmith-mcp-client",  # MCP client pool + OAuth (DSH mcp/*; codesmith-mcp is the server side)
     "codesmith-agent-runtime",  # the kernel: one turn loop, engine, compaction
 }
 

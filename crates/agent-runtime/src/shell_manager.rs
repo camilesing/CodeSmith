@@ -41,13 +41,13 @@ use wait_timeout::ChildExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use crate::child_env;
 use crate::host_services::ShellManagerApi;
 use crate::tools::git_env::merge_git_scrub_env;
 use crate::tools::shell_output::truncate_with_meta;
 use crate::tools::shell_types::{
     ShellDeltaResult, ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus,
 };
+use codesmith_sandbox::child_env;
 use codesmith_sandbox::runtime::{
     CommandSpec, ExecEnv, SandboxDecision, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy,
     SandboxRuntimeConfig, SandboxType,

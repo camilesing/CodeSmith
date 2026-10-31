@@ -791,6 +791,7 @@ dependencies = [
  "codesmith-config",
  "codesmith-context",
  "codesmith-extensions",
+ "codesmith-mcp-client",
  "codesmith-sandbox",
  "codesmith-secrets",
  "codesmith-session",
@@ -1084,6 +1085,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "codesmith-mcp-client"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "codesmith-agent",
+ "codesmith-config",
+ "codesmith-sandbox",
+ "codesmith-secrets",
+ "codesmith-session",
+ "futures-util",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "tiny_http",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "codesmith-protocol"
 version = "0.11.0"
 dependencies = [
@@ -1133,6 +1159,7 @@ dependencies = [
  "fd-lock",
  "libc",
  "multimap",
+ "portable-pty",
  "pretty_assertions",
  "regex",
  "reqwest",

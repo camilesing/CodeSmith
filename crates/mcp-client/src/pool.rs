@@ -89,12 +89,12 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 
-use crate::child_env;
-use crate::mcp_oauth::{McpOAuthConfig, OAuthState};
-use crate::utils::write_atomic;
+use crate::oauth::{McpOAuthConfig, OAuthState};
+use codesmith_sandbox::child_env;
 use codesmith_sandbox::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
+use codesmith_session::primitives::write_atomic;
 
-pub use crate::mcp_oauth::{McpOAuthToken, default_secrets as oauth_default_secrets};
+pub use crate::oauth::{McpOAuthToken, default_secrets as oauth_default_secrets};
 
 // === Error diagnostics helpers (#71) ===
 
@@ -394,9 +394,9 @@ async fn maybe_refresh_oauth_headers(
     else {
         return false;
     };
-    match crate::mcp_oauth::try_refresh_matching(
+    match crate::oauth::try_refresh_matching(
         client,
-        &crate::mcp_oauth::default_secrets(),
+        &crate::oauth::default_secrets(),
         oauth,
         &current,
     )
@@ -565,7 +565,7 @@ impl Default for McpTimeouts {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum McpTransportKind {
+pub enum McpTransportKind {
     StreamableHttp,
     Sse,
     SseIde,
@@ -2049,9 +2049,9 @@ impl McpConnection {
                     .keys()
                     .any(|key| key.eq_ignore_ascii_case("authorization"))
             {
-                match crate::mcp_oauth::resolve_authorization_value(
+                match crate::oauth::resolve_authorization_value(
                     &client,
-                    &crate::mcp_oauth::default_secrets(),
+                    &crate::oauth::default_secrets(),
                     &state.server,
                     &state.config,
                 )
@@ -3463,12 +3463,12 @@ impl McpPool {
     }
 
     /// Convert discovered tools to API Tool format
-    pub fn to_api_tools(&self) -> Vec<crate::models::Tool> {
+    pub fn to_api_tools(&self) -> Vec<codesmith_agent::models::Tool> {
         let mut api_tools = Vec::new();
 
         // Add regular tools
         for (name, tool) in self.all_tools() {
-            api_tools.push(crate::models::Tool {
+            api_tools.push(codesmith_agent::models::Tool {
                 tool_type: None,
                 name,
                 description: truncate_mcp_description(
@@ -3486,7 +3486,7 @@ impl McpPool {
 
         let has_servers = !self.state.lock().unwrap().config.servers.is_empty();
         if has_servers {
-            api_tools.push(crate::models::Tool {
+            api_tools.push(codesmith_agent::models::Tool {
                 tool_type: None,
                 name: "list_mcp_resources".to_string(),
                 description: "List available MCP resources across servers (optionally filtered by server).".to_string(),
@@ -3503,7 +3503,7 @@ impl McpPool {
                 strict: None,
                 cache_control: None,
             });
-            api_tools.push(crate::models::Tool {
+            api_tools.push(codesmith_agent::models::Tool {
                 tool_type: None,
                 name: "list_mcp_resource_templates".to_string(),
                 description: "List available MCP resource templates across servers (optionally filtered by server).".to_string(),
@@ -3525,7 +3525,7 @@ impl McpPool {
         // Add resource reading tools if resources exist
         let resources = self.all_resources();
         if !resources.is_empty() {
-            api_tools.push(crate::models::Tool {
+            api_tools.push(codesmith_agent::models::Tool {
                 tool_type: None,
                 name: "mcp_read_resource".to_string(),
                 description: "Read a resource from an MCP server using its URI".to_string(),
@@ -3544,7 +3544,7 @@ impl McpPool {
                 strict: None,
                 cache_control: None,
             });
-            api_tools.push(crate::models::Tool {
+            api_tools.push(codesmith_agent::models::Tool {
                 tool_type: None,
                 name: "read_mcp_resource".to_string(),
                 description: "Alias for mcp_read_resource.".to_string(),
@@ -3568,7 +3568,7 @@ impl McpPool {
         // Add prompt getting tools if prompts exist
         let prompts = self.all_prompts();
         if !prompts.is_empty() {
-            api_tools.push(crate::models::Tool {
+            api_tools.push(codesmith_agent::models::Tool {
                 tool_type: None,
                 name: "mcp_get_prompt".to_string(),
                 description: "Get a prompt from an MCP server".to_string(),

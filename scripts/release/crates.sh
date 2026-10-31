@@ -18,6 +18,8 @@ release_crates=(
   codesmith-extensions
   codesmith-session
   codesmith-sandbox
+  codesmith-context
+  codesmith-mcp-client
   codesmith-agent-runtime
   codesmith-providers
   codesmith-core

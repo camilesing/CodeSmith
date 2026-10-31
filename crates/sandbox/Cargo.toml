@@ -23,6 +23,7 @@ unicode-normalization.workspace = true
 unicode-properties.workspace = true
 async-trait.workspace = true
 libc.workspace = true
+portable-pty = "0.9"
 regex = "1.11"
 serde.workspace = true
 serde_json.workspace = true

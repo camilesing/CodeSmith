@@ -18,6 +18,7 @@
 //! the engine (it takes `AppMode`); everything here is mode-free.
 
 pub mod bash_ast;
+pub mod child_env;
 pub mod command_safety;
 pub mod execpolicy;
 pub mod network_policy;

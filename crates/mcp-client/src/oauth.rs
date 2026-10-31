@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn server_entry_with_oauth_round_trips() {
-        use crate::mcp::McpServerConfig;
+        use crate::pool::McpServerConfig;
 
         // The `oauth` table sits inside a server entry; make sure the
         // McpServerConfig field deserializes and skips serialization when
