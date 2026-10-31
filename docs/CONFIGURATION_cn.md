@@ -54,6 +54,13 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 5. requirements 校验（`requirements_path`，默认
    `/etc/codesmith/requirements.toml`），可在启动时拒绝最终结果
 
+没人读取的键会被点名，而不是被静默丢弃：加载的文件（顶层、任一表或
+`[profiles.<name>]` 条目）里若有 CodeSmith 任何部分都不读取的键——例如拼写
+错误的 `aproval_mode`，或新旧版本使用过的键——启动时会在 stderr 输出一行
+`warning: config.toml has keys CodeSmith does not read …`，`codesmith doctor`
+也会列出这些键（`doctor --json` 中为 `config_unknown_keys`）。这些键被忽略，
+运行照常继续；目前是告警，尚不拒绝。
+
 ### 按项目叠加
 
 当 codesmith 在包含 `<workspace>/.codesmith/config.toml` 文件的工作区中启动时，

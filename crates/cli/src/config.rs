@@ -706,6 +706,12 @@ fn heavy_model_for_provider(provider: ApiProvider) -> &'static str {
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
+    /// Keys in the loaded config file that no config model reads — typos
+    /// and stale keys (round-9 TODO-60). Filled by [`Config::load`]; never
+    /// read from the file itself. Reported, not yet refused (new
+    /// enforcement starts as a warning).
+    #[serde(skip)]
+    pub unknown_keys: Vec<String>,
     pub provider: Option<String>,
     /// Active custom provider id (ROADMAP §D2). When set, this overrides
     /// `provider` and selects the matching `[[providers.custom]]` entry by id.
@@ -1545,12 +1551,22 @@ impl Config {
     /// ```
     pub fn load(path: Option<PathBuf>, profile: Option<&str>) -> Result<Self> {
         let path = resolve_load_config_path(path);
+        let mut unknown_keys = Vec::new();
         let mut config = if let Some(path) = path.as_ref() {
             if path.exists() {
                 let contents = fs::read_to_string(path)
                     .with_context(|| format!("Failed to read config file: {}", path.display()))?;
                 let parsed: ConfigFile = toml::from_str(&contents)
                     .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+                unknown_keys = unknown_config_keys(&contents);
+                if !unknown_keys.is_empty() {
+                    tracing::warn!(
+                        target: "codesmith::config",
+                        path = %path.display(),
+                        keys = ?unknown_keys,
+                        "config file has keys no config model reads"
+                    );
+                }
                 apply_profile(parsed, profile)?
             } else {
                 Config::default()
@@ -1558,6 +1574,7 @@ impl Config {
         } else {
             Config::default()
         };
+        config.unknown_keys = unknown_keys;
 
         apply_env_overrides(&mut config);
         apply_managed_overrides(&mut config)?;
@@ -3129,6 +3146,85 @@ pub(crate) use codesmith_agent_runtime::workspace_trust::{
     workspace_config_key, workspace_trust_level_from_doc,
 };
 
+/// Config-file keys neither config model reads — typos and stale keys
+/// (round-9 TODO-60). The file is shared: the CLI model ([`Config`], with
+/// its `profiles`) and the shared model (`codesmith_config::ConfigToml`,
+/// read by auth/onboarding and the app server) each skip keys only the
+/// other reads, so a key counts as unknown only when both skip it (or an
+/// ancestor table of it). Each model is walked directly rather than
+/// through `ConfigFile`'s `flatten`, which hides skipped keys. A file that
+/// does not parse yields nothing here — the loader reports that error.
+pub(crate) fn unknown_config_keys(contents: &str) -> Vec<String> {
+    let Ok(mut table) = toml::from_str::<toml::Table>(contents) else {
+        return Vec::new();
+    };
+    // `serde_ignored` renders an `Option` layer as a `?` segment; the key
+    // path a user wrote has none.
+    let key_path = |path: &serde_ignored::Path<'_>| {
+        path.to_string()
+            .split('.')
+            .filter(|segment| *segment != "?")
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    let shared_input = toml::Value::Table(table.clone());
+    let profiles = table.remove("profiles");
+
+    let mut cli_skipped: Vec<String> = Vec::new();
+    let _: Result<Config, _> = serde_ignored::deserialize(toml::Value::Table(table), |path| {
+        cli_skipped.push(key_path(&path));
+    });
+    match profiles {
+        Some(toml::Value::Table(profiles)) => {
+            for (name, profile) in profiles {
+                let _: Result<Config, _> = serde_ignored::deserialize(profile, |path| {
+                    cli_skipped.push(format!("profiles.{name}.{}", key_path(&path)));
+                });
+            }
+        }
+        Some(_) => cli_skipped.push("profiles".to_string()),
+        None => {}
+    }
+
+    let mut shared_skipped: Vec<String> = Vec::new();
+    let shared: Result<codesmith_config::ConfigToml, _> =
+        serde_ignored::deserialize(shared_input, |path| shared_skipped.push(key_path(&path)));
+    if let Ok(shared) = shared {
+        // The shared model's catch-all keeps unknown top-level keys rather
+        // than skipping them; for this check they are skipped all the same.
+        shared_skipped.extend(shared.extras.keys().cloned());
+    }
+
+    let covers = |ancestor: &str, path: &str| {
+        path == ancestor
+            || path
+                .strip_prefix(ancestor)
+                .is_some_and(|rest| rest.starts_with('.'))
+    };
+    // Tables their owner reads and writes as raw TOML, outside both models.
+    let raw_owned = [codesmith_agent_runtime::workspace_trust::PROJECTS_TABLE];
+    let mut unknown: Vec<String> = Vec::new();
+    for cli in &cli_skipped {
+        if raw_owned.iter().any(|owned| covers(owned, cli)) {
+            continue;
+        }
+        for shared in &shared_skipped {
+            let deepest = if covers(cli, shared) {
+                shared
+            } else if covers(shared, cli) {
+                cli
+            } else {
+                continue;
+            };
+            if !unknown.contains(deepest) {
+                unknown.push(deepest.clone());
+            }
+        }
+    }
+    unknown.sort();
+    unknown
+}
+
 fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = path {
         return Some(expand_pathbuf(path));
@@ -4182,6 +4278,9 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
+        // Load-time diagnostics, not a layer value: `Config::load` sets
+        // them after every merge.
+        unknown_keys: base.unknown_keys,
         // `[mods]` follows the same override-or-base pattern as every other
         // Option field: resetting it to None here would discard the user's
         // `[mods] enabled = false` on any profile/managed-override merge,
@@ -4929,6 +5028,46 @@ pub fn clear_api_key() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-9 TODO-60: a typo or stale key is named with its path — at
+    /// the top level, inside a table, and inside a profile — while keys only
+    /// the shared model reads (`log_level`, `[hook_sinks]`) are not.
+    #[test]
+    fn unknown_config_keys_name_typos_and_spare_keys_another_model_reads() {
+        let contents = r#"
+provider = "deepseek"
+aproval_mode = "auto"
+log_level = "debug"
+
+[lsp]
+enabled = true
+servrs = {}
+
+[hook_sinks]
+unix_socket_path = "/tmp/hooks.sock"
+
+[projects."/tmp/work"]
+trust_level = "trusted"
+
+[profiles.work]
+modle = "x"
+"#;
+        assert_eq!(
+            unknown_config_keys(contents),
+            vec![
+                "aproval_mode".to_string(),
+                "lsp.servrs".to_string(),
+                "profiles.work.modle".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_clean_config_has_no_unknown_keys() {
+        let contents = "provider = \"deepseek\"\n[lsp]\nenabled = true\n";
+        assert!(unknown_config_keys(contents).is_empty());
+    }
+
     use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
     use std::collections::HashMap;
     use std::env;

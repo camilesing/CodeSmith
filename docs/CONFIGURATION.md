@@ -56,6 +56,14 @@ Consolidated resolution order (highest first):
    `/etc/codesmith/requirements.toml`), which can reject the final result
    at startup
 
+Keys nothing reads are named, not silently dropped: when the loaded file
+(top level, any table, or a `[profiles.<name>]` entry) carries a key no
+part of CodeSmith reads — a typo such as `aproval_mode`, or a key a newer or
+older release used — startup prints one `warning: config.toml has keys
+CodeSmith does not read …` line on stderr, and `codesmith doctor` lists the
+same keys (`config_unknown_keys` in `doctor --json`). The keys are ignored
+and the run continues; this is a warning today, not a refusal.
+
 ### Per-project overlay
 
 When codesmith starts in a workspace that contains a

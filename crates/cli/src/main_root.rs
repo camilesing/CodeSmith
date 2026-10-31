@@ -2493,6 +2493,25 @@ pub(crate) async fn run_doctor(
             ),
         );
     }
+    if config.unknown_keys.is_empty() {
+        if config_path.exists() {
+            println!(
+                "  {} every key is read by CodeSmith",
+                "✓".truecolor(aqua_r, aqua_g, aqua_b)
+            );
+        }
+    } else {
+        let keys = config.unknown_keys.join(", ");
+        println!(
+            "  {} keys CodeSmith does not read (ignored): {keys}",
+            "!".truecolor(sky_r, sky_g, sky_b)
+        );
+        println!("    Likely typos or stale keys — fix or remove them.");
+        findings.warn(
+            "Configuration",
+            format!("config.toml keys CodeSmith does not read (ignored): {keys}"),
+        );
+    }
     println!(
         "  workspace: {}",
         codesmith_agent_runtime::utils::display_path(workspace)
@@ -3494,6 +3513,7 @@ pub(crate) fn run_doctor_json(
         "version": env!("CARGO_PKG_VERSION"),
         "config_path": config_path.display().to_string(),
         "config_present": config_path.exists(),
+        "config_unknown_keys": config.unknown_keys,
         "workspace": workspace.display().to_string(),
         "api_key": {
             "source": api_key_state,
@@ -4081,6 +4101,21 @@ pub(crate) fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &Works
     }
 }
 
+/// Name config-file keys no config model reads, once per process, on stderr
+/// (round-9 TODO-60). Dry-run enforcement: the keys are ignored and the run
+/// continues; `codesmith doctor` lists them too.
+fn warn_unknown_config_keys(config: &Config) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if config.unknown_keys.is_empty() || WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    eprintln!(
+        "warning: config.toml has keys CodeSmith does not read (ignored — likely typos or stale \
+         keys): {}",
+        config.unknown_keys.join(", ")
+    );
+}
+
 pub(crate) fn load_config_from_cli(cli: &Cli) -> Result<Config> {
     load_config_from_cli_with_exec_model(cli, None)
 }
@@ -4094,6 +4129,7 @@ pub(crate) fn load_config_from_cli_with_exec_model(
         .clone()
         .or_else(|| codesmith_config::codesmith_env("PROFILE"));
     let mut config = Config::load(cli.config.clone(), profile.as_deref())?;
+    warn_unknown_config_keys(&config);
     // Top-level `--model <id>`: the same slot fold as the facade's
     // `CODESMITH_MODEL` handoff — wins over config.toml and satisfies the
     // custom-gateway explicit-model check below.

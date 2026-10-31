@@ -112,6 +112,12 @@ pub fn workspace_config_key(workspace: &Path) -> String {
         .into_owned()
 }
 
+/// The `config.toml` table holding per-workspace trust entries
+/// (`[projects."<path>"] trust_level = "trusted"`). Read and written as raw
+/// TOML here, outside both config models — the unknown-key check counts it
+/// as known through this constant.
+pub const PROJECTS_TABLE: &str = "projects";
+
 /// Whether a trust-level string equals "trusted" (case-insensitive).
 pub fn is_trusted_level(level: &str) -> bool {
     level.trim().eq_ignore_ascii_case("trusted")
@@ -123,7 +129,7 @@ pub fn workspace_trust_level_from_doc<'a>(
     workspace: &Path,
 ) -> Option<&'a str> {
     let workspace = canonicalize_or_keep(workspace);
-    let projects = doc.get("projects")?.as_table()?;
+    let projects = doc.get(PROJECTS_TABLE)?.as_table()?;
     for (raw_path, project) in projects {
         let project_path = canonicalize_or_keep(&expand_path(raw_path));
         if project_path == workspace {
@@ -179,7 +185,7 @@ pub fn apply_workspace_trust(doc: &mut toml::Value, workspace: &Path) -> Result<
         .as_table_mut()
         .context("Config root must be a TOML table.")?;
     let projects = root
-        .entry("projects".to_string())
+        .entry(PROJECTS_TABLE.to_string())
         .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
         .as_table_mut()
         .context("`projects` must be a table.")?;

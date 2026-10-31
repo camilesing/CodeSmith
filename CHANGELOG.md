@@ -34,6 +34,13 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Config typos get named** — a key in `config.toml` that no part of
+  CodeSmith reads (`aproval_mode`, a key from another release, a misspelled
+  key inside a table or a profile) is now reported on stderr at startup and
+  listed by `codesmith doctor` (`config_unknown_keys` in `--json`), instead of
+  being silently ignored. Keys that only the app server or the workspace-trust
+  store read are not flagged. It is a warning for now; the run continues.
+
 - **Sessions keep an append-only journal** — every REPL and ACP session now
   writes `<id>.journal.jsonl` beside its snapshot: each appended message and
   each wholesale replacement, in order, so the history a `/compact`, `/purge`,
