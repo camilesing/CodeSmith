@@ -28,7 +28,11 @@
   `scripts/capability-graph.py` 生成、CI 校验新鲜度）列出每个接缝的
   三件套——新能力须在同一变更中落齐三个角色；每个
   `ExtensionEventKind` 声明分发模式（`dispatch_mode()`，由契约测试
-  锁定）。
+  锁定）。生成式事件矩阵（`docs/EVENT_MATRIX.md`，由
+  `scripts/event-matrix.py` 生成、CI 校验）列出每个事件的分发模式、构造
+  它用于派发的文件及仓库内订阅者；`scripts/verify-md-links.py`（CI）保证
+  顶层与 `docs/` markdown 的相对链接可解析；`docs/schemas/` 下的 JSON
+  Schema（协议、配置）由测试钉在对应类型上。
 - **会话持久化接缝。** 持久会话记录（`SavedSession`）、格式治理解码
   管线（schema 门禁、相邻内存迁移、未知块容忍、中断回合修复）与
   `SessionStore` 接缝位于 `agent-runtime/src/session_store.rs`；文件

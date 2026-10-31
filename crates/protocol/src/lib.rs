@@ -16,7 +16,7 @@ pub mod runtime {
     /// serde's `Content` type, which only works with self-describing
     /// formats: this envelope is JSON-only and cannot be deserialized from
     /// binary formats such as bincode or postcard.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct RuntimeEventEnvelope {
         /// Envelope schema version. `None` means the payload predates schema
         /// versioning (legacy) — defaulting absence to the *current* version
@@ -42,7 +42,7 @@ pub mod runtime {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Envelope<T> {
     pub request_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,7 +50,7 @@ pub struct Envelope<T> {
     pub body: T,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadStatus {
     Running,
@@ -61,7 +61,7 @@ pub enum ThreadStatus {
     Archived,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionSource {
     Interactive,
@@ -71,7 +71,7 @@ pub enum SessionSource {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Thread {
     pub id: String,
     pub preview: String,
@@ -91,7 +91,7 @@ pub struct Thread {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadStartParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -103,7 +103,7 @@ pub struct ThreadStartParams {
     pub persist_extended_history: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadResumeParams {
     pub thread_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,7 +132,7 @@ pub struct ThreadResumeParams {
     pub persist_extended_history: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadForkParams {
     pub thread_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,7 +157,7 @@ pub struct ThreadForkParams {
     pub persist_extended_history: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadListParams {
     #[serde(default)]
     pub include_archived: bool,
@@ -165,12 +165,12 @@ pub struct ThreadListParams {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadReadParams {
     pub thread_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadSetNameParams {
     pub thread_id: String,
     pub name: String,
@@ -181,7 +181,7 @@ pub struct ThreadSetNameParams {
 /// A request carrying an unknown `kind` tag (e.g. from a newer producer)
 /// fails deserialization; consumers that must tolerate unknown requests
 /// should inspect the raw JSON tag before decoding into this enum.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ThreadRequest {
     Create {
@@ -207,7 +207,7 @@ pub enum ThreadRequest {
 }
 
 /// Response to a [`ThreadRequest`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ThreadResponse {
     /// The thread this response pertains to.
     pub thread_id: String,
@@ -243,7 +243,7 @@ pub struct ThreadResponse {
 }
 
 /// Application-level requests that are not tied to a specific thread.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppRequest {
     /// Query the server's capabilities.
@@ -263,7 +263,7 @@ pub enum AppRequest {
 }
 
 /// Response to an [`AppRequest`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AppResponse {
     /// Whether the request succeeded.
     pub ok: bool,
@@ -275,7 +275,7 @@ pub struct AppResponse {
 }
 
 /// A simple prompt request that sends text to the model and returns output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PromptRequest {
     /// Optional thread context for the prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -288,7 +288,7 @@ pub struct PromptRequest {
 }
 
 /// Response to a [`PromptRequest`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PromptResponse {
     /// The model's output text.
     pub output: String,
@@ -300,7 +300,7 @@ pub struct PromptResponse {
 }
 
 /// Policy controlling when the agent must ask the user for approval before acting.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AskForApproval {
     /// Ask for approval unless the action is on a trusted path/resource.
@@ -320,7 +320,7 @@ pub enum AskForApproval {
 }
 
 /// Classification of tool invocation origin.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
     /// A built-in function tool.
@@ -330,7 +330,7 @@ pub enum ToolKind {
 }
 
 /// Parameters for executing a local shell command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LocalShellParams {
     /// The shell command to execute.
     pub command: String,
@@ -343,7 +343,7 @@ pub struct LocalShellParams {
 }
 
 /// The payload of a tool call, discriminated by tool type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolPayload {
     /// A built-in function call with JSON-encoded arguments.
@@ -363,7 +363,7 @@ pub enum ToolPayload {
 }
 
 /// The result of a tool call, discriminated by tool type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolOutput {
     /// Result of a built-in function call.
@@ -382,7 +382,7 @@ pub enum ToolOutput {
 }
 
 /// Action to take for a network policy rule.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicyRuleAction {
     /// Allow network access to the host.
@@ -392,7 +392,7 @@ pub enum NetworkPolicyRuleAction {
 }
 
 /// A proposed amendment to the network access policy for a specific host.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct NetworkPolicyAmendment {
     /// The host to amend the policy for.
     pub host: String,
@@ -401,7 +401,7 @@ pub struct NetworkPolicyAmendment {
 }
 
 /// A user's decision on an approval request.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReviewDecision {
     /// Approve the action.
@@ -422,7 +422,7 @@ pub enum ReviewDecision {
 }
 
 /// Status of an MCP server during startup.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum McpStartupStatus {
     /// The server is in the process of starting.
@@ -436,7 +436,7 @@ pub enum McpStartupStatus {
 }
 
 /// A progress update for a single MCP server's startup.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpStartupUpdateEvent {
     /// Name of the MCP server.
     pub server_name: String,
@@ -445,7 +445,7 @@ pub struct McpStartupUpdateEvent {
 }
 
 /// Details of an MCP server that failed to start.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpStartupFailure {
     /// Name of the MCP server that failed.
     pub server_name: String,
@@ -454,7 +454,7 @@ pub struct McpStartupFailure {
 }
 
 /// Summary event emitted once all MCP servers have finished starting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct McpStartupCompleteEvent {
     /// Servers that started successfully.
     pub ready: Vec<String>,
@@ -465,7 +465,7 @@ pub struct McpStartupCompleteEvent {
 }
 
 /// Context about a network access request that requires approval.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NetworkApprovalContext {
     /// The host being accessed.
     pub host: String,
@@ -474,7 +474,7 @@ pub struct NetworkApprovalContext {
 }
 
 /// An event requesting user approval for a command execution or patch application.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ExecApprovalRequestEvent {
     /// Identifier of the tool call requesting approval.
     pub call_id: String,
@@ -506,7 +506,9 @@ pub struct ExecApprovalRequestEvent {
 }
 
 /// The channel a response delta is being written to.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseChannel {
     /// The main visible text output.
@@ -524,7 +526,7 @@ impl ResponseChannel {
 }
 
 /// A user's approval decision sent in response to an approval request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApprovalDecisionRequest {
     /// The decision identifier (e.g. `"approved"`, `"denied"`).
     pub decision: String,
@@ -542,7 +544,7 @@ pub struct ApprovalDecisionRequest {
 /// A frame carrying an unknown `event` tag (e.g. from a newer producer)
 /// fails deserialization; consumers that must tolerate unknown events
 /// should inspect the raw JSON tag before decoding into this enum.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventFrame {
     /// A new model response has started.

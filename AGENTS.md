@@ -156,7 +156,11 @@ because they did anything wrong. Treat their time as more expensive than ours.
 capability is a seam triple — definition in a framework crate, provider
 in an implementation crate, consumer — and lands in
 `scripts/capability-graph.py`'s seam list (regenerate
-`docs/CAPABILITY_GRAPH.md`; CI checks freshness).
+`docs/CAPABILITY_GRAPH.md`; CI checks freshness). The other generated
+contracts follow the same rule: a change to an `ExtensionEvent` emit site
+regenerates `docs/EVENT_MATRIX.md` (`python3 scripts/event-matrix.py`), and
+a change to a protocol or config type regenerates `docs/schemas/*.json`
+(`CODESMITH_UPDATE_SCHEMA=1` with the failing schema test).
 - The model-facing sub-agent surface is `agent_open`/`agent_eval`/
   `agent_close` (implementation in `crates/cli/src/tools/subagent/`) plus
   persistent RLM sessions (`crates/tool-impls/src/tools/rlm.rs`);

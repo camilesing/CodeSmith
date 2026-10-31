@@ -34,6 +34,14 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Machine-readable contracts for config and the app-server protocol** —
+  `docs/schemas/config.schema.json` describes every `config.toml` key the CLI
+  reads (profiles included), so an editor with TOML schema support can
+  complete and check the file; `docs/schemas/protocol.schema.json` describes
+  the app-server messages for client authors. Both are generated from the
+  types the program actually decodes and a test fails when either falls
+  behind, so they cannot drift from the implementation.
+
 - **Config typos get named** — a key in `config.toml` that no part of
   CodeSmith reads (`aproval_mode`, a key from another release, a misspelled
   key inside a table or a profile) is now reported on stderr at startup and

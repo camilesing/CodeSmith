@@ -59,6 +59,13 @@ Consolidated resolution order (highest first):
 `codesmith config dump` prints the result of this whole fold for the
 current workspace, secrets redacted.
 
+`docs/schemas/config.schema.json` is a JSON Schema (draft 2020-12) of the
+keys the CLI reads from `config.toml`, profiles included, generated from the
+config model — point an editor's TOML schema support at it for completion and
+validation. A test fails when it falls behind the model. Keys read only by
+the app server (`log_level`, `[hook_sinks]`, …) and the workspace-trust
+`[projects]` table are not in it.
+
 Keys nothing reads are named, not silently dropped: when the loaded file
 (top level, any table, or a `[profiles.<name>]` entry) carries a key no
 part of CodeSmith reads — a typo such as `aproval_mode`, or a key a newer or

@@ -56,6 +56,11 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 
 `codesmith config dump` 打印当前工作区下整套叠加后的结果，密钥已脱敏。
 
+`docs/schemas/config.schema.json` 是 CLI 从 `config.toml` 读取的键（含档案）
+的 JSON Schema（draft 2020-12），由配置模型生成——可让编辑器的 TOML schema
+支持据此补全与校验。它落后于模型时会有测试失败。只有 app server 读取的键
+（`log_level`、`[hook_sinks]` 等）与工作区信任表 `[projects]` 不在其中。
+
 没人读取的键会被点名，而不是被静默丢弃：加载的文件（顶层、任一表或
 `[profiles.<name>]` 条目）里若有 CodeSmith 任何部分都不读取的键——例如拼写
 错误的 `aproval_mode`，或新旧版本使用过的键——启动时会在 stderr 输出一行
@@ -765,7 +770,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `api_key`（字符串，托管 provider 必填）：对 DeepSeek/托管 provider 必须非空（或设置该 provider 的 API 密钥环境变量）。自托管的 SGLang、vLLM 和 Ollama 可以省略。
 - `custom_provider`（字符串，可选）：某个 `[[providers.custom]]` 条目的
   id。设置后覆盖 `provider`，并让会话走该自包含的网关定义——参见
-  [自定义 provider 注册表](#自定义-provider-注册表-providerscustom)。
+  [自定义 provider 注册表](#自定义-provider-注册表providerscustom)。
 - `auth_mode`（字符串，可选）：当前活跃 provider 的认证方式。
   `api_key` / `api-key` / `apikey` / `bearer` / `bearer-token`
   强制带密钥认证，即使对环回端点也一样；`none` / `off` /
@@ -938,7 +943,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `personality`（字符串，可选）：`calm`（默认）或 `playful`——
   系统提示词中的语气与风格叠加层。不区分大小写；其他值会导致启动
   校验失败。仅影响表达：它不能改变代理做什么，只能改变它怎么说。
-  参见[系统提示词自定义](#system-prompt-customization)。
+  参见[系统提示词自定义](#系统提示词自定义)。
 - `append_system_prompt`（字符串数组，可选）：文件路径，在装配好的
   系统提示词之后按声明顺序渲染为额外的提示词小节。`~` 和环境变量
   会被展开；无法读取的文件会被跳过并给出警告。
@@ -947,7 +952,7 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   提示词（宪法、工具分类法、模式/审批层）；`append_system_prompt`
   小节仍会在其后渲染。除非需要从头构建角色，否则优先使用
   `instructions` + `append_system_prompt`。参见
-  [系统提示词自定义](#system-prompt-customization)。
+  [系统提示词自定义](#系统提示词自定义)。
 - `[memory].enabled`（布尔，可选）：未设置即**默认开启**——记忆文件
   会被读写，输入框的 `# foo` 快速记录开箱即用。生效值按优先级级联
   （从高到低）：`CODESMITH_DISABLE_AUTO_MEMORY` 环境变量、bare/simple

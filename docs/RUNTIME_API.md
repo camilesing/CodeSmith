@@ -441,3 +441,11 @@ cargo test -p codesmith-protocol --test parity_protocol --locked
 
 This validates that the app-server's event schema hasn't drifted from the
 documented contract. CI runs this on every push to `main` and on release tags.
+
+The machine-readable contract is `docs/schemas/protocol.schema.json` — a JSON
+Schema (draft 2020-12) generated from the `codesmith-protocol` types, with one
+entry per top-level message under `messages` (`ThreadRequest`,
+`AppRequest`, `PromptRequest`, `EventFrame`, `RuntimeEventEnvelope`, …) and
+their nested types under `$defs`. `cargo test -p codesmith-protocol --test
+protocol_schema` fails when the committed file no longer matches the types;
+regenerate it with `CODESMITH_UPDATE_SCHEMA=1` set.

@@ -443,3 +443,10 @@ cargo test -p codesmith-protocol --test parity_protocol --locked
 
 这会验证 app-server 的事件 schema 尚未偏离
 已文档化的契约。CI 在每次推送到 `main` 以及发布标签时运行它。
+
+机器可读的契约是 `docs/schemas/protocol.schema.json`——由
+`codesmith-protocol` 类型生成的 JSON Schema（draft 2020-12）：顶层消息各占
+`messages` 下一项（`ThreadRequest`、`AppRequest`、`PromptRequest`、
+`EventFrame`、`RuntimeEventEnvelope` 等），嵌套类型位于 `$defs`。提交的文件
+与类型不一致时，`cargo test -p codesmith-protocol --test protocol_schema`
+会失败；设置 `CODESMITH_UPDATE_SCHEMA=1` 运行即可重新生成。

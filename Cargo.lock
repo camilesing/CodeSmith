@@ -804,6 +804,7 @@ dependencies = [
  "proc-macro2",
  "regex",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -1026,6 +1027,7 @@ dependencies = [
  "dirs",
  "ignore",
  "rusqlite",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -1055,6 +1057,7 @@ dependencies = [
 name = "codesmith-protocol"
 version = "0.11.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
 ]

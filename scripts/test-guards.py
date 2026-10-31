@@ -3,10 +3,10 @@
 
 Runs each verify-* guard against throwaway fixture trees and pins the
 accept/reject paths: clean trees pass, injected drift fails naming the
-offender. The cargo-metadata guards (check-framework-deps.py,
-capability-graph.py) are not covered here — they need a fixture
-workspace; they stay manually injection-verified (see the TODO-1 and
-TODO-4 records in the dev plan).
+offender. The workspace-scanning guards (check-framework-deps.py,
+capability-graph.py, event-matrix.py) are not covered here — they need a
+fixture workspace; they stay manually injection-verified (see the TODO-1,
+TODO-4 and round-9 TODO-61 records in the dev plan).
 
 Run: python3 scripts/test-guards.py
 """
@@ -172,6 +172,46 @@ fn b() {}
             result = run_guard("verify-deadcode-budget.py", root, "--budget", "9")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("shrink BUDGET to 4", result.stdout)
+
+
+class MdLinksGuard(unittest.TestCase):
+    def test_paired_tree_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "docs/GUIDE.md", "# Guide\n\nSee [the appendix](APPENDIX.md#appendix).\n")
+            write(root, "docs/APPENDIX.md", "# Appendix\n")
+            result = run_guard("verify-md-links.py", root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("2 file(s)", result.stdout)
+
+    def test_missing_target_fails_and_names_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "README.md", "[missing](docs/GONE.md)\n")
+            result = run_guard("verify-md-links.py", root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("missing target docs/GONE.md", result.stderr)
+
+    def test_unknown_fragment_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "docs/GUIDE.md", "[x](OTHER.md#nope)\n")
+            write(root, "docs/OTHER.md", "# Real Heading\n")
+            result = run_guard("verify-md-links.py", root)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no heading for #nope", result.stderr)
+
+    def test_code_blocks_and_external_links_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "docs/GUIDE.md",
+                "```markdown\n[broke](NOPE.md)\n```\n"
+                "`[inline](ALSO-NOPE.md)` and [site](https://example.com/x) stay.\n",
+            )
+            result = run_guard("verify-md-links.py", root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

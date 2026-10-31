@@ -33,7 +33,7 @@ pub use codesmith_agent_runtime::hooks::{
 };
 
 /// Condition for when a hook should run
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[derive(Default)]
 pub enum HookCondition {
@@ -67,7 +67,7 @@ pub enum HookCondition {
 }
 
 /// A single hook definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Hook {
     /// The event that triggers this hook
     pub event: HookEvent,
@@ -151,7 +151,7 @@ impl Hook {
 }
 
 /// Configuration for hooks (loaded from config.toml)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HooksConfig {
     /// List of hooks to execute
     #[serde(default)]

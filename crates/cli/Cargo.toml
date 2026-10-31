@@ -66,7 +66,7 @@ regex = "1.11"
 # runtime — the blocking client panics on a runtime worker.
 reqwest = { workspace = true, features = ["blocking", "json", "stream", "multipart", "form", "rustls", "http2", "gzip", "brotli"] }
 rustyline = "14.0.0"
-schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
+schemars.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

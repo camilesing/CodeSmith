@@ -92,6 +92,7 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 # `ToolResult::canonical: Option<Arc<serde_json::Value>>`).
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
 # Reports the keys a deserialize skipped — the config loader names typos and
 # stale keys with it (Cargo uses it the same way for manifests).
 serde_ignored = "0.1.14"

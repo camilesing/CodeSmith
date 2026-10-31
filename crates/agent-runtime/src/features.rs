@@ -169,7 +169,7 @@ pub fn render_feature_table(features: &Features) -> String {
 }
 
 /// Deserializable features table for TOML.
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, schemars::JsonSchema)]
 pub struct FeaturesToml {
     #[serde(flatten)]
     pub entries: BTreeMap<String, bool>,

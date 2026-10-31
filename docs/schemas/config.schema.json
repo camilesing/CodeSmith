@@ -1,0 +1,3286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConfigFile",
+  "description": "Resolved CLI configuration, including defaults and environment overrides.",
+  "type": "object",
+  "properties": {
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "custom_provider": {
+      "description": "Active custom provider id (ROADMAP §D2). When set, this overrides\n`provider` and selects the matching `[[providers.custom]]` entry by id.\nThe host maps this to `ProviderId::Custom(id)` for `resolve_llm_client`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "turn_executor": {
+      "description": "Selected main-turn executor id (kernel composition,\n`engine::executor_composition`). Kept as a raw string because the id\nspace is open: the always-present `builtin` plus any factory a host\nregisters on the process-shared turn-executor registry. An unknown id\nfails loud at startup.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "api_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "http_headers": {
+      "description": "Optional extra HTTP headers sent to model API requests.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "default_text_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_mode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reasoning_effort": {
+      "description": "DeepSeek reasoning-effort tier: `\"off\" | \"low\" | \"medium\" | \"high\" | \"max\"`.\nDefaults to `\"max\"` at runtime if unset.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tools_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tools": {
+      "description": "Native tool catalog controls. `tools_file` is the legacy external\nschema path; this table controls built-in tool loading policy.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "skills_dir": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mcp_config_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "notes_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "memory_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "strict_tool_mode": {
+      "description": "When true, set `tool_choice: \"required\"` and opt compatible function\nschemas into DeepSeek beta strict mode. Schemas with root alternatives\nstay non-strict to avoid changing optional/one-of tool semantics.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "instructions": {
+      "description": "Additional system-prompt sources concatenated in declared order\n(#454). Paths are expanded via `expand_path` so `~` and env\nvars work. Project config overrides user config (replace, not\nmerge) — that's the typical \"this repo needs X plus everything\nI already have\" pattern, where users put `~/global.md` in the\nproject's array if they want both. Each file is loaded, capped\nat 100 KiB, and skipped (with a warning) on read errors so a\nmissing optional file doesn't fail the launch.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "system_prompt": {
+      "description": "Full system prompt override. Replaces the built-in assembled prompt but\nstill preserves explicit append sections after it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "system_prompt_file": {
+      "description": "Path to a file containing the full system prompt override.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "append_system_prompt": {
+      "description": "Additional system-prompt append sources rendered after the selected base.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "personality": {
+      "description": "Personality overlay for the system prompt: `\"calm\"` (default) or\n`\"playful\"`. Case-insensitive; invalid values fail `validate` at\nstartup so typos surface immediately instead of silently falling\nback to calm. Presentation-only — voice and tone, never behavior.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "allow_shell": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "approval_policy": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sandbox_mode": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "yolo": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "preset": {
+      "description": "Active configuration preset tier (`simple` | `middle` | `all` |\n`experiment`, plus `plan` and user/project preset files). Preset\nvalues are *baselines* applied fill-if-unset after profile and\nproject merging: explicit keys elsewhere in this file always win,\nand any explicit value that differs from the selected tier turns\nthe effective preset into `diy` (a derived state — see\n[`Config::effective_preset`]). Overridden by `--preset` on the CLI.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mode": {
+      "description": "Deprecated pre-rename alias of [`Self::preset`]; still accepted so\nexisting configs keep working (canonicalized with a warning).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "telemetry": {
+      "description": "Enable local-only telemetry: capacity-decision analytics events are\nwritten to `~/.codesmith/telemetry/events.jsonl`. Off by default; the\nsink is constructed pre-trust (events queue in-memory) and only\nattaches (writes to disk) once the workspace trust boundary passes.",
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "default": null
+    },
+    "mods": {
+      "description": "Script Mods (§F script mod layer) controls: `enabled` gates the whole\nscript-mod layer (discovery, `manage_mods` tool, watcher), `watch`\ngates only the hot-reload file watcher. Both default to `true`.\nDocumented in `config.example.toml` + `docs/MODS.md`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commands": {
+      "description": "Built-in slash-command controls (`[commands] disabled`): canonical\nnames or aliases of builtin commands to hide — dispatch, `/help`,\nand Tab completion all skip them, while user commands and mod\ncommands of the same name still work. Validated against the builtin\ntable at REPL start (an unknown name fails loud). Documented in\n`config.example.toml` + `docs/CLI.md`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "automations": {
+      "description": "Bounds for scheduled automation runs (`[automations] max_steps`).\nDefaults to [`AUTOMATION_DEFAULT_MAX_STEPS`] — see\n[`AutomationsConfig`].",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AutomationsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "sandbox_backend": {
+      "description": "External sandbox backend: `\"none\"` or `\"opensandbox\"`.\nWhen set, exec_shell routes commands through the backend's HTTP API\ninstead of spawning a local process.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sandbox_url": {
+      "description": "Base URL for the external sandbox backend (default: `\"http://localhost:8080\"`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sandbox_api_key": {
+      "description": "Optional API key for the external sandbox backend (sent as Bearer token).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sandbox": {
+      "description": "Optional structured sandbox controls. Legacy top-level sandbox fields are\nstill accepted and are merged into the runtime view for compatibility.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SandboxConfigToml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "prefer_bwrap": {
+      "description": "When true and `/usr/bin/bwrap` is present on Linux, route exec_shell\nthrough bubblewrap instead of relying solely on Landlock (#2184).\nDefaults to false. Requires the `bubblewrap` package to be installed\nseparately — we do NOT vendor bwrap.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "managed_config_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requirements_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_subagents": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint",
+      "minimum": 0
+    },
+    "retry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RetryConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stream_idle_timeout_secs": {
+      "description": "Idle watchdog for streaming responses, in seconds: the maximum\nsilence between two consecutive stream events before the stream is\ndeclared silently stalled and aborted into the transparent-retry path\n(P0-1). Default 120; `0` disables the watchdog; clamped to\n`[MIN_STREAM_IDLE_TIMEOUT_SECS, MAX_STREAM_IDLE_TIMEOUT_SECS]`\n(10..=3600) otherwise.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "stream_idle_retry_increment_secs": {
+      "description": "Per-retry widening of the stream idle watchdog window, in seconds:\neach transparent retry's idle deadline grows by this amount times the\nretries already spent, so a provider silence gap longer than the base\nwindow doesn't kill every retry in the same silent stretch (P0-1\nadaptive retry). Default 30; `0` keeps the window fixed; clamped to\n`[0, MAX_STREAM_IDLE_RETRY_INCREMENT_SECS]` (600) otherwise.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "capacity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CapacityConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "features": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FeaturesToml"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hooks": {
+      "description": "Lifecycle hooks configuration",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "providers": {
+      "description": "Provider-specific credentials and defaults shared with the `codesmith` facade.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProvidersConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "network": {
+      "description": "Per-domain network policy (#135). When absent, network tools fall back\nto a permissive default, matching the old lenient behavior.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetworkPolicyToml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verification": {
+      "description": "Post-turn claim checks (P3-8). When absent, the result claim\nverifier runs with its defaults (on).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VerificationToml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "doctor": {
+      "description": "`codesmith doctor` LLM fallback layer (P3-8). When absent, the\nadvisory analysis runs with its default (on, when findings exist\nand a client resolves).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DoctorToml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "skills": {
+      "description": "Community skill installer settings (#140). When absent, installer\ncommands fall back to the bundled defaults\n([`codesmith_agent_runtime::skills::install::DEFAULT_REGISTRY_URL`] +\n[`codesmith_agent_runtime::skills::install::DEFAULT_MAX_SIZE_BYTES`]).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SkillsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "snapshots": {
+      "description": "Workspace side-git snapshots (#137). Defaults to enabled with 7-day\nretention when the table is absent.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SnapshotsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "edit": {
+      "description": "File-editing behavior (P0-1 parse gate). Defaults to enabled when\nthe table is absent.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EditConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "search": {
+      "description": "Web search provider configuration. When absent, defaults to DuckDuckGo.\nSet `provider` to `bing`, `tavily`, or `bocha` to use those services\ninstead; Tavily and Bocha also require an `api_key`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SearchConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "index": {
+      "description": "Persistent code index configuration (`[index]` table). When absent,\nthe index is enabled with the built-in `tree-sitter` symbol backend;\nevery capability is individually switchable. See docs/INDEX.md.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IndexConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "memory": {
+      "description": "User-level memory file (#489). Default behaviour is **opt-in**:\nloading + injection happens only when `[memory] enabled = true` or\n`CODESMITH_MEMORY=on` is set.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "auto": {
+      "description": "Tunables for `--model auto` (#1207). When absent, the auto router\nkeeps its existing balanced behaviour.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AutoConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lsp": {
+      "description": "Post-edit LSP diagnostics injection (#136). When absent, the engine\napplies the defaults documented in [`LspConfigToml`].",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LspConfigToml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "context": {
+      "description": "Append-only layered context management with Flash seam manager (#159).",
+      "$ref": "#/$defs/ContextConfig",
+      "default": {
+        "enabled": null,
+        "project_pack": null,
+        "verbatim_window_turns": null,
+        "l1_threshold": null,
+        "l2_threshold": null,
+        "l3_threshold": null,
+        "cycle_threshold": null,
+        "seam_model": null,
+        "tokenizer_path": null
+      }
+    },
+    "subagents": {
+      "description": "Sub-agent model overrides.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SubagentsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "runtime": {
+      "description": "Engine recursion limits (`[runtime]` table). When absent, the\ndocumented defaults apply.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "workflow": {
+      "description": "Bounds for the model-writable `workflow` tool (`[workflow]`\ntable). When absent, the documented defaults apply.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkflowConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "runtime_api": {
+      "description": "Runtime API server tuning (`codesmith serve --http`). Currently only\nhosts the CORS allow-list extension (whalescale#255 / #561). When the\ntable is absent, the daemon ships with localhost:3000 / localhost:1420\n/ tauri://localhost as the only allowed dev origins.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeApiConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "workshop": {
+      "description": "Workshop / large-tool-output routing (#548). When absent, the global\ndefault threshold of 4 096 tokens applies and routing is active.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkshopConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "vision_model": {
+      "description": "Vision model configuration for the `image_analyze` tool.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VisionModelConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "utility_model": {
+      "description": "Utility model configuration — a cheap/fast secondary LLM for background\nassists (workshop large-output synthesis, auto-route classification,\nFlash seams). When absent, all assists use the main model.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UtilityModelConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "profiles": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/$defs/Config"
+      }
+    }
+  },
+  "$defs": {
+    "ToolsConfig": {
+      "description": "Model-visible tool catalog controls (`[tools]` table in config.toml).",
+      "type": "object",
+      "properties": {
+        "always_load": {
+          "description": "Native tool names to keep loaded even when they are outside the small\ndefault core catalog. Unknown names are harmless and simply never match.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "progressive_disclosure": {
+          "description": "Progressive disclosure: withhold the tools that declare `should_defer`\nfrom the request and offer them on demand through `tool_search`. `None`\n(key absent) leaves the decision to the active preset's baseline, which\nthe factory tiers set on for every tier except `simple`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "plugin_dir": {
+          "description": "Optional directory to scan for plugin tool scripts. Scripts with a\nfrontmatter header (`# name:`, `# description:`, `# schema:`) are\nauto-discovered and registered as tools.\n\nDefaults to `~/.codesmith/tools/` when `None`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "overrides": {
+          "description": "Per-tool overrides keyed by built-in tool name.\nEach override replaces or disables the named tool.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/ToolOverride"
+          },
+          "default": null
+        }
+      }
+    },
+    "ToolOverride": {
+      "description": "How a user wants to replace or disable a built-in tool.",
+      "oneOf": [
+        {
+          "description": "Run a local script file. The script receives the tool's JSON input\non stdin and must return a JSON `ToolResult` on stdout.",
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Path to the script (absolute, or relative to `~/.codesmith/tools/`).",
+              "type": "string"
+            },
+            "args": {
+              "description": "Optional static arguments prepended before the tool's JSON input.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "script"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ]
+        },
+        {
+          "description": "Run an external command. The command receives the tool's JSON input\non stdin and must return a JSON `ToolResult` on stdout.",
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "The command to run (binary name or absolute path).",
+              "type": "string"
+            },
+            "args": {
+              "description": "Optional static arguments prepended before the tool's JSON input.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "command"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ]
+        },
+        {
+          "description": "Completely disable a built-in tool. The tool will not appear in the\nmodel-visible catalog and cannot be called.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "disabled"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "ModsConfig": {
+      "description": "`[mods]` table (§F script mod layer).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "CommandsConfig": {
+      "description": "`[commands]` table — built-in slash-command controls.",
+      "type": "object",
+      "properties": {
+        "disabled": {
+          "description": "Builtin command names (or aliases) to disable.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "AutomationsConfig": {
+      "description": "`[automations]` table — bounds for scheduled automation runs.\nDocumented in `config.example.toml` + `docs/CLI.md`.",
+      "type": "object",
+      "properties": {
+        "max_steps": {
+          "description": "Step cap per turn for scheduled (unattended) runs. Defaults to\n[`AUTOMATION_DEFAULT_MAX_STEPS`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "SandboxConfigToml": {
+      "description": "Structured `[sandbox]` table. Every field is optional so legacy flat keys\nand per-mode defaults can fill the gaps.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "fail_if_unavailable": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "enabled_platforms": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "excluded_commands": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "auto_allow_bash_if_sandboxed": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "auto_allow": {
+          "description": "Shell command prefixes that never prompt for approval. Matched by the\nsame arity dictionary the approval prompt uses\n(`command_safety::classify_command`), so `\"git status\"` covers\n`git status -s` and not `git push`. Read at startup; `/permissions`\nshows what is in force and `/permissions allow` persists a grant.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "prefer_bwrap": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "filesystem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxFilesystemConfigToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxNetworkConfigToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "SandboxFilesystemConfigToml": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "writable_roots": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "allow_read": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "deny_read": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "allow_write": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "deny_write": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "exclude_tmpdir": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "exclude_slash_tmp": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "SandboxNetworkConfigToml": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "allow_managed_domains_only": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "allow": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "deny": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      }
+    },
+    "RetryConfig": {
+      "description": "Raw retry configuration loaded from config files.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_retries": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "initial_delay": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "max_delay": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "exponential_base": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      }
+    },
+    "CapacityConfig": {
+      "description": "Capacity-controller config loaded from config files/environment.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "low_risk_max": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "medium_risk_max": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "severe_min_slack": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "severe_violation_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "refresh_cooldown_turns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "replan_cooldown_turns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_replay_per_turn": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "min_turns_before_guardrail": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "profile_window": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "deepseek_v3_2_chat_prior": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "deepseek_v3_2_reasoner_prior": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "deepseek_v4_pro_prior": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "deepseek_v4_flash_prior": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "fallback_default_prior": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      }
+    },
+    "FeaturesToml": {
+      "description": "Deserializable features table for TOML.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "HooksConfig": {
+      "description": "Configuration for hooks (loaded from config.toml)",
+      "type": "object",
+      "properties": {
+        "hooks": {
+          "description": "List of hooks to execute",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Hook"
+          },
+          "default": []
+        },
+        "enabled": {
+          "description": "Global enable/disable for all hooks",
+          "type": "boolean",
+          "default": true
+        },
+        "default_timeout_secs": {
+          "description": "Global timeout override. When set it takes precedence over every\nhook's `timeout_secs` (table-over-hook precedence, documented in\n`docs/HOOKS.md`); when unset, each hook's own timeout applies.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "working_dir": {
+          "description": "Working directory for hook execution (default: workspace)",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "Hook": {
+      "description": "A single hook definition",
+      "type": "object",
+      "properties": {
+        "event": {
+          "description": "The event that triggers this hook",
+          "$ref": "#/$defs/HookEvent"
+        },
+        "command": {
+          "description": "Shell command to execute (platform shell: `sh -c` on Unix, `cmd /C` on Windows)",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Optional condition for when this hook should run",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HookCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeout_secs": {
+          "description": "Timeout in seconds (default: 30). The executor-level\n`default_timeout_secs` override — when set — always takes\nprecedence over this value (table-over-hook precedence, as\ndocumented in `docs/HOOKS.md`).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 30
+        },
+        "background": {
+          "description": "Run in background (don't wait for completion)",
+          "type": "boolean",
+          "default": false
+        },
+        "continue_on_error": {
+          "description": "Continue if this hook fails (default: true)",
+          "type": "boolean",
+          "default": true
+        },
+        "name": {
+          "description": "Optional name for logging/debugging",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "event",
+        "command"
+      ]
+    },
+    "HookEvent": {
+      "description": "Events that can trigger hook execution.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "session_start",
+            "session_end",
+            "message_submit",
+            "tool_call_before",
+            "tool_call_after",
+            "mode_change",
+            "on_error",
+            "task_created",
+            "task_completed"
+          ]
+        },
+        {
+          "description": "Immediately before each `exec_shell` invocation. The hook's stdout is\nparsed as `KEY=VALUE\\n` lines and merged onto the shell command's\nenvironment (#456).",
+          "type": "string",
+          "const": "shell_env"
+        },
+        {
+          "description": "Immediately before context compaction. The hook's stdout is collected\nas \"context to preserve\" and merged into the compaction summary (#485).",
+          "type": "string",
+          "const": "pre_compact"
+        },
+        {
+          "description": "After a turn completes (completed / interrupted / failed). Observer-only:\npayload carries turn status and usage, stdout is ignored (#1364).",
+          "type": "string",
+          "const": "turn_end"
+        },
+        {
+          "description": "When a sub-agent starts. Observer-only (#1364).",
+          "type": "string",
+          "const": "subagent_spawn"
+        },
+        {
+          "description": "When a sub-agent finishes. Observer-only (#1364).",
+          "type": "string",
+          "const": "subagent_complete"
+        }
+      ]
+    },
+    "HookCondition": {
+      "description": "Condition for when a hook should run",
+      "oneOf": [
+        {
+          "description": "Always run this hook",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "always"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Only run for specific tool names",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Tool name to match (e.g., \"`exec_shell`\", \"`write_file`\")",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_name"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ]
+        },
+        {
+          "description": "Only run for specific tool categories",
+          "type": "object",
+          "properties": {
+            "category": {
+              "description": "Category: \"safe\", \"`file_write`\", \"shell\"",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_category"
+            }
+          },
+          "required": [
+            "type",
+            "category"
+          ]
+        },
+        {
+          "description": "Only run in specific modes",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "description": "Mode: \"plan\", \"agent\", \"yolo\"",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "mode"
+            }
+          },
+          "required": [
+            "type",
+            "mode"
+          ]
+        },
+        {
+          "description": "Only run when exit code matches (for `ToolCallAfter`)",
+          "type": "object",
+          "properties": {
+            "code": {
+              "description": "Exit code to match",
+              "type": "integer",
+              "format": "int32"
+            },
+            "type": {
+              "type": "string",
+              "const": "exit_code"
+            }
+          },
+          "required": [
+            "type",
+            "code"
+          ]
+        },
+        {
+          "description": "Combine multiple conditions with AND",
+          "type": "object",
+          "properties": {
+            "conditions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HookCondition"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "all"
+            }
+          },
+          "required": [
+            "type",
+            "conditions"
+          ]
+        },
+        {
+          "description": "Combine multiple conditions with OR",
+          "type": "object",
+          "properties": {
+            "conditions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HookCondition"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "any"
+            }
+          },
+          "required": [
+            "type",
+            "conditions"
+          ]
+        }
+      ]
+    },
+    "ProvidersConfig": {
+      "type": "object",
+      "properties": {
+        "deepseek": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "deepseek_cn": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "nvidia_nim": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "openai": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "atlascloud": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "wanjie_ark": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "volcengine": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "openrouter": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "xiaomi_mimo": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "novita": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "fireworks": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "siliconflow": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "moonshot": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "sglang": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "vllm": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "ollama": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "anthropic": {
+          "$ref": "#/$defs/ProviderConfig",
+          "default": {
+            "api_key": null,
+            "base_url": null,
+            "model": null,
+            "auth_mode": null,
+            "http_headers": null,
+            "vision": null,
+            "display_model": null,
+            "context_window": null
+          }
+        },
+        "custom": {
+          "description": "Open set of `[[providers.custom]]` entries (ROADMAP §D2). The active\nentry is selected by the top-level `Config.custom_provider` id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomProviderConfig"
+          },
+          "default": []
+        }
+      }
+    },
+    "ProviderConfig": {
+      "type": "object",
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http_headers": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "vision": {
+          "description": "Capability override (product-polish §1): does this provider's resolved\nmodel accept inline image content blocks? `None` defers to the static\n`provider_capability` model-name matrix. Set `true` for gateways\nfronting a vision model the matrix cannot see, `false` to force the\ntext-reference fallback on a vision-capable model.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "display_model": {
+          "description": "Display-only model name. The REPL prints this string verbatim (banner,\nstatus line, `/status`, `/model`, …) so a gateway alias can be labelled\nwith what actually serves it. Presentation only: the request payload,\nsession metadata and logs keep the real `model` id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context_window": {
+          "description": "Context-window override in tokens for gateway deployments whose backend\nwindow the static `context_window_for_model` table cannot see. Drives\nthe status-line 🧭 denominator, `/context` / `/tokens`, and the\nauto-compaction threshold. `None` defers to that table.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "CustomProviderConfig": {
+      "description": "Runtime view of a single `[[providers.custom]]` entry (ROADMAP §D2).\n\nMirrors [`codesmith_config::CustomProviderToml`] but lives in the CLI's own\nruntime `Config` schema. Each entry is self-contained (own base_url/model/\ncredentials); the top-level `Config.custom_provider` selector picks one by\n`id`. Selection + resolution is handled by [`Config::custom_provider_entry`]\nand `resolve_llm_client`; the builtin accessor path (`api_provider` /\n`provider_config_for`) is bypassed for custom providers.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http_headers": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "vision": {
+          "description": "Capability override (product-polish §1); see [`ProviderConfig::vision`].\nCustom gateways have no static matrix entry, so the effective default\nis `false` (text-reference fallback) unless this is set.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "display_model": {
+          "description": "Display-only model name; see [`ProviderConfig::display_model`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context_window": {
+          "description": "Context-window override in tokens; see [`ProviderConfig::context_window`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "NetworkPolicyToml": {
+      "description": "`[network]` table — mirrors `codesmith_config::NetworkPolicyToml` so the live\nCLI runtime can construct a [`codesmith_agent_runtime::network_policy::NetworkPolicy`]\nwithout reaching into the workspace config crate. See `config.example.toml`\nfor documentation.",
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Decision for hosts that are not in `allow` or `deny`. One of\n`\"allow\" | \"deny\" | \"prompt\"`. Defaults to `\"prompt\"`.",
+          "type": "string",
+          "default": "prompt"
+        },
+        "allow": {
+          "description": "Hosts that are always allowed. Subdomain rules: a leading dot\n(`.example.com`) matches subdomains but not the apex.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "deny": {
+          "description": "Hosts that are always denied. Deny entries win over allow entries.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "proxy": {
+          "description": "Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an\nexplicitly trusted proxy setup. Literal IP URLs remain blocked.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "audit": {
+          "description": "Whether to record one audit-log line per outbound network call.\n`None` inherits the active preset's baseline (default `true`).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "VerificationToml": {
+      "description": "`[verification]` table — post-turn claim checks (P3-8). See\n`config.example.toml` for documentation.",
+      "type": "object",
+      "properties": {
+        "result_claims": {
+          "description": "When `true` (the default), a completed turn whose final assistant\nmessage claims \"tests pass / build succeeds\" triggers an engine-side\nre-run of the verification-class command the model executed that\nturn; the verdict is injected before the next request and surfaced\nas a toast. `false` restores the pre-P3-8 behavior.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "DoctorToml": {
+      "description": "`[doctor]` table — the `codesmith doctor` LLM fallback layer (P3-8\nstep 2). See `config.example.toml` for documentation.",
+      "type": "object",
+      "properties": {
+        "llm_fallback": {
+          "description": "When `true` (opt-in; the default is `false`), doctor's post-check\nadvisory analysis runs when the deterministic checks collected\nwarnings/errors and an LLM client resolves (utility model when\nconfigured, else the main client). `false` (or unset) keeps doctor\nfully deterministic.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "SkillsConfig": {
+      "description": "`[skills]` table — knobs for the community-skill installer.",
+      "type": "object",
+      "properties": {
+        "registry_url": {
+          "description": "Curated registry index. `/skill install <name>` looks up the spec here.\nDefaults to [`codesmith_agent_runtime::skills::install::DEFAULT_REGISTRY_URL`].",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "max_install_size_bytes": {
+          "description": "Per-skill maximum *uncompressed* size in bytes. Tarballs that exceed\nthis limit are rejected during validation. Defaults to 5 MiB.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      }
+    },
+    "SnapshotsConfig": {
+      "description": "Workspace side-git snapshot configuration (#137).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Snapshot the workspace before and after each interactive agent\nturn. `None` inherits the active preset's baseline (default `true`).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "max_age_days": {
+          "description": "Prune side-git snapshots older than this many days at session boot.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 7
+        },
+        "max_workspace_gb": {
+          "description": "Maximum non-excluded workspace size (in GB) before the snapshot\nfeature self-disables on first use. Set to `0` to disable the cap\nand snapshot regardless of size (the v0.8.31 behavior). The walk\nhonors `.gitignore` and the snapshot module's built-in excludes\n(`node_modules/`, `target/`, ...) so the measured size reflects\nwhat would actually land in a snapshot commit.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 2
+        }
+      }
+    },
+    "EditConfig": {
+      "description": "File-editing configuration (P0-1 parse gate).",
+      "type": "object",
+      "properties": {
+        "parse_gate": {
+          "description": "Pre-write parse gate for file-editing tools: writes that would break\na previously-parsing `.rs`/`.toml`/`.json` file are rejected before\ntouching disk (regression-only — already-broken files stay editable).\n`false` restores write-through behavior. `None` inherits the active\npreset's baseline (default `true`).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "SearchConfig": {
+      "description": "Web search provider configuration (`[search]` table in config.toml).",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "Search provider: `bing` | `duckduckgo` | `tavily` | `bocha` | `metaso` | `baidu` | `volcengine` | `provider_native`. Default: `duckduckgo`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SearchProvider"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "api_key": {
+          "description": "API key for Tavily, Bocha, Metaso, Baidu, or Volcengine. Not required for Bing or DuckDuckGo.\nMetaso also falls back to `METASO_API_KEY` env var, then a built-in default.\nBaidu also falls back to `BAIDU_SEARCH_API_KEY` env var.\nVolcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "SearchProvider": {
+      "description": "Search provider enumeration — selects which backend `web_search` uses.",
+      "oneOf": [
+        {
+          "description": "Bing HTML scraping. No API key needed.",
+          "type": "string",
+          "const": "bing"
+        },
+        {
+          "description": "DuckDuckGo HTML scraping with Bing fallback. No API key needed.",
+          "type": "string",
+          "const": "duck_duck_go"
+        },
+        {
+          "description": "Tavily AI Search API (<https://tavily.com>). Requires api_key.",
+          "type": "string",
+          "const": "tavily"
+        },
+        {
+          "description": "Bocha AI Search API (<https://bochaai.com>). Requires api_key.",
+          "type": "string",
+          "const": "bocha"
+        },
+        {
+          "description": "Metaso AI Search API (<https://metaso.cn>). Uses built-in default key\nor `METASO_API_KEY` env var; configurable via `[search] api_key`.",
+          "type": "string",
+          "const": "metaso"
+        },
+        {
+          "description": "Baidu AI Search API (<https://qianfan.baidubce.com>). Requires api_key.",
+          "type": "string",
+          "const": "baidu"
+        },
+        {
+          "description": "Volcengine Ark web_search via Responses API. Requires api_key.\nFree tier: 20K queries/month per API key. Falls back to\n`VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY`\nenv vars when `[search] api_key` is not set.",
+          "type": "string",
+          "const": "volcengine"
+        },
+        {
+          "description": "The active model provider's own server-side search tool\n(Anthropic-compatible `web_search_*`). Reuses the provider's\nbase_url / API key / model, so no `[search] api_key` is needed.",
+          "type": "string",
+          "const": "provider_native"
+        }
+      ]
+    },
+    "IndexConfig": {
+      "description": "`[index]` section in config.toml.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. `None` means enabled (default-on when a backend is\ncompiled in), so the index costs nothing to adopt.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "refresh_budget_ms": {
+          "description": "Wall-clock budget for the lazy incremental refresh a single query\nmay trigger. Default: [`DEFAULT_REFRESH_BUDGET_MS`]. `0` is not a\nvalid \"disable\": [`IndexConfig::effective_refresh_budget_ms`]\nfloors it to 1 ms — disable the index to turn the refresh off.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "files": {
+          "description": "File inventory cache sub-table.",
+          "$ref": "#/$defs/IndexFilesConfig",
+          "default": {
+            "enabled": null
+          }
+        },
+        "symbols": {
+          "description": "Symbol index sub-table.",
+          "$ref": "#/$defs/IndexSymbolsConfig",
+          "default": {
+            "enabled": null,
+            "backend": null,
+            "languages": {
+              "rust": null,
+              "python": null,
+              "javascript": null,
+              "typescript": null,
+              "go": null
+            }
+          }
+        },
+        "semantic": {
+          "description": "Semantic index sub-table (reserved seam).",
+          "$ref": "#/$defs/IndexSemanticConfig",
+          "default": {
+            "enabled": null,
+            "backend": null
+          }
+        }
+      }
+    },
+    "IndexFilesConfig": {
+      "description": "`[index.files]` — file inventory cache. Built-in walk (`ignore` crate),\nno swappable backend, so the table only carries a switch.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "`None` means enabled (default).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "IndexSymbolsConfig": {
+      "description": "`[index.symbols]` — symbol index capability.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "`None` means enabled (default).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "backend": {
+          "description": "Registry id of the extraction backend. Default:\n[`DEFAULT_SYMBOLS_BACKEND`].",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "languages": {
+          "description": "Per-language switches; an absent language key means enabled.",
+          "$ref": "#/$defs/IndexLanguages",
+          "default": {
+            "rust": null,
+            "python": null,
+            "javascript": null,
+            "typescript": null,
+            "go": null
+          }
+        }
+      }
+    },
+    "IndexLanguages": {
+      "description": "`[index.symbols.languages]` — one boolean per language, all `Option`\nwith enabled defaults. Unknown keys are rejected: a mistyped or\nnot-yet-supported language name (`kotlin = true`) silently falling back\nto \"not configured\" contradicts the fail-fast validation goal.",
+      "type": "object",
+      "properties": {
+        "rust": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "python": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "javascript": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "typescript": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "go": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "IndexSemanticConfig": {
+      "description": "`[index.semantic]` — reserved seam for embedding-based search. No\nbuilt-in backend this cycle; enabling it with no capable backend fails\n[`IndexConfig::validate`].",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "`None` / `false` means disabled (default).",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "backend": {
+          "description": "Registry id of the semantic backend. Default `\"none\"`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "MemoryConfig": {
+      "description": "User-level memory configuration (#489).\n\nDefault is **on** (mirrors Claude Code's `isAutoMemoryEnabled`): when this\ntable is absent, the memory file is read/written and `# foo` quick-adds in\nthe composer append to it. The effective enablement is resolved by\n[`Config::memory_enabled`], which applies a five-level priority cascade\n(disable env > bare/simple > remote-without-storage > explicit setting >\ndefault on). Set `enabled = false` (or `CODESMITH_DISABLE_AUTO_MEMORY=1`) to\nopt out.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "When `true`, load the user memory file at `Config::memory_path()`\ninto the system prompt as a `<user_memory>` block, and intercept\n`# foo` typed in the composer to append to that file. When `None`,\nthe cascade default (`true`) applies.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "kod_enabled": {
+          "description": "When `true`, evolve memory from a single file to a directory-based\nKnowledge On Demand system with frontmatter-parsed `.md` files,\nan entrypoint (`MEMORY.md`), and async prefetch per turn.\nRequires `enabled = true` and the `knowledge_on_demand` feature flag.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "directory": {
+          "description": "Override path for the memory directory. When unset, defaults to\nthe parent of `Config::memory_path()` with `/memory/` appended.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "excludes": {
+          "description": "Paths to exclude from the four-tier CLAUDE.md memory merge (Plan 03 /\nfinding F1). Each entry is `~`/env-expanded and canonicalized before\nmatching, so a symlinked or realpath-variant of an excluded file is\ndropped too. Resolved into the `CODESMITH_MEMORY_EXCLUDES` env var at\nengine startup so every load site (per-turn prompt reloader, session\ninit, …) honours it without threading `EngineConfig`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      }
+    },
+    "AutoConfig": {
+      "description": "`[auto]` table — knobs for the `--model auto` / `/model auto` router.\n\n`cost_saving` (#1207): the full cheap-routing opt-in. When `true`, the\nrouter classifier runs on the configured `[utility_model]` (cheap brain)\nand ambiguous requests resolve to the light tier. Default `false`: the\nclassifier runs on the heavy tier — the strongest available brain decides\nwho does the work — and ambiguous requests resolve to heavy.",
+      "type": "object",
+      "properties": {
+        "cost_saving": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "heavy_model": {
+          "description": "Explicit heavy-tier model for auto routing. Wins over the provider's\ndefault heavy model; the only way to pin the heavy tier on\npass-through providers (custom gateways, OpenAI-compatible endpoints)\nwhose catalogue the router cannot infer.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "light_model": {
+          "description": "Explicit light-tier model for auto routing. Wins over the provider's\ndefault light model (see `Config::resolve_model_tier`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "router_model": {
+          "description": "Explicit model for the routing classifier itself. Default: the heavy\ntier. `[auto] cost_saving = true` moves the classifier to the\n`[utility_model]` cheap brain instead.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "LspConfigToml": {
+      "description": "`[lsp]` table — mirrors [`crate::lsp::LspConfig`]. Documented in\n`config.example.toml`. When omitted, defaults from `LspConfig::default()`\napply (enabled, 5 s poll, 20 diagnostics/file, errors only, no overrides).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. Defaults to `true`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "poll_after_edit_ms": {
+          "description": "How long to wait for the LSP server to publish diagnostics after a\n`didOpen`/`didChange`. Defaults to 5000 ms.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "max_diagnostics_per_file": {
+          "description": "Cap on diagnostics surfaced per file. Defaults to 20.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "include_warnings": {
+          "description": "Whether to surface warnings in addition to errors. Defaults to `false`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "servers": {
+          "description": "Optional override for the `Language -> [cmd, ...args]` table. Keys\nare language slugs (`\"rust\"`, `\"go\"`, etc.).",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": null
+        }
+      }
+    },
+    "ContextConfig": {
+      "description": "Context management configuration (append-only layered context with Flash seams).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master enable for layered context management. Default: false while\nv0.7.5 audits V4 prefix-cache behavior.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "project_pack": {
+          "description": "Include a deterministic project context pack in the stable prompt\nprefix. Default: true; set `[context] project_pack = false` to disable.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "verbatim_window_turns": {
+          "description": "Verbatim window: last N turns never summarized. Default: 16.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "l1_threshold": {
+          "description": "Soft seam thresholds based on the active request input estimate.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "l2_threshold": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "l3_threshold": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "cycle_threshold": {
+          "description": "Hard cycle boundary. Default: 768000.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "seam_model": {
+          "description": "Model used for seam/briefing work. Default: \"deepseek-v4-flash\".",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tokenizer_path": {
+          "description": "Path to a HuggingFace `tokenizer.json` (e.g. DeepSeek's) used for\nexact token counts across compaction, capacity, and truncation\nbudgets. When unset (or on load failure) the chars/3 heuristic\nestimate is used. Download e.g.:\n`huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json\n--local-dir ~/.codesmith/tokenizers`",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "SubagentsConfig": {
+      "description": "Sub-agent model overrides. Keys in `models` can be role names (`worker`,\n`explorer`, `awaiter`) or type names (`general`, `explore`, `plan`,\n`review`, `custom`). Per-call explicit model choices still win.",
+      "type": "object",
+      "properties": {
+        "default_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "worker_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "explorer_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "awaiter_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "review_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "custom_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "models": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "max_concurrent": {
+          "description": "Maximum concurrent sub-agents. Overrides the top-level max_subagents\nsetting. Clamped to [1, MAX_SUBAGENTS].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "api_timeout_secs": {
+          "description": "Per-step DeepSeek API timeout for sub-agent requests, in seconds. The\ntimeout wraps `client.create_message` so a stuck single step cannot\npin the parent's parent-completion wakeup channel indefinitely.\nDefaults to `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120) and is clamped\nto `MIN_SUBAGENT_API_TIMEOUT_SECS..=MAX_SUBAGENT_API_TIMEOUT_SECS`\n(1..=1800). Zero or unset uses the legacy 120s default (#1806, #1808).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "inherit_full_registry": {
+          "description": "Whether sub-agents inherit the FULL parent tool registry regardless of\nthe parent's effective tool set (legacy v0.6.6 behavior). Default\n`false` (Plan 04 / finding F4 `restrictToSubset`): a child's tool\nsurface is a subset of its parent's effective tools — children can\nnever escalate beyond what the parent exposes. Set `true` to restore\nunrestricted full inheritance for flows that relied on the old default.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "external_provider": {
+          "description": "Out-of-process sub-agent provider. Unset (default) runs children\nin-process; `\"headless\"` runs each non-team child as a\n`codesmith exec --json` subprocess of this binary (see\n`tools::subagent::headless`); `\"acp\"` delegates each run to an\nAgent-Client-Protocol stdio agent configured under\n`[subagents.acp]` (see `tools::subagent::acp`). Unknown names are\nrejected at config load.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "acp": {
+          "description": "`[subagents.acp]` — process + protocol knobs for\n`external_provider = \"acp\"`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AcpSubagentConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "AcpSubagentConfig": {
+      "description": "`[subagents.acp]` — how to spawn and bound the ACP child agent.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Executable to spawn (required for the `acp` provider).",
+          "type": "string",
+          "default": ""
+        },
+        "args": {
+          "description": "Static arguments for `command`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "env": {
+          "description": "Extra environment variables layered over the parent's environment.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "timeout_secs": {
+          "description": "Child-run timeout in seconds. Unset uses 1800 (30 min, matching the\nheadless provider); values below 1 clamp to 1.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      }
+    },
+    "RuntimeConfig": {
+      "description": "`[runtime]` table — engine-wide limits shared by every engine root\n(REPL, `exec`, automation threads). The sub-agent depth-gate error\n(\"Increase via [runtime] max_spawn_depth in config.toml\") points here.",
+      "type": "object",
+      "properties": {
+        "max_spawn_depth": {
+          "description": "Maximum sub-agent spawn depth across the whole spawn tree\n(`spawn_depth + 1 > max_spawn_depth` rejects). Unset falls back to\n[`crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH`] (3); `0`\ndisables sub-agent spawning entirely. A headless child inherits the\n*remaining* budget through `CODESMITH_SUBAGENT_DEPTH` /\n`CODESMITH_MAX_SPAWN_DEPTH`, which takes precedence over this value\ninside the child.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        }
+      }
+    },
+    "WorkflowConfig": {
+      "description": "`[workflow]` table — bounds for the model-writable `workflow` tool.\n\nUnknown keys inside the table fail at load (`deny_unknown_fields`,\nthe fail-loud serde posture; see `crates/config/src/presets.rs` for the\nprecedent) and out-of-range values fail `validate` at startup — never a\nsilent clamp.",
+      "type": "object",
+      "properties": {
+        "timeout_secs": {
+          "description": "Wall-clock bound for one workflow run, in seconds. Default\n[`codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS`]\n(600); values of 0 or above\n[`codesmith_agent_runtime::workflow::MAX_WORKFLOW_TIMEOUT_SECS`]\n(1800) are rejected at load.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "max_agents": {
+          "description": "Per-run cap on sub-agents a workflow may spawn (concurrent +\ntotal). Unset → the engine default (`DEFAULT_MAX_SUBAGENTS` = 10);\nvalues of 0 or above `MAX_SUBAGENTS` (20) are rejected at load.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuntimeApiConfig": {
+      "description": "`[runtime_api]` table — knobs for the local HTTP/SSE daemon.",
+      "type": "object",
+      "properties": {
+        "cors_origins": {
+          "description": "Additional CORS origins to allow on top of the built-in defaults\n(`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,\n`tauri://localhost`). Useful when developing a UI against a non-default\ndev server port (e.g. Vite's default `:5173`).\n\nResolution order (highest priority first): `--cors-origin` CLI flag,\n`CODESMITH_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      }
+    },
+    "WorkshopConfig": {
+      "description": "`[workshop]` section in `config.toml`.",
+      "type": "object",
+      "properties": {
+        "large_output_threshold_tokens": {
+          "description": "Token threshold above which tool results are routed through the workshop\nsynthesis sub-agent. Default: [`DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "per_tool_thresholds": {
+          "description": "Per-tool threshold overrides (tool name → token limit). A tool whose\nname appears here uses this limit instead of\n`large_output_threshold_tokens`.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "default": null
+        }
+      }
+    },
+    "VisionModelConfig": {
+      "description": "Vision model configuration for the `image_analyze` tool.\nUses an OpenAI-compatible vision model API.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Model identifier (e.g., \"gemini-3.1-flash-lite-preview\").",
+          "type": "string"
+        },
+        "api_key": {
+          "description": "API key for the vision model. Inherits from main config if not specified.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "base_url": {
+          "description": "Base URL for the vision model API. Defaults to OpenAI.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "model"
+      ]
+    },
+    "UtilityModelConfig": {
+      "description": "Utility model configuration — a cheap/fast secondary LLM for background\nassists (workshop large-output synthesis #548, auto-route classification,\nFlash seams). When the table is absent every assist falls back to the main\nmodel and behaviour is unchanged.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Model identifier (e.g., \"deepseek-v4-flash\"). Setting the table\nenables the utility model.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider for the utility model. Inherits the main provider when unset;\na different provider here builds a dedicated second client.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiProvider"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "api_key": {
+          "description": "API key for the utility model. Inherits from main config if not specified.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "base_url": {
+          "description": "Base URL for the utility model. Inherits from main config if not specified.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "model"
+      ]
+    },
+    "ApiProvider": {
+      "type": "string",
+      "enum": [
+        "deepseek",
+        "nvidia_nim",
+        "openai",
+        "atlascloud",
+        "wanjie_ark",
+        "volcengine",
+        "openrouter",
+        "xiaomi_mimo",
+        "novita",
+        "fireworks",
+        "siliconflow",
+        "moonshot",
+        "sglang",
+        "vllm",
+        "ollama",
+        "anthropic"
+      ]
+    },
+    "Config": {
+      "description": "Resolved CLI configuration, including defaults and environment overrides.",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "custom_provider": {
+          "description": "Active custom provider id (ROADMAP §D2). When set, this overrides\n`provider` and selects the matching `[[providers.custom]]` entry by id.\nThe host maps this to `ProviderId::Custom(id)` for `resolve_llm_client`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_executor": {
+          "description": "Selected main-turn executor id (kernel composition,\n`engine::executor_composition`). Kept as a raw string because the id\nspace is open: the always-present `builtin` plus any factory a host\nregisters on the process-shared turn-executor registry. An unknown id\nfails loud at startup.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http_headers": {
+          "description": "Optional extra HTTP headers sent to model API requests.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "default_text_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_effort": {
+          "description": "DeepSeek reasoning-effort tier: `\"off\" | \"low\" | \"medium\" | \"high\" | \"max\"`.\nDefaults to `\"max\"` at runtime if unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "description": "Native tool catalog controls. `tools_file` is the legacy external\nschema path; this table controls built-in tool loading policy.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "skills_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcp_config_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memory_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strict_tool_mode": {
+          "description": "When true, set `tool_choice: \"required\"` and opt compatible function\nschemas into DeepSeek beta strict mode. Schemas with root alternatives\nstay non-strict to avoid changing optional/one-of tool semantics.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "instructions": {
+          "description": "Additional system-prompt sources concatenated in declared order\n(#454). Paths are expanded via `expand_path` so `~` and env\nvars work. Project config overrides user config (replace, not\nmerge) — that's the typical \"this repo needs X plus everything\nI already have\" pattern, where users put `~/global.md` in the\nproject's array if they want both. Each file is loaded, capped\nat 100 KiB, and skipped (with a warning) on read errors so a\nmissing optional file doesn't fail the launch.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "system_prompt": {
+          "description": "Full system prompt override. Replaces the built-in assembled prompt but\nstill preserves explicit append sections after it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system_prompt_file": {
+          "description": "Path to a file containing the full system prompt override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "append_system_prompt": {
+          "description": "Additional system-prompt append sources rendered after the selected base.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "personality": {
+          "description": "Personality overlay for the system prompt: `\"calm\"` (default) or\n`\"playful\"`. Case-insensitive; invalid values fail `validate` at\nstartup so typos surface immediately instead of silently falling\nback to calm. Presentation-only — voice and tone, never behavior.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allow_shell": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "approval_policy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "yolo": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "preset": {
+          "description": "Active configuration preset tier (`simple` | `middle` | `all` |\n`experiment`, plus `plan` and user/project preset files). Preset\nvalues are *baselines* applied fill-if-unset after profile and\nproject merging: explicit keys elsewhere in this file always win,\nand any explicit value that differs from the selected tier turns\nthe effective preset into `diy` (a derived state — see\n[`Config::effective_preset`]). Overridden by `--preset` on the CLI.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "Deprecated pre-rename alias of [`Self::preset`]; still accepted so\nexisting configs keep working (canonicalized with a warning).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "telemetry": {
+          "description": "Enable local-only telemetry: capacity-decision analytics events are\nwritten to `~/.codesmith/telemetry/events.jsonl`. Off by default; the\nsink is constructed pre-trust (events queue in-memory) and only\nattaches (writes to disk) once the workspace trust boundary passes.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "mods": {
+          "description": "Script Mods (§F script mod layer) controls: `enabled` gates the whole\nscript-mod layer (discovery, `manage_mods` tool, watcher), `watch`\ngates only the hot-reload file watcher. Both default to `true`.\nDocumented in `config.example.toml` + `docs/MODS.md`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "commands": {
+          "description": "Built-in slash-command controls (`[commands] disabled`): canonical\nnames or aliases of builtin commands to hide — dispatch, `/help`,\nand Tab completion all skip them, while user commands and mod\ncommands of the same name still work. Validated against the builtin\ntable at REPL start (an unknown name fails loud). Documented in\n`config.example.toml` + `docs/CLI.md`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "automations": {
+          "description": "Bounds for scheduled automation runs (`[automations] max_steps`).\nDefaults to [`AUTOMATION_DEFAULT_MAX_STEPS`] — see\n[`AutomationsConfig`].",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutomationsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sandbox_backend": {
+          "description": "External sandbox backend: `\"none\"` or `\"opensandbox\"`.\nWhen set, exec_shell routes commands through the backend's HTTP API\ninstead of spawning a local process.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_url": {
+          "description": "Base URL for the external sandbox backend (default: `\"http://localhost:8080\"`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_api_key": {
+          "description": "Optional API key for the external sandbox backend (sent as Bearer token).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox": {
+          "description": "Optional structured sandbox controls. Legacy top-level sandbox fields are\nstill accepted and are merged into the runtime view for compatibility.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxConfigToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prefer_bwrap": {
+          "description": "When true and `/usr/bin/bwrap` is present on Linux, route exec_shell\nthrough bubblewrap instead of relying solely on Landlock (#2184).\nDefaults to false. Requires the `bubblewrap` package to be installed\nseparately — we do NOT vendor bwrap.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "managed_config_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requirements_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_subagents": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stream_idle_timeout_secs": {
+          "description": "Idle watchdog for streaming responses, in seconds: the maximum\nsilence between two consecutive stream events before the stream is\ndeclared silently stalled and aborted into the transparent-retry path\n(P0-1). Default 120; `0` disables the watchdog; clamped to\n`[MIN_STREAM_IDLE_TIMEOUT_SECS, MAX_STREAM_IDLE_TIMEOUT_SECS]`\n(10..=3600) otherwise.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stream_idle_retry_increment_secs": {
+          "description": "Per-retry widening of the stream idle watchdog window, in seconds:\neach transparent retry's idle deadline grows by this amount times the\nretries already spent, so a provider silence gap longer than the base\nwindow doesn't kill every retry in the same silent stretch (P0-1\nadaptive retry). Default 30; `0` keeps the window fixed; clamped to\n`[0, MAX_STREAM_IDLE_RETRY_INCREMENT_SECS]` (600) otherwise.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "capacity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapacityConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "features": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FeaturesToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hooks": {
+          "description": "Lifecycle hooks configuration",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HooksConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "providers": {
+          "description": "Provider-specific credentials and defaults shared with the `codesmith` facade.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProvidersConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "network": {
+          "description": "Per-domain network policy (#135). When absent, network tools fall back\nto a permissive default, matching the old lenient behavior.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NetworkPolicyToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verification": {
+          "description": "Post-turn claim checks (P3-8). When absent, the result claim\nverifier runs with its defaults (on).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerificationToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "doctor": {
+          "description": "`codesmith doctor` LLM fallback layer (P3-8). When absent, the\nadvisory analysis runs with its default (on, when findings exist\nand a client resolves).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoctorToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "skills": {
+          "description": "Community skill installer settings (#140). When absent, installer\ncommands fall back to the bundled defaults\n([`codesmith_agent_runtime::skills::install::DEFAULT_REGISTRY_URL`] +\n[`codesmith_agent_runtime::skills::install::DEFAULT_MAX_SIZE_BYTES`]).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "snapshots": {
+          "description": "Workspace side-git snapshots (#137). Defaults to enabled with 7-day\nretention when the table is absent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SnapshotsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "edit": {
+          "description": "File-editing behavior (P0-1 parse gate). Defaults to enabled when\nthe table is absent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EditConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "search": {
+          "description": "Web search provider configuration. When absent, defaults to DuckDuckGo.\nSet `provider` to `bing`, `tavily`, or `bocha` to use those services\ninstead; Tavily and Bocha also require an `api_key`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SearchConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "index": {
+          "description": "Persistent code index configuration (`[index]` table). When absent,\nthe index is enabled with the built-in `tree-sitter` symbol backend;\nevery capability is individually switchable. See docs/INDEX.md.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndexConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "memory": {
+          "description": "User-level memory file (#489). Default behaviour is **opt-in**:\nloading + injection happens only when `[memory] enabled = true` or\n`CODESMITH_MEMORY=on` is set.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemoryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "auto": {
+          "description": "Tunables for `--model auto` (#1207). When absent, the auto router\nkeeps its existing balanced behaviour.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lsp": {
+          "description": "Post-edit LSP diagnostics injection (#136). When absent, the engine\napplies the defaults documented in [`LspConfigToml`].",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LspConfigToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "context": {
+          "description": "Append-only layered context management with Flash seam manager (#159).",
+          "$ref": "#/$defs/ContextConfig",
+          "default": {
+            "enabled": null,
+            "project_pack": null,
+            "verbatim_window_turns": null,
+            "l1_threshold": null,
+            "l2_threshold": null,
+            "l3_threshold": null,
+            "cycle_threshold": null,
+            "seam_model": null,
+            "tokenizer_path": null
+          }
+        },
+        "subagents": {
+          "description": "Sub-agent model overrides.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubagentsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "runtime": {
+          "description": "Engine recursion limits (`[runtime]` table). When absent, the\ndocumented defaults apply.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workflow": {
+          "description": "Bounds for the model-writable `workflow` tool (`[workflow]`\ntable). When absent, the documented defaults apply.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "runtime_api": {
+          "description": "Runtime API server tuning (`codesmith serve --http`). Currently only\nhosts the CORS allow-list extension (whalescale#255 / #561). When the\ntable is absent, the daemon ships with localhost:3000 / localhost:1420\n/ tauri://localhost as the only allowed dev origins.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeApiConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workshop": {
+          "description": "Workshop / large-tool-output routing (#548). When absent, the global\ndefault threshold of 4 096 tokens applies and routing is active.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkshopConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "vision_model": {
+          "description": "Vision model configuration for the `image_analyze` tool.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisionModelConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "utility_model": {
+          "description": "Utility model configuration — a cheap/fast secondary LLM for background\nassists (workshop large-output synthesis, auto-route classification,\nFlash seams). When absent, all assists use the main model.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UtilityModelConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    }
+  }
+}

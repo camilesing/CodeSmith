@@ -10,5 +10,6 @@ repository.workspace = true
 description = "App-server protocol frames for the CodeSmith workspace architecture"
 
 [dependencies]
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

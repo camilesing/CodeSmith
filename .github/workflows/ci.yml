@@ -68,6 +68,10 @@ jobs:
         run: python3 scripts/check-framework-deps.py
       - name: Check capability graph freshness
         run: python3 scripts/capability-graph.py --check
+      - name: Check event matrix freshness
+        run: python3 scripts/event-matrix.py --check
+      - name: Check markdown links
+        run: python3 scripts/verify-md-links.py
       - name: Check docs bilingual pairs
         run: python3 scripts/verify-docs-pairs.py
       - name: Check dead-code budget

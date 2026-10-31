@@ -32,7 +32,12 @@ Current boundary note (v0.11.0):
 `scripts/capability-graph.py`, CI-checked for freshness) lists every
 seam's triple — a new capability lands all three roles in the same
 change, and every `ExtensionEventKind` declares its dispatch mode
-(`dispatch_mode()`, pinned by a contract test).
+(`dispatch_mode()`, pinned by a contract test). The generated event matrix
+(`docs/EVENT_MATRIX.md`, from `scripts/event-matrix.py`, CI-checked) lists
+each kind's dispatch mode, the files that construct it for dispatch, and its
+in-tree subscribers; `scripts/verify-md-links.py` (CI) keeps relative links
+in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
+`docs/schemas/` (protocol, config) are test-pinned to their types.
 - **Session persistence seam.** Durable session records (`SavedSession`),
   the format-governance decode pipeline (schema gate, adjacent in-memory
   migrations, unknown-block tolerance, interrupted-turn repair), and the

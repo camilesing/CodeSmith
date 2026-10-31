@@ -1,0 +1,1606 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeSmith app-server protocol",
+  "description": "Generated from codesmith-protocol — do not hand-edit.",
+  "messages": {
+    "ThreadRequest": {
+      "$ref": "#/$defs/ThreadRequest"
+    },
+    "ThreadResponse": {
+      "$ref": "#/$defs/ThreadResponse"
+    },
+    "AppRequest": {
+      "$ref": "#/$defs/AppRequest"
+    },
+    "AppResponse": {
+      "$ref": "#/$defs/AppResponse"
+    },
+    "PromptRequest": {
+      "$ref": "#/$defs/PromptRequest"
+    },
+    "PromptResponse": {
+      "$ref": "#/$defs/PromptResponse"
+    },
+    "ApprovalDecisionRequest": {
+      "$ref": "#/$defs/ApprovalDecisionRequest"
+    },
+    "EventFrame": {
+      "$ref": "#/$defs/EventFrame"
+    },
+    "RuntimeEventEnvelope": {
+      "$ref": "#/$defs/RuntimeEventEnvelope"
+    }
+  },
+  "$defs": {
+    "ThreadRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "metadata": true,
+            "kind": {
+              "type": "string",
+              "const": "create"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ThreadStartParams",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "start"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ThreadResumeParams",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "resume"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ThreadForkParams",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "fork"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ThreadListParams",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ThreadReadParams",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "read"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "$ref": "#/$defs/ThreadSetNameParams",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_name"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "thread_id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "archive"
+            }
+          },
+          "required": [
+            "kind",
+            "thread_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "thread_id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "unarchive"
+            }
+          },
+          "required": [
+            "kind",
+            "thread_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "thread_id": {
+              "type": "string"
+            },
+            "input": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "message"
+            }
+          },
+          "required": [
+            "kind",
+            "thread_id",
+            "input"
+          ]
+        }
+      ],
+      "description": "A request that operates on conversation threads, tagged by `kind`.\n\nA request carrying an unknown `kind` tag (e.g. from a newer producer)\nfails deserialization; consumers that must tolerate unknown requests\nshould inspect the raw JSON tag before decoding into this enum."
+    },
+    "ThreadStartParams": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "persist_extended_history": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "ThreadResumeParams": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string"
+        },
+        "history": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": true
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_policy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": true,
+        "base_instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "developer_instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "personality": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "persist_extended_history": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "thread_id"
+      ]
+    },
+    "ThreadForkParams": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_policy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": true,
+        "base_instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "developer_instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "persist_extended_history": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "thread_id"
+      ]
+    },
+    "ThreadListParams": {
+      "type": "object",
+      "properties": {
+        "include_archived": {
+          "type": "boolean",
+          "default": false
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      }
+    },
+    "ThreadReadParams": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ]
+    },
+    "ThreadSetNameParams": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id",
+        "name"
+      ]
+    },
+    "ThreadResponse": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string",
+          "description": "The thread this response pertains to."
+        },
+        "status": {
+          "type": "string",
+          "description": "Human-readable status string (e.g. `\"ok\"`, `\"error\"`)."
+        },
+        "thread": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Thread"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread details, when a single thread is returned."
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Thread"
+          },
+          "description": "List of threads, populated by `List` requests.",
+          "default": []
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The model used for the thread, if applicable."
+        },
+        "model_provider": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The model provider used for the thread."
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The working directory of the thread."
+        },
+        "approval_policy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The active approval policy."
+        },
+        "sandbox": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The active sandbox configuration."
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventFrame"
+          },
+          "description": "Streaming events associated with this response.",
+          "default": []
+        },
+        "data": {
+          "description": "Arbitrary additional response data.",
+          "default": null
+        }
+      },
+      "required": [
+        "thread_id",
+        "status"
+      ],
+      "description": "Response to a [`ThreadRequest`]."
+    },
+    "Thread": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "model_provider": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Unix timestamp (seconds) when the thread was created."
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Unix timestamp (seconds) of the most recent update."
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "cli_version": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SessionSource"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "preview",
+        "ephemeral",
+        "model_provider",
+        "created_at",
+        "updated_at",
+        "status",
+        "cwd",
+        "cli_version",
+        "source"
+      ]
+    },
+    "ThreadStatus": {
+      "type": "string",
+      "enum": [
+        "running",
+        "idle",
+        "completed",
+        "failed",
+        "paused",
+        "archived"
+      ]
+    },
+    "SessionSource": {
+      "type": "string",
+      "enum": [
+        "interactive",
+        "resume",
+        "fork",
+        "api",
+        "unknown"
+      ]
+    },
+    "EventFrame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "response_id": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "response_start"
+            }
+          },
+          "required": [
+            "event",
+            "response_id"
+          ],
+          "description": "A new model response has started."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "response_id": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            },
+            "channel": {
+              "$ref": "#/$defs/ResponseChannel"
+            },
+            "event": {
+              "type": "string",
+              "const": "response_delta"
+            }
+          },
+          "required": [
+            "event",
+            "response_id",
+            "delta"
+          ],
+          "description": "A incremental text delta for an in-progress response."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "response_id": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "response_end"
+            }
+          },
+          "required": [
+            "event",
+            "response_id"
+          ],
+          "description": "The model response has finished."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "response_id": {
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "arguments": true,
+            "event": {
+              "type": "string",
+              "const": "tool_call_start"
+            }
+          },
+          "required": [
+            "event",
+            "response_id",
+            "tool_name",
+            "arguments"
+          ],
+          "description": "A tool call has begun."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "response_id": {
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "output": true,
+            "event": {
+              "type": "string",
+              "const": "tool_call_result"
+            }
+          },
+          "required": [
+            "event",
+            "response_id",
+            "tool_name",
+            "output"
+          ],
+          "description": "A tool call has completed and produced a result."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "update": {
+              "$ref": "#/$defs/McpStartupUpdateEvent"
+            },
+            "event": {
+              "type": "string",
+              "const": "mcp_startup_update"
+            }
+          },
+          "required": [
+            "event",
+            "update"
+          ],
+          "description": "Progress update for an MCP server starting up."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "summary": {
+              "$ref": "#/$defs/McpStartupCompleteEvent"
+            },
+            "event": {
+              "type": "string",
+              "const": "mcp_startup_complete"
+            }
+          },
+          "required": [
+            "event",
+            "summary"
+          ],
+          "description": "All MCP servers have finished starting."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server_name": {
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "mcp_tool_call_begin"
+            }
+          },
+          "required": [
+            "event",
+            "server_name",
+            "tool_name"
+          ],
+          "description": "An MCP tool call has begun."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server_name": {
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "event": {
+              "type": "string",
+              "const": "mcp_tool_call_end"
+            }
+          },
+          "required": [
+            "event",
+            "server_name",
+            "tool_name",
+            "ok"
+          ],
+          "description": "An MCP tool call has finished."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ExecApprovalRequestEvent"
+            },
+            "event": {
+              "type": "string",
+              "const": "exec_approval_request"
+            }
+          },
+          "required": [
+            "event",
+            "request"
+          ],
+          "description": "User approval is needed for a command execution."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/ExecApprovalRequestEvent"
+            },
+            "event": {
+              "type": "string",
+              "const": "apply_patch_approval_request"
+            }
+          },
+          "required": [
+            "event",
+            "request"
+          ],
+          "description": "User approval is needed for applying a patch."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "server_name": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "elicitation_request"
+            }
+          },
+          "required": [
+            "event",
+            "server_name",
+            "request_id",
+            "prompt"
+          ],
+          "description": "An MCP server is requesting user input (elicitation)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "exec_command_begin"
+            }
+          },
+          "required": [
+            "event",
+            "command",
+            "cwd"
+          ],
+          "description": "A command has started executing."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "exec_command_output_delta"
+            }
+          },
+          "required": [
+            "event",
+            "command",
+            "delta"
+          ],
+          "description": "Incremental output from a running command."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "exit_code": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "event": {
+              "type": "string",
+              "const": "exec_command_end"
+            }
+          },
+          "required": [
+            "event",
+            "command",
+            "exit_code"
+          ],
+          "description": "A command has finished executing."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "patch_apply_begin"
+            }
+          },
+          "required": [
+            "event",
+            "path"
+          ],
+          "description": "A patch has started being applied to a file."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            },
+            "event": {
+              "type": "string",
+              "const": "patch_apply_end"
+            }
+          },
+          "required": [
+            "event",
+            "path",
+            "ok"
+          ],
+          "description": "A patch has finished being applied."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "turn_id": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "turn_started"
+            }
+          },
+          "required": [
+            "event",
+            "turn_id"
+          ],
+          "description": "A new turn has started within a thread."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "turn_id": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "turn_complete"
+            }
+          },
+          "required": [
+            "event",
+            "turn_id"
+          ],
+          "description": "A turn has completed successfully."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "turn_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "turn_aborted"
+            }
+          },
+          "required": [
+            "event",
+            "turn_id",
+            "reason"
+          ],
+          "description": "A turn was aborted before completion."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "response_id": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "event",
+            "response_id",
+            "message"
+          ],
+          "description": "An error occurred during processing."
+        }
+      ],
+      "description": "A single streaming event frame emitted during agent execution.\n\nEvents are tagged by the `event` field and cover the full lifecycle of a\nturn: response streaming, tool calls, MCP lifecycle, command execution,\npatch application, approvals, and errors.\n\nA frame carrying an unknown `event` tag (e.g. from a newer producer)\nfails deserialization; consumers that must tolerate unknown events\nshould inspect the raw JSON tag before decoding into this enum."
+    },
+    "ResponseChannel": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "text",
+          "description": "The main visible text output."
+        },
+        {
+          "type": "string",
+          "const": "reasoning",
+          "description": "Internal reasoning / chain-of-thought output."
+        }
+      ],
+      "description": "The channel a response delta is being written to."
+    },
+    "McpStartupUpdateEvent": {
+      "type": "object",
+      "properties": {
+        "server_name": {
+          "type": "string",
+          "description": "Name of the MCP server."
+        },
+        "status": {
+          "$ref": "#/$defs/McpStartupStatus",
+          "description": "Current startup status."
+        }
+      },
+      "required": [
+        "server_name",
+        "status"
+      ],
+      "description": "A progress update for a single MCP server's startup."
+    },
+    "McpStartupStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "starting",
+          "description": "The server is in the process of starting."
+        },
+        {
+          "type": "string",
+          "const": "ready",
+          "description": "The server is ready to accept requests."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "failed": {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ]
+            }
+          },
+          "required": [
+            "failed"
+          ],
+          "additionalProperties": false,
+          "description": "The server failed to start."
+        },
+        {
+          "type": "string",
+          "const": "cancelled",
+          "description": "Startup was cancelled."
+        }
+      ],
+      "description": "Status of an MCP server during startup."
+    },
+    "McpStartupCompleteEvent": {
+      "type": "object",
+      "properties": {
+        "ready": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Servers that started successfully."
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/McpStartupFailure"
+          },
+          "description": "Servers that failed to start."
+        },
+        "cancelled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Servers whose startup was cancelled."
+        }
+      },
+      "required": [
+        "ready",
+        "failed",
+        "cancelled"
+      ],
+      "description": "Summary event emitted once all MCP servers have finished starting."
+    },
+    "McpStartupFailure": {
+      "type": "object",
+      "properties": {
+        "server_name": {
+          "type": "string",
+          "description": "Name of the MCP server that failed."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error description."
+        }
+      },
+      "required": [
+        "server_name",
+        "error"
+      ],
+      "description": "Details of an MCP server that failed to start."
+    },
+    "ExecApprovalRequestEvent": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "description": "Identifier of the tool call requesting approval."
+        },
+        "approval_id": {
+          "type": "string",
+          "description": "Unique identifier for this approval request."
+        },
+        "turn_id": {
+          "type": "string",
+          "description": "The turn during which the request was made."
+        },
+        "command": {
+          "type": "string",
+          "description": "The command that would be executed."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "The working directory for the command."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable reason why approval is needed."
+        },
+        "network_approval_context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NetworkApprovalContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Network context if the approval involves network access."
+        },
+        "proposed_execpolicy_amendment": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Proposed execution policy rule amendments.",
+          "default": []
+        },
+        "proposed_network_policy_amendments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NetworkPolicyAmendment"
+          },
+          "description": "Proposed network policy amendments.",
+          "default": []
+        },
+        "additional_permissions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional permissions being requested.",
+          "default": []
+        },
+        "available_decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReviewDecision"
+          },
+          "description": "The set of decisions the user can choose from.",
+          "default": []
+        }
+      },
+      "required": [
+        "call_id",
+        "approval_id",
+        "turn_id",
+        "command",
+        "cwd",
+        "reason"
+      ],
+      "description": "An event requesting user approval for a command execution or patch application."
+    },
+    "NetworkApprovalContext": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "The host being accessed."
+        },
+        "protocol": {
+          "type": "string",
+          "description": "The network protocol (e.g. `\"https\"`, `\"tcp\"`)."
+        }
+      },
+      "required": [
+        "host",
+        "protocol"
+      ],
+      "description": "Context about a network access request that requires approval."
+    },
+    "NetworkPolicyAmendment": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "The host to amend the policy for."
+        },
+        "action": {
+          "$ref": "#/$defs/NetworkPolicyRuleAction",
+          "description": "The action to apply."
+        }
+      },
+      "required": [
+        "host",
+        "action"
+      ],
+      "description": "A proposed amendment to the network access policy for a specific host."
+    },
+    "NetworkPolicyRuleAction": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "allow",
+          "description": "Allow network access to the host."
+        },
+        {
+          "type": "string",
+          "const": "deny",
+          "description": "Deny network access to the host."
+        }
+      ],
+      "description": "Action to take for a network policy rule."
+    },
+    "ReviewDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "approved"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Approve the action."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "approved_execpolicy_amendment"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Approve and also amend the execution policy."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "approved_for_session"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Approve for the remainder of this session only."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "action": {
+              "$ref": "#/$defs/NetworkPolicyRuleAction"
+            },
+            "type": {
+              "type": "string",
+              "const": "network_policy_amendment"
+            }
+          },
+          "required": [
+            "type",
+            "host",
+            "action"
+          ],
+          "description": "Approve with a network policy amendment."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "denied"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Deny the action."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "abort"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Abort the entire turn."
+        }
+      ],
+      "description": "A user's decision on an approval request."
+    },
+    "AppRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "capabilities"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "Query the server's capabilities."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "config_get"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "description": "Read a configuration value by key."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "config_set"
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "value"
+          ],
+          "description": "Set a configuration key to a value."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "config_unset"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "description": "Remove a configuration key."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "config_list"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "List all configuration entries."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "models"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "List available models."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "thread_loaded_list"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "List threads that are currently loaded in memory."
+        }
+      ],
+      "description": "Application-level requests that are not tied to a specific thread."
+    },
+    "AppResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "Whether the request succeeded."
+        },
+        "data": {
+          "description": "The response payload."
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventFrame"
+          },
+          "description": "Streaming events associated with this response.",
+          "default": []
+        }
+      },
+      "required": [
+        "ok",
+        "data"
+      ],
+      "description": "Response to an [`AppRequest`]."
+    },
+    "PromptRequest": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional thread context for the prompt."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The prompt text."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Model override, or the default if omitted."
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "description": "A simple prompt request that sends text to the model and returns output."
+    },
+    "PromptResponse": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string",
+          "description": "The model's output text."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model that produced the output."
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventFrame"
+          },
+          "description": "Streaming events associated with this response.",
+          "default": []
+        }
+      },
+      "required": [
+        "output",
+        "model"
+      ],
+      "description": "Response to a [`PromptRequest`]."
+    },
+    "ApprovalDecisionRequest": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "string",
+          "description": "The decision identifier (e.g. `\"approved\"`, `\"denied\"`)."
+        },
+        "remember": {
+          "type": "boolean",
+          "description": "Whether to remember this decision for future similar requests.",
+          "default": false
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "description": "A user's approval decision sent in response to an approval request."
+    },
+    "RuntimeEventEnvelope": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Envelope schema version. `None` means the payload predates schema\nversioning (legacy) — defaulting absence to the *current* version\nwould silently re-interpret legacy payloads once the version bumps\npast 1, defeating the field's purpose."
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "event": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Event timestamp, formatted as RFC 3339."
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Envelope creation timestamp, formatted as RFC 3339."
+        },
+        "payload": true
+      },
+      "required": [
+        "seq",
+        "event",
+        "kind",
+        "thread_id",
+        "timestamp",
+        "payload"
+      ],
+      "additionalProperties": true,
+      "description": "Envelope for runtime events streamed over the wire protocol.\n\nThe `extra` map uses `#[serde(flatten)]` to carry unknown top-level\nfields across a round-trip. Flatten buffers the whole map through\nserde's `Content` type, which only works with self-describing\nformats: this envelope is JSON-only and cannot be deserialized from\nbinary formats such as bincode or postcard."
+    }
+  }
+}
