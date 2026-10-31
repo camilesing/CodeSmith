@@ -1423,13 +1423,12 @@ fn print_agent_tool_catalog_metrics() {
     let baseline_json = serde_json::to_vec(&baseline_catalog).expect("serialize baseline");
 
     let always_load = HashSet::new();
-    let mut catalog = build_model_tool_catalog(
+    let catalog = build_model_tool_catalog(
         baseline_catalog.clone(),
         vec![],
         AppMode::Agent,
         &always_load,
     );
-    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
     let active = initial_active_tools(&catalog);
     let active_catalog = active_tools_for_step(&catalog, &active, false);
     let active_json = serde_json::to_vec(&active_catalog).expect("serialize active");
@@ -3607,16 +3606,10 @@ fn tool_search_activates_discovered_deferred_tools() {
             cache_control: None,
         },
     ];
-    let always_load = HashSet::new();
-    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+    catalog.push(tool_search_control_tool());
     let mut active = initial_active_tools(&catalog);
-    let result = execute_tool_search(
-        TOOL_SEARCH_BM25_NAME,
-        &json!({"query":"read file"}),
-        &catalog,
-        &mut active,
-    )
-    .expect("search succeeds");
+    let result = execute_tool_search(&json!({"query":"read file"}), &catalog, &mut active)
+        .expect("search succeeds");
     assert!(result.success);
     assert!(active.contains("read_file"));
 }
@@ -3636,8 +3629,7 @@ fn tool_search_catalog_with_matches(count: usize) -> Vec<Tool> {
             cache_control: None,
         })
         .collect::<Vec<_>>();
-    let always_load = HashSet::new();
-    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+    catalog.push(tool_search_control_tool());
     catalog
 }
 
@@ -3651,21 +3643,12 @@ fn tool_search_reference_count(result: &ToolResult) -> usize {
 }
 
 #[test]
-fn tool_search_defaults_to_twenty_results_for_regex_and_bm25() {
+fn tool_search_defaults_to_twenty_results() {
     let catalog = tool_search_catalog_with_matches(25);
-
-    for tool_name in [TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_BM25_NAME] {
-        let mut active = initial_active_tools(&catalog);
-        let result = execute_tool_search(
-            tool_name,
-            &json!({"query":"matching"}),
-            &catalog,
-            &mut active,
-        )
+    let mut active = initial_active_tools(&catalog);
+    let result = execute_tool_search(&json!({"query":"matching"}), &catalog, &mut active)
         .expect("search succeeds");
-
-        assert_eq!(tool_search_reference_count(&result), 20);
-    }
+    assert_eq!(tool_search_reference_count(&result), 20);
 }
 
 #[test]
@@ -3674,7 +3657,6 @@ fn tool_search_respects_and_caps_max_results() {
 
     let mut active = initial_active_tools(&catalog);
     let limited = execute_tool_search(
-        TOOL_SEARCH_BM25_NAME,
         &json!({"query":"matching","max_results":7}),
         &catalog,
         &mut active,
@@ -3684,65 +3666,12 @@ fn tool_search_respects_and_caps_max_results() {
 
     let mut active = initial_active_tools(&catalog);
     let capped = execute_tool_search(
-        TOOL_SEARCH_REGEX_NAME,
         &json!({"query":"matching","max_results":999}),
         &catalog,
         &mut active,
     )
     .expect("search succeeds");
     assert_eq!(tool_search_reference_count(&capped), 100);
-}
-
-#[test]
-fn tool_search_schema_exposes_max_results_default_and_cap() {
-    let mut catalog = Vec::new();
-    let always_load = HashSet::new();
-    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
-
-    for tool_name in [TOOL_SEARCH_REGEX_NAME, TOOL_SEARCH_BM25_NAME] {
-        let tool = catalog
-            .iter()
-            .find(|tool| tool.name == tool_name)
-            .expect("tool search definition exists");
-        let schema = &tool.input_schema["properties"]["max_results"];
-
-        assert_eq!(schema["default"], 20);
-        assert_eq!(schema["maximum"], 100);
-        assert_eq!(schema["minimum"], 1);
-    }
-}
-
-#[tokio::test]
-async fn code_execution_runs_python_and_returns_result_payload() {
-    let tmp = tempdir().expect("tempdir");
-    let result =
-        execute_code_execution_tool(&json!({"code":"print('hello from code exec')"}), tmp.path())
-            .await
-            .expect("code execution should run");
-    assert!(result.content.contains("hello from code exec"));
-    assert!(result.content.contains("return_code"));
-}
-
-#[test]
-fn plan_mode_catalog_skips_code_execution_tool_but_agent_keeps_it() {
-    let mut plan_catalog = vec![api_tool("read_file")];
-    let always_load = HashSet::new();
-    ensure_advanced_tooling(&mut plan_catalog, AppMode::Plan, &always_load);
-    assert!(
-        !plan_catalog
-            .iter()
-            .any(|tool| tool.name == CODE_EXECUTION_TOOL_NAME),
-        "Plan mode must not expose code_execution"
-    );
-
-    let mut agent_catalog = vec![api_tool("read_file")];
-    ensure_advanced_tooling(&mut agent_catalog, AppMode::Agent, &always_load);
-    assert!(
-        agent_catalog
-            .iter()
-            .any(|tool| tool.name == CODE_EXECUTION_TOOL_NAME),
-        "Agent mode should still expose code_execution"
-    );
 }
 
 #[test]
@@ -3770,99 +3699,6 @@ fn deferred_tool_requests_are_auto_activated() {
         &mut active
     ));
     assert!(active.contains("exec_shell"));
-}
-
-#[test]
-fn missing_tool_error_message_offers_suggestions() {
-    let catalog = vec![
-        Tool {
-            tool_type: None,
-            name: "read_file".to_string(),
-            description: "Read file contents".to_string(),
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
-            output_schema: None,
-            allowed_callers: Some(vec!["direct".to_string()]),
-            defer_loading: Some(false),
-            input_examples: None,
-            strict: None,
-            cache_control: None,
-        },
-        Tool {
-            tool_type: None,
-            name: "grep_files".to_string(),
-            description: "Search file contents".to_string(),
-            input_schema: json!({"type":"object","properties":{"pattern":{"type":"string"}}}),
-            output_schema: None,
-            allowed_callers: Some(vec!["direct".to_string()]),
-            defer_loading: Some(false),
-            input_examples: None,
-            strict: None,
-            cache_control: None,
-        },
-    ];
-
-    let message = missing_tool_error_message("reed_file", &catalog);
-    assert!(message.contains("Did you mean:"));
-    assert!(message.contains("read_file"));
-    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
-}
-
-#[test]
-fn missing_tool_error_message_includes_discovery_guidance_when_no_match() {
-    let catalog = vec![Tool {
-        tool_type: None,
-        name: "read_file".to_string(),
-        description: "Read file contents".to_string(),
-        input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
-        output_schema: None,
-        allowed_callers: Some(vec!["direct".to_string()]),
-        defer_loading: Some(false),
-        input_examples: None,
-        strict: None,
-        cache_control: None,
-    }];
-
-    let message = missing_tool_error_message("totally_unknown_tool", &catalog);
-    assert!(message.contains("not available in the current tool catalog"));
-    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
-}
-
-#[test]
-fn missing_shell_tool_error_message_names_allow_shell_gate() {
-    let catalog = vec![api_tool("read_file")];
-
-    for tool_name in [
-        "exec_shell",
-        "exec_shell_wait",
-        "exec_shell_interact",
-        "task_shell_start",
-        "task_shell_wait",
-    ] {
-        let message = missing_tool_error_message(tool_name, &catalog);
-        assert!(message.contains("not available in the current tool catalog"));
-        assert!(message.contains("allow_shell"), "{tool_name}: {message}");
-        assert!(
-            message.contains("trusted workspaces"),
-            "{tool_name}: {message}"
-        );
-        assert!(
-            message.contains(TOOL_SEARCH_BM25_NAME),
-            "{tool_name}: {message}"
-        );
-    }
-}
-
-#[test]
-fn missing_shell_tool_error_message_keeps_allow_shell_hint_with_suggestions() {
-    let catalog = vec![api_tool("exec")];
-
-    let message = missing_tool_error_message("exec_shell", &catalog);
-
-    assert!(message.contains("Did you mean:"));
-    assert!(message.contains("exec"));
-    assert!(message.contains("allow_shell"));
-    assert!(message.contains("trusted workspaces"));
-    assert!(message.contains(TOOL_SEARCH_BM25_NAME));
 }
 
 #[test]
@@ -5503,6 +5339,218 @@ async fn engine_128k_window_long_session_compacts_without_prompt_too_long() {
         first.messages.len() < 30,
         "expected compacted transcript, got {} messages",
         first.messages.len()
+    );
+}
+
+// === TODO-57 turn-boundary integrity ========================================
+
+/// A client whose stream emits `events` and then stalls forever — the
+/// stand-in for a model still generating when the user cancels.
+struct StallingClient {
+    events: Vec<codesmith_agent::models::StreamEvent>,
+}
+
+impl codesmith_agent::llm_client::LlmClient for StallingClient {
+    fn provider_name(&self) -> &'static str {
+        "mock"
+    }
+
+    fn model(&self) -> &str {
+        "mock-model"
+    }
+
+    fn create_message(
+        &self,
+        _request: codesmith_agent::models::MessageRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<codesmith_agent::models::MessageResponse>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Err(anyhow::anyhow!("StallingClient serves streams only")) })
+    }
+
+    fn create_message_stream(
+        &self,
+        _request: codesmith_agent::models::MessageRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<codesmith_agent::llm_client::StreamEventBox>,
+                > + Send
+                + '_,
+        >,
+    > {
+        use futures_util::StreamExt;
+        let events = self.events.clone();
+        Box::pin(async move {
+            let head = futures_util::stream::iter(events.into_iter().map(Ok));
+            let stream: codesmith_agent::llm_client::StreamEventBox =
+                Box::pin(head.chain(futures_util::stream::pending()));
+            Ok(stream)
+        })
+    }
+}
+
+/// A cancel that lands while the model is still streaming ends the turn at
+/// once (the stream is dropped, not drained to completion), and the text
+/// the user already saw is committed with the reason marker — the next
+/// request carries what the user saw.
+#[tokio::test]
+async fn cancel_mid_stream_commits_the_text_the_user_saw() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let client = std::sync::Arc::new(StallingClient {
+        events: vec![
+            canned::message_start("stall"),
+            canned::text_block_start(0),
+            canned::text_delta(0, "Partial answer so far"),
+        ],
+    });
+    let (engine, handle) =
+        Engine::new_with_client(test_engine_config(tmp.path()), &Config::default(), client);
+    tokio::spawn(async move { engine.run().await });
+    handle.send(make_send_op("explain")).await.expect("send op");
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut events = Vec::new();
+        let mut rx = handle.rx_event.write().await;
+        while let Some(event) = rx.recv().await {
+            if matches!(&event, Event::MessageDelta { content, .. } if content.contains("Partial answer"))
+            {
+                handle.cancel();
+            }
+            let done = matches!(event, Event::TurnComplete { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        events
+    })
+    .await
+    .expect("a mid-stream cancel must end the turn without waiting for the stream");
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::TurnComplete {
+                status: TurnOutcomeStatus::Interrupted,
+                ..
+            }
+        )),
+        "the cancelled turn reports Interrupted"
+    );
+    let transcript = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            _ => None,
+        })
+        .expect("the turn emits the session transcript");
+    let last = transcript.last().expect("transcript is not empty");
+    assert_eq!(last.role, "assistant");
+    let text = match last.content.as_slice() {
+        [ContentBlock::Text { text, .. }] => text.clone(),
+        other => panic!("expected one text block, got {other:?}"),
+    };
+    assert!(text.starts_with("Partial answer so far"), "{text}");
+    assert!(
+        text.ends_with("[Response interrupted by the user.]"),
+        "{text}"
+    );
+}
+
+/// A tool call left without a result (here restored that way; in
+/// production a transcript change can drop the result) is closed in the
+/// log before the next request, so the model reads TOOL_OUTCOME_UNKNOWN
+/// instead of the call vanishing from the wire copy.
+#[tokio::test]
+async fn dangling_tool_call_is_closed_before_the_next_request() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("Continuing.")]);
+    let (handle, mock_arc) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+
+    let restored = vec![
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "push the branch".to_string(),
+                cache_control: None,
+            }],
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "call_lost".to_string(),
+                name: "exec_shell".to_string(),
+                input: json!({"command": "git push"}),
+                caller: None,
+            }],
+        },
+    ];
+    handle
+        .send(Op::SyncSession {
+            session_id: None,
+            messages: restored,
+            system_prompt: None,
+            system_prompt_override: false,
+            model: "mock-model".to_string(),
+            workspace: tmp.path().to_path_buf(),
+        })
+        .await
+        .expect("sync op");
+    handle
+        .send(make_send_op("continue"))
+        .await
+        .expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::TurnComplete {
+            status: TurnOutcomeStatus::Completed,
+            ..
+        }
+    )));
+
+    let request = mock_arc.last_request().expect("one request was sent");
+    let position = |pred: &dyn Fn(&ContentBlock) -> bool| {
+        request
+            .messages
+            .iter()
+            .position(|m| m.content.iter().any(pred))
+    };
+    let call_at = position(&|b| matches!(b, ContentBlock::ToolUse { id, .. } if id == "call_lost"))
+        .expect("the request keeps the call");
+    let result_at = position(
+        &|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_lost"),
+    )
+    .expect("the request carries a terminator for the dangling call");
+    assert_eq!(
+        result_at,
+        call_at + 1,
+        "the terminator must directly follow its call (strict providers reject anything else)"
+    );
+    let terminator = request.messages[result_at]
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .expect("terminator text");
+    assert!(
+        terminator.starts_with("TOOL_OUTCOME_UNKNOWN"),
+        "{terminator}"
+    );
+    assert!(
+        terminator.contains("may or may not have run"),
+        "{terminator}"
     );
 }
 

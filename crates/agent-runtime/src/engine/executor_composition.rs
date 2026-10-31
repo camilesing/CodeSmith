@@ -207,6 +207,11 @@ pub trait TurnHarvest: Send + Sync {
     fn take_pending_targeted_refresh_outcome(&self) -> Option<TargetedRefreshOutcome> {
         None
     }
+    /// The text the user saw before an interrupt (committed by the engine
+    /// with an interruption marker); `None` when nothing streamed.
+    fn take_interrupted_text(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Process-shared registry of turn-executor factories, selected by the

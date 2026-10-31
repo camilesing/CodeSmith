@@ -103,27 +103,51 @@ use host_executor::{LspProbe, ReinjectProbe, TurnMetaProbe};
 pub(crate) const RUNTIME_EVENT_PREFIX: &str = "<codesmith:runtime_event";
 
 /// Reason the active turn was cancelled. The token from `tokio_util`
-/// does not carry a cause, so the engine keeps a sibling latch for
-/// approval and user-input waits that need to explain cancellation.
+/// does not carry a cause, so the engine keeps a sibling latch
+/// (`Engine::cancel_reason`, shared with `EngineHandle`) that the
+/// turn-boundary commit reads to name who interrupted a response.
 ///
-/// `External`, `Preempted`, and `Internal` are reserved for the
-/// remaining direct cancellation paths tracked in #1541.
+/// Known limitation: there is no pre-emption cause — no path cancels a
+/// running turn because a new one started (queued input waits for the
+/// turn to end), so none is modelled; add one with its first producer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum CancelReason {
-    /// User-initiated cancel (Esc, `/cancel`, click cancel on modal).
+    /// User-initiated cancel (Ctrl+C, Esc, ACP `session/cancel`).
     User,
-    /// External / runtime-API cancel (HTTP `DELETE /v1/threads/...`,
-    /// task manager stop, parent agent cancel).
+    /// Out-of-process client cancel (runtime API turn interrupt — task
+    /// manager stops ride the same path).
     External,
-    /// Cancel triggered when a new turn starts before the previous one
-    /// finished — e.g. plain Enter while busy after the queueing path
-    /// pre-empts the running turn.
-    Preempted,
-    /// Engine internals tore down the turn (drop, channel close,
-    /// shutdown). Rare — surfaced as an internal error.
+    /// The harness tore the turn down (ACP session close, the ACP turn
+    /// wall-clock deadline).
     Internal,
 }
+
+impl CancelReason {
+    /// The marker appended to the text an interrupted response had already
+    /// shown the user, so the next request tells the model why it stopped.
+    #[must_use]
+    pub fn interruption_marker(self) -> &'static str {
+        match self {
+            Self::User => "[Response interrupted by the user.]",
+            Self::External => "[Response interrupted: cancelled by an external client.]",
+            Self::Internal => "[Response interrupted: the session shut down.]",
+        }
+    }
+}
+
+/// The assistant message committing an interrupted response: the text the
+/// user saw plus the reason marker (a generic one when no reason was latched).
+pub(crate) fn interrupted_response_message(text: &str, reason: Option<CancelReason>) -> Message {
+    let marker = reason.map_or("[Response interrupted.]", CancelReason::interruption_marker);
+    Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: format!("{}\n\n{marker}", text.trim_end()),
+            cache_control: None,
+        }],
+    }
+}
+
 /// The core engine that processes operations and emits events
 pub struct Engine {
     pub config: EngineConfig,
@@ -163,9 +187,9 @@ pub struct Engine {
     pub cancel_token: CancellationToken,
     pub(crate) shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Latched reason for the current cancellation, mirrored to
-    /// `EngineHandle::cancel_reason`. Read by `approval.rs` when
-    /// surfacing the "Request cancelled while awaiting …" error so the
-    /// user-facing message names a cause.
+    /// `EngineHandle::cancel_reason`. Read by the turn-boundary commit
+    /// ([`Self::commit_interrupted_response`]) to name who interrupted a
+    /// response.
     pub(crate) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     /// Orphaned by the legacy turn-loop retirement: it serialized tool calls
     /// through this lock; `HostAgentExecutor` runs tools sequentially in its
@@ -903,6 +927,43 @@ impl Engine {
         }
     }
 
+    /// Commit the text an interrupted response had already shown the user
+    /// (TODO-57), with a marker naming who interrupted it, so the next
+    /// request carries what the user saw. A plain append — the prefix cache
+    /// is untouched.
+    async fn commit_interrupted_response(&mut self, text: &str) {
+        let reason = *self
+            .cancel_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.push_session_message(interrupted_response_message(text, reason));
+        self.emit_session_updated().await;
+    }
+
+    /// Close the tool calls left without a result at the transcript tail
+    /// (TODO-57) — run at turn start, before the user message lands (a
+    /// restored or op-mutated transcript), and at turn end after every
+    /// post-run change (an alternate turn executor, a post-run reset), so a
+    /// turn neither starts nor ends on a dangling call. Non-tail dangling
+    /// calls are out of reach of an append — see
+    /// `session_store::tail_tool_outcome_unknown_terminator`.
+    async fn close_dangling_tool_calls(&mut self, origin: &str) {
+        if let Some((terminator, closed)) =
+            crate::session_store::tail_tool_outcome_unknown_terminator(
+                &self.session.messages,
+                origin,
+            )
+        {
+            tracing::warn!(
+                target: "codesmith_agent_runtime::engine",
+                "closing {} dangling tool call(s) ({origin}): {closed:?}",
+                closed.len()
+            );
+            self.push_session_message(terminator);
+            self.emit_session_updated().await;
+        }
+    }
+
     async fn emit_session_updated(&mut self) {
         let _ = self
             .tx_event
@@ -1196,6 +1257,10 @@ impl Engine {
         // post-compaction re-inject hook can re-send them once compaction
         // has summarized the message that carried them.
         self.session.record_media_attachments(&image_paths);
+        // A tool call left dangling at the tail (a restored or op-mutated
+        // transcript) is closed before the user message lands — after it,
+        // an appended result would no longer follow its call.
+        self.close_dangling_tool_calls("closed at turn start").await;
         // P3-8: remember where this turn's transcript slice starts (the
         // user message below is its first entry) so the post-turn result
         // claim verifier can scan exactly this turn's assistant/tool traffic.
@@ -1552,6 +1617,11 @@ impl Engine {
         // its user message was committed to the AppendLog before the run and
         // its working-set snapshot only described this turn's `<turn_meta>`.
         self.turn_scratch.clear();
+        if matches!(stop_reason, Ok(StopReason::Interrupted))
+            && let Some(text) = built.harvest.take_interrupted_text()
+        {
+            self.commit_interrupted_response(&text).await;
+        }
         // Harvest per-turn token usage from the executor (slice 21 §E). The
         // inline stream reducer captured `MessageStart`/`MessageDelta` usage
         // and accumulated it across the turn's streams; this replaces the
@@ -1763,6 +1833,8 @@ impl Engine {
         if matches!(status, TurnOutcomeStatus::Completed) {
             self.maybe_advance_cycle(mode).await;
         }
+
+        self.close_dangling_tool_calls("closed at turn end").await;
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
@@ -3640,14 +3712,12 @@ pub use self::streaming::{
     ToolCallDeltaFilter, ToolUseState, contains_fake_tool_wrapper, filter_tool_call_delta,
     should_transparently_retry_stream,
 };
-pub use self::tool_catalog::{
-    CODE_EXECUTION_TOOL_NAME, TOOL_SEARCH_BM25_NAME, TOOL_SEARCH_NAME, TOOL_SEARCH_REGEX_NAME,
-    activated_by_transcript, active_tool_list_from_catalog, active_tools_for_step,
-    apply_mcp_tool_deferral, apply_native_deferral_overrides, apply_tool_selection,
-    build_model_tool_catalog, ensure_advanced_tooling, execute_code_execution_tool,
-    execute_tool_search, initial_active_tools, is_tool_search_tool,
-    maybe_activate_requested_deferred_tool, maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message, preflight_requested_deferred_tool, progressive_disclosure_active,
-    tool_search_control_tool, tool_search_loaded_sentinel,
-};
 use self::tool_catalog::{MULTI_TOOL_PARALLEL_NAME, REQUEST_USER_INPUT_NAME};
+pub use self::tool_catalog::{
+    TOOL_SEARCH_NAME, activated_by_transcript, active_tool_list_from_catalog,
+    active_tools_for_step, apply_mcp_tool_deferral, apply_native_deferral_overrides,
+    apply_tool_selection, build_model_tool_catalog, execute_tool_search, initial_active_tools,
+    is_tool_search_tool, maybe_activate_requested_deferred_tool,
+    maybe_hydrate_requested_deferred_tool, preflight_requested_deferred_tool,
+    progressive_disclosure_active, tool_search_control_tool, tool_search_loaded_sentinel,
+};

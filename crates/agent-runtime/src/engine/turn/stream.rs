@@ -39,7 +39,10 @@
 //!   loop on a cancelled turn. This executor now mirrors it: Checkpoint C (the
 //!   `Empty` arm) checks `is_cancelled()` and returns
 //!   `StreamRoundOutcome::Interrupted` (no retry); Checkpoint B (stream-open
-//!   race) and Checkpoint D (post-stream `Complete`/`Partial`) are also wired.
+//!   race), the mid-stream cancel race (`reduce_stream` drops the stream the
+//!   moment the token fires), and Checkpoint D (post-stream
+//!   `Complete`/`Partial`) are also wired. The two content-bearing exits hand
+//!   the already-streamed content back in `Interrupted { partial, .. }`.
 //!   See guardrail 10 (cancel-token) for the full checkpoint map.
 
 //! ## Known gaps in early-tool-start (by design)
@@ -366,6 +369,14 @@ enum StreamReduceOutcome {
     /// Safe to retry transparently — the user has seen nothing (mirrors
     /// `should_transparently_retry_stream` in `streaming.rs:81`).
     Empty { error: String },
+    /// The cancel token fired while the stream was still producing. The
+    /// stream is dropped at once (closing the connection stops generation);
+    /// `content` is what was assembled up to that point — the text the user
+    /// already saw — and `usage` the tokens the provider billed for it.
+    Cancelled {
+        content: Vec<ContentBlock>,
+        usage: Usage,
+    },
 }
 
 /// Outcome of one (possibly retried) stream round in
@@ -390,11 +401,28 @@ pub(crate) enum StreamRoundOutcome {
     /// picks up the compacted transcript (mirrors `handle_deepseek_turn`).
     RecoveredContextOverflow,
     /// The turn was cancelled during the stream phase (Checkpoint B race at
-    /// stream-open, Checkpoint C guard in the transparent-retry `Empty` arm,
-    /// or Checkpoint D post-stream gate). The caller should surface
+    /// stream-open, the mid-stream cancel race in `reduce_stream`, Checkpoint
+    /// C guard in the transparent-retry `Empty` arm, or Checkpoint D
+    /// post-stream gate). The caller should surface
     /// [`StopReason::Interrupted`](codesmith_agent::callback::StopReason::Interrupted) — mirroring production's
-    /// `TurnOutcomeStatus::Interrupted` (`handle_deepseek_turn`).
-    Interrupted,
+    /// `TurnOutcomeStatus::Interrupted` (`handle_deepseek_turn`). `partial`
+    /// is the content already streamed to the user (empty when the cancel
+    /// landed before any arrived); the host commits its text so the next
+    /// request carries what the user saw.
+    Interrupted {
+        partial: Vec<ContentBlock>,
+        usage: Usage,
+    },
+}
+
+impl StreamRoundOutcome {
+    /// An interruption that landed before any content streamed.
+    fn interrupted_before_content() -> Self {
+        Self::Interrupted {
+            partial: Vec::new(),
+            usage: Usage::default(),
+        }
+    }
 }
 
 impl HostAgentExecutor {
@@ -504,30 +532,55 @@ impl HostAgentExecutor {
         // `self.stream_idle_timeout`: the retry loop widens it per retry
         // attempt, so a provider whose silence outlasts the base window
         // doesn't have every retry die in the same silent gap.
+        //
+        // Mid-stream cancel race: every wait for the next event also races
+        // the turn's cancel token (`biased`, so a pending cancel wins over a
+        // buffered event). On cancel the stream is dropped — the connection
+        // closes and the provider stops generating — and what was assembled
+        // so far goes back as `Cancelled` for the host to commit.
+        let cancel_token = self.cancel_token.clone();
 
         loop {
-            let item = match idle_timeout {
-                Some(idle) => match tokio::time::timeout(idle, stream.next()).await {
-                    Ok(item) => item,
-                    Err(_elapsed) => {
-                        let error = format!(
-                            "stream idle timeout: no events for {:.1}s, connection may have silently stalled",
-                            idle.as_secs_f64()
-                        );
-                        if any_content_received {
-                            flush_text_carry(&mut blocks, &mut text_filter);
-                            let content = finalize_blocks(std::mem::take(&mut blocks));
-                            return StreamReduceOutcome::Partial {
-                                content,
-                                stop_reason,
-                                error,
-                                usage,
-                            };
-                        }
-                        return StreamReduceOutcome::Empty { error };
-                    }
+            let next_event = async {
+                match idle_timeout {
+                    Some(idle) => tokio::time::timeout(idle, stream.next())
+                        .await
+                        .map_err(|_elapsed| idle),
+                    None => Ok(stream.next().await),
+                }
+            };
+            let polled = match &cancel_token {
+                Some(token) => tokio::select! {
+                    biased;
+                    () = token.cancelled() => None,
+                    polled = next_event => Some(polled),
                 },
-                None => stream.next().await,
+                None => Some(next_event.await),
+            };
+            let Some(polled) = polled else {
+                flush_text_carry(&mut blocks, &mut text_filter);
+                let content = finalize_blocks(std::mem::take(&mut blocks));
+                return StreamReduceOutcome::Cancelled { content, usage };
+            };
+            let item = match polled {
+                Ok(item) => item,
+                Err(idle) => {
+                    let error = format!(
+                        "stream idle timeout: no events for {:.1}s, connection may have silently stalled",
+                        idle.as_secs_f64()
+                    );
+                    if any_content_received {
+                        flush_text_carry(&mut blocks, &mut text_filter);
+                        let content = finalize_blocks(std::mem::take(&mut blocks));
+                        return StreamReduceOutcome::Partial {
+                            content,
+                            stop_reason,
+                            error,
+                            usage,
+                        };
+                    }
+                    return StreamReduceOutcome::Empty { error };
+                }
             };
             let Some(item) = item else {
                 // P0-3 — the stream ended without `MessageStop`, i.e. with no
@@ -999,9 +1052,11 @@ impl HostAgentExecutor {
     ///
     /// The cancel-token short-circuits are **absorbed** — Checkpoint B (stream-
     /// open race), Checkpoint C (`!cancelled` in the transparent-retry `Empty`
-    /// arm, mirroring `should_transparently_retry_stream`), and Checkpoint D
-    /// (post-stream gate, discarding even cleanly-completed content if the turn
-    /// was cancelled mid-stream). All return [`StreamRoundOutcome::Interrupted`]
+    /// arm, mirroring `should_transparently_retry_stream`), the mid-stream
+    /// cancel race inside [`reduce_stream`], and Checkpoint D (post-stream
+    /// gate: a stream that finished after the cancel is not acted on). All
+    /// return [`StreamRoundOutcome::Interrupted`], carrying any content the
+    /// user already saw,
     /// so `run_inner` surfaces [`StopReason::Interrupted`](codesmith_agent::callback::StopReason::Interrupted). The loop-top gate
     /// (Checkpoint A in `run_inner`) bounds the capacity/reactive `continue`
     /// loops on a cancelled turn. Production's inner mid-flight retry (resetting
@@ -1069,7 +1124,7 @@ impl HostAgentExecutor {
                     }
                 } => {
                     self.emit_status("Request cancelled".to_string()).await;
-                    return Ok(StreamRoundOutcome::Interrupted);
+                    return Ok(StreamRoundOutcome::interrupted_before_content());
                 }
                 result = client.create_message_stream(request.clone()) => match result {
                     Ok(s) => {
@@ -1114,7 +1169,7 @@ impl HostAgentExecutor {
                         }
                         if self.is_cancelled() {
                             self.emit_status("Request cancelled".to_string()).await;
-                            return Ok(StreamRoundOutcome::Interrupted);
+                            return Ok(StreamRoundOutcome::interrupted_before_content());
                         }
                         self.record_failed_attempt(
                             step,
@@ -1137,12 +1192,16 @@ impl HostAgentExecutor {
                     stop_reason,
                     usage,
                 } => {
-                    // Checkpoint D — post-stream cancel gate (mirrors
-                    // `handle_deepseek_turn`): even a cleanly-completed
-                    // stream is discarded if the turn was cancelled mid-stream.
+                    // Checkpoint D — post-stream cancel gate: a stream that
+                    // finished after the cancel landed is not acted on (no
+                    // tool runs, no next step), but the text the user already
+                    // saw goes back to the host to be committed.
                     if self.is_cancelled() {
                         self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
+                        return Ok(StreamRoundOutcome::Interrupted {
+                            partial: content,
+                            usage,
+                        });
                     }
                     // Healthy round → reset the retry budget so a bad prior
                     // step doesn't carry over (mirrors `handle_deepseek_turn`).
@@ -1159,18 +1218,27 @@ impl HostAgentExecutor {
                         usage,
                     });
                 }
+                StreamReduceOutcome::Cancelled { content, usage } => {
+                    self.emit_status("Request cancelled".to_string()).await;
+                    return Ok(StreamRoundOutcome::Interrupted {
+                        partial: content,
+                        usage,
+                    });
+                }
                 StreamReduceOutcome::Partial {
                     content,
                     stop_reason,
                     error,
                     usage,
                 } => {
-                    // Checkpoint D — post-stream cancel gate. Same as Complete:
-                    // if cancelled, discard the partial content and return
-                    // `Interrupted`.
+                    // Checkpoint D — post-stream cancel gate. Same as
+                    // Complete: not acted on, the seen text goes back.
                     if self.is_cancelled() {
                         self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
+                        return Ok(StreamRoundOutcome::Interrupted {
+                            partial: content,
+                            usage,
+                        });
                     }
                     // Stream died after content was received — surface the
                     // partial content, don't retry (the model has billed for
@@ -1208,7 +1276,7 @@ impl HostAgentExecutor {
                     // retry — return `Interrupted` (not `Err`).
                     if self.is_cancelled() {
                         self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
+                        return Ok(StreamRoundOutcome::interrupted_before_content());
                     }
                     // Classify before spending retry budget. A context-length
                     // rejection (InvalidInput) can also arrive in-band after
@@ -1394,7 +1462,7 @@ impl HostAgentExecutor {
                                     }
                                 } => {
                                     self.emit_status("Request cancelled".to_string()).await;
-                                    return Ok(StreamRoundOutcome::Interrupted);
+                                    return Ok(StreamRoundOutcome::interrupted_before_content());
                                 }
                             }
                         }
@@ -1434,7 +1502,7 @@ impl HostAgentExecutor {
                     // not a stream failure (mirrors the pre-stream guard).
                     if self.is_cancelled() {
                         self.emit_status("Request cancelled".to_string()).await;
-                        return Ok(StreamRoundOutcome::Interrupted);
+                        return Ok(StreamRoundOutcome::interrupted_before_content());
                     }
                     crate::retry_status::failed(format!(
                         "stream failed ({category}); {MAX_TRANSPARENT_STREAM_RETRIES} retries exhausted"

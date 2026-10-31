@@ -208,7 +208,7 @@ Chat Completions 驱动 turn。
   - `github.rs` - 只读 GitHub 上下文以及由 `gh` 支撑的受防护评论/关闭工具
   - `automation.rs` - 基于 `AutomationManager` 的模型可见调度工具
   - `subagent/` - 持久子代理会话（`agent_open` / `agent_eval` / `agent_close`）和持久 RLM 会话（`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` —— 带语义辅助调用和 `var_handle` 输出支持的沙箱化 Python REPL；运行时位于 `crates/cli/src/rlm/`）
-  - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `js_execution.rs` / `large_output_router.rs` 等 - 其余工具表面
+  - `skill.rs` / `plugin.rs` / `web_search.rs` / `goal.rs` / `large_output_router.rs` 等 - 其余工具表面
 
 ### 扩展系统
 

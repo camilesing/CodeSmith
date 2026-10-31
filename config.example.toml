@@ -1034,7 +1034,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #
 # [tools.overrides]
 # # Disable a tool entirely — removes it from the model-visible catalog.
-# "code_execution" = { type = "disabled" }
+# "web_search" = { type = "disabled" }
 #
 # # Replace a tool with a script. Relative paths resolve against plugin_dir.
 # "exec_shell" = { type = "script", path = "audit-exec-shell.sh" }

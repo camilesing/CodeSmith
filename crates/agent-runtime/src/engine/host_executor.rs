@@ -1458,6 +1458,14 @@ pub struct HostAgentExecutor {
     /// path. Same `std::sync::Mutex` one-shot pattern as
     /// [`HostAgentExecutor::pending_replay_outcome`].
     pending_targeted_refresh_outcome: std::sync::Mutex<Option<TargetedRefreshOutcome>>,
+
+    /// One-shot interrupted-response slot (TODO-57). Set by `run_inner` when
+    /// a stream round ends `Interrupted` with text already shown to the
+    /// user; the host reads it after `run` returns and commits it to the
+    /// transcript with a reason-specific marker, so the next request carries
+    /// what the user saw. Only the joined text blocks are kept — thinking is
+    /// display-only and an unexecuted `tool_use` must not enter the history.
+    pending_interrupted_text: std::sync::Mutex<Option<String>>,
     /// §F1 — extension runtime probe. `None` ⇒ extension events are no-ops
     /// (embeds/tests skip via `with_extension_runner`). When bound, `emit`
     /// calls fan out best-effort to registered `Handler`s at the lifecycle
@@ -1578,6 +1586,7 @@ impl HostAgentExecutor {
             pending_capacity_decision: std::sync::Mutex::new(None),
             pending_replay_outcome: std::sync::Mutex::new(None),
             pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
+            pending_interrupted_text: std::sync::Mutex::new(None),
             extension: None,
             stream_idle_timeout: None,
             stream_idle_retry_increment: std::time::Duration::ZERO,
@@ -1883,7 +1892,7 @@ impl HostAgentExecutor {
         if crate::engine::is_tool_search_tool(name) {
             let before = active.clone();
             let mut result =
-                crate::engine::execute_tool_search(name, input, catalog, &mut active).ok()?;
+                crate::engine::execute_tool_search(input, catalog, &mut active).ok()?;
             append_loaded_sentinel(&mut result, &before, &active);
             return Some(result);
         }
@@ -2161,6 +2170,15 @@ impl HostAgentExecutor {
             .expect("pending_targeted_refresh_outcome mutex poisoned")
             .take()
     }
+
+    /// Read back the interrupted-response slot (TODO-57): the text the user
+    /// saw before an interrupt, `None` when nothing streamed.
+    pub fn take_interrupted_text(&self) -> Option<String> {
+        self.pending_interrupted_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 /// The dyn-safe harvest surface of the production loop — the engine reads
@@ -2195,6 +2213,9 @@ impl TurnHarvest for HostAgentExecutor {
     }
     fn take_pending_targeted_refresh_outcome(&self) -> Option<TargetedRefreshOutcome> {
         HostAgentExecutor::take_pending_targeted_refresh_outcome(self)
+    }
+    fn take_interrupted_text(&self) -> Option<String> {
+        HostAgentExecutor::take_interrupted_text(self)
     }
 }
 
@@ -3782,11 +3803,28 @@ impl HostAgentExecutor {
                     // the retired turn handler).
                     continue;
                 }
-                Ok(StreamRoundOutcome::Interrupted) => {
+                Ok(StreamRoundOutcome::Interrupted { partial, usage }) => {
                     // The turn was cancelled during the stream phase
-                    // (Checkpoint B/C/D inside `stream_with_transparent_retry`).
-                    // Surface `Interrupted` — mirrors production's
+                    // (Checkpoint B/C/D or the mid-stream race inside
+                    // `stream_with_transparent_retry`). The provider billed
+                    // whatever streamed, so its usage counts; the text the
+                    // user saw is handed to the host to commit. Surface
+                    // `Interrupted` — mirrors production's
                     // `TurnOutcomeStatus::Interrupted`.
+                    self.accumulate_usage(&usage);
+                    let shown: String = partial
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !shown.trim().is_empty() {
+                        *self
+                            .pending_interrupted_text
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(shown);
+                    }
                     self.emit_status("Request cancelled".to_string()).await;
                     callback.on_complete(&StopReason::Interrupted).await;
                     return Ok(StopReason::Interrupted);

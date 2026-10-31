@@ -47,8 +47,6 @@ pub use codesmith_agent_runtime::engine::{
 // does not flag them as unused imports.
 #[cfg(test)]
 pub use codesmith_agent_runtime::engine::{
-    // tool_catalog
-    CODE_EXECUTION_TOOL_NAME,
     // context
     COMPACTION_SUMMARY_MARKER,
     // streaming
@@ -58,8 +56,6 @@ pub use codesmith_agent_runtime::engine::{
     MAX_STREAM_ERRORS_BEFORE_FAIL,
     MAX_TRANSPARENT_STREAM_RETRIES,
     TOOL_CALL_START_MARKERS,
-    TOOL_SEARCH_BM25_NAME,
-    TOOL_SEARCH_REGEX_NAME,
     TURN_MAX_OUTPUT_TOKENS,
     // dispatch
     ToolExecOutcome,
@@ -76,8 +72,6 @@ pub use codesmith_agent_runtime::engine::{
     edited_paths_for_tool,
     effective_max_output_tokens,
     effective_max_output_tokens_for_provider,
-    ensure_advanced_tooling,
-    execute_code_execution_tool,
     execute_tool_search,
     extract_compaction_summary_prompt,
     filter_tool_call_delta,
@@ -86,7 +80,6 @@ pub use codesmith_agent_runtime::engine::{
     is_context_length_error_message,
     maybe_activate_requested_deferred_tool,
     maybe_hydrate_requested_deferred_tool,
-    missing_tool_error_message,
     plan_tool_execution_batches,
     preflight_requested_deferred_tool,
     should_force_update_plan_first,

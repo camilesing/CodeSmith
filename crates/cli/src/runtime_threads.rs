@@ -38,7 +38,7 @@ use crate::automation_manager::wrap_automation_manager;
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::core::coherence::CoherenceState;
-use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use crate::core::engine::{CancelReason, EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::models::{ContentBlock, Message, SystemPrompt, Usage};
 use crate::task_manager::wrap_task_manager;
@@ -1776,7 +1776,9 @@ impl RuntimeThreadManager {
                 bail!("Turn {turn_id} is not active on thread {thread_id}");
             }
             active_turn.interrupt_requested = true;
-            active_thread.engine.cancel();
+            active_thread
+                .engine
+                .cancel_with_reason(CancelReason::External);
             touch_lru(&mut active.lru, thread_id);
         }
 

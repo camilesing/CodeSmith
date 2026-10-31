@@ -34,6 +34,16 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Cancelling mid-answer keeps what you saw** — Ctrl+C (or Esc, an ACP
+  `session/cancel`, a runtime-API interrupt) now stops the stream at once
+  instead of letting the model finish a response nobody reads, and the text
+  already on screen stays in the conversation with a marker naming who
+  interrupted it, so the next turn starts from what you actually saw. A tool
+  call left without a result — at a turn boundary, or in a session being
+  resumed — now gets a `TOOL_OUTCOME_UNKNOWN` result placed directly after it,
+  telling the model the call may or may not have run, instead of vanishing
+  from the request.
+
 - **The agent verifies external systems against their documentation** — the
   base prompt now treats cloud services, databases, libraries, CLIs, and APIs
   as documented rather than remembered: when a claim depends on how one

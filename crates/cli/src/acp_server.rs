@@ -74,7 +74,8 @@ use tokio::sync::oneshot;
 use crate::app_state::AppMode;
 use crate::config::Config;
 use crate::core::engine::{
-    EngineHandle, EngineHost, HeadlessEngineOptions, headless_engine_config, spawn_engine,
+    CancelReason, EngineHandle, EngineHost, HeadlessEngineOptions, headless_engine_config,
+    spawn_engine,
 };
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::models::{ContentBlock, Message, SystemPrompt};
@@ -776,7 +777,7 @@ where
         Ok(Ok(outcome)) => outcome,
         // The session closed (its slot was dropped); the turn is over.
         Ok(Err(_)) => {
-            engine.cancel();
+            engine.cancel_with_reason(CancelReason::Internal);
             return Ok(PromptOutcome {
                 status: TurnOutcomeStatus::Interrupted,
                 error: None,
@@ -785,7 +786,7 @@ where
         }
         // Deadline: cancel the engine, free OUR slot, answer interrupted.
         Err(_) => {
-            engine.cancel();
+            engine.cancel_with_reason(CancelReason::Internal);
             release_slot(shared);
             return Ok(PromptOutcome {
                 status: TurnOutcomeStatus::Interrupted,

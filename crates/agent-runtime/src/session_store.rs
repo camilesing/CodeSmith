@@ -36,9 +36,11 @@
 //!
 //! Interrupted turns (assistant `tool_use` with no recorded `tool_result` —
 //! Ctrl-C mid-tool, a crash between call and result) are repaired at load
-//! with `TOOL_OUTCOME_UNKNOWN` terminators
+//! with `TOOL_OUTCOME_UNKNOWN` terminators inserted right after each call
 //! ([`repair_interrupted_tool_calls`]) so the resumed transcript satisfies
-//! provider tool_call/tool_result pairing. Known limitation: the snapshot
+//! provider tool_call/tool_result pairing and adjacency; the live engine
+//! closes tail calls the same way at turn boundaries
+//! ([`tail_tool_outcome_unknown_terminator`]). Known limitation: the snapshot
 //! records no dispatch state, so `TOOL_NOT_STARTED` (interrupted before
 //! dispatch) cannot be distinguished from `TOOL_OUTCOME_UNKNOWN` (dispatched,
 //! result lost) — the conservative `TOOL_OUTCOME_UNKNOWN` is always used;
@@ -143,34 +145,124 @@ fn migrate_session_format(session: &mut SavedSession) {
 }
 
 /// Crash-repair vocabulary (dev-plan TODO-29): close tool calls whose turn
-/// was interrupted before the result was recorded by appending one user
-/// message carrying a `TOOL_OUTCOME_UNKNOWN` `tool_result` terminator per
-/// dangling call, so the resumed transcript satisfies provider
-/// tool_call/tool_result pairing. Idempotent by construction — a terminator
-/// answers its call, so a repaired-and-resaved session repairs to nothing.
-/// Returns the repaired call ids (empty when the transcript was already
-/// balanced).
+/// was interrupted before the result was recorded with a
+/// `TOOL_OUTCOME_UNKNOWN` `tool_result` terminator, inserted right after the
+/// call's assistant message (after any results it already has) — strict
+/// providers reject a tool result that does not directly follow its call.
+/// Load time owns a plain `Vec`, so the insert costs no prefix cache.
+/// Idempotent by construction — a terminator answers its call, so a
+/// repaired-and-resaved session repairs to nothing. Returns the repaired
+/// call ids in first-appearance order (empty when already balanced).
 pub(crate) fn repair_interrupted_tool_calls(session: &mut SavedSession) -> Vec<String> {
-    let dangling = crate::compaction::compact::unanswered_tool_use_ids(&session.messages);
-    if dangling.is_empty() {
-        return dangling;
+    let mut remaining: std::collections::HashSet<String> =
+        crate::compaction::compact::unanswered_tool_use_ids(&session.messages)
+            .into_iter()
+            .collect();
+    let mut repaired = Vec::new();
+    let mut index = 0;
+    while index < session.messages.len() && !remaining.is_empty() {
+        if session.messages[index].role == "assistant" {
+            let ids: Vec<String> = session.messages[index]
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolUse { id, .. } if remaining.remove(id) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !ids.is_empty() {
+                let mut at = index + 1;
+                while at < session.messages.len() && is_tool_result_batch(&session.messages[at]) {
+                    at += 1;
+                }
+                session
+                    .messages
+                    .insert(at, tool_outcome_unknown_message(&ids, "session-repair"));
+                repaired.extend(ids);
+                index = at;
+            }
+        }
+        index += 1;
     }
-    let content: Vec<ContentBlock> = dangling
+    repaired
+}
+
+/// The live counterpart of [`repair_interrupted_tool_calls`] for an
+/// append-only transcript: a terminator message for the unanswered calls of
+/// the **tail** assistant message — the last assistant message, followed by
+/// nothing but tool-result batches — plus the closed ids; `None` when there
+/// is nothing at the tail to close. Shared by the engine's turn-start and
+/// turn-end commits so a live transcript does not rely on the outbound
+/// wire sanitizer silently dropping a dangling call.
+///
+/// Known limitation: a dangling call that is no longer at the tail (a
+/// transcript change put other messages after it) is not closed here —
+/// appending a result that does not directly follow its call would make
+/// strict providers reject the request. The outbound sanitizer strips such
+/// a call from the wire copy, and a reload repairs it in place.
+pub(crate) fn tail_tool_outcome_unknown_terminator(
+    messages: &[Message],
+    origin: &str,
+) -> Option<(Message, Vec<String>)> {
+    let mut tail_start = messages.len();
+    while tail_start > 0 && is_tool_result_batch(&messages[tail_start - 1]) {
+        tail_start -= 1;
+    }
+    let assistant = messages.get(tail_start.checked_sub(1)?)?;
+    if assistant.role != "assistant" {
+        return None;
+    }
+    let answered: std::collections::HashSet<&str> = messages[tail_start..]
         .iter()
-        .map(|id| ContentBlock::ToolResult {
-            tool_use_id: id.clone(),
-            content: "TOOL_OUTCOME_UNKNOWN: the turn was interrupted before this \
-                      tool call's result was recorded (session-repair)"
-                .to_string(),
-            is_error: Some(true),
-            content_blocks: None,
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
         })
         .collect();
-    session.messages.push(Message {
+    let ids: Vec<String> = assistant
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } if !answered.contains(id.as_str()) => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    if ids.is_empty() {
+        return None;
+    }
+    Some((tool_outcome_unknown_message(&ids, origin), ids))
+}
+
+/// A user message made only of tool results (one batch of a tool round).
+fn is_tool_result_batch(message: &Message) -> bool {
+    message.role == "user"
+        && !message.content.is_empty()
+        && message
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
+}
+
+/// One `TOOL_OUTCOME_UNKNOWN` terminator per id. `origin` names who closed
+/// the calls; the text also tells the model the call may have run.
+fn tool_outcome_unknown_message(ids: &[String], origin: &str) -> Message {
+    Message {
         role: "user".to_string(),
-        content,
-    });
-    dangling
+        content: ids
+            .iter()
+            .map(|id| ContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: format!(
+                    "TOOL_OUTCOME_UNKNOWN: the turn was interrupted before this tool call's \
+                     result was recorded ({origin}); it may or may not have run — repeat it \
+                     only if doing so is safe"
+                ),
+                is_error: Some(true),
+                content_blocks: None,
+            })
+            .collect(),
+    }
 }
 
 fn normalize_managed_dir(path: PathBuf) -> std::io::Result<PathBuf> {
@@ -2537,6 +2629,39 @@ mod tests {
             })
             .count();
         assert_eq!(terminators, 1, "repair must be idempotent");
+    }
+
+    /// Strict providers reject a tool result that does not directly follow
+    /// its call, so the repair inserts the terminator right after the call's
+    /// assistant message — not at the tail behind later messages.
+    #[test]
+    fn repair_inserts_terminator_directly_after_its_call() {
+        let mut session = create_saved_session(
+            &dangling_tool_call_messages(),
+            "test-model",
+            std::path::Path::new("/tmp"),
+            0,
+            None,
+        );
+        let repaired = repair_interrupted_tool_calls(&mut session);
+        assert_eq!(repaired, vec!["call_dangling".to_string()]);
+        let call_at = session
+            .messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { id, .. } if id == "call_dangling"))
+            })
+            .expect("call present");
+        assert!(
+            matches!(
+                session.messages[call_at + 1].content.as_slice(),
+                [ContentBlock::ToolResult { tool_use_id, .. }] if tool_use_id == "call_dangling"
+            ),
+            "terminator must directly follow its call: {:?}",
+            session.messages
+        );
     }
 
     /// The same repair vocabulary applies to the crash-recovery checkpoint

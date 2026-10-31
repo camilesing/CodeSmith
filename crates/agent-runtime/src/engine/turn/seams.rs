@@ -42,8 +42,12 @@
 //!   aborts before the stream opens;
 //! - **Checkpoint C** (the `Empty` arm, in `turn::stream`) aborts a
 //!   transparent retry;
+//! - the **mid-stream cancel race** (in `turn::stream::reduce_stream`) drops
+//!   the stream the moment the token fires, keeping what already arrived;
 //! - **Checkpoint D** (post-stream `Complete`/`Partial`, in `turn::stream`)
-//!   discards already-produced content;
+//!   does not act on content that finished after the cancel; the content
+//!   the user already saw goes to the host, which commits its text with an
+//!   interruption marker (`Engine::commit_interrupted_response`);
 //! - **Checkpoint G** (post-tool-loop, before `loop_guard_halt`, in
 //!   `run_inner`) lets a tool-triggered cancel take priority over a loop-guard
 //!   halt;
