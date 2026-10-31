@@ -1,0 +1,36 @@
+[package]
+name = "codesmith-context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords = ["agent", "context", "memory"]
+categories = ["development-tools"]
+license.workspace = true
+repository.workspace = true
+description = "Session context plane for CodeSmith: project docs, working set, workspace trust, persistent memory"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+codesmith-agent.workspace = true
+codesmith-config.workspace = true
+codesmith-sandbox.workspace = true
+codesmith-session.workspace = true
+dirs.workspace = true
+ignore = "0.4"
+regex = "1.11"
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+fd-lock = "4.0.4"
+sha2.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
+serde_json.workspace = true
+shellexpand = "3"
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

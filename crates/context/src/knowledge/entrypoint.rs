@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::utils::defuse_prompt_framing_tags;
+use codesmith_sandbox::sanitization::defuse_framing_tags as defuse_prompt_framing_tags;
 
 use super::budget::{MAX_ENTRYPOINT_BYTES, MAX_ENTRYPOINT_LINES};
 

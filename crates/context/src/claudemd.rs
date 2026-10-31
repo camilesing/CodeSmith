@@ -14,7 +14,7 @@
 //! "project overrides global" semantics.
 //!
 //! CodeSmith previously loaded only two tiers (Project + User global) via
-//! [`crate::project_context`], picked the first matching project file, had
+//! [`crate::project_docs`], picked the first matching project file, had
 //! no Managed tier, no Local rules glob, and no `@include` support. This
 //! module generalizes the merge from two tiers to N and is wired into
 //! `project_context::load_project_context_with_parents_and_home`.
@@ -24,7 +24,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::project_context::{
+use crate::project_docs::{
     GLOBAL_AGENTS_RELATIVE_PATH, GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH, PROJECT_CONTEXT_FILES,
     load_context_file,
 };

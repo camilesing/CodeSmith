@@ -125,26 +125,10 @@ pub fn recursively_sanitize_unicode(value: Value) -> Value {
     }
 }
 
-/// Neutralize closing-tag sequences of every prompt framing element.
-///
-/// The framing-tag vocabulary is the engine's (prompt assembly owns it), so
-/// the host registers the defuser at startup
-/// ([`set_framing_tag_defuser`]); until then a local minimal set keeps the
-/// demotion wrapper safe to use.
-pub fn defuse_framing_tags(text: &str) -> String {
-    let mut out = text.to_string();
-    for tag in framing_tags() {
-        if out.contains("</") {
-            out = defuse_closing_tag(&out, tag);
-        }
-    }
-    out
-}
-
-/// Neutralize `</tag` sequences (case-insensitive prefix match) by escaping
-/// the opener — same scheme as the engine's `defuse_closing_tag`, kept
-/// byte-identical so a registered tag set behaves the same here.
-fn defuse_closing_tag(text: &str, tag: &str) -> String {
+/// Neutralize `</tag` sequences — matched ASCII-case-insensitively with any
+/// trailing characters — by escaping the opener, so the body stays readable.
+/// Single source since the round-9 split (the engine re-exports it).
+pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
     if tag.is_empty() || !text.contains("</") {
         return text.to_string();
     }
@@ -170,26 +154,52 @@ fn defuse_closing_tag(text: &str, tag: &str) -> String {
     out
 }
 
-/// The registered framing-tag vocabulary (engine-owned).
-static FRAMING_TAGS: std::sync::OnceLock<&'static [&'static str]> = std::sync::OnceLock::new();
+/// Every framing tag the system prompt or conversation tail wraps around
+/// untrusted bodies (single source; the engine re-exports it as
+/// `utils::PROMPT_FRAMING_TAGS`). A body injected inside one framing
+/// element must not be able to prematurely close a *different* element
+/// rendered later in the prompt, so all of these are defused together —
+/// see [`defuse_framing_tags`].
+pub const PROMPT_FRAMING_TAGS: &[&str] = &[
+    "instructions",
+    "handoff",
+    "system_prompt_append",
+    "session_goal",
+    "knowledge_memory",
+    "external_content",
+    // Conversation-tail wrappers: `<system-reminder>` carries compaction
+    // re-injected file previews and skill bodies; `<user_memory>` /
+    // `<agent_memory>` carry files the model itself can write via
+    // `remember` / `agent_memory_write` (a planted closer would survive
+    // across sessions); `<diagnostics>` carries language-server output over
+    // untrusted workspace files.
+    "system-reminder",
+    "user_memory",
+    "agent_memory",
+    "diagnostics",
+];
 
+/// The framing-tag set [`defuse_framing_tags`] neutralizes.
 fn framing_tags() -> &'static [&'static str] {
-    FRAMING_TAGS.get().copied().unwrap_or(&[
-        "instructions",
-        "system_prompt_append",
-        "external_content",
-        "system-reminder",
-        "user_memory",
-        "agent_memory",
-        "diagnostics",
-    ])
+    PROMPT_FRAMING_TAGS
 }
 
-/// Register the engine's prompt-framing tag vocabulary (its closing tags are
-/// what [`defuse_framing_tags`] neutralizes). Called once at host startup;
-/// first registration wins, mirroring the tokenizer registry.
-pub fn set_framing_tags(tags: &'static [&'static str]) {
-    let _ = FRAMING_TAGS.set(tags);
+/// Neutralize closing-tag sequences of **every** known prompt framing tag
+/// in untrusted body text. Per-tag defusing (via [`defuse_closing_tag`])
+/// only stops a body from closing its *own* element; a `</handoff>` inside
+/// an instructions body would still terminate a later handoff section's
+/// framing early. Defusing the full [`PROMPT_FRAMING_TAGS`] set closes
+/// that gap. The opening-tag side needs no treatment: a stray `<handoff>`
+/// in a body is inert prose unless something later closes it — which this
+/// function prevents.
+pub fn defuse_framing_tags(text: &str) -> String {
+    let mut out = text.to_string();
+    for tag in framing_tags() {
+        if out.contains("</") {
+            out = defuse_closing_tag(&out, tag);
+        }
+    }
+    out
 }
 
 /// Wrap a tool result whose content originated from an external network
@@ -283,6 +293,36 @@ fn external_content_source(tool_name: &str, input: &Value) -> Option<String> {
         name if name.starts_with("github_") => Some("github.com".to_string()),
         _ => None,
     }
+}
+
+/// Escapes `&`, `"`, `<`, `>`, and `'` to entities so an untrusted value
+/// cannot terminate the attribute early (`x"><injected …`) or smuggle
+/// markup into the framing. `&` must be escaped for entity output to be
+/// well-formed; the emitted entities contain no bare metacharacters, so
+/// a single pass cannot double-escape.
+///
+/// Values without any metacharacter (the common case for ids, slugs, and
+/// file paths) pass through unchanged via a scan-first fast path.
+#[must_use]
+pub fn escape_prompt_attr(value: &str) -> String {
+    if !value
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'"' | b'<' | b'>' | b'\''))
+    {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 8);
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

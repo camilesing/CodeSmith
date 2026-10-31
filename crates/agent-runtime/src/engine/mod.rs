@@ -3600,11 +3600,6 @@ impl Engine {
         if let Some(id) = engine.config.session_id.clone() {
             engine.session.id = id;
         }
-        // Register the engine's prompt-framing tag vocabulary with the
-        // sandbox crate (its untrusted-content demotion neutralizes those
-        // closing tags). First registration wins, so doing it per engine is
-        // idempotent.
-        codesmith_sandbox::sanitization::set_framing_tags(crate::utils::PROMPT_FRAMING_TAGS);
         if engine.config.session_journal.is_some() {
             engine.session.messages.enable_journal();
         }

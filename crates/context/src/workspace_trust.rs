@@ -7,12 +7,23 @@
 //! checks without depending on the host. The CLI re-exports them at the
 //! historical `crate::config::` paths for backwards compatibility.
 
+/// `$HOME`, or `$USERPROFILE` on Windows, as an owned path when set and
+/// non-empty.
+fn effective_home_dir() -> Option<std::path::PathBuf> {
+    for key in ["HOME", "USERPROFILE"] {
+        if let Some(path) = std::env::var_os(key)
+            && !path.is_empty()
+        {
+            return Some(std::path::PathBuf::from(path));
+        }
+    }
+    None
+}
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-
-use crate::utils::effective_home_dir;
 
 /// Canonicalize a path, falling back to a lexically absolutized copy on
 /// failure (e.g. the path does not exist yet). Keeps comparisons stable

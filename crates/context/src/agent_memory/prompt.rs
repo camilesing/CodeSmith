@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use codesmith_sandbox::sanitization::defuse_framing_tags as defuse_prompt_framing_tags;
+
 use crate::agent_memory::AgentMemoryScope;
 use crate::knowledge::entrypoint::load_entrypoint;
 
@@ -26,9 +28,7 @@ pub fn compose_agent_memory_prompt(
         block.push_str("Current MEMORY.md:\n");
         // MEMORY.md is model-writable (`agent_memory_write`); a planted
         // closing tag must not break out of the framing block.
-        block.push_str(&crate::utils::defuse_prompt_framing_tags(
-            &entrypoint.content,
-        ));
+        block.push_str(&defuse_prompt_framing_tags(&entrypoint.content));
         if entrypoint.was_line_truncated || entrypoint.was_byte_truncated {
             block.push_str("\n\n[Note: MEMORY.md was truncated to fit prompt budget. Use agent_memory_read on MEMORY.md if you need the full index.]");
         }

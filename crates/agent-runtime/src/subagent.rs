@@ -51,9 +51,8 @@
 //! caps, spawn-depth budget, approval ceiling, and the `SessionBeforeFork`
 //! veto — no new approval surface.
 
-use std::fmt;
+use crate::agent_memory::AgentMemoryMetadata;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -420,57 +419,6 @@ const COORDINATOR_WORKER_INTRO: &str = concat!(
     "Focus on completing the task thoroughly and report your findings clearly.\n",
     "You cannot use team management tools or send messages to other agents — focus solely on your assigned task.\n\n"
 );
-
-/// Scope for an agent memory directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentMemoryScope {
-    /// User-wide memory shared across workspaces for this agent type.
-    User,
-    /// Project memory committed/stored with the workspace state directory.
-    Project,
-    /// Local project memory that should not be shared.
-    Local,
-}
-
-impl AgentMemoryScope {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
-            Self::Local => "local",
-        }
-    }
-}
-
-impl fmt::Display for AgentMemoryScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for AgentMemoryScope {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "user" => Ok(Self::User),
-            "project" | "workspace" | "repo" => Ok(Self::Project),
-            "local" => Ok(Self::Local),
-            other => Err(format!(
-                "invalid agent memory scope '{other}', expected user, project, or local"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentMemoryMetadata {
-    pub agent_type: String,
-    pub scope: AgentMemoryScope,
-    pub dir: PathBuf,
-}
 
 /// Snapshot of sub-agent state for tool results.
 #[derive(Debug, Clone, Serialize, Deserialize)]

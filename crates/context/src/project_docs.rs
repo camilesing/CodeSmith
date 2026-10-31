@@ -11,6 +11,8 @@
 //! The loaded content is injected into the system prompt to give the agent
 //! context about the project's conventions, structure, and requirements.
 
+use ignore::WalkBuilder;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -610,8 +612,8 @@ fn auto_generate_context(workspace: &Path) -> Option<String> {
         return None;
     }
 
-    let summary = crate::utils::summarize_project(workspace);
-    let tree = crate::utils::project_tree(workspace, 2);
+    let summary = summarize_project(workspace);
+    let tree = project_tree(workspace, 2);
 
     let content = format!(
         "# Project Structure (Auto-generated)\n\n\
@@ -758,6 +760,154 @@ pub fn merge_contexts(contexts: &[ProjectContext]) -> Option<String> {
     } else {
         Some(non_empty.join("\n\n"))
     }
+}
+
+/// Generate a high-level summary of the project based on key files.
+///
+/// Output is byte-stable across calls: `WalkBuilder` doesn't sort siblings
+/// (the OS readdir order leaks through), so the joined `key_files` list
+/// would otherwise reorder run-to-run on filesystems that don't pre-sort.
+/// Only matters when the workspace has no `AGENTS.md` / `CLAUDE.md`, since
+/// the system prompt routes through `ProjectContext::as_system_block` first
+/// and only falls back here when no project-context document exists.
+#[must_use]
+pub fn summarize_project(root: &Path) -> String {
+    let mut key_files = Vec::new();
+
+    let mut builder = WalkBuilder::new(root);
+    builder.hidden(false).follow_links(false).max_depth(Some(2));
+    let walker = builder.build();
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
+            continue;
+        }
+        if is_key_file(entry.path())
+            && let Ok(rel) = entry.path().strip_prefix(root)
+        {
+            key_files.push(rel.to_string_lossy().to_string());
+        }
+    }
+
+    key_files.sort();
+
+    if key_files.is_empty() {
+        return "Unknown project type".to_string();
+    }
+
+    let mut types = Vec::new();
+    if key_files
+        .iter()
+        .any(|f| f.to_lowercase().contains("cargo.toml"))
+    {
+        types.push("Rust");
+    }
+    if key_files
+        .iter()
+        .any(|f| f.to_lowercase().contains("package.json"))
+    {
+        types.push("JavaScript/Node.js");
+    }
+    if key_files
+        .iter()
+        .any(|f| f.to_lowercase().contains("requirements.txt"))
+    {
+        types.push("Python");
+    }
+
+    if types.is_empty() {
+        format!("Project with key files: {}", key_files.join(", "))
+    } else {
+        format!("A {} project", types.join(" and "))
+    }
+}
+
+/// Generate a tree-like view of the project structure.
+///
+/// Sibling order is fixed by sorting collected paths — the underlying
+/// `WalkBuilder` follows the OS readdir order, which is non-deterministic
+/// across filesystems. Sorting by full path preserves the tree shape (a
+/// directory still precedes its children because `"src" < "src/lib.rs"`)
+/// while making the rendered output byte-stable across runs.
+#[must_use]
+pub fn project_tree(root: &Path, max_depth: usize) -> String {
+    let mut entries: Vec<(PathBuf, bool)> = Vec::new();
+
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .max_depth(Some(max_depth + 1));
+
+    for entry in builder.build().flatten() {
+        if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
+            continue;
+        }
+        let depth = entry.depth();
+        if depth == 0 || depth > max_depth {
+            continue;
+        }
+        let rel_path = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(entry.path())
+            .to_path_buf();
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        entries.push((rel_path, is_dir));
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut tree_lines = Vec::with_capacity(entries.len());
+    for (rel_path, is_dir) in entries {
+        let depth = rel_path.components().count();
+        let indent = "  ".repeat(depth.saturating_sub(1));
+        let prefix = if is_dir { "DIR: " } else { "FILE: " };
+        tree_lines.push(format!(
+            "{}{}{}",
+            indent,
+            prefix,
+            rel_path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+    }
+
+    tree_lines.join("\n")
+}
+
+// === Filesystem Helpers ===
+
+/// The GitHub repository this project is published under (`owner/repo`).
+/// Single source of truth for user-facing URLs (feedback, share footers,
+/// user-agent strings); the web app mirrors this in `web/lib/constants.ts`.
+/// Identify if a file is a "key" file for project identification.
+#[must_use]
+pub fn is_key_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        file_name.to_lowercase().as_str(),
+        "cargo.toml"
+            | "package.json"
+            | "requirements.txt"
+            | "build.gradle"
+            | "pom.xml"
+            | "readme.md"
+            | "agents.md"
+            | "claude.md"
+            | "makefile"
+            | "dockerfile"
+            | "main.rs"
+            | "lib.rs"
+            | "index.js"
+            | "index.ts"
+            | "app.py"
+    )
 }
 
 // === Unit Tests ===

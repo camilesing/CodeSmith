@@ -1,5 +1,12 @@
 //! Utility helpers shared across the `DeepSeek` CLI.
 
+pub use codesmith_context::project_docs::{is_key_file, project_tree, summarize_project};
+pub use codesmith_sandbox::sanitization::{
+    PROMPT_FRAMING_TAGS, defuse_closing_tag, defuse_framing_tags as defuse_prompt_framing_tags,
+    escape_prompt_attr,
+};
+pub const GITHUB_REPO: &str = "camilesing/CodeSmith";
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -7,7 +14,6 @@ use std::process::Command;
 
 use crate::models::{ContentBlock, ImageSource, Message};
 use anyhow::{Context, Result};
-use ignore::WalkBuilder;
 use serde_json::Value;
 
 // === Home Directory Resolution ===
@@ -114,156 +120,6 @@ pub fn effective_home_dir() -> Option<PathBuf> {
 }
 
 // === Project Mapping Helpers ===
-
-/// Identify if a file is a "key" file for project identification.
-#[must_use]
-pub fn is_key_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-
-    matches!(
-        file_name.to_lowercase().as_str(),
-        "cargo.toml"
-            | "package.json"
-            | "requirements.txt"
-            | "build.gradle"
-            | "pom.xml"
-            | "readme.md"
-            | "agents.md"
-            | "claude.md"
-            | "makefile"
-            | "dockerfile"
-            | "main.rs"
-            | "lib.rs"
-            | "index.js"
-            | "index.ts"
-            | "app.py"
-    )
-}
-
-/// Generate a high-level summary of the project based on key files.
-///
-/// Output is byte-stable across calls: `WalkBuilder` doesn't sort siblings
-/// (the OS readdir order leaks through), so the joined `key_files` list
-/// would otherwise reorder run-to-run on filesystems that don't pre-sort.
-/// Only matters when the workspace has no `AGENTS.md` / `CLAUDE.md`, since
-/// the system prompt routes through `ProjectContext::as_system_block` first
-/// and only falls back here when no project-context document exists.
-#[must_use]
-pub fn summarize_project(root: &Path) -> String {
-    let mut key_files = Vec::new();
-
-    let mut builder = WalkBuilder::new(root);
-    builder.hidden(false).follow_links(false).max_depth(Some(2));
-    let walker = builder.build();
-
-    for entry in walker {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
-            continue;
-        }
-        if is_key_file(entry.path())
-            && let Ok(rel) = entry.path().strip_prefix(root)
-        {
-            key_files.push(rel.to_string_lossy().to_string());
-        }
-    }
-
-    key_files.sort();
-
-    if key_files.is_empty() {
-        return "Unknown project type".to_string();
-    }
-
-    let mut types = Vec::new();
-    if key_files
-        .iter()
-        .any(|f| f.to_lowercase().contains("cargo.toml"))
-    {
-        types.push("Rust");
-    }
-    if key_files
-        .iter()
-        .any(|f| f.to_lowercase().contains("package.json"))
-    {
-        types.push("JavaScript/Node.js");
-    }
-    if key_files
-        .iter()
-        .any(|f| f.to_lowercase().contains("requirements.txt"))
-    {
-        types.push("Python");
-    }
-
-    if types.is_empty() {
-        format!("Project with key files: {}", key_files.join(", "))
-    } else {
-        format!("A {} project", types.join(" and "))
-    }
-}
-
-/// Generate a tree-like view of the project structure.
-///
-/// Sibling order is fixed by sorting collected paths — the underlying
-/// `WalkBuilder` follows the OS readdir order, which is non-deterministic
-/// across filesystems. Sorting by full path preserves the tree shape (a
-/// directory still precedes its children because `"src" < "src/lib.rs"`)
-/// while making the rendered output byte-stable across runs.
-#[must_use]
-pub fn project_tree(root: &Path, max_depth: usize) -> String {
-    let mut entries: Vec<(PathBuf, bool)> = Vec::new();
-
-    let mut builder = WalkBuilder::new(root);
-    builder
-        .hidden(false)
-        .follow_links(false)
-        .max_depth(Some(max_depth + 1));
-
-    for entry in builder.build().flatten() {
-        if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
-            continue;
-        }
-        let depth = entry.depth();
-        if depth == 0 || depth > max_depth {
-            continue;
-        }
-        let rel_path = entry
-            .path()
-            .strip_prefix(root)
-            .unwrap_or(entry.path())
-            .to_path_buf();
-        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
-        entries.push((rel_path, is_dir));
-    }
-
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut tree_lines = Vec::with_capacity(entries.len());
-    for (rel_path, is_dir) in entries {
-        let depth = rel_path.components().count();
-        let indent = "  ".repeat(depth.saturating_sub(1));
-        let prefix = if is_dir { "DIR: " } else { "FILE: " };
-        tree_lines.push(format!(
-            "{}{}{}",
-            indent,
-            prefix,
-            rel_path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-    }
-
-    tree_lines.join("\n")
-}
-
-// === Filesystem Helpers ===
-
-/// The GitHub repository this project is published under (`owner/repo`).
-/// Single source of truth for user-facing URLs (feedback, share footers,
-/// user-agent strings); the web app mirrors this in `web/lib/constants.ts`.
-pub const GITHUB_REPO: &str = "camilesing/CodeSmith";
 
 /// Quarantine a state file that failed to parse: best-effort copy to
 /// `<name>.corrupt-<unix-millis>` before the caller substitutes a default.
@@ -599,130 +455,8 @@ pub fn url_encode(input: &str) -> String {
 }
 
 // === Prompt-Framing Escape Helpers ===
-
-/// Escape untrusted text for use inside a double-quoted XML-ish attribute
-/// value in prompt framing markup (e.g. `<instructions source="…">`).
-///
-/// Escapes `&`, `"`, `<`, `>`, and `'` to entities so an untrusted value
-/// cannot terminate the attribute early (`x"><injected …`) or smuggle
-/// markup into the framing. `&` must be escaped for entity output to be
-/// well-formed; the emitted entities contain no bare metacharacters, so
-/// a single pass cannot double-escape.
-///
-/// Values without any metacharacter (the common case for ids, slugs, and
-/// file paths) pass through unchanged via a scan-first fast path.
-#[must_use]
-pub fn escape_prompt_attr(value: &str) -> String {
-    if !value
-        .bytes()
-        .any(|b| matches!(b, b'&' | b'"' | b'<' | b'>' | b'\''))
-    {
-        return value.to_string();
-    }
-    let mut out = String::with_capacity(value.len() + 8);
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '"' => out.push_str("&quot;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-/// Neutralize closing-tag sequences of `tag` in untrusted prompt body text.
-///
-/// The literal `</{tag}` sequence — matched **ASCII-case-insensitively**, so
-/// `</knowledge_memory>`, `</KNOWLEDGE_MEMORY>`, and `</Knowledge_Memory>`
-/// are all defused, with any trailing characters — is replaced with
-/// `&lt;/{tag}`, so the body can no longer close the framing tag early
-/// while staying readable for the model. Occurrences of other tags (e.g.
-/// `</other>`) are left untouched.
-///
-/// `tag` is always a literal tag name from our own code; an empty `tag` is
-/// degenerate (it would match every `</`) and returns the input unchanged.
-#[must_use]
-pub fn defuse_closing_tag(text: &str, tag: &str) -> String {
-    if tag.is_empty() || !text.contains("</") {
-        return text.to_string();
-    }
-    let tag_bytes = tag.as_bytes();
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            let rest = &bytes[i + 2..];
-            if rest.len() >= tag_bytes.len()
-                && rest[..tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
-            {
-                out.push_str("&lt;/");
-                i += 2;
-                continue;
-            }
-        }
-        // Copy one full UTF-8 character (loop index always sits on a
-        // boundary: it starts at 0 and advances by char lengths, and the
-        // `</` skip above only skips ASCII bytes).
-        let ch = text[i..].chars().next().unwrap_or('<');
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-/// Every framing tag the system prompt or conversation tail wraps around
-/// untrusted bodies. A body injected inside one framing element must not be
-/// able to prematurely close a *different* element rendered later in the
-/// prompt, so all of these are defused together — see
-/// [`defuse_prompt_framing_tags`].
-pub const PROMPT_FRAMING_TAGS: &[&str] = &[
-    "instructions",
-    "handoff",
-    "system_prompt_append",
-    "session_goal",
-    "knowledge_memory",
-    "external_content",
-    // Conversation-tail wrappers: `<system-reminder>` carries compaction
-    // re-injected file previews and skill bodies; `<user_memory>` /
-    // `<agent_memory>` carry files the model itself can write via
-    // `remember` / `agent_memory_write` (a planted closer would survive
-    // across sessions); `<diagnostics>` carries language-server output over
-    // untrusted workspace files.
-    "system-reminder",
-    "user_memory",
-    "agent_memory",
-    "diagnostics",
-];
-
-/// Neutralize closing-tag sequences of **every** known prompt framing tag
-/// in untrusted body text.
-///
-/// Per-tag defusing (via [`defuse_closing_tag`]) only stops a body from
-/// closing its *own* element; a `</handoff>` inside an instructions body
-/// would still terminate a later handoff section's framing early, because
-/// configured instructions are rendered before the goal/handoff sections.
-/// Defusing the full [`PROMPT_FRAMING_TAGS`] set closes that gap. The
-/// opening-tag side needs no treatment: a stray `<handoff>` in a body is
-/// inert prose unless something later closes it — which this function
-/// prevents.
-#[must_use]
-pub fn defuse_prompt_framing_tags(text: &str) -> String {
-    let mut out = text.to_string();
-    for tag in PROMPT_FRAMING_TAGS {
-        // Cheap pre-check keeps the already-clean common case at one
-        // `contains("</")` scan plus per-tag probes, with no extra
-        // allocation (`defuse_closing_tag` returns the input unchanged
-        // when nothing matches).
-        if out.contains("</") {
-            out = defuse_closing_tag(&out, tag);
-        }
-    }
-    out
-}
+// (moved to `codesmith_sandbox::sanitization` in the round-9 split; the
+// re-exports at the top of this file keep `crate::utils::…` paths working)
 
 /// Render a path for **user-facing display** with the home directory
 /// contracted to `~`. Use this in the REPL, doctor/setup stdout, and any

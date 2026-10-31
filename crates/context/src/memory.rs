@@ -21,6 +21,10 @@
 //! That keeps existing users on zero-overhead behavior and makes the
 //! feature explicit.
 
+use codesmith_sandbox::sanitization::escape_prompt_attr;
+
+use codesmith_sandbox::sanitization::defuse_framing_tags as defuse_prompt_framing_tags;
+
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -60,7 +64,7 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     // filenames — cannot terminate the attribute and smuggle framing
     // markup into the system prompt (the payload-only defusing below
     // never sees it).
-    let display = crate::utils::escape_prompt_attr(&source.display().to_string());
+    let display = escape_prompt_attr(&source.display().to_string());
     let payload = if content.len() > MAX_MEMORY_SIZE {
         let cutoff = truncation_cutoff(content, &display);
         let omitted_bytes = content.len() - cutoff;
@@ -76,7 +80,7 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     // early — defuse before the legit closer is appended.
     Some(format!(
         "<user_memory source=\"{display}\">\n{}\n</user_memory>",
-        crate::utils::defuse_prompt_framing_tags(&payload)
+        defuse_prompt_framing_tags(&payload)
     ))
 }
 

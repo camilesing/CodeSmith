@@ -113,7 +113,7 @@ pub fn ensure_agent_memory_dir(memory_dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(memory_dir)?;
     let entrypoint = resolve_agent_memory_entrypoint(memory_dir);
     if !entrypoint.exists() {
-        crate::utils::write_atomic(
+        codesmith_session::primitives::write_atomic(
             &entrypoint,
             b"# Agent Memory\n\nAdd links to durable memory topic files here.\n",
         )?;

@@ -6,10 +6,10 @@
 //! - a compact working-set summary block for the system prompt
 //! - pinned message indices that compaction should preserve
 
-use crate::models::{ContentBlock, Message};
 use crate::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery, should_skip_unignored_discovery_entry,
 };
+use codesmith_agent::models::{ContentBlock, Message};
 use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1329,8 +1329,6 @@ mod tests {
     /// system prompt before the historical conversation.
     #[test]
     fn summary_block_is_byte_stable_across_next_turn_when_no_new_paths_observed() {
-        use crate::test_support::assert_byte_identical;
-
         let tmp = TempDir::new().expect("tempdir");
         fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"").expect("write");
         let src = tmp.path().join("src");
@@ -1414,11 +1412,36 @@ mod tests {
         assert!(a_score >= b_score);
     }
 
+    /// Windowed first-divergence diff (twin of the engine test-support
+    /// helper) — a byte mismatch names where, not just that.
+    #[track_caller]
+    fn assert_byte_identical(label: &str, a: &str, b: &str) {
+        if a != b {
+            let pos = a
+                .bytes()
+                .zip(b.bytes())
+                .position(|(x, y)| x != y)
+                .unwrap_or_else(|| a.len().min(b.len()));
+            panic!(
+                "{label}: non-deterministic construction — first diff at byte {pos}\n{:?}\nvs\n{:?}",
+                &a[pos.saturating_sub(32)..(pos + 32).min(a.len())],
+                &b[pos.saturating_sub(32)..(pos + 32).min(b.len())],
+            );
+        }
+    }
+
     #[test]
-    fn estimate_tokens_is_available_for_future_budgeting() {
-        use crate::compaction::estimate_tokens;
-        let messages = vec![make_message("user", "src/main.rs")];
-        assert!(estimate_tokens(&messages) > 0);
+    fn conservative_token_estimate_is_available_for_budgeting() {
+        let messages = [make_message("user", "src/main.rs")];
+        let text: String = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                codesmith_agent::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(codesmith_session::primitives::estimate_text_tokens_conservative(&text) > 0);
     }
 
     #[test]

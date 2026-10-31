@@ -789,6 +789,7 @@ dependencies = [
  "clap",
  "codesmith-agent",
  "codesmith-config",
+ "codesmith-context",
  "codesmith-extensions",
  "codesmith-sandbox",
  "codesmith-secrets",
@@ -946,6 +947,34 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "codesmith-context"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codesmith-agent",
+ "codesmith-config",
+ "codesmith-sandbox",
+ "codesmith-session",
+ "dirs",
+ "fd-lock",
+ "ignore",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shellexpand",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "toml_edit",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
