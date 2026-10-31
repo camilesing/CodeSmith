@@ -724,6 +724,7 @@ where
         shared,
         &config,
         &settings,
+        store.sessions_dir(),
         &session_id,
         &route.model,
         writer,
@@ -844,6 +845,7 @@ async fn ensure_engine<W>(
     shared: &AcpShared,
     config: &Config,
     settings: &Settings,
+    sessions_dir: &Path,
     session_id: &str,
     model: &str,
     writer: SharedWriter<W>,
@@ -867,7 +869,7 @@ where
     if let Some(engine) = existing {
         return Ok(engine);
     }
-    let engine_config = headless_engine_config(
+    let mut engine_config = headless_engine_config(
         config,
         settings,
         HeadlessEngineOptions {
@@ -883,6 +885,13 @@ where
             team_context: None,
         },
     )?;
+    // An ACP session is a saved session keyed by its ACP id: the engine
+    // starts under that id so the journal (round-9 TODO-58) pairs with the
+    // snapshot `persist_turn` writes.
+    engine_config.session_id = Some(session_id.to_string());
+    engine_config.session_journal = Some(std::sync::Arc::new(
+        codesmith_agent_runtime::session_journal::FileSessionJournal::new(sessions_dir),
+    ));
     let engine = spawn_engine(engine_config, config, EngineHost::default());
     if !history.is_empty() {
         engine

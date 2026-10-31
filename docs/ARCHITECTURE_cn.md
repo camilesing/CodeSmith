@@ -41,6 +41,14 @@
   `ThreadResumeParams.session_id` 扩展并已放弃：CLI runtime API 已提供
   从保存会话恢复的能力，且 core/app-server 目前没有对 agent-runtime 的
   依赖边）。
+  REPL / ACP 转写的持久记录是只追加的**会话日志**
+  （`agent-runtime/src/session_journal.rs`，接缝 `SessionJournal`，文件
+  提供者 `FileSessionJournal` → `<sessions>/<id>.journal.jsonl`）：引擎在
+  每次 `TurnComplete` 之前和每个 op 之后，把转写的每次追加与每次重建
+  ——包括压缩、`/purge`、`/edit` 丢弃的历史——发给日志，因此任一时刻的
+  转写都是日志某个前缀的折叠。快照是这一折叠的加载缓存：`save_session`
+  记录它覆盖的日志大小（`journal_bytes`），加载时若日志已超出该大小，
+  就从日志恢复转写。exec 运行、runtime API 线程与子代理不记日志。
 - **插件分层（已声明）。** 可插拔性统一走 `Extension` 契约
   （`crates/agent/src/extension.rs`）+ `ExtensionRunner`——共四层：用户
   Rhai mod（`~/.codesmith/mods/`，consent 门控）、内建 Rhai 层（内嵌脚本

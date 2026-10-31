@@ -5,6 +5,7 @@
 //! (transcript cells, pickers, themes) are intentionally absent: the REPL
 //! prints to stdout and reads lines from stdin.
 
+use codesmith_agent_runtime::session_journal::{FileSessionJournal, SessionJournal};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -856,6 +857,15 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
+        // The REPL snapshot is keyed by the engine session id, so the
+        // journal pairs with it (round-9 TODO-58).
+        session_journal: crate::session_manager::SessionManager::default_location()
+            .ok()
+            .map(|manager| {
+                std::sync::Arc::new(FileSessionJournal::new(manager.sessions_dir()))
+                    as std::sync::Arc<dyn SessionJournal>
+            }),
+        session_id: None,
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),
@@ -1190,6 +1200,7 @@ mod restore_tests {
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
             approvals: Vec::new(),
+            journal_bytes: None,
         };
         restore_engine_backed_session_state(&mut state, &saved).await;
 

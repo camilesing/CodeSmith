@@ -288,12 +288,14 @@ pub struct RebuildRecord {
 
 /// Append-only conversation history — the `Session` transcript store.
 ///
-/// Recording-layer role (one of four layers; each owning module states its
-/// role): while the session runs this log is the **authoritative record** —
-/// every transcript projection folds from it (see
-/// `crate::projections`), and every durable layer (the session snapshot
-/// file, the JSONL event stream, the SQLite query index) is downstream of
-/// it. Nothing downstream holds authority over it.
+/// Recording-layer role (each owning module states its role): while the
+/// session runs this log is the **authoritative record** — every transcript
+/// projection folds from it (see `crate::projections`), and every durable
+/// layer (the session journal, the session snapshot file, the JSONL event
+/// stream, the SQLite query index) is downstream of it. Nothing downstream
+/// holds authority over it. With journaling enabled, every push and every
+/// rebuild — including the history a rebuild drops — reaches the durable
+/// journal (`crate::session_journal`) in order.
 ///
 /// `push` is the only everyday mutation this type expresses. Wholesale
 /// replacement exists solely through [`rebuild`](Self::rebuild), which
@@ -310,6 +312,10 @@ pub struct RebuildRecord {
 pub struct AppendLog {
     messages: Vec<Message>,
     last_rebuild: Option<RebuildRecord>,
+    /// Durable-journal cursor (round-9 TODO-58); `None` until
+    /// [`enable_journal`](Self::enable_journal) — a log nobody drains keeps
+    /// no pending entries.
+    journal: Option<JournalCursor>,
     /// Shared snapshot handed to `Event::SessionUpdated` and the per-turn
     /// tool-context build. Interior-mutable so `snapshot(&self)` works from
     /// shared-ref call sites: `push` extends it in place while unsold
@@ -327,9 +333,21 @@ impl Clone for AppendLog {
         Self {
             messages: self.messages.clone(),
             last_rebuild: self.last_rebuild,
+            // A clone is never the journaled owner: draining both would
+            // write every pending entry twice.
+            journal: None,
             snapshot: StdMutex::new(None),
         }
     }
+}
+
+/// What the durable journal has not been sent yet: messages from `mark` on,
+/// plus the entries a rebuild already sealed (the pre-rebuild tail and the
+/// replacement itself).
+#[derive(Debug, Default)]
+struct JournalCursor {
+    mark: usize,
+    pending: Vec<crate::session_journal::JournalEntry>,
 }
 
 impl AppendLog {
@@ -337,6 +355,7 @@ impl AppendLog {
         Self {
             messages: Vec::new(),
             last_rebuild: None,
+            journal: None,
             snapshot: StdMutex::new(None),
         }
     }
@@ -347,8 +366,38 @@ impl AppendLog {
         Self {
             messages,
             last_rebuild: None,
+            journal: None,
             snapshot: StdMutex::new(None),
         }
+    }
+
+    /// Start recording journal entries from the current tail on (the
+    /// engine enables this when a session journal is configured). Messages
+    /// already in the log count as recorded.
+    pub fn enable_journal(&mut self) {
+        if self.journal.is_none() {
+            self.journal = Some(JournalCursor {
+                mark: self.messages.len(),
+                pending: Vec::new(),
+            });
+        }
+    }
+
+    /// Drain the journal entries recorded since the last drain, in order:
+    /// whatever rebuilds sealed, then the messages appended since. Empty
+    /// when journaling is off or nothing changed.
+    pub fn take_journal_entries(&mut self) -> Vec<crate::session_journal::JournalEntry> {
+        let Some(cursor) = self.journal.as_mut() else {
+            return Vec::new();
+        };
+        let mut entries = std::mem::take(&mut cursor.pending);
+        if cursor.mark < self.messages.len() {
+            entries.push(crate::session_journal::JournalEntry::Append {
+                messages: self.messages[cursor.mark..].to_vec(),
+            });
+        }
+        cursor.mark = self.messages.len();
+        entries
     }
 
     /// The everyday mutation: append one message to the tail. Every
@@ -375,6 +424,25 @@ impl AppendLog {
     /// record ([`last_rebuild`](Self::last_rebuild)) for `/cache zones`.
     pub fn rebuild(&mut self, reason: RebuildReason, messages: Vec<Message>) {
         let before = self.messages.len();
+        if let Some(cursor) = self.journal.as_mut() {
+            // Seal the not-yet-journaled tail before it leaves the log, then
+            // the replacement: the replaced history stays on record.
+            if cursor.mark < before {
+                cursor
+                    .pending
+                    .push(crate::session_journal::JournalEntry::Append {
+                        messages: self.messages[cursor.mark..].to_vec(),
+                    });
+            }
+            cursor
+                .pending
+                .push(crate::session_journal::JournalEntry::Rebuild {
+                    reason: reason.to_string(),
+                    before,
+                    messages: messages.clone(),
+                });
+            cursor.mark = messages.len();
+        }
         self.messages = messages;
         self.last_rebuild = Some(RebuildRecord {
             reason,
@@ -767,6 +835,50 @@ mod tests {
 
         let messages: Vec<_> = log.iter().collect();
         assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn journal_records_pushes_and_rebuilds_in_order_and_keeps_dropped_history() {
+        use crate::session_journal::{JournalEntry, fold_transcript};
+        let mut log = AppendLog::from_messages(vec![text_message("user", "restored")]);
+        log.enable_journal();
+        log.push(text_message("user", "one"));
+        log.push(text_message("assistant", "two"));
+        log.rebuild(
+            RebuildReason::ManualCompaction,
+            vec![text_message("user", "summary")],
+        );
+        log.push(text_message("user", "three"));
+        let entries = log.take_journal_entries();
+        assert_eq!(
+            entries,
+            vec![
+                JournalEntry::Append {
+                    messages: vec![
+                        text_message("user", "one"),
+                        text_message("assistant", "two")
+                    ],
+                },
+                JournalEntry::Rebuild {
+                    reason: RebuildReason::ManualCompaction.to_string(),
+                    before: 3,
+                    messages: vec![text_message("user", "summary")],
+                },
+                JournalEntry::Append {
+                    messages: vec![text_message("user", "three")],
+                },
+            ]
+        );
+        assert_eq!(fold_transcript(&entries).unwrap(), log.to_vec());
+        assert!(log.take_journal_entries().is_empty(), "drained");
+    }
+
+    #[test]
+    fn journaling_off_records_nothing() {
+        let mut log = AppendLog::new();
+        log.push(text_message("user", "one"));
+        log.rebuild(RebuildReason::Purge, Vec::new());
+        assert!(log.take_journal_entries().is_empty());
     }
 
     #[test]

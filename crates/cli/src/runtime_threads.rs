@@ -2134,6 +2134,10 @@ impl RuntimeThreadManager {
             subagent_external_provider: crate::tools::subagent::headless::provider_from_config(
                 &self.config,
             )?,
+            // Runtime API threads: the thread store's event stream is the
+            // authoritative record (TODO-20), so no session journal.
+            session_journal: None,
+            session_id: None,
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             sandbox_runtime: self.config.sandbox_runtime_config(),
             memory_enabled: self.config.memory_enabled(),

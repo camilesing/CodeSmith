@@ -807,6 +807,7 @@ mod tests {
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
             approvals: Vec::new(),
+            journal_bytes: None,
         };
         session.failed_attempts = vec![codesmith_agent_runtime::session_store::AttemptRecord {
             turn_id: "t-9".to_string(),

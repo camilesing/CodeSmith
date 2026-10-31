@@ -191,6 +191,8 @@ pub struct Engine {
     /// ([`Self::commit_interrupted_response`]) to name who interrupted a
     /// response.
     pub(crate) cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
+    /// Whether a failed session-journal write was already surfaced.
+    journal_failure_reported: bool,
     /// Orphaned by the legacy turn-loop retirement: it serialized tool calls
     /// through this lock; `HostAgentExecutor` runs tools sequentially in its
     /// own `run_inner`. Retained pending a follow-up slice that decides whether
@@ -909,7 +911,11 @@ impl Engine {
                     self.handle_team_inbox_dispatch(dispatch).await;
                 }
             }
+            // Every op that changed the transcript reaches the journal
+            // before the next one runs.
+            self.flush_journal().await;
         }
+        self.flush_journal().await;
 
         // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
         // a brief window to exit before drop fires SIGKILL via kill_on_drop.
@@ -961,6 +967,45 @@ impl Engine {
             );
             self.push_session_message(terminator);
             self.emit_session_updated().await;
+        }
+    }
+
+    /// Send the transcript changes recorded since the last flush to the
+    /// configured session journal (round-9 TODO-58). Off the async runtime
+    /// (blocking file I/O) but awaited, so journal order equals op order.
+    /// A failed write is logged and surfaced once per engine; the turn goes
+    /// on — the snapshot still saves, and the next flush retries with the
+    /// entries that follow (the failed batch is not re-sent).
+    async fn flush_journal(&mut self) {
+        let Some(journal) = self.config.session_journal.clone() else {
+            return;
+        };
+        let entries = self.session.messages.take_journal_entries();
+        if entries.is_empty() {
+            return;
+        }
+        let session_id = self.session.id.clone();
+        let outcome =
+            tokio::task::spawn_blocking(move || journal.append(&session_id, entries)).await;
+        let error = match outcome {
+            Ok(Ok(())) => return,
+            Ok(Err(err)) => err.to_string(),
+            Err(join) => join.to_string(),
+        };
+        tracing::error!(
+            target: "codesmith::session",
+            session = %self.session.id,
+            %error,
+            "session journal write failed"
+        );
+        if !self.journal_failure_reported {
+            self.journal_failure_reported = true;
+            let _ = self
+                .tx_event
+                .send(Event::status(format!(
+                    "warning: session journal write failed ({error}); the snapshot still saves"
+                )))
+                .await;
         }
     }
 
@@ -1838,6 +1883,11 @@ impl Engine {
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
+
+        // The turn's transcript reaches the journal before the UI hears the
+        // turn ended — hosts write the snapshot on `TurnComplete`, and the
+        // journal must never trail it.
+        self.flush_journal().await;
 
         // Emit turn complete event — after all post-turn bookkeeping so
         // the terminal is immediately responsive when the UI receives it.
@@ -3498,6 +3548,7 @@ impl Engine {
             cancel_token,
             shared_cancel_token,
             cancel_reason,
+            journal_failure_reported: false,
             tool_exec_lock,
             capacity_controller,
             coherence_state: CoherenceState::default(),
@@ -3514,6 +3565,12 @@ impl Engine {
             runtime_ui,
             extension_runner,
         };
+        if let Some(id) = engine.config.session_id.clone() {
+            engine.session.id = id;
+        }
+        if engine.config.session_journal.is_some() {
+            engine.session.messages.enable_journal();
+        }
         engine.rehydrate_latest_canonical_state();
         engine
     }

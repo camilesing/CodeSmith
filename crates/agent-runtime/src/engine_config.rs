@@ -8,6 +8,7 @@
 //! binary (the CLI today, via an `EngineHost`-style struct) so that this type
 //! stays free of OS-bridging managers.
 
+use crate::session_journal::SessionJournal;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -291,6 +292,16 @@ pub struct EngineConfig {
     /// owns while the kernel only sees the definition
     /// (`crate::subagent::ExternalSubagentProvider`).
     pub subagent_external_provider: Option<Arc<dyn ExternalSubagentProvider>>,
+    /// Durable session journal (round-9 TODO-58). `Some` on hosts whose
+    /// session snapshot is keyed by the engine's session id (the REPL, ACP);
+    /// the engine then journals every transcript append and rebuild before
+    /// each `TurnComplete` and after every op. `None` keeps no journal.
+    pub session_journal: Option<Arc<dyn SessionJournal>>,
+    /// Session id to start under, for hosts that choose the persisted
+    /// session's id before the engine exists (ACP) — the journal and the
+    /// `SessionUpdated` events then name the same session the host saves.
+    /// `None` mints a fresh id.
+    pub session_id: Option<String>,
     /// Native tools that should stay in the model-visible catalog even when
     /// they are outside the small default core surface (#2076).
     pub tools_always_load: HashSet<String>,
@@ -423,6 +434,8 @@ impl Default for EngineConfig {
             result_claim_verifier: true,
             subagent_inherit_full_registry: false,
             subagent_external_provider: None,
+            session_journal: None,
+            session_id: None,
             tools_always_load: HashSet::new(),
             progressive_disclosure: false,
             turn_executor: crate::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),

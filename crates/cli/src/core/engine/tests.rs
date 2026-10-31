@@ -5554,6 +5554,86 @@ async fn dangling_tool_call_is_closed_before_the_next_request() {
     );
 }
 
+// === Round-9 TODO-58 session journal =======================================
+
+/// The journal is the session's durable record: its fold equals the
+/// transcript the REPL persists, and history a rebuild removed from the live
+/// transcript (here `/edit` dropping the last exchange) stays on record.
+#[tokio::test]
+async fn session_journal_folds_to_the_transcript_and_keeps_rolled_back_history() {
+    use codesmith_agent_runtime::session_journal::{
+        FileSessionJournal, JournalEntry, fold_transcript, journal_path, read_journal,
+    };
+
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let sessions = tmp.path().join("sessions");
+    let mut config = test_engine_config(tmp.path());
+    config.session_journal = Some(std::sync::Arc::new(FileSessionJournal::new(&sessions)));
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("first answer"),
+        canned::simple_text_turn("second answer"),
+        canned::simple_text_turn("edited answer"),
+    ]);
+    let (handle, _mock) = spawn_engine_with_mock(config, mock);
+
+    let mut last: Option<(String, Vec<Message>)> = None;
+    for op in [
+        make_send_op("first"),
+        make_send_op("second"),
+        Op::EditLastTurn {
+            new_message: "second, edited".to_string(),
+        },
+    ] {
+        handle.send(op).await.expect("send op");
+        for event in collect_until_turn_complete(&handle).await {
+            if let Event::SessionUpdated {
+                session_id,
+                messages,
+                ..
+            } = event
+            {
+                last = Some((session_id, messages.as_ref().clone()));
+            }
+        }
+    }
+    let (session_id, transcript) = last.expect("the engine reported its transcript");
+
+    let entries = read_journal(&journal_path(&sessions, &session_id).expect("path"))
+        .expect("the journal is readable");
+    assert_eq!(
+        fold_transcript(&entries).expect("fold"),
+        transcript,
+        "the journal folds to the persisted transcript"
+    );
+    let text_of = |m: &Message| {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>()
+    };
+    assert!(
+        !transcript
+            .iter()
+            .any(|m| text_of(m).contains("second answer")),
+        "the rollback removed the exchange from the live transcript"
+    );
+    assert!(
+        entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Append { messages } if messages.iter().any(|m| text_of(m).contains("second answer"))
+        )),
+        "the rolled-back exchange stays on record in the journal"
+    );
+    assert!(entries.iter().any(|entry| matches!(
+        entry,
+        JournalEntry::Rebuild { reason, .. } if reason.contains("edit rollback")
+    )));
+}
+
 // === Test 2: Tool call round-trip ============================================
 
 #[tokio::test]

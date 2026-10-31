@@ -1990,6 +1990,10 @@ pub(crate) fn headless_engine_config(
         result_claim_verifier: config.result_claim_verifier(),
         subagent_inherit_full_registry: config.subagent_inherit_full_registry(),
         subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
+        // Headless runs (`exec`) mint their snapshot id apart from the
+        // engine session id, so no journal; ACP sets one after this builds.
+        session_journal: None,
+        session_id: None,
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
         memory_enabled: config.memory_enabled(),

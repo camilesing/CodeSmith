@@ -46,6 +46,7 @@ SEAMS = [
     "LlmClient",
     "ProviderFactory",
     "SandboxBackend",
+    "SessionJournal",
     "SessionStore",
     "SubAgentSpawner",
     "ToolDefinition",

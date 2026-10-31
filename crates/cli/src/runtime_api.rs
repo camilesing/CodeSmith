@@ -2389,6 +2389,7 @@ mod tests {
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
             approvals: Vec::new(),
+            journal_bytes: None,
         }
     }
 

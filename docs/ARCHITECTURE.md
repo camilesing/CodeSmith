@@ -48,6 +48,17 @@ change, and every `ExtensionEventKind` declares its dispatch mode
   extension was considered and dropped: the CLI runtime API already
   serves resume-from-session, and core/app-server have no
   agent-runtime edge today).
+  The durable record of a REPL / ACP transcript is the append-only
+  **session journal** (`agent-runtime/src/session_journal.rs`, seam
+  `SessionJournal`, file provider `FileSessionJournal` →
+  `<sessions>/<id>.journal.jsonl`): the engine sends every transcript
+  append and every rebuild — including the history a compaction, `/purge`,
+  or `/edit` drops — before each `TurnComplete` and after every op, so the
+  transcript at any point is a fold of a journal prefix. The snapshot is
+  that fold's load cache: `save_session` stamps the journal size it covers
+  (`journal_bytes`), and a load whose journal has grown past it recovers
+  the transcript from the journal. Exec runs, runtime-API threads, and
+  sub-agents keep no journal.
 - **Plugin tiers (declared).** Pluggability rides the single `Extension`
   contract (`crates/agent/src/extension.rs`) + `ExtensionRunner` — four
   tiers: user Rhai mods (`~/.codesmith/mods/`, consent-gated), the

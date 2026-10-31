@@ -6,10 +6,13 @@
 //! load-time governance are decided here, not in any one host. The CLI's
 //! `session_manager` module re-exports this for call-site compatibility.
 //!
-//! Recording-layer role (one of four layers; each owning module states its
-//! role): a `SavedSession` file is a **loadable snapshot** — a copy of the
-//! transcript plus cache/snapshot fields (last request envelope, fact
-//! ledger). Foldable state is deliberately NOT persisted here: todo/plan/
+//! Recording-layer role (each owning module states its role): a
+//! `SavedSession` file is a **loadable snapshot** — a copy of the transcript
+//! plus cache/snapshot fields (last request envelope, fact ledger). For
+//! REPL and ACP sessions the durable record of the transcript is the
+//! append-only session journal (`crate::session_journal`); the snapshot is
+//! the load cache of its fold, stamped with the journal size it covers
+//! (`journal_bytes`) so a load can tell when the journal has moved on. Foldable state is deliberately NOT persisted here: todo/plan/
 //! recent-read-file projections rebuild from the transcript at load (see
 //! `codesmith_agent_runtime::projections`), while non-refoldable state
 //! (the fact ledger, whose source messages compaction may drop) snapshots.
@@ -548,6 +551,14 @@ pub struct SavedSession {
     /// request. Empty on sessions saved before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approvals: Vec<ApprovalRecord>,
+    /// Size in bytes of the session journal (`<id>.journal.jsonl`, round-9
+    /// TODO-58) when this snapshot was written — stamped by
+    /// [`FileSessionStore::save_session`]. A load whose journal has grown
+    /// past it recovers the transcript from the journal. `None` when no
+    /// journal existed, or the snapshot was written by a build that kept
+    /// none (the snapshot then stays authoritative).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_bytes: Option<u64>,
 }
 
 /// File-backed [`SessionStore`] provider: one pretty-JSON
@@ -615,8 +626,18 @@ impl FileSessionStore {
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let path = self.validated_session_path(&session.metadata.id)?;
 
-        let content = serde_json::to_string_pretty(&session)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // Stamp the journal size this snapshot covers (the engine journals
+        // before it reports a turn complete, so the journal already holds
+        // everything this snapshot shows).
+        let journal_bytes = self.journal_len(&session.metadata.id);
+        let content = if journal_bytes == session.journal_bytes {
+            serde_json::to_string_pretty(&session)
+        } else {
+            let mut stamped = session.clone();
+            stamped.journal_bytes = journal_bytes;
+            serde_json::to_string_pretty(&stamped)
+        }
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         // Atomic write via write_atomic (NamedTempFile + fsync + persist)
         write_atomic(&path, content.as_bytes())?;
@@ -666,7 +687,61 @@ impl FileSessionStore {
         let path = self.validated_session_path(id)?;
 
         let content = fs::read_to_string(&path)?;
-        Self::decode_session(&content)
+        let mut session = Self::decode_session(&content)?;
+        self.recover_from_journal(&mut session);
+        Ok(session)
+    }
+
+    /// Current size of `id`'s journal, `None` when it has none.
+    fn journal_len(&self, id: &str) -> Option<u64> {
+        let path = crate::session_journal::journal_path(&self.sessions_dir, id).ok()?;
+        fs::metadata(path).ok().map(|meta| meta.len())
+    }
+
+    /// The journal is the durable record; the snapshot caches its fold. A
+    /// journal that grew past the size the snapshot recorded (a crash
+    /// between journal append and snapshot write, or an op that changed the
+    /// transcript after the last snapshot) wins. A snapshot that recorded
+    /// no size was written by a build without journals — it stays
+    /// authoritative, so a downgrade-then-upgrade never rolls a session
+    /// back. An unreadable journal keeps the snapshot (logged).
+    fn recover_from_journal(&self, session: &mut SavedSession) {
+        let Some(recorded) = session.journal_bytes else {
+            return;
+        };
+        let Some(current) = self.journal_len(&session.metadata.id) else {
+            return;
+        };
+        if current <= recorded {
+            return;
+        }
+        let Ok(path) =
+            crate::session_journal::journal_path(&self.sessions_dir, &session.metadata.id)
+        else {
+            return;
+        };
+        match crate::session_journal::read_journal(&path)
+            .and_then(|entries| crate::session_journal::fold_transcript(&entries))
+        {
+            Ok(messages) => {
+                tracing::info!(
+                    target: "codesmith::session",
+                    id = %session.metadata.id,
+                    snapshot = session.messages.len(),
+                    journal = messages.len(),
+                    "snapshot trails its journal; transcript recovered from the journal"
+                );
+                session.messages = messages;
+                session.journal_bytes = Some(current);
+                repair_interrupted_tool_calls(session);
+            }
+            Err(err) => tracing::warn!(
+                target: "codesmith::session",
+                id = %session.metadata.id,
+                %err,
+                "session journal unreadable; keeping the snapshot"
+            ),
+        }
     }
 
     /// Decode one persisted session record through the format-governance
@@ -827,6 +902,19 @@ impl FileSessionStore {
                 id = %id.trim(),
                 %err,
                 "failed to remove the inbox journal for a deleted session"
+            );
+        }
+        // The session journal (TODO-58) is the session's own record and
+        // dies with it on the same paths.
+        if let Ok(session_journal) = crate::session_journal::journal_path(&self.sessions_dir, id)
+            && let Err(err) = fs::remove_file(&session_journal)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                target: "session",
+                id = %id.trim(),
+                %err,
+                "failed to remove the session journal for a deleted session"
             );
         }
         Ok(())
@@ -1219,6 +1307,7 @@ pub fn create_saved_session_with_id_and_mode(
         artifacts: Vec::new(),
         failed_attempts: Vec::new(),
         approvals: Vec::new(),
+        journal_bytes: None,
     }
 }
 
@@ -1630,6 +1719,7 @@ mod tests {
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
             approvals: Vec::new(),
+            journal_bytes: None,
         };
         manager.save_session(&session).expect("save");
     }
@@ -1667,6 +1757,7 @@ mod tests {
             artifacts: Vec::new(),
             failed_attempts: Vec::new(),
             approvals: Vec::new(),
+            journal_bytes: None,
         };
         manager.save_session(&session).expect("save empty");
     }
@@ -2629,6 +2720,71 @@ mod tests {
             })
             .count();
         assert_eq!(terminators, 1, "repair must be idempotent");
+    }
+
+    /// The journal is the durable record and the snapshot its cache: a turn
+    /// that reached the journal but not the snapshot (a crash between the
+    /// two writes) is recovered on load.
+    #[test]
+    fn load_recovers_the_transcript_when_the_snapshot_trails_its_journal() {
+        use crate::session_journal::{FileSessionJournal, JournalEntry, SessionJournal};
+        let tmp = tempdir().expect("tempdir");
+        let store = FileSessionStore::new(tmp.path().join("sessions")).expect("new");
+        let journal = FileSessionJournal::new(store.sessions_dir());
+        let first = vec![
+            make_test_message("user", "one"),
+            make_test_message("assistant", "two"),
+        ];
+        let session = create_saved_session(&first, "test-model", tmp.path(), 0, None);
+        let id = session.metadata.id.clone();
+        journal
+            .append(&id, vec![JournalEntry::Append { messages: first }])
+            .expect("journal");
+        store.save_session(&session).expect("save");
+        journal
+            .append(
+                &id,
+                vec![JournalEntry::Append {
+                    messages: vec![
+                        make_test_message("user", "three"),
+                        make_test_message("assistant", "four"),
+                    ],
+                }],
+            )
+            .expect("journal the next turn");
+
+        let loaded = store.load_session(&id).expect("load");
+        assert_eq!(loaded.messages.len(), 4, "{:?}", loaded.messages);
+        assert_eq!(loaded.messages[3], make_test_message("assistant", "four"));
+    }
+
+    /// A snapshot that recorded no journal size was written by a build
+    /// without journals — it stays authoritative even when a journal exists,
+    /// so a downgrade-then-upgrade never rolls the session back.
+    #[test]
+    fn a_snapshot_without_a_recorded_journal_size_stays_authoritative() {
+        use crate::session_journal::{FileSessionJournal, JournalEntry, SessionJournal};
+        let tmp = tempdir().expect("tempdir");
+        let store = FileSessionStore::new(tmp.path().join("sessions")).expect("new");
+        let snapshot_messages = vec![
+            make_test_message("user", "one"),
+            make_test_message("assistant", "older build added this"),
+        ];
+        let session = create_saved_session(&snapshot_messages, "test-model", tmp.path(), 0, None);
+        let id = session.metadata.id.clone();
+        FileSessionJournal::new(store.sessions_dir())
+            .append(
+                &id,
+                vec![JournalEntry::Append {
+                    messages: vec![make_test_message("user", "one")],
+                }],
+            )
+            .expect("journal");
+        let path = store.validated_session_path(&id).expect("path");
+        fs::write(&path, serde_json::to_string(&session).expect("json")).expect("write");
+
+        let loaded = store.load_session(&id).expect("load");
+        assert_eq!(loaded.messages, snapshot_messages);
     }
 
     /// Strict providers reject a tool result that does not directly follow
