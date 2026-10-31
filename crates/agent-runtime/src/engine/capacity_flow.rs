@@ -1359,7 +1359,7 @@ impl Engine {
                     Ok(result) => {
                         if !result.messages.is_empty() || self.session.messages.is_empty() {
                             self.rebuild_transcript(
-                                crate::prompt_zones::RebuildReason::AutoCompaction,
+                                codesmith_session::zones::RebuildReason::AutoCompaction,
                                 result.messages,
                             );
                             self.merge_compaction_summary(result.summary_prompt);
@@ -1676,7 +1676,7 @@ impl Engine {
         if !skip_transcript {
             let kept = kept_verify_and_replan_messages(&self.session.messages);
             self.session.rebuild_transcript(
-                crate::prompt_zones::RebuildReason::VerifyAndReplanReset,
+                codesmith_session::zones::RebuildReason::VerifyAndReplanReset,
                 kept,
             );
             // Direct rebuild (not the engine wrapper — this path emits its

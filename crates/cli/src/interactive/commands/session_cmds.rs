@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use super::ReplState;
 use crate::models::{Message, SystemPrompt};
-use crate::session_manager::{
-    SessionManager, create_saved_session_with_id_and_mode, create_saved_session_with_mode,
+use codesmith_agent_runtime::ops::Op;
+use codesmith_session::store::{
+    FileSessionStore, create_saved_session_with_id_and_mode, create_saved_session_with_mode,
     truncate_id, update_session,
 };
-use codesmith_agent_runtime::ops::Op;
 
 const MAX_TITLE_LEN: usize = 100;
 
@@ -35,7 +35,7 @@ async fn send_session_op(state: &ReplState, op: Op) {
 
 fn sync_cost_to_metadata(
     state: &ReplState,
-    metadata: &mut crate::session_manager::SessionMetadata,
+    metadata: &mut codesmith_session::store::SessionMetadata,
 ) {
     metadata.cost.session_cost_usd = state.session.session_cost;
     metadata.cost.session_cost_cny = state.session.session_cost_cny;
@@ -46,7 +46,7 @@ fn sync_cost_to_metadata(
     metadata.cumulative_turn_secs = state.cumulative_turn_duration.as_secs();
 }
 
-fn build_saved_session(state: &ReplState) -> crate::session_manager::SavedSession {
+fn build_saved_session(state: &ReplState) -> codesmith_session::store::SavedSession {
     let mut session = create_saved_session_with_mode(
         &state.api_messages,
         &state.model,
@@ -67,7 +67,7 @@ pub fn save(state: &mut ReplState, path: Option<&str>) {
     let save_path = match path {
         Some(p) => std::path::PathBuf::from(p),
         None => {
-            let dir = crate::session_manager::default_sessions_dir()
+            let dir = codesmith_session::store::default_sessions_dir()
                 .unwrap_or_else(|_| state.workspace.clone());
             let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
             dir.join(format!("session_{timestamp}.json"))
@@ -150,7 +150,7 @@ pub async fn branch(state: &mut ReplState, name: Option<&str>) {
         );
         return;
     }
-    let Ok(manager) = SessionManager::default_location() else {
+    let Ok(manager) = FileSessionStore::default_location() else {
         println!("{} could not open sessions directory", "✗".red());
         return;
     };
@@ -303,7 +303,7 @@ pub async fn load(state: &mut ReplState, path: Option<&str>) {
             return;
         }
     };
-    let session: crate::session_manager::SavedSession = match serde_json::from_str(&content) {
+    let session: codesmith_session::store::SavedSession = match serde_json::from_str(&content) {
         Ok(s) => s,
         Err(e) => {
             println!("{} failed to parse session file: {e}", "✗".red());
@@ -326,7 +326,7 @@ pub async fn resume(state: &mut ReplState, arg: Option<&str>) {
     // that happens to look like a title still wins.
     let id = match requested {
         None => "latest".to_string(),
-        Some(value) => match SessionManager::default_location()
+        Some(value) => match FileSessionStore::default_location()
             .ok()
             .and_then(|manager| manager.load_session_by_prefix(value).ok())
         {
@@ -345,7 +345,7 @@ pub async fn resume(state: &mut ReplState, arg: Option<&str>) {
 
 /// The newest session whose title contains `needle`, if any.
 fn find_session_by_name(needle: &str) -> Option<String> {
-    let manager = SessionManager::default_location().ok()?;
+    let manager = FileSessionStore::default_location().ok()?;
     let sessions = manager.list_sessions().ok()?;
     let needle = needle.to_ascii_lowercase();
     sessions
@@ -387,7 +387,7 @@ fn derive_title(state: &ReplState) -> Option<String> {
 /// Shared adoption path for `/load`.
 async fn adopt_loaded_session(
     state: &mut ReplState,
-    session: crate::session_manager::SavedSession,
+    session: codesmith_session::store::SavedSession,
 ) {
     state.api_messages = Arc::new(session.messages.clone());
     state.set_model_selection(session.metadata.model.clone());
@@ -579,7 +579,7 @@ fn render_message_text(message: &Message) -> String {
 pub fn sessions(state: &ReplState, arg: Option<&str>) {
     let trimmed = arg.unwrap_or("").trim();
     if trimmed.is_empty() || matches!(trimmed, "show" | "list") {
-        let Ok(manager) = SessionManager::default_location() else {
+        let Ok(manager) = FileSessionStore::default_location() else {
             println!("{} could not open the session store", "✗".red());
             return;
         };
@@ -654,7 +654,7 @@ fn prune(days_arg: Option<&str>) {
         println!("{} expected a positive integer number of days", "✗".red());
         return;
     }
-    let Ok(manager) = SessionManager::default_location() else {
+    let Ok(manager) = FileSessionStore::default_location() else {
         println!("{} could not open sessions directory", "✗".red());
         return;
     };
@@ -725,7 +725,7 @@ pub fn rename(state: &mut ReplState, arg: Option<&str>) {
         println!("{} no active session — send a message first", "✗".red());
         return;
     };
-    let Ok(manager) = SessionManager::default_location() else {
+    let Ok(manager) = FileSessionStore::default_location() else {
         println!("{} could not open sessions directory", "✗".red());
         return;
     };
@@ -779,10 +779,10 @@ mod tests {
         ReplState::new(options, &crate::config::Config::default())
     }
 
-    fn saved_with_failed_attempt() -> crate::session_manager::SavedSession {
-        let mut session = crate::session_manager::SavedSession {
+    fn saved_with_failed_attempt() -> codesmith_session::store::SavedSession {
+        let mut session = codesmith_session::store::SavedSession {
             schema_version: 1,
-            metadata: codesmith_agent_runtime::session_store::SessionMetadata {
+            metadata: codesmith_session::store::SessionMetadata {
                 id: "sess-load".to_string(),
                 title: "load adoption".to_string(),
                 created_at: chrono::Utc::now(),
@@ -809,7 +809,7 @@ mod tests {
             approvals: Vec::new(),
             journal_bytes: None,
         };
-        session.failed_attempts = vec![codesmith_agent_runtime::session_store::AttemptRecord {
+        session.failed_attempts = vec![codesmith_session::store::AttemptRecord {
             turn_id: "t-9".to_string(),
             step: 3,
             error_category: "network".to_string(),

@@ -64,7 +64,6 @@ use codesmith_extensions::ExtensionRunner;
 
 use crate::capacity::CapacityController;
 use crate::compaction::CompactionConfig;
-use crate::compaction::fact_ledger::FactLedger;
 use crate::config_types::ApiProvider;
 use crate::engine::approval::{ApprovalRouter, UserInputDecision};
 use crate::engine::capacity_flow::CapacityGateProbe;
@@ -78,11 +77,12 @@ use crate::events::Event;
 use crate::host_services::SubAgentApi;
 use crate::mode::AppMode;
 use crate::prefix_cache::PrefixStabilityManager;
-use crate::session_store::AttemptRecord;
 use crate::subagent::SubAgentCompletion;
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tool_state::plan_mode::SharedPlanModeState;
 use crate::working_set::WorkingSet;
+use codesmith_session::fact_ledger::FactLedger;
+use codesmith_session::store::AttemptRecord;
 
 /// The always-registered id of the default production loop
 /// ([`HostAgentExecutorFactory`]). Config `turn_executor` defaults to this.

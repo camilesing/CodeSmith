@@ -163,7 +163,7 @@ pub struct EngineHandle {
     /// and restore it on session load without an engine rebuild (the
     /// `extension_runner` precedent). Same `Arc` the engine's compaction
     /// feeds.
-    pub fact_ledger: Arc<StdMutex<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>>,
+    pub fact_ledger: Arc<StdMutex<codesmith_session::fact_ledger::FactLedger>>,
     /// Event-sourcing slice 6 — the session's recent-read-files working set
     /// (same `Arc` the executor's record site feeds), surfaced so session
     /// load can rebuild it from the transcript without an engine rebuild.

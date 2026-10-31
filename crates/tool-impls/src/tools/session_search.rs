@@ -25,10 +25,10 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use codesmith_agent_runtime::session_store::SavedSession;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
+use codesmith_session::store::SavedSession;
 
 use super::recall_archive::{
     CONTEXT_WINDOW_CHARS, best_window, bm25_rank, message_text, round_score, tokenize,
@@ -371,10 +371,8 @@ mod tests {
     #![allow(unsafe_code)]
     use super::*;
     use codesmith_agent_runtime::models::{ContentBlock, Message};
-    use codesmith_agent_runtime::session_store::{
-        FileSessionStore, create_saved_session_with_id_and_mode,
-    };
     use codesmith_agent_runtime::test_support::lock_test_env;
+    use codesmith_session::store::{FileSessionStore, create_saved_session_with_id_and_mode};
     use tempfile::TempDir;
 
     // Same isolation pattern as `recall_archive`'s tests: point the config

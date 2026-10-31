@@ -838,7 +838,7 @@ impl TaskManager {
     /// the task data root. References come from model-supplied task
     /// metadata (`patch_path`, `TaskArtifactRef.path`), so absolute inputs
     /// and `..`/prefix escapes are rejected rather than resolved — mirrors
-    /// `agent_runtime::artifacts::session_artifact_absolute_path`.
+    /// `codesmith_session::artifacts::session_artifact_absolute_path`.
     pub fn artifact_absolute_path(&self, path: &Path) -> Result<PathBuf> {
         use std::path::Component;
         if path.is_absolute()

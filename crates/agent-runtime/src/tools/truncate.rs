@@ -85,7 +85,7 @@ pub const SPILLOVER_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 // Test-storage-root override helpers are compiled unconditionally and
 // exposed `pub` (not `cfg(test)`-gated) so dependent crates' test builds
 // can reach them — dependencies are never built with `cfg(test)` (same
-// convention as `crate::test_support` and `crate::artifacts`). They are
+// convention as `crate::test_support` and `codesmith_session::artifacts`). They are
 // only ever invoked from test contexts; in production the override stays
 // `None`.
 static TEST_SPILLOVER_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -241,7 +241,7 @@ pub fn write_spillover_parts(id: &str, parts: &[&str]) -> io::Result<PathBuf> {
 /// Drop spillover files older than `max_age`. Returns the number of
 /// files removed. Non-fatal: directory-missing returns 0; per-file
 /// errors are logged and skipped. Mirrors the workspace-snapshot prune
-/// step (see the CLI's `session_manager::prune_workspace_snapshots`).
+/// step (`crate::snapshot::prune_workspace_snapshots`).
 pub fn prune_older_than(max_age: Duration) -> io::Result<usize> {
     let Some(root) = spillover_root() else {
         return Ok(0);
@@ -407,22 +407,24 @@ fn apply_spillover_inner(
 
     let mut artifact_path = None;
     if let Some(context) = artifact_context {
-        let artifact_id = crate::artifacts::artifact_id_for_tool_call(tool_id);
-        match crate::artifacts::write_session_artifact(
+        let artifact_id = codesmith_session::artifacts::artifact_id_for_tool_call(tool_id);
+        match codesmith_session::artifacts::write_session_artifact(
             context.session_id,
             &artifact_id,
             &original_content,
         ) {
             Ok((absolute_path, relative_path)) => {
-                let record = crate::artifacts::record_tool_output_artifact(
+                let record = codesmith_session::artifacts::record_tool_output_artifact(
                     context.session_id,
                     tool_id,
                     context.tool_name,
                     relative_path.clone(),
                     &original_content,
                 );
-                let transcript_ref = crate::artifacts::TranscriptArtifactRef::from(&record);
-                result.content = crate::artifacts::render_transcript_artifact_ref(&transcript_ref);
+                let transcript_ref =
+                    codesmith_session::artifacts::TranscriptArtifactRef::from(&record);
+                result.content =
+                    codesmith_session::artifacts::render_transcript_artifact_ref(&transcript_ref);
                 artifact_path = Some((absolute_path, relative_path, record));
             }
             Err(err) => {
@@ -470,9 +472,9 @@ fn apply_spillover_inner(
             );
             obj.insert(
                 "artifact_relative_path".into(),
-                serde_json::Value::String(crate::artifacts::format_artifact_relative_path(
-                    relative_path,
-                )),
+                serde_json::Value::String(
+                    codesmith_session::artifacts::format_artifact_relative_path(relative_path),
+                ),
             );
             obj.insert(
                 "artifact_path".into(),
@@ -516,9 +518,9 @@ fn apply_spillover_inner(
                 );
                 obj.insert(
                     "artifact_relative_path".into(),
-                    serde_json::Value::String(crate::artifacts::format_artifact_relative_path(
-                        relative_path,
-                    )),
+                    serde_json::Value::String(
+                        codesmith_session::artifacts::format_artifact_relative_path(relative_path),
+                    ),
                 );
                 obj.insert(
                     "artifact_path".into(),
@@ -570,7 +572,7 @@ fn with_test_home<F, R>(home: &Path, f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let _artifact_guard = crate::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
+    let _artifact_guard = codesmith_session::artifacts::TEST_ARTIFACT_SESSIONS_GUARD
         .lock()
         .unwrap_or_else(|err| err.into_inner());
 
@@ -582,7 +584,9 @@ where
     impl Drop for StorageRootOverride {
         fn drop(&mut self) {
             set_test_spillover_root(self.prior_spillover.take());
-            crate::artifacts::set_test_artifact_sessions_root(self.prior_artifacts.take());
+            codesmith_session::artifacts::set_test_artifact_sessions_root(
+                self.prior_artifacts.take(),
+            );
         }
     }
 
@@ -591,7 +595,7 @@ where
     // artifacts.rs tests.
     let prior_spillover =
         set_test_spillover_root(Some(home.join(".codesmith").join(SPILLOVER_DIR_NAME)));
-    let prior_artifacts = crate::artifacts::set_test_artifact_sessions_root(Some(
+    let prior_artifacts = codesmith_session::artifacts::set_test_artifact_sessions_root(Some(
         home.join(".codesmith").join("sessions"),
     ));
     let _restore = StorageRootOverride {
@@ -626,7 +630,7 @@ mod tests {
                 Some(tmp.path().join(".codesmith").join("tool_outputs").as_path())
             );
             assert_eq!(
-                crate::artifacts::session_artifact_absolute_path(
+                codesmith_session::artifacts::session_artifact_absolute_path(
                     "session-123",
                     &PathBuf::from("artifacts").join("art_call-big.txt")
                 )

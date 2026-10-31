@@ -42,8 +42,8 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
 - **Session persistence seam.** Durable session records (`SavedSession`),
   the format-governance decode pipeline (schema gate, adjacent in-memory
   migrations, unknown-block tolerance, interrupted-turn repair), and the
-  `SessionStore` seam live in `codesmith-session` (`session/src/store.rs`,
-  re-exported as `agent_runtime::session_store`; round-9 split); the
+  `SessionStore` seam live in `codesmith-session` (`session/src/store.rs`;
+  round-9 split); the
   file provider (`FileSessionStore`, one JSON file per session +
   crash checkpoints) lives in the same module — provider-in-framework by
   the `FileKeyringStore` precedent. Consumers: the CLI REPL resume flow
@@ -209,7 +209,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
 - **`crates/providers`** - Pluggable LLM client implementations (openai-compat, anthropic, mock; rig adapter) behind Cargo features.
 - **`crates/release`** - Release discovery / version comparison.
 - **`crates/secrets`** - OS keyring integration for API key storage.
-- **`crates/session`** - Session data plane (DSH `core/session` counterpart, split out of `agent-runtime` in round 9): the `AppendLog` / three-zone request contract, the append-only session journal, the saved-session store and its format governance, the artifact registry and fact ledger. Re-exported under the historical `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` paths.
+- **`crates/session`** - Session data plane (DSH `core/session` counterpart, split out of `agent-runtime` in round 9): the `AppendLog` / three-zone request contract, the append-only session journal, the saved-session store and its format governance, the artifact registry and fact ledger. Consumers import it directly (the historical `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` and CLI `session_manager` paths were removed with the split).
 - **`crates/state`** - SQLite thread/session persistence layer.
 - **`crates/tool-impls`** - Concrete model-visible tool implementations.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the CLI runtime.
@@ -302,7 +302,6 @@ live there).
 - **`pricing.rs`** - Cost estimation
 - **`prompts.rs`** - Prompt loading shims (assembled system prompts live in `crates/agent-runtime/src/prompts.rs` + `prompts/` assets: base constitution, mode deltas, personality overlays, approval policies)
 - **`project_context.rs`** - Project documentation handling
-- **`session_manager.rs`** - Session serialization
 - **`runtime_api.rs`** - HTTP/SSE runtime API (`codesmith serve --http`)
 - **`runtime_threads.rs`** - Durable thread/turn/item store + replayable event timeline
 - **`task_manager.rs`** - Durable queue, worker pool, task timelines and artifacts
@@ -389,7 +388,7 @@ ordinary durable tasks.
 
 ### Durable Schema Gates
 
-- `session_manager.rs`, `runtime_threads.rs`, and `task_manager.rs` embed `schema_version` on persisted records.
+- `codesmith-session` (`session/src/store.rs`), `runtime_threads.rs`, and `task_manager.rs` embed `schema_version` on persisted records.
 - On load, newer schema versions are rejected with explicit errors instead of silently truncating/overwriting data.
 - This allows safe forward migrations and prevents corruption when binaries and stored state are out of sync.
 
@@ -450,7 +449,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
 6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/cli` runtime today
 7. **Three-zone prompt contract**: every request is divided into a
    `PinnedPrefix` (system prompt + tool catalog, fingerprinted per step by
-   `prompt_zones::PinnedPrefix::freeze` and drift-checked by
+   `codesmith_session::zones::PinnedPrefix::freeze` and drift-checked by
    `prefix_cache::PrefixStabilityManager`), an `AppendLog` (the `Session`
    transcript store — `push` is the only everyday mutation the type
    expresses; wholesale replacement must name itself via a `RebuildReason`

@@ -206,7 +206,7 @@ pub enum Event {
         /// `SavedSession::failed_attempts`; never enters a model request.
         /// Empty for turn completions without a failing model round
         /// (compaction commands, early config failures, synthesized events).
-        failed_attempts: Vec<crate::session_store::AttemptRecord>,
+        failed_attempts: Vec<codesmith_session::store::AttemptRecord>,
     },
 
     /// Context compaction started.

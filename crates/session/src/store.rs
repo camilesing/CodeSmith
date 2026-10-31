@@ -3,8 +3,7 @@
 //! provider (one JSON file per session under `~/.codesmith/sessions/`).
 //!
 //! Framework-side home of the REPL resume contract — schema evolution and
-//! load-time governance are decided here, not in any one host. The CLI's
-//! `session_manager` module re-exports this for call-site compatibility.
+//! load-time governance are decided here, not in any one host.
 //!
 //! Recording-layer role (each owning module states its role): a
 //! `SavedSession` file is a **loadable snapshot** — a copy of the transcript

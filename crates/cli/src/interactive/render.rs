@@ -999,7 +999,8 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 if previous_session_id
                     .as_deref()
                     .is_some_and(|previous| previous != session_id)
-                    && let Ok(manager) = crate::session_manager::SessionManager::default_location()
+                    && let Ok(manager) =
+                        codesmith_session::store::FileSessionStore::default_location()
                 {
                     super::inbox_journal::rekey(
                         manager.sessions_dir(),
@@ -1433,7 +1434,7 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     let Some(session) = saved_session_from_state(state) else {
         return;
     };
-    let Ok(manager) = crate::session_manager::SessionManager::default_location() else {
+    let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() else {
         return;
     };
     if let Err(err) = manager.save_session(&session) {
@@ -1462,7 +1463,7 @@ fn save_crash_recovery_checkpoint(state: &ReplState) {
     let Some(session) = saved_session_from_state(state) else {
         return;
     };
-    let Ok(manager) = crate::session_manager::SessionManager::default_location() else {
+    let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() else {
         return;
     };
     let _ = manager.save_checkpoint(&session);
@@ -1470,8 +1471,8 @@ fn save_crash_recovery_checkpoint(state: &ReplState) {
 
 /// Build the persistable session record from REPL state, or `None` when
 /// there is nothing worth persisting yet.
-fn saved_session_from_state(state: &ReplState) -> Option<crate::session_manager::SavedSession> {
-    use crate::session_manager::create_saved_session_with_id_and_mode;
+fn saved_session_from_state(state: &ReplState) -> Option<codesmith_session::store::SavedSession> {
+    use codesmith_session::store::create_saved_session_with_id_and_mode;
 
     if state.api_messages.is_empty() {
         return None;
@@ -1936,7 +1937,7 @@ async fn handle_approval(
 /// Append one approval decision to the session's record.
 ///
 /// The `decision` vocabulary is the one documented on
-/// [`ApprovalRecord`](codesmith_agent_runtime::session_store::ApprovalRecord):
+/// [`ApprovalRecord`](codesmith_session::store::ApprovalRecord):
 /// the four prompt answers, `feedback`, and the four paths that never prompted.
 #[allow(clippy::too_many_arguments)]
 fn log_approval(
@@ -1951,7 +1952,7 @@ fn log_approval(
     let workspace = state.workspace.to_string_lossy().into_owned();
     state
         .approvals
-        .push(codesmith_agent_runtime::session_store::ApprovalRecord {
+        .push(codesmith_session::store::ApprovalRecord {
             tool_call_id: tool_call_id.to_string(),
             tool_name: tool_name.to_string(),
             approval_key: approval_key.to_string(),
@@ -2196,7 +2197,7 @@ mod tests {
     }
 
     /// Redirect HOME (and USERPROFILE) for tests that go through
-    /// `SessionManager::default_location()`; the env lock serializes them.
+    /// `FileSessionStore::default_location()`; the env lock serializes them.
     fn with_home<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
         let prev_home = std::env::var_os("HOME");
         let prev_userprofile = std::env::var_os("USERPROFILE");
@@ -2230,7 +2231,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         with_home(&home, || {
             let manager =
-                crate::session_manager::SessionManager::default_location().expect("manager");
+                codesmith_session::store::FileSessionStore::default_location().expect("manager");
             let sessions_dir = manager.sessions_dir().to_path_buf();
 
             let mut state = test_repl_state();
@@ -2274,7 +2275,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         with_home(&home, || {
             let manager =
-                crate::session_manager::SessionManager::default_location().expect("manager");
+                codesmith_session::store::FileSessionStore::default_location().expect("manager");
             let sessions_dir = manager.sessions_dir().to_path_buf();
 
             let orphan = crate::interactive::inbox_journal::InboxJournal::for_session(
@@ -2335,7 +2336,7 @@ mod tests {
                 cache_control: None,
             }],
         }]);
-        state.failed_attempts = vec![codesmith_agent_runtime::session_store::AttemptRecord {
+        state.failed_attempts = vec![codesmith_session::store::AttemptRecord {
             turn_id: "t-1".to_string(),
             step: 1,
             error_category: "authentication".to_string(),
@@ -2391,7 +2392,7 @@ mod tests {
     /// but no producer filled it before.
     #[test]
     fn saved_session_from_state_carries_media_attachment_references() {
-        use codesmith_agent_runtime::session_store::{
+        use codesmith_session::store::{
             ContextReference, ContextReferenceKind, ContextReferenceSource, SessionContextReference,
         };
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();

@@ -40,13 +40,13 @@ use crate::runtime_threads::{
     ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest,
     UsageGroupBy,
 };
-use crate::session_manager::{SavedSession, SessionMetadata, default_sessions_dir};
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskRecord, TaskSummary,
     wrap_task_manager,
 };
 use codesmith_agent_runtime::mcp::{McpConfig, McpPool};
+use codesmith_session::store::{SavedSession, SessionMetadata, default_sessions_dir};
 
 #[derive(Clone)]
 pub struct RuntimeApiState {
@@ -56,8 +56,8 @@ pub struct RuntimeApiState {
     runtime_threads: SharedRuntimeThreadManager,
     cors_origins: Vec<String>,
     /// Shared session store (opened once; the per-endpoint
-    /// `SessionManager::new` reopened the directory on every request).
-    sessions: std::sync::Arc<crate::session_manager::SessionManager>,
+    /// `FileSessionStore::new` reopened the directory on every request).
+    sessions: std::sync::Arc<codesmith_session::store::FileSessionStore>,
     mcp_config_path: PathBuf,
     automations: SharedAutomationManager,
     runtime_token: Option<String>,
@@ -454,12 +454,14 @@ pub async fn run_http_server(
     // handle: a panic here skipped the scheduler/handle cleanup at the end
     // of this function and surfaced as a backtrace.
     let sessions = std::sync::Arc::new(
-        crate::session_manager::SessionManager::new(sessions_dir.clone()).with_context(|| {
-            format!(
-                "runtime API: cannot open sessions directory {}",
-                sessions_dir.display()
-            )
-        })?,
+        codesmith_session::store::FileSessionStore::new(sessions_dir.clone()).with_context(
+            || {
+                format!(
+                    "runtime API: cannot open sessions directory {}",
+                    sessions_dir.display()
+                )
+            },
+        )?,
     );
     let state = RuntimeApiState {
         config: config.clone(),
@@ -827,7 +829,7 @@ async fn list_sessions(
             .search_sessions(&search)
             .map_err(|e| ApiError::internal(format!("Failed to search sessions: {e}")))?
     } else {
-        use codesmith_agent_runtime::session_store::SessionStore;
+        use codesmith_session::store::SessionStore;
         let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
         store
             .list()
@@ -843,7 +845,7 @@ async fn get_session(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionDetailResponse>, ApiError> {
-    use codesmith_agent_runtime::session_store::SessionStore;
+    use codesmith_session::store::SessionStore;
     let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
     let session = store
         .load(&id)
@@ -859,7 +861,7 @@ async fn resume_session_thread(
 ) -> Result<(StatusCode, Json<ResumeSessionResponse>), ApiError> {
     // The resume path consumes the SessionStore seam: dyn-dispatched load
     // through the trait, not the concrete file type.
-    use codesmith_agent_runtime::session_store::SessionStore;
+    use codesmith_session::store::SessionStore;
     let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
     let session = store
         .load(&id)
@@ -918,7 +920,7 @@ async fn delete_session(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    use codesmith_agent_runtime::session_store::SessionStore;
+    use codesmith_session::store::SessionStore;
     let store: std::sync::Arc<dyn SessionStore> = state.sessions.clone();
     store
         .delete(&id)
@@ -2597,7 +2599,7 @@ mod tests {
             task_manager: manager,
             runtime_threads: runtime_threads.clone(),
             cors_origins: Vec::new(),
-            sessions: std::sync::Arc::new(crate::session_manager::SessionManager::new(
+            sessions: std::sync::Arc::new(codesmith_session::store::FileSessionStore::new(
                 sessions_dir.clone(),
             )?),
             mcp_config_path: root.join("mcp.json"),

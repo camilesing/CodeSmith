@@ -37,13 +37,11 @@ const CODESMITH_BLUE_RGB: (u8, u8, u8) = (47, 134, 255);
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tool_summary::{summarize_tool_args, summarize_tool_output};
-use crate::{
-    acp_server, doctor_llm, logging, mcp_server, memory_consolidate, runtime_api, session_manager,
-};
+use crate::{acp_server, doctor_llm, logging, mcp_server, memory_consolidate, runtime_api};
 use codesmith_agent_runtime::features::{Feature, render_feature_table};
 use codesmith_agent_runtime::mcp::{McpConfig, McpPool, McpServerConfig};
+use codesmith_session::store::{FileSessionStore, create_saved_session, truncate_id};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -3924,14 +3922,14 @@ pub(crate) fn rustc_version() -> String {
 
 /// List saved sessions
 pub(crate) fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
+    use codesmith_session::store::{FileSessionStore, format_session_line};
     use colored::Colorize;
-    use session_manager::{SessionManager, format_session_line};
 
     let (blue_r, blue_g, blue_b) = CODESMITH_BLUE_RGB;
     let (sky_r, sky_g, sky_b) = CODESMITH_SKY_RGB;
     let (aqua_r, aqua_g, aqua_b) = CODESMITH_SKY_RGB;
 
-    let manager = SessionManager::default_location()?;
+    let manager = FileSessionStore::default_location()?;
 
     let sessions = if let Some(query) = search {
         manager.search_sessions(&query)?
@@ -4234,7 +4232,7 @@ pub(crate) fn resolve_session_id(
 }
 
 pub(crate) fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
-    let manager = SessionManager::default_location()?;
+    let manager = FileSessionStore::default_location()?;
     Ok(manager
         .get_latest_session_for_workspace(workspace)?
         .map(|session| session.id))
@@ -4245,7 +4243,7 @@ pub(crate) fn fork_session(
     last: bool,
     workspace: &Path,
 ) -> Result<String> {
-    let manager = SessionManager::default_location()?;
+    let manager = FileSessionStore::default_location()?;
     let saved = if last {
         let Some(meta) = manager.get_latest_session_for_workspace(workspace)? else {
             bail!(
@@ -4290,7 +4288,7 @@ pub(crate) fn fork_session(
 }
 
 pub(crate) fn pick_session_id() -> Result<String> {
-    let manager = SessionManager::default_location()?;
+    let manager = FileSessionStore::default_location()?;
     let sessions = manager.list_sessions()?;
     if sessions.is_empty() {
         bail!("No saved sessions found.");
@@ -5214,8 +5212,8 @@ pub(crate) fn parse_sandbox_policy(
 
 /// Load a recent crash-recovery checkpoint, pruning stale checkpoints first.
 pub(crate) fn load_recent_checkpoint(
-    manager: &session_manager::SessionManager,
-) -> Option<(session_manager::SavedSession, std::time::Duration)> {
+    manager: &codesmith_session::store::FileSessionStore,
+) -> Option<(codesmith_session::store::SavedSession, std::time::Duration)> {
     let session = manager.load_checkpoint().ok().flatten()?;
 
     let checkpoint_path = manager
@@ -5253,7 +5251,7 @@ pub(crate) fn checkpoint_age_label(age: std::time::Duration) -> String {
 /// persisted as a regular session (so the user can find it via
 /// `codesmith sessions` / `codesmith resume <id>`) and cleared, but not loaded.
 pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<String> {
-    let manager = session_manager::SessionManager::default_location().ok()?;
+    let manager = codesmith_session::store::FileSessionStore::default_location().ok()?;
     let (session, age) = load_recent_checkpoint(&manager)?;
 
     // Refuse to silently restore a session from another workspace. Compare
@@ -5262,7 +5260,7 @@ pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path)
     // directory their shell happened to be in.
     let session_workspace = session.metadata.workspace.clone();
     let workspace_matches =
-        session_manager::workspace_scope_matches(&session_workspace, launch_workspace);
+        codesmith_session::store::workspace_scope_matches(&session_workspace, launch_workspace);
 
     if !workspace_matches {
         // Persist the checkpoint so the user can find it via `codesmith
@@ -5302,7 +5300,7 @@ pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path)
 /// the same folder" from re-entering the previous in-flight session while still
 /// leaving an explicit resume path.
 pub(crate) fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
-    let Some(manager) = session_manager::SessionManager::default_location().ok() else {
+    let Some(manager) = codesmith_session::store::FileSessionStore::default_location().ok() else {
         return;
     };
     let Some((session, age)) = load_recent_checkpoint(&manager) else {
@@ -5314,7 +5312,7 @@ pub(crate) fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspa
     let _ = manager.clear_checkpoint();
 
     let age_str = checkpoint_age_label(age);
-    if session_manager::workspace_scope_matches(&session_workspace, launch_workspace) {
+    if codesmith_session::store::workspace_scope_matches(&session_workspace, launch_workspace) {
         eprintln!(
             "Found an in-flight session snapshot ({age_str}). Starting a new \
              session. Run `codesmith --continue` to resume it."
@@ -5588,7 +5586,10 @@ pub(crate) async fn run_interactive(
     // never block the REPL from starting.
     let snapshots = config.snapshots_config();
     if snapshots.is_enabled() {
-        session_manager::prune_workspace_snapshots(&workspace, snapshots.max_age());
+        codesmith_agent_runtime::snapshot::prune_workspace_snapshots(
+            &workspace,
+            snapshots.max_age(),
+        );
     }
 
     // Prune stale tool-output spillover files (#422). Non-fatal: home
@@ -5613,7 +5614,7 @@ pub(crate) async fn run_interactive(
 
     // v0.8.44: prune managed sessions on boot to prevent unbounded growth.
     // Keeps at most MAX_SESSIONS (50) recent sessions; non-fatal on error.
-    if let Ok(manager) = session_manager::SessionManager::default_location() {
+    if let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() {
         let _ = manager.cleanup_old_sessions();
     }
 
@@ -5949,17 +5950,17 @@ pub(crate) fn persist_exec_session(
     total_tokens: u64,
 ) -> Result<String> {
     let manager =
-        SessionManager::default_location().context("could not open session manager for save")?;
+        FileSessionStore::default_location().context("could not open session manager for save")?;
     let saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
         match manager.load_session(id) {
-            Ok(existing) => session_manager::update_session(
+            Ok(existing) => codesmith_session::store::update_session(
                 existing,
                 messages,
                 total_tokens,
                 system_prompt.as_ref(),
             ),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                session_manager::create_saved_session_with_id_and_mode(
+                codesmith_session::store::create_saved_session_with_id_and_mode(
                     id.to_string(),
                     messages,
                     model,
@@ -5972,7 +5973,7 @@ pub(crate) fn persist_exec_session(
             Err(err) => return Err(err).context("could not load existing exec session"),
         }
     } else {
-        session_manager::create_saved_session_with_mode(
+        codesmith_session::store::create_saved_session_with_mode(
             messages,
             model,
             workspace,
@@ -6047,7 +6048,7 @@ pub(crate) async fn run_exec_agent(
 
     let mut loaded_session_id = None;
     if let Some(session_id) = resume_session_id.as_deref() {
-        let manager = SessionManager::default_location()
+        let manager = FileSessionStore::default_location()
             .context("could not open session manager for exec resume")?;
         let saved = manager
             .load_session_by_prefix(session_id)
@@ -7946,7 +7947,7 @@ mod setup_helper_tests {
         std::fs::create_dir_all(&workspace).unwrap();
 
         with_home(tmp.path(), || {
-            let manager = SessionManager::default_location().expect("manager");
+            let manager = FileSessionStore::default_location().expect("manager");
             let messages = vec![Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
@@ -7981,7 +7982,7 @@ mod setup_helper_tests {
         std::fs::create_dir_all(&workspace).unwrap();
 
         with_home(tmp.path(), || {
-            let manager = SessionManager::default_location().expect("manager");
+            let manager = FileSessionStore::default_location().expect("manager");
             let messages = vec![Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {

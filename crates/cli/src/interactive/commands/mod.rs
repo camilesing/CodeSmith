@@ -1112,7 +1112,7 @@ fn print_status(state: &ReplState) {
     match state.current_session_id.as_deref() {
         Some(id) => println!(
             "  session:          {}",
-            crate::session_manager::truncate_id(id)
+            codesmith_session::store::truncate_id(id)
         ),
         None => println!("  session:          (unsaved)"),
     }

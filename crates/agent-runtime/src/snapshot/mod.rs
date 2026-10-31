@@ -18,8 +18,8 @@
 //!   footprint tractable — typical 100 MB workspace × 12 turns ≈ 1.2 GB
 //!   uncompressed but git's content-addressed storage usually brings
 //!   that down 10-30×. We mitigate further with:
-//!     - 7-day default retention (`session_manager` prunes at session
-//!       start via [`prune::prune_older_than`]).
+//!     - 7-day default retention (pruned at session start via
+//!       [`prune::prune_workspace_snapshots`]).
 //!     - `gc.auto = 0` on the side repo (we don't want background gcs
 //!       firing mid-turn) plus an explicit `git gc --prune=<grace>` after
 //!       prune. NOTE: the side repo is shared by any two processes open
@@ -41,7 +41,7 @@ pub mod paths;
 pub mod prune;
 pub mod repo;
 
-pub use prune::{DEFAULT_MAX_AGE, prune_older_than};
+pub use prune::{DEFAULT_MAX_AGE, prune_older_than, prune_workspace_snapshots};
 
 /// Maximum snapshots kept per workspace side-repo. Oldest are pruned
 /// after each new snapshot to cap disk usage (#1112).

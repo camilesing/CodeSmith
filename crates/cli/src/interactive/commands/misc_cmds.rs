@@ -833,7 +833,7 @@ pub fn note(state: &ReplState, content: Option<&str>) {
 /// (`crate::media::ingest_for_message`), off the runtime thread.
 pub fn attach(state: &mut ReplState, arg: Option<&str>) {
     use codesmith_agent_runtime::attachments::{AttachmentStore, MAX_ATTACHMENTS_PER_MESSAGE};
-    use codesmith_agent_runtime::session_store::ContextReferenceSource;
+    use codesmith_session::store::ContextReferenceSource;
 
     let Some(raw_path) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
         println!("{} usage: /attach <image-path>", "✗".red());

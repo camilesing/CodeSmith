@@ -13,9 +13,9 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::models::{ContentBlock, Message, MessageRequest};
-use crate::session_manager::SessionManager;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
+use codesmith_session::store::FileSessionStore;
 
 #[derive(Debug, Default, Deserialize)]
 struct McpServerConfigFile {
@@ -314,7 +314,7 @@ impl McpServer {
             "mimeType": "inode/directory",
         }));
 
-        if let Ok(manager) = SessionManager::default_location()
+        if let Ok(manager) = FileSessionStore::default_location()
             && let Ok(sessions) = manager.list_sessions()
         {
             for session in sessions {

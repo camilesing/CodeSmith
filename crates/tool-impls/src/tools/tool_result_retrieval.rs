@@ -172,9 +172,9 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
     // `resolves_art_prefix_via_session_artifacts` exercises the real
     // path.
     let session_artifacts_root = if !session_id.is_empty() {
-        codesmith_agent_runtime::artifacts::session_artifact_absolute_path(
+        codesmith_session::artifacts::session_artifact_absolute_path(
             session_id,
-            std::path::Path::new(codesmith_agent_runtime::artifacts::ARTIFACTS_DIR_NAME),
+            std::path::Path::new(codesmith_session::artifacts::ARTIFACTS_DIR_NAME),
         )
     } else {
         None
@@ -881,19 +881,15 @@ mod tests {
         let tmp = tempdir().unwrap();
         let _spill_guard = set_spillover_root(tmp.path().join("tool_outputs"));
         let _art_guard = {
-            let prior = codesmith_agent_runtime::artifacts::set_test_artifact_sessions_root(Some(
+            let prior = codesmith_session::artifacts::set_test_artifact_sessions_root(Some(
                 tmp.path().join("sessions"),
             ));
             scopeguard_for_test(prior)
         };
         let session_id = "session-abc";
         let body = "this is the canonical session artifact body, not a legacy file";
-        codesmith_agent_runtime::artifacts::write_session_artifact(
-            session_id,
-            "art_call_real",
-            body,
-        )
-        .unwrap();
+        codesmith_session::artifacts::write_session_artifact(session_id, "art_call_real", body)
+            .unwrap();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -921,7 +917,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let _spill_guard = set_spillover_root(tmp.path().join("tool_outputs"));
         let _art_guard = {
-            let prior = codesmith_agent_runtime::artifacts::set_test_artifact_sessions_root(Some(
+            let prior = codesmith_session::artifacts::set_test_artifact_sessions_root(Some(
                 tmp.path().join("sessions"),
             ));
             scopeguard_for_test(prior)
@@ -960,7 +956,7 @@ mod tests {
     }
     impl Drop for ArtifactRootGuard {
         fn drop(&mut self) {
-            codesmith_agent_runtime::artifacts::set_test_artifact_sessions_root(self.prior.take());
+            codesmith_session::artifacts::set_test_artifact_sessions_root(self.prior.take());
         }
     }
     fn scopeguard_for_test(prior: Option<PathBuf>) -> ArtifactRootGuard {

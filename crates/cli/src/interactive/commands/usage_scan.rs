@@ -23,7 +23,7 @@ use serde_json::Value;
 
 /// Saved session files, newest first, at most `limit`.
 pub fn session_files(limit: usize) -> Vec<PathBuf> {
-    let Some(dir) = crate::session_manager::default_sessions_dir().ok() else {
+    let Some(dir) = codesmith_session::store::default_sessions_dir().ok() else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {

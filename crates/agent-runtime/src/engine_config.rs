@@ -8,7 +8,7 @@
 //! binary (the CLI today, via an `EngineHost`-style struct) so that this type
 //! stays free of OS-bridging managers.
 
-use crate::session_journal::SessionJournal;
+use codesmith_session::journal::SessionJournal;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;

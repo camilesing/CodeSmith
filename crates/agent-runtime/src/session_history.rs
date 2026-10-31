@@ -158,8 +158,10 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
     fn clear(&mut self) {
         // Empty wholesale replacement through the audited rebuild — the
         // AppendLog store has no in-place `clear`.
-        self.session
-            .rebuild_transcript(crate::prompt_zones::RebuildReason::TraitClear, Vec::new());
+        self.session.rebuild_transcript(
+            codesmith_session::zones::RebuildReason::TraitClear,
+            Vec::new(),
+        );
         self.refold_projections();
         self.emit_transcript_rebuilt();
     }
@@ -172,7 +174,7 @@ impl<'a> ChatHistory for SessionChatHistory<'a> {
     /// this replaces fired none, or N).
     fn replace_all(&mut self, reason: &'static str, messages: Vec<Message>) {
         self.session.rebuild_transcript(
-            crate::prompt_zones::RebuildReason::Runtime(reason),
+            codesmith_session::zones::RebuildReason::Runtime(reason),
             messages,
         );
         self.refold_projections();

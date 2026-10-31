@@ -1,6 +1,6 @@
 //! Boot-time snapshot pruning.
 //!
-//! Called from `session_manager` once per session start. Failure is
+//! Called once per session start (`prune_workspace_snapshots`). Failure is
 //! never fatal — old snapshots taking disk space is annoying but not
 //! correctness-breaking, so we log and move on.
 
@@ -27,6 +27,21 @@ pub fn prune_older_than(workspace: &Path, max_age: Duration) -> io::Result<usize
     let removed = repo.prune_older_than(max_age)?;
     repo.prune_unreachable_objects()?;
     Ok(removed)
+}
+
+/// Boot-time prune for the session-start path: [`prune_older_than`] with
+/// failures logged, never returned (old snapshots cost disk, not
+/// correctness).
+pub fn prune_workspace_snapshots(workspace: &Path, max_age: Duration) {
+    match prune_older_than(workspace, max_age) {
+        Ok(0) => {}
+        Ok(n) => {
+            tracing::debug!(target: "snapshot", "boot prune removed {n} snapshot(s)");
+        }
+        Err(e) => {
+            tracing::warn!(target: "snapshot", "boot prune failed: {e}");
+        }
+    }
 }
 
 #[cfg(test)]

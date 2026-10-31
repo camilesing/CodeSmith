@@ -29,7 +29,7 @@
 //! └─────────────────────────────────────────┘
 //! ```
 //!
-//! The fingerprint *is* [`FrozenPrefix`] from [`crate::prompt_zones`] — the
+//! The fingerprint *is* [`FrozenPrefix`] from [`codesmith_session::zones`] — the
 //! same type the request path freezes per step. One fingerprint
 //! implementation, one source of truth: what `/cache zones` displays is
 //! exactly what the request path verifies. Tool identity hashes the full
@@ -39,7 +39,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::prompt_zones::FrozenPrefix;
+use codesmith_session::zones::FrozenPrefix;
 
 /// A change record describing what drifted in the prefix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,7 +220,7 @@ impl PrefixStabilityManager {
 mod tests {
     use super::*;
     use crate::models::{SystemPrompt, Tool};
-    use crate::prompt_zones::PinnedPrefix;
+    use codesmith_session::zones::PinnedPrefix;
 
     fn make_tool(name: &str) -> Tool {
         Tool {

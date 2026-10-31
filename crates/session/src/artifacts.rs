@@ -3,9 +3,8 @@
 //! Large tool outputs are written under the owning session directory and saved
 //! sessions keep a durable metadata index for resume/listing flows.
 //
-// Physically migrated from `codesmith-tui`. The CLI keeps a glob re-export
-// shim (`pub use codesmith_agent_runtime::artifacts::*;`) so historical
-// `crate::artifacts::<item>` paths keep resolving.
+// Physically migrated from `codesmith-tui`, then into this crate in the
+// round-9 split.
 //
 // Test-session-root override helpers (`set_test_artifact_sessions_root`,
 // `TEST_ARTIFACT_SESSIONS_GUARD`) are compiled unconditionally and exposed

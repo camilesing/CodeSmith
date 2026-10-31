@@ -607,7 +607,6 @@ use super::turn::{
 };
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
-use crate::compaction::fact_ledger::FactLedger;
 use crate::compaction::micro_compact::{
     MicroCompactState, micro_compact_messages, should_trigger_micro_compact,
 };
@@ -623,6 +622,7 @@ use crate::mode::AppMode;
 use crate::subagent::SubAgentCompletion;
 use crate::tool_dispatch::ToolDispatcher;
 use crate::working_set::WorkingSet;
+use codesmith_session::fact_ledger::FactLedger;
 use tokio_util::sync::CancellationToken;
 
 /// Bundles the LSP collaborators the executor needs for the post-edit collect /
@@ -1361,7 +1361,7 @@ pub struct HostAgentExecutor {
     /// `SavedSession`. Log-only — never enters the transcript or a model
     /// request. `std::sync::Mutex` for the same reason as
     /// [`Self::usage`]: synchronous pushes, never held across an `await`.
-    failed_attempts: std::sync::Mutex<Vec<crate::session_store::AttemptRecord>>,
+    failed_attempts: std::sync::Mutex<Vec<codesmith_session::store::AttemptRecord>>,
 
     /// `result.summary_prompt` from `run_compaction` / `recover_context_overflow`
     /// (slice 25a §E) — accumulated across a turn's compactions via
@@ -1956,7 +1956,7 @@ impl HostAgentExecutor {
     ///
     /// [`take_usage`]: HostAgentExecutor::take_usage
     #[must_use]
-    pub fn take_failed_attempts(&self) -> Vec<crate::session_store::AttemptRecord> {
+    pub fn take_failed_attempts(&self) -> Vec<codesmith_session::store::AttemptRecord> {
         std::mem::take(
             &mut *self
                 .failed_attempts
@@ -1982,7 +1982,7 @@ impl HostAgentExecutor {
         self.failed_attempts
             .lock()
             .expect("failed_attempts mutex poisoned")
-            .push(crate::session_store::AttemptRecord {
+            .push(codesmith_session::store::AttemptRecord {
                 turn_id: String::new(),
                 step,
                 error_category: category.to_string(),
@@ -2196,7 +2196,7 @@ impl TurnHarvest for HostAgentExecutor {
     fn take_reported_model(&self) -> Option<String> {
         HostAgentExecutor::take_reported_model(self)
     }
-    fn take_failed_attempts(&self) -> Vec<crate::session_store::AttemptRecord> {
+    fn take_failed_attempts(&self) -> Vec<codesmith_session::store::AttemptRecord> {
         HostAgentExecutor::take_failed_attempts(self)
     }
     fn take_pending_compaction_summary(&self) -> Option<SystemPrompt> {
@@ -2263,7 +2263,7 @@ impl HostAgentExecutor {
     /// `await` (the event payload is pre-extracted).
     pub(crate) async fn observe_prefix_stability(
         &self,
-        frozen: &crate::prompt_zones::FrozenPrefix,
+        frozen: &codesmith_session::zones::FrozenPrefix,
     ) {
         let Some(manager) = &self.prefix_stability else {
             return;
@@ -3605,7 +3605,8 @@ impl HostAgentExecutor {
             // observer below AND the request, so what `/cache zones`
             // reports is exactly what the request path carries.
             let frozen_prefix =
-                crate::prompt_zones::PinnedPrefix::new(system.as_ref(), api_tools.clone()).freeze();
+                codesmith_session::zones::PinnedPrefix::new(system.as_ref(), api_tools.clone())
+                    .freeze();
             // Shadow-mode prefix-cache stability check (P0-3): fingerprint
             // this step's system prompt + tool set against the session-pinned
             // fingerprint. Sits after the system-prompt refresh /
@@ -3644,10 +3645,10 @@ impl HostAgentExecutor {
             // before the run loop starts). Byte-identical to the legacy
             // direct `MessageRequest` construction; the zone types govern
             // how the request is *expressible*, not what it contains.
-            let mut request = crate::prompt_zones::ThreeZoneRequest {
+            let mut request = codesmith_session::zones::ThreeZoneRequest {
                 prefix: &frozen_prefix,
                 log: &history.messages(),
-                scratch: crate::prompt_zones::TurnScratch::new(),
+                scratch: codesmith_session::zones::TurnScratch::new(),
                 model: client.model().to_string(),
                 max_tokens,
                 system: system.clone(),
@@ -7505,7 +7506,7 @@ mod tests {
         ))));
 
         let freeze = |text: &str| {
-            crate::prompt_zones::PinnedPrefix::new(
+            codesmith_session::zones::PinnedPrefix::new(
                 Some(&SystemPrompt::Text(text.to_string())),
                 vec![],
             )
@@ -7588,7 +7589,7 @@ mod tests {
         );
 
         let freeze = |text: &str| {
-            crate::prompt_zones::PinnedPrefix::new(
+            codesmith_session::zones::PinnedPrefix::new(
                 Some(&SystemPrompt::Text(text.to_string())),
                 vec![],
             )
@@ -19465,14 +19466,18 @@ mod tests {
     impl Drop for SpillRootsGuard {
         fn drop(&mut self) {
             crate::tools::truncate::set_test_spillover_root(self.prior_spill.take());
-            crate::artifacts::set_test_artifact_sessions_root(self.prior_artifacts.take());
+            codesmith_session::artifacts::set_test_artifact_sessions_root(
+                self.prior_artifacts.take(),
+            );
         }
     }
 
     fn set_spill_roots(spill_root: PathBuf, sessions_root: PathBuf) -> SpillRootsGuard {
         SpillRootsGuard {
             prior_spill: crate::tools::truncate::set_test_spillover_root(Some(spill_root)),
-            prior_artifacts: crate::artifacts::set_test_artifact_sessions_root(Some(sessions_root)),
+            prior_artifacts: codesmith_session::artifacts::set_test_artifact_sessions_root(Some(
+                sessions_root,
+            )),
         }
     }
 

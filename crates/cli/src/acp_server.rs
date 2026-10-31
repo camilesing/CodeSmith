@@ -63,7 +63,7 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use codesmith_agent_runtime::mode::ApprovalMode;
-use codesmith_agent_runtime::session_store::{
+use codesmith_session::store::{
     FileSessionStore, SessionMetadata, create_saved_session_with_id_and_mode, update_session,
     workspace_scope_matches,
 };
@@ -890,7 +890,7 @@ where
     // snapshot `persist_turn` writes.
     engine_config.session_id = Some(session_id.to_string());
     engine_config.session_journal = Some(std::sync::Arc::new(
-        codesmith_agent_runtime::session_journal::FileSessionJournal::new(sessions_dir),
+        codesmith_session::journal::FileSessionJournal::new(sessions_dir),
     ));
     let engine = spawn_engine(engine_config, config, EngineHost::default());
     if !history.is_empty() {

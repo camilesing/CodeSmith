@@ -13,9 +13,9 @@
 //! - [`transcript`] / [`primitives`]: dependency-free helpers (tool-pairing
 //!   predicates, path extraction, atomic writes, hashing, token estimates).
 //!
-//! The engine crate re-exports every module under its historical path
-//! (`codesmith_agent_runtime::session_store`, `::prompt_zones`, …), so
-//! consumers move at their own pace.
+//! Consumers import from this crate directly; the historical
+//! `codesmith_agent_runtime::{session_store, session_journal, prompt_zones,
+//! artifacts}` and CLI `session_manager` paths were removed with the split.
 //!
 //! Known limitation: the workspace snapshot pruning a store call triggers
 //! (`prune_workspace_snapshots`) lives with the side-git snapshot code in the

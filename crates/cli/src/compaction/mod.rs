@@ -1926,7 +1926,9 @@ mod tests {
         let mock = MockLlmClient::new(Vec::new());
         mock.push_message_response(summary_response("layered", LAYERED_SUMMARY_TEXT));
 
-        let ledger = std::sync::Arc::new(std::sync::Mutex::new(fact_ledger::FactLedger::default()));
+        let ledger = std::sync::Arc::new(std::sync::Mutex::new(
+            codesmith_session::fact_ledger::FactLedger::default(),
+        ));
         let enhancements = CompactionEnhancements {
             fact_ledger: Some(ledger.clone()),
             ..CompactionEnhancements::default()
@@ -2039,7 +2041,9 @@ mod tests {
             ));
         }
 
-        let ledger = std::sync::Arc::new(std::sync::Mutex::new(fact_ledger::FactLedger::default()));
+        let ledger = std::sync::Arc::new(std::sync::Mutex::new(
+            codesmith_session::fact_ledger::FactLedger::default(),
+        ));
         let enhancements = CompactionEnhancements {
             fact_ledger: Some(ledger.clone()),
             ..CompactionEnhancements::default()

@@ -261,7 +261,7 @@ pub(crate) fn adopt_for_resume(
             format!(
                 "warning: skipped {} corrupt inbox journal line(s) for session {}",
                 contents.corrupt,
-                crate::session_manager::truncate_id(session_id),
+                codesmith_session::store::truncate_id(session_id),
             )
             .yellow()
         );
@@ -322,7 +322,7 @@ pub(crate) fn rekey(sessions_dir: &Path, old_id: &str, new_id: &str) {
 /// (the REPL startup sweep is the backstop for stores that are not the
 /// default file store).
 pub(crate) fn remove_at_default_location(id: &str) {
-    let Some(sessions_dir) = crate::session_manager::SessionManager::default_location()
+    let Some(sessions_dir) = codesmith_session::store::FileSessionStore::default_location()
         .ok()
         .map(|manager| manager.sessions_dir().to_path_buf())
     else {
@@ -410,7 +410,7 @@ pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<OrphanHarvest> {
 /// the live session's queue, re-journaled under the current id so they keep
 /// the same crash-durability contract. Returns the harvested count.
 pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::ReplState) -> usize {
-    let manager = match crate::session_manager::SessionManager::default_location() {
+    let manager = match codesmith_session::store::FileSessionStore::default_location() {
         Ok(manager) => manager,
         Err(err) => {
             println!(
@@ -441,7 +441,7 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
 }
 
 fn default_journal(id: &str) -> Option<InboxJournal> {
-    let sessions_dir = crate::session_manager::SessionManager::default_location()
+    let sessions_dir = codesmith_session::store::FileSessionStore::default_location()
         .ok()
         .map(|manager| manager.sessions_dir().to_path_buf());
     let sessions_dir = sessions_dir?;

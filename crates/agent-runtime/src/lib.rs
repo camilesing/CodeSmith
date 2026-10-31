@@ -38,7 +38,6 @@ pub(crate) fn policy_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub mod agent_memory;
-pub use codesmith_session::artifacts;
 pub mod attachments;
 pub mod auto_reasoning;
 pub mod background_task;
@@ -83,7 +82,6 @@ pub mod project_context;
 pub mod prompt_inspect;
 pub mod prompt_runtime;
 pub mod prompt_sources;
-pub use codesmith_session::zones as prompt_zones;
 pub mod prompts;
 pub mod purge;
 pub mod repl;
@@ -94,8 +92,6 @@ pub mod sandbox;
 pub mod sanitization;
 pub mod session;
 pub mod session_history;
-pub use codesmith_session::journal as session_journal;
-pub mod session_store;
 pub mod settings_file;
 pub mod shell_dispatcher;
 pub mod shell_manager;

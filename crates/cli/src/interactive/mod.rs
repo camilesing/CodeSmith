@@ -490,7 +490,7 @@ pub async fn run_repl(
             .into_iter()
             .map(|path| crate::media::PendingImage {
                 path: PathBuf::from(path),
-                source: codesmith_agent_runtime::session_store::ContextReferenceSource::AtMention,
+                source: codesmith_session::store::ContextReferenceSource::AtMention,
             })
             .collect();
         images.extend(
@@ -499,8 +499,7 @@ pub async fn run_repl(
                 .drain(..)
                 .map(|path| crate::media::PendingImage {
                     path,
-                    source:
-                        codesmith_agent_runtime::session_store::ContextReferenceSource::Attachment,
+                    source: codesmith_session::store::ContextReferenceSource::Attachment,
                 }),
         );
         if let Err(err) = submit_with_images(&mut state, content, images).await {

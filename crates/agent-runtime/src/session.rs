@@ -3,7 +3,6 @@
 //! Tracks conversation history, token usage, and session metadata.
 
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
-use crate::compaction::fact_ledger::FactLedger;
 use crate::compaction::micro_compact::MicroCompactState;
 use crate::compaction::responsive_compact::ResponsiveCompactState;
 use crate::compaction::session_memory_compact::SessionMemoryCompactConfig;
@@ -12,9 +11,10 @@ use crate::mode::ApprovalMode;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::prefix_cache::PrefixStabilityManager;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
-use crate::prompt_zones::{AppendLog, RebuildReason};
 use crate::working_set::WorkingSet;
 use chrono::{DateTime, Utc};
+use codesmith_session::fact_ledger::FactLedger;
+use codesmith_session::zones::{AppendLog, RebuildReason};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -333,7 +333,7 @@ impl Session {
     /// sanctioned cache-busting path (compaction, overflow recovery,
     /// `/edit` rollback, session restore, cycle reseeds). The `reason`
     /// names the caller and is kept in the log's
-    /// [`RebuildRecord`](crate::prompt_zones::RebuildRecord) for `/cache zones`.
+    /// [`RebuildRecord`](codesmith_session::zones::RebuildRecord) for `/cache zones`.
     pub fn rebuild_transcript(&mut self, reason: RebuildReason, messages: Vec<Message>) {
         self.messages.rebuild(reason, messages);
     }

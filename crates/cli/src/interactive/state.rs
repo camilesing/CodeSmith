@@ -5,7 +5,7 @@
 //! (transcript cells, pickers, themes) are intentionally absent: the REPL
 //! prints to stdout and reads lines from stdin.
 
-use codesmith_agent_runtime::session_journal::{FileSessionJournal, SessionJournal};
+use codesmith_session::journal::{FileSessionJournal, SessionJournal};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +22,6 @@ use crate::cycle_manager::CycleConfig;
 use crate::hooks::{HookContext, HookEvent, HookExecutor};
 use crate::localization::{Locale, resolve_locale};
 use crate::models::{Message, SystemPrompt};
-use crate::session_manager::SessionManager;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
 use crate::tools::plan_mode::SharedPlanModeState;
@@ -33,6 +32,7 @@ use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use codesmith_agent_runtime::mcp;
 use codesmith_agent_runtime::mode::ApprovalMode;
 use codesmith_config::presets::PresetCatalog;
+use codesmith_session::store::FileSessionStore;
 
 /// Known limitations of the line-based REPL, recorded beside the behaviour
 /// it owns so the next reader does not assume a capability that was never
@@ -114,21 +114,21 @@ pub struct ReplState {
     /// rounds. Persisted onto `SavedSession::failed_attempts` at the turn
     /// boundary and re-adopted on resume/`/load`. Log-only — never part of
     /// `api_messages` or any model request.
-    pub failed_attempts: Vec<codesmith_agent_runtime::session_store::AttemptRecord>,
+    pub failed_attempts: Vec<codesmith_session::store::AttemptRecord>,
     /// Approval decisions this session's gate reached, one per gated tool call —
     /// including the ones answered without asking. Persisted onto
     /// `SavedSession::approvals` at the turn boundary and re-adopted on
     /// resume/`/load`. Log-only — never part of `api_messages` or any model
     /// request, and carrying no authority (the grants themselves live in
     /// `approval_session_approved` / `approval_grants`).
-    pub approvals: Vec<codesmith_agent_runtime::session_store::ApprovalRecord>,
+    pub approvals: Vec<codesmith_session::store::ApprovalRecord>,
     /// Media attachment record (TODO-50): one entry per image the user
     /// attached, admitted into the content-addressed store (`included: true`,
     /// hash/size/type in `detail`) or refused (`included: false`, reason in
     /// `detail`). Persisted onto `SavedSession::context_references` at the
     /// turn boundary and re-adopted on resume/`/load`. Log-only — the
     /// transcript's image blocks are what the model sees; this says why.
-    pub context_references: Vec<codesmith_agent_runtime::session_store::SessionContextReference>,
+    pub context_references: Vec<codesmith_session::store::SessionContextReference>,
     pub api_provider: ApiProvider,
     pub model_ids_passthrough: bool,
     pub reasoning_effort: ReasoningEffort,
@@ -255,8 +255,7 @@ pub struct ReplState {
     /// Tool-catalog baseline shared from the engine (the `/tools` readout).
     pub tool_catalog: Option<crate::core::tool_catalog::SharedToolCatalog>,
     /// The live session's fact ledger (engine-shared `Arc`).
-    pub fact_ledger:
-        Option<Arc<std::sync::Mutex<codesmith_agent_runtime::compaction::fact_ledger::FactLedger>>>,
+    pub fact_ledger: Option<Arc<std::sync::Mutex<codesmith_session::fact_ledger::FactLedger>>>,
     /// The session's recent-read-files working set (engine-shared `Arc`).
     pub recent_read_files: Option<
         Arc<
@@ -859,7 +858,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         subagent_external_provider: crate::tools::subagent::headless::provider_from_config(config)?,
         // The REPL snapshot is keyed by the engine session id, so the
         // journal pairs with it (round-9 TODO-58).
-        session_journal: crate::session_manager::SessionManager::default_location()
+        session_journal: codesmith_session::store::FileSessionStore::default_location()
             .ok()
             .map(|manager| {
                 std::sync::Arc::new(FileSessionJournal::new(manager.sessions_dir()))
@@ -900,7 +899,7 @@ pub async fn resume_session(
 ) -> anyhow::Result<bool> {
     use codesmith_agent_runtime::ops::Op;
 
-    let manager = match SessionManager::default_location() {
+    let manager = match FileSessionStore::default_location() {
         Ok(manager) => manager,
         Err(err) => {
             eprintln!("could not open session manager: {err}");
@@ -971,7 +970,7 @@ pub async fn resume_session(
         .await?;
     println!(
         "resumed session {}",
-        crate::session_manager::truncate_id(&saved_id)
+        codesmith_session::store::truncate_id(&saved_id)
     );
     Ok(true)
 }
@@ -995,7 +994,7 @@ pub async fn resume_session(
 /// revisit only if long-session resume cost is observed as a problem.
 async fn restore_engine_backed_session_state(
     state: &mut ReplState,
-    session: &crate::session_manager::SavedSession,
+    session: &codesmith_session::store::SavedSession,
 ) {
     // todo/plan: fold rebuilds from the resumed transcript. Not gated on the
     // engine — the shared Arcs outlive any single engine instance.
@@ -1172,10 +1171,10 @@ mod restore_tests {
             None,
             "test-model".to_string(),
         );
-        let saved = crate::session_manager::SavedSession {
+        let saved = codesmith_session::store::SavedSession {
             // v1 — matches the private CURRENT_SESSION_SCHEMA_VERSION.
             schema_version: 1,
-            metadata: codesmith_agent_runtime::session_store::SessionMetadata {
+            metadata: codesmith_session::store::SessionMetadata {
                 id: "sess-restore".to_string(),
                 title: "restore regression".to_string(),
                 created_at: chrono::Utc::now(),

@@ -689,7 +689,7 @@ pub struct CompactionEnhancements {
     /// Session fact ledger. When present, facts are extracted from the
     /// drop set of every compaction and the ledger is rendered as a section
     /// of the summary block. `None` disables fact extraction entirely.
-    pub fact_ledger: Option<Arc<std::sync::Mutex<super::fact_ledger::FactLedger>>>,
+    pub fact_ledger: Option<Arc<std::sync::Mutex<codesmith_session::fact_ledger::FactLedger>>>,
 }
 
 impl std::fmt::Debug for CompactionEnhancements {
@@ -1011,8 +1011,9 @@ pub async fn compact_messages_safe(
                     && let Some(summary) = prompt.as_ref()
                 {
                     let summary_text = prompt_summary_text(summary);
-                    let lessons = super::fact_ledger::extract_refuted_assumptions(&summary_text);
-                    let file_map = super::fact_ledger::extract_file_map(&summary_text);
+                    let lessons =
+                        codesmith_session::fact_ledger::extract_refuted_assumptions(&summary_text);
+                    let file_map = codesmith_session::fact_ledger::extract_file_map(&summary_text);
                     if !lessons.is_empty() || !file_map.is_empty() {
                         let mut guard = ledger
                             .lock()
@@ -1452,7 +1453,7 @@ pub const LAYERED_SUMMARY_HEADERS: &[&str] = &[
     "### Decisions & Confirmed Facts",
     "### Failed Approaches",
     "### Brief Process",
-    super::fact_ledger::REFUTED_ASSUMPTIONS_HEADER,
+    codesmith_session::fact_ledger::REFUTED_ASSUMPTIONS_HEADER,
 ];
 
 /// How many of the layered-summary section headers `text` carries. A

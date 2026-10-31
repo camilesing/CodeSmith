@@ -5561,7 +5561,7 @@ async fn dangling_tool_call_is_closed_before_the_next_request() {
 /// transcript (here `/edit` dropping the last exchange) stays on record.
 #[tokio::test]
 async fn session_journal_folds_to_the_transcript_and_keeps_rolled_back_history() {
-    use codesmith_agent_runtime::session_journal::{
+    use codesmith_session::journal::{
         FileSessionJournal, JournalEntry, fold_transcript, journal_path, read_journal,
     };
 
@@ -5640,7 +5640,7 @@ async fn session_journal_folds_to_the_transcript_and_keeps_rolled_back_history()
 #[tokio::test]
 async fn every_model_request_is_reconstructable_from_the_session_journal() {
     use codesmith_agent::llm_client::record_replay::{RecordLine, RecordingClient};
-    use codesmith_agent_runtime::session_journal::{
+    use codesmith_session::journal::{
         FileSessionJournal, journal_path, read_journal, reconstruct_requests,
     };
 

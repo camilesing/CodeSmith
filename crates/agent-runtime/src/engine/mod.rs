@@ -42,13 +42,13 @@ use crate::models::{
     ContentBlock, ImageSource, LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool,
     Usage,
 };
-use crate::prompt_zones::RebuildReason;
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
 use crate::subagent::SubAgentCompletion;
 use crate::tool_state::goal::SharedGoalState;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
 use crate::utils::spawn_supervised;
+use codesmith_session::zones::RebuildReason;
 
 use super::capacity::{
     CapacityController, CapacityDecision, CapacityObservationInput, CapacitySnapshot,
@@ -288,7 +288,7 @@ pub struct Engine {
     /// (so the request-time scratch is empty in production — the request
     /// tail is the log tail), and the scratch is cleared when the turn's
     /// run returns. See `prompt_zones::TurnScratch`.
-    pub turn_scratch: crate::prompt_zones::TurnScratch,
+    pub turn_scratch: codesmith_session::zones::TurnScratch,
 }
 
 // === Internal tool helpers ===
@@ -980,7 +980,7 @@ impl Engine {
     /// `session_store::tail_tool_outcome_unknown_terminator`.
     async fn close_dangling_tool_calls(&mut self, origin: &str) {
         if let Some((terminator, closed)) =
-            crate::session_store::tail_tool_outcome_unknown_terminator(
+            codesmith_session::store::tail_tool_outcome_unknown_terminator(
                 &self.session.messages,
                 origin,
             )
@@ -3586,7 +3586,7 @@ impl Engine {
             coherence_state: CoherenceState::default(),
             turn_counter: 0,
             last_dispatched_mode: None,
-            turn_scratch: crate::prompt_zones::TurnScratch::new(),
+            turn_scratch: codesmith_session::zones::TurnScratch::new(),
             pending_lsp_blocks: Vec::new(),
             pending_result_verifications: Arc::new(StdMutex::new(Vec::new())),
             tool_durations: Arc::new(StdMutex::new(std::collections::HashMap::new())),

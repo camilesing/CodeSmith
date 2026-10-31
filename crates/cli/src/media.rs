@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use codesmith_agent_runtime::attachments::{AttachmentStore, StoredAttachment};
-use codesmith_agent_runtime::session_store::{
+use codesmith_session::store::{
     ContextReference, ContextReferenceKind, ContextReferenceSource, SessionContextReference,
 };
 

@@ -36,8 +36,8 @@
   Schema（协议、配置）由测试钉在对应类型上。
 - **会话持久化接缝。** 持久会话记录（`SavedSession`）、格式治理解码
   管线（schema 门禁、相邻内存迁移、未知块容忍、中断回合修复）与
-  `SessionStore` 接缝位于 `codesmith-session`（`session/src/store.rs`，
-  以 `agent_runtime::session_store` 再导出；第九轮拆分）；文件
+  `SessionStore` 接缝位于 `codesmith-session`（`session/src/store.rs`；
+  第九轮拆分）；文件
   提供者（`FileSessionStore`，每会话一个 JSON 文件 + 崩溃检查点）同
   模块——按 `FileKeyringStore` 先例允许提供者留在框架 crate。消费者：
   CLI REPL 恢复流程与 runtime API 的会话端点（dyn 分发）。已知限制：
@@ -192,7 +192,7 @@
 - **`crates/providers`** - 位于 Cargo feature 之后的可插拔 LLM 客户端实现（openai-compat、anthropic、mock；rig 适配器）。
 - **`crates/release`** - 发布发现 / 版本比较。
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
-- **`crates/session`** - 会话数据面（对应 DSH `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。以历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 再导出。
+- **`crates/session`** - 会话数据面（对应 DSH `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。消费者直接从本 crate 导入（历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 与 CLI 的 `session_manager` 已随拆分移除）。
 - **`crates/state`** - SQLite 线程/会话持久化层。
 - **`crates/tool-impls`** - 具体的模型可见工具实现。
 - **`crates/tools`** - 共享工具调用原语，包括 CLI 运行时使用的工具结果/错误/能力类型。
@@ -284,7 +284,6 @@ Chat Completions 驱动 turn。
 - **`pricing.rs`** - 成本估算
 - **`prompts.rs`** - 提示词加载 shim（组装后的系统提示词位于 `crates/agent-runtime/src/prompts.rs` + `prompts/` 资产：基础宪法、模式增量、性格叠加、审批策略）
 - **`project_context.rs`** - 项目文档处理
-- **`session_manager.rs`** - 会话序列化
 - **`runtime_api.rs`** - HTTP/SSE 运行时 API（`codesmith serve --http`）
 - **`runtime_threads.rs`** - 持久线程/turn/条目存储 + 可重放的事件时间线
 - **`task_manager.rs`** - 持久队列、工作线程池、任务时间线和工件
@@ -367,7 +366,7 @@ Chat Completions 驱动 turn。
 
 ### 持久 Schema 门控
 
-- `session_manager.rs`、`runtime_threads.rs` 和 `task_manager.rs` 在持久化记录中嵌入 `schema_version`。
+- `codesmith-session`（`session/src/store.rs`）、`runtime_threads.rs` 和 `task_manager.rs` 在持久化记录中嵌入 `schema_version`。
 - 加载时，较新的 schema 版本会被显式错误拒绝，而不是静默截断/覆盖数据。
 - 这允许安全的前向迁移，并在二进制文件与已存储状态不同步时防止损坏。
 
@@ -420,7 +419,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
    （`SANDBOX_UNAVAILABLE`）（平台矩阵见 `docs/SANDBOX.md`）。
 5. **最小依赖**：精心选择依赖以保证构建速度
 6. **本地优先的运行时 API**：HTTP/SSE 端点面向受信任的 localhost 访问，目前由 `crates/cli` 运行时提供
-7. **三区 prompt 契约**：每个请求划分为 `PinnedPrefix`（系统提示词 + 工具目录，每步由 `prompt_zones::PinnedPrefix::freeze` 指纹化、由 `prefix_cache::PrefixStabilityManager` 漂移检查）、`AppendLog`（`Session` 转录存储——`push` 是该类型唯一日常可表达的变更；整体替换必须通过 `RebuildReason` 自我声明并落入日志的审计记录，以 `Event::TranscriptRebuilt` 浮出）与 `TurnScratch`（每轮的组合暂存区，在请求循环前提交进日志、在每个轮次边界清空）。每步的 `MessageRequest` 经 `engine/host_executor.rs` 中的 `ThreeZoneRequest` 组装——`messages` 只能是日志切片加暂存尾部，因此在别处用任意 `Vec<Message>` 手工拼装请求正是该契约要杜绝的模式（与旧式直接构造逐字节一致；见 `three_zone_assembly_sends_verbatim_log_snapshot` 回归测试）
+7. **三区 prompt 契约**：每个请求划分为 `PinnedPrefix`（系统提示词 + 工具目录，每步由 `codesmith_session::zones::PinnedPrefix::freeze` 指纹化、由 `prefix_cache::PrefixStabilityManager` 漂移检查）、`AppendLog`（`Session` 转录存储——`push` 是该类型唯一日常可表达的变更；整体替换必须通过 `RebuildReason` 自我声明并落入日志的审计记录，以 `Event::TranscriptRebuilt` 浮出）与 `TurnScratch`（每轮的组合暂存区，在请求循环前提交进日志、在每个轮次边界清空）。每步的 `MessageRequest` 经 `engine/host_executor.rs` 中的 `ThreeZoneRequest` 组装——`messages` 只能是日志切片加暂存尾部，因此在别处用任意 `Vec<Message>` 手工拼装请求正是该契约要杜绝的模式（与旧式直接构造逐字节一致；见 `three_zone_assembly_sends_verbatim_log_snapshot` 回归测试）
 
 ## 配置文件
 
