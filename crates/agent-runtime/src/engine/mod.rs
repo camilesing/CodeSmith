@@ -1645,32 +1645,37 @@ impl Engine {
         // the snapshot fields mirror the old construction's `Arc` clones
         // (all taken before the `&mut self.session` borrow below).
         let deps = executor_composition::TurnDeps {
+            shape: executor_composition::TurnShape::Main,
             client,
             tools,
             callback,
             executor_config,
+            request_model: None,
+            reasoning_effort: None,
             tx_event: Some(self.tx_event.clone()),
             rx_steer: Arc::clone(&self.rx_steer),
-            rx_approval: Arc::clone(&self.rx_approval),
-            rx_user_input: Arc::clone(&self.rx_user_input),
-            rx_subagent_completion: Arc::clone(&self.rx_subagent_completion),
+            rx_approval: Some(Arc::clone(&self.rx_approval)),
+            rx_user_input: Some(Arc::clone(&self.rx_user_input)),
+            rx_subagent_completion: Some(Arc::clone(&self.rx_subagent_completion)),
             cancel_token: self.cancel_token.clone(),
             lsp,
             turn_meta: Some(turn_meta_probe),
             reinject: Some(reinject_probe),
             deliverables: self.deliverables_probe.clone(),
-            compaction: self.config.compaction.clone(),
-            workspace: self.session.workspace.clone(),
-            fact_ledger: Arc::clone(&self.session.fact_ledger),
-            api_provider: self.api_provider,
-            model: self.session.model.clone(),
-            capacity_controller: Arc::clone(&self.capacity_controller),
-            working_set: Arc::clone(&self.session.working_set),
-            capacity_profile_window: self.config.capacity.profile_window,
-            turn_counter: self.turn_counter,
+            context: Some(executor_composition::TurnContextSources {
+                compaction: self.config.compaction.clone(),
+                workspace: self.session.workspace.clone(),
+                fact_ledger: Arc::clone(&self.session.fact_ledger),
+                api_provider: self.api_provider,
+                model: self.session.model.clone(),
+                capacity_controller: Arc::clone(&self.capacity_controller),
+                working_set: Arc::clone(&self.session.working_set),
+                capacity_profile_window: self.config.capacity.profile_window,
+                turn_counter: self.turn_counter,
+            }),
             mode,
             max_subagents: self.config.max_subagents,
-            plan_mode_state: self.config.plan_mode_state.clone(),
+            plan_mode_state: Some(self.config.plan_mode_state.clone()),
             progressive_disclosure: tool_catalog_for_event.as_deref().is_some_and(|catalog| {
                 progressive_disclosure_active(catalog, self.config.progressive_disclosure)
             }),
@@ -1684,8 +1689,8 @@ impl Engine {
             tool_dispatcher: plan.tool_registry().cloned(),
             extension_runner: self.extension_runner.clone(),
             prefix_stability: self.session.prefix_stability.clone(),
-            pending_result_verifications: Arc::clone(&self.pending_result_verifications),
-            tool_durations: Arc::clone(&self.tool_durations),
+            pending_result_verifications: Some(Arc::clone(&self.pending_result_verifications)),
+            tool_durations: Some(Arc::clone(&self.tool_durations)),
             subagents: self.host.subagents(),
             session_id: Some(self.session.id.clone()),
         };
@@ -3875,6 +3880,7 @@ fn non_empty_deliverables_probe(
     }
 }
 
+pub mod child_turn;
 mod deliverables;
 mod dispatch;
 pub mod executor_composition;

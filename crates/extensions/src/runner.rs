@@ -218,8 +218,10 @@ pub(crate) struct Pending {
     pub commands: Vec<PendingCommand>,
     pub handlers: Vec<PendingHandler>,
     /// DSH around-dispatch registrations (tools/execute) queued by the
-    /// stub `ExtensionApi`, awaiting the `bind_core` flush.
-    pub around_tools: Vec<Arc<dyn AroundToolHandler>>,
+    /// stub `ExtensionApi`, awaiting the `bind_core` flush — each with
+    /// its load-path origin (a dylib wrapper never wraps a sub-agent's
+    /// dispatch, §F5d).
+    pub around_tools: Vec<(Arc<dyn AroundToolHandler>, RegistrationOrigin)>,
     /// Around-turn registrations (the kernel-composition runtime half)
     /// queued by the stub `ExtensionApi`, awaiting the `bind_core` flush.
     pub around_turns: Vec<Arc<dyn AroundTurnHandler>>,
@@ -306,11 +308,11 @@ pub struct ExtensionRunner {
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
     handlers: Mutex<Vec<RegisteredHandler>>,
     /// Bound at `bind_core` — the flushed around-dispatch handlers
-    /// (DSH tools/execute), in registration order (outermost first). The
-    /// engine snapshots them per tool phase via
-    /// [`around_tool_handlers`](Self::around_tool_handlers) and composes
-    /// the `next()` chain; `clear_around_tools` / reload drop them.
-    around_tools: Mutex<Vec<Arc<dyn AroundToolHandler>>>,
+    /// (DSH tools/execute) with their origins, in registration order
+    /// (outermost first). The engine snapshots them per tool phase via
+    /// [`around_tool_handlers_for`](Self::around_tool_handlers_for) and
+    /// composes the `next()` chain; `clear_around_tools` / reload drop them.
+    around_tools: Mutex<Vec<(Arc<dyn AroundToolHandler>, RegistrationOrigin)>>,
     /// Bound at `bind_core` — the flushed around-turn handlers (the
     /// kernel-composition runtime half), in registration order (outermost
     /// first). The engine snapshots them once per main-turn assembly via
@@ -485,14 +487,29 @@ impl ExtensionRunner {
     }
 
     /// Snapshot the bound around-dispatch handlers in registration order
-    /// (outermost first). The engine reads this once per tool phase; an
-    /// empty snapshot leaves the dispatch path untouched.
+    /// (outermost first) — the **Global** view (the main turn's).
     #[must_use]
     pub fn around_tool_handlers(&self) -> Vec<Arc<dyn AroundToolHandler>> {
+        self.around_tool_handlers_for(&Scope::Global)
+    }
+
+    /// The around-dispatch chain a tool phase at `scope` composes, in
+    /// registration order (outermost first): every registration at
+    /// `Global`; at an agent-type scope the dylib-origin wrappers drop out
+    /// (§F5d — a detached sub-agent can outlive a reload's `Library`
+    /// drop, the same rule as [`emit_scoped`](Self::emit_scoped)). Around
+    /// registrations are global-only, so there is no per-type overlay. The
+    /// engine reads this once per tool phase; an empty snapshot leaves the
+    /// dispatch path untouched.
+    #[must_use]
+    pub fn around_tool_handlers_for(&self, scope: &Scope) -> Vec<Arc<dyn AroundToolHandler>> {
         self.around_tools
             .lock()
             .expect("around-tools lock poisoned")
-            .clone()
+            .iter()
+            .filter(|(_, origin)| scope.is_global() || !origin.is_dylib())
+            .map(|(handler, _)| Arc::clone(handler))
+            .collect()
     }
 
     /// Clear the generation's around-turn registrations. Same reload
@@ -2965,12 +2982,26 @@ mod tests {
 
     #[test]
     fn dylib_tools_and_handlers_stay_main_turn_only() {
-        // One dylib-stamped ext (a Global tool + a Global handler) and one
-        // compiled-in ext (same shapes) — the tier must keep only the
-        // dylib half out of sub-agent surfaces.
+        // One dylib-stamped ext (a Global tool + a Global handler + an
+        // around-tool wrapper) and one compiled-in ext (same shapes) — the
+        // tier must keep only the dylib half out of sub-agent surfaces.
         struct MixedExt {
             seen: Arc<Mutex<Vec<&'static str>>>,
             label: &'static str,
+        }
+        struct LabelledAround(&'static str);
+        #[async_trait::async_trait]
+        impl codesmith_agent::extension::AroundToolHandler for LabelledAround {
+            async fn call(
+                &self,
+                _call: codesmith_agent::extension::ToolCallEvent,
+                next: codesmith_agent::extension::ToolCallNext<'_>,
+            ) -> Result<codesmith_agent::tools::ToolResult, codesmith_agent::tools::ToolError>
+            {
+                let mut result = next.await?;
+                result.content.push_str(self.0);
+                Ok(result)
+            }
         }
         #[async_trait::async_trait]
         impl Extension for MixedExt {
@@ -2990,6 +3021,7 @@ mod tests {
                         label: Box::leak(format!("{}_handler", self.label).into_boxed_str()),
                     }),
                 )?;
+                api.register_around_tool(Arc::new(LabelledAround(self.label)))?;
                 Ok(())
             }
         }
@@ -3046,6 +3078,29 @@ mod tests {
             *seen.lock().unwrap(),
             vec!["compiled_handler", "dylib_handler", "compiled_handler"],
             "the dylib-origin handler is skipped at agent-type scopes"
+        );
+
+        // Around-tool: the main turn's (Global) chain composes both
+        // wrappers; a sub-agent's chain composes only the compiled-in one.
+        let compose = |handlers: Vec<Arc<dyn codesmith_agent::extension::AroundToolHandler>>| {
+            let terminal: codesmith_agent::extension::ToolCallNext<'static> =
+                Box::pin(async { Ok(codesmith_agent::tools::ToolResult::success(String::new())) });
+            let call = codesmith_agent::extension::ToolCallEvent {
+                id: "c1".into(),
+                name: "t".into(),
+                input: serde_json::Value::Null,
+            };
+            rt.block_on(codesmith_agent::extension::wrap_tool_dispatch(
+                &handlers, call, terminal,
+            ))
+            .expect("chain")
+            .content
+        };
+        assert_eq!(compose(runner.around_tool_handlers()), "dylibcompiled");
+        assert_eq!(
+            compose(runner.around_tool_handlers_for(&Scope::AgentType("general".to_string()))),
+            "compiled",
+            "a dylib-origin around-tool wrapper never wraps a sub-agent dispatch"
         );
     }
 }

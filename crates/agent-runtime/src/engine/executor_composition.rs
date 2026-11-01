@@ -1,15 +1,19 @@
-//! Turn-executor composition — the kernel composition point for the main
-//! turn loop.
+//! Turn-executor composition — the kernel composition point for every
+//! turn loop: the main turn and every in-process sub-agent turn.
 //!
 //! The engine no longer hard-wires `HostAgentExecutor` into
 //! `handle_send_message`: every turn it snapshots its kernel services into a
 //! [`TurnDeps`], resolves the configured factory from the process-shared
 //! [`TurnExecutorRegistry`] (config key `turn_executor`, default
 //! [`BUILTIN_TURN_EXECUTOR_ID`]), and runs whatever the factory built
-//! through the dyn-safe [`AgentExecutor`] seam. This is the deepseek-harness
-//! (DSH) kernel-composition model adapted to this codebase: kernel services
-//! stay owned by the host, and "which loop runs" is a *selection*, resolved
-//! at a defined chokepoint, not a composition of the engine itself.
+//! through the dyn-safe [`AgentExecutor`] seam. A sub-agent turn takes the
+//! same path through [`run_child_turn`](super::child_turn::run_child_turn):
+//! a child-shaped [`TurnDeps`] ([`TurnShape::Child`]), the same registry,
+//! the same factory (DSH: one factory makes every agent). This is the
+//! deepseek-harness (DSH) kernel-composition model adapted to this
+//! codebase: kernel services stay owned by the host, and "which loop runs"
+//! is a *selection*, resolved at a defined chokepoint, not a composition
+//! of the engine itself.
 //!
 //! Registration follows the reversible-registration house pattern
 //! (`SharedProviderRegistry` / `ProviderRegistration`): upsert by id, an
@@ -30,11 +34,10 @@
 //!   `TurnDeps`'s runtime-side types across the `codesmith-agent` →
 //!   `codesmith-agent-runtime` boundary. Wrapping an existing turn from a
 //!   dylib is the around-turn seam (`crates/agent/src/extension.rs`).
-//! - **Main turns only.** Sub-agent loops build their own in-loop dispatch
-//!   and do not consult this registry for *selection*; a session's
-//!   children run the builtin machinery regardless of the selected
-//!   main-turn executor. They do hold [`crate::turn_lease`] leases on the
-//!   builtin id, so the replacement guard counts them.
+//! - **One selection for every agent.** `turn_executor` picks the loop for
+//!   the main turn and every in-process child alike; there is no per-type
+//!   selection (DSH plan D2 — no consumer yet). External-provider children
+//!   (out of process) run whatever loop their own process selects.
 //! - **Approval is loop discipline, not dispatcher-enforced.** A factory
 //!   receives the approval router and the cancel/steer channels in
 //!   `TurnDeps` and is contractually required to gate tool calls through
@@ -88,39 +91,32 @@ use codesmith_session::store::AttemptRecord;
 /// ([`HostAgentExecutorFactory`]). Config `turn_executor` defaults to this.
 pub const BUILTIN_TURN_EXECUTOR_ID: &str = "builtin";
 
-/// The kernel-service bundle the engine snapshots per turn and hands a
-/// [`TurnExecutorFactory`] — the composition surface of the main turn loop.
-///
-/// Every field is an owned clone taken *before* the `&mut Session` borrow
-/// (probes observe session state through `Arc`s), so the bundle carries no
-/// engine borrow. [`TurnExecutorFactory::build`] consumes it by value: the
-/// engine builds one bundle per turn and hands it over whole. A factory
-/// that needs less simply drops fields it ignores; a future field addition
-/// is additive (compiled-in factories recompile in lockstep).
-///
-/// `pub(crate)`: compiled-in factories live in this crate for now (see the
-/// module doc's known limitations); promoting a host-side factory tier
-/// means naming these runtime types across the crate boundary first.
-pub(crate) struct TurnDeps {
-    // --- the four agent-level collaborators (as the reference loop takes) --
-    pub client: LlmClientHandle,
-    pub tools: Arc<ToolSet>,
-    pub callback: Arc<dyn Callback>,
-    pub executor_config: AgentExecutorConfig,
+/// Which agent a turn is assembled for — the one shape question a factory
+/// answers (the builtin factory reads it for the dispatch scope). What a
+/// child lacks is an absent (`None`) service in [`TurnDeps`], never a
+/// branch in the loop: DSH is one scope per agent, not a pile of branches
+/// per agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TurnShape {
+    /// The engine's own turn: session-level services, `Global` dispatch.
+    Main,
+    /// A sub-agent turn ([`run_child_turn`](super::child_turn::run_child_turn)).
+    Child {
+        /// The sub-agent type id — the `Scope::AgentType` it dispatches at.
+        agent_type: String,
+        /// Spawn depth (1 = a direct child of the main turn).
+        depth: u32,
+        /// The spawning sub-agent's id; `None` when the main turn spawned it.
+        /// Carried for lineage-aware executors; the builtin factory does not
+        /// read it.
+        parent: Option<String>,
+    },
+}
 
-    // --- channels / tokens -------------------------------------------------
-    pub tx_event: Option<mpsc::Sender<Event>>,
-    pub rx_steer: Arc<AsyncMutex<mpsc::Receiver<String>>>,
-    pub rx_approval: Arc<ApprovalRouter>,
-    pub rx_user_input: Arc<AsyncMutex<mpsc::Receiver<UserInputDecision>>>,
-    pub rx_subagent_completion: Arc<AsyncMutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>,
-    pub cancel_token: CancellationToken,
-
-    // --- probe sources (the builtin factory constructs its probes from these)
-    pub lsp: Option<LspProbe>,
-    pub turn_meta: Option<TurnMetaProbe>,
-    pub reinject: Option<ReinjectProbe>,
-    pub deliverables: Option<DeliverablesProbe>,
+/// The compaction / capacity probe sources — the main turn's
+/// context-window management. Absent for a sub-agent turn (children run
+/// without compaction or the capacity gates, as they always have).
+pub(crate) struct TurnContextSources {
     pub compaction: CompactionConfig,
     pub workspace: PathBuf,
     pub fact_ledger: Arc<StdMutex<FactLedger>>,
@@ -130,11 +126,61 @@ pub(crate) struct TurnDeps {
     pub working_set: Arc<StdMutex<WorkingSet>>,
     pub capacity_profile_window: usize,
     pub turn_counter: u64,
+}
+
+/// The kernel-service bundle a host snapshots per turn and hands a
+/// [`TurnExecutorFactory`] — the composition surface of every turn loop:
+/// the engine builds the main turn's ([`TurnShape::Main`]),
+/// [`run_child_turn`](super::child_turn::run_child_turn) builds each
+/// sub-agent's ([`TurnShape::Child`]), and one factory serves both.
+///
+/// Every field is an owned clone taken *before* the `&mut Session` borrow
+/// (probes observe session state through `Arc`s), so the bundle carries no
+/// engine borrow. [`TurnExecutorFactory::build`] consumes it by value: the
+/// host builds one bundle per turn and hands it over whole. A factory
+/// that needs less simply drops fields it ignores; a future field addition
+/// is additive (compiled-in factories recompile in lockstep). The
+/// `Option`al services are the main turn's own: a child's bundle carries
+/// `None` for each.
+///
+/// `pub(crate)`: compiled-in factories live in this crate for now (see the
+/// module doc's known limitations); promoting a host-side factory tier
+/// means naming these runtime types across the crate boundary first.
+pub(crate) struct TurnDeps {
+    pub shape: TurnShape,
+
+    // --- the four agent-level collaborators (as the reference loop takes) --
+    pub client: LlmClientHandle,
+    pub tools: Arc<ToolSet>,
+    pub callback: Arc<dyn Callback>,
+    pub executor_config: AgentExecutorConfig,
+    /// Per-turn request overrides (a child's routed model / effort);
+    /// `None` sends the client's own model and no effort override.
+    pub request_model: Option<String>,
+    pub reasoning_effort: Option<String>,
+
+    // --- channels / tokens -------------------------------------------------
+    pub tx_event: Option<mpsc::Sender<Event>>,
+    /// Mid-turn user input: the engine's steer channel for the main turn, a
+    /// child's own `agent_send_input` channel for a sub-agent turn.
+    pub rx_steer: Arc<AsyncMutex<mpsc::Receiver<String>>>,
+    pub rx_approval: Option<Arc<ApprovalRouter>>,
+    pub rx_user_input: Option<Arc<AsyncMutex<mpsc::Receiver<UserInputDecision>>>>,
+    pub rx_subagent_completion:
+        Option<Arc<AsyncMutex<mpsc::UnboundedReceiver<SubAgentCompletion>>>>,
+    pub cancel_token: CancellationToken,
+
+    // --- probe sources (the builtin factory constructs its probes from these)
+    pub lsp: Option<LspProbe>,
+    pub turn_meta: Option<TurnMetaProbe>,
+    pub reinject: Option<ReinjectProbe>,
+    pub deliverables: Option<DeliverablesProbe>,
+    pub context: Option<TurnContextSources>,
 
     // --- turn-shape config ---------------------------------------------------
     pub mode: AppMode,
     pub max_subagents: usize,
-    pub plan_mode_state: SharedPlanModeState,
+    pub plan_mode_state: Option<SharedPlanModeState>,
     pub progressive_disclosure: bool,
     pub stream_idle_timeout: Option<Duration>,
     pub stream_idle_retry_increment: Duration,
@@ -146,8 +192,8 @@ pub(crate) struct TurnDeps {
     // --- engine-held shared state -------------------------------------------
     pub extension_runner: Option<Arc<ExtensionRunner>>,
     pub prefix_stability: Option<Arc<StdMutex<PrefixStabilityManager>>>,
-    pub pending_result_verifications: Arc<StdMutex<Vec<VerdictBlock>>>,
-    pub tool_durations: Arc<StdMutex<HashMap<String, u64>>>,
+    pub pending_result_verifications: Option<Arc<StdMutex<Vec<VerdictBlock>>>>,
+    pub tool_durations: Option<Arc<StdMutex<HashMap<String, u64>>>>,
     pub subagents: Arc<dyn SubAgentApi>,
     pub session_id: Option<String>,
 }
@@ -385,10 +431,12 @@ pub fn validate_turn_executor_id(id: &str) -> Result<(), String> {
     resolve_turn_executor(id).map(|_| ())
 }
 
-/// The default production loop: exactly the `HostAgentExecutor` assembly the
-/// engine used to inline in `handle_send_message` (slice 20 §E onward),
-/// moved here unchanged. Probes are constructed per build from the
-/// `TurnDeps` snapshots, as before.
+/// The default production loop — one loop for every agent: exactly the
+/// `HostAgentExecutor` assembly the engine used to inline in
+/// `handle_send_message` (slice 20 §E onward) for the main turn, and the
+/// same assembly with the main turn's services absent for a sub-agent turn.
+/// The shape decides only the dispatch scope. Probes are constructed per
+/// build from the `TurnDeps` snapshots, as before.
 pub(crate) struct HostAgentExecutorFactory;
 
 impl TurnExecutorFactory for HostAgentExecutorFactory {
@@ -397,6 +445,38 @@ impl TurnExecutorFactory for HostAgentExecutorFactory {
     }
 
     fn build(&self, deps: TurnDeps) -> BuiltTurn {
+        let dispatch_scope = match &deps.shape {
+            TurnShape::Main => codesmith_agent::extension::Scope::Global,
+            TurnShape::Child { agent_type, .. } => {
+                codesmith_agent::extension::Scope::AgentType(agent_type.clone())
+            }
+        };
+        let (compaction, capacity, capacity_gate) = match deps.context {
+            Some(ctx) => (
+                Some(
+                    CompactionProbe::new(ctx.compaction.clone(), ctx.workspace.clone())
+                        .with_fact_ledger(Some(ctx.fact_ledger.clone())),
+                ),
+                Some(
+                    CapacityProbe::new(
+                        ctx.api_provider,
+                        ctx.model.clone(),
+                        ctx.compaction,
+                        ctx.workspace.clone(),
+                    )
+                    .with_fact_ledger(Some(ctx.fact_ledger)),
+                ),
+                Some(CapacityGateProbe::new(
+                    ctx.capacity_controller,
+                    ctx.model,
+                    ctx.workspace,
+                    ctx.working_set,
+                    ctx.capacity_profile_window,
+                    ctx.turn_counter,
+                )),
+            ),
+            None => (None, None, None),
+        };
         let executor = Arc::new(
             HostAgentExecutor::new(
                 deps.client,
@@ -406,46 +486,30 @@ impl TurnExecutorFactory for HostAgentExecutorFactory {
                 deps.tx_event,
                 deps.lsp,
                 Some(deps.rx_steer),
-                Some(deps.rx_approval),
-                Some(
-                    CompactionProbe::new(deps.compaction.clone(), deps.workspace.clone())
-                        .with_fact_ledger(Some(deps.fact_ledger.clone())),
-                ),
-                Some(
-                    CapacityProbe::new(
-                        deps.api_provider,
-                        deps.model.clone(),
-                        deps.compaction.clone(),
-                        deps.workspace.clone(),
-                    )
-                    .with_fact_ledger(Some(deps.fact_ledger.clone())),
-                ),
-                Some(deps.rx_subagent_completion),
+                deps.rx_approval,
+                compaction,
+                capacity,
+                deps.rx_subagent_completion,
                 Some(deps.cancel_token),
                 Some(deps.subagents),
             )
-            .with_capacity_gate(Some(CapacityGateProbe::new(
-                deps.capacity_controller,
-                deps.model,
-                deps.workspace.clone(),
-                deps.working_set,
-                deps.capacity_profile_window,
-                deps.turn_counter,
-            )))
+            .with_capacity_gate(capacity_gate)
             .with_turn_mode(deps.mode)
             .with_subagent_cap(deps.max_subagents)
-            .with_plan_mode_state(Some(deps.plan_mode_state))
+            .with_plan_mode_state(deps.plan_mode_state)
             .with_request_catalog(deps.request_catalog)
             .with_progressive_disclosure(deps.progressive_disclosure)
             .with_tool_dispatcher(deps.tool_dispatcher)
-            .with_user_input(Some(deps.rx_user_input))
+            .with_user_input(deps.rx_user_input)
             .with_turn_meta(deps.turn_meta)
             .with_reinject(deps.reinject)
             .with_extension_runner(deps.extension_runner)
+            .with_dispatch_scope(dispatch_scope)
+            .with_request_overrides(deps.request_model, deps.reasoning_effort)
             .with_stream_idle_timeout(deps.stream_idle_timeout)
             .with_stream_idle_retry_increment(deps.stream_idle_retry_increment)
             .with_prefix_stability(deps.prefix_stability)
-            .with_result_verifications(Some(deps.pending_result_verifications))
+            .with_result_verifications(deps.pending_result_verifications)
             .with_tool_durations(deps.tool_durations)
             .with_session_id(deps.session_id)
             .with_deliverables(deps.deliverables),

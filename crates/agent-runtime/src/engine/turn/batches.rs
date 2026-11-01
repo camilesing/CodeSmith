@@ -179,13 +179,15 @@ impl HostAgentExecutor {
         let mut plan_approved = false;
         let n = tool_uses.len();
         // DSH around-dispatch (tools/execute): the generation's around
-        // handlers wrap the dispatch terminal in BOTH arms below. An empty
-        // snapshot (no runner / none registered) leaves the dispatch path
-        // untouched — no-extension parity is structural, not a flag.
+        // handlers wrap the dispatch terminal in BOTH arms below — the view
+        // at this turn's dispatch scope (a sub-agent's chain drops
+        // dylib-origin wrappers). An empty snapshot (no runner / none
+        // registered) leaves the dispatch path untouched — no-extension
+        // parity is structural, not a flag.
         let around_handlers: Vec<Arc<dyn codesmith_agent::extension::AroundToolHandler>> =
             extension
                 .as_ref()
-                .map(|runner| runner.around_tool_handlers())
+                .map(|runner| runner.around_tool_handlers_for(&self.dispatch_scope))
                 .unwrap_or_default();
 
         // P0-2 truncation classification — computed once for the whole turn:
@@ -374,13 +376,16 @@ impl HostAgentExecutor {
                         let mut needs_approval = plan.approval_required;
                         if let Some(runner) = &extension {
                             let out = runner
-                                .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
-                                    codesmith_agent::extension::ToolCallEvent {
-                                        id: plan.id.clone(),
-                                        name: plan.name.clone(),
-                                        input: plan.input.clone(),
-                                    },
-                                ))
+                                .emit_scoped(
+                                    self.dispatch_scope.clone(),
+                                    codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                        codesmith_agent::extension::ToolCallEvent {
+                                            id: plan.id.clone(),
+                                            name: plan.name.clone(),
+                                            input: plan.input.clone(),
+                                        },
+                                    ),
+                                )
                                 .await;
                             if let codesmith_agent::extension::HandlerOutcome::Block { reason } =
                                 out.outcome
@@ -620,6 +625,7 @@ impl HostAgentExecutor {
                         // future so ToolExecutionStart/End can bracket the
                         // tool run from inside `async move`.
                         let ext = extension.clone();
+                        let scope = self.dispatch_scope.clone();
                         let id = plan.id.clone();
                         let name = plan.name.clone();
                         // Route B — the extension chain's terminal input
@@ -663,7 +669,7 @@ impl HostAgentExecutor {
                                 // the actual tool run (mirrors the serial arm).
                                 if let Some(runner) = &ext {
                                     let _ = runner
-                                        .emit(
+                                        .emit_scoped(scope.clone(),
                                             codesmith_agent::extension::ExtensionEvent::ToolExecutionStart,
                                         )
                                         .await;
@@ -721,7 +727,7 @@ impl HostAgentExecutor {
                                 };
                                 if let Some(runner) = &ext {
                                     let _ = runner
-                                        .emit(
+                                        .emit_scoped(scope.clone(),
                                             codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd,
                                         )
                                         .await;
@@ -758,13 +764,16 @@ impl HostAgentExecutor {
                             .clone();
                         let final_result = if let Some(runner) = &extension {
                             let out = runner
-                                .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
-                                    codesmith_agent::extension::ToolResultEvent {
-                                        id: plan.id.clone(),
-                                        name: plan.name.clone(),
-                                        result: original_result.clone(),
-                                    },
-                                ))
+                                .emit_scoped(
+                                    self.dispatch_scope.clone(),
+                                    codesmith_agent::extension::ExtensionEvent::ToolResult(
+                                        codesmith_agent::extension::ToolResultEvent {
+                                            id: plan.id.clone(),
+                                            name: plan.name.clone(),
+                                            result: original_result.clone(),
+                                        },
+                                    ),
+                                )
                                 .await;
                             match out.event {
                                 codesmith_agent::extension::ExtensionEvent::ToolResult(tr) => {
@@ -799,13 +808,16 @@ impl HostAgentExecutor {
                     let mut ext_ask: Option<String> = None;
                     let ext_blocked_reason: Option<String> = if let Some(runner) = &extension {
                         let out = runner
-                            .emit(codesmith_agent::extension::ExtensionEvent::ToolCall(
-                                codesmith_agent::extension::ToolCallEvent {
-                                    id: plan.id.clone(),
-                                    name: plan.name.clone(),
-                                    input: plan.input.clone(),
-                                },
-                            ))
+                            .emit_scoped(
+                                self.dispatch_scope.clone(),
+                                codesmith_agent::extension::ExtensionEvent::ToolCall(
+                                    codesmith_agent::extension::ToolCallEvent {
+                                        id: plan.id.clone(),
+                                        name: plan.name.clone(),
+                                        input: plan.input.clone(),
+                                    },
+                                ),
+                            )
                             .await;
                         if let codesmith_agent::extension::HandlerOutcome::Block { reason } =
                             out.outcome
@@ -858,7 +870,8 @@ impl HostAgentExecutor {
                         // serial dispatch (approval + run).
                         if let Some(runner) = &extension {
                             let _ = runner
-                                .emit(
+                                .emit_scoped(
+                                    self.dispatch_scope.clone(),
                                     codesmith_agent::extension::ExtensionEvent::ToolExecutionStart,
                                 )
                                 .await;
@@ -1031,7 +1044,10 @@ impl HostAgentExecutor {
                         // serial dispatch.
                         if let Some(runner) = &extension {
                             let _ = runner
-                                .emit(codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd)
+                                .emit_scoped(
+                                    self.dispatch_scope.clone(),
+                                    codesmith_agent::extension::ExtensionEvent::ToolExecutionEnd,
+                                )
                                 .await;
                         }
                         (r, false)
@@ -1043,13 +1059,16 @@ impl HostAgentExecutor {
                     // pushes the transformed `ToolResult`.
                     let final_result = if let Some(runner) = &extension {
                         let out = runner
-                            .emit(codesmith_agent::extension::ExtensionEvent::ToolResult(
-                                codesmith_agent::extension::ToolResultEvent {
-                                    id: plan.id.clone(),
-                                    name: plan.name.clone(),
-                                    result: result.clone(),
-                                },
-                            ))
+                            .emit_scoped(
+                                self.dispatch_scope.clone(),
+                                codesmith_agent::extension::ExtensionEvent::ToolResult(
+                                    codesmith_agent::extension::ToolResultEvent {
+                                        id: plan.id.clone(),
+                                        name: plan.name.clone(),
+                                        result: result.clone(),
+                                    },
+                                ),
+                            )
                             .await;
                         match out.event {
                             codesmith_agent::extension::ExtensionEvent::ToolResult(tr) => tr.result,

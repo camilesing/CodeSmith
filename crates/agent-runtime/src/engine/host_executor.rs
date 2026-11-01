@@ -1473,6 +1473,20 @@ pub struct HostAgentExecutor {
     /// `ProviderRequestError` question (turn/stream.rs).
     pub(crate) extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
 
+    /// The registration scope every extension dispatch of this turn runs
+    /// at — `Global` for the main turn, the agent type for a sub-agent turn
+    /// (DSH: one scope per agent, the same loop for every agent). At an
+    /// agent-type scope the runner skips dylib-origin handlers and around
+    /// wrappers (§F5d unload safety), so a child's dispatch never runs
+    /// dylib code. Defaults to `Global` (embeds/tests).
+    pub(crate) dispatch_scope: codesmith_agent::extension::Scope,
+
+    /// Per-turn request knobs (a sub-agent's routed model and reasoning
+    /// effort ride the parent's client). `None` (default; the main turn)
+    /// sends the client's own model and no reasoning-effort override.
+    request_model: Option<String>,
+    request_reasoning_effort: Option<String>,
+
     /// Idle watchdog for the streaming connection (P0-1). When `Some(d)`,
     /// [`reduce_stream`](Self::reduce_stream) aborts a stream that produces no
     /// event (not even a `Ping`) for `d` — the silent-stall failure mode where
@@ -1588,6 +1602,9 @@ impl HostAgentExecutor {
             pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
             pending_interrupted_text: std::sync::Mutex::new(None),
             extension: None,
+            dispatch_scope: codesmith_agent::extension::Scope::Global,
+            request_model: None,
+            request_reasoning_effort: None,
             stream_idle_timeout: None,
             stream_idle_retry_increment: std::time::Duration::ZERO,
             usage_anchor: std::sync::Mutex::new(None),
@@ -1708,6 +1725,28 @@ impl HostAgentExecutor {
         self
     }
 
+    /// Dispatch this turn's extension events at `scope` (see
+    /// [`Self::dispatch_scope`]). Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_dispatch_scope(mut self, scope: codesmith_agent::extension::Scope) -> Self {
+        self.dispatch_scope = scope;
+        self
+    }
+
+    /// Send `model` / `reasoning_effort` on every request of this turn
+    /// instead of the client's own model and no effort override (see
+    /// [`Self::request_model`]). Consumes and returns `self` (builder).
+    #[must_use]
+    pub fn with_request_overrides(
+        mut self,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    ) -> Self {
+        self.request_model = model;
+        self.request_reasoning_effort = reasoning_effort;
+        self
+    }
+
     /// Opt into the stream idle watchdog (P0-1). The production wire-in calls
     /// this with the engine-configured timeout (`[stream] idle_timeout_secs`,
     /// default 120s; `0` maps to `None` = disabled). Embeds/tests skip it —
@@ -1786,9 +1825,9 @@ impl HostAgentExecutor {
     #[must_use]
     pub(crate) fn with_tool_durations(
         mut self,
-        durations: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+        durations: Option<Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>>,
     ) -> Self {
-        self.tool_durations = Some(durations);
+        self.tool_durations = durations;
         self
     }
 
@@ -2595,7 +2634,10 @@ impl HostAgentExecutor {
         // counts compactions that actually happen).
         if let Some(runner) = &self.extension {
             let out = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::SessionBeforeCompact)
+                .emit_scoped(
+                    self.dispatch_scope.clone(),
+                    codesmith_agent::extension::ExtensionEvent::SessionBeforeCompact,
+                )
                 .await;
             if matches!(
                 out.outcome,
@@ -2675,7 +2717,10 @@ impl HostAgentExecutor {
                 // transcript (summary + reinjected attachments) is applied.
                 if let Some(runner) = &self.extension {
                     let _ = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::SessionCompact)
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::SessionCompact,
+                        )
                         .await;
                 }
                 probe
@@ -3240,6 +3285,12 @@ impl HostAgentExecutor {
         // no-ops then. `turn_id` is shared by the TurnStart + TurnEnd emits.
         let extension = self.extension.clone();
         let turn_id = uuid::Uuid::new_v4().to_string();
+        // The model every request of this turn names: a sub-agent's routed
+        // model when the host set one, else the client's own.
+        let request_model = self
+            .request_model
+            .clone()
+            .unwrap_or_else(|| client.model().to_string());
 
         // Route B (systemPrompt sections) — append registered mod sections
         // to the base prompt BEFORE the BeforeAgentStart seam: sections are
@@ -3258,7 +3309,8 @@ impl HostAgentExecutor {
         // system prompt. AgentStart (observe) fires right after.
         if let Some(runner) = &extension {
             let out = runner
-                .emit(
+                .emit_scoped(
+                    self.dispatch_scope.clone(),
                     codesmith_agent::extension::ExtensionEvent::BeforeAgentStart(
                         codesmith_agent::extension::AgentStartEvent {
                             system_prompt: None,
@@ -3282,7 +3334,10 @@ impl HostAgentExecutor {
                 }
             }
             let _ = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::AgentStart)
+                .emit_scoped(
+                    self.dispatch_scope.clone(),
+                    codesmith_agent::extension::ExtensionEvent::AgentStart,
+                )
                 .await;
         }
 
@@ -3314,9 +3369,12 @@ impl HostAgentExecutor {
         }
         if let Some(runner) = &extension {
             let _ = runner
-                .emit(codesmith_agent::extension::ExtensionEvent::TurnStart {
-                    turn_id: turn_id.clone(),
-                })
+                .emit_scoped(
+                    self.dispatch_scope.clone(),
+                    codesmith_agent::extension::ExtensionEvent::TurnStart {
+                        turn_id: turn_id.clone(),
+                    },
+                )
                 .await;
         }
 
@@ -3365,14 +3423,20 @@ impl HostAgentExecutor {
                 callback.on_complete(&StopReason::Interrupted).await;
                 if let Some(runner) = &extension {
                     let _ = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::TurnEnd {
-                            turn_id: turn_id.clone(),
-                            reason: codesmith_agent::extension::TurnEndReason::Interrupted,
-                        })
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::TurnEnd {
+                                turn_id: turn_id.clone(),
+                                reason: codesmith_agent::extension::TurnEndReason::Interrupted,
+                            },
+                        )
                         .await;
                     // §F2b T2 — AgentEnd (observe) brackets the turn.
                     let _ = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::AgentEnd,
+                        )
                         .await;
                 }
                 return Ok(StopReason::Interrupted);
@@ -3392,7 +3456,10 @@ impl HostAgentExecutor {
                 callback.on_complete(&StopReason::MaxSteps).await;
                 if let Some(runner) = &extension {
                     let _ = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::AgentEnd,
+                        )
                         .await;
                 }
                 return Ok(StopReason::MaxSteps);
@@ -3446,7 +3513,10 @@ impl HostAgentExecutor {
                     callback.on_complete(&StopReason::Error(msg.clone())).await;
                     if let Some(runner) = &extension {
                         let _ = runner
-                            .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                            .emit_scoped(
+                                self.dispatch_scope.clone(),
+                                codesmith_agent::extension::ExtensionEvent::AgentEnd,
+                            )
                             .await;
                     }
                     return Ok(StopReason::Error(msg));
@@ -3629,7 +3699,8 @@ impl HostAgentExecutor {
                     })
                     .collect();
                 let _ = runner
-                    .emit(
+                    .emit_scoped(
+                        self.dispatch_scope.clone(),
                         codesmith_agent::extension::ExtensionEvent::BeforeProviderHeaders(
                             codesmith_agent::extension::BeforeProviderHeadersEvent {
                                 headers: serde_json::Value::Object(headers),
@@ -3649,7 +3720,7 @@ impl HostAgentExecutor {
                 prefix: &frozen_prefix,
                 log: &history.messages(),
                 scratch: codesmith_session::zones::TurnScratch::new(),
-                model: client.model().to_string(),
+                model: request_model.clone(),
                 max_tokens,
                 system: system.clone(),
                 tools: if api_tools.is_empty() {
@@ -3660,7 +3731,7 @@ impl HostAgentExecutor {
                 tool_choice: None,
                 metadata: None,
                 thinking: None,
-                reasoning_effort: None,
+                reasoning_effort: self.request_reasoning_effort.clone(),
                 stream: Some(true),
                 temperature,
                 top_p: None,
@@ -3677,7 +3748,8 @@ impl HostAgentExecutor {
             let mut request_messages_rewritten = false;
             if let Some(runner) = &extension {
                 let out = runner
-                    .emit(
+                    .emit_scoped(
+                        self.dispatch_scope.clone(),
                         codesmith_agent::extension::ExtensionEvent::BeforeProviderRequest(
                             codesmith_agent::extension::BeforeProviderRequestEvent {
                                 messages: serde_json::to_value(&request.messages)
@@ -3772,14 +3844,15 @@ impl HostAgentExecutor {
                             r#type: "message".to_string(),
                             role: "assistant".to_string(),
                             content: content.clone(),
-                            model: client.model().to_string(),
+                            model: request_model.clone(),
                             stop_reason: stop_reason.clone(),
                             stop_sequence: None,
                             container: None,
                             usage: usage.clone(),
                         };
                         let _ = runner
-                            .emit(
+                            .emit_scoped(
+                                self.dispatch_scope.clone(),
                                 codesmith_agent::extension::ExtensionEvent::AfterProviderResponse(
                                     codesmith_agent::extension::AfterProviderResponseEvent {
                                         response: serde_json::to_value(&response)
@@ -4120,11 +4193,14 @@ impl HostAgentExecutor {
                 // the turn.
                 if let Some(runner) = &extension {
                     let out = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::TurnStopping(
-                            codesmith_agent::extension::TurnStoppingEvent {
-                                reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
-                            },
-                        ))
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::TurnStopping(
+                                codesmith_agent::extension::TurnStoppingEvent {
+                                    reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+                                },
+                            ),
+                        )
                         .await;
                     if let codesmith_agent::extension::HandlerOutcome::Cancel { reason } =
                         out.outcome
@@ -4180,14 +4256,20 @@ impl HostAgentExecutor {
                 callback.on_complete(&StopReason::NoToolCalls).await;
                 if let Some(runner) = &extension {
                     let _ = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::TurnEnd {
-                            turn_id: turn_id.clone(),
-                            reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
-                        })
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::TurnEnd {
+                                turn_id: turn_id.clone(),
+                                reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+                            },
+                        )
                         .await;
                     // §F2b T2 — AgentEnd (observe) brackets the turn.
                     let _ = runner
-                        .emit(codesmith_agent::extension::ExtensionEvent::AgentEnd)
+                        .emit_scoped(
+                            self.dispatch_scope.clone(),
+                            codesmith_agent::extension::ExtensionEvent::AgentEnd,
+                        )
                         .await;
                 }
                 return Ok(StopReason::NoToolCalls);

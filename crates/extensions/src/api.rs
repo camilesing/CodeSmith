@@ -205,7 +205,7 @@ impl ExtensionApi for StubExtensionApi {
     ) -> Result<(), ExtensionError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending.around_tools.push(handler);
+        pending.around_tools.push((handler, self.origin));
         Ok(())
     }
     fn register_around_turn(

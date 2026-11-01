@@ -1374,7 +1374,8 @@ impl HostAgentExecutor {
                     let mut plan = default_plan.clone();
                     if let Some(runner) = &self.extension {
                         let out = runner
-                            .emit(
+                            .emit_scoped(
+                                self.dispatch_scope.clone(),
                                 codesmith_agent::extension::ExtensionEvent::ProviderRequestError(
                                     codesmith_agent::extension::ProviderRequestErrorEvent {
                                         failure: codesmith_agent::extension::ProviderFailure {
