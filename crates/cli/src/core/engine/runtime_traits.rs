@@ -104,6 +104,18 @@ impl HostServices for super::EngineHost {
         self.lsp_manager.clone()
     }
 
+    fn list_shell_jobs(
+        &self,
+    ) -> Vec<codesmith_agent_runtime::tools::shell_types::ShellJobSnapshot> {
+        // Round 10 TODO-70 — the engine's shell-job watcher polls this; the
+        // trait-erased manager locks internally (synchronous methods).
+        self.runtime_services
+            .shell_manager
+            .as_ref()
+            .map(|shell| shell.list_jobs())
+            .unwrap_or_default()
+    }
+
     fn bg_registry(&self) -> Arc<dyn BgRegistryApi> {
         // Pre-erased once at construction (`Default` / `build_engine` — the
         // only site that ever reassigns the registry) so this is a cheap

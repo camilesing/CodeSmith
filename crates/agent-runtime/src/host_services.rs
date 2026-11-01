@@ -440,6 +440,16 @@ pub trait HostServices: Send + Sync {
     /// the engine's background poller can capture it across a `spawn`.
     fn bg_registry(&self) -> Arc<dyn BgRegistryApi>;
 
+    /// Background shell-job snapshots (round 10 TODO-70). The engine's
+    /// shell-job watcher polls this for terminal transitions and bridges
+    /// each onto the parent-completion drain seam (the same channel and
+    /// pre-request drain as sub-agent completions). Default: no shell jobs
+    /// (embeds, tests, hosts without a shell manager) — the watcher then
+    /// no-ops.
+    fn list_shell_jobs(&self) -> Vec<ShellJobSnapshot> {
+        Vec::new()
+    }
+
     /// Layered-context (seam) manager, when configured. `None` when the
     /// feature is disabled — callers early-return, matching the previous
     /// `if let Some(seam_mgr) = self.seam_manager` guards.

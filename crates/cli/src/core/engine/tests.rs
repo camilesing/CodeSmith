@@ -4311,7 +4311,7 @@ async fn model_tool_catalog_includes_session_search() {
 
 // === Round 10 TODO-69 — idle wake ==========================================
 
-use codesmith_agent_runtime::subagent::SubAgentCompletion;
+use codesmith_agent_runtime::subagent::{CompletionKind, SubAgentCompletion};
 
 /// A completion payload shaped exactly like `emit_parent_completion`'s wire
 /// format: human summary on line 1, `<codesmith:subagent.done>` sentinel on
@@ -4319,6 +4319,7 @@ use codesmith_agent_runtime::subagent::SubAgentCompletion;
 fn parked_completion(agent_id: &str, summary: &str) -> SubAgentCompletion {
     SubAgentCompletion {
         agent_id: agent_id.to_string(),
+        kind: CompletionKind::Subagent,
         payload: format!(
             "{summary}\n<codesmith:subagent.done>{{\"agent_id\":\"{agent_id}\"}}</codesmith:subagent.done>"
         ),
@@ -4418,6 +4419,83 @@ async fn idle_wake_synthesizes_turn_when_completion_lands_while_idle() {
     // The wake notice is a real user-role message (model-visible means
     // logged): it rides the transcript, not a side channel.
     assert_eq!(requests[1].messages[wake].role, "user");
+}
+
+/// Round 10 TODO-70, end to end: a background shell job finishing while
+/// the engine is idle is bridged onto the drain seam and reaches the model
+/// through an idle-wake synthesized turn.
+#[tokio::test]
+async fn background_shell_completion_bridges_to_model_via_idle_wake() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let shell: codesmith_agent_runtime::shell_manager::SharedShellManager =
+        std::sync::Arc::new(std::sync::Mutex::new(
+            codesmith_agent_runtime::shell_manager::ShellManager::new(tmp.path().to_path_buf()),
+        ));
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("first turn done"),
+        canned::simple_text_turn("coordinated"),
+    ]);
+    let mock_arc = std::sync::Arc::new(mock);
+    let client: LlmClientHandle = mock_arc.clone();
+    let mut config = test_engine_config(tmp.path());
+    config.idle_wake = true;
+    let host = crate::core::engine::EngineHost {
+        runtime_services: crate::tools::spec::RuntimeToolServices {
+            shell_manager: Some(codesmith_agent_runtime::shell_manager::wrap_shell_manager(
+                shell.clone(),
+            )),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // `build_engine` directly (not the `new_with_host` shim): the shim
+    // injects no client, and this test needs the mock LLM plus a custom
+    // host carrying the shell manager.
+    let (engine, handle) =
+        crate::core::engine::build_engine(config, &Config::default(), Some(client), host);
+    tokio::spawn(async move { engine.run().await });
+
+    // Turn 1 primes the wake's parameter snapshot.
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    // Start a background job directly on the shell manager; it finishes on
+    // its own while the engine is idle.
+    {
+        let mut manager = shell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        manager
+            .execute("echo bridge-ok", None, 10_000, true)
+            .expect("start background job");
+    }
+
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        collect_until_turn_complete(&handle),
+    )
+    .await
+    .expect("shell completion bridges onto the idle wake");
+    assert_eq!(
+        second
+            .iter()
+            .filter(|e| matches!(e, Event::TurnComplete { .. }))
+            .count(),
+        1
+    );
+
+    let requests = mock_arc.captured_requests();
+    assert_eq!(requests.len(), 2, "exactly two model requests");
+    let texts = user_text_blocks(&requests[1]);
+    assert!(
+        texts.iter().any(|t| {
+            t.contains("kind=\"shell_job_completion\"")
+                && t.contains("<codesmith:shell_job.done>")
+                && t.contains("bridge-ok")
+        }),
+        "the synthesized request carries the shell job sentinel and output tail"
+    );
 }
 
 /// Idle wake off (the default): the same completion stays parked — no

@@ -453,6 +453,17 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// What produced a [`SubAgentCompletion`] — a direct child sub-agent, or
+/// (round 10 TODO-70) a background shell job bridged onto the same drain
+/// seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionKind {
+    /// A direct child sub-agent (`<codesmith:subagent.done>` sentinel).
+    Subagent,
+    /// A background shell job (`<codesmith:shell_job.done>` sentinel).
+    ShellJob,
+}
+
 /// Terminal-state notification emitted to the engine's parent turn loop
 /// when one of its direct children finishes (issue #756). Carries the
 /// already-rendered `<codesmith:subagent.done>` sentinel that the model
@@ -468,6 +479,10 @@ pub struct SubAgentCompletion {
     /// payload), but downstream tooling and tests need the field.
     #[allow(dead_code)]
     pub agent_id: String,
+    /// What completed (round 10 TODO-70). The drain picks the runtime-event
+    /// framing and instruction text per kind; the payload shape is the same
+    /// (human summary, sentinel, bounded tails).
+    pub kind: CompletionKind,
     /// Human summary on line 1, sentinel on line 2. Same payload shape as
     /// `Event::AgentComplete::result`.
     pub payload: String,

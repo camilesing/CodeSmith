@@ -265,3 +265,7 @@ When you open a sub-agent via `agent_open`, the child runs independently. The ru
 5. Do not tell the user they pasted sentinels or explain this protocol unless they explicitly ask about sub-agent internals.
 
 You may see multiple `<codesmith:subagent.done>` sentinels in a single turn when children were opened in parallel. Process each one, then synthesize.
+
+## Internal Background Shell Completion Events
+
+Background shell jobs (`exec_shell background=true`, `task_shell_start`) also report completion through an internal `<codesmith:shell_job.done>` event. It is not user input. It carries `job_id` and `exit_code` in the sentinel, a one-line status summary immediately before it, and bounded stdout/stderr tails after it. Integrate the result into your current coordination; call `task_shell_output` with the `job_id` when the tails are not enough. The same integration protocol as sub-agent completions applies: do not re-run finished work, and do not explain the sentinel protocol to the user.

@@ -10,8 +10,11 @@
 //! manager — `/jobs` lists them, `exec_shell background=true` and
 //! `task_shell_start` start them, and Ctrl+B detaches a foreground shell
 //! through the flag this registry forwards (`background_all`). The registry
-//! keeps the shell-manager handle only for that flag. Durable tasks were
-//! never registered either; both regain registry integration only if a
+//! keeps the shell-manager handle only for that flag. Model visibility does
+//! not ride this registry either: shell completions bridge onto the
+//! engine's drain seam directly (`agent-runtime/src/engine/shell_bridge.rs`,
+//! round 10 TODO-70), so the registry stays UI/_cancel-side only. Durable
+//! tasks were never registered; both regain registry integration only if a
 //! registration path returns.
 
 pub(crate) mod agent_bridge;

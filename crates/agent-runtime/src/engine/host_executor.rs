@@ -602,8 +602,8 @@ use super::executor_composition::TurnHarvest;
 use super::loop_guard::LoopGuard;
 use super::summarize_text;
 use super::turn::{
-    EarlyToolTask, StreamRoundOutcome, approval_intent_summary, should_emit_thinking_only_status,
-    should_hold_turn_for_subagents, subagent_completion_runtime_message,
+    EarlyToolTask, StreamRoundOutcome, approval_intent_summary, completion_runtime_message,
+    should_emit_thinking_only_status, should_hold_turn_for_subagents,
 };
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
@@ -4080,7 +4080,7 @@ impl HostAgentExecutor {
                     if !completions.is_empty() {
                         let count = completions.len();
                         for c in completions {
-                            history.push(subagent_completion_runtime_message(&c.payload));
+                            history.push(completion_runtime_message(c.kind, &c.payload));
                             // `ContextPatch` apply (tighten-only
                             // `auto_approve`/`trust_mode`) is deferred — it
                             // mutates `Session` state not reachable through
@@ -7663,6 +7663,7 @@ mod tests {
     fn completion(summary: &str) -> SubAgentCompletion {
         SubAgentCompletion {
             agent_id: "test-agent".to_string(),
+            kind: crate::subagent::CompletionKind::Subagent,
             payload: format!(
                 "{summary}\n<codesmith:subagent.done>{{\"agent_id\":\"test-agent\"}}</codesmith:subagent.done>"
             ),

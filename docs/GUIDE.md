@@ -449,6 +449,14 @@ Sub-agents are most useful when work can be separated cleanly. Do not use them
 for tiny edits, and do not ask multiple agents to write the same files at the
 same time.
 
+When background work finishes — a sub-agent completing or a background shell
+job (`exec_shell background=true`, `task_shell_start`) exiting — the agent is
+told about it and continues on its own, even if you are not typing: the
+completion reaches the model as an internal event, and in the REPL it wakes
+the engine for the next coordination step while the prompt is still showing.
+Answer prompts it cannot show you are denied headless-style, exactly like a
+detached run; submit any input to take over.
+
 Next: [SUBAGENTS.md](SUBAGENTS.md) covers roles, lifecycle, concurrency, and
 output contracts.
 

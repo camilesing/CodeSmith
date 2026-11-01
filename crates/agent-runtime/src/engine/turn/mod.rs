@@ -41,7 +41,6 @@ mod user_input;
 
 pub(crate) use approval::approval_intent_summary;
 pub(crate) use postprocess::{
-    should_emit_thinking_only_status, should_hold_turn_for_subagents,
-    subagent_completion_runtime_message,
+    completion_runtime_message, should_emit_thinking_only_status, should_hold_turn_for_subagents,
 };
 pub(crate) use stream::{EarlyToolTask, StreamRoundOutcome};

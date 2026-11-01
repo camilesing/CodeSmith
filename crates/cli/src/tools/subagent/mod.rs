@@ -369,7 +369,7 @@ fn wrap_with_deprecation_notice(
 /// Re-exported from `codesmith_agent_runtime::subagent` so the engine and
 /// CLI share the same sub-agent taxonomy.
 pub use codesmith_agent_runtime::subagent::{
-    DEFAULT_MAX_SPAWN_DEPTH, ExternalSubagentOutcome, ExternalSubagentProvider,
+    CompletionKind, DEFAULT_MAX_SPAWN_DEPTH, ExternalSubagentOutcome, ExternalSubagentProvider,
     ExternalSubagentRequest, SubAgentAssignment, SubAgentCompletion, SubAgentStatus, SubAgentType,
 };
 
@@ -5048,6 +5048,7 @@ pub(crate) fn emit_parent_completion(
     };
     tx.send(SubAgentCompletion {
         agent_id: agent_id.to_string(),
+        kind: CompletionKind::Subagent,
         payload: payload.to_string(),
         // No by-value context回流 today — shared `Arc<Mutex<…>>` state
         // already回流s atomically. A future child that wants to tighten a

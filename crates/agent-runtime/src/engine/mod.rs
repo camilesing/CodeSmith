@@ -546,6 +546,15 @@ impl Engine {
     /// scope.
     #[allow(clippy::too_many_lines)]
     async fn run_inner(mut self) {
+        // Round 10 TODO-70 — bridge background shell-job completions onto
+        // the same drain seam as sub-agent completions (see
+        // `engine::shell_bridge`). Runs for every host; without shell jobs
+        // the poll is an empty-list no-op.
+        crate::engine::shell_bridge::spawn_shell_job_watcher(
+            std::sync::Arc::clone(&self.host),
+            self.tx_subagent_completion.clone(),
+            self.cancel_token.clone(),
+        );
         // Spawn background task poller — polls registry every 2s for status
         // changes and completion notifications.
         {
@@ -3843,6 +3852,7 @@ mod loop_guard;
 mod lsp_hooks;
 mod plan_reminder;
 mod result_verifier;
+mod shell_bridge;
 mod streaming;
 mod team_inbox;
 mod tool_catalog;

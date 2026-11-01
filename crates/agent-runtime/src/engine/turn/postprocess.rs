@@ -57,7 +57,7 @@ use codesmith_agent::models::{ContentBlock, Message};
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::lsp_hooks::edit_file_paths;
 use crate::lsp_diagnostics::render_blocks as render_lsp_blocks;
-use crate::subagent::SubAgentCompletion;
+use crate::subagent::{CompletionKind, SubAgentCompletion};
 
 /// Decide whether the turn should hold (block) for still-running sub-agents
 /// when the non-blocking completion drain found nothing (mirrors
@@ -107,14 +107,26 @@ pub(crate) fn should_emit_thinking_only_status(
 /// Relocated from `turn_loop.rs` in slice 49 §E (module convergence — that
 /// file was the retired `handle_deepseek_turn` home and is now deleted; this
 /// is the sole production caller's module).
-pub(crate) fn subagent_completion_runtime_message(payload: &str) -> Message {
+pub(crate) fn completion_runtime_message(kind: CompletionKind, payload: &str) -> Message {
+    let (event_kind, guidance) = match kind {
+        CompletionKind::Subagent => (
+            "subagent_completion",
+            "Use the sub-agent completion data below to continue coordinating the \
+current task.",
+        ),
+        CompletionKind::ShellJob => (
+            "shell_job_completion",
+            "A background shell job finished. Use its exit status and output \
+below to continue the task; call `task_shell_output` with the job id if you \
+need more than the tail included here.",
+        ),
+    };
     Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "{} kind=\"subagent_completion\" visibility=\"internal\">\n\
-This is an internal runtime event, not user input. Use the sub-agent completion \
-data below to continue coordinating the current task. Do not tell the user they \
+                "{} kind=\"{event_kind}\" visibility=\"internal\">\n\
+This is an internal runtime event, not user input. {guidance} Do not tell the user they \
 pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
 XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 {payload}\n\
@@ -156,7 +168,7 @@ impl HostAgentExecutor {
         }
         let count = completions.len();
         for c in completions {
-            history.push(subagent_completion_runtime_message(&c.payload));
+            history.push(completion_runtime_message(c.kind, &c.payload));
         }
         self.emit_status(format!(
             "Delivered {count} sub-agent completion(s) before the next request"
@@ -315,12 +327,31 @@ mod tests {
         ));
     }
 
+    /// Round 10 TODO-70 — a ShellJob completion renders under its own
+    /// runtime-event kind, with guidance pointing at `task_shell_output`.
+    #[test]
+    fn shell_job_completion_renders_own_event_kind() {
+        let message = completion_runtime_message(
+            CompletionKind::ShellJob,
+            "Background shell job j_9 (`cargo test`) completed (exit 0).\n<codesmith:shell_job.done>{\"job_id\":\"j_9\"}</codesmith:shell_job.done>",
+        );
+        let text = match &message.content[0] {
+            ContentBlock::Text { text, .. } => text,
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(text.contains("kind=\"shell_job_completion\""));
+        assert!(text.contains("background shell job finished"));
+        assert!(text.contains("`task_shell_output`"));
+        assert!(text.contains("<codesmith:shell_job.done>"));
+    }
+
     /// §E slice 49 — relocated from turn_loop.rs (module convergence). Pure-fn
     /// unit test for the sentinel-message format the `host_executor` tests
     /// exercise end-to-end via the executor.
     #[test]
     fn subagent_completion_handoff_is_internal_user_message() {
-        let message = subagent_completion_runtime_message(
+        let message = completion_runtime_message(
+            CompletionKind::Subagent,
             "Build passed\n<codesmith:subagent.done>{\"agent_id\":\"agent_a\"}</codesmith:subagent.done>",
         );
 

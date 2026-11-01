@@ -34,6 +34,13 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Background shell jobs now report back to the model** — a background
+  `exec_shell` / `task_shell_start` job finishing is bridged onto the same
+  drain seam as sub-agent completions: the model receives a
+  `<codesmith:shell_job.done>` internal event with exit status and output
+  tails, and (with the idle wake) the engine continues on its own. The UI
+  registry intentionally stays shell-free; `/jobs` is unchanged.
+
 - **The agent wakes itself when background work finishes** — a background
   sub-agent completing while no turn is running now synthesizes the next
   turn instead of waiting for you to type: the engine's idle op-loop listens
