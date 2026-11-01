@@ -5,11 +5,6 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// Maximum number of automatic goal-continuation prompt injections in one
-/// engine turn. This prevents a missing `update_goal` call from becoming an
-/// unbounded local loop.
-pub const MAX_GOAL_CONTINUATIONS_PER_TURN: u32 = 3;
-
 /// Hard cap on goal rounds the round driver may synthesize across turns
 /// (round 10 TODO-71), for the same reason as the per-turn cap: a goal whose
 /// model never calls `update_goal` must not burn tokens forever. The token

@@ -312,18 +312,22 @@
 //!
 //! ## Known gaps in thinking-only handling (by design)
 //!
-//! - **goal-continuation / inline REPL resume branches deferred** — production's
-//!   `tool_uses.is_empty()` tail (the retired turn handler) also ran two
-//!   *resume* branches before the thinking-only status: **goal-continuation**
-//!   (`goal_continuation_message_if_needed` — inject a continuation prompt and
-//!   resume while an `update_goal` is active, capped at
-//!   `MAX_GOAL_CONTINUATIONS_PER_TURN=3`) and **inline REPL** (```repl fenced
-//!   blocks executed via `PythonRuntime`, fed back as `<turn_meta>`). The
-//!   executor has neither: the infra is still live (`tool_state/goal.rs`,
-//!   `repl/sandbox.rs` + `repl/runtime.rs`) but unwired, so a thinking-only
-//!   response whose turn *would* have resumed for one of those now ends on
-//!   `NoToolCalls` + the status. They are larger, less self-contained slices
-//!   (each needs mid-loop host state / a runtime) and remain deferred.
+//! - **goal-continuation inside the turn: evaluated and dropped (round 11
+//!   TODO-75)** — the retired turn handler injected a continuation prompt
+//!   at the `tool_uses.is_empty()` tail and resumed the turn (capped at 3
+//!   per turn). The goal round driver (`engine/idle_wake.rs`, round 10
+//!   TODO-71) now provides that continuation for every `idle_wake` host —
+//!   a clean turn end (including the thinking-only tail) drives the next
+//!   round under the token budget and `MAX_GOAL_ROUNDS` — and hosts that
+//!   keep `idle_wake` off (exec, embeds) exit or idle instead of driving,
+//!   by the same decision that governs every synthesized turn. A second,
+//!   in-turn mechanism would double-drive goals (its 3-per-turn cap
+//!   counting beside the round cap) for no host that wants it; the
+//!   `MAX_GOAL_CONTINUATIONS_PER_TURN` constant is retired.
+//!   **inline REPL** (```repl fenced blocks executed via `PythonRuntime`,
+//!   fed back as `<turn_meta>`) stays unwired: the infra is live
+//!   (`repl/sandbox.rs` + `repl/runtime.rs`) but has no consumer — a
+//!   larger slice with a real need.
 //! - **placeholder thinking for tool-call turns not injected** — the *inverse*
 //!   gap: when the model made tool calls but streamed no reasoning, production
 //!   injected a `"(reasoning omitted)"` placeholder `Thinking` block because
