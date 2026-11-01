@@ -333,7 +333,8 @@ so a single crate gives them both the traits and the runtime helpers.
   `Block` intervention). Not offered to script mods (async seam — see
   `docs/MODS.md`).
 - **`AroundTurnHandler`** — kernel composition, runtime half (DSH
-  `next()` over the whole main turn): `async fn call(&self, turn:
+  `next()` over a whole turn, the main turn's and every sub-agent's):
+  `async fn call(&self, turn:
   TurnAroundEvent, next: TurnNext<'_>) -> anyhow::Result<StopReason>`.
   Register via `ExtensionApi::register_around_turn`; handlers compose in
   registration order (outermost first) around the composed executor's
@@ -341,8 +342,10 @@ so a single crate gives them both the traits and the runtime helpers.
   returning your own `StopReason` without awaiting `next`. `next` is a
   single-shot future (awaiting it runs the inner turn once; "re-run the
   loop" is not expressible here). Takes effect at the next turn's
-  assembly; reload clears it with the generation. Main turns only —
-  sub-agent turns are not wrapped — and the chain sits INSIDE the engine's turn
+  assembly; reload clears it with the generation. Wraps the main turn and
+  every sub-agent turn alike (a child composes the chain at its
+  agent-type scope — dylib-origin wrappers never wrap a child); on the
+  main turn the chain sits INSIDE the engine's turn
   bookkeeping (`TurnStarted` / `TurnComplete`, harvest), so a vetoed turn
   still completes with the handler's reason. Pairs with the selection
   half, the `turn_executor` config key (`docs/CONFIGURATION.md`). Not

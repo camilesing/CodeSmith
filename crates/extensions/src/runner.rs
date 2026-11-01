@@ -223,8 +223,10 @@ pub(crate) struct Pending {
     /// dispatch, §F5d).
     pub around_tools: Vec<(Arc<dyn AroundToolHandler>, RegistrationOrigin)>,
     /// Around-turn registrations (the kernel-composition runtime half)
-    /// queued by the stub `ExtensionApi`, awaiting the `bind_core` flush.
-    pub around_turns: Vec<Arc<dyn AroundTurnHandler>>,
+    /// queued by the stub `ExtensionApi`, awaiting the `bind_core` flush —
+    /// each with its load-path origin (a dylib wrapper never wraps a
+    /// sub-agent's turn, §F5d).
+    pub around_turns: Vec<(Arc<dyn AroundTurnHandler>, RegistrationOrigin)>,
     pub providers: Vec<PendingProvider>,
     pub prompt_sections: Vec<(String, String)>,
     pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
@@ -314,13 +316,13 @@ pub struct ExtensionRunner {
     /// composes the `next()` chain; `clear_around_tools` / reload drop them.
     around_tools: Mutex<Vec<(Arc<dyn AroundToolHandler>, RegistrationOrigin)>>,
     /// Bound at `bind_core` — the flushed around-turn handlers (the
-    /// kernel-composition runtime half), in registration order (outermost
-    /// first). The engine snapshots them once per main-turn assembly via
-    /// [`around_turn_handlers`](Self::around_turn_handlers) and composes
-    /// the `next()` chain around the executor's run; `clear_around_turns`
-    /// / reload drop them. Main-turn only — sub-agent turns are never
-    /// wrapped, so a dylib-origin handler needs no origin tiering here.
-    around_turns: Mutex<Vec<Arc<dyn AroundTurnHandler>>>,
+    /// kernel-composition runtime half) with their origins, in
+    /// registration order (outermost first). Each turn's assembly
+    /// snapshots its scope's view via
+    /// [`around_turn_handlers_for`](Self::around_turn_handlers_for) and
+    /// composes the `next()` chain around the executor's run;
+    /// `clear_around_turns` / reload drop them.
+    around_turns: Mutex<Vec<(Arc<dyn AroundTurnHandler>, RegistrationOrigin)>>,
     /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`. On
     /// reload, [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
     /// (§F5d T4) MOVES these to `pending_drop` (the `Library` stays alive —
@@ -524,14 +526,28 @@ impl ExtensionRunner {
     }
 
     /// Snapshot the bound around-turn handlers in registration order
-    /// (outermost first). The engine reads this once per main-turn
-    /// assembly; an empty snapshot leaves the run path untouched.
+    /// (outermost first) — the **Global** view (the main turn's).
     #[must_use]
     pub fn around_turn_handlers(&self) -> Vec<Arc<dyn AroundTurnHandler>> {
+        self.around_turn_handlers_for(&Scope::Global)
+    }
+
+    /// The around-turn chain a turn at `scope` composes, in registration
+    /// order (outermost first): every registration at `Global`; at an
+    /// agent-type scope (a sub-agent's turn) the dylib-origin wrappers
+    /// drop out (§F5d — the same rule as
+    /// [`around_tool_handlers_for`](Self::around_tool_handlers_for)).
+    /// Read once per turn assembly; an empty snapshot leaves the run path
+    /// untouched.
+    #[must_use]
+    pub fn around_turn_handlers_for(&self, scope: &Scope) -> Vec<Arc<dyn AroundTurnHandler>> {
         self.around_turns
             .lock()
             .expect("around-turns lock poisoned")
-            .clone()
+            .iter()
+            .filter(|(_, origin)| scope.is_global() || !origin.is_dylib())
+            .map(|(handler, _)| Arc::clone(handler))
+            .collect()
     }
 
     /// §F5d — clear all bound **tools** (name→`Arc<dyn ToolDefinition>` map).
@@ -1226,8 +1242,19 @@ impl ExtensionRunner {
     /// used to skip dispatch, never to change emit semantics.
     #[must_use]
     pub fn has_handlers(&self, kind: ExtensionEventKind) -> bool {
+        self.has_handlers_scoped(kind, &Scope::Global)
+    }
+
+    /// [`has_handlers`](Self::has_handlers) for a dispatch at `scope`:
+    /// whether [`emit_scoped`](Self::emit_scoped) at `scope` would reach a
+    /// handler for `kind` (the same scope and origin filters).
+    #[must_use]
+    pub fn has_handlers_scoped(&self, kind: ExtensionEventKind, scope: &Scope) -> bool {
+        let dylib_excluded = !scope.is_global();
         self.handlers.lock().unwrap().iter().any(|rh| {
-            rh.scope.is_global() && (rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
+            !(dylib_excluded && rh.origin.is_dylib())
+                && rh.scope.covers(scope)
+                && (rh.kind_filter.is_none() || rh.kind_filter == Some(kind))
         })
     }
 

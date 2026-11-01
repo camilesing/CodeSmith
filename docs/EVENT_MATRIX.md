@@ -21,7 +21,7 @@ vocabularies are not covered.
 | `AgentEnd` | Emit | `agent-runtime/engine/host_executor.rs` ×4 | — |
 | `AgentSettled` | Emit | `agent-runtime/engine/mod.rs` | — |
 | `AgentStart` | Emit | `agent-runtime/engine/host_executor.rs` | — |
-| `AssistantStream` | Emit | `agent-runtime/callback_bridge.rs` | — |
+| `AssistantStream` | Emit | `agent-runtime/callback_bridge.rs`, `agent-runtime/engine/child_turn.rs` | — |
 | `BeforeAgentStart` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |
 | `BeforeProviderHeaders` | Emit | `agent-runtime/engine/host_executor.rs` | — |
 | `BeforeProviderRequest` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |

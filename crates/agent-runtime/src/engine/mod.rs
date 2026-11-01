@@ -1771,7 +1771,8 @@ impl Engine {
         let main_turn_executor: Arc<dyn AgentExecutor> = built.executor.clone();
         // Kernel composition, runtime half: snapshot the around-turn chain
         // at assembly (registration-effective-next-turn, the tools-change
-        // discipline). Main turns only — sub-agent loops never read this.
+        // discipline). The main turn's chain; a sub-agent's turn
+        // (`run_child_turn`) snapshots its scope's view.
         let around_turn_handlers = self
             .extension_runner
             .as_ref()

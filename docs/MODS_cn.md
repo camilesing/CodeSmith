@@ -31,7 +31,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
-| turn 循环（所有 agent） | — | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（默认 `builtin`），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 DSH `next()` 包裹主 turn 的 run（仅主 turn）；异步接缝（无脚本形态） |
+| turn 循环（所有 agent） | — | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（默认 `builtin`），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 DSH `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；异步接缝（无脚本形态） |
 | 压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建；压缩的*旋钮*是 policy，算法不是） |
 
 经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
@@ -158,7 +158,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 的扩展工具视图（仅 script/compiled-in 来源——因此 mod 的 guard 同样把关子代理工具
 调用），而每个子代理 turn——与主 turn 同一个循环——在其 agent 类型作用域分发自己的
 生命周期：`before-agent-start`、`agent-start` / `agent-end`、`turn-start` / `turn-end`、
-`turn-stopping`、provider 事件、`tool-call` / `tool-result` 与 `tool-execution-start` /
+`turn-stopping`、provider 事件、`assistant-stream`、`tool-call` / `tool-result` 与 `tool-execution-start` /
 `-end`（仅 script/compiled-in 来源的处理器；dylib 处理器永远看不到子代理），其后续输入
 （`agent_send_input`）以 steer 形态经过 `input`。会话级事件（`session-*`、`agent-settled`、
 `tools-change`）仍只属主 turn。
@@ -191,7 +191,7 @@ emit 事件下一切返回值仅具参考性；serial 事件下 `cancel(reason)`
 作用域：`on_event` 注册是 global 作用域、script 来源——global 注册覆盖
 所有分发作用域，因此 `on_event` 回调既观察到主 turn 的 emit/serial 事件，
 也观察到每个子代理 turn 的（`turn-start`、`turn-end`、`agent-start`、
-`agent-end`、`turn-stopping`、provider emit、`tool-execution-*`）。已知
+`agent-end`、`turn-stopping`、provider emit、`assistant-stream`、`tool-execution-*`）。已知
 限制：载荷不带 agent 身份，回调无法区分子代理的 turn 与主 turn（作用域
 单位是 agent 类型——必须区分的编译内置扩展请注册 `on_variant_scoped`）。
 没有 `on_event_scoped`——脚本看不到

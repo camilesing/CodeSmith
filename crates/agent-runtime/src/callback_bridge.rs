@@ -171,6 +171,7 @@ const STREAM_DISPATCH_CUMULATIVE_BUDGET_MS: u64 = 1_000;
 /// the event in the warnings.
 pub(crate) async fn budgeted_observe_emit(
     runner: Arc<codesmith_extensions::ExtensionRunner>,
+    scope: codesmith_agent::extension::Scope,
     event: codesmith_agent::extension::ExtensionEvent,
     warned: &std::sync::atomic::AtomicBool,
     spent_ms: &std::sync::atomic::AtomicU64,
@@ -187,7 +188,7 @@ pub(crate) async fn budgeted_observe_emit(
         // `panic = "abort"` release profiles. Contain it: the dispatch is
         // emit-only, so a shutdown-time panic is swallowed.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle.block_on(runner.emit(event))
+            handle.block_on(runner.emit_scoped(scope, event))
         }))
     });
     let warn_once = || !warned.swap(true, std::sync::atomic::Ordering::Relaxed);
@@ -289,6 +290,7 @@ impl crate::tools::spec::ToolProgressSink for RunnerProgressSink {
             );
             budgeted_observe_emit(
                 Arc::clone(runner),
+                codesmith_agent::extension::Scope::Global,
                 event,
                 &self.warned,
                 &self.spent_ms,
@@ -657,6 +659,7 @@ impl Callback for CallbackBridge {
                 );
                 budgeted_observe_emit(
                     Arc::clone(runner),
+                    codesmith_agent::extension::Scope::Global,
                     event,
                     &stream_warned,
                     &stream_dispatch_spent_ms,

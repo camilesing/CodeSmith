@@ -286,14 +286,15 @@ inventory::submit! {
   around 链的结果是执行结果：计入 loop guard 失败升级（不同于 `Block`
   干预）。不对脚本 mod 开放（异步接缝——见 `docs/MODS.md`）。
 - **`AroundTurnHandler`** —— 内核组合的运行期半边（DSH 的 `next()`
-  包裹整个主 turn）：`async fn call(&self, turn: TurnAroundEvent, next:
+  包裹一个完整 turn——主 turn 与每个子代理 turn）：`async fn call(&self, turn: TurnAroundEvent, next:
   TurnNext<'_>) -> anyhow::Result<StopReason>`。经
   `ExtensionApi::register_around_turn` 注册；handler 按注册顺序组合
   （最外层在前），包住已组合执行器的 `AgentExecutor::run` —— 在循环
   前后加阶段，或不 `await next` 直接返回自己的 `StopReason` 即否决。
   `next` 是单次 future（await 一次跑一次内层 turn；「重跑循环」在此
-  不可表达）。下一 turn 装配时生效；reload 随本代一并清除。仅主 turn
-  —— 子代理 turn 不被包裹 —— 且链位于引擎 turn 记账（`TurnStarted` /
+  不可表达）。下一 turn 装配时生效；reload 随本代一并清除。包裹主 turn
+  与每个子代理 turn（子代理在其 agent 类型作用域上组合该链——dylib 来源
+  的包装从不包裹子代理）；主 turn 上链位于引擎 turn 记账（`TurnStarted` /
   `TurnComplete`、收割）之内，因此被否决的 turn 仍以 handler 的理由
   正常收尾。与选择半边——`turn_executor` 配置键（`docs/CONFIGURATION_cn.md`）
   ——配对。不对脚本 mod 开放（异步接缝）。

@@ -26,9 +26,13 @@
 //!   through the parent's approval router itself;
 //! - sub-agent completion delivery or the blocking hold: only the main
 //!   turn's direct children report back on the completion channel;
-//! - around-turn composition (the engine wraps the main turn only);
 //! - live per-step token usage: the executor reports none per step, so the
 //!   mailbox gets one `TokenUsage` with the run's total at the end.
+//!
+//! Composition parity with the main turn (iteration C): the child's turn is
+//! wrapped by the around-turn chain at its scope (dylib-origin wrappers
+//! never wrap a child), and its assistant text deltas dispatch
+//! `assistant-stream` through the budgeted observer at the same scope.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -194,6 +198,9 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
             };
         }
     };
+    // The registration scope every dispatch of this turn runs at (the
+    // executor's dispatch scope and the around-turn view below read it).
+    let child_scope = codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string());
     // Structural ownership: the lease covers the executor's lifetime (it
     // is dropped after `built`), so a reload of the runtime this child was
     // assembled under drains it before the two-phase dylib unload.
@@ -219,7 +226,21 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         max_steps,
         steps: AtomicU32::new(0),
         events: events.clone(),
+        stream_observer: extension_runner.clone().map(|runner| StreamObserver {
+            runner,
+            scope: child_scope.clone(),
+            warned: std::sync::atomic::AtomicBool::new(false),
+            spent_ms: std::sync::atomic::AtomicU64::new(0),
+        }),
     });
+    // Composition parity (DSH): a sub-agent's run is wrapped by the
+    // around-turn chain at its scope — the same `next()` composition the
+    // main turn gets, minus dylib-origin wrappers (5b). Snapshotted at this
+    // turn's assembly, like the engine's.
+    let around_turn_handlers = extension_runner
+        .as_ref()
+        .map(|runner| runner.around_turn_handlers_for(&child_scope))
+        .unwrap_or_default();
     let deps = TurnDeps {
         shape: TurnShape::Child {
             agent_type: agent_type.as_str().to_string(),
@@ -270,7 +291,16 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     for message in messages {
         history.push(message);
     }
-    let stop = built.executor.run(&mut history, String::new()).await;
+    let run = built.executor.run(&mut history, String::new());
+    let stop = if around_turn_handlers.is_empty() {
+        // No-extension parity is structural: an empty chain is the bare run.
+        run.await
+    } else {
+        let turn_event = codesmith_agent::extension::TurnAroundEvent {
+            turn_id: agent_id.clone(),
+        };
+        codesmith_agent::extension::wrap_turn_dispatch(&around_turn_handlers, turn_event, run).await
+    };
     let usage = built.harvest.take_usage();
     events.mailbox(MailboxMessage::token_usage(
         agent_id.as_str(),
@@ -327,6 +357,19 @@ struct ChildTurnCallback {
     max_steps: u32,
     steps: AtomicU32,
     events: ChildEventSink,
+    /// `assistant-stream` observation at the child's scope; `None` without
+    /// an extension runtime.
+    stream_observer: Option<StreamObserver>,
+}
+
+/// The hot-path `assistant-stream` dispatch for a child's text deltas — the
+/// main turn's discipline (`budgeted_observe_emit`: bounded per delta, a
+/// per-turn breaker once handlers miss the budget), at the child's scope.
+struct StreamObserver {
+    runner: Arc<ExtensionRunner>,
+    scope: codesmith_agent::extension::Scope,
+    warned: std::sync::atomic::AtomicBool,
+    spent_ms: std::sync::atomic::AtomicU64,
 }
 
 impl ChildTurnCallback {
@@ -391,6 +434,41 @@ impl Callback for ChildTurnCallback {
             ok: matches!(result, Ok(r) if r.success),
         });
         Box::pin(async {})
+    }
+
+    fn on_stream_delta<'a>(
+        &'a self,
+        delta: &'a codesmith_agent::callback::StreamDelta,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let (Some(observer), codesmith_agent::callback::StreamDelta::Text { content, .. }) =
+                (&self.stream_observer, delta)
+            else {
+                return;
+            };
+            if observer.warned.load(Ordering::Relaxed)
+                || !observer.runner.has_handlers_scoped(
+                    codesmith_agent::extension::ExtensionEventKind::AssistantStream,
+                    &observer.scope,
+                )
+            {
+                return;
+            }
+            let event = codesmith_agent::extension::ExtensionEvent::AssistantStream(
+                codesmith_agent::extension::AssistantStreamEvent {
+                    text: content.clone(),
+                },
+            );
+            crate::callback_bridge::budgeted_observe_emit(
+                Arc::clone(&observer.runner),
+                observer.scope.clone(),
+                event,
+                &observer.warned,
+                &observer.spent_ms,
+                "AssistantStream",
+            )
+            .await;
+        })
     }
 
     fn on_complete<'a>(
@@ -651,6 +729,326 @@ mod tests {
         assert!(
             !sent.contains("+dylib"),
             "a dylib-origin handler never sees a child's input: {sent}"
+        );
+    }
+
+    // === Iteration C — composition parity at the child scope =============
+
+    use codesmith_agent::extension::{
+        AroundTurnHandler, Extension, ExtensionApi, ExtensionContext, ExtensionError,
+        ExtensionEvent, ExtensionEventKind, ExtensionMetadata, ExtensionMode, Handler,
+        HandlerOutcome, Scope, TurnAroundEvent, TurnNext,
+    };
+    use codesmith_extensions::{HostExtensionContext, RegistrationOrigin};
+
+    fn bound_runner(workspace: &std::path::Path) -> Arc<ExtensionRunner> {
+        let runner = Arc::new(ExtensionRunner::new());
+        let _ = workspace;
+        runner
+    }
+
+    fn bind(runner: &Arc<ExtensionRunner>, workspace: &std::path::Path) {
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            workspace.to_path_buf(),
+            ExtensionMode::Interactive,
+            Arc::new(StdMutex::new(true)),
+            Arc::new(StdMutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+    }
+
+    struct StampAround {
+        label: &'static str,
+        seen: Arc<StdMutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AroundTurnHandler for StampAround {
+        async fn call(
+            &self,
+            turn: TurnAroundEvent,
+            next: TurnNext<'_>,
+        ) -> anyhow::Result<StopReason> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:pre:{}", self.label, turn.turn_id));
+            let reason = next.await;
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:post", self.label));
+            reason
+        }
+    }
+
+    struct AroundExt {
+        label: &'static str,
+        seen: Arc<StdMutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for AroundExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("child-around-turn");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.register_around_turn(Arc::new(StampAround {
+                label: self.label,
+                seen: self.seen.clone(),
+            }))
+        }
+    }
+
+    /// A child's run is wrapped by the around-turn chain at its scope (the
+    /// `turn_id` a child's wrapper sees is its agent id), and a
+    /// dylib-origin wrapper never wraps a child (5b).
+    #[tokio::test]
+    async fn around_turn_wraps_the_child_run_at_its_scope() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let runner = bound_runner(workspace.path());
+        runner
+            .load(&AroundExt {
+                label: "compiled",
+                seen: seen.clone(),
+            })
+            .await
+            .expect("load compiled-in");
+        runner
+            .load_as(
+                &AroundExt {
+                    label: "dylib",
+                    seen: seen.clone(),
+                },
+                RegistrationOrigin::Dylib,
+            )
+            .await
+            .expect("load dylib-stamped");
+        bind(&runner, workspace.path());
+
+        let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")]));
+        let mut child = spec(
+            mock.clone(),
+            crate::engine::BUILTIN_TURN_EXECUTOR_ID,
+            workspace.path(),
+        );
+        child.extension_runner = Some(runner);
+
+        let outcome = run_child_turn(child).await;
+
+        assert_eq!(outcome.status, ChildTurnStatus::Completed, "{outcome:?}");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "compiled:pre:agent_probe".to_string(),
+                "compiled:post".to_string()
+            ],
+            "the compiled-in wrapper brackets the child's run; the dylib one never wraps it"
+        );
+    }
+
+    struct KindRecorder {
+        seen: Arc<StdMutex<Vec<ExtensionEventKind>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Handler for KindRecorder {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            self.seen.lock().unwrap().push(event.kind());
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// Records every kind it receives: subscribe-to-all at `Global`, or one
+    /// kind at a foreign agent-type scope.
+    struct RecorderExt {
+        seen: Arc<StdMutex<Vec<ExtensionEventKind>>>,
+        foreign_scope: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Extension for RecorderExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("child-scope-recorder");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            let handler = Arc::new(KindRecorder {
+                seen: self.seen.clone(),
+            });
+            if self.foreign_scope {
+                api.on_variant_scoped(
+                    ExtensionEventKind::TurnStart,
+                    Scope::AgentType("plan".to_string()),
+                    handler,
+                )
+            } else {
+                api.on(handler)
+            }
+        }
+    }
+
+    struct EchoSpec;
+
+    #[async_trait::async_trait]
+    impl crate::tools::spec::ToolSpec for EchoSpec {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "echo the text back"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}})
+        }
+        fn capabilities(&self) -> Vec<codesmith_agent::tools::ToolCapability> {
+            vec![codesmith_agent::tools::ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(
+                input["text"].as_str().unwrap_or_default().to_string(),
+            ))
+        }
+    }
+
+    /// The child-scope coverage table (DSH plan iteration C): which event
+    /// kinds a sub-agent turn dispatches at its agent-type scope, pinned
+    /// over a representative run (a follow-up input, a tool call, a final
+    /// text answer). Every kind is listed — adding a kind without placing
+    /// it here fails the length check. `false` rows split two ways:
+    /// session-level kinds that never reach a child, and conditional kinds
+    /// this run does not trigger but that dispatch at the child's scope
+    /// when they occur (`ProviderRequestError` on a failed stream,
+    /// `SessionBeforeFork` when the child's own spawn tool forks at depth
+    /// ≥ 1). A dylib-origin handler and a handler scoped to another agent
+    /// type see nothing of the child.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn child_scope_coverage_table() {
+        use ExtensionEventKind as K;
+        let table: &[(K, bool)] = &[
+            // Fire in every child turn of this shape.
+            (K::BeforeAgentStart, true),
+            (K::AgentStart, true),
+            (K::TurnStart, true),
+            (K::Input, true),
+            (K::BeforeProviderHeaders, true),
+            (K::BeforeProviderRequest, true),
+            (K::AssistantStream, true),
+            (K::AfterProviderResponse, true),
+            (K::ToolCall, true),
+            (K::ToolExecutionStart, true),
+            (K::ToolExecutionEnd, true),
+            (K::ToolResult, true),
+            (K::TurnStopping, true),
+            (K::TurnEnd, true),
+            (K::AgentEnd, true),
+            // Conditional — dispatched at the child's scope when triggered.
+            (K::ProviderRequestError, false),
+            (K::SessionBeforeFork, false),
+            // Session-level / main-turn-only — never at a child's scope.
+            (K::ToolExecutionUpdate, false),
+            (K::ProjectTrust, false),
+            (K::SessionStart, false),
+            (K::SessionShutdown, false),
+            (K::SessionBeforeSwitch, false),
+            (K::SessionBeforeCompact, false),
+            (K::SessionCompact, false),
+            (K::AgentSettled, false),
+            (K::ToolsChange, false),
+            (K::WorkflowStart, false),
+            (K::WorkflowLog, false),
+            (K::WorkflowAgentStart, false),
+            (K::WorkflowAgentEnd, false),
+            (K::WorkflowEnd, false),
+        ];
+        assert_eq!(table.len(), 31, "every ExtensionEventKind has a row");
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let global = Arc::new(StdMutex::new(Vec::new()));
+        let dylib = Arc::new(StdMutex::new(Vec::new()));
+        let foreign = Arc::new(StdMutex::new(Vec::new()));
+        let runner = bound_runner(workspace.path());
+        runner
+            .load(&RecorderExt {
+                seen: global.clone(),
+                foreign_scope: false,
+            })
+            .await
+            .expect("load the global recorder");
+        runner
+            .load_as(
+                &RecorderExt {
+                    seen: dylib.clone(),
+                    foreign_scope: false,
+                },
+                RegistrationOrigin::Dylib,
+            )
+            .await
+            .expect("load the dylib recorder");
+        runner
+            .load(&RecorderExt {
+                seen: foreign.clone(),
+                foreign_scope: true,
+            })
+            .await
+            .expect("load the foreign-scope recorder");
+        bind(&runner, workspace.path());
+
+        let mut registry = ToolRegistry::new(ToolContext::new(workspace.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("call_echo", "echo", r#"{"text":"hi"}"#),
+            canned::simple_text_turn("all done"),
+        ]));
+        let mut child = spec(
+            mock.clone(),
+            crate::engine::BUILTIN_TURN_EXECUTOR_ID,
+            workspace.path(),
+        );
+        child.tools = ChildToolSurface {
+            tool_set: Arc::new(registry.to_framework_tool_set()),
+            catalog: registry.to_api_tools(),
+            dispatcher: Arc::new(registry),
+        };
+        let (input_tx, input_rx) = mpsc::channel(4);
+        input_tx
+            .send("also check the docs".to_string())
+            .await
+            .expect("queue the follow-up");
+        child.input = input_rx;
+        child.extension_runner = Some(runner);
+
+        let outcome = run_child_turn(child).await;
+
+        assert_eq!(outcome.status, ChildTurnStatus::Completed, "{outcome:?}");
+        assert_eq!(outcome.final_text.as_deref(), Some("all done"));
+        let fired = global.lock().unwrap().clone();
+        for (kind, expected) in table {
+            assert_eq!(
+                fired.contains(kind),
+                *expected,
+                "child-scope coverage drift at {kind:?} (fired: {fired:?})"
+            );
+        }
+        assert!(
+            dylib.lock().unwrap().is_empty(),
+            "a dylib-origin handler sees nothing of a child: {:?}",
+            dylib.lock().unwrap()
+        );
+        assert!(
+            foreign.lock().unwrap().is_empty(),
+            "a handler scoped to another agent type sees nothing of this child: {:?}",
+            foreign.lock().unwrap()
         );
     }
 }

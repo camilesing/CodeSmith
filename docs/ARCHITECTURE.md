@@ -102,9 +102,10 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   engine resolves a config-selected factory (`turn_executor`, default
   `builtin`) from the process-shared `TurnExecutorRegistry`
   (`engine/executor_composition.rs`), with alternates as crate-compiled
-  registry entries, and wraps the main turn with the `AroundTurnHandler`
-  chain (`register_around_turn`, DSH `next()`, Rust extensions, main turn
-  only). Every in-process sub-agent turn rides the same factory through
+  registry entries, and wraps every turn with the `AroundTurnHandler`
+  chain (`register_around_turn`, DSH `next()`, Rust extensions; a child
+  composes it at its agent-type scope, dylib wrappers excluded). Every
+  in-process sub-agent turn rides the same factory through
   `engine/child_turn.rs`: the CLI spawn path hands over a `ChildTurnSpec`
   (plain data — the child's delegated tool surface, model route, input /
   cancel channels, progress sink), and `run_child_turn` builds a

@@ -265,7 +265,8 @@ ids and the remedy), and at turn assembly if a registration disappears
 mid-session, and a child's turn fails through its normal failed-agent
 contract (nothing runs). Script mods cannot implement a loop (no async);
 wrapping the run from a Rust extension is the composition half,
-`register_around_turn` (`docs/EXTENSIONS.md`), main turn only.
+`register_around_turn` (`docs/EXTENSIONS.md`) — wrapped around the
+main turn and every sub-agent turn alike.
 
 
 Third-party OpenAI-compatible gateways that need extra request headers can set

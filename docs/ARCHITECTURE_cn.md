@@ -84,7 +84,8 @@
   （`engine/executor_composition.rs`）解析按配置选择的 factory
   （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目
   落地，并以 `AroundTurnHandler` 链（`register_around_turn`，DSH
-  `next()`，Rust 扩展，仅主 turn）包裹主 turn。每个进程内子代理 turn 经
+  `next()`，Rust 扩展）包裹主 turn 与每个子代理 turn（子代理在其
+  agent-type scope 上组合该链，dylib 包装被跳过）。每个进程内子代理 turn 经
   `engine/child_turn.rs` 走同一个 factory：CLI 的 spawn 路径交出
   `ChildTurnSpec`（纯数据——子代理的委托工具面、模型路由、输入/取消通道、
   进度 sink），`run_child_turn` 构造子形态 `TurnDeps`（`TurnShape::Child`：

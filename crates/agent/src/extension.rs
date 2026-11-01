@@ -40,7 +40,8 @@
 //! factories are extension-contributed, route A), the session log format,
 //! the compaction algorithm (its knobs are policy), and `BASE_PROMPT`.
 //! Sub-agent turns run on the same composed loop: the `turn_executor`
-//! selection reaches them; the around-turn chain wraps the main turn only.
+//! selection reaches them; the around-turn chain wraps every turn (a
+//! sub-agent's at its agent-type scope — dylib wrappers excluded).
 //! Known limitations (deliberate): `Waterfall` remains a
 //! fold chain (each handler's `Transform` is visible to the next);
 //! `next()`-wrapping exists for tool execution ([`AroundToolHandler`])
@@ -1068,8 +1069,9 @@ pub struct TurnAroundEvent {
 /// Known limitations: `next` is a single-shot future — awaiting it runs
 /// the inner turn once, so "re-run the loop" (DSH's callable `next()`)
 /// is not expressible here (a handler wanting retries needs a factory
-/// form; add it with a real consumer); main-turn only (a sub-agent's
-/// turn is not wrapped); the chain wraps the executor run INSIDE the engine's turn
+/// form; add it with a real consumer); dylib-origin handlers wrap the
+/// main turn only (a sub-agent's turn composes the chain at its
+/// agent-type scope without them); the chain wraps the executor run INSIDE the engine's turn
 /// bookkeeping (TurnStarted / TurnComplete, harvest, snapshots), so a
 /// vetoed turn still completes its bookkeeping with the handler's returned
 /// `StopReason`; and the seam is not offered to script mods (async

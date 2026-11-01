@@ -278,9 +278,10 @@ impl HostServices for super::EngineHost {
             req.runtime_ui,
         );
         // Sub-agent runtimes take the context BEFORE the progress sink is
-        // attached: `tool-execution-update` is main-turn-only (sub-agent
-        // loops emit no extension events, and their registries stay
-        // extension-free — §4b).
+        // attached: the sink dispatches `tool-execution-update` at the main
+        // turn's Global scope (dylib handlers included), so a child's tool
+        // progress must not ride it — children report none (known
+        // limitation).
         let subagent_context = tool_context.clone();
         let tool_context = tool_context.with_progress_sink(Some(Arc::new(
             codesmith_agent_runtime::callback_bridge::RunnerProgressSink::new(

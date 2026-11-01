@@ -18,7 +18,7 @@ construct it, consumers take it by value).
 |---|---|---|---|
 | `AgentExecutor` | `agent` | `agent`, `agent-runtime` | `agent-runtime` |
 | `AroundToolHandler` | `agent` | `agent`, `agent-runtime` | `agent`, `extensions` |
-| `AroundTurnHandler` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
+| `AroundTurnHandler` | `agent` | `agent`, `agent-runtime`, `extensions` | `agent`, `extensions` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
 | `ChildTurnSpec` (data) | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |

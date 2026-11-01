@@ -183,7 +183,9 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   (`crates/agent-runtime/src/engine/executor_composition.rs`, config key
   `turn_executor`, default `builtin`), then wraps the run with the
   registered `AroundTurnHandler` chain (`register_around_turn`, DSH
-  `next()`; Rust extensions only, main turn only). Every in-process
+  `next()`; Rust extensions, wrapped around the main turn and every
+  sub-agent turn alike — a child composes the chain at its agent-type
+  scope, dylib wrappers excluded). Every in-process
   sub-agent turn takes the same path: the CLI spawn path builds a
   `ChildTurnSpec` (plain data: tool surface, route, channels, depth) and
   `engine::child_turn::run_child_turn` resolves the same factory, builds a

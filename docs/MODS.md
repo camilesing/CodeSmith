@@ -32,7 +32,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
-| Turn loop (every agent) | — | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (default `builtin`) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the main turn's run with DSH `next()` (main turn only); async seam (no script form) |
+| Turn loop (every agent) | — | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (default `builtin`) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with DSH `next()` (every turn — a sub-agent composes the chain at its agent-type scope); async seam (no script form) |
 | Compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries; compaction *knobs* are policy, the algorithm is not) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
@@ -166,7 +166,7 @@ carrier on the child side: sub-agent registries mount the child type's extension
 (script/compiled-in origins only — a mod's guard therefore also gates sub-agent tool calls),
 and every sub-agent turn — the same loop as the main turn — dispatches its lifecycle at its
 agent-type scope: `before-agent-start`, `agent-start` / `agent-end`, `turn-start` /
-`turn-end`, `turn-stopping`, the provider events, `tool-call` / `tool-result` and
+`turn-end`, `turn-stopping`, the provider events, `assistant-stream`, `tool-call` / `tool-result` and
 `tool-execution-start` / `-end` (script/compiled-in handlers only; dylib handlers never see a
 child), and its follow-up input (`agent_send_input`) meets `input` as a steer. Session-level
 events (`session-*`, `agent-settled`, `tools-change`) stay main-turn-only.
@@ -203,7 +203,7 @@ Scope: `on_event` registrations are global-scope, script-origin — a
 global registration covers every dispatch scope, so an `on_event`
 callback observes the main turn's emit/serial events and every
 sub-agent turn's (`turn-start`, `turn-end`, `agent-start`, `agent-end`,
-`turn-stopping`, the provider emits, `tool-execution-*`). Known
+`turn-stopping`, the provider emits, `assistant-stream`, `tool-execution-*`). Known
 limitation: the payloads carry no agent identity, so a callback cannot
 tell a child's turn from the main turn's (the scope unit is the agent
 type — a compiled-in extension that must tell them apart registers

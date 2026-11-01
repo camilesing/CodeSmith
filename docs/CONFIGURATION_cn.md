@@ -242,7 +242,8 @@ turn_executor = "builtin"   # 默认值；生产的 HostAgentExecutor 循环
 for '…'`，带已注册 id 与补救说明）；会话中途注册消失则在 turn 装配时报错，
 子代理的 turn 按其既有的失败契约失败（什么都不跑）。脚本 mod 无法
 实现循环（无 async）；从 Rust 扩展侧包裹 run 是组合半边
-`register_around_turn`（`docs/EXTENSIONS_cn.md`，仅主 turn），不是这个键。
+`register_around_turn`（`docs/EXTENSIONS_cn.md`，主 turn 与每个子代理
+turn 都会被包裹），不是这个键。
 
 
 需要额外请求头的第三方 OpenAI 兼容网关，可以在顶层或 provider 表

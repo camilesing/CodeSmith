@@ -214,7 +214,7 @@ impl ExtensionApi for StubExtensionApi {
     ) -> Result<(), ExtensionError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending.around_turns.push(handler);
+        pending.around_turns.push((handler, self.origin));
         Ok(())
     }
     fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
