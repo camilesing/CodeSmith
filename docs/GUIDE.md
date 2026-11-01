@@ -457,6 +457,12 @@ the engine for the next coordination step while the prompt is still showing.
 Answer prompts it cannot show you are denied headless-style, exactly like a
 detached run; submit any input to take over.
 
+An active goal (`create_goal` / `/goal`) keeps driving too: after each turn
+that ends cleanly, the agent starts the next round by itself — with the
+goal state and a continuation prompt — until the goal is completed or
+blocked, its token budget is spent, or the round cap is reached, at which
+point the goal pauses itself and says so.
+
 Next: [SUBAGENTS.md](SUBAGENTS.md) covers roles, lifecycle, concurrency, and
 output contracts.
 

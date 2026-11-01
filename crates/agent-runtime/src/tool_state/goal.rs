@@ -10,6 +10,22 @@ use std::time::Instant;
 /// unbounded local loop.
 pub const MAX_GOAL_CONTINUATIONS_PER_TURN: u32 = 3;
 
+/// Hard cap on goal rounds the round driver may synthesize across turns
+/// (round 10 TODO-71), for the same reason as the per-turn cap: a goal whose
+/// model never calls `update_goal` must not burn tokens forever. The token
+/// budget (`token_budget`) is the finer-grained bound when set; this cap is
+/// the unconditional backstop.
+pub const MAX_GOAL_ROUNDS: u32 = 25;
+
+/// What the round driver does after one clean turn end (round 10 TODO-71).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundDecision {
+    /// Synthesize round `u32` (1-based); the continuation prompt carries it.
+    Drive(u32),
+    /// Pause the goal; the string is the human reason.
+    Pause(&'static str),
+}
+
 /// Shared reference to the current runtime goal.
 pub type SharedGoalState = Arc<Mutex<GoalState>>;
 
@@ -37,6 +53,10 @@ pub enum GoalStatus {
     Active,
     Complete,
     Blocked,
+    /// Stopped by the round driver, not by the model (round 10 TODO-71):
+    /// token budget exhausted or the round cap reached. `resume` (or a new
+    /// budget via `/goal` / `update_goal`) makes it active again.
+    Paused,
 }
 
 impl GoalStatus {
@@ -46,6 +66,7 @@ impl GoalStatus {
             Self::Active => "active",
             Self::Complete => "complete",
             Self::Blocked => "blocked",
+            Self::Paused => "paused",
         }
     }
 }
@@ -61,6 +82,12 @@ pub struct GoalState {
     finished_at: Option<Instant>,
     evidence: Option<String>,
     blocker: Option<String>,
+    /// Rounds the round driver has synthesized so far (round 10 TODO-71).
+    /// Reset by `create` and by a changed objective in `sync_from_host`.
+    rounds_driven: u32,
+    /// Turn usage accumulated while the goal was active (input + output).
+    /// The driver pauses the goal when this reaches `token_budget`.
+    tokens_spent: u64,
 }
 
 impl GoalState {
@@ -95,6 +122,8 @@ impl GoalState {
                     self.started_at = Some(Instant::now());
                     self.evidence = None;
                     self.blocker = None;
+                    self.rounds_driven = 0;
+                    self.tokens_spent = 0;
                 } else if token_budget.is_some() {
                     self.token_budget = token_budget;
                 }
@@ -149,6 +178,8 @@ impl GoalState {
         self.finished_at = None;
         self.evidence = None;
         self.blocker = None;
+        self.rounds_driven = 0;
+        self.tokens_spent = 0;
     }
 
     pub fn resume(&mut self, objective: Option<String>) -> Result<(), &'static str> {
@@ -193,6 +224,40 @@ impl GoalState {
         self.evidence = None;
         self.blocker = Some(blocker);
         Ok(())
+    }
+
+    /// Pause the goal, recording why the round driver stopped it (round 10
+    /// TODO-71). The reason rides the `blocker` field (snapshot-visible), so
+    /// `/goal` and `get_goal` surface it without a new field.
+    pub fn pause(&mut self, reason: &str) {
+        self.status = Some(GoalStatus::Paused);
+        self.finished_at = Some(Instant::now());
+        self.blocker = Some(reason.to_string());
+    }
+
+    /// Round-driver decision after a clean turn end while the goal is active
+    /// (round 10 TODO-71). Accumulates the finished turn's usage into the
+    /// goal's spend (every turn while the goal is active counts — the budget
+    /// bounds the goal's total pursuit, autonomous or not), then either
+    /// grants the next round's index or names why the goal pauses.
+    pub fn next_round(&mut self, usage_input: u64, usage_output: u64) -> RoundDecision {
+        self.tokens_spent = self.tokens_spent.saturating_add(usage_input + usage_output);
+        if let Some(budget) = self.token_budget
+            && self.tokens_spent >= u64::from(budget)
+        {
+            return RoundDecision::Pause("token budget exhausted");
+        }
+        if self.rounds_driven >= MAX_GOAL_ROUNDS {
+            return RoundDecision::Pause("round limit reached");
+        }
+        self.rounds_driven += 1;
+        RoundDecision::Drive(self.rounds_driven)
+    }
+
+    /// Rounds the driver has synthesized so far (snapshot/test surface).
+    #[must_use]
+    pub fn rounds_driven(&self) -> u32 {
+        self.rounds_driven
     }
 
     pub fn clear(&mut self) {
@@ -275,6 +340,61 @@ pub fn render_continuation_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 10 TODO-71 — the round driver's decision sequence.
+    #[test]
+    fn next_round_drives_then_pauses_on_budget() {
+        let mut state = GoalState::default();
+        state.create("ship it".to_string(), Some(100));
+        // Rounds accumulate spend; 3 rounds × 40 = 120 ≥ 100 → pause.
+        assert_eq!(state.next_round(20, 20), RoundDecision::Drive(1));
+        assert_eq!(state.next_round(20, 20), RoundDecision::Drive(2));
+        // The engine applies the pause (goal_round_after_turn calls pause).
+        let decision = state.next_round(20, 20);
+        assert_eq!(decision, RoundDecision::Pause("token budget exhausted"));
+        if let RoundDecision::Pause(reason) = decision {
+            state.pause(reason);
+        }
+        assert_eq!(state.status, Some(GoalStatus::Paused));
+        assert_eq!(state.blocker.as_deref(), Some("token budget exhausted"));
+        // Paused is not active: the driver stops calling, and the snapshot
+        // says so.
+        assert!(!state.snapshot().is_active());
+        assert_eq!(state.snapshot().status, "paused");
+        // Resume makes it active again (and a raised budget lets it drive).
+        state.resume(None).expect("resume");
+        assert!(state.is_active());
+        assert_eq!(
+            state.next_round(0, 0),
+            RoundDecision::Pause("token budget exhausted")
+        );
+    }
+
+    #[test]
+    fn next_round_hits_round_cap_without_budget() {
+        let mut state = GoalState::default();
+        state.create("endless".to_string(), None);
+        for expected in 1..=MAX_GOAL_ROUNDS {
+            assert_eq!(state.next_round(0, 0), RoundDecision::Drive(expected));
+        }
+        assert_eq!(
+            state.next_round(0, 0),
+            RoundDecision::Pause("round limit reached")
+        );
+    }
+
+    #[test]
+    fn create_resets_round_counters() {
+        let mut state = GoalState::default();
+        state.create("first".to_string(), Some(50));
+        assert_eq!(
+            state.next_round(60, 0),
+            RoundDecision::Pause("token budget exhausted")
+        );
+        state.create("second".to_string(), Some(10_000));
+        assert_eq!(state.rounds_driven(), 0);
+        assert_eq!(state.next_round(0, 0), RoundDecision::Drive(1));
+    }
 
     #[test]
     fn sync_from_host_tracks_completion_on_unchanged_objective() {

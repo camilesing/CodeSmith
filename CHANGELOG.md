@@ -34,6 +34,13 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Active goals now drive themselves** — after a turn ends cleanly while a
+  goal is active, the engine queues the next round on its own (goal state +
+  continuation prompt as the round message), until the goal completes, is
+  blocked, its `token_budget` is spent, or the 25-round cap is hit — at
+  which point the goal auto-pauses with the reason in `/goal` status and
+  `resume` (or a raised budget) continues it.
+
 - **Background shell jobs now report back to the model** — a background
   `exec_shell` / `task_shell_start` job finishing is bridged onto the same
   drain seam as sub-agent completions: the model receives a

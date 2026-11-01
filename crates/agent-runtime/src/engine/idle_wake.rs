@@ -38,8 +38,12 @@
 //!   means logged"); it is NOT prefix-cache-frozen content.
 
 use super::RUNTIME_EVENT_PREFIX;
-use crate::engine::Engine;
+use crate::engine::{Engine, TurnEnd};
+use crate::events::TurnOutcomeStatus;
 use crate::ops::Op;
+use crate::tool_state::goal::{
+    GoalSnapshot, MAX_GOAL_ROUNDS, RoundDecision, render_continuation_prompt,
+};
 
 impl Engine {
     /// Decide and build the idle-wake turn. `None` = no synthesis: returns
@@ -65,6 +69,72 @@ impl Engine {
             "idle wake: synthesizing turn with {parked} parked sub-agent completion(s)"
         );
         Some(op)
+    }
+}
+
+impl Engine {
+    /// Goal round driver (round 10 TODO-71): after a cleanly-ended
+    /// `SendMessage` turn with an active goal, queue the next round as
+    /// another synthesized turn — or pause the goal when the token budget
+    /// or round cap is exhausted. Same wake seam as the idle wake: the
+    /// synthesized op rides the ordinary `Op::SendMessage` path, so it is
+    /// journaled, pumped, and approval-gated like any turn. Deliberately
+    /// only the `SendMessage` arm (not `/edit`): an edited turn's clean end
+    /// does not auto-drive.
+    pub(crate) async fn goal_round_after_turn(&self, end: TurnEnd) {
+        if !self.config.idle_wake || end.status != TurnOutcomeStatus::Completed {
+            return;
+        }
+        // Real ops always outrank a synthesized round; and parked
+        // completions win over the goal — their wake turn re-runs this
+        // check at its own end.
+        if !self.rx_op.is_empty() || self.llm_client.is_none() {
+            return;
+        }
+        if !self.rx_subagent_completion.lock().await.is_empty() {
+            return;
+        }
+        let Some(mut op) = self.last_send_op.clone() else {
+            return;
+        };
+        let decision = {
+            let mut goal = self
+                .config
+                .goal_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !goal.is_active() {
+                return;
+            }
+            goal.next_round(u64::from(end.input_tokens), u64::from(end.output_tokens))
+        };
+        match decision {
+            RoundDecision::Drive(round) => {
+                let snapshot: GoalSnapshot = self
+                    .config
+                    .goal_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .snapshot();
+                if let Op::SendMessage { content, .. } = &mut op {
+                    *content = render_continuation_prompt(&snapshot, round, MAX_GOAL_ROUNDS);
+                }
+                let _ = self.tx_op.send(op).await;
+            }
+            RoundDecision::Pause(reason) => {
+                self.config
+                    .goal_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pause(reason);
+                let _ = self
+                    .tx_event
+                    .send(crate::events::Event::status(format!(
+                        "Goal paused: {reason} (raise the token budget or /goal resume to continue)"
+                    )))
+                    .await;
+            }
+        }
     }
 }
 

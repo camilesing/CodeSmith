@@ -4498,6 +4498,94 @@ async fn background_shell_completion_bridges_to_model_via_idle_wake() {
     );
 }
 
+/// Round 10 TODO-71 — an active goal keeps driving rounds after each clean
+/// turn end; the continuation prompt reaches the model as the next round's
+/// user message.
+#[tokio::test]
+async fn goal_round_driver_continues_active_goal() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("working on it"),
+        canned::simple_text_turn("still going"),
+    ]);
+    let mut config = test_engine_config(tmp.path());
+    config.idle_wake = true;
+    config
+        .goal_state
+        .lock()
+        .unwrap()
+        .create("ship the release".to_string(), Some(1_000_000));
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("start")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    // The driver queues round 1 without any user input.
+    let _second = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        collect_until_turn_complete(&handle),
+    )
+    .await
+    .expect("goal round driver synthesizes the next round");
+
+    let requests = mock_arc.captured_requests();
+    assert_eq!(requests.len(), 2);
+    let texts = user_text_blocks(&requests[1]);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Continuation pass: 1/") && t.contains("ship the release")),
+        "the round message carries the continuation prompt with the objective"
+    );
+}
+
+/// Round 10 TODO-71 — an exhausted token budget pauses the goal instead of
+/// driving, and the goal snapshot reports `paused`.
+#[tokio::test]
+async fn goal_round_driver_pauses_on_exhausted_budget() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("working on it"),
+        canned::simple_text_turn("should never run"),
+    ]);
+    let mut config = test_engine_config(tmp.path());
+    config.idle_wake = true;
+    // Budget zero: the very first decision pauses.
+    config
+        .goal_state
+        .lock()
+        .unwrap()
+        .create("ship it".to_string(), Some(0));
+    let goal_state = config.goal_state.clone();
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("start")).await.expect("send op");
+    let mut events = collect_until_turn_complete(&handle).await;
+    // The driver runs after `TurnComplete` is sent; its pause status is the
+    // next event on the channel.
+    if let Ok(Some(extra)) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut rx = handle.rx_event.write().await;
+        rx.recv().await
+    })
+    .await
+    {
+        events.push(extra);
+    }
+
+    // No synthesized round: the mock saw exactly one request.
+    assert_eq!(mock_arc.captured_requests().len(), 1);
+    // The pause surfaced as a status event and the goal reads paused.
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Status { message } if message.contains("Goal paused"))),
+        "the pause is surfaced to the user"
+    );
+    assert_eq!(goal_state.lock().unwrap().snapshot().status, "paused");
+}
+
 /// Idle wake off (the default): the same completion stays parked — no
 /// synthesized turn — and the NEXT user turn's pre-request drain delivers
 /// it. Pins the old behavior for hosts that leave the flag off.

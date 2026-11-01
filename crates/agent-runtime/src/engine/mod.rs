@@ -312,6 +312,15 @@ pub struct Engine {
 
 // === Internal tool helpers ===
 
+/// How one `SendMessage` turn ended (round 10 TODO-71) — the op loop's
+/// goal round driver reads it after `handle_send_message` returns.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TurnEnd {
+    pub status: TurnOutcomeStatus,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
 impl Engine {
     /// Return the session transcript verbatim for a request snapshot.
     ///
@@ -729,26 +738,31 @@ impl Engine {
                     allowed_tools,
                     blocked_tools,
                 } => {
-                    self.handle_send_message(
-                        content,
-                        image_paths,
-                        mode,
-                        model,
-                        goal_objective,
-                        reasoning_effort,
-                        reasoning_effort_auto,
-                        auto_model,
-                        allow_shell,
-                        trust_mode,
-                        auto_approve,
-                        approval_mode,
-                        translation_enabled,
-                        show_thinking,
-                        is_simple,
-                        allowed_tools,
-                        blocked_tools,
-                    )
-                    .await;
+                    let turn_end = self
+                        .handle_send_message(
+                            content,
+                            image_paths,
+                            mode,
+                            model,
+                            goal_objective,
+                            reasoning_effort,
+                            reasoning_effort_auto,
+                            auto_model,
+                            allow_shell,
+                            trust_mode,
+                            auto_approve,
+                            approval_mode,
+                            translation_enabled,
+                            show_thinking,
+                            is_simple,
+                            allowed_tools,
+                            blocked_tools,
+                        )
+                        .await;
+                    // Round 10 TODO-71 — the goal round driver rides the
+                    // same wake seam: a cleanly-ended turn with an active
+                    // goal queues the next round without user input.
+                    self.goal_round_after_turn(turn_end).await;
                 }
                 Op::CancelRequest => {
                     self.cancel_token.cancel();
@@ -950,6 +964,9 @@ impl Engine {
                         self.config.blocked_tools.clone(),
                     )
                     .await;
+                    // The round driver deliberately rides only the
+                    // `SendMessage` arm (see `engine::idle_wake`); the
+                    // edited turn's clean end does not auto-drive.
                 }
                 Op::Shutdown => {
                     break;
@@ -1284,7 +1301,7 @@ impl Engine {
         is_simple: bool,
         allowed_tools: Option<Vec<String>>,
         blocked_tools: Vec<String>,
-    ) {
+    ) -> TurnEnd {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
         self.last_dispatched_mode = Some(mode);
@@ -1368,7 +1385,11 @@ impl Engine {
                     failed_attempts: Vec::new(),
                 })
                 .await;
-            return;
+            return TurnEnd {
+                status: TurnOutcomeStatus::Failed,
+                input_tokens: turn.usage.input_tokens,
+                output_tokens: turn.usage.output_tokens,
+            };
         }
 
         // `Input` seam: handlers rewrite the submitted text before the
@@ -1692,7 +1713,11 @@ impl Engine {
                         failed_attempts: Vec::new(),
                     })
                     .await;
-                return;
+                return TurnEnd {
+                    status: TurnOutcomeStatus::Failed,
+                    input_tokens: turn.usage.input_tokens,
+                    output_tokens: turn.usage.output_tokens,
+                };
             }
         };
         // Structural ownership (DSH, `turn_lease`): hold this turn's
@@ -2004,6 +2029,11 @@ impl Engine {
         // `TurnComplete` re-checks it to decide whether to keep pumping, so
         // it must already read false by the time the event arrives.
         self.turn_in_flight.store(false, Ordering::SeqCst);
+        let turn_end = TurnEnd {
+            status,
+            input_tokens: turn.usage.input_tokens,
+            output_tokens: turn.usage.output_tokens,
+        };
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -2131,6 +2161,7 @@ impl Engine {
                 );
             }
         }
+        turn_end
     }
 
     async fn handle_manual_compaction(&mut self, mode: crate::ops::CompactMode) {
