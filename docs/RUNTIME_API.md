@@ -374,7 +374,23 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
 `item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
-`approval.timeout`, `sandbox.denied`, `coherence.state`.
+`approval.timeout`, `sandbox.denied`, `coherence.state`,
+`background.agent_completed`, `background.status`.
+
+### Idle-wake turns (round 10)
+
+Thread engines run with the engine's idle wake enabled: a background
+sub-agent completing while no turn is running synthesizes the next turn on
+its own. Each idle monitor owns its engine's event channel between turns,
+so such a turn is materialized as a first-class turn record
+(`input_summary` prefixed `idle wake`, `turn.started` payload carries
+`"idle_wake": true`) and monitored exactly like a client turn — approvals
+follow the normal approval model, and `interrupt` works against its turn
+id. Events that arrive while the thread is idle (a background sub-agent
+completing, engine status lines) are forwarded as thread-scoped
+`background.*` events instead of leaking into the next client turn's item
+log. A client `POST start_turn` while an idle-wake turn is active still
+gets the existing "thread already has an active turn" rejection.
 
 ## Security boundary
 

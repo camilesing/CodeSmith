@@ -41,8 +41,13 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
   no new inbox), and the new turn's pre-request drain hands the result to
   the model. While the prompt is showing, the REPL's unattended pump keeps
   the engine streaming (approvals it cannot show you are denied, exactly
-  like a headless run — submit anything to take over). Off by default for
-  embeds/`exec`; ACP stays off pending turn-scoped prompt resolution.
+  like a headless run — submit anything to take over). Runtime-API threads
+  get the same wake: a per-thread idle monitor owns the engine's event
+  channel between turns, records synthesized turns as first-class turn
+  records (approvals and interrupt work as usual), and forwards idle-time
+  background events as thread-scoped `background.*` SSE events instead of
+  leaking them into the next client turn. Off by default for embeds/`exec`;
+  ACP stays off pending turn-scoped prompt resolution.
 
 - **The `input` hook sees what you typed** — an extension or Rhai mod
   subscribed to `input` now receives the text of each submitted message and

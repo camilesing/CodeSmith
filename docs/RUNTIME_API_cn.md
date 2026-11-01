@@ -376,7 +376,12 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 `turn.lifecycle`、`turn.steered`、`turn.interrupt_requested`、
 `turn.completed`、`item.started`、`item.delta`、`item.completed`、
 `item.failed`、`item.interrupted`、`approval.required`、`approval.decided`、
-`approval.timeout`、`sandbox.denied`、`coherence.state`。
+`approval.timeout`、`sandbox.denied`、`coherence.state`、
+`background.agent_completed`、`background.status`。
+
+### 空闲唤醒 turn（第十轮）
+
+线程引擎开启引擎级空闲唤醒：后台子代理在无运行 turn 时完成，引擎自行合成下一个 turn。每个线程的空闲监视器在 turn 之间持有该引擎的事件通道，因此这样的 turn 会被物化为一等 turn 记录（`input_summary` 以 `idle wake` 开头，`turn.started` 载荷带 `"idle_wake": true`），并与客户端 turn 完全同等地被监视——审批走既有审批模型，`interrupt` 对其 turn id 生效。线程空闲期到达的事件（后台子代理完成、引擎状态行）以线程级 `background.*` 事件转发，不再漏进下一个客户端 turn 的 item 记录。空闲唤醒 turn 活动期间客户端 `POST start_turn` 仍会收到既有的 "thread already has an active turn" 拒绝。
 
 ## 安全边界
 

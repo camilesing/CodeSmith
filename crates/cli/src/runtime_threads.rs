@@ -29,7 +29,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, broadcast, oneshot};
+use tokio::sync::{Mutex, broadcast, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -738,6 +738,10 @@ struct ActiveTurnState {
 struct ActiveThreadState {
     engine: EngineHandle,
     active_turn: Option<ActiveTurnState>,
+    /// Round 10 TODO-69b — `true` while a turn (client-started or
+    /// idle-wake synthesized) owns the engine's event channel; the idle
+    /// monitor parks while this is set. Arc so the state stays `Clone`.
+    turn_active_tx: Arc<watch::Sender<bool>>,
 }
 
 #[derive(Default)]
@@ -1666,6 +1670,7 @@ impl RuntimeThreadManager {
                 auto_approve: req.auto_approve.unwrap_or(thread.auto_approve),
                 trust_mode: req.trust_mode.unwrap_or(thread.trust_mode),
             });
+            let _ = state.turn_active_tx.send(true);
             touch_lru(&mut active.lru, thread_id);
         }
 
@@ -1931,6 +1936,7 @@ impl RuntimeThreadManager {
                 auto_approve: thread.auto_approve,
                 trust_mode: thread.trust_mode,
             });
+            let _ = state.turn_active_tx.send(true);
             touch_lru(&mut active.lru, thread_id);
         }
 
@@ -2060,10 +2066,10 @@ impl RuntimeThreadManager {
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,
             trust_mode: thread.trust_mode,
-            // Round 10 TODO-69b flips this on together with the per-thread
-            // idle event monitor (until then an unattended synthesized turn
-            // could stall on the event channel's backpressure).
-            idle_wake: false,
+            // Round 10 TODO-69b — on together with the per-thread idle
+            // monitor below: the monitor owns the engine's event channel
+            // while no client turn is running.
+            idle_wake: true,
             turn_executor: self.config.turn_executor_id(),
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),
@@ -2211,6 +2217,7 @@ impl RuntimeThreadManager {
                 .map_err(|e| anyhow!("Failed to sync thread session: {e}"))?;
         }
 
+        let (turn_active_tx, turn_active_rx) = watch::channel(false);
         let mut active = self.active.lock().await;
         let evicted = enforce_lru_capacity(&mut active, self.manager_cfg.max_active_threads);
         active.engines.insert(
@@ -2218,6 +2225,7 @@ impl RuntimeThreadManager {
             ActiveThreadState {
                 engine: engine.clone(),
                 active_turn: None,
+                turn_active_tx: Arc::new(turn_active_tx),
             },
         );
         touch_lru(&mut active.lru, &thread.id);
@@ -2225,7 +2233,227 @@ impl RuntimeThreadManager {
         for handle in evicted {
             let _ = handle.send(Op::Shutdown).await;
         }
+        // Round 10 TODO-69b — the per-thread idle monitor: reads the
+        // engine's event channel while no turn is active, forwards
+        // background events into the thread's event stream, and runs
+        // idle-wake synthesized turns as first-class turn records.
+        {
+            let manager = Arc::new(self.clone());
+            let thread = thread.clone();
+            let engine = engine.clone();
+            codesmith_agent_runtime::utils::spawn_supervised(
+                "thread-idle-monitor",
+                std::panic::Location::caller(),
+                async move {
+                    manager
+                        .run_idle_monitor(thread, engine, turn_active_rx)
+                        .await;
+                },
+            );
+        }
         Ok(engine)
+    }
+
+    /// Materialize a turn record for an idle-wake synthesized turn (round 10
+    /// TODO-69b) and hand the event channel to `monitor_turn`. The
+    /// check-and-set of `active_turn` under the active map's lock is the
+    /// single arbiter between this and a concurrent client `start_turn`:
+    /// exactly one wins.
+    async fn run_idle_wake_turn(
+        self: &Arc<Self>,
+        thread: &ThreadRecord,
+        engine: EngineHandle,
+    ) -> Result<String> {
+        let now = Utc::now();
+        let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
+        let mut turn = TurnRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: turn_id.clone(),
+            thread_id: thread.id.clone(),
+            status: RuntimeTurnStatus::InProgress,
+            input_summary: "idle wake: background completion".to_string(),
+            created_at: now,
+            started_at: Some(now),
+            ended_at: None,
+            duration_ms: None,
+            usage: None,
+            error: None,
+            item_ids: Vec::new(),
+            steer_count: 0,
+            tool_catalog: None,
+            base_url: None,
+        };
+
+        // Marker user item: the engine's real wake message (and the drained
+        // completion sentinels) live in the engine session; the turn record
+        // carries a faithful placeholder so transcript reconstruction on a
+        // lazy reload keeps the turn's shape.
+        let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: item_id.clone(),
+            turn_id: turn_id.clone(),
+            kind: TurnItemKind::UserMessage,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: "idle wake".to_string(),
+            detail: Some(
+                "(idle wake: a background sub-agent completed while the thread was idle)"
+                    .to_string(),
+            ),
+            metadata: None,
+            artifact_refs: Vec::new(),
+            started_at: Some(now),
+            ended_at: Some(now),
+        };
+        turn.item_ids.push(item_id.clone());
+        self.store.save_item(&item)?;
+        self.store.save_turn(&turn)?;
+
+        {
+            let mut active = self.active.lock().await;
+            let Some(state) = active.engines.get_mut(thread.id.as_str()) else {
+                bail!("Thread engine not loaded");
+            };
+            if state.active_turn.is_some() {
+                // A client turn won the race; leave the record we already
+                // wrote terminal so it never shows as in-progress.
+                turn.status = RuntimeTurnStatus::Canceled;
+                turn.ended_at = Some(Utc::now());
+                self.store.save_turn(&turn)?;
+                bail!("Thread already has an active turn");
+            }
+            state.active_turn = Some(ActiveTurnState {
+                turn_id: turn_id.clone(),
+                interrupt_requested: false,
+                auto_approve: thread.auto_approve,
+                trust_mode: thread.trust_mode,
+            });
+            let _ = state.turn_active_tx.send(true);
+            touch_lru(&mut active.lru, thread.id.as_str());
+        }
+
+        self.emit_event(
+            thread.id.as_str(),
+            Some(&turn_id),
+            None,
+            "turn.started",
+            json!({ "turn": turn, "idle_wake": true }),
+        )
+        .await?;
+
+        // The inline monitor owns the channel from here; on return it has
+        // cleared `active_turn` and flipped the watch back to false.
+        let monitor = self.clone();
+        let thread_id = thread.id.clone();
+        if let Err(err) = monitor
+            .monitor_turn(thread_id, turn_id.clone(), engine)
+            .await
+        {
+            tracing::error!("Idle-wake turn monitor failed: {err}");
+        }
+        Ok(turn_id)
+    }
+
+    /// The per-engine idle monitor loop (round 10 TODO-69b). Owns the
+    /// engine's event channel while no turn is active:
+    ///
+    /// - A `TurnStarted` with no active turn is an idle-wake synthesized
+    ///   turn — it is materialized as a first-class turn record and driven
+    ///   by `monitor_turn` inline (the same task reads on; no handoff).
+    /// - A `TurnStarted` with an active turn is a client turn whose first
+    ///   event was consumed in the park race window (sub-millisecond); the
+    ///   lifecycle event its monitor will never see is emitted here, so the
+    ///   client stream loses nothing.
+    /// - Other idle-time events (background sub-agent progress, statuses)
+    ///   are forwarded into the thread's event stream instead of leaking
+    ///   into the next client turn's item log (the pre-69b wart).
+    ///
+    /// Exits when the engine's event channel closes (LRU eviction sends
+    /// `Op::Shutdown` and drops the engine).
+    async fn run_idle_monitor(
+        self: Arc<Self>,
+        thread: ThreadRecord,
+        engine: EngineHandle,
+        mut turn_active: watch::Receiver<bool>,
+    ) {
+        loop {
+            // Park while a turn owns the channel.
+            while *turn_active.borrow_and_update() {
+                if turn_active.changed().await.is_err() {
+                    return;
+                }
+            }
+            let event = tokio::select! {
+                biased;
+                changed = turn_active.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                event = async {
+                    let mut rx = engine.rx_event.write().await;
+                    rx.recv().await
+                } => {
+                    let Some(event) = event else {
+                        return;
+                    };
+                    event
+                }
+            };
+            if let EngineEvent::TurnStarted { turn_id } = &event {
+                let active_now = {
+                    let active = self.active.lock().await;
+                    active
+                        .engines
+                        .get(thread.id.as_str())
+                        .is_some_and(|state| state.active_turn.is_some())
+                };
+                if active_now {
+                    // The client turn's monitor never sees this event; emit
+                    // the lifecycle notification on its behalf.
+                    let _ = self
+                        .emit_event(
+                            thread.id.as_str(),
+                            Some(turn_id),
+                            None,
+                            "turn.lifecycle",
+                            json!({ "status": "in_progress" }),
+                        )
+                        .await;
+                } else if let Err(err) = self.run_idle_wake_turn(&thread, engine.clone()).await {
+                    tracing::debug!("Idle wake skipped: {err}");
+                }
+                continue;
+            }
+            // Background events while idle → thread event stream (no turn
+            // to misattribute them to).
+            match event {
+                EngineEvent::AgentComplete { id, result } => {
+                    let _ = self
+                        .emit_event(
+                            thread.id.as_str(),
+                            None,
+                            None,
+                            "background.agent_completed",
+                            json!({ "id": id, "summary": summarize_text(&result, SUMMARY_LIMIT) }),
+                        )
+                        .await;
+                }
+                EngineEvent::Status { message } => {
+                    let _ = self
+                        .emit_event(
+                            thread.id.as_str(),
+                            None,
+                            None,
+                            "background.status",
+                            json!({ "message": message }),
+                        )
+                        .await;
+                }
+                _ => {}
+            }
+        }
     }
 
     fn reconstruct_messages_from_turns(&self, turns: &[TurnRecord]) -> Result<Vec<Message>> {
@@ -3211,6 +3439,8 @@ impl RuntimeThreadManager {
                     .is_some_and(|t| t.turn_id == turn_id)
             {
                 state.active_turn = None;
+                // Round 10 TODO-69b — the idle monitor may resume reading.
+                let _ = state.turn_active_tx.send(false);
             }
             touch_lru(&mut active.lru, &thread_id);
         }
@@ -3318,16 +3548,31 @@ impl RuntimeThreadManager {
         thread_id: &str,
         engine: EngineHandle,
     ) -> Result<()> {
-        let _ = self.get_thread(thread_id).await?;
-        let mut active = self.active.lock().await;
-        active.engines.insert(
-            thread_id.to_string(),
-            ActiveThreadState {
-                engine,
-                active_turn: None,
+        let thread = self.get_thread(thread_id).await?;
+        let (turn_active_tx, turn_active_rx) = watch::channel(false);
+        {
+            let mut active = self.active.lock().await;
+            active.engines.insert(
+                thread_id.to_string(),
+                ActiveThreadState {
+                    engine: engine.clone(),
+                    active_turn: None,
+                    turn_active_tx: Arc::new(turn_active_tx),
+                },
+            );
+            touch_lru(&mut active.lru, thread_id);
+        }
+        // Round 10 TODO-69b — idle monitor parity on the test attach path.
+        let manager = Arc::new(self.clone());
+        codesmith_agent_runtime::utils::spawn_supervised(
+            "thread-idle-monitor-attach",
+            std::panic::Location::caller(),
+            async move {
+                manager
+                    .run_idle_monitor(thread, engine, turn_active_rx)
+                    .await;
             },
         );
-        touch_lru(&mut active.lru, thread_id);
         Ok(())
     }
 }
@@ -3647,14 +3892,33 @@ mod tests {
     ) -> crate::core::engine::MockEngineHandle {
         let harness = mock_engine_handle();
         let mut active = manager.active.lock().await;
+        let (turn_active_tx, turn_active_rx) = watch::channel(false);
         active.engines.insert(
             thread_id.to_string(),
             ActiveThreadState {
                 engine: harness.handle.clone(),
                 active_turn: None,
+                turn_active_tx: Arc::new(turn_active_tx),
             },
         );
         touch_lru(&mut active.lru, thread_id);
+        drop(active);
+        // Production parity (round 10 TODO-69b): the idle monitor reads the
+        // fake engine's events between turns, exactly as `ensure_engine_loaded`
+        // spawns one for a real engine.
+        if let Ok(thread) = manager.get_thread(thread_id).await {
+            let manager = Arc::new(manager.clone());
+            let engine = harness.handle.clone();
+            codesmith_agent_runtime::utils::spawn_supervised(
+                "thread-idle-monitor-test",
+                std::panic::Location::caller(),
+                async move {
+                    manager
+                        .run_idle_monitor(thread, engine, turn_active_rx)
+                        .await;
+                },
+            );
+        }
         harness
     }
 
@@ -3810,6 +4074,7 @@ mod tests {
                     auto_approve: true,
                     trust_mode: false,
                 }),
+                turn_active_tx: Arc::new(watch::channel(true).0),
             },
         );
         active.engines.insert(
@@ -3822,6 +4087,7 @@ mod tests {
                     auto_approve: true,
                     trust_mode: false,
                 }),
+                turn_active_tx: Arc::new(watch::channel(true).0),
             },
         );
         active.lru.push_back("thr_a".to_string());
@@ -4143,6 +4409,67 @@ mod tests {
             other => panic!("expected SendMessage op, got {other:?}"),
         }
 
+        Ok(())
+    }
+
+    /// Round 10 TODO-69b — an idle-wake synthesized turn (engine emits
+    /// `TurnStarted` with no client turn active) becomes a first-class,
+    /// terminal turn record on the thread instead of leaking into the next
+    /// client turn's item log.
+    #[tokio::test]
+    async fn idle_monitor_runs_synthesized_turn_as_thread_record() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+
+        // No client turn: the engine "synthesizes" one (idle wake). The
+        // idle monitor materializes the record and monitors the turn inline.
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "turn_synth".to_string(),
+            })
+            .await?;
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                usage: Usage::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+                reported_model: None,
+                failed_attempts: Vec::new(),
+            })
+            .await?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let turns = manager.store.list_turns_for_thread(&thread.id)?;
+            let settled = turns.iter().any(|turn| {
+                turn.input_summary.contains("idle wake")
+                    && matches!(turn.status, RuntimeTurnStatus::Completed)
+            });
+            if settled {
+                break;
+            }
+            if Instant::now() >= deadline {
+                bail!("synthesized idle-wake turn never reached a terminal record");
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
         Ok(())
     }
 
