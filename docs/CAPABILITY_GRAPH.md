@@ -10,14 +10,17 @@ a framework crate) / **provider** (a crate implementing it) / **consumer**
 change; this table makes a missing role visible. `—` marks an empty role:
 for intra-crate seams (definition and provider colocated, e.g.
 `IndexBackend`) that is expected; for a cross-crate seam it is a gap worth
-explaining.
+explaining. A `(data)` row is a data seam — a plain struct the
+definition crate consumes and an implementation crate builds (providers
+construct it, consumers take it by value).
 
-| Seam trait | Definition | Providers | Consumers (`dyn` use) |
+| Seam | Definition | Providers | Consumers (`dyn` / by-value use) |
 |---|---|---|---|
 | `AgentExecutor` | `agent` | `agent`, `agent-runtime` | `agent-runtime` |
 | `AroundToolHandler` | `agent` | `agent`, `agent-runtime` | `agent`, `extensions` |
 | `AroundTurnHandler` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
+| `ChildTurnSpec` (data) | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |
 | `ExternalSubagentProvider` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |

@@ -34,6 +34,16 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Sub-agents run on the main turn loop** — an in-process sub-agent is now
+  built by the same `turn_executor` factory as the main turn and runs its
+  loop: it streams with the idle watchdog (`[subagents] api_timeout_secs`
+  is now that window), retries a dropped stream, keeps the loop guard and
+  truncation gate, and runs read-only tool calls in parallel. Its
+  extension events (turn, provider and tool) dispatch at its agent-type
+  scope, so global script and compiled-in handlers now see child turns;
+  dylib handlers still never do. The completion sentinel and result shape
+  are unchanged. `agent_send_input` messages arrive in order at the
+  child's next step (`interrupt` no longer discards earlier input).
 - **Active goals now drive themselves** — after a turn ends cleanly while a
   goal is active, the engine queues the next round on its own (goal state +
   continuation prompt as the round message), until the goal completes, is

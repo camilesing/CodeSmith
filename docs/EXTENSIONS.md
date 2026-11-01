@@ -97,7 +97,7 @@ Everything an extension can register, and what the host does with it:
   abstains. There is no allow or transform vocabulary, so a denial is
   monotonic by construction (block short-circuits the chain). Guards
   evaluate pre-approval at the seam and gate sub-agent tool calls too
-  (5b: child loops dispatch `ToolCall` at their agent-type scope;
+  (a child's turn dispatches `ToolCall` at its agent-type scope;
   script-origin handlers ride along); a script error abstains with a warn.
 - **Event handlers (`on` / `on_variant`; Rhai shapes: `on(event, cb)` for
   any kind, `on_event(kind, cb)` for the DSH-aligned emit/serial subset —
@@ -342,7 +342,7 @@ so a single crate gives them both the traits and the runtime helpers.
   single-shot future (awaiting it runs the inner turn once; "re-run the
   loop" is not expressible here). Takes effect at the next turn's
   assembly; reload clears it with the generation. Main turns only —
-  sub-agent loops never wrap — and the chain sits INSIDE the engine's turn
+  sub-agent turns are not wrapped — and the chain sits INSIDE the engine's turn
   bookkeeping (`TurnStarted` / `TurnComplete`, harvest), so a vetoed turn
   still completes with the handler's reason. Pairs with the selection
   half, the `turn_executor` config key (`docs/CONFIGURATION.md`). Not
@@ -437,17 +437,19 @@ tools and globally restricted names never appear in the main catalog.
 
 Known limitations: registration scopes are resolved **per origin tier**
 (5b) — sub-agent registries mount only script/compiled-in extension
-tools and sub-agent loops dispatch only script/compiled-in handlers at
-their scope, because a detached background sub-agent (an `agent_open`
-session) can outlive a reload's two-phase dylib drop, so dylib
-contributions stay main-turn-only (a dylib cannot even register scoped
-tools/handlers — the load fails loud). Sub-agent loops emit only
-`ToolCall` / `ToolResult` at their scope (and the depth ≥ 1
-`SessionBeforeFork` fork veto dispatches at the child's scope too — the
-same dylib-safety rule); turn-level and provider-level events stay
-main-turn-only. The scoped surface is also not offered to
-script mods. Denying a builtin by name is not this list's job (see
-above).
+tools, and a sub-agent turn's dispatches at its agent-type scope skip
+dylib-origin handlers and around-tool wrappers, because a detached
+background sub-agent (an `agent_open` session) can outlive a reload's
+two-phase dylib drop, so dylib contributions stay main-turn-only (a
+dylib cannot even register scoped tools/handlers — the load fails
+loud). A sub-agent turn runs the same loop as the main turn and
+dispatches its whole lifecycle at its scope (turn, provider and tool
+events; the depth ≥ 1 `SessionBeforeFork` fork veto dispatches at the
+child's scope too — the same dylib-safety rule); session-level events
+(`SessionStart` / `SessionShutdown` / compaction, `ToolsChange`,
+`AgentSettled`) stay main-turn-only. The scoped surface is also not
+offered to script mods. Denying a builtin by name is not this list's
+job (see above).
 
 ## Dispatch three-states (DSH alignment) + host seam mapping
 
@@ -520,8 +522,8 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | emit | payload = the assembled `MessageResponse` serialized (streaming synthesis: `id` is empty — no wire response object reaches the reducer; `content`/`stop_reason`/`usage` come from the stream reduction) |
 | `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the DSH request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
 | `AssistantStream(AssistantStreamEvent)` | callback-bridge stream-delta path (`agent-runtime/src/callback_bridge.rs`) | emit | one incremental assistant **text** chunk per wire delta; dispatch runs off-thread under a 250 ms per-delta + 1 s cumulative-per-turn budget — an over-budget handler is detached (runs to completion, outcome discarded, never cancelled mid-flight) and later deltas that turn skip dispatch; no dispatch at all when nothing subscribes; thinking deltas stay UI-only |
-| `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch + **sub-agent loops** (5b: every child tool call dispatches at the child's `AgentType` scope — script/compiled-in handlers only, dylib handlers skipped) | **Transform + Block + Ask** | a handler may rewrite the call's `input`, deny it, or ask the user. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. `Ask { reason }` routes the call through the approval decision channel regardless of its static classification — on the serial arm it forces the gate (fail-closed: no channel ⇒ denied); on the parallel arm the batch's sequential pre-dispatch loop asks inline (a read-only call becomes user-gated), a denial records like a block and an approved escalation logs + runs with the fixed context. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input. Around-dispatch (`AroundToolHandler`) wraps the dispatch terminal of both arms — see the section above. In a sub-agent loop: `Block` denies (error-string result), `Ask` fails closed (the child attaches no approval ask channel — denied, reason fed back), a transform's rewritten input is what executes and what the child transcript records |
-| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` + **sub-agent loops** (5b: after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the DSH post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
+| `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch — the one loop, main turn and sub-agent turns alike (a child's tool calls dispatch at the child's `AgentType` scope — script/compiled-in handlers only, dylib handlers skipped) | **Transform + Block + Ask** | a handler may rewrite the call's `input`, deny it, or ask the user. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. `Ask { reason }` routes the call through the approval decision channel regardless of its static classification — on the serial arm it forces the gate (fail-closed: no channel ⇒ denied); on the parallel arm the batch's sequential pre-dispatch loop asks inline (a read-only call becomes user-gated), a denial records like a block and an approved escalation logs + runs with the fixed context. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input. Around-dispatch (`AroundToolHandler`) wraps the dispatch terminal of both arms — see the section above. In a sub-agent turn: `Block` denies, `Ask` fails closed (a child's turn carries no approval channel — denied, reason fed back), a transform's rewritten input is what executes and what the child transcript records |
+| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` — the one loop, main turn and sub-agent turns alike (after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the DSH post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
 | `ToolExecutionStart` | `host_executor` tool closure (before `tool.run`) | emit | — |
 | `ToolExecutionEnd` | `host_executor` tool closure (after `tool.run`) | emit | — |
 | `AgentEnd` | `host_executor::run_inner` each `return Ok(...)` | emit | — |
@@ -602,8 +604,9 @@ proof.
 
 - `Input` carries the text only — a handler cannot tell a submitted turn
   from a mid-turn steer, and it cannot reject an input (the seam is a
-  non-denying waterfall; rewriting a steer to whitespace drops it).
-  Sub-agent loops do not dispatch `Input`.
+  non-denying waterfall; rewriting a steer to whitespace drops it). A
+  sub-agent's follow-up input (`agent_send_input`) meets the seam as a
+  steer, at the child's dispatch scope.
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` return `ExtensionError::Unimplemented`.
 - `TurnStopping` steers are capped at 3 per turn (loop guard); only the

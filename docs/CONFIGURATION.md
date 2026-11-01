@@ -246,8 +246,9 @@ insecure HTTP. Use `https://` for internet-facing gateways.
 
 #### Turn-executor selection (`turn_executor`)
 
-The main turn loop is a composed kernel service: at every turn the engine
-resolves the selected factory from the turn-executor registry
+One loop implementation drives every agent (the main turn and every
+in-process sub-agent): at every turn the engine resolves the selected
+factory from the turn-executor registry
 (`crates/agent-runtime/src/engine/executor_composition.rs`). The top-level
 selector is
 
@@ -257,12 +258,14 @@ turn_executor = "builtin"   # default; the production HostAgentExecutor loop
 
 Only ids registered in the process are valid — currently `builtin`; the
 registry exists so an alternate loop can land as a crate-compiled registry
-entry instead of a forked engine. An unknown id fails loud at startup
+entry instead of a forked engine or a second sub-agent loop. An unknown id
+fails the main turn loud at startup
 (`turn_executor: no turn executor registered for '…'` with the registered
 ids and the remedy), and at turn assembly if a registration disappears
-mid-session. Script mods cannot implement a loop (no async); wrapping the
-run from a Rust extension is the composition half, `register_around_turn`
-(`docs/EXTENSIONS.md`), not this key.
+mid-session, and a child's turn fails through its normal failed-agent
+contract (nothing runs). Script mods cannot implement a loop (no async);
+wrapping the run from a Rust extension is the composition half,
+`register_around_turn` (`docs/EXTENSIONS.md`), main turn only.
 
 
 Third-party OpenAI-compatible gateways that need extra request headers can set
@@ -975,9 +978,10 @@ and the capacity controller remains disabled unless configured.
   `review_model`, `custom_model`, `max_concurrent`, `api_timeout_secs`,
   `inherit_full_registry`, and `external_provider`. The
   `[subagents] max_concurrent` value overrides top-level `max_subagents` and is
-  also clamped to `1..=20`; `[subagents] api_timeout_secs` controls the
-  per-step API timeout for sub-agent model calls and is clamped to `1..=1800`,
-  with `0` or unset preserving the legacy 120 second default.
+  also clamped to `1..=20`; `[subagents] api_timeout_secs` is the idle
+  watchdog window for a sub-agent's model streams (a stream silent this long
+  is retried, then fails the child) and is clamped to `1..=1800`, with `0` or
+  unset keeping the 120 second default.
   `[subagents] inherit_full_registry` (bool, optional, default `false`)
   controls child-permission narrowing (`restrictToSubset`): when `false`, a
   sub-agent's tool surface is a subset of its parent's effective tools —
@@ -1141,9 +1145,10 @@ and the capacity controller remains disabled unless configured.
     `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json --local-dir ~/.codesmith/tokenizers`
     and point `tokenizer_path` at the downloaded file.
 - `retry.*` (optional): retry/backoff settings for API requests. Applies to
-  non-streaming model calls (compaction summaries, utility assists, in-process
-  sub-agent steps) via the retrying client decorator; streaming retries are
-  owned by the engine's transparent stream retry with their own fixed budget:
+  non-streaming model calls (compaction summaries, utility assists) via the
+  retrying client decorator; streaming retries — every agent turn, sub-agents
+  included — are owned by the engine's transparent stream retry with their
+  own fixed budget:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)
   - `[retry].initial_delay` (float seconds, default `1.0`)

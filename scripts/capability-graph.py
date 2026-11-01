@@ -12,6 +12,12 @@ Heuristics (a starting point, deliberately dumb):
 - providers   = crates containing an `impl ... <Name> for` block
 - consumers   = crates referencing `dyn <Name>` (trait-object use)
 
+A *data seam* (`DATA_SEAMS`) is a plain struct a framework crate defines
+and consumes and an implementation crate builds — the host-to-kernel hand-
+over of `ChildTurnSpec`. Its roles: definition = `pub struct <Name>`,
+providers = crates constructing a `<Name> { … }` literal, consumers =
+crates taking it by value (`: <Name>`).
+
 Test-module impls count as providers (noise accepted); if a seam ever
 needs precision, teach this script. `--check` compares the generated
 document with the committed one and exits non-zero on drift (CI gate —
@@ -55,6 +61,12 @@ SEAMS = [
     "WorkflowEngine",
 ]
 
+# Data seams — plain structs handed across the framework boundary (see the
+# docstring). Same admission rule as SEAMS.
+DATA_SEAMS = [
+    "ChildTurnSpec",
+]
+
 HEADER = """\
 # Capability Graph (generated)
 
@@ -68,9 +80,11 @@ a framework crate) / **provider** (a crate implementing it) / **consumer**
 change; this table makes a missing role visible. `—` marks an empty role:
 for intra-crate seams (definition and provider colocated, e.g.
 `IndexBackend`) that is expected; for a cross-crate seam it is a gap worth
-explaining.
+explaining. A `(data)` row is a data seam — a plain struct the
+definition crate consumes and an implementation crate builds (providers
+construct it, consumers take it by value).
 
-| Seam trait | Definition | Providers | Consumers (`dyn` use) |
+| Seam | Definition | Providers | Consumers (`dyn` / by-value use) |
 |---|---|---|---|
 """
 
@@ -128,6 +142,22 @@ def scan() -> list[tuple[str, str, list[str], list[str]]]:
         if "target" not in p.parts
     ]
     rows = []
+    for seam in DATA_SEAMS:
+        esc = re.escape(seam)
+        def_re = re.compile(rf"\bpub(?:\(crate\))? struct {esc}\b")
+        build_re = re.compile(rf"(?<!struct )(?<!let )\b{esc}\s*\{{")
+        take_re = re.compile(rf":\s*{esc}\b")
+        definition = next((c for c, t in sources if def_re.search(t)), None)
+        providers = {c for c, t in sources if build_re.search(t)}
+        consumers = {c for c, t in sources if take_re.search(t)}
+        rows.append(
+            (
+                f"`{seam}` (data)",
+                definition or "—",
+                sorted(providers) or ["—"],
+                sorted(consumers) or ["—"],
+            )
+        )
     for seam in SEAMS:
         esc = re.escape(seam)
         definition = None
@@ -155,7 +185,7 @@ def scan() -> list[tuple[str, str, list[str], list[str]]]:
                 consumers.add(crate)
         rows.append(
             (
-                seam,
+                f"`{seam}`",
                 definition or "—",
                 sorted(providers) or ["—"],
                 sorted(consumers) or ["—"],
@@ -169,7 +199,7 @@ def render(rows: list[tuple[str, str, list[str], list[str]]]) -> str:
     out = [HEADER]
     for seam, definition, providers, consumers in rows:
         out.append(
-            f"| `{seam}` | `{definition}` | "
+            f"| {seam} | `{definition}` | "
             f"{', '.join(f'`{c}`' for c in providers)} | "
             f"{', '.join(f'`{c}`' for c in consumers)} |\n"
         )
@@ -192,14 +222,14 @@ def main() -> int:
             print("error: docs/CAPABILITY_GRAPH.md is stale; regenerate with")
             print("  python3 scripts/capability-graph.py")
             return 1
-        print(f"capability graph fresh ({len(SEAMS)} seams)")
+        print(f"capability graph fresh ({len(SEAMS) + len(DATA_SEAMS)} seams)")
         return 0
 
     # Symmetric with the --check path: a checkout without docs/ must not
     # crash the write path with a raw traceback.
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(generated, encoding="utf-8")
-    print(f"wrote {OUT_PATH.relative_to(REPO_ROOT)} ({len(SEAMS)} seams)")
+    print(f"wrote {OUT_PATH.relative_to(REPO_ROOT)} ({len(SEAMS) + len(DATA_SEAMS)} seams)")
     return 0
 
 

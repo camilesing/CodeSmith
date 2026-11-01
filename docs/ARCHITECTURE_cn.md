@@ -79,16 +79,25 @@
   解析自己的视图（5b：script/compiled-in 工具可挂载进子代理，dylib 工具
   保持仅主轮——detached 后台子代理可能活得比一次 reload 的两阶段 dylib
   drop 更久）。唯一的 `BASE_PROMPT` 与子代理工具注册表的内建表面是
-  契约声明的核心，不做插件化；主 turn 循环是可组合的内核服务（DSH 内核
+  契约声明的核心，不做插件化；一个 turn 循环驱动所有 agent（DSH 内核
   组合模型）——引擎从进程共享 `TurnExecutorRegistry`
   （`engine/executor_composition.rs`）解析按配置选择的 factory
   （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目
   落地，并以 `AroundTurnHandler` 链（`register_around_turn`，DSH
-  `next()`，Rust 扩展，仅主 turn）包裹 run（逐表面地图见 MODS_cn.md
-  "该用哪一层"）。结构性所有权（DSH，
+  `next()`，Rust 扩展，仅主 turn）包裹主 turn。每个进程内子代理 turn 经
+  `engine/child_turn.rs` 走同一个 factory：CLI 的 spawn 路径交出
+  `ChildTurnSpec`（纯数据——子代理的委托工具面、模型路由、输入/取消通道、
+  进度 sink），`run_child_turn` 构造子形态 `TurnDeps`（`TurnShape::Child`：
+  主 turn 的会话服务缺席——无压缩、无审批提示、无完成投递、无 plan 门——
+  所有扩展派发都在子代理的 agent-type scope 上进行，dylib 来源的 handler
+  与 around-tool 包装在此被跳过）。子代理与主 turn 一样流式 + idle 看门狗；
+  委托策略（白名单、按角色审批、终端接管拒绝、经父级 router 的路径提问）
+  落在子代理的工具面上（`DelegatedTool`），而不是循环里（逐表面地图见
+  MODS_cn.md "该用哪一层"）。结构性所有权（DSH，
   `agent-runtime/src/turn_lease.rs`）：每个运行中的 turn 都持有一份
   `TurnLease`（键：agent id + 扩展代次 + 执行器 id，按 runner 作用域）
-  ——主 turn 在装配时持有、每个进程内子代理在整个运行期持有——因此
+  ——主 turn 在装配时持有、每个进程内子代理 turn 在 `run_child_turn` 中
+  持有——因此
   reload 在两阶段 dylib 卸载之前先排空该运行时的在飞子代理（带原因
   取消、由深及浅、有界等待），有在飞租约的执行器 id 拒绝替换，且引擎
   op-loop 在存在「已退役代次下装配且声明 dylib 暴露」的租约时推迟
@@ -168,6 +177,7 @@
   - `mod.rs` - `Engine` 结构体 + 事件循环（`Engine::run`、`handle_send_message`）、系统提示词刷新、图片块组装
   - `host_executor.rs` - `HostAgentExecutor`，生产环境的 LLM↔工具 turn 循环，吸收了全部护栏（loop-guard、LSP flush、透明重试、steer、审批、压缩、容量、early-tool-start、子代理、cycle）
   - `executor_composition.rs` - turn 执行器组合（内核组合点）：每 turn 的 `TurnDeps` 快照、从进程共享 `TurnExecutorRegistry` 按配置解析的 `TurnExecutorFactory`（默认 `builtin` = `host_executor.rs` 的装配），以及 dyn-safe 的 `TurnHarvest` 收割（take_*）面
+  - `child_turn.rs` - 子代理 turn 走同一个 factory：`ChildTurnSpec`（宿主构造的纯数据交接）、`run_child_turn`（factory 解析、子代理的 `TurnLease`、子形态 `TurnDeps`、进度 / mailbox sink）
   - `turn/` - 从 `host_executor.rs` 按阶段拆出的每步机制模块：`stream.rs`（流式归约 + 透明重试）、`batches.rs`（工具批次规划/执行）、`approval.rs`（逐工具审批门控）、`seams.rs`（取消检查点 + steer 排空）、`postprocess.rs`（子代理收割门控、thinking-only 状态、LSP 收集/刷新）、`truncation.rs`（输出截断/工具输出限界）
   - `capacity_flow.rs` - 容量护栏检查点和干预
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard 状态、工具输入解析 + 批次规划、延迟工具目录策略、MCP 分发扇出、编辑后 LSP 钩子

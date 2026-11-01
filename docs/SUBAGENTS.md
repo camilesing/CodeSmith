@@ -202,22 +202,33 @@ cancelled records persist for inspection but don't occupy a slot.
 Agents that lost their `task_handle` (e.g. across a process
 restart) also don't count against the cap.
 
-## Per-step API timeout
+## Stream idle watchdog
 
-Each sub-agent step wraps its DeepSeek `create_message` call in a
-per-step timeout so a single stuck request can't pin the parent's
-completion wakeup channel indefinitely. The default is `120` seconds,
-which matches the legacy hardcoded value. Long-thinking children that
-legitimately exceed that, for example heavy plan or review work behind
-`agent_open`, can extend the timeout in `~/.codesmith/config.toml`:
+A sub-agent runs on the same turn loop as the main turn (the configured
+`turn_executor`): its model calls stream, and a stream that produces no
+event for the watchdog window is retried, then fails the child, so a
+stuck connection can't pin the parent's completion wakeup channel
+indefinitely. A long but steadily streaming answer never trips it —
+only silence does. The window defaults to `120` seconds; widen it in
+`~/.codesmith/config.toml` for providers with long silent gaps:
 
 ```toml
 [subagents]
 api_timeout_secs = 900  # 15 minutes; clamped to 1..=1800
 ```
 
-Values are clamped to `1..=1800`. `0` and `unset` keep the legacy
-`120` second default, so existing installs see no behavior change.
+Values are clamped to `1..=1800`; `0` and `unset` keep the `120` second
+default. Each retry widens the window by the session's
+`stream_idle_retry_increment_secs`, as on the main turn.
+
+Known limitations of a child's turn (by design): it carries no
+compaction or capacity gate, no approval prompt (its delegated tool
+surface refuses or asks path questions through the parent's UI
+instead), and no completion delivery for its own children; each
+delegated tool call is capped at 30 seconds and each response at 4096
+output tokens. `agent_send_input` messages are delivered in order at the
+child's next step boundary (`interrupt` is accepted for compatibility
+and no longer discards earlier queued input).
 
 ## Lifecycle
 

@@ -97,18 +97,30 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   origin tier (5b: script/compiled-in tools mount in children, dylib
   tools stay main-turn-only — a detached background child can outlive a
   reload's two-phase dylib drop). The sole `BASE_PROMPT` and sub-agent tool
-  registries' built-in surface are core by contract, not plugins; the main
-  turn loop is a composed kernel service (DSH kernel-composition model) —
-  the engine resolves a config-selected factory (`turn_executor`, default
+  registries' built-in surface are core by contract, not plugins; one
+  turn loop drives every agent (DSH kernel-composition model) — the
+  engine resolves a config-selected factory (`turn_executor`, default
   `builtin`) from the process-shared `TurnExecutorRegistry`
   (`engine/executor_composition.rs`), with alternates as crate-compiled
-  registry entries, and wraps the run with the `AroundTurnHandler` chain
-  (`register_around_turn`, DSH `next()`, Rust extensions, main turn only)
-  (per-surface map: MODS.md "Which tier when"). Structural ownership
+  registry entries, and wraps the main turn with the `AroundTurnHandler`
+  chain (`register_around_turn`, DSH `next()`, Rust extensions, main turn
+  only). Every in-process sub-agent turn rides the same factory through
+  `engine/child_turn.rs`: the CLI spawn path hands over a `ChildTurnSpec`
+  (plain data — the child's delegated tool surface, model route, input /
+  cancel channels, progress sink), and `run_child_turn` builds a
+  child-shaped `TurnDeps` (`TurnShape::Child`: the main turn's session
+  services absent — no compaction, approval prompt, completion delivery
+  or plan gate — and every extension dispatch at the child's agent-type
+  scope, where dylib-origin handlers and around-tool wrappers are
+  skipped). Children stream with the idle watchdog like the main turn;
+  the delegation policy (allowlist, approval by role, terminal takeover,
+  path questions through the parent's router) rides the child's tool
+  surface (`DelegatedTool`), not the loop (per-surface map: MODS.md
+  "Which tier when"). Structural ownership
   (DSH, `agent-runtime/src/turn_lease.rs`): every running turn holds a
   `TurnLease` (key: agent id + extension generation + executor id,
   runner-scoped) — the main turn at assembly, each in-process sub-agent
-  for its run — so a reload drains the runtime's in-flight sub-agents
+  turn in `run_child_turn` — so a reload drains the runtime's in-flight sub-agents
   (reason-tagged cancel, deepest first, bounded wait) before the
   two-phase dylib unload, an executor id with in-flight leases refuses
   replacement, and the engine op-loop defers `drop_pending` while a
@@ -188,6 +200,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   - `mod.rs` - `Engine` struct + event loop (`Engine::run`, `handle_send_message`), system-prompt refresh, image-block assembly
   - `host_executor.rs` - `HostAgentExecutor`, the production LLM↔tool turn loop with the absorbed guardrails (loop-guard, LSP flush, transparent-retry, steer, approval, compaction, capacity, early-tool-start, subagent, cycle)
   - `executor_composition.rs` - turn-executor composition (the kernel composition point): per-turn `TurnDeps` snapshot, config-selected `TurnExecutorFactory` from the process-shared `TurnExecutorRegistry` (default `builtin` = the `host_executor.rs` assembly), and the dyn-safe `TurnHarvest` post-run take_* surface
+  - `child_turn.rs` - sub-agent turns on the same factory: `ChildTurnSpec` (the host-built plain-data hand-over), `run_child_turn` (factory resolution, the child's `TurnLease`, child-shaped `TurnDeps`, progress / mailbox sink)
   - `turn/` - per-step phase modules split out of `host_executor.rs`: `stream.rs` (stream reduction + transparent retry), `batches.rs` (tool-batch planning/execution), `approval.rs` (per-tool approval gate), `seams.rs` (cancel checkpoints + steer drain), `postprocess.rs` (sub-agent reap gate, thinking-only status, LSP collect/flush)
   - `capacity_flow.rs` - Capacity guardrail checkpoints and interventions
   - `loop_guard.rs` / `dispatch.rs` / `tool_catalog.rs` / `tool_execution.rs` / `lsp_hooks.rs` - loop-guard state, tool-input parsing + batch planning, deferred tool catalog policy, MCP dispatch fanout, post-edit LSP hook

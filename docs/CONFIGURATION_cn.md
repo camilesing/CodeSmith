@@ -227,20 +227,22 @@ model = "glm-5"
 
 #### Turn 执行器选择（`turn_executor`）
 
-主 turn 循环是可组合的内核服务：引擎在每个 turn 从 turn-executor
-注册表（`crates/agent-runtime/src/engine/executor_composition.rs`）解析
-选定的 factory。顶层选择键为
+一个循环实现驱动所有 agent（主 turn 与每个进程内子代理）：引擎在每个
+turn 从 turn-executor 注册表
+（`crates/agent-runtime/src/engine/executor_composition.rs`）解析选定的
+factory。顶层选择键为
 
 ```toml
 turn_executor = "builtin"   # 默认值；生产的 HostAgentExecutor 循环
 ```
 
 只有进程内已注册的 id 才有效——目前是 `builtin`；注册表的存在让替代
-循环能以 crate 内编译的注册条目落地，而不是分叉引擎。未知 id 在启动时
-即刻报错（`turn_executor: no turn executor registered for '…'`，带已注册
-id 与补救说明）；会话中途注册消失则在 turn 装配时报错。脚本 mod 无法
+循环能以 crate 内编译的注册条目落地，而不是分叉引擎或第二条子代理循环。
+未知 id 在启动时即刻报错（`turn_executor: no turn executor registered
+for '…'`，带已注册 id 与补救说明）；会话中途注册消失则在 turn 装配时报错，
+子代理的 turn 按其既有的失败契约失败（什么都不跑）。脚本 mod 无法
 实现循环（无 async）；从 Rust 扩展侧包裹 run 是组合半边
-`register_around_turn`（`docs/EXTENSIONS_cn.md`），不是这个键。
+`register_around_turn`（`docs/EXTENSIONS_cn.md`，仅主 turn），不是这个键。
 
 
 需要额外请求头的第三方 OpenAI 兼容网关，可以在顶层或 provider 表
@@ -881,8 +883,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   `custom_model`、`max_concurrent`、`api_timeout_secs`、
   `inherit_full_registry` 和 `external_provider`。`[subagents] max_concurrent` 值会覆盖顶层
   `max_subagents`，同样钳制在 `1..=20`；`[subagents] api_timeout_secs`
-  控制子代理模型调用的每步 API 超时，钳制在 `1..=1800`，为 `0` 或
-  未设置时保持旧版 120 秒默认值。
+  是子代理模型流的 idle 看门狗窗口（静默这么久的流先重试、再让子代理
+  失败），钳制在 `1..=1800`，为 `0` 或未设置时保持 120 秒默认值。
   `[subagents] inherit_full_registry`（布尔，可选，默认 `false`）
   控制子权限收窄（`restrictToSubset`）：当为 `false` 时，子代理的
   工具面是其父代理有效工具的子集——子代理永远无法调用父代理没有的
@@ -1020,8 +1022,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
     `huggingface-cli download deepseek-ai/DeepSeek-V3 tokenizer.json --local-dir ~/.codesmith/tokenizers`
     然后把 `tokenizer_path` 指向下载的文件。
 - `retry.*`（可选）：API 请求的重试/退避设置。作用于非流式模型调用
-  （压缩摘要、utility 辅助、进程内子代理步骤），经重试客户端装饰器
-  生效；流式重试由引擎的透明流重试持有独立的固定预算：
+  （压缩摘要、utility 辅助），经重试客户端装饰器生效；流式重试——每个
+  agent 的 turn，子代理也包括在内——由引擎的透明流重试持有独立的固定预算：
   - `[retry].enabled`（布尔，默认 `true`）
   - `[retry].max_retries`（整数，默认 `3`）
   - `[retry].initial_delay`（浮点秒数，默认 `1.0`）

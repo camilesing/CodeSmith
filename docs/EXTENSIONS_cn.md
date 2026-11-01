@@ -64,7 +64,7 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
   包在 `ToolCall` 接缝上的 deny-only 闭包：返回字符串即拒绝该调用
   （归因 `guard (mod: <id>)`），返回其他任何值则弃权。没有 allow 或
   transform 词汇，拒绝由构造保证单调（block 短路整条链）。守卫在接缝
-  处、审批之前评估，同样把关子代理工具调用（5b：子代理循环按其
+  处、审批之前评估，同样把关子代理工具调用（子代理的 turn 按其
   agent 类型作用域分发 `ToolCall`；script 来源的处理器一并覆盖）；
   脚本出错则弃权并打 warn。
 - **事件处理器（`on` / `on_variant`；Rhai 形态：任意 kind 用
@@ -293,7 +293,7 @@ inventory::submit! {
   前后加阶段，或不 `await next` 直接返回自己的 `StopReason` 即否决。
   `next` 是单次 future（await 一次跑一次内层 turn；「重跑循环」在此
   不可表达）。下一 turn 装配时生效；reload 随本代一并清除。仅主 turn
-  —— 子代理循环从不包裹 —— 且链位于引擎 turn 记账（`TurnStarted` /
+  —— 子代理 turn 不被包裹 —— 且链位于引擎 turn 记账（`TurnStarted` /
   `TurnComplete`、收割）之内，因此被否决的 turn 仍以 handler 的理由
   正常收尾。与选择半边——`turn_executor` 配置键（`docs/CONFIGURATION_cn.md`）
   ——配对。不对脚本 mod 开放（异步接缝）。
@@ -379,14 +379,15 @@ global 注册减去所有覆盖该视图的 restriction，然后——对 `Agent
 主目录里。
 
 已知限制：注册作用域按**来源分层**解析（5b）——子代理注册表只挂载
-script/compiled-in 扩展工具，子代理循环只在自己作用域分发
-script/compiled-in 处理器，因为 detached 后台子代理（`agent_open` 会话）
-可能活得比一次 reload 的两阶段 dylib drop 更久，所以 dylib 贡献保持仅
-主轮（dylib 甚至无法注册 scoped 工具/处理器——加载直接失败报错）。
-子代理循环只在自己作用域发射 `ToolCall` / `ToolResult`（深度 ≥ 1 的
-`SessionBeforeFork` fork veto 也按子作用域分发——同一条 dylib 安全
-规则）；轮级与 provider 级事件保持仅主轮。带作用域的注册面也未向脚本
-mod 开放。按名字
+script/compiled-in 扩展工具，子代理 turn 在其 agent 类型作用域上的分发
+会跳过 dylib 来源的处理器与 around-tool 包装，因为 detached 后台子代理
+（`agent_open` 会话）可能活得比一次 reload 的两阶段 dylib drop 更久，
+所以 dylib 贡献保持仅主轮（dylib 甚至无法注册 scoped 工具/处理器——加载
+直接失败报错）。子代理 turn 与主 turn 跑同一个循环，在自己的作用域分发
+完整生命周期（turn、provider 与工具事件；深度 ≥ 1 的 `SessionBeforeFork`
+fork veto 也按子作用域分发——同一条 dylib 安全规则）；会话级事件
+（`SessionStart` / `SessionShutdown` / 压缩、`ToolsChange`、`AgentSettled`）
+保持仅主轮。带作用域的注册面也未向脚本 mod 开放。按名字
 拒绝内建工具不是这份名单的职责（见上）。
 
 ## 分发三态（DSH 对齐）+ 宿主接缝映射
@@ -452,8 +453,8 @@ UI 决策通道；不存在 `ask()` 控制值，脚本永远产生不了 `Ask` �
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` 分支在 `accumulate_usage` 之后 | emit | payload = 组装后的 `MessageResponse` 序列化（流式合成：`id` 为空 —— 归约器拿不到 wire 响应对象；`content`/`stop_reason`/`usage` 来自流归约） |
 | `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` 分支，每次重试决策前 | **Transform + Block** | DSH request-error 瀑布，在透明重试守卫内部问询：`Continue` 保持默认策略（有界重试；限流退避）；`Transform` 改写 `plan` —— `Retry { delay_ms }` 改写退避（钳制 5 分钟）或在默认预算耗尽后强制重试（强制重试上限 6 次）；`Block` 放弃并让失败上浮。`failure` 携带分类类别（snake_case）+ 原始消息；`attempt` 是 1 起始的失败尝试序号。重试不进模型上下文 —— 扩展决策由 `tracing` 记录 |
 | `AssistantStream(AssistantStreamEvent)` | 回调桥流式增量路径（`agent-runtime/src/callback_bridge.rs`） | emit | 每个线上增量一个 assistant **文本**块；分发在离线程执行，受每增量 250 ms + 每轮累计 1 s 预算约束 —— 超预算的处理器被脱离（运行至完成、结果被丢弃、从不在执行中途被取消），该轮后续增量跳过分发；无订阅者时完全不分发；thinking 增量保持仅 UI |
-| `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发 + **子代理循环**（5b：子代理每次工具调用都按其 `AgentType` 作用域分发——仅 script/compiled-in 处理器，dylib 处理器被跳过） | **Transform + Block + Ask** | handler 可改写调用 `input`、拒绝它或询问用户。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。`Ask { reason }` 把调用路由到审批决策通道，无视其静态分类 —— 串行臂强制走门（fail-closed：无通道 ⇒ 拒绝）；并行臂在批的顺序化预分发循环里就地询问（只读调用变成用户把关），拒绝按 block 记录，批准的升级策略记日志并按固定上下文运行。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入。around-dispatch（`AroundToolHandler`）包裹两条臂的分发终端 —— 见上节。子代理循环中：`Block` 拒绝（错误字符串结果），`Ask` fail-closed（子代理不挂审批询问通道——拒绝并把理由回传），transform 改写后的输入才是执行与子代理转录记录的输入 |
-| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前 + **子代理循环**（5b：子代理每次工具执行之后，按其作用域——终值内容即子代理转录记录的内容） | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。这就是 DSH post-execute 的 accept/replace 等价物 —— `Continue` 接受、`Transform` 替换（执行后不存在拒绝；拒绝用 `ToolCall` 接缝）。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
+| `ToolCall(ToolCallEvent)` | `host_executor` 并行 + 串行工具分发——同一个循环，主 turn 与子代理 turn 一视同仁（子代理的工具调用按其 `AgentType` 作用域分发——仅 script/compiled-in 处理器，dylib 处理器被跳过） | **Transform + Block + Ask** | handler 可改写调用 `input`、拒绝它或询问用户。`Block` 跳过审批 + `tool.run` → `Err(ToolError::permission_denied(reason))`，`blocked = true`。`Ask { reason }` 把调用路由到审批决策通道，无视其静态分类 —— 串行臂强制走门（fail-closed：无通道 ⇒ 拒绝）；并行臂在批的顺序化预分发循环里就地询问（只读调用变成用户把关），拒绝按 block 记录，批准的升级策略记日志并按固定上下文运行。在并行批中，改写后的输入必须重新分类为自动批准，否则调用在该处被阻断 —— 改写无法把未批准的输入偷运过免审批批；模型可重新发起调用以走串行审批门。`on_tool_start` 与审计记录看到的是改写后的输入。around-dispatch（`AroundToolHandler`）包裹两条臂的分发终端 —— 见上节。子代理 turn 中：`Block` 拒绝，`Ask` fail-closed（子代理的 turn 不带审批通道——拒绝并把理由回传），transform 改写后的输入才是执行与子代理转录记录的输入 |
+| `ToolResult(ToolResultEvent)` | `host_executor` 并行 + 串行，emit 重排到 `on_tool_end` 之前——同一个循环，主 turn 与子代理 turn 一视同仁（子代理每次工具执行之后，按其作用域——终值内容即子代理转录记录的内容） | **Transform** | 替换结果；`on_tool_end` + 下游 `outcomes[idx].result` 看到的是变换后的结果。这就是 DSH post-execute 的 accept/replace 等价物 —— `Continue` 接受、`Transform` 替换（执行后不存在拒绝；拒绝用 `ToolCall` 接缝）。`ToolResult` 携带 canonical/rendered 分离：`content` 是模型可见渲染，`canonical` 是结构化机器值（仅存活于当前进程，不随转录持久化）—— 改写 `content` 不得改写 `canonical` |
 | `ToolExecutionStart` | `host_executor` 工具闭包（`tool.run` 之前） | emit | — |
 | `ToolExecutionEnd` | `host_executor` 工具闭包（`tool.run` 之后） | emit | — |
 | `AgentEnd` | `host_executor::run_inner` 每个 `return Ok(...)` | emit | — |
@@ -523,7 +524,8 @@ agent + 扩展代次 + turn-executor id，按 runner 作用域），其登记表
 
 - `Input` 只携带文本——处理器无法区分提交的 turn 与 turn 中途的 steer，
   也无法拒绝一条输入（该接缝是不可拒绝的 waterfall；把 steer 改写成空白
-  会将其丢弃）。子代理循环不派发 `Input`。
+  会将其丢弃）。子代理的后续输入（`agent_send_input`）以 steer 的形态、
+  在子代理的分发作用域上经过该接缝。
 - `ExtensionContext::abort() / shutdown() / compact() /
   get_context_usage()` 返回 `ExtensionError::Unimplemented`。
 - `TurnStopping` 的 steer 每轮上限 3 次（loop guard）；只有 `NoToolCalls`

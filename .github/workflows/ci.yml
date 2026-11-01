@@ -76,6 +76,9 @@ jobs:
         run: python3 scripts/verify-docs-pairs.py
       - name: Check dead-code budget
         run: python3 scripts/verify-deadcode-budget.py
+      - name: Report second turn loops (dry-run)
+        # Reports only (exit 0); `--enforce` is the opt-in failing mode.
+        run: python3 scripts/verify-single-turn-loop.py
       - name: Guard script self-tests
         run: python3 scripts/test-guards.py
 

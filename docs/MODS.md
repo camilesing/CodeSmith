@@ -32,7 +32,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
-| Turn loop (main turn) | — | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (default `builtin`); *composition*: a Rust extension wraps the run with DSH `next()`; main turn only, async seam (no script form) |
+| Turn loop (every agent) | — | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (default `builtin`) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the main turn's run with DSH `next()` (main turn only); async seam (no script form) |
 | Compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries; compaction *knobs* are policy, the algorithm is not) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
@@ -154,9 +154,8 @@ running (`exec_shell` foreground and `exec_shell_wait`): at most once per second
 when new output arrived. `id` is the shell task id (a tool does not know its wire tool-call
 id — correlate by `name` + ordering); `message` is the output since the previous checkpoint
 (tail-capped at 4 KiB; a truncated manager excerpt yields its tail). Emit-only, main turns
-only (the sub-agent progress sink stays unwired — 5b gave sub-agent loops
-`tool-call`/`tool-result` only); sandboxed-backend and interactive runs
-report no checkpoints. The same checkpoint reaches the UI as `ToolCallProgress`.
+only (a sub-agent turn's callback wires no tool-progress sink); sandboxed-backend and
+interactive runs report no checkpoints. The same checkpoint reaches the UI as `ToolCallProgress`.
 `resources-discover` was removed in 0.11.0 (never had an emitter or a consumer).
 `session-before-fork` fires at
 every spawn — the spawn-family tools (`agent_open` / `agent_spawn` /
@@ -165,7 +164,12 @@ grandchildren forks are vetoable too) and the engine-internal spawn path — bef
 forks session state; `cancel()` vetoes the fork. Since 5b the runner is more than the veto
 carrier on the child side: sub-agent registries mount the child type's extension-tool view
 (script/compiled-in origins only — a mod's guard therefore also gates sub-agent tool calls),
-and sub-agent loops dispatch `tool-call`/`tool-result` at their agent-type scope.
+and every sub-agent turn — the same loop as the main turn — dispatches its lifecycle at its
+agent-type scope: `before-agent-start`, `agent-start` / `agent-end`, `turn-start` /
+`turn-end`, `turn-stopping`, the provider events, `tool-call` / `tool-result` and
+`tool-execution-start` / `-end` (script/compiled-in handlers only; dylib handlers never see a
+child), and its follow-up input (`agent_send_input`) meets `input` as a steer. Session-level
+events (`session-*`, `agent-settled`, `tools-change`) stay main-turn-only.
 
 `tool-result` payloads carry the canonical/rendered separation: `content` is the model-visible rendering; `canonical` is the structured machine-readable value of the same result (the `ToolResult::json` value, or what a tool attached via `with_canonical`). Read `canonical` instead of re-parsing `content` — prose-rendered results (`todo_add` prefixes a sentence before the JSON) are not parseable at all. Canonical is live-process only: the transcript persists the rendered `content`.
 
@@ -196,10 +200,14 @@ DSH's emit/serial model; use `on()` for the full CodeSmith surface
 script surface).
 
 Scope: `on_event` registrations are global-scope, script-origin — a
-global registration covers every dispatch scope, but sub-agent loops
-(5b) dispatch only `tool-call`/`tool-result` at their scope (both
-waterfall, both rejected here), so in practice an `on_event` callback
-observes main-turn events. There is no `on_event_scoped` — scripts do
+global registration covers every dispatch scope, so an `on_event`
+callback observes the main turn's emit/serial events and every
+sub-agent turn's (`turn-start`, `turn-end`, `agent-start`, `agent-end`,
+`turn-stopping`, the provider emits, `tool-execution-*`). Known
+limitation: the payloads carry no agent identity, so a callback cannot
+tell a child's turn from the main turn's (the scope unit is the agent
+type — a compiled-in extension that must tell them apart registers
+`on_variant_scoped`). There is no `on_event_scoped` — scripts do
 not see registration scopes (a compiled-in extension can register
 `on_variant_scoped`). Around-execute and `ask` have no script form in
 any channel (async / UI decision channel — see
@@ -415,8 +423,8 @@ the blocked result is attributed (`guard (mod: <mod-id>): <reason>`). Use
 you need a policy floor. A guard whose script errors abstains with a
 `tracing` warn (same fail-open policy as handler errors). Guards evaluate
 at the tool-call seam (before approval — a denied call is never dispatched,
-so no approval path can flip it), gate sub-agent tool calls too (5b: child
-loops dispatch `tool-call` at their agent-type scope and script-origin
+so no approval path can flip it), gate sub-agent tool calls too (a child's
+turn dispatches `tool-call` at its agent-type scope and script-origin
 handlers ride along), and reload clears the generation's guards.
 
 ### Registering a message projection (session log folds)

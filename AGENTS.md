@@ -175,32 +175,42 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   prose under `crates/prompts/src/assets/`) is the sole base prompt by
   convention; `crates/cli/src/prompts.rs` has tests asserting required tags.
   Same rule: move the code, not the prose, if that changes.
-- The main turn is a composed kernel service (DSH kernel-composition
-  model, adopted by founder decision 2026-10-30): at every turn assembly
-  the engine snapshots its kernel services into `TurnDeps` and resolves the
-  configured factory from the process-shared `TurnExecutorRegistry`
+- One loop implementation drives every agent (DSH kernel-composition
+  model, adopted by founder decision 2026-10-30; sub-agents moved onto it
+  in round 11). At every turn assembly the engine snapshots its kernel
+  services into `TurnDeps` and resolves the configured factory from the
+  process-shared `TurnExecutorRegistry`
   (`crates/agent-runtime/src/engine/executor_composition.rs`, config key
   `turn_executor`, default `builtin`), then wraps the run with the
   registered `AroundTurnHandler` chain (`register_around_turn`, DSH
-  `next()`; Rust extensions only, main turn only). `HostAgentExecutor` is
-  the default production loop behind the `AgentExecutor` seam
-  (`Arc<dyn AgentExecutor>` for the run, `Arc<dyn TurnHarvest>` for the
-  post-run take_* family); an alternate loop lands as a crate-compiled
-  registry entry, not as a second engine loop or a fork of the wire-in.
-  The loop lives in `crates/agent-runtime/src/engine/` (turn phases in
-  `engine/turn/`). `crates/cli/src/core/` is a thin re-export and
-  construction bridge (`EngineHost`/`build_engine`), not a second loop;
-  `crates/core` is a separate crate and runs no turns. Structural
-  ownership (DSH): every running turn holds a `TurnLease`
-  (`crates/agent-runtime/src/turn_lease.rs`; key = agent id + extension
-  generation + executor id, runner-scoped; main turn at assembly,
-  in-process sub-agents via `run_subagent_task`) — a reload drains the
-  runtime's in-flight sub-agents (reason-tagged cancel, deepest first,
-  bounded wait) before the two-phase dylib unload, an executor id with
-  in-flight leases refuses replacement, and the engine op-loop defers
-  `drop_pending` while a lease assembled under a retired generation
-  declares dylib exposure. The boundary note
-  at the top of `docs/ARCHITECTURE.md` is the live reference.
+  `next()`; Rust extensions only, main turn only). Every in-process
+  sub-agent turn takes the same path: the CLI spawn path builds a
+  `ChildTurnSpec` (plain data: tool surface, route, channels, depth) and
+  `engine::child_turn::run_child_turn` resolves the same factory, builds a
+  child-shaped `TurnDeps` (`TurnShape::Child` — the main turn's session
+  services absent, dispatch at the child's agent-type scope) and runs it.
+  The delegation policy rides the child's tool surface (`DelegatedTool`,
+  `crates/cli/src/tools/subagent/`), never a branch in the loop.
+  `HostAgentExecutor` is the default production loop behind the
+  `AgentExecutor` seam (`Arc<dyn AgentExecutor>` for the run,
+  `Arc<dyn TurnHarvest>` for the post-run take_* family); an alternate
+  loop lands as a crate-compiled registry entry, not as a second engine
+  loop, a second child loop, or a fork of the wire-in
+  (`scripts/verify-single-turn-loop.py` reports model calls issued from a
+  loop outside the executor). The loop lives in
+  `crates/agent-runtime/src/engine/` (turn phases in `engine/turn/`).
+  `crates/cli/src/core/` is a thin re-export and construction bridge
+  (`EngineHost`/`build_engine`), not a second loop; `crates/core` is a
+  separate crate and runs no turns. Structural ownership (DSH): every
+  running turn holds a `TurnLease` (`crates/agent-runtime/src/turn_lease.rs`;
+  key = agent id + extension generation + executor id, runner-scoped;
+  main turn at assembly, in-process sub-agents in `run_child_turn`) — a
+  reload drains the runtime's in-flight sub-agents (reason-tagged cancel,
+  deepest first, bounded wait) before the two-phase dylib unload, an
+  executor id with in-flight leases refuses replacement, and the engine
+  op-loop defers `drop_pending` while a lease assembled under a retired
+  generation declares dylib exposure. The boundary note at the top of
+  `docs/ARCHITECTURE.md` is the live reference.
 - The system prompt + tool catalog are a session-pinned cache prefix
   (`crates/agent-runtime/src/prefix_cache.rs`); the static system prompt
   stays cache-friendly. Any new session-context contributor must state its

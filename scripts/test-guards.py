@@ -214,5 +214,78 @@ class MdLinksGuard(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+def single_loop_allowlist() -> dict:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_single_turn_loop", SCRIPTS / "verify-single-turn-loop.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(module.ALLOWLIST)
+
+
+def write_loop_allowlisted(root: Path) -> None:
+    # The guard reports allowlist entries with no matching file.
+    for rel in single_loop_allowlist():
+        write(root, rel, "fn allowlisted() { loop { client.create_message(req); } }\n")
+
+
+class SingleTurnLoopGuard(unittest.TestCase):
+    LOOP_IN_SUBAGENT = (
+        "async fn run_child(client: &Client) {\n"
+        "    for _step in 0..8 {\n"
+        "        // a comment: client.create_message(x) is not a call\n"
+        "        let response = client.create_message(request()).await;\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def test_one_shot_calls_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_loop_allowlisted(root)
+            write(
+                root,
+                "crates/cli/src/router.rs",
+                "async fn route(c: &Client) { let r = c.create_message(req).await; }\n",
+            )
+            result = run_guard("verify-single-turn-loop.py", root, "--enforce")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("single turn loop OK", result.stdout)
+
+    def test_second_loop_is_reported_dry_run_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_loop_allowlisted(root)
+            write(root, "crates/cli/src/tools/subagent/mod.rs", self.LOOP_IN_SUBAGENT)
+            dry = run_guard("verify-single-turn-loop.py", root)
+            self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+            self.assertIn("crates/cli/src/tools/subagent/mod.rs:4:", dry.stdout)
+            self.assertIn("dry-run", dry.stdout)
+            enforced = run_guard("verify-single-turn-loop.py", root, "--enforce")
+            self.assertEqual(enforced.returncode, 1)
+
+    def test_test_modules_and_allowlisted_files_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_loop_allowlisted(root)
+            write(
+                root,
+                "crates/cli/src/engine.rs",
+                "fn live() {}\n#[cfg(test)]\nmod tests {\n" + self.LOOP_IN_SUBAGENT + "}\n",
+            )
+            result = run_guard("verify-single-turn-loop.py", root, "--enforce")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_stale_allowlist_entry_fails_under_enforce(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "crates/cli/src/lib.rs", "fn main() {}\n")
+            result = run_guard("verify-single-turn-loop.py", root, "--enforce")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("allowlist entry matches no file", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
