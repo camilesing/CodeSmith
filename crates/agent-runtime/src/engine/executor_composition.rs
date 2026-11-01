@@ -8,7 +8,7 @@
 //! [`BUILTIN_TURN_EXECUTOR_ID`]), and runs whatever the factory built
 //! through the dyn-safe [`AgentExecutor`] seam. A sub-agent turn takes the
 //! same path through [`run_child_turn`](super::child_turn::run_child_turn):
-//! a child-shaped [`TurnDeps`] ([`TurnShape::Child`]), the same registry,
+//! a child-shaped `TurnDeps` (`TurnShape::Child`), the same registry,
 //! the same factory (DSH: one factory makes every agent). This is the
 //! deepseek-harness (DSH) kernel-composition model adapted to this
 //! codebase: kernel services stay owned by the host, and "which loop runs"

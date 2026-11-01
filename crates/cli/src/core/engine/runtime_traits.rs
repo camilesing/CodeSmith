@@ -208,7 +208,11 @@ impl HostServices for super::EngineHost {
             req.session.reasoning_effort_auto,
         )
         .with_max_spawn_depth(req.config.max_spawn_depth)
-        .with_step_api_timeout(req.config.subagent_api_timeout)
+        .with_stream_idle(
+            req.config.subagent_api_timeout,
+            req.config.stream_idle_retry_increment,
+        )
+        .with_turn_executor(req.config.turn_executor.clone())
         .with_inherit_full_registry(req.config.subagent_inherit_full_registry)
         .with_external_provider(req.config.subagent_external_provider.clone())
         .with_capability_disabled_tools(req.config.disabled_tools.clone())
@@ -404,7 +408,11 @@ impl HostServices for super::EngineHost {
                             session.reasoning_effort_auto,
                         )
                         .with_max_spawn_depth(config.max_spawn_depth)
-                        .with_step_api_timeout(config.subagent_api_timeout)
+                        .with_stream_idle(
+                            config.subagent_api_timeout,
+                            config.stream_idle_retry_increment,
+                        )
+                        .with_turn_executor(config.turn_executor.clone())
                         .with_inherit_full_registry(config.subagent_inherit_full_registry)
                         .with_external_provider(config.subagent_external_provider.clone())
                         .with_capability_disabled_tools(config.disabled_tools.clone())
@@ -430,9 +438,9 @@ impl HostServices for super::EngineHost {
                         // The flag is OR-ed with the *live* plan session a model
                         // opens by itself: that axis is enforced per call in the
                         // turn loop (`plan_mode_refusal`), and a child built
-                        // here would otherwise be the way around it — it has its
-                        // own loop and its own registry, so the parent's gate
-                        // never sees its calls.
+                        // here would otherwise be the way around it — its turn
+                        // carries its own registry and no plan-session gate,
+                        // so the parent's gate never sees its calls.
                         let plan_session_open = config.plan_mode_state.lock().await.active;
                         if children_are_read_only_in(mode) || plan_session_open {
                             rt = rt.with_children_read_only(true);
@@ -493,7 +501,11 @@ impl HostServices for super::EngineHost {
                         session.reasoning_effort_auto,
                     )
                     .with_max_spawn_depth(config.max_spawn_depth)
-                    .with_step_api_timeout(config.subagent_api_timeout)
+                    .with_stream_idle(
+                        config.subagent_api_timeout,
+                        config.stream_idle_retry_increment,
+                    )
+                    .with_turn_executor(config.turn_executor.clone())
                     .with_inherit_full_registry(config.subagent_inherit_full_registry)
                     .with_external_provider(config.subagent_external_provider.clone())
                     .with_capability_disabled_tools(config.disabled_tools.clone())

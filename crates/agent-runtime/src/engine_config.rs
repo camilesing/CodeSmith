@@ -246,8 +246,9 @@ pub struct EngineConfig {
     /// (`Config::index_tools_enabled()`); the service itself is attached
     /// through `RuntimeToolServices::index_service`, not EngineConfig.
     pub index_enabled: bool,
-    /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
-    /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
+    /// Idle watchdog window for sub-agent model streams (a child stream
+    /// silent this long is retried, then fails the child). Resolved from
+    /// `[subagents] api_timeout_secs` (clamped to 1..=1800)
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,

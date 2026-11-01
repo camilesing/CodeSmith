@@ -34,7 +34,7 @@ vocabularies are not covered.
 | `SessionCompact` | Emit | `agent-runtime/engine/host_executor.rs` | — |
 | `SessionShutdown` | Emit | `agent-runtime/engine/mod.rs` | — |
 | `SessionStart` | Emit | `agent-runtime/engine/mod.rs` | — |
-| `ToolCall` | Waterfall (can_deny: true) | `agent-runtime/engine/turn/batches.rs` ×2, `cli/tools/subagent/mod.rs` | `extensions/script/rhai_mod.rs` |
+| `ToolCall` | Waterfall (can_deny: true) | `agent-runtime/engine/turn/batches.rs` ×2 | `extensions/script/rhai_mod.rs` |
 | `ToolExecutionEnd` | Emit | `agent-runtime/engine/turn/batches.rs` ×2 | — |
 | `ToolExecutionStart` | Emit | `agent-runtime/engine/turn/batches.rs` ×2 | — |
 | `ToolExecutionUpdate` | Emit | `agent-runtime/callback_bridge.rs` | — |

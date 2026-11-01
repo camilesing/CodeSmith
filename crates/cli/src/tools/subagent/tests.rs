@@ -44,6 +44,24 @@ fn make_test_registry(
     make_test_registry_with(agent_type, allowed_tools, false)
 }
 
+/// Run one call through the child's delegated surface — the path the shared
+/// turn loop takes (`ToolSet` → `DelegatedTool::execute`).
+async fn delegated_call(
+    registry: SubAgentToolRegistry,
+    agent_id: &str,
+    name: &str,
+    input: Value,
+) -> Result<String> {
+    let surface = registry.into_surface(agent_id);
+    let tool = surface
+        .tool_set
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow!("Tool {name} is not registered"))?;
+    let result = tool.run(input).await.map_err(|err| anyhow!(err))?;
+    Ok(result.content)
+}
+
 fn make_test_registry_with(
     agent_type: SubAgentType,
     allowed_tools: Option<Vec<String>>,
@@ -617,7 +635,6 @@ fn test_parse_assign_request_accepts_aliases() {
     assert_eq!(request.objective.as_deref(), Some("re-check failing tests"));
     assert_eq!(request.role.as_deref(), Some("explorer"));
     assert_eq!(request.message.as_deref(), Some("focus on tests only"));
-    assert!(!request.interrupt);
 }
 
 #[test]
@@ -1263,7 +1280,7 @@ fn subagent_capability_disabled_set_propagates_to_descendants() {
 #[tokio::test]
 async fn test_wait_for_result_reports_timeout_when_still_running() {
     let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let agent = SubAgent::new(
         "test_agent_1".to_string(),
         SubAgentType::Explore,
@@ -1295,7 +1312,7 @@ async fn test_wait_for_result_reports_timeout_when_still_running() {
 #[tokio::test]
 async fn agent_eval_on_completed_session_returns_full_projection_not_running_error() {
     let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 1)));
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         "test_agent_2".to_string(),
         SubAgentType::Explore,
@@ -1349,7 +1366,7 @@ async fn agent_eval_on_completed_session_returns_full_projection_not_running_err
 #[tokio::test]
 async fn test_running_count_counts_only_agents_with_live_task_handles() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         "test_agent_3".to_string(),
         SubAgentType::Explore,
@@ -1381,7 +1398,7 @@ async fn test_running_count_counts_only_agents_with_live_task_handles() {
 #[tokio::test]
 async fn test_live_running_snapshots_return_only_agents_with_live_task_handles() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 2);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut live_agent = SubAgent::new(
         "test_agent_live".to_string(),
         SubAgentType::Explore,
@@ -1401,7 +1418,7 @@ async fn test_live_running_snapshots_return_only_agents_with_live_task_handles()
     let live_agent_id = live_agent.id.clone();
     manager.agents.insert(live_agent_id.clone(), live_agent);
 
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut stale_agent = SubAgent::new(
         "test_agent_stale".to_string(),
         SubAgentType::Explore,
@@ -1431,7 +1448,7 @@ async fn test_live_running_snapshots_return_only_agents_with_live_task_handles()
 #[test]
 fn test_running_count_ignores_running_status_without_task_handle() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         "test_agent_4".to_string(),
         SubAgentType::Explore,
@@ -1452,7 +1469,7 @@ fn test_running_count_ignores_running_status_without_task_handle() {
 #[tokio::test]
 async fn test_running_count_ignores_finished_task_handles() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         "test_agent_5".to_string(),
         SubAgentType::Explore,
@@ -1481,7 +1498,7 @@ async fn test_running_count_ignores_finished_task_handles() {
 #[test]
 fn test_assign_updates_running_agent_and_sends_message() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 2);
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+    let (input_tx, mut input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let agent = SubAgent::new(
         "test_agent_6".to_string(),
         SubAgentType::General,
@@ -1502,7 +1519,6 @@ fn test_assign_updates_running_agent_and_sends_message() {
             Some("Re-check module boundaries".to_string()),
             Some("explorer".to_string()),
             None,
-            true,
         )
         .expect("assignment should succeed");
     assert_eq!(snapshot.assignment.objective, "Re-check module boundaries");
@@ -1511,15 +1527,14 @@ fn test_assign_updates_running_agent_and_sends_message() {
     let dispatched = input_rx
         .try_recv()
         .expect("running agent should receive assignment update");
-    assert!(dispatched.interrupt);
-    assert!(dispatched.text.contains("Assignment updated"));
-    assert!(dispatched.text.contains("objective"));
+    assert!(dispatched.contains("Assignment updated"));
+    assert!(dispatched.contains("objective"));
 }
 
 #[test]
 fn test_assign_rejects_message_for_non_running_agent() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         "test_agent_7".to_string(),
         SubAgentType::Explore,
@@ -1536,7 +1551,7 @@ fn test_assign_rejects_message_for_non_running_agent() {
     manager.agents.insert(agent_id.clone(), agent);
 
     let err = manager
-        .assign(&agent_id, None, None, Some("keep going".to_string()), true)
+        .assign(&agent_id, None, None, Some("keep going".to_string()))
         .expect_err("non-running agent cannot receive assignment message");
     assert!(err.to_string().contains("is not running"));
 }
@@ -1544,7 +1559,7 @@ fn test_assign_rejects_message_for_non_running_agent() {
 #[test]
 fn test_assign_updates_non_running_metadata_without_message() {
     let mut manager = SubAgentManager::new(PathBuf::from("."), 1);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         "test_agent_8".to_string(),
         SubAgentType::Plan,
@@ -1566,7 +1581,6 @@ fn test_assign_updates_non_running_metadata_without_message() {
             Some("Draft retry plan".to_string()),
             Some("awaiter".to_string()),
             None,
-            true,
         )
         .expect("metadata update should succeed");
     assert_eq!(snapshot.assignment.objective, "Draft retry plan");
@@ -1580,7 +1594,7 @@ fn test_persist_and_reload_marks_running_agent_as_interrupted() {
     let state_path = default_state_path(tmp.path());
 
     let mut manager = SubAgentManager::new(workspace.clone(), 2).with_state_path(state_path);
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let running = SubAgent::new(
         "test_agent_9_running".to_string(),
         SubAgentType::General,
@@ -2043,7 +2057,7 @@ fn child_runtime_increments_depth_and_preserves_auto_approve() {
     parent.context.auto_approve = false; // parent in suggest mode
     let child = parent.child_runtime();
     assert_eq!(child.spawn_depth, 2, "child depth = parent + 1");
-    assert_eq!(child.step_api_timeout, DEFAULT_STEP_API_TIMEOUT);
+    assert_eq!(child.stream_idle_timeout, DEFAULT_CHILD_STREAM_IDLE_TIMEOUT);
     assert!(
         !child.context.auto_approve,
         "child must inherit parent approval state"
@@ -2059,15 +2073,20 @@ fn child_runtime_increments_depth_and_preserves_auto_approve() {
 }
 
 #[test]
-fn child_and_background_runtimes_preserve_step_api_timeout() {
+fn child_and_background_runtimes_preserve_the_child_turn_config() {
+    // Real sub-agents spawn through `child_runtime()` / `background_runtime()`;
+    // forgetting a field here silently drops the user's config for every
+    // descendant (#1806, #1808) or runs grandchildren on another loop.
     let timeout = Duration::from_secs(7);
-    let parent = stub_runtime().with_step_api_timeout(timeout);
+    let parent = stub_runtime()
+        .with_stream_idle(timeout, Duration::from_secs(3))
+        .with_turn_executor("alt-loop".to_string());
 
-    let child = parent.child_runtime();
-    assert_eq!(child.step_api_timeout, timeout);
-
-    let background = parent.background_runtime();
-    assert_eq!(background.step_api_timeout, timeout);
+    for derived in [parent.child_runtime(), parent.background_runtime()] {
+        assert_eq!(derived.stream_idle_timeout, timeout);
+        assert_eq!(derived.stream_idle_retry_increment, Duration::from_secs(3));
+        assert_eq!(derived.turn_executor, "alt-loop");
+    }
 }
 
 #[tokio::test]
@@ -2082,10 +2101,14 @@ async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
         Arc::new(Mutex::new(PlanState::default())),
     );
 
-    let err = registry
-        .execute("agent_test", "exec_shell", json!({"command": "echo hi"}))
-        .await
-        .expect_err("approval-gated child tool should be blocked");
+    let err = delegated_call(
+        registry,
+        "agent_test",
+        "exec_shell",
+        json!({"command": "echo hi"}),
+    )
+    .await
+    .expect_err("approval-gated child tool should be blocked");
 
     assert!(
         err.to_string().contains("requires approval"),
@@ -2113,14 +2136,14 @@ async fn implementer_delegation_allows_suggest_write_without_parent_auto_approve
         Arc::new(Mutex::new(PlanState::default())),
     );
 
-    let result = registry
-        .execute(
-            "agent_test",
-            "write_file",
-            json!({"path": "delegated.txt", "content": "hello"}),
-        )
-        .await
-        .expect("delegated write should be allowed for implementer");
+    let result = delegated_call(
+        registry,
+        "agent_test",
+        "write_file",
+        json!({"path": "delegated.txt", "content": "hello"}),
+    )
+    .await
+    .expect("delegated write should be allowed for implementer");
 
     let written = std::fs::read_to_string(workspace.join("delegated.txt"))
         .expect("file should exist after delegated write");
@@ -2146,14 +2169,14 @@ async fn general_delegation_still_blocks_suggest_write_without_parent_auto_appro
         Arc::new(Mutex::new(PlanState::default())),
     );
 
-    let err = registry
-        .execute(
-            "agent_test",
-            "write_file",
-            json!({"path": "general.txt", "content": "ok"}),
-        )
-        .await
-        .expect_err("general agent should not silently gain write permission");
+    let err = delegated_call(
+        registry,
+        "agent_test",
+        "write_file",
+        json!({"path": "general.txt", "content": "ok"}),
+    )
+    .await
+    .expect_err("general agent should not silently gain write permission");
     let msg = err.to_string();
     assert!(
         msg.contains("not delegated to general sub-agents"),
@@ -2183,14 +2206,14 @@ async fn explore_role_still_blocks_suggest_writes_without_parent_auto_approve() 
         Arc::new(Mutex::new(PlanState::default())),
     );
 
-    let err = registry
-        .execute(
-            "agent_test",
-            "write_file",
-            json!({"path": "should_not_appear.txt", "content": "denied"}),
-        )
-        .await
-        .expect_err("explore agents must not write");
+    let err = delegated_call(
+        registry,
+        "agent_test",
+        "write_file",
+        json!({"path": "should_not_appear.txt", "content": "denied"}),
+    )
+    .await
+    .expect_err("explore agents must not write");
     let msg = err.to_string();
     // The type's read-only surface is the first gate now (the write tool is not
     // in the allowlist at all), so the refusal names the tool rather than the
@@ -2222,10 +2245,14 @@ async fn delegated_write_role_still_blocks_required_tools() {
         Arc::new(Mutex::new(PlanState::default())),
     );
 
-    let err = registry
-        .execute("agent_test", "exec_shell", json!({"command": "echo hi"}))
-        .await
-        .expect_err("Required-level shell must still need parent auto-approve");
+    let err = delegated_call(
+        registry,
+        "agent_test",
+        "exec_shell",
+        json!({"command": "echo hi"}),
+    )
+    .await
+    .expect_err("Required-level shell must still need parent auto-approve");
     assert!(
         err.to_string().contains(
             "cannot run inside this sub-agent unless the parent session is auto-approved"
@@ -2253,14 +2280,14 @@ async fn auto_approved_parent_runs_required_tools_in_subagent() {
     // Calling exec_shell with interactive=true is what we block via the
     // separate terminal-takeover guard; pick the simpler write-file path
     // to assert that approval gating is off when auto_approve is set.
-    registry
-        .execute(
-            "agent_test",
-            "write_file",
-            json!({"path": "auto.txt", "content": "auto"}),
-        )
-        .await
-        .expect("auto-approved parent should allow writes");
+    delegated_call(
+        registry,
+        "agent_test",
+        "write_file",
+        json!({"path": "auto.txt", "content": "auto"}),
+    )
+    .await
+    .expect("auto-approved parent should allow writes");
 }
 
 #[test]
@@ -2506,7 +2533,10 @@ fn stub_runtime() -> SubAgentRuntime {
         parent_completion_tx: None,
         fork_context: None,
         mcp_pool: None,
-        step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
+        stream_idle_timeout: DEFAULT_CHILD_STREAM_IDLE_TIMEOUT,
+        stream_idle_retry_increment: Duration::ZERO,
+        turn_executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+        parent_agent_id: None,
         inherit_full_registry: false,
         children_read_only: false,
         child_subset_basis: None,
@@ -2545,7 +2575,7 @@ fn insert_prior_session_agent(
     status: SubAgentStatus,
     boot_id: &str,
 ) {
-    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let mut agent = SubAgent::new(
         id.to_string(),
         SubAgentType::General,
@@ -2819,7 +2849,7 @@ fn emit_parent_completion_dropped_receiver_does_not_panic() {
 #[tokio::test]
 async fn run_subagent_task_emits_parent_completion_before_terminal_update() {
     let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));
-    let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
+    let (task_input_tx, task_input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
     let agent_id = "agent_noop".to_string();
     let mut agent = SubAgent::new(
         agent_id.clone(),
@@ -2903,42 +2933,17 @@ fn child_runtime_propagates_completion_tx_for_gating() {
 }
 
 #[test]
-fn subagent_runtime_default_step_api_timeout_is_legacy_120s() {
-    // The legacy hardcoded constant is now the default field value so existing
-    // call sites and tests that construct a runtime without explicit timeout
-    // wiring keep their old behavior (#1806, #1808).
+fn subagent_runtime_default_stream_idle_timeout_is_the_config_default() {
+    // A runtime built without config wiring watches its children's streams
+    // with the same window `[subagents] api_timeout_secs` defaults to.
     let runtime = stub_runtime();
-    assert_eq!(runtime.step_api_timeout, DEFAULT_STEP_API_TIMEOUT);
     assert_eq!(
-        DEFAULT_STEP_API_TIMEOUT,
+        runtime.stream_idle_timeout,
+        DEFAULT_CHILD_STREAM_IDLE_TIMEOUT
+    );
+    assert_eq!(
+        DEFAULT_CHILD_STREAM_IDLE_TIMEOUT,
         std::time::Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS)
-    );
-}
-
-#[test]
-fn with_step_api_timeout_overrides_runtime_field() {
-    let runtime = stub_runtime().with_step_api_timeout(std::time::Duration::from_secs(900));
-    assert_eq!(runtime.step_api_timeout.as_secs(), 900);
-}
-
-#[test]
-fn child_runtime_preserves_step_api_timeout() {
-    // Real sub-agents spawn through `child_runtime()` / `background_runtime()`;
-    // forgetting to clone the timeout would silently drop the user's config
-    // override and resurrect the 120 s default for every child step.
-    let parent = stub_runtime().with_step_api_timeout(std::time::Duration::from_secs(900));
-    let child = parent.child_runtime();
-    let background = parent.background_runtime();
-
-    assert_eq!(
-        child.step_api_timeout.as_secs(),
-        900,
-        "child_runtime must preserve parent's per-step timeout"
-    );
-    assert_eq!(
-        background.step_api_timeout.as_secs(),
-        900,
-        "background_runtime (detached) must also preserve the parent's timeout"
     );
 }
 
@@ -3128,9 +3133,7 @@ async fn child_path_escape_asks_the_parent_and_runs_once_approved() {
 
     let path = file.to_string_lossy().into_owned();
     let call = tokio::spawn(async move {
-        registry
-            .execute("agent_1", "read_file", json!({ "path": path }))
-            .await
+        delegated_call(registry, "agent_1", "read_file", json!({ "path": path })).await
     });
 
     // The question reaches the host (the UI that spawned the child)…
@@ -3187,9 +3190,7 @@ async fn child_path_escape_denial_keeps_the_call_refused() {
 
     let path = file.to_string_lossy().into_owned();
     let call = tokio::spawn(async move {
-        registry
-            .execute("agent_2", "read_file", json!({ "path": path }))
-            .await
+        delegated_call(registry, "agent_2", "read_file", json!({ "path": path })).await
     });
 
     let id = loop {
@@ -3473,14 +3474,14 @@ async fn session_before_fork_cancel_vetoes_grandchild_spawn() {
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
-    let err = registry
-        .execute(
-            "agent-child",
-            "agent_spawn",
-            serde_json::json!({"prompt": "fork a grandchild"}),
-        )
-        .await
-        .expect_err("Cancel must abort the grandchild spawn");
+    let err = delegated_call(
+        registry,
+        "agent-child",
+        "agent_spawn",
+        serde_json::json!({"prompt": "fork a grandchild"}),
+    )
+    .await
+    .expect_err("Cancel must abort the grandchild spawn");
     assert!(
         err.to_string().contains("vetoed"),
         "veto error surfaced: {err}"
@@ -3549,13 +3550,13 @@ async fn session_before_fork_dylib_handler_skipped_in_child_context() {
         Arc::new(Mutex::new(TodoList::new())),
         Arc::new(Mutex::new(PlanState::default())),
     );
-    let outcome = registry
-        .execute(
-            "agent-child",
-            "agent_spawn",
-            serde_json::json!({"prompt": "fork a grandchild"}),
-        )
-        .await;
+    let outcome = delegated_call(
+        registry,
+        "agent-child",
+        "agent_spawn",
+        serde_json::json!({"prompt": "fork a grandchild"}),
+    )
+    .await;
     assert!(
         !matches!(&outcome, Err(e) if e.to_string().contains("vetoed")),
         "dylib handler must not run from a child context: {outcome:?}"
@@ -3951,4 +3952,323 @@ async fn in_process_subagent_holds_a_lease_and_drains_on_reload() {
     // loop path (not an abort).
     let settled = wait_until_terminal(&manager_handle, &spawned.agent_id).await;
     assert_eq!(settled.status, SubAgentStatus::Cancelled);
+}
+
+// === Iteration B — the child turn rides the one loop (TODO-72) ============
+
+/// `run_subagent` streams: the model call is `create_message_stream` on the
+/// shared turn loop, with the child's routed model and its per-type system
+/// prompt on the request — the retired loop called non-streaming
+/// `create_message`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_run_streams_on_the_shared_loop() {
+    use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
+
+    let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+        "child final answer",
+    )]));
+    let workspace = tempdir().expect("workspace");
+    let mut runtime = stub_runtime().background_runtime();
+    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.model = "child-routed-model".to_string();
+    runtime.client = mock.clone();
+
+    let (_input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+    let result = run_subagent(
+        &runtime,
+        "agent_stream_probe".to_string(),
+        SubAgentType::Explore,
+        "find the streaming seam".to_string(),
+        make_assignment(),
+        None,
+        false,
+        None,
+        std::time::Instant::now(),
+        DEFAULT_MAX_STEPS,
+        input_rx,
+    )
+    .await
+    .expect("child run");
+
+    assert_eq!(result.status, SubAgentStatus::Completed, "{result:?}");
+    assert_eq!(result.result.as_deref(), Some("child final answer"));
+    assert_eq!(result.steps_taken, 1);
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 1, "one model request");
+    assert_eq!(
+        requests[0].stream,
+        Some(true),
+        "the child's turn must stream on the shared loop"
+    );
+    assert_eq!(
+        requests[0].model, "child-routed-model",
+        "the routed model rides the request"
+    );
+    assert_eq!(
+        requests[0].system,
+        Some(crate::models::SystemPrompt::Text(
+            build_subagent_system_prompt(&SubAgentType::Explore, &make_assignment(), None)
+        )),
+        "the per-type child system prompt rides the request"
+    );
+    assert_eq!(
+        requests[0].messages.len(),
+        1,
+        "a fresh child opens on its assignment"
+    );
+    assert_eq!(requests[0].messages[0].role, "user");
+}
+
+/// A child turn dispatches its whole lifecycle at its agent-type scope: a
+/// compiled-in Global handler sees the child's TurnStart, tool call and
+/// TurnEnd; the same handler loaded as a dylib sees nothing of the child
+/// (5b — dylib code never runs from a sub-agent dispatch). The retired loop
+/// dispatched only `ToolCall`/`ToolResult`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_run_dispatches_its_lifecycle_at_its_agent_type_scope() {
+    use codesmith_agent::extension::{ExtensionEvent, ExtensionEventKind, HandlerOutcome};
+    use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
+    use codesmith_extensions::{ExtensionMetadata, RegistrationOrigin};
+
+    struct Probe {
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+        label: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl codesmith_agent::extension::Handler for Probe {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn codesmith_agent::extension::ExtensionContext,
+        ) -> Result<HandlerOutcome, codesmith_extensions::ExtensionError> {
+            let kind = match event {
+                ExtensionEvent::TurnStart { .. } => "TurnStart",
+                ExtensionEvent::TurnEnd { .. } => "TurnEnd",
+                ExtensionEvent::ToolCall(_) => "ToolCall",
+                _ => return Ok(HandlerOutcome::Continue),
+            };
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:{kind}", self.label));
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+    struct ProbeExt {
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+        label: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl codesmith_extensions::Extension for ProbeExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("child-scope-probe");
+            &M
+        }
+        async fn configure(
+            &self,
+            api: &dyn codesmith_extensions::ExtensionApi,
+        ) -> Result<(), codesmith_extensions::ExtensionError> {
+            for kind in [
+                ExtensionEventKind::TurnStart,
+                ExtensionEventKind::TurnEnd,
+                ExtensionEventKind::ToolCall,
+            ] {
+                api.on_variant(
+                    kind,
+                    Arc::new(Probe {
+                        seen: self.seen.clone(),
+                        label: self.label,
+                    }),
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    let workspace = tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("marker.txt"), "probe").unwrap();
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    runner
+        .load(&ProbeExt {
+            seen: seen.clone(),
+            label: "compiled",
+        })
+        .await
+        .expect("load compiled-in probe");
+    runner
+        .load_as(
+            &ProbeExt {
+                seen: seen.clone(),
+                label: "dylib",
+            },
+            RegistrationOrigin::Dylib,
+        )
+        .await
+        .expect("load dylib-stamped probe");
+    runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
+        workspace.path().to_path_buf(),
+        codesmith_agent::extension::ExtensionMode::Interactive,
+        Arc::new(std::sync::Mutex::new(true)),
+        Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+        runner.generation_arc(),
+    )));
+
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_probe_read", "read_file", r#"{"path":"marker.txt"}"#),
+        canned::simple_text_turn("done"),
+    ]));
+    let mut runtime = stub_runtime().background_runtime();
+    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.context.auto_approve = true;
+    runtime.client = mock.clone();
+    runtime.extension_runner = Some(runner);
+
+    let (_input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+    let result = run_subagent(
+        &runtime,
+        "agent_scope_probe".to_string(),
+        SubAgentType::General,
+        "read the marker".to_string(),
+        make_assignment(),
+        None,
+        false,
+        None,
+        std::time::Instant::now(),
+        DEFAULT_MAX_STEPS,
+        input_rx,
+    )
+    .await
+    .expect("child run");
+
+    assert_eq!(result.status, SubAgentStatus::Completed, "{result:?}");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            "compiled:TurnStart".to_string(),
+            "compiled:ToolCall".to_string(),
+            "compiled:TurnEnd".to_string(),
+        ],
+        "the compiled-in handler sees the child's lifecycle; the dylib one sees nothing"
+    );
+}
+
+/// The background spawn path keeps its observable contract on the shared
+/// loop: the parent's completion channel receives the summary line plus the
+/// `<codesmith:subagent.done>` sentinel, and the manager's record carries
+/// the final text and the step count (one per model request).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_child_keeps_the_completion_contract() {
+    use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("notes.md"), "contract-notes").unwrap();
+    let mock = Arc::new(MockLlmClient::new(vec![
+        canned::tool_call_turn("call_contract", "read_file", r#"{"path":"notes.md"}"#),
+        canned::simple_text_turn("notes say contract"),
+    ]));
+    let (completion_tx, mut completion_rx) =
+        codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(Arc::new(
+            tokio::sync::Notify::new(),
+        ));
+    let mut parent = runtime_with_depth(0, Some(completion_tx));
+    parent.client = mock.clone();
+    parent.context = ToolContext::new(workspace.path().to_path_buf());
+    parent.context.auto_approve = true;
+    let runtime = parent.background_runtime();
+    let manager_handle = runtime.manager.clone();
+
+    let spawned = {
+        let mut manager = manager_handle.write().await;
+        manager.spawn_background_with_assignment(
+            manager_handle.clone(),
+            runtime,
+            SubAgentType::General,
+            "read the notes".to_string(),
+            SubAgentAssignment::new("read the notes".to_string(), None),
+            None,
+        )
+    }
+    .expect("spawn in-process child");
+
+    let completion = tokio::time::timeout(Duration::from_secs(20), completion_rx.recv())
+        .await
+        .expect("the completion arrives")
+        .expect("completion channel open");
+    assert_eq!(completion.agent_id, spawned.agent_id);
+    let (summary, sentinel) = completion
+        .payload
+        .split_once('\n')
+        .expect("summary line, then sentinel");
+    assert_eq!(summary, "notes say contract");
+    assert!(
+        sentinel.starts_with("<codesmith:subagent.done>")
+            && sentinel.contains(r#""status":"completed""#)
+            && sentinel.contains(&spawned.agent_id),
+        "{sentinel}"
+    );
+
+    let settled = wait_until_terminal(&manager_handle, &spawned.agent_id).await;
+    assert_eq!(settled.status, SubAgentStatus::Completed);
+    assert_eq!(settled.result.as_deref(), Some("notes say contract"));
+    assert_eq!(settled.steps_taken, 2);
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 2);
+    let fed_back = serde_json::to_string(&requests[1].messages).unwrap();
+    assert!(
+        fed_back.contains("contract-notes"),
+        "the tool ran and its result reached the second request: {fed_back}"
+    );
+}
+
+/// The session's `turn_executor` selection applies to children (DSH plan
+/// §6 decision 3): an id no factory is registered under fails the child
+/// loudly through the normal failure contract — never a silent fallback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_turn_uses_the_session_turn_executor() {
+    use codesmith_agent_runtime::test_support::mock_llm::MockLlmClient;
+
+    let mock = Arc::new(MockLlmClient::new(Vec::new()));
+    let (completion_tx, mut completion_rx) =
+        codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(Arc::new(
+            tokio::sync::Notify::new(),
+        ));
+    let mut parent =
+        runtime_with_depth(0, Some(completion_tx)).with_turn_executor("no-such-loop".to_string());
+    parent.client = mock.clone();
+    let runtime = parent.background_runtime();
+    let manager_handle = runtime.manager.clone();
+
+    let spawned = {
+        let mut manager = manager_handle.write().await;
+        manager.spawn_background_with_assignment(
+            manager_handle.clone(),
+            runtime,
+            SubAgentType::General,
+            "never runs".to_string(),
+            SubAgentAssignment::new("never runs".to_string(), None),
+            None,
+        )
+    }
+    .expect("spawn in-process child");
+
+    let completion = tokio::time::timeout(Duration::from_secs(20), completion_rx.recv())
+        .await
+        .expect("the completion arrives")
+        .expect("completion channel open");
+    assert!(
+        completion
+            .payload
+            .contains("no turn executor registered for 'no-such-loop'")
+            && completion.payload.contains(r#""status":"failed""#),
+        "{}",
+        completion.payload
+    );
+    let settled = wait_until_terminal(&manager_handle, &spawned.agent_id).await;
+    assert!(
+        matches!(&settled.status, SubAgentStatus::Failed(reason) if reason.contains("no-such-loop")),
+        "{:?}",
+        settled.status
+    );
+    assert_eq!(mock.call_count(), 0, "nothing was sent");
 }

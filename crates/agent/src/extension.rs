@@ -38,9 +38,10 @@
 //!
 //! What stays core by contract: the provider registry *mechanism* (its
 //! factories are extension-contributed, route A), the session log format,
-//! the compaction algorithm (its knobs are policy), `BASE_PROMPT`, and the
-//! sub-agent loops (children run the builtin machinery; neither seam
-//! reaches them). Known limitations (deliberate): `Waterfall` remains a
+//! the compaction algorithm (its knobs are policy), and `BASE_PROMPT`.
+//! Sub-agent turns run on the same composed loop: the `turn_executor`
+//! selection reaches them; the around-turn chain wraps the main turn only.
+//! Known limitations (deliberate): `Waterfall` remains a
 //! fold chain (each handler's `Transform` is visible to the next);
 //! `next()`-wrapping exists for tool execution ([`AroundToolHandler`])
 //! and the main turn ([`AroundTurnHandler`]) — not as a general event
@@ -60,8 +61,10 @@
 //! compiled-in handlers at their scope (a detached background child can
 //! outlive a reload's two-phase dylib drop, so dylib contributions stay
 //! main-turn-only; a dylib cannot register scoped tools/handlers at all).
-//! Sub-agent loops emit only `ToolCall` / `ToolResult` at their scope —
-//! turn-level and provider-level events stay main-turn-only.
+//! A sub-agent turn dispatches its whole loop lifecycle (turn, provider and
+//! tool events) at its scope; the session-level events (`SessionStart` /
+//! `SessionShutdown`, compaction, `Input`, `AgentSettled`) stay
+//! main-turn-only.
 //!
 //! ## Style note
 //!
@@ -919,8 +922,8 @@ pub type ToolGuardFn = Arc<dyn Fn(&ToolCallEvent) -> Option<String> + Send + Syn
 ///   is never dispatched, so no approval path observes or flips it; there
 ///   is no post-approval evaluation point (CodeSmith has no execution path
 ///   that bypasses the seam, so the deny-only floor is equivalent).
-/// - Main turns and sub-agent loops both evaluate guards: a sub-agent's
-///   loop dispatches `ToolCall` at its agent-type scope, so a `Global`
+/// - Main turns and sub-agent turns both evaluate guards: a sub-agent's
+///   turn dispatches `ToolCall` at its agent-type scope, so a `Global`
 ///   guard gates child calls too (5b). Origin caveat: a guard registered
 ///   by a **dylib** extension stays main-turn-only (§F5d unload safety —
 ///   sub-agent-scoped dispatch skips dylib-origin handlers); script and
@@ -1065,8 +1068,8 @@ pub struct TurnAroundEvent {
 /// Known limitations: `next` is a single-shot future — awaiting it runs
 /// the inner turn once, so "re-run the loop" (DSH's callable `next()`)
 /// is not expressible here (a handler wanting retries needs a factory
-/// form; add it with a real consumer); main-turn only (sub-agent loops
-/// never wrap); the chain wraps the executor run INSIDE the engine's turn
+/// form; add it with a real consumer); main-turn only (a sub-agent's
+/// turn is not wrapped); the chain wraps the executor run INSIDE the engine's turn
 /// bookkeeping (TurnStarted / TurnComplete, harvest, snapshots), so a
 /// vetoed turn still completes its bookkeeping with the handler's returned
 /// `StopReason`; and the seam is not offered to script mods (async

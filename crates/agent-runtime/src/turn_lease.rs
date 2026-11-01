@@ -3,8 +3,9 @@
 //!
 //! Every running turn holds a [`TurnLease`] for its lifetime: the main
 //! turn acquires one at assembly in
-//! `engine::handle_send_message`, and each in-process sub-agent run
-//! acquires one in `run_subagent_task` (the CLI). The lease is keyed by
+//! `engine::handle_send_message`, and each in-process sub-agent turn
+//! acquires one in `engine::child_turn::run_child_turn` (background and
+//! foreground children alike). The lease is keyed by
 //! the agent identity, the extension generation the turn was assembled
 //! under, and the turn-executor id it runs on. The process-shared
 //! [`TurnLeaseRegistry`] makes "who runs what, under which generation" an

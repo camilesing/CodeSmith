@@ -366,6 +366,8 @@ mod handle;
 mod runtime_traits;
 pub(crate) mod tool_setup;
 
+pub(crate) use runtime_traits::SubAgentManagerHost;
+
 #[cfg(test)]
 mod tests;
 

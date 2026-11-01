@@ -7,7 +7,7 @@
 //! owns what makes it a *turn*: it resolves the configured `turn_executor`
 //! factory from the same registry the main turn uses (one selection for
 //! every agent), acquires the child's [`TurnLease`](crate::turn_lease::TurnLease),
-//! builds a child-shaped [`TurnDeps`] ([`TurnShape::Child`]) and runs the
+//! builds a child-shaped `TurnDeps` (`TurnShape::Child`) and runs the
 //! built executor over the child's transcript. The loop is the main turn's
 //! loop — streaming with the idle watchdog, transparent retry, the loop
 //! guard, the truncation gate, parallel batches — and its extension

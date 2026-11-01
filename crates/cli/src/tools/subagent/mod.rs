@@ -32,7 +32,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(dead_code)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -70,6 +70,9 @@ use codesmith_agent_runtime::agent_memory::{
     AgentMemoryMetadata, AgentMemoryRequest, AgentMemoryScope, AgentMemorySnapshotMode,
     ResolvedAgentMemory,
 };
+use codesmith_agent_runtime::engine::child_turn::{
+    ChildEventSink, ChildToolSurface, ChildTurnSpec, ChildTurnStatus, run_child_turn,
+};
 use codesmith_agent_runtime::utils::spawn_supervised;
 
 pub mod acp;
@@ -95,23 +98,27 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
-/// Default maximum steps for sub-agent loops. Set to `u32::MAX` to remove the
+/// Default maximum steps for sub-agent turns. Set to `u32::MAX` to remove the
 /// arbitrary fixed cap (#2034). Sub-agents run until they produce a final text
 /// response (no tool calls), are cancelled by the parent, or hit a configured
 /// explicit budget. Callers that want a hard bound can override `max_steps` on
 /// the `SubAgentManager`.
 const DEFAULT_MAX_STEPS: u32 = u32::MAX;
+/// Wall-clock cap on one delegated tool call (the delegation policy's, not
+/// the turn loop's — the main turn has none). Kept from the retired child
+/// loop; lifting it is a separate decision.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Per-step LLM API call timeout. Each `create_message` request must complete
-/// within this window or the step is treated as timed out. Prevents a single
-/// stuck API call from blocking the sub-agent indefinitely.
-/// Legacy fallback for the per-step DeepSeek API timeout. The active timeout
-/// now travels on `SubAgentRuntime::step_api_timeout` so users can override
-/// it via `[subagents] api_timeout_secs` in `~/.codesmith/config.toml`. The
-/// constant only exists for tests/stub runtimes that need a hard-coded
-/// default; production runtimes set the field explicitly (#1806, #1808).
-const DEFAULT_STEP_API_TIMEOUT: Duration =
+/// Default idle watchdog window for a child's model streams — the
+/// fallback for `[subagents] api_timeout_secs`. Production runtimes set the
+/// field from config explicitly (#1806, #1808); this default exists for
+/// tests and stub runtimes.
+const DEFAULT_CHILD_STREAM_IDLE_TIMEOUT: Duration =
     Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS);
+/// `max_tokens` on every child request (the retired loop's value; the main
+/// turn's provider-derived cap is not inherited).
+const SUBAGENT_MAX_OUTPUT_TOKENS: u32 = 4096;
+/// Bound on queued `agent_send_input` messages a child has not yet read.
+const CHILD_INPUT_CAPACITY: usize = 64;
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_RESULT_TIMEOUT_MS: u64 = 30_000;
 #[allow(dead_code)] // Legacy agent_wait clamp; new agent_eval uses DEFAULT/MAX.
@@ -427,12 +434,6 @@ impl WaitMode {
 }
 
 #[derive(Debug, Clone)]
-struct SubAgentInput {
-    text: String,
-    interrupt: bool,
-}
-
-#[derive(Debug, Clone)]
 struct AgentDefinition {
     name: String,
     agent_type: Option<SubAgentType>,
@@ -478,7 +479,6 @@ struct AssignRequest {
     objective: Option<String>,
     role: Option<String>,
     message: Option<String>,
-    interrupt: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -622,12 +622,23 @@ pub struct SubAgentRuntime {
     pub fork_context: Option<SubAgentForkContext>,
     /// The parent's MCP pool if available.
     pub mcp_pool: Option<std::sync::Arc<codesmith_agent_runtime::mcp::McpPool>>,
-    /// Per-step DeepSeek API timeout for the child's `create_message` call.
+    /// Idle watchdog window for the child's model streams: a stream that
+    /// produces no event for this long is retried, then fails the child.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800) at
-    /// engine construction so a slow but legitimate model turn does not
-    /// false-timeout the child mid-thinking. `child_runtime()` and
-    /// `background_runtime()` preserve the parent's value (#1806, #1808).
-    pub step_api_timeout: Duration,
+    /// engine construction; `child_runtime()` and `background_runtime()`
+    /// preserve the parent's value (#1806, #1808). Zero disables it.
+    pub stream_idle_timeout: Duration,
+    /// Per-retry widening of that window (the engine's
+    /// `stream_idle_retry_increment`, shared with the main turn).
+    pub stream_idle_retry_increment: Duration,
+    /// The `turn_executor` id children build their turn with — the session's
+    /// selection, the same one the main turn uses (one factory makes every
+    /// agent). Propagated verbatim to descendants.
+    pub turn_executor: String,
+    /// The id of the sub-agent whose tools spawn this runtime's children;
+    /// `None` when the main turn spawns them. Set when a child's own tool
+    /// runtime is built, so a grandchild's turn names its parent.
+    pub parent_agent_id: Option<String>,
     /// Whether this runtime's children must be a subset of this agent's
     /// effective tool set (`false`, Plan 04 / finding F4 `restrictToSubset`)
     /// or may inherit the full agent surface regardless (`true`, legacy
@@ -712,7 +723,10 @@ impl SubAgentRuntime {
             parent_completion_tx: None,
             fork_context: None,
             mcp_pool: None,
-            step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
+            stream_idle_timeout: DEFAULT_CHILD_STREAM_IDLE_TIMEOUT,
+            stream_idle_retry_increment: Duration::ZERO,
+            turn_executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+            parent_agent_id: None,
             inherit_full_registry: false,
             children_read_only: false,
             child_subset_basis: None,
@@ -761,8 +775,8 @@ impl SubAgentRuntime {
     /// every descendant's — registry emit `SessionBeforeFork` through it
     /// (veto), `SubAgentToolRegistry::new` resolves this child type's
     /// extension-tool view off it (5b; script/compiled-in origins only),
-    /// and the child loop dispatches `ToolCall`/`ToolResult` at this
-    /// child's agent-type scope through it (5b).
+    /// and the child's turn — the shared loop — dispatches its events at
+    /// this child's agent-type scope through it (dylib handlers skipped).
     #[must_use]
     pub fn with_extension_runner(
         mut self,
@@ -772,13 +786,21 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Override the per-step DeepSeek API timeout (default
-    /// `DEFAULT_STEP_API_TIMEOUT`). Called by the engine after reading
-    /// `[subagents] api_timeout_secs`. Tests may use this to fail fast
-    /// without waiting the legacy 120 seconds (#1806, #1808).
+    /// Set the children's stream idle watchdog: the window (from
+    /// `[subagents] api_timeout_secs`, default
+    /// `DEFAULT_CHILD_STREAM_IDLE_TIMEOUT`) and its per-retry widening
+    /// (the engine's `stream_idle_retry_increment`) (#1806, #1808).
     #[must_use]
-    pub fn with_step_api_timeout(mut self, timeout: Duration) -> Self {
-        self.step_api_timeout = timeout;
+    pub fn with_stream_idle(mut self, timeout: Duration, retry_increment: Duration) -> Self {
+        self.stream_idle_timeout = timeout;
+        self.stream_idle_retry_increment = retry_increment;
+        self
+    }
+
+    /// Build children's turns with the session's `turn_executor` selection.
+    #[must_use]
+    pub fn with_turn_executor(mut self, turn_executor: String) -> Self {
+        self.turn_executor = turn_executor;
         self
     }
 
@@ -958,7 +980,10 @@ impl SubAgentRuntime {
             parent_completion_tx: self.parent_completion_tx.clone(),
             fork_context: self.fork_context.clone(),
             mcp_pool: self.mcp_pool.clone(),
-            step_api_timeout: self.step_api_timeout,
+            stream_idle_timeout: self.stream_idle_timeout,
+            stream_idle_retry_increment: self.stream_idle_retry_increment,
+            turn_executor: self.turn_executor.clone(),
+            parent_agent_id: self.parent_agent_id.clone(),
             inherit_full_registry: self.inherit_full_registry,
             children_read_only: self.children_read_only,
             // Propagate the parent's subset basis so the child's
@@ -1009,7 +1034,9 @@ pub struct SubAgent {
     pub team_name: Option<String>,
     /// Scoped Agent Memory metadata for this session, if enabled.
     pub agent_memory: Option<AgentMemoryMetadata>,
-    input_tx: Option<mpsc::UnboundedSender<SubAgentInput>>,
+    /// `agent_send_input` / `agent_assign` messages for the running child,
+    /// read at its next step boundary (the turn loop's steer seam).
+    input_tx: Option<mpsc::Sender<String>>,
     task_handle: Option<JoinHandle<()>>,
 }
 
@@ -1025,7 +1052,7 @@ impl SubAgent {
         model: String,
         nickname: Option<String>,
         allowed_tools: Option<Vec<String>>,
-        input_tx: mpsc::UnboundedSender<SubAgentInput>,
+        input_tx: mpsc::Sender<String>,
         session_boot_id: String,
     ) -> Self {
         let session_name = id.clone();
@@ -1137,7 +1164,7 @@ impl SubAgentManager {
         id: String,
         assignment: SubAgentAssignment,
     ) -> String {
-        let (input_tx, _input_rx) = mpsc::unbounded_channel();
+        let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
         let mut agent = SubAgent::new(
             id,
             SubAgentType::Explore,
@@ -1427,7 +1454,7 @@ impl SubAgentManager {
             runtime.child_subset_basis.as_deref(),
             runtime.inherit_full_registry,
         )?;
-        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let (input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
         let mut agent = SubAgent::new(
             agent_id.clone(),
             agent_type.clone(),
@@ -1608,7 +1635,7 @@ impl SubAgentManager {
                 .get_mut(agent_id)
                 .ok_or_else(|| anyhow!("Agent {agent_id} not found"))?;
 
-            let (input_tx, input_rx) = mpsc::unbounded_channel();
+            let (input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
             let restarted_at = Instant::now();
             let mut restart_runtime = runtime.clone();
             let agent_memory = agent.agent_memory.clone().map(|metadata| {
@@ -1674,8 +1701,9 @@ impl SubAgentManager {
         Ok(snapshot)
     }
 
-    /// Send input to a running sub-agent.
-    pub fn send_input(&mut self, agent_id: &str, text: String, interrupt: bool) -> Result<()> {
+    /// Send input to a running sub-agent. It is delivered, in order with
+    /// any other queued input, at the child's next step boundary.
+    pub fn send_input(&mut self, agent_id: &str, text: String) -> Result<()> {
         let agent = self
             .agents
             .get_mut(agent_id)
@@ -1690,8 +1718,8 @@ impl SubAgentManager {
             .as_ref()
             .ok_or_else(|| anyhow!("Agent {agent_id} cannot accept input"))?;
 
-        tx.send(SubAgentInput { text, interrupt })
-            .map_err(|_| anyhow!("Failed to send input to agent {agent_id}"))?;
+        tx.try_send(text)
+            .map_err(|err| child_input_error(agent_id, &err))?;
 
         Ok(())
     }
@@ -1703,7 +1731,6 @@ impl SubAgentManager {
         objective: Option<String>,
         role: Option<String>,
         message: Option<String>,
-        interrupt: bool,
     ) -> Result<SubAgentResult> {
         if objective.is_none() && role.is_none() && message.is_none() {
             return Err(anyhow!(
@@ -1787,11 +1814,8 @@ impl SubAgentManager {
         if let Some(payload) = payload {
             let tx = input_tx
                 .ok_or_else(|| anyhow!("Agent {agent_id} cannot accept assignment input"))?;
-            tx.send(SubAgentInput {
-                text: payload,
-                interrupt,
-            })
-            .map_err(|_| anyhow!("Failed to send assignment to agent {agent_id}"))?;
+            tx.try_send(payload)
+                .map_err(|err| child_input_error(agent_id, &err))?;
         }
 
         if changed {
@@ -1997,6 +2021,20 @@ fn default_state_path(workspace: &Path) -> PathBuf {
         .join(".codesmith")
         .join("state")
         .join(SUBAGENT_STATE_FILE)
+}
+
+/// A child's input queue refused a message: the child already ended (its
+/// receiver is gone) or has `CHILD_INPUT_CAPACITY` unread inputs queued.
+fn child_input_error(agent_id: &str, err: &mpsc::error::TrySendError<String>) -> anyhow::Error {
+    match err {
+        mpsc::error::TrySendError::Full(_) => anyhow!(
+            "Agent {agent_id} has {CHILD_INPUT_CAPACITY} unread inputs queued; wait for it to \
+             read them before sending more"
+        ),
+        mpsc::error::TrySendError::Closed(_) => {
+            anyhow!("Failed to send input to agent {agent_id}")
+        }
+    }
 }
 
 fn epoch_millis_now() -> u64 {
@@ -3280,8 +3318,8 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
 /// executes inside a child that may be a detached background session
 /// outliving a reload's two-phase `Library` drop — dispatch at the
 /// child's agent-type scope instead, whose origin filter skips dylib
-/// handlers (§F5d; same rule as the child loop's `tool-call` /
-/// `tool-result` dispatch). Global script/compiled-in handlers receive
+/// handlers (§F5d; the same rule as the child turn's own scoped
+/// dispatch). Global script/compiled-in handlers receive
 /// the scoped dispatch either way, so mod fork vetoes hold at every
 /// depth.
 async fn emit_fork_veto(
@@ -3445,12 +3483,12 @@ impl SubagentRunTool {
         child_runtime.reasoning_effort_auto = false;
 
         // Empty input channel — sync agents don't accept follow-up inputs
-        let (_input_tx, input_rx) = mpsc::unbounded_channel();
+        let (_input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
 
         let agent_id = format!("agent_run_{}", &Uuid::new_v4().to_string()[..8]);
         let started_at = Instant::now();
 
-        // Run sub-agent loop directly, blocking until completion
+        // Run the child's turn directly, blocking until completion
         let result = run_subagent(
             &child_runtime,
             agent_id.clone(),
@@ -3759,7 +3797,7 @@ impl ToolSpec for AgentEvalTool {
                 },
                 "interrupt": {
                     "type": "boolean",
-                    "description": "When sending input, prioritize it over pending inputs"
+                    "description": "Accepted for compatibility; every input is delivered in order at the agent's next step"
                 },
                 "block": {
                     "type": "boolean",
@@ -3787,7 +3825,8 @@ impl ToolSpec for AgentEvalTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ToolError::missing_field("name"))?;
         let message = parse_optional_text_or_items(&input, &["message", "input"], "items")?;
-        let interrupt = optional_bool(&input, "interrupt", false)?;
+        // Validated for compatibility; every input is delivered in order.
+        optional_bool(&input, "interrupt", false)?;
         let block = optional_bool(&input, "block", true)?;
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)?
             .clamp(1000, MAX_RESULT_TIMEOUT_MS);
@@ -3824,7 +3863,7 @@ impl ToolSpec for AgentEvalTool {
             } else {
                 let mut manager = self.manager.write().await;
                 manager
-                    .send_input(&agent_id, message, interrupt)
+                    .send_input(&agent_id, message)
                     .map_err(|e| ToolError::execution_failed(e.to_string()))?;
                 message_delivery = Some(json!({ "delivered": true }));
             }
@@ -4282,7 +4321,7 @@ impl ToolSpec for AgentSendInputTool {
                 },
                 "interrupt": {
                     "type": "boolean",
-                    "description": "Prioritize this message over pending inputs"
+                    "description": "Accepted for compatibility; every input is delivered in order at the agent's next step"
                 }
             }
         })
@@ -4299,11 +4338,12 @@ impl ToolSpec for AgentSendInputTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let message = parse_text_or_items(&input, &["message", "input"], "items", "message")?;
-        let interrupt = optional_bool(&input, "interrupt", false)?;
+        // Validated for compatibility; every input is delivered in order.
+        optional_bool(&input, "interrupt", false)?;
 
         let mut manager = self.manager.write().await;
         manager
-            .send_input(agent_id, message, interrupt)
+            .send_input(agent_id, message)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         let snapshot = manager
             .get_result(agent_id)
@@ -4349,8 +4389,8 @@ impl ToolSpec for AgentAssignTool {
 
     fn description(&self) -> &'static str {
         "Update a sub-agent's assignment (objective, role) and optionally deliver an immediate \
-         coordinator note. The update is delivered as a high-priority message when `interrupt` is \
-         true (the default). Returns the agent's current snapshot."
+         coordinator note. The update reaches the agent at its next step. Returns the agent's \
+         current snapshot."
     }
 
     fn input_schema(&self) -> Value {
@@ -4394,7 +4434,7 @@ impl ToolSpec for AgentAssignTool {
                 },
                 "interrupt": {
                     "type": "boolean",
-                    "description": "Prioritize this assignment update in the agent inbox (default: true)"
+                    "description": "Accepted for compatibility; the update is delivered in order at the agent's next step"
                 }
             }
         })
@@ -4413,7 +4453,6 @@ impl ToolSpec for AgentAssignTool {
                 request.objective,
                 request.role,
                 request.message,
-                request.interrupt,
             )
             .map_err(|e| ToolError::execution_failed(format!("Failed to assign sub-agent: {e}")))?;
 
@@ -4884,7 +4923,7 @@ struct SubAgentTask {
     agent_memory: Option<ResolvedAgentMemory>,
     started_at: Instant,
     max_steps: u32,
-    input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
+    input_rx: mpsc::Receiver<String>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -4907,33 +4946,10 @@ async fn run_subagent_task(task: SubAgentTask) {
             )
             .await
         }
+        // In-process: the turn rides the shared loop, which holds the
+        // child's turn lease for the run (`run_child_turn`).
         None => {
-            // Structural ownership (DSH, `turn_lease`): this in-process child
-            // holds its in-flight lease for the run's lifetime, so a reload
-            // of the extension runtime it was assembled under can drain it
-            // (reason-tagged cancel + bounded wait) before the two-phase
-            // dylib unload. Runs the builtin loop today, so the executor id
-            // is `builtin`; `dylib_exposed: false` is the 5b rule —
-            // dylib-origin contributions never enter sub-agent dispatch.
-            let lease = codesmith_agent_runtime::turn_lease::shared_turn_leases().acquire(
-                codesmith_agent_runtime::turn_lease::TurnLeaseSpec {
-                    key: codesmith_agent_runtime::turn_lease::TurnLeaseKey {
-                        agent: task.agent_id.clone(),
-                        generation: task
-                            .runtime
-                            .extension_runner
-                            .as_ref()
-                            .map_or(0, |r| r.generation()),
-                        executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID
-                            .to_string(),
-                    },
-                    depth: task.runtime.spawn_depth,
-                    cancel: task.runtime.cancel_token.clone(),
-                    dylib_exposed: false,
-                    scope: task.runtime.extension_runner.as_ref().map(Arc::downgrade),
-                },
-            );
-            let result = run_subagent(
+            run_subagent(
                 &task.runtime,
                 task.agent_id.clone(),
                 task.agent_type,
@@ -4946,19 +4962,7 @@ async fn run_subagent_task(task: SubAgentTask) {
                 task.max_steps,
                 task.input_rx,
             )
-            .await;
-            // A drain cancels the token and latches its reason first; make
-            // the reason visible in the parent's progress feed so a
-            // reload-stopped child explains itself.
-            if let Some(reason) = lease.cancel_reason() {
-                emit_agent_progress(
-                    task.runtime.event_tx.as_ref(),
-                    task.runtime.mailbox.as_ref(),
-                    &task.agent_id,
-                    format!("cancelled: {reason}"),
-                );
-            }
-            result
+            .await
         }
     };
 
@@ -5202,7 +5206,13 @@ async fn run_external_subagent(
     })
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+/// Run one in-process child: assemble its opening transcript, its narrowed
+/// tool surface and its route, then hand the turn to the shared loop
+/// (`run_child_turn` — the configured `turn_executor`, streaming, the
+/// child's agent-type dispatch scope). Spawn-time refusals (unavailable or
+/// refused tools) fail before any model call; the turn's outcome is shaped
+/// into the manager's [`SubAgentResult`] and the full transcript handle.
+#[allow(clippy::too_many_arguments)]
 async fn run_subagent(
     runtime: &SubAgentRuntime,
     agent_id: String,
@@ -5214,7 +5224,7 @@ async fn run_subagent(
     agent_memory: Option<ResolvedAgentMemory>,
     started_at: Instant,
     max_steps: u32,
-    mut input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
+    input_rx: mpsc::Receiver<String>,
 ) -> Result<SubAgentResult> {
     let system_prompt =
         build_subagent_system_prompt(&agent_type, &assignment, agent_memory.as_ref());
@@ -5223,20 +5233,23 @@ async fn run_subagent(
         .then_some(runtime.fork_context.as_ref())
         .flatten();
     let request_system = subagent_request_system_prompt(&system_prompt, fork_context);
-    let mut messages = build_initial_subagent_messages(
+    let messages = build_initial_subagent_messages(
         &prompt,
         &assignment,
         &agent_type,
         fork_context,
         agent_memory.as_ref(),
     );
-    let runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
+    let mut runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
         system: Some(request_system.clone()),
         messages: messages.clone(),
         structured_state_block: None,
         current_assistant_text: None,
         current_turn_tool_calls: None,
     });
+    // This child's own spawn tools make its children: their turns name it
+    // as their parent.
+    runtime_for_tools.parent_agent_id = Some(agent_id.clone());
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
         agent_type.clone(),
@@ -5275,375 +5288,45 @@ async fn run_subagent(
             refused.join(", ")
         ));
     }
-    let tools = tool_registry.tools_for_model(&agent_type);
-    if let Some(mb) = runtime.mailbox.as_ref() {
-        let _ = mb.send(MailboxMessage::started(&agent_id, agent_type.clone()));
-    }
-    emit_agent_progress(
-        runtime.event_tx.as_ref(),
-        runtime.mailbox.as_ref(),
-        &agent_id,
-        format!("started ({})", agent_type.as_str()),
-    );
 
-    let mut steps = 0;
-    let mut final_result: Option<String> = None;
-    let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
-    // 5b — the extension dispatch scope for this child's whole run: its
-    // own agent type. Agent-type-scoped handlers receive only this
-    // child's events; Global (script/compiled-in) handlers receive them
-    // too; dylib-origin handlers are skipped (§F5d unload safety — see
-    // `ExtensionRunner::emit_scoped`).
-    let ext_runner = runtime.extension_runner.clone();
-    let ext_scope = codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string());
+    let outcome = run_child_turn(ChildTurnSpec {
+        agent_id: agent_id.clone(),
+        agent_type: agent_type.clone(),
+        depth: runtime.spawn_depth,
+        parent: runtime.parent_agent_id.clone(),
+        executor_id: runtime.turn_executor.clone(),
+        client: runtime.client.clone(),
+        model: runtime.model.clone(),
+        reasoning_effort: runtime.reasoning_effort.clone(),
+        max_tokens: SUBAGENT_MAX_OUTPUT_TOKENS,
+        max_steps,
+        system: request_system,
+        messages,
+        tools: tool_registry.into_surface(&agent_id),
+        input: input_rx,
+        cancel: runtime.cancel_token.clone(),
+        events: ChildEventSink {
+            event_tx: runtime.event_tx.clone(),
+            mailbox: runtime.mailbox.clone(),
+        },
+        stream_idle_timeout: (!runtime.stream_idle_timeout.is_zero())
+            .then_some(runtime.stream_idle_timeout),
+        stream_idle_retry_increment: runtime.stream_idle_retry_increment,
+        extension_runner: runtime.extension_runner.clone(),
+        subagents: Arc::new(crate::core::engine::SubAgentManagerHost(
+            runtime.manager.clone(),
+        )),
+    })
+    .await;
 
-    for _step in 0..max_steps {
-        // Cooperative cancellation: bail if this session's token was cancelled
-        // while we were between steps. Top-level model-visible sub-agents use
-        // a detached token so parent turn cancellation does not stop them.
-        if runtime.cancel_token.is_cancelled() {
-            emit_agent_progress(
-                runtime.event_tx.as_ref(),
-                runtime.mailbox.as_ref(),
-                &agent_id,
-                format!("step {steps}/{max_steps}: cancelled"),
-            );
-            if let Some(mb) = runtime.mailbox.as_ref() {
-                let _ = mb.send(MailboxMessage::Cancelled {
-                    agent_id: agent_id.clone(),
-                });
-            }
-            let status = SubAgentStatus::Cancelled;
-            let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-            insert_subagent_full_transcript_handle(
-                runtime,
-                &agent_id,
-                &agent_type,
-                &assignment,
-                &status,
-                None,
-                &messages,
-                steps,
-                duration_ms,
-                fork_context_enabled,
-            )
-            .await;
-            return Ok(SubAgentResult {
-                name: agent_id.clone(),
-                agent_id: agent_id.clone(),
-                context_mode: if fork_context_enabled {
-                    "forked"
-                } else {
-                    "fresh"
-                }
-                .to_string(),
-                fork_context: fork_context_enabled,
-                agent_type: agent_type.clone(),
-                assignment: assignment.clone(),
-                model: runtime.model.clone(),
-                nickname: None,
-                status,
-                agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
-                result: None,
-                steps_taken: steps,
-                duration_ms,
-                from_prior_session: false,
-            });
+    let status = match outcome.status {
+        ChildTurnStatus::Completed => {
+            release_resident_leases_for(&agent_id);
+            SubAgentStatus::Completed
         }
-
-        steps += 1;
-        emit_agent_progress(
-            runtime.event_tx.as_ref(),
-            runtime.mailbox.as_ref(),
-            &agent_id,
-            format!("step {steps}/{max_steps}: requesting model response"),
-        );
-
-        while let Ok(input) = input_rx.try_recv() {
-            if input.interrupt {
-                pending_inputs.clear();
-            }
-            pending_inputs.push_back(input);
-        }
-
-        while let Some(input) = pending_inputs.pop_front() {
-            if !input.text.trim().is_empty() {
-                messages.push(Message {
-                    role: "user".to_string(),
-                    content: vec![ContentBlock::Text {
-                        text: input.text,
-                        cache_control: None,
-                    }],
-                });
-            }
-        }
-
-        let request = MessageRequest {
-            model: runtime.model.clone(),
-            messages: messages.clone(),
-            max_tokens: 4096,
-            system: Some(request_system.clone()),
-            tools: Some(tools.clone()),
-            tool_choice: Some(json!({ "type": "auto" })),
-            metadata: None,
-            thinking: None,
-            reasoning_effort: runtime.reasoning_effort.clone(),
-            stream: Some(false),
-            temperature: None,
-            top_p: None,
-        };
-
-        // Race the API call against the cancellation token so a parent
-        // cancel during a long thinking turn doesn't have to wait for the
-        // step timeout.
-        let response = tokio::select! {
-            biased;
-            () = runtime.cancel_token.cancelled() => {
-                emit_agent_progress(
-                    runtime.event_tx.as_ref(),
-                    runtime.mailbox.as_ref(),
-                    &agent_id,
-                    format!("step {steps}/{max_steps}: cancelled mid-request"),
-                );
-                if let Some(mb) = runtime.mailbox.as_ref() {
-                    let _ = mb.send(MailboxMessage::Cancelled {
-                        agent_id: agent_id.clone(),
-                    });
-                }
-                let status = SubAgentStatus::Cancelled;
-                let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-                insert_subagent_full_transcript_handle(
-                    runtime,
-                    &agent_id,
-                    &agent_type,
-                    &assignment,
-                    &status,
-                    None,
-                    &messages,
-                    steps,
-                    duration_ms,
-                    fork_context_enabled,
-                )
-                .await;
-                return Ok(SubAgentResult {
-                    name: agent_id.clone(),
-                    agent_id: agent_id.clone(),
-                    context_mode: if fork_context_enabled { "forked" } else { "fresh" }.to_string(),
-                    fork_context: fork_context_enabled,
-                    agent_type: agent_type.clone(),
-                    assignment: assignment.clone(),
-                    model: runtime.model.clone(),
-                    nickname: None,
-                    status,
-                    agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
-                    result: None,
-                    steps_taken: steps,
-                    duration_ms,
-                    from_prior_session: false,
-                });
-            }
-            api = tokio::time::timeout(runtime.step_api_timeout, runtime.client.create_message(request)) => {
-                api.map_err(|_| anyhow!("API call timed out after {}s", runtime.step_api_timeout.as_secs()))??
-            }
-        };
-
-        let mut tool_uses = Vec::new();
-
-        // Report token usage so the parent's cost counter updates live.
-        if let Some(mb) = runtime.mailbox.as_ref() {
-            let _ = mb.send(MailboxMessage::token_usage(
-                &agent_id,
-                response.model.clone(),
-                response.usage.clone(),
-            ));
-        }
-
-        for block in &response.content {
-            match block {
-                ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
-                    final_result = Some(text.clone());
-                }
-                ContentBlock::ToolUse {
-                    id, name, input, ..
-                } => {
-                    tool_uses.push((id.clone(), name.clone(), input.clone()));
-                }
-                _ => {}
-            }
-        }
-
-        messages.push(Message {
-            role: "assistant".to_string(),
-            content: response.content.clone(),
-        });
-
-        if tool_uses.is_empty() {
-            while let Ok(input) = input_rx.try_recv() {
-                if input.interrupt {
-                    pending_inputs.clear();
-                }
-                pending_inputs.push_back(input);
-            }
-            if pending_inputs.is_empty() {
-                emit_agent_progress(
-                    runtime.event_tx.as_ref(),
-                    runtime.mailbox.as_ref(),
-                    &agent_id,
-                    format!("step {steps}/{max_steps}: complete"),
-                );
-                break;
-            }
-            continue;
-        }
-
-        emit_agent_progress(
-            runtime.event_tx.as_ref(),
-            runtime.mailbox.as_ref(),
-            &agent_id,
-            format!(
-                "step {steps}/{max_steps}: executing {} tool call(s)",
-                tool_uses.len()
-            ),
-        );
-        let mut tool_results: Vec<ContentBlock> = Vec::new();
-        for (tool_id, tool_name, tool_input) in tool_uses {
-            emit_agent_progress(
-                runtime.event_tx.as_ref(),
-                runtime.mailbox.as_ref(),
-                &agent_id,
-                format!("step {steps}/{max_steps}: running tool '{tool_name}'"),
-            );
-            if let Some(mb) = runtime.mailbox.as_ref() {
-                let _ = mb.send(MailboxMessage::ToolCallStarted {
-                    agent_id: agent_id.clone(),
-                    tool_name: tool_name.clone(),
-                    step: steps,
-                });
-            }
-            // 5b — dispatch the call through the extension runner at this
-            // child's scope (the denying `ToolCall` waterfall): `Block`
-            // denies the call, `Ask` fails closed (a child attaches no
-            // approval ask channel — path asks are a different,
-            // host-owned flow — so an asked call is denied, never
-            // silently run), and a `Transform`'s rewritten input is what
-            // executes and what the transcript records (model-visible ⇒
-            // session-recorded via the child transcript below).
-            let mut call = codesmith_agent::extension::ToolCallEvent {
-                id: tool_id.clone(),
-                name: tool_name.clone(),
-                input: tool_input,
-            };
-            let mut denied: Option<String> = None;
-            if let Some(runner) = ext_runner.as_ref() {
-                let out = runner
-                    .emit_scoped(
-                        ext_scope.clone(),
-                        codesmith_agent::extension::ExtensionEvent::ToolCall(call.clone()),
-                    )
-                    .await;
-                if let codesmith_agent::extension::ExtensionEvent::ToolCall(tc) = out.event {
-                    call = tc;
-                }
-                match out.outcome {
-                    codesmith_agent::extension::HandlerOutcome::Block { reason } => {
-                        denied = Some(reason);
-                    }
-                    codesmith_agent::extension::HandlerOutcome::Ask { reason } => {
-                        denied = Some(format!(
-                            "approval requested by an extension, but no ask channel is \
-                             available in sub-agents: {reason}"
-                        ));
-                    }
-                    // `Continue` proceeds; a stray `Cancel` is ignored at a
-                    // Waterfall seam (the dispatch contract).
-                    _ => {}
-                }
-            }
-            let exec_name = call.name.clone();
-            let mut result = match denied {
-                Some(reason) => format!("Error: {reason}"),
-                None => match tokio::time::timeout(TOOL_TIMEOUT, async {
-                    tool_registry
-                        .execute(&agent_id, &call.name, call.input)
-                        .await
-                })
-                .await
-                {
-                    Ok(Ok(output)) => output,
-                    Ok(Err(e)) => format!("Error: {e}"),
-                    Err(_) => format!("Error: Tool {exec_name} timed out"),
-                },
-            };
-            let mut tool_ok = !result.starts_with("Error:");
-            // 5b — the result rides back through the `ToolResult`
-            // waterfall (non-denying): a `Transform` may rewrite the
-            // model-visible content, and the final content is what the
-            // transcript records.
-            if let Some(runner) = ext_runner.as_ref() {
-                let event = codesmith_agent::extension::ToolResultEvent {
-                    id: tool_id.clone(),
-                    name: exec_name.clone(),
-                    result: if tool_ok {
-                        Ok(ToolResult::success(result.clone()))
-                    } else {
-                        Err(ToolError::execution_failed(result.clone()))
-                    },
-                };
-                let out = runner
-                    .emit_scoped(
-                        ext_scope.clone(),
-                        codesmith_agent::extension::ExtensionEvent::ToolResult(event),
-                    )
-                    .await;
-                if let codesmith_agent::extension::ExtensionEvent::ToolResult(tr) = out.event {
-                    match tr.result {
-                        Ok(r) => {
-                            result = r.content;
-                            tool_ok = r.success;
-                        }
-                        Err(e) => {
-                            result = format!("Error: {e}");
-                            tool_ok = false;
-                        }
-                    }
-                }
-            }
-            emit_agent_progress(
-                runtime.event_tx.as_ref(),
-                runtime.mailbox.as_ref(),
-                &agent_id,
-                format!("step {steps}/{max_steps}: finished tool '{exec_name}'"),
-            );
-            if let Some(mb) = runtime.mailbox.as_ref() {
-                let _ = mb.send(MailboxMessage::ToolCallCompleted {
-                    agent_id: agent_id.clone(),
-                    tool_name: exec_name.clone(),
-                    step: steps,
-                    ok: tool_ok,
-                });
-            }
-
-            tool_results.push(ContentBlock::ToolResult {
-                tool_use_id: tool_id,
-                content: result,
-                // Persist the explicit success/error flag: the transcript
-                // rebuild of `recent_read_files` only projects `Some(false)`
-                // results, so `None` would drop successful read previews.
-                is_error: Some(!tool_ok),
-                content_blocks: None,
-            });
-        }
-
-        if !tool_results.is_empty() {
-            messages.push(Message {
-                role: "user".to_string(),
-                content: tool_results,
-            });
-        }
-    }
-
-    release_resident_leases_for(&agent_id);
-    let status = SubAgentStatus::Completed;
+        ChildTurnStatus::Cancelled => SubAgentStatus::Cancelled,
+        ChildTurnStatus::Failed(message) => return Err(anyhow!(message)),
+    };
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     insert_subagent_full_transcript_handle(
         runtime,
@@ -5651,9 +5334,9 @@ async fn run_subagent(
         &agent_type,
         &assignment,
         &status,
-        final_result.as_ref(),
-        &messages,
-        steps,
+        outcome.final_text.as_ref(),
+        &outcome.messages,
+        outcome.steps,
         duration_ms,
         fork_context_enabled,
     )
@@ -5675,8 +5358,8 @@ async fn run_subagent(
         nickname: None,
         status,
         agent_memory: agent_memory.as_ref().map(AgentMemoryMetadata::from),
-        result: final_result,
-        steps_taken: steps,
+        result: outcome.final_text,
+        steps_taken: outcome.steps,
         duration_ms,
         from_prior_session: false,
     })
@@ -6817,7 +6500,8 @@ fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
         .transpose()?
         .map(str::to_string);
     let message = parse_optional_text_or_items(input, &["message", "input"], "items")?;
-    let interrupt = optional_bool(input, "interrupt", true)?;
+    // Validated for compatibility; every input is delivered in order.
+    optional_bool(input, "interrupt", true)?;
 
     if objective.is_none() && role.is_none() && message.is_none() {
         return Err(ToolError::invalid_input(
@@ -6831,7 +6515,6 @@ fn parse_assign_request(input: &Value) -> Result<AssignRequest, ToolError> {
         objective,
         role,
         message,
-        interrupt,
     })
 }
 
@@ -6863,23 +6546,6 @@ fn build_assignment_prompt(
     )
 }
 
-fn emit_agent_progress(
-    event_tx: Option<&mpsc::Sender<Event>>,
-    mailbox: Option<&Mailbox>,
-    agent_id: &str,
-    status: String,
-) {
-    if let Some(mb) = mailbox {
-        let _ = mb.send(MailboxMessage::progress(agent_id, status.clone()));
-    }
-    if let Some(event_tx) = event_tx {
-        let _ = event_tx.try_send(Event::AgentProgress {
-            id: agent_id.to_string(),
-            status,
-        });
-    }
-}
-
 // === Tool Registry Helpers ===
 
 /// Per-sub-agent tool registry.
@@ -6894,6 +6560,10 @@ fn emit_agent_progress(
 /// - **Explicit narrow** (`allowed_tools = Some(list)`): legacy / Custom
 ///   path. The registry still builds the full surface, but only the listed
 ///   tool names are visible to the model and callable.
+///
+/// [`into_surface`](Self::into_surface) hands the result to the shared turn
+/// loop: every tool behind the [`DelegationPolicy`] gate, plus the
+/// model-visible catalog.
 struct SubAgentToolRegistry {
     /// `None` → full inheritance (no allowlist filter applied). `Some(list)` →
     /// only the listed tools are visible to the model and callable.
@@ -6915,9 +6585,6 @@ struct SubAgentToolRegistry {
     /// [`PathAsk`]). `None` ⇒ the child cannot ask and out-of-workspace calls
     /// keep failing on their own path check.
     path_ask: Option<PathAsk>,
-    /// Distinguishes one ask from the next within this registry, so a repeated
-    /// call for the same path is a fresh question with a fresh id.
-    asks: std::sync::atomic::AtomicU64,
 }
 
 /// The child's end of the parent's path-access channel: the parent's event
@@ -6957,7 +6624,7 @@ impl SubAgentToolRegistry {
     /// dylib `Arc`. That exclusion is now per-ORIGIN, not per-surface —
     /// dylib registrations are filtered here
     /// ([`ExtensionRunner::mountable_tools_for_subagents`]) and skipped by
-    /// the child loop's scoped dispatch, because a detached background
+    /// the child turn's scoped dispatch, because a detached background
     /// child can outlive a reload's two-phase `Library` drop (§F5d T4's
     /// safety argument covers the main-turn executor only). Script /
     /// compiled-in contributions hold statically linked code or retained
@@ -7140,7 +6807,6 @@ impl SubAgentToolRegistry {
                 cancel_token: runtime.cancel_token.clone(),
                 context: ask_context,
             }),
-            asks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -7156,31 +6822,6 @@ impl SubAgentToolRegistry {
     /// request fails loudly instead of running with a narrowed toolset.
     fn refused_non_read_only_tools(&self) -> &[String] {
         &self.refused_non_read_only
-    }
-
-    /// Whether this role is allowed to use `Suggest`-level tools (write_file,
-    /// edit_file, apply_patch, ...) without the parent runtime being
-    /// auto-approved. Read-only stances (`explore`, `plan`, `review`,
-    /// `verifier`) stay blocked so they can't quietly mutate the workspace
-    /// while a non-auto parent is delegating bounded investigation.
-    /// `Required`-level tools (shell, etc.) still need parent auto-approve
-    /// regardless of role (#1828, #1833).
-    fn role_can_delegate_writes(agent_type: &SubAgentType) -> bool {
-        matches!(agent_type, SubAgentType::Implementer | SubAgentType::Custom)
-    }
-
-    /// Whether a given tool name is permitted under this child's filter.
-    /// `None` filter = everything permitted.
-    fn is_tool_allowed(&self, name: &str) -> bool {
-        if matches!(self.agent_type, SubAgentType::CoordinatorWorker)
-            && WORKER_EXCLUDED_TOOLS.contains(&name)
-        {
-            return false;
-        }
-        match &self.allowed_tools {
-            None => true,
-            Some(list) => list.iter().any(|t| t == name),
-        }
     }
 
     fn tools_for_model(&self, agent_type: &SubAgentType) -> Vec<Tool> {
@@ -7238,59 +6879,127 @@ impl SubAgentToolRegistry {
         }
     }
 
-    async fn execute(&self, agent_id: &str, name: &str, input: Value) -> Result<String> {
+    /// The child's tool surface for the shared turn loop: every registered
+    /// tool behind one [`DelegationPolicy`] gate (so a hidden, refused or
+    /// out-of-workspace call fails, or asks, exactly as it always has), and
+    /// the model-visible catalog ([`Self::tools_for_model`]).
+    fn into_surface(self, agent_id: &str) -> ChildToolSurface {
+        let catalog = self.tools_for_model(&self.agent_type);
+        let policy = Arc::new(DelegationPolicy {
+            agent_id: agent_id.to_string(),
+            agent_type: self.agent_type,
+            allowed_tools: self.allowed_tools,
+            auto_approve: self.auto_approve,
+            path_ask: self.path_ask,
+            asks: std::sync::atomic::AtomicU64::new(0),
+        });
+        let mut delegated = ToolRegistry::new(self.registry.context().clone());
+        for inner in self.registry.all() {
+            delegated.register(Arc::new(DelegatedTool {
+                inner,
+                policy: Arc::clone(&policy),
+            }));
+        }
+        ChildToolSurface {
+            tool_set: Arc::new(delegated.to_framework_tool_set()),
+            dispatcher: Arc::new(delegated),
+            catalog,
+        }
+    }
+}
+
+/// The trust envelope a parent hands its child (DSH: delegation narrows the
+/// envelope, never the loop). The shared turn loop never asks the user on a
+/// child's behalf — every [`DelegatedTool`] reports `Auto` — so this gate
+/// decides instead, before the call runs: the child's allowlist, the
+/// approval delegation by role, the terminal-takeover refusal, and the
+/// out-of-workspace path question routed to the parent's UI.
+struct DelegationPolicy {
+    agent_id: String,
+    /// Decides whether `Suggest`-level tools (write/edit/patch) may run
+    /// without the parent being auto-approved (#1828, #1833).
+    agent_type: SubAgentType,
+    /// `None` = every registered tool; `Some(list)` = only the listed ones.
+    allowed_tools: Option<Vec<String>>,
+    auto_approve: bool,
+    path_ask: Option<PathAsk>,
+    /// Distinguishes one ask from the next, so a repeated call for the same
+    /// path is a fresh question with a fresh id.
+    asks: std::sync::atomic::AtomicU64,
+}
+
+impl DelegationPolicy {
+    /// Whether this role is allowed to use `Suggest`-level tools (write_file,
+    /// edit_file, apply_patch, ...) without the parent runtime being
+    /// auto-approved. Read-only stances (`explore`, `plan`, `review`,
+    /// `verifier`) stay blocked so they can't quietly mutate the workspace
+    /// while a non-auto parent is delegating bounded investigation.
+    /// `Required`-level tools (shell, etc.) still need parent auto-approve
+    /// regardless of role (#1828, #1833).
+    fn role_can_delegate_writes(agent_type: &SubAgentType) -> bool {
+        matches!(agent_type, SubAgentType::Implementer | SubAgentType::Custom)
+    }
+
+    /// Whether a given tool name is permitted under this child's filter.
+    /// `None` filter = everything permitted.
+    fn is_tool_allowed(&self, name: &str) -> bool {
+        if matches!(self.agent_type, SubAgentType::CoordinatorWorker)
+            && WORKER_EXCLUDED_TOOLS.contains(&name)
+        {
+            return false;
+        }
+        match &self.allowed_tools {
+            None => true,
+            Some(list) => list.iter().any(|t| t == name),
+        }
+    }
+
+    /// Admit one call of `spec` with `input`, or refuse it with the reason
+    /// the child's model reads. An out-of-workspace path is the user's
+    /// decision, not a dead end: a child has no prompt of its own, so the
+    /// question goes to the parent's UI and the answer decides.
+    async fn admit(
+        &self,
+        spec: &dyn ToolSpec,
+        input: &Value,
+        context: &ToolContext,
+    ) -> Result<(), ToolError> {
+        let name = spec.name();
         if !self.is_tool_allowed(name) {
-            return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
+            return Err(ToolError::permission_denied(format!(
+                "Tool {name} not allowed for this sub-agent"
+            )));
         }
         if !self.auto_approve {
-            let Some(spec) = self.registry.get(name) else {
-                return Err(anyhow!("Tool {name} is not registered"));
-            };
             match spec.approval_requirement() {
                 ApprovalRequirement::Auto => {}
                 ApprovalRequirement::Suggest => {
                     // Write/edit/patch tools land here. Explicit
                     // write-capable roles (`implementer`, `custom`) may run them
                     // without parent auto-approve so that delegated work
-                    // can actually land file changes; the previous
-                    // behavior blocked every write under `suggest` mode
-                    // even for the role explicitly chartered to write
-                    // (#1828, #1833). Read-only roles still bounce so
-                    // exploration/review/planning/verifier children
+                    // can actually land file changes; read-only roles still
+                    // bounce so exploration/review/planning/verifier children
                     // can't mutate the workspace behind the parent's back.
                     if !Self::role_can_delegate_writes(&self.agent_type) {
-                        return Err(anyhow!(
+                        return Err(ToolError::permission_denied(format!(
                             "Tool {name} requires approval and is not delegated to {role} sub-agents; rerun the parent with auto approval or pick a write-capable role",
                             role = self.agent_type.as_str()
-                        ));
+                        )));
                     }
                 }
                 ApprovalRequirement::Required => {
-                    return Err(anyhow!(
+                    return Err(ToolError::permission_denied(format!(
                         "Tool {name} requires approval and cannot run inside this sub-agent unless the parent session is auto-approved"
-                    ));
+                    )));
                 }
             }
         }
-        reject_subagent_terminal_takeover(name, &input)?;
-        // An out-of-workspace path is the user's decision, not a dead end. A
-        // child has no prompt of its own, so the question goes to the parent's
-        // UI and the answer decides whether the call below runs or fails.
-        if let Some(path) = self.escaped_path(name, &input) {
-            self.ask_path_access(agent_id, name, &path).await?;
+        reject_subagent_terminal_takeover(name, input)
+            .map_err(|err| ToolError::permission_denied(err.to_string()))?;
+        if let Some(path) = spec.escaped_path_for_input(input, context) {
+            self.ask_path_access(name, &path).await?;
         }
-        self.registry
-            .execute(name, input)
-            .await
-            .map_err(|e| anyhow!(e))
-    }
-
-    /// Path this call names that `resolve_path` would refuse (outside the
-    /// workspace, untrusted). `None` for tools with no path input, an allowed
-    /// path, or a child whose context is in `trust_mode`.
-    fn escaped_path(&self, name: &str, input: &Value) -> Option<PathBuf> {
-        let spec = self.registry.get(name)?;
-        spec.escaped_path_for_input(input, self.registry.context())
+        Ok(())
     }
 
     /// Ask the host for access to `path`, in the parent's prompt (the child
@@ -7298,14 +7007,15 @@ impl SubAgentToolRegistry {
     /// list, so the call that follows — and the parent turn asking for the
     /// same directory — both resolve it. Refusal returns an error the child's
     /// model can act on.
-    async fn ask_path_access(&self, agent_id: &str, name: &str, path: &Path) -> Result<()> {
+    async fn ask_path_access(&self, name: &str, path: &Path) -> Result<(), ToolError> {
         let Some(ask) = &self.path_ask else {
             // No host channel (embeds, tests): leave the refusal to the tool's
             // own path check, which names `/trust add` for the user.
             return Ok(());
         };
         let id = format!(
-            "sub:{agent_id}:{}",
+            "sub:{}:{}",
+            self.agent_id,
             self.asks.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         if let Some(tx) = &ask.event_tx {
@@ -7327,24 +7037,115 @@ impl SubAgentToolRegistry {
                 ask.context.grant_external_path(path.to_path_buf());
                 Ok(())
             }
-            Ok(Some(ApprovalDecision::Denied { .. })) => Err(anyhow!(
-                "The user declined access to '{}' (outside the workspace, not trusted). \
+            Ok(Some(ApprovalDecision::Denied { .. })) => {
+                Err(ToolError::permission_denied(format!(
+                    "The user declined access to '{}' (outside the workspace, not trusted). \
                  Do not retry this call or ask for that path again.",
-                path.display()
-            )),
+                    path.display()
+                )))
+            }
             // Nobody was there to answer (the parent's UI only prompts while a
             // turn is running). The path stays untrusted — say so rather than
             // letting the model treat silence as consent.
-            Ok(None) => Err(anyhow!(
+            Ok(None) => Err(ToolError::permission_denied(format!(
                 "Timed out waiting for the user to allow access to '{}' (outside the workspace, \
                  not trusted). The path stays untrusted.",
                 path.display()
-            )),
-            Err(err) => Err(anyhow!(
+            ))),
+            Err(err) => Err(ToolError::permission_denied(format!(
                 "Path access for '{}' was not decided ({err:?}); the path stays untrusted.",
                 path.display()
-            )),
+            ))),
         }
+    }
+}
+
+/// One tool on a child's surface: the inner spec, gated by the child's
+/// [`DelegationPolicy`]. Metadata is the inner spec's, except that the
+/// loop is told every call is approval-free and names no escaped path —
+/// the child never prompts through the loop; `execute` admits (or refuses,
+/// or asks about the path) itself, then runs the inner spec under the
+/// delegated-call cap.
+struct DelegatedTool {
+    inner: Arc<dyn ToolSpec>,
+    policy: Arc<DelegationPolicy>,
+}
+
+#[async_trait]
+impl ToolSpec for DelegatedTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> Value {
+        self.inner.input_schema()
+    }
+
+    fn output_schema(&self) -> Value {
+        self.inner.output_schema()
+    }
+
+    fn validate_input(&self, input: &Value, context: &ToolContext) -> Result<(), ToolError> {
+        self.inner.validate_input(input, context)
+    }
+
+    fn capabilities(&self) -> Vec<ToolCapability> {
+        self.inner.capabilities()
+    }
+
+    fn approval_requirement(&self) -> ApprovalRequirement {
+        ApprovalRequirement::Auto
+    }
+
+    fn approval_requirement_for_input(
+        &self,
+        _input: &Value,
+        _context: &ToolContext,
+    ) -> ApprovalRequirement {
+        ApprovalRequirement::Auto
+    }
+
+    fn escaped_path_for_input(&self, _input: &Value, _context: &ToolContext) -> Option<PathBuf> {
+        None
+    }
+
+    fn is_sandboxable(&self) -> bool {
+        self.inner.is_sandboxable()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    fn is_destructive(&self, input: &Value) -> bool {
+        self.inner.is_destructive(input)
+    }
+
+    fn is_interactive(&self, input: &Value) -> bool {
+        self.inner.is_interactive(input)
+    }
+
+    fn supports_parallel(&self) -> bool {
+        self.inner.supports_parallel()
+    }
+
+    fn defer_loading(&self) -> bool {
+        self.inner.defer_loading()
+    }
+
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        self.policy
+            .admit(self.inner.as_ref(), &input, context)
+            .await?;
+        tokio::time::timeout(TOOL_TIMEOUT, self.inner.execute(input, context))
+            .await
+            .unwrap_or(Err(ToolError::Timeout {
+                seconds: TOOL_TIMEOUT.as_secs(),
+            }))
     }
 }
 

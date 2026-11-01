@@ -318,8 +318,8 @@ pub struct ExtensionRunner {
     /// first). The engine snapshots them once per main-turn assembly via
     /// [`around_turn_handlers`](Self::around_turn_handlers) and composes
     /// the `next()` chain around the executor's run; `clear_around_turns`
-    /// / reload drop them. Main-turn only — sub-agent loops never read
-    /// this, so a dylib-origin handler needs no origin tiering here.
+    /// / reload drop them. Main-turn only — sub-agent turns are never
+    /// wrapped, so a dylib-origin handler needs no origin tiering here.
     around_turns: Mutex<Vec<Arc<dyn AroundTurnHandler>>>,
     /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`. On
     /// reload, [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
@@ -1244,8 +1244,8 @@ impl ExtensionRunner {
     /// dispatch): handlers registered at `Global` always receive the
     /// event; a handler registered at `AgentType(id)` receives it only
     /// when `scope` is that same type. The main-turn sites call
-    /// [`emit`](Self::emit) (Global); a sub-agent loop dispatches with
-    /// its own agent type. At agent-type scopes, dylib-origin handlers
+    /// [`emit`](Self::emit) (Global); a sub-agent turn dispatches every
+    /// event with its own agent type. At agent-type scopes, dylib-origin handlers
     /// are skipped (§F5d unload safety: a detached background child can
     /// outlive a reload's two-phase `Library` drop, so dylib code never
     /// runs from a sub-agent dispatch).
