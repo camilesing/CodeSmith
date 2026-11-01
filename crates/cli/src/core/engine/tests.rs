@@ -4327,6 +4327,19 @@ fn parked_completion(agent_id: &str, summary: &str) -> SubAgentCompletion {
     }
 }
 
+/// The `synthesized` tag of the (single) `TurnStarted` among `events`.
+fn turn_started_tag(events: &[Event]) -> bool {
+    let tags: Vec<bool> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::TurnStarted { synthesized, .. } => Some(*synthesized),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tags.len(), 1, "one TurnStarted per collected turn");
+    tags[0]
+}
+
 /// Flatten every text block of a request's messages into one string per
 /// message, for order assertions over the synthesized turn.
 fn user_text_blocks(request: &crate::models::MessageRequest) -> Vec<String> {
@@ -4375,6 +4388,10 @@ async fn idle_wake_synthesizes_turn_when_completion_lands_while_idle() {
     // The in-flight flag must already read false once TurnComplete is
     // observed (cleared before the event is sent).
     assert!(!handle.turn_in_flight());
+    assert!(
+        !turn_started_tag(&first),
+        "a host's own turn is not synthesized"
+    );
 
     // A direct child completes while the engine is idle.
     handle
@@ -4396,6 +4413,10 @@ async fn idle_wake_synthesizes_turn_when_completion_lands_while_idle() {
         1
     );
     assert!(!handle.turn_in_flight());
+    assert!(
+        turn_started_tag(&second),
+        "the idle-wake turn announces itself as synthesized"
+    );
 
     let requests = mock_arc.captured_requests();
     assert_eq!(requests.len(), 2, "exactly two model requests");
@@ -4519,15 +4540,20 @@ async fn goal_round_driver_continues_active_goal() {
     let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
 
     handle.send(make_send_op("start")).await.expect("send op");
-    let _ = collect_until_turn_complete(&handle).await;
+    let first = collect_until_turn_complete(&handle).await;
+    assert!(!turn_started_tag(&first));
 
     // The driver queues round 1 without any user input.
-    let _second = tokio::time::timeout(
+    let second = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         collect_until_turn_complete(&handle),
     )
     .await
     .expect("goal round driver synthesizes the next round");
+    assert!(
+        turn_started_tag(&second),
+        "a goal round announces itself as synthesized"
+    );
 
     let requests = mock_arc.captured_requests();
     assert_eq!(requests.len(), 2);
@@ -4945,7 +4971,7 @@ async fn failed_turn_reports_attempt_record_on_turn_complete() {
     let started_id = events
         .iter()
         .find_map(|event| match event {
-            Event::TurnStarted { turn_id } => Some(turn_id.clone()),
+            Event::TurnStarted { turn_id, .. } => Some(turn_id.clone()),
             _ => None,
         })
         .expect("TurnStarted precedes the failed turn's completion");

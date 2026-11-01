@@ -3089,6 +3089,7 @@ mod tests {
                         let _ = tx_event
                             .send(EngineEvent::TurnStarted {
                                 turn_id: "mock_lifecycle".to_string(),
+                                synthesized: false,
                             })
                             .await;
                         let _ = tx_event
@@ -3272,6 +3273,7 @@ mod tests {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
                     turn_id: "mock_cursor".to_string(),
+                    synthesized: false,
                 })
                 .await;
             let _ = tx_event
@@ -3401,6 +3403,7 @@ mod tests {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
                     turn_id: "engine_turn_api".to_string(),
+                    synthesized: false,
                 })
                 .await;
             let _ = tx_event
@@ -3625,6 +3628,7 @@ mod tests {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
                     turn_id: "mock_stream".to_string(),
+                    synthesized: false,
                 })
                 .await;
             let _ = tx_event

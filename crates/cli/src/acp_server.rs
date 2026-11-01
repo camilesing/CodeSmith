@@ -18,8 +18,11 @@
 //! engine's only event reader: text deltas relay as `agent_message_chunk`,
 //! reasoning as `agent_thinking_chunk`, tool calls as `tool_call` /
 //! `tool_call_update`. A prompt completes through a per-session oneshot the
-//! pump resolves on `TurnComplete`; because the pump is the single reader, a
-//! cancelled turn cannot be confused with its successor. Two prompts are
+//! pump resolves on the `TurnComplete` of the turn that *is* the prompt's:
+//! a turn that started while the slot was pending and was not
+//! engine-synthesized (`TurnStarted { synthesized: false }`) — so an idle
+//! wake or goal round the engine runs between prompts neither completes a
+//! queued prompt early nor steals its turn. Two prompts are
 //! never in flight on one session: the second is refused with
 //! `invalid_params` (ACP clients await one response before the next).
 //!
@@ -239,6 +242,10 @@ struct AcpSession {
     pump_task: Option<tokio::task::AbortHandle>,
     /// The in-flight prompt's completion slot, if any.
     pending_prompt: Option<oneshot::Sender<PromptOutcome>>,
+    /// The running turn is the pending prompt's own (started after the slot
+    /// was reserved and not engine-synthesized) — its `TurnComplete`
+    /// resolves the slot. Any other running turn leaves the slot waiting.
+    prompt_turn_live: bool,
     /// Monotonic per-session prompt generation: lets an abandoned turn
     /// clear ITS reservation without clobbering a newer prompt's slot
     /// after a close/resume re-created the same session id.
@@ -488,6 +495,7 @@ impl AcpServer {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                prompt_turn_live: false,
                 prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
@@ -578,6 +586,7 @@ impl AcpServer {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                prompt_turn_live: false,
                 prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
@@ -889,6 +898,10 @@ where
     // starts under that id so the journal (round-9 TODO-58) pairs with the
     // snapshot `persist_turn` writes.
     engine_config.session_id = Some(session_id.to_string());
+    // The pump reads events while idle and pairs a prompt with its own
+    // turn only (`AcpSession::prompt_turn_live`), so engine-synthesized
+    // turns (idle wake, goal rounds) are safe here.
+    engine_config.idle_wake = true;
     engine_config.session_journal = Some(std::sync::Arc::new(
         codesmith_session::journal::FileSessionJournal::new(sessions_dir),
     ));
@@ -1137,6 +1150,12 @@ async fn pump_events<W>(
                     session.system_prompt = system_prompt;
                 }
             }
+            Event::TurnStarted { synthesized, .. } => {
+                let mut sessions = lock_sessions(&shared.sessions);
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    session.prompt_turn_live = !synthesized && session.pending_prompt.is_some();
+                }
+            }
             Event::TurnComplete {
                 status,
                 error,
@@ -1149,10 +1168,16 @@ async fn pump_events<W>(
                     tokens: u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
                 };
                 let mut sessions = lock_sessions(&shared.sessions);
-                if let Some(session) = sessions.get_mut(&session_id)
-                    && let Some(pending) = session.pending_prompt.take()
-                {
-                    let _ = pending.send(outcome);
+                if let Some(session) = sessions.get_mut(&session_id) {
+                    // Only the prompt's own turn resolves it (see
+                    // `AcpSession::prompt_turn_live`); any other turn's
+                    // completion leaves the slot for the next one.
+                    if session.prompt_turn_live
+                        && let Some(pending) = session.pending_prompt.take()
+                    {
+                        let _ = pending.send(outcome);
+                    }
+                    session.prompt_turn_live = false;
                 }
             }
             _ => {}
@@ -1619,6 +1644,7 @@ mod tests {
                 engine: None,
                 pump_task: None,
                 pending_prompt: None,
+                prompt_turn_live: false,
                 prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
@@ -2175,5 +2201,139 @@ mod tests {
         )
         .await;
         assert_eq!(denied, Permission::Deny);
+    }
+
+    // === Round 11 TODO-74 — turn-scoped prompt outcome ======================
+
+    /// Drive the pump with hand-made events over a mock engine and report
+    /// whether the reserved slot resolved (and with what status).
+    async fn pump_scenario(events: Vec<Event>) -> Option<PromptOutcome> {
+        pump_scenario_with_slot_after(events, 0).await
+    }
+
+    /// Same, but the prompt slot is reserved only after the pump has
+    /// consumed the first `split` events (modeling a prompt arriving mid-
+    /// turn: the running turn's `TurnStarted` precedes the reservation).
+    async fn pump_scenario_with_slot_after(
+        events: Vec<Event>,
+        split: usize,
+    ) -> Option<PromptOutcome> {
+        let (tmp, store) = temp_store();
+        let mut server = server_over(store);
+        let cwd = tmp.path().join("proj");
+        open_session(&mut server, "acp-t74", &cwd);
+        let mock = crate::core::engine::mock_engine_handle();
+        {
+            let mut sessions = lock_sessions(&server.shared.sessions);
+            sessions.get_mut("acp-t74").expect("session opened").engine = Some(mock.handle.clone());
+        }
+        let (slot_tx, slot_rx) = oneshot::channel::<PromptOutcome>();
+        let mut slot_tx = Some(slot_tx);
+        let shared = server.shared.clone();
+        let install_slot = |slot: &mut Option<oneshot::Sender<PromptOutcome>>| {
+            lock_sessions(&shared.sessions)
+                .get_mut("acp-t74")
+                .expect("session")
+                .pending_prompt = slot.take();
+        };
+        if split == 0 {
+            install_slot(&mut slot_tx);
+        }
+
+        let pump = tokio::spawn(pump_events(
+            mock.handle.clone(),
+            server.shared.clone(),
+            "acp-t74".to_string(),
+            sink(),
+        ));
+        for (index, event) in events.into_iter().enumerate() {
+            if index == split && split != 0 {
+                // One beat so the pump consumes the earlier events first —
+                // the ordering the scenario is about (the split == 0 case
+                // installed the slot before the pump started).
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                install_slot(&mut slot_tx);
+            }
+            mock.tx_event.send(event).await.expect("event channel");
+        }
+        // Give the pump a beat to (wrongly) resolve the slot, if it would.
+        let settled = tokio::time::timeout(std::time::Duration::from_millis(150), slot_rx).await;
+        pump.abort();
+        settled
+            .map(|resolved| resolved.expect("slot channel open"))
+            .ok()
+    }
+
+    fn completed_turn() -> Event {
+        Event::TurnComplete {
+            usage: Default::default(),
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+            reported_model: None,
+            failed_attempts: Vec::new(),
+        }
+    }
+
+    /// An engine-synthesized turn (idle wake / goal round) completing
+    /// between the prompt and its own turn must NOT resolve the prompt —
+    /// the old first-TurnComplete-wins resolution completed it early.
+    #[tokio::test]
+    async fn a_synthesized_turn_does_not_complete_a_pending_prompt() {
+        let outcome = pump_scenario(vec![
+            Event::TurnStarted {
+                turn_id: "wake-1".to_string(),
+                synthesized: true,
+            },
+            completed_turn(),
+            Event::TurnStarted {
+                turn_id: "real-1".to_string(),
+                synthesized: false,
+            },
+        ])
+        .await;
+        assert!(
+            outcome.is_none(),
+            "the synthesized turn's completion must not resolve the prompt"
+        );
+    }
+
+    /// The prompt resolves on the TurnComplete of the real turn that started
+    /// after its slot was reserved.
+    #[tokio::test]
+    async fn the_prompt_resolves_on_its_own_turn() {
+        let outcome = pump_scenario(vec![
+            Event::TurnStarted {
+                turn_id: "real-1".to_string(),
+                synthesized: false,
+            },
+            completed_turn(),
+        ])
+        .await;
+        let outcome = outcome.expect("the prompt's own turn resolves it");
+        assert_eq!(outcome.status, TurnOutcomeStatus::Completed);
+    }
+
+    /// A real turn that was already running when the prompt arrived is not
+    /// the prompt's either — only a turn started after the slot resolves it.
+    #[tokio::test]
+    async fn a_turn_started_before_the_prompt_does_not_resolve_it() {
+        let events = vec![
+            Event::TurnStarted {
+                turn_id: "old-1".to_string(),
+                synthesized: false,
+            },
+            completed_turn(),
+            Event::TurnStarted {
+                turn_id: "real-1".to_string(),
+                synthesized: false,
+            },
+        ];
+        let outcome = pump_scenario_with_slot_after(events, 1).await;
+        assert!(
+            outcome.is_none(),
+            "a turn that started before the prompt is not the prompt's turn"
+        );
     }
 }

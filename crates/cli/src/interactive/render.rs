@@ -3283,6 +3283,7 @@ mod tests {
         mock.tx_event
             .send(Event::TurnStarted {
                 turn_id: "turn-1".to_string(),
+                synthesized: false,
             })
             .await
             .expect("event channel");

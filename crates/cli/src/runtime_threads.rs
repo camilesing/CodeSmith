@@ -2401,7 +2401,7 @@ impl RuntimeThreadManager {
                     event
                 }
             };
-            if let EngineEvent::TurnStarted { turn_id } = &event {
+            if let EngineEvent::TurnStarted { turn_id, .. } = &event {
                 let active_now = {
                     let active = self.active.lock().await;
                     active
@@ -4221,6 +4221,7 @@ mod tests {
                 let _ = tx_event
                     .send(EngineEvent::TurnStarted {
                         turn_id: "engine_turn_1".to_string(),
+                        synthesized: false,
                     })
                     .await;
                 let _ = tx_event
@@ -4440,6 +4441,7 @@ mod tests {
             .tx_event
             .send(EngineEvent::TurnStarted {
                 turn_id: "turn_synth".to_string(),
+                synthesized: false,
             })
             .await?;
         harness
@@ -4586,6 +4588,7 @@ mod tests {
                 let _ = tx_event
                     .send(EngineEvent::TurnStarted {
                         turn_id: format!("engine_turn_{turn_index}"),
+                        synthesized: false,
                     })
                     .await;
                 let _ = tx_event
@@ -4709,6 +4712,7 @@ mod tests {
                 let _ = tx_event
                     .send(EngineEvent::TurnStarted {
                         turn_id: "engine_turn_interrupt".to_string(),
+                        synthesized: false,
                     })
                     .await;
                 let _ = tx_event
@@ -5354,6 +5358,7 @@ mod tests {
                 let _ = tx_event
                     .send(EngineEvent::TurnStarted {
                         turn_id: "engine_turn_steer".to_string(),
+                        synthesized: false,
                     })
                     .await;
                 if let Some(steer) = rx_steer.recv().await {
@@ -5467,6 +5472,7 @@ mod tests {
                         let _ = tx_event
                             .send(EngineEvent::TurnStarted {
                                 turn_id: "engine_turn_auto".to_string(),
+                                synthesized: false,
                             })
                             .await;
                         let _ = tx_event

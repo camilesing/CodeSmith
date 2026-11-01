@@ -250,6 +250,14 @@ pub struct Engine {
     /// session's current settings; only the content is replaced with the
     /// wake notice. `None` until the first user-driven turn.
     pub(crate) last_send_op: Option<Op>,
+    /// The next `Op::SendMessage` the op loop runs is engine-synthesized
+    /// (idle wake / goal round). Set on the op-loop task immediately before
+    /// that op runs and consumed at the top of `handle_send_message`, so it
+    /// tags exactly that turn's `TurnStarted` — no queue sits between.
+    pub(crate) synthesizing: bool,
+    /// A goal round the driver decided on after the last turn, run at the
+    /// next loop top unless a real op is waiting (real ops outrank rounds).
+    pub(crate) pending_round: Option<Op>,
     /// Whether a `SendMessage` turn is currently executing (round 10
     /// TODO-69). Set at `handle_send_message` entry and cleared **before**
     /// the final `TurnComplete` is sent, so a frontend that pumps on
@@ -679,18 +687,29 @@ impl Engine {
                 Op(Option<Op>),
                 Wake,
             }
-            let wake = tokio::select! {
-                biased;
-                op = self.rx_op.recv() => LoopWake::Op(op),
-                _ = self.idle_wake.notified() => LoopWake::Wake,
-            };
-            let op = match wake {
-                LoopWake::Op(Some(op)) => op,
-                LoopWake::Op(None) => break,
-                LoopWake::Wake => match self.idle_wake_op().await {
-                    Some(op) => op,
-                    None => continue,
-                },
+            // A decided goal round runs first unless a real op is waiting
+            // (a waiting op wins; its turn's end re-runs the driver).
+            let round = self.pending_round.take().filter(|_| self.rx_op.is_empty());
+            let op = if let Some(round) = round {
+                self.synthesizing = true;
+                round
+            } else {
+                let wake = tokio::select! {
+                    biased;
+                    op = self.rx_op.recv() => LoopWake::Op(op),
+                    _ = self.idle_wake.notified() => LoopWake::Wake,
+                };
+                match wake {
+                    LoopWake::Op(Some(op)) => op,
+                    LoopWake::Op(None) => break,
+                    LoopWake::Wake => match self.idle_wake_op().await {
+                        Some(op) => {
+                            self.synthesizing = true;
+                            op
+                        }
+                        None => continue,
+                    },
+                }
             };
             // The synthesized turn reuses the most recent real turn's
             // parameters; keep that snapshot current.
@@ -767,8 +786,8 @@ impl Engine {
                         .await;
                     // Round 10 TODO-71 — the goal round driver rides the
                     // same wake seam: a cleanly-ended turn with an active
-                    // goal queues the next round without user input.
-                    self.goal_round_after_turn(turn_end).await;
+                    // goal decides the next round, run at the next loop top.
+                    self.pending_round = self.goal_round_after_turn(turn_end).await;
                 }
                 Op::CancelRequest => {
                     self.cancel_token.cancel();
@@ -1308,6 +1327,8 @@ impl Engine {
         allowed_tools: Option<Vec<String>>,
         blocked_tools: Vec<String>,
     ) -> TurnEnd {
+        // Consumed first: no exit below may leave the tag for the next turn.
+        let synthesized = std::mem::take(&mut self.synthesizing);
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
         self.last_dispatched_mode = Some(mode);
@@ -1335,6 +1356,7 @@ impl Engine {
             .tx_event
             .send(Event::TurnStarted {
                 turn_id: turn.id.clone(),
+                synthesized,
             })
             .await;
 
@@ -3709,6 +3731,8 @@ impl Engine {
             rx_subagent_completion: Arc::new(AsyncMutex::new(rx_subagent_completion)),
             idle_wake,
             last_send_op: None,
+            synthesizing: false,
+            pending_round: None,
             turn_in_flight: Arc::new(AtomicBool::new(false)),
             cancel_token,
             shared_cancel_token,

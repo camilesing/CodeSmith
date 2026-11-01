@@ -226,9 +226,10 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   `SubAgentCompletionSender` — no second queue, no inbox framework. A host
   that turns it on must read the event channel while idle (the REPL's
   `interactive::unattended` pump; its unattended policy denies approvals the
-  way headless runs do). exec/embeds leave it off; ACP stays off until its
-  prompt-outcome resolution is turn-scoped (its pump resolves any pending
-  prompt on the first `TurnComplete`).
+  way headless runs do). exec/embeds leave it off; ACP runs it on (its
+  prompt outcome is turn-scoped — a synthesized turn's `TurnStarted` is
+  tagged `synthesized`, and its `TurnComplete` never completes a queued
+  client prompt).
 - Verify consumers before removing "looks-dead" modules; standing live
   examples: `session/src/zones.rs` (re-exported as
   `agent_runtime::prompt_zones`) and

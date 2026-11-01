@@ -176,8 +176,11 @@ pub enum Event {
     },
 
     // === Turn Lifecycle ===
-    /// A new turn has started (user sent a message)
-    TurnStarted { turn_id: String },
+    /// A new turn has started. `synthesized` is `true` when the engine
+    /// started it on its own — an idle wake or a goal round — rather than
+    /// for a host's `Op::SendMessage`; a host that pairs its own request
+    /// with "the next turn" (ACP's prompt outcome) skips synthesized ones.
+    TurnStarted { turn_id: String, synthesized: bool },
 
     /// Event-sourcing slice 5 — one per provider request (LLM step): the
     /// compact request-envelope facts the turn-level record does not carry

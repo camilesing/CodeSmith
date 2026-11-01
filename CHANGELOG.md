@@ -34,6 +34,11 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **ACP sessions idle-wake** — a background sub-agent finishing while the
+  editor session sits idle now synthesizes the next turn there too (the
+  goal round driver likewise). A queued `session/prompt` is completed only
+  by the turn that is its own (synthesized turns are tagged on
+  `TurnStarted` and never complete a prompt early).
 - **Sub-agents run on the main turn loop** — an in-process sub-agent is now
   built by the same `turn_executor` factory as the main turn and runs its
   loop: it streams with the idle watchdog (`[subagents] api_timeout_secs`

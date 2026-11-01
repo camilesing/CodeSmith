@@ -1951,11 +1951,9 @@ pub(crate) fn headless_engine_config(
         workspace,
         allow_shell: auto_approve || config.allow_shell(),
         trust_mode,
-        // Off for headless hosts (round 10 TODO-69): exec exits after one
-        // turn, and ACP's always-on pump resolves any pending prompt on the
-        // first TurnComplete it sees — a synthesized turn would complete a
-        // queued client prompt early. Revisit when ACP's prompt outcome is
-        // turn-scoped.
+        // Off by default for headless hosts: exec exits after one turn.
+        // ACP turns it on per session (its pump pairs a prompt with its own
+        // turn, skipping synthesized ones).
         idle_wake: false,
         turn_executor: config.turn_executor_id(),
         notes_path: config.notes_path(),

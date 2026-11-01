@@ -28,11 +28,14 @@
 //! ## Known limitations
 //!
 //! - A host that turns `idle_wake` on must drain the event channel while
-//!   idle (REPL `unattended::IdlePump`, runtime-API idle monitor). A host
-//!   that cannot (exec exits after one turn; embeds; ACP until its
-//!   prompt-outcome resolution is turn-scoped) leaves it off — the event
-//!   channel's intentional `MessageDelta` backpressure would otherwise
-//!   stall a synthesized turn mid-stream once 256 events queue up.
+//!   idle (REPL `unattended::IdlePump`, runtime-API idle monitor, ACP's
+//!   always-on pump). A host that cannot (exec exits after one turn;
+//!   embeds) leaves it off — the event channel's intentional
+//!   `MessageDelta` backpressure would otherwise stall a synthesized turn
+//!   mid-stream once 256 events queue up.
+//! - Every synthesized turn's `TurnStarted` carries `synthesized: true` (the
+//!   op loop sets `Engine::synthesizing` right before running it), so a
+//!   host that pairs its own request with the next turn can skip it.
 //! - The synthesized turn's wake notice is a real user-role message (it
 //!   enters the transcript and the session journal, per "model-visible
 //!   means logged"); it is NOT prefix-cache-frozen content.
@@ -81,22 +84,22 @@ impl Engine {
     /// journaled, pumped, and approval-gated like any turn. Deliberately
     /// only the `SendMessage` arm (not `/edit`): an edited turn's clean end
     /// does not auto-drive.
-    pub(crate) async fn goal_round_after_turn(&self, end: TurnEnd) {
+    /// Returns the next round's op for the loop top to run (where a waiting
+    /// real op outranks it); `None` pauses or abstains.
+    pub(crate) async fn goal_round_after_turn(&self, end: TurnEnd) -> Option<Op> {
         if !self.config.idle_wake || end.status != TurnOutcomeStatus::Completed {
-            return;
+            return None;
         }
         // Real ops always outrank a synthesized round; and parked
         // completions win over the goal — their wake turn re-runs this
         // check at its own end.
         if !self.rx_op.is_empty() || self.llm_client.is_none() {
-            return;
+            return None;
         }
         if !self.rx_subagent_completion.lock().await.is_empty() {
-            return;
+            return None;
         }
-        let Some(mut op) = self.last_send_op.clone() else {
-            return;
-        };
+        let mut op = self.last_send_op.clone()?;
         let decision = {
             let mut goal = self
                 .config
@@ -104,7 +107,7 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !goal.is_active() {
-                return;
+                return None;
             }
             goal.next_round(u64::from(end.input_tokens), u64::from(end.output_tokens))
         };
@@ -119,7 +122,7 @@ impl Engine {
                 if let Op::SendMessage { content, .. } = &mut op {
                     *content = render_continuation_prompt(&snapshot, round, MAX_GOAL_ROUNDS);
                 }
-                let _ = self.tx_op.send(op).await;
+                Some(op)
             }
             RoundDecision::Pause(reason) => {
                 self.config
@@ -133,6 +136,7 @@ impl Engine {
                         "Goal paused: {reason} (raise the token budget or /goal resume to continue)"
                     )))
                     .await;
+                None
             }
         }
     }
