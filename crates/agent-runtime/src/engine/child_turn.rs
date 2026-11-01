@@ -564,4 +564,93 @@ mod tests {
         assert!(message.contains("turn_executor"), "{message}");
         assert_eq!(mock.call_count(), 0, "nothing was sent");
     }
+
+    /// A child's follow-up input (the steer seam) meets the `Input`
+    /// waterfall at the child's agent-type scope: a compiled-in handler
+    /// transforms it, a dylib-origin handler never sees it (5b — dylib code
+    /// never runs from a sub-agent dispatch).
+    #[tokio::test]
+    async fn child_follow_up_input_meets_the_seam_at_the_child_scope() {
+        use codesmith_agent::extension::{
+            Extension, ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent,
+            ExtensionEventKind, ExtensionMetadata, ExtensionMode, Handler, HandlerOutcome,
+            InputEvent,
+        };
+        use codesmith_extensions::{HostExtensionContext, RegistrationOrigin};
+
+        struct Suffix(&'static str);
+        #[async_trait::async_trait]
+        impl Handler for Suffix {
+            async fn handle(
+                &self,
+                event: &ExtensionEvent,
+                _ctx: &dyn ExtensionContext,
+            ) -> Result<HandlerOutcome, ExtensionError> {
+                let ExtensionEvent::Input(input) = event else {
+                    return Ok(HandlerOutcome::Continue);
+                };
+                Ok(HandlerOutcome::Transform(ExtensionEvent::Input(
+                    InputEvent {
+                        text: format!("{} +{}", input.text, self.0),
+                    },
+                )))
+            }
+        }
+        struct SuffixExt(&'static str);
+        #[async_trait::async_trait]
+        impl Extension for SuffixExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("input-suffix");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on_variant(ExtensionEventKind::Input, Arc::new(Suffix(self.0)))
+            }
+        }
+
+        let runner = Arc::new(ExtensionRunner::new());
+        runner
+            .load(&SuffixExt("compiled"))
+            .await
+            .expect("load compiled-in");
+        runner
+            .load_as(&SuffixExt("dylib"), RegistrationOrigin::Dylib)
+            .await
+            .expect("load dylib-stamped");
+        let workspace = tempfile::tempdir().expect("workspace");
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            workspace.path().to_path_buf(),
+            ExtensionMode::Interactive,
+            Arc::new(StdMutex::new(true)),
+            Arc::new(StdMutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+
+        let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("ok")]));
+        let mut spec = spec(
+            mock.clone(),
+            crate::engine::BUILTIN_TURN_EXECUTOR_ID,
+            workspace.path(),
+        );
+        let (input_tx, input_rx) = mpsc::channel(4);
+        input_tx
+            .send("follow-up note".to_string())
+            .await
+            .expect("queue the follow-up");
+        spec.input = input_rx;
+        spec.extension_runner = Some(runner);
+
+        let outcome = run_child_turn(spec).await;
+
+        assert_eq!(outcome.status, ChildTurnStatus::Completed, "{outcome:?}");
+        let sent = serde_json::to_string(&mock.captured_requests()[0].messages).unwrap();
+        assert!(
+            sent.contains("follow-up note +compiled"),
+            "the compiled-in handler transformed the child's input: {sent}"
+        );
+        assert!(
+            !sent.contains("+dylib"),
+            "a dylib-origin handler never sees a child's input: {sent}"
+        );
+    }
 }

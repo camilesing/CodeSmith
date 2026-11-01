@@ -98,7 +98,12 @@ impl HostAgentExecutor {
         steer: String,
         history: &mut dyn ChatHistory,
     ) -> bool {
-        let steer = crate::engine::input_through_extensions(self.extension.as_ref(), steer).await;
+        let steer = crate::engine::input_through_extensions(
+            self.extension.as_ref(),
+            self.dispatch_scope.clone(),
+            steer,
+        )
+        .await;
         let steer = steer.trim().to_string();
         if steer.is_empty() {
             return false;

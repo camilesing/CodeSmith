@@ -3349,7 +3349,12 @@ impl HostAgentExecutor {
         let user_text = if user_text.is_empty() {
             user_text
         } else {
-            crate::engine::input_through_extensions(extension.as_ref(), user_text).await
+            crate::engine::input_through_extensions(
+                extension.as_ref(),
+                self.dispatch_scope.clone(),
+                user_text,
+            )
+            .await
         };
 
         // Seed the transcript with the user turn. Empty `user_text` means
