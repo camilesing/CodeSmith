@@ -4309,6 +4309,165 @@ async fn model_tool_catalog_includes_session_search() {
     );
 }
 
+// === Round 10 TODO-69 — idle wake ==========================================
+
+use codesmith_agent_runtime::subagent::SubAgentCompletion;
+
+/// A completion payload shaped exactly like `emit_parent_completion`'s wire
+/// format: human summary on line 1, `<codesmith:subagent.done>` sentinel on
+/// line 2.
+fn parked_completion(agent_id: &str, summary: &str) -> SubAgentCompletion {
+    SubAgentCompletion {
+        agent_id: agent_id.to_string(),
+        payload: format!(
+            "{summary}\n<codesmith:subagent.done>{{\"agent_id\":\"{agent_id}\"}}</codesmith:subagent.done>"
+        ),
+        context_patch: None,
+    }
+}
+
+/// Flatten every text block of a request's messages into one string per
+/// message, for order assertions over the synthesized turn.
+fn user_text_blocks(request: &crate::models::MessageRequest) -> Vec<String> {
+    request
+        .messages
+        .iter()
+        .filter_map(|m| {
+            let texts: Vec<String> = m
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect();
+            (!texts.is_empty()).then(|| texts.join("\n"))
+        })
+        .collect()
+}
+
+/// Idle wake on: a sub-agent completion landing while no turn is running
+/// synthesizes the next turn; its pre-request drain delivers both the wake
+/// notice and the completion sentinel, in that order, ahead of the request.
+#[tokio::test]
+async fn idle_wake_synthesizes_turn_when_completion_lands_while_idle() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("first turn done"),
+        canned::simple_text_turn("coordinated"),
+    ]);
+    let mut config = test_engine_config(tmp.path());
+    config.idle_wake = true;
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    // Turn 1: a normal user turn, driven to completion.
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let first = collect_until_turn_complete(&handle).await;
+    assert_eq!(
+        first
+            .iter()
+            .filter(|e| matches!(e, Event::TurnComplete { .. }))
+            .count(),
+        1
+    );
+    // The in-flight flag must already read false once TurnComplete is
+    // observed (cleared before the event is sent).
+    assert!(!handle.turn_in_flight());
+
+    // A direct child completes while the engine is idle.
+    handle
+        .tx_subagent_completion
+        .send(parked_completion("agent_a", "Built the widget"));
+
+    // The engine synthesizes the next turn with no user input.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        collect_until_turn_complete(&handle),
+    )
+    .await
+    .expect("idle wake synthesizes the next turn");
+    assert_eq!(
+        second
+            .iter()
+            .filter(|e| matches!(e, Event::TurnComplete { .. }))
+            .count(),
+        1
+    );
+    assert!(!handle.turn_in_flight());
+
+    let requests = mock_arc.captured_requests();
+    assert_eq!(requests.len(), 2, "exactly two model requests");
+    let texts = user_text_blocks(&requests[1]);
+    let wake = texts
+        .iter()
+        .position(|t| t.contains("kind=\"idle_wake\""))
+        .expect("wake notice in the synthesized turn");
+    let sentinel = texts
+        .iter()
+        .position(|t| t.contains("kind=\"subagent_completion\""))
+        .expect("drained completion sentinel in the synthesized turn");
+    assert!(
+        texts[sentinel].contains("<codesmith:subagent.done>"),
+        "the sentinel carries the completion payload"
+    );
+    assert!(
+        wake < sentinel,
+        "the wake notice precedes the drained completion"
+    );
+    // The wake notice is a real user-role message (model-visible means
+    // logged): it rides the transcript, not a side channel.
+    assert_eq!(requests[1].messages[wake].role, "user");
+}
+
+/// Idle wake off (the default): the same completion stays parked — no
+/// synthesized turn — and the NEXT user turn's pre-request drain delivers
+/// it. Pins the old behavior for hosts that leave the flag off.
+#[tokio::test]
+async fn idle_wake_off_parks_completion_until_next_turn() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("first"),
+        canned::simple_text_turn("second"),
+    ]);
+    let (handle, mock_arc) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    handle
+        .tx_subagent_completion
+        .send(parked_completion("agent_b", "Polished the widget"));
+
+    // No synthesized turn while idle.
+    let leaked = tokio::time::timeout(
+        std::time::Duration::from_millis(750),
+        collect_until_turn_complete(&handle),
+    )
+    .await;
+    assert!(leaked.is_err(), "no synthesized turn when idle_wake is off");
+    drop(leaked);
+    assert_eq!(mock_arc.captured_requests().len(), 1);
+
+    // The parked completion is delivered by the next user turn's drain.
+    handle
+        .send(make_send_op("what finished?"))
+        .await
+        .expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+    let requests = mock_arc.captured_requests();
+    assert_eq!(requests.len(), 2);
+    let texts = user_text_blocks(&requests[1]);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("kind=\"subagent_completion\"")
+                && t.contains("<codesmith:subagent.done>")),
+        "the parked completion reaches the model on the next real turn"
+    );
+}
+
 /// How a test host answers one `request_user_input` prompt.
 enum TestUserInputAnswer {
     Submit(Vec<codesmith_agent_runtime::user_input::UserInputAnswer>),

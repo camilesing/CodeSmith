@@ -24,6 +24,18 @@ impl EngineHandle {
         Ok(())
     }
 
+    /// Whether a `SendMessage` turn is executing in the engine (round 10
+    /// TODO-69). Set at turn start; cleared just before the final
+    /// `TurnComplete` is sent, so once a pump observes `TurnComplete` this
+    /// already reads false — unless *another* turn (the user's message
+    /// queued behind a synthesized idle-wake turn) is already running, in
+    /// which case the pump should keep pumping.
+    #[must_use]
+    pub fn turn_in_flight(&self) -> bool {
+        self.turn_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Cancel the current request (user-initiated path — keeps the
     /// public `cancel()` signature stable). Equivalent to
     /// `cancel_with_reason(CancelReason::User)`.

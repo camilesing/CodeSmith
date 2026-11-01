@@ -10,13 +10,14 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::SystemTime;
 
 use anyhow::Result;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, Notify, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::background_task::BackgroundTaskStatus;
@@ -202,7 +203,12 @@ pub struct Engine {
     /// Wakeup channel for the parent turn loop when a direct child sub-agent
     /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
     /// can fan completion events back into the engine.
-    pub(crate) tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    pub(crate) tx_subagent_completion: crate::subagent::SubAgentCompletionSender,
+    /// Idle-wake signal (round 10 TODO-69): poked by
+    /// [`SubAgentCompletionSender::send`] so the op loop — while idle — can
+    /// synthesize the next turn and let the pre-request drain deliver the
+    /// parked completions. See `engine::idle_wake`.
+    pub(crate) idle_wake: Arc<Notify>,
     /// Receiver paired with `tx_subagent_completion`. Wrapped in an
     /// `Arc<tokio::sync::Mutex<…>>` (slice 20 §E) so the executor can
     /// `Arc::clone` it per turn — the single consumer is the executor's
@@ -232,6 +238,19 @@ pub struct Engine {
     /// prompt. A hardcoded `AppMode::Agent` there let `/edit` in Plan mode
     /// silently re-dispatch with the full Agent surface.
     pub(crate) last_dispatched_mode: Option<AppMode>,
+    /// Snapshot of the most recent real `Op::SendMessage` (round 10
+    /// TODO-69). An idle-wake turn reuses its parameters (mode, model,
+    /// approval posture, …) so a synthesized turn runs under exactly the
+    /// session's current settings; only the content is replaced with the
+    /// wake notice. `None` until the first user-driven turn.
+    pub(crate) last_send_op: Option<Op>,
+    /// Whether a `SendMessage` turn is currently executing (round 10
+    /// TODO-69). Set at `handle_send_message` entry and cleared **before**
+    /// the final `TurnComplete` is sent, so a frontend that pumps on
+    /// `TurnComplete` can check this flag afterwards and keep pumping when
+    /// another turn (queued behind a synthesized one) is already running.
+    /// Surfaced through `EngineHandle::turn_in_flight`.
+    pub(crate) turn_in_flight: Arc<AtomicBool>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pub pending_lsp_blocks: Vec<crate::lsp_diagnostics::DiagnosticBlock>,
@@ -308,6 +327,15 @@ impl Engine {
     /// deleted; this accessor is test-referenced from the CLI).
     pub fn messages_with_turn_metadata(&self) -> Vec<Message> {
         self.session.messages.to_vec()
+    }
+
+    /// The engine's turn-in-flight flag (round 10 TODO-69), shared with
+    /// `EngineHandle::turn_in_flight`. Hosts read it after a `TurnComplete`
+    /// they pumped to decide whether another turn is already running (their
+    /// own op queued behind a synthesized idle-wake turn) and keep pumping.
+    #[must_use]
+    pub fn turn_in_flight_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.turn_in_flight)
     }
 
     pub fn reset_cancel_token(&mut self) {
@@ -611,7 +639,40 @@ impl Engine {
                 })
                 .await;
         }
-        while let Some(op) = self.rx_op.recv().await {
+        loop {
+            // Round 10 TODO-69 — idle wake. While no turn is running (this
+            // loop waiting on `rx_op` IS the idle state: turns execute
+            // inline in the match below), a sub-agent completion parked in
+            // the parent-completion channel synthesizes the next turn so
+            // the executor's pre-request drain delivers it — the DSH
+            // inbox-wake equivalent, without a second queue (see
+            // `engine::idle_wake`). Real ops always win the race
+            // (`biased`), and a synthesized turn never queues ahead of a
+            // waiting op. The select resolves to a marker first so the
+            // decision can borrow `self` after the branch futures (one of
+            // which holds `&mut self.rx_op`) are dropped.
+            enum LoopWake {
+                Op(Option<Op>),
+                Wake,
+            }
+            let wake = tokio::select! {
+                biased;
+                op = self.rx_op.recv() => LoopWake::Op(op),
+                _ = self.idle_wake.notified() => LoopWake::Wake,
+            };
+            let op = match wake {
+                LoopWake::Op(Some(op)) => op,
+                LoopWake::Op(None) => break,
+                LoopWake::Wake => match self.idle_wake_op().await {
+                    Some(op) => op,
+                    None => continue,
+                },
+            };
+            // The synthesized turn reuses the most recent real turn's
+            // parameters; keep that snapshot current.
+            if matches!(op, Op::SendMessage { .. }) {
+                self.last_send_op = Some(op.clone());
+            }
             // §F5d T4 — drop any `Library`s orphaned by a UI-thread reload.
             // This is the safe moment: the main turn's in-flight lease
             // (structural ownership, `turn_lease`) was released when
@@ -1218,6 +1279,11 @@ impl Engine {
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
         self.last_dispatched_mode = Some(mode);
+        // Round 10 TODO-69 — a turn is executing from here until the final
+        // `TurnComplete` (cleared just before it is sent). Frontends use this
+        // to keep pumping when their own turn queues behind a synthesized
+        // idle-wake turn.
+        self.turn_in_flight.store(true, Ordering::SeqCst);
 
         // Stale-steer drain now happens inside the executor (slice 20 §E),
         // just before `executor.run` — see the wire-in below.
@@ -1280,6 +1346,7 @@ impl Engine {
                 .tx_event
                 .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
+            self.turn_in_flight.store(false, Ordering::SeqCst);
             let _ = self
                 .tx_event
                 .send(Event::TurnComplete {
@@ -1603,6 +1670,7 @@ impl Engine {
                     .tx_event
                     .send(Event::error(ErrorEnvelope::fatal(message.clone())))
                     .await;
+                self.turn_in_flight.store(false, Ordering::SeqCst);
                 let _ = self
                     .tx_event
                     .send(Event::TurnComplete {
@@ -1923,6 +1991,10 @@ impl Engine {
 
         // Emit turn complete event — after all post-turn bookkeeping so
         // the terminal is immediately responsive when the UI receives it.
+        // The in-flight flag clears first (TODO-69): a frontend pumping on
+        // `TurnComplete` re-checks it to decide whether to keep pumping, so
+        // it must already read false by the time the event arrives.
+        self.turn_in_flight.store(false, Ordering::SeqCst);
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -3539,8 +3611,9 @@ impl Engine {
         rx_user_input: mpsc::Receiver<UserInputDecision>,
         rx_steer: mpsc::Receiver<String>,
         tx_event: mpsc::Sender<Event>,
-        tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+        tx_subagent_completion: crate::subagent::SubAgentCompletionSender,
         rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,
+        idle_wake: Arc<Notify>,
         cancel_token: CancellationToken,
         shared_cancel_token: Arc<StdMutex<CancellationToken>>,
         cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
@@ -3577,6 +3650,9 @@ impl Engine {
             tx_event,
             tx_subagent_completion,
             rx_subagent_completion: Arc::new(AsyncMutex::new(rx_subagent_completion)),
+            idle_wake,
+            last_send_op: None,
+            turn_in_flight: Arc::new(AtomicBool::new(false)),
             cancel_token,
             shared_cancel_token,
             cancel_reason,
@@ -3762,6 +3838,7 @@ fn non_empty_deliverables_probe(
 mod deliverables;
 mod dispatch;
 pub mod executor_composition;
+mod idle_wake;
 mod loop_guard;
 mod lsp_hooks;
 mod plan_reminder;

@@ -2724,7 +2724,7 @@ fn persist_round_trip_preserves_session_boot_id() {
 
 fn runtime_with_depth(
     spawn_depth: u32,
-    parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
+    parent_completion_tx: Option<codesmith_agent_runtime::subagent::SubAgentCompletionSender>,
 ) -> SubAgentRuntime {
     let mut rt = stub_runtime();
     rt.spawn_depth = spawn_depth;
@@ -2734,7 +2734,9 @@ fn runtime_with_depth(
 
 #[test]
 fn emit_parent_completion_fires_for_direct_child() {
-    let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let (tx, mut rx) = codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     let runtime = runtime_with_depth(1, Some(tx));
 
     let sent = emit_parent_completion(&runtime, "agent_abc", "summary line\n<sentinel/>");
@@ -2748,7 +2750,9 @@ fn emit_parent_completion_fires_for_direct_child() {
 
 #[test]
 fn emit_parent_completion_skips_grandchildren() {
-    let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let (tx, mut rx) = codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     let runtime = runtime_with_depth(2, Some(tx));
 
     let sent = emit_parent_completion(&runtime, "agent_grandchild", "ignored");
@@ -2767,7 +2771,9 @@ fn emit_parent_completion_skips_grandchildren() {
 fn emit_parent_completion_skips_engine_self() {
     // depth 0 is the engine itself — the engine never spawns a task at
     // depth 0, but defend against accidental misuse.
-    let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let (tx, mut rx) = codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     let runtime = runtime_with_depth(0, Some(tx));
 
     let sent = emit_parent_completion(&runtime, "agent_root", "ignored");
@@ -2793,7 +2799,9 @@ fn emit_parent_completion_no_channel_is_noop() {
 
 #[test]
 fn emit_parent_completion_dropped_receiver_does_not_panic() {
-    let (tx, rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let (tx, rx) = codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     drop(rx);
     let runtime = runtime_with_depth(1, Some(tx));
 
@@ -2827,7 +2835,10 @@ async fn run_subagent_task_emits_parent_completion_before_terminal_update() {
     agent.status = SubAgentStatus::Running;
     manager.write().await.agents.insert(agent_id.clone(), agent);
 
-    let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let (completion_tx, mut completion_rx) =
+        codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(std::sync::Arc::new(
+            tokio::sync::Notify::new(),
+        ));
     let mut runtime = runtime_with_depth(1, Some(completion_tx));
     runtime.manager = Arc::clone(&manager);
 
@@ -2877,7 +2888,9 @@ fn child_runtime_propagates_completion_tx_for_gating() {
     // The channel is cloned through `child_runtime()` so descendants carry
     // it. The gate at the send site (`spawn_depth == 1`) is what limits
     // who actually fires — `child_runtime` simply must not strand it.
-    let (tx, _rx) = mpsc::unbounded_channel::<SubAgentCompletion>();
+    let (tx, _rx) = codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     let parent = runtime_with_depth(0, Some(tx));
 
     let child = parent.child_runtime();

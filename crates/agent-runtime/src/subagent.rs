@@ -53,8 +53,10 @@
 
 use crate::agent_memory::AgentMemoryMetadata;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubAgentAssignment {
@@ -508,6 +510,52 @@ impl ContextPatch {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.auto_approve.is_none() && self.trust_mode.is_none()
+    }
+}
+
+/// Sender half of the parent-completion channel (round 10 TODO-69).
+///
+/// A thin wrapper over `mpsc::UnboundedSender<SubAgentCompletion>` whose
+/// `send` also pokes the engine's idle-wake [`Notify`] — a side-band signal,
+/// not a second queue: the completion itself stays queued in the channel and
+/// is delivered by the executor's pre-request drain
+/// (`HostAgentExecutor::drain_subagent_completions`) exactly as before. The
+/// poke only matters while the engine is idle (no turn running): the op loop
+/// synthesizes the next turn so the drain runs at all (see
+/// `engine::idle_wake`). While a turn is running the `Notify` permit is
+/// simply stored and re-checked against the channel at the next idle wait;
+/// if the turn's own drains already consumed the completion, the wake is a
+/// no-op.
+#[derive(Debug, Clone)]
+pub struct SubAgentCompletionSender {
+    tx: mpsc::UnboundedSender<SubAgentCompletion>,
+    idle_wake: Arc<tokio::sync::Notify>,
+}
+
+impl SubAgentCompletionSender {
+    /// Create the paired sender / receiver around the shared wake signal.
+    /// The same `Notify` instance is handed to `Engine::new_runtime` so the
+    /// op loop waits on it while idle.
+    #[must_use]
+    pub fn channel(
+        idle_wake: Arc<tokio::sync::Notify>,
+    ) -> (Self, mpsc::UnboundedReceiver<SubAgentCompletion>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx, idle_wake }, rx)
+    }
+
+    /// Enqueue a completion and poke the idle-wake signal. Errors (receiver
+    /// dropped) are swallowed like the previous bare-channel sends: the
+    /// engine outlives the sender, so a dropped receiver means shutdown.
+    pub fn send(&self, completion: SubAgentCompletion) {
+        let _ = self.tx.send(completion);
+        self.idle_wake.notify_one();
+    }
+
+    /// Whether the underlying receiver is still attached.
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        !self.tx.is_closed()
     }
 }
 

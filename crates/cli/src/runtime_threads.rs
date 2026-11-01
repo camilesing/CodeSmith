@@ -2060,6 +2060,10 @@ impl RuntimeThreadManager {
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,
             trust_mode: thread.trust_mode,
+            // Round 10 TODO-69b flips this on together with the per-thread
+            // idle event monitor (until then an unattended synthesized turn
+            // could stall on the event channel's backpressure).
+            idle_wake: false,
             turn_executor: self.config.turn_executor_id(),
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),

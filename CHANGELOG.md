@@ -34,6 +34,16 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **The agent wakes itself when background work finishes** — a background
+  sub-agent completing while no turn is running now synthesizes the next
+  turn instead of waiting for you to type: the engine's idle op-loop listens
+  for the completion (a side-band notify on the parent-completion channel —
+  no new inbox), and the new turn's pre-request drain hands the result to
+  the model. While the prompt is showing, the REPL's unattended pump keeps
+  the engine streaming (approvals it cannot show you are denied, exactly
+  like a headless run — submit anything to take over). Off by default for
+  embeds/`exec`; ACP stays off pending turn-scoped prompt resolution.
+
 - **The `input` hook sees what you typed** — an extension or Rhai mod
   subscribed to `input` now receives the text of each submitted message and
   of each message typed while a turn runs, and its rewrite is what the model

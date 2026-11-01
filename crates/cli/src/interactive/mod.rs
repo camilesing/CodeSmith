@@ -37,6 +37,7 @@ pub mod state;
 pub mod status;
 pub mod statusline;
 pub mod theme;
+pub mod unattended;
 
 use std::path::PathBuf;
 
@@ -168,6 +169,13 @@ pub async fn run_repl(
         );
     }
 
+    // Round 10 TODO-69 — the unattended event pump: while the main loop is
+    // blocked in readline, it reads engine events so an idle-wake turn
+    // (background sub-agent completion) does not stall on the event
+    // channel's backpressure. Created held (main loop owns the channel);
+    // released right before each readline.
+    let idle_pump = unattended::IdlePump::start(&state);
+
     // Session resume.
     if let Some(resume_id) = options.resume_session_id.as_deref() {
         state::resume_session(&mut state, resume_id).await?;
@@ -230,11 +238,12 @@ pub async fn run_repl(
     let mut editor_mode = state.settings.composer_vim_mode.clone();
     loop {
         if let Some(text) = pending_submit.take() {
+            idle_pump.hold().await;
             if let Err(err) = submit(&mut state, text).await {
                 println!("{} {err}", "✗".red());
                 break;
             }
-            match render::pump_turn(&mut state).await {
+            match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
                 Ok(render::PumpExit::TurnDone) => continue,
                 Err(err) => {
@@ -254,11 +263,12 @@ pub async fn run_repl(
                 "{}",
                 "▶ plan approved — continuing into implementation".dimmed()
             );
+            idle_pump.hold().await;
             if let Err(err) = submit(&mut state, PLAN_IMPLEMENTATION_KICKOFF.to_string()).await {
                 println!("{} {err}", "✗".red());
                 break;
             }
-            match render::pump_turn(&mut state).await {
+            match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
                 Ok(render::PumpExit::TurnDone) => continue,
                 Err(err) => {
@@ -274,11 +284,12 @@ pub async fn run_repl(
         if !state.queued_messages.is_empty() {
             let text = state.queued_messages.remove(0);
             println!("{}", "▶ sending the queued message".dimmed());
+            idle_pump.hold().await;
             if let Err(err) = submit(&mut state, text).await {
                 println!("{} {err}", "✗".red());
                 break;
             }
-            match render::pump_turn(&mut state).await {
+            match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
                 Ok(render::PumpExit::TurnDone) => continue,
                 Err(err) => {
@@ -349,6 +360,9 @@ pub async fn run_repl(
             prefill = Some(prepared);
         }
         let prompt = format!("{prompt_row}\n{}", prompt_str(&state));
+        // Hand the event channel to the unattended pump for the duration
+        // of the blocking readline (round 10 TODO-69).
+        idle_pump.release();
         let read = match prefill.take() {
             Some(text) => editor.readline_with_initial(&prompt, ("", text.as_str())),
             None => editor.readline(&prompt),
@@ -463,11 +477,12 @@ pub async fn run_repl(
         // (Claude Code's shell mode). Checked before the command dispatch so
         // a shell line never reaches the slash-command table.
         if let Some(command) = shell_mode::command_from_line(trimmed) {
+            idle_pump.hold().await;
             if let Err(err) = run_shell_mode(&mut state, command).await {
                 println!("{} {err}", "✗".red());
                 break;
             }
-            match render::pump_turn(&mut state).await {
+            match pump_to_idle(&mut state, &idle_pump).await {
                 Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
                 Ok(render::PumpExit::TurnDone) => {}
                 Err(err) => {
@@ -502,11 +517,12 @@ pub async fn run_repl(
                     source: codesmith_session::store::ContextReferenceSource::Attachment,
                 }),
         );
+        idle_pump.hold().await;
         if let Err(err) = submit_with_images(&mut state, content, images).await {
             println!("{} {err}", "✗".red());
             break;
         }
-        match render::pump_turn(&mut state).await {
+        match pump_to_idle(&mut state, &idle_pump).await {
             Ok(render::PumpExit::UserQuit | render::PumpExit::EngineGone) => break,
             Ok(render::PumpExit::TurnDone) => {}
             Err(err) => {
@@ -548,6 +564,36 @@ pub async fn run_repl(
 
     println!("{}", "bye.".dimmed());
     Ok(())
+}
+
+/// Pump turns until the engine is actually idle (round 10 TODO-69).
+///
+/// `pump_turn` exits at the first `TurnComplete` it observes. That may be a
+/// synthesized idle-wake turn's, with this loop's own turn (its op queued
+/// behind) already running — so after each exit, the engine's in-flight
+/// flag decides whether to keep pumping. The flag is cleared before
+/// `TurnComplete` is sent, so a false reading here is definitive.
+async fn pump_to_idle(
+    state: &mut ReplState,
+    idle_pump: &unattended::IdlePump,
+) -> anyhow::Result<render::PumpExit> {
+    // Idempotent: callers already hold before submit; this covers the
+    // pump itself against a future path that forgets.
+    idle_pump.hold().await;
+    loop {
+        match render::pump_turn(state).await? {
+            render::PumpExit::TurnDone => {
+                let in_flight = state
+                    .engine
+                    .as_ref()
+                    .is_some_and(|engine| engine.turn_in_flight());
+                if !in_flight {
+                    return Ok(render::PumpExit::TurnDone);
+                }
+            }
+            other => return Ok(other),
+        }
+    }
 }
 
 /// The prompt marker. The accent comes from the theme (and `/color`), so the

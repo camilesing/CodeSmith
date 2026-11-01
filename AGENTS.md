@@ -206,6 +206,17 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   stays cache-friendly. Any new session-context contributor must state its
   cache effect: frozen prefix vs. append-only history. Never splice a
   volatile fact into the prefix; append it as a user-role message.
+- **Idle wake** (round 10): with `EngineConfig::idle_wake` on (the REPL;
+  runtime-API threads once their idle monitor lands), a sub-agent completion
+  that lands while no turn is running makes the engine op loop synthesize
+  the next turn (`engine/idle_wake.rs`); the turn's existing pre-request
+  drain delivers the completion. The signal is the side-band `Notify` on
+  `SubAgentCompletionSender` — no second queue, no inbox framework. A host
+  that turns it on must read the event channel while idle (the REPL's
+  `interactive::unattended` pump; its unattended policy denies approvals the
+  way headless runs do). exec/embeds leave it off; ACP stays off until its
+  prompt-outcome resolution is turn-scoped (its pump resolves any pending
+  prompt on the first `TurnComplete`).
 - Verify consumers before removing "looks-dead" modules; standing live
   examples: `session/src/zones.rs` (re-exported as
   `agent_runtime::prompt_zones`) and

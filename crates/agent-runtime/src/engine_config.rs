@@ -146,6 +146,15 @@ pub struct EngineConfig {
     pub plan_mode_state: SharedPlanModeState,
     /// Shared runtime goal state for model-visible goal tools.
     pub goal_state: SharedGoalState,
+    /// Idle wake (round 10 TODO-69): when `true` and the op loop is idle (no
+    /// turn running), a sub-agent completion parked in the parent-completion
+    /// channel synthesizes the next turn, whose pre-request drain delivers
+    /// the completion to the model. Hosts that cannot drain the event
+    /// channel while idle (exec exits after one turn; embeds) leave this
+    /// off — a synthesized turn whose events nobody reads stalls on the
+    /// event channel's intentional backpressure. The REPL and the runtime
+    /// API threads turn it on.
+    pub idle_wake: bool,
     /// Shared worktree isolation state for enter_worktree/exit_worktree tools.
     pub worktree_state: SharedWorktreeSessionState,
     /// Maximum sub-agent recursion depth (default 3). See
@@ -400,6 +409,7 @@ impl Default for EngineConfig {
             plan_state: new_shared_plan_state(),
             plan_mode_state: new_shared_plan_mode_state(),
             goal_state: new_shared_goal_state(),
+            idle_wake: false,
             worktree_state: new_shared_worktree_session_state(),
             max_spawn_depth: DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,

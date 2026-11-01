@@ -617,7 +617,7 @@ pub struct SubAgentRuntime {
     /// via clone but gated to `spawn_depth == 1` at the send site so the
     /// parent isn't flooded with grandchild completions it didn't directly
     /// orchestrate. `None` when no consumer is wired (tests / legacy paths).
-    pub parent_completion_tx: Option<mpsc::UnboundedSender<SubAgentCompletion>>,
+    pub parent_completion_tx: Option<codesmith_agent_runtime::subagent::SubAgentCompletionSender>,
     /// Snapshot of the request prefix visible to an opt-in forked child.
     pub fork_context: Option<SubAgentForkContext>,
     /// The parent's MCP pool if available.
@@ -823,7 +823,7 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_parent_completion_tx(
         mut self,
-        tx: mpsc::UnboundedSender<SubAgentCompletion>,
+        tx: codesmith_agent_runtime::subagent::SubAgentCompletionSender,
     ) -> Self {
         self.parent_completion_tx = Some(tx);
         self
@@ -5046,7 +5046,7 @@ pub(crate) fn emit_parent_completion(
     let Some(tx) = runtime.parent_completion_tx.as_ref() else {
         return false;
     };
-    let _ = tx.send(SubAgentCompletion {
+    tx.send(SubAgentCompletion {
         agent_id: agent_id.to_string(),
         payload: payload.to_string(),
         // No by-value context回流 today — shared `Arc<Mutex<…>>` state

@@ -18,6 +18,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool as StdAtomicBool;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use tokio::sync::{RwLock, mpsc};
@@ -135,6 +136,14 @@ pub struct EngineHandle {
     pub tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.
     pub tx_steer: mpsc::Sender<String>,
+    /// Round 10 TODO-69 — parent-completion sender with its idle-wake poke.
+    /// Surfaced so hosts and tests can inject a completion the way
+    /// `emit_parent_completion` does; the paired receiver lives in the
+    /// engine and is drained by the executor's pre-request seam.
+    pub tx_subagent_completion: codesmith_agent_runtime::subagent::SubAgentCompletionSender,
+    /// Round 10 TODO-69 — whether a `SendMessage` turn is executing in the
+    /// engine. See [`Self::turn_in_flight`].
+    pub turn_in_flight: Arc<StdAtomicBool>,
     /// §F1 — bound extension runner, surfaced from `build_extension_runtime`
     /// so `/extension status` / `/extension reload` (in `extension_commands`)
     /// can read + invalidate it without an engine round-trip. `None` when no
@@ -1367,7 +1376,14 @@ pub fn build_engine(
     let approval_router = Arc::new(ApprovalRouter::new(rx_approval));
     let (tx_user_input, rx_user_input) = mpsc::channel(32);
     let (tx_steer, rx_steer) = mpsc::channel(64);
-    let (tx_subagent_completion, rx_subagent_completion) = mpsc::unbounded_channel();
+    // Round 10 TODO-69 — the parent-completion channel plus its idle-wake
+    // side-band signal: a completion landing while the engine is idle (no
+    // turn running) pokes the op loop, which synthesizes the next turn so
+    // the pre-request drain delivers it. The `Notify` is shared between the
+    // sender wrapper and `Engine::new_runtime`.
+    let idle_wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (tx_subagent_completion, rx_subagent_completion) =
+        codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(idle_wake.clone());
     let cancel_token = CancellationToken::new();
     let shared_cancel_token = Arc::new(StdMutex::new(cancel_token.clone()));
     let cancel_reason: Arc<StdMutex<Option<CancelReason>>> = Arc::new(StdMutex::new(None));
@@ -1700,8 +1716,9 @@ pub fn build_engine(
         rx_user_input,
         rx_steer,
         tx_event,
-        tx_subagent_completion,
+        tx_subagent_completion.clone(),
         rx_subagent_completion,
+        idle_wake,
         cancel_token,
         shared_cancel_token.clone(),
         cancel_reason.clone(),
@@ -1724,6 +1741,8 @@ pub fn build_engine(
         tx_steer,
         fact_ledger: engine.session.fact_ledger.clone(),
         recent_read_files: engine.session.recent_read_files.clone(),
+        tx_subagent_completion: tx_subagent_completion.clone(),
+        turn_in_flight: engine.turn_in_flight_flag(),
         extension_runner: Some(extension_runner),
         mod_reload: host_concrete.mod_reload.clone(),
         mods_pending: mods_report.pending_mods,
@@ -1930,6 +1949,12 @@ pub(crate) fn headless_engine_config(
         workspace,
         allow_shell: auto_approve || config.allow_shell(),
         trust_mode,
+        // Off for headless hosts (round 10 TODO-69): exec exits after one
+        // turn, and ACP's always-on pump resolves any pending prompt on the
+        // first TurnComplete it sees — a synthesized turn would complete a
+        // queued client prompt early. Revisit when ACP's prompt outcome is
+        // turn-scoped.
+        idle_wake: false,
         turn_executor: config.turn_executor_id(),
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
@@ -2082,6 +2107,13 @@ pub(crate) fn mock_engine_handle() -> MockEngineHandle {
         tx_approval,
         tx_user_input,
         tx_steer,
+        tx_subagent_completion: {
+            let (tx, _rx) = codesmith_agent_runtime::subagent::SubAgentCompletionSender::channel(
+                Arc::new(tokio::sync::Notify::new()),
+            );
+            tx
+        },
+        turn_in_flight: Arc::new(StdAtomicBool::new(false)),
         extension_runner: None,
         mod_reload: None,
         mods_pending: Vec::new(),

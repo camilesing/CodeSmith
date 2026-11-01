@@ -787,6 +787,10 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         workspace: state.workspace.clone(),
         allow_shell: state.allow_shell,
         trust_mode: state.trust_mode,
+        // Round 10 TODO-69 — the REPL drains engine events while at the
+        // prompt (`interactive::unattended`), so idle-wake turns are safe
+        // here.
+        idle_wake: true,
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: state.skills_dir.clone(),

@@ -40,7 +40,7 @@ use crate::models::{Message, Tool};
 use crate::ops::Op;
 use crate::runtime_ui::RuntimeUi;
 use crate::session::Session;
-use crate::subagent::{SubAgentCompletion, SubAgentResult, SubAgentType};
+use crate::subagent::{SubAgentResult, SubAgentType};
 use crate::tool_dispatch::ToolDispatcher;
 use crate::tool_state::plan::SharedPlanState;
 use crate::tool_state::todo::SharedTodoList;
@@ -555,7 +555,7 @@ pub struct TurnDispatchRequest<'a> {
     /// Engine event channel (subagent mailbox drainer + runtime events).
     pub tx_event: mpsc::Sender<Event>,
     /// Channel fan-out for direct child sub-agent completion (#756).
-    pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    pub tx_subagent_completion: crate::subagent::SubAgentCompletionSender,
     /// Resolved MCP pool (already ensured by the engine body), when enabled.
     pub mcp_pool: Option<Arc<McpPool>>,
     /// MCP tool definitions (already connected by the engine body).
@@ -645,7 +645,7 @@ pub struct SpawnSubAgentRequest<'a> {
     /// Engine event channel.
     pub tx_event: mpsc::Sender<Event>,
     /// Channel fan-out for direct child sub-agent completion (#756).
-    pub tx_subagent_completion: mpsc::UnboundedSender<SubAgentCompletion>,
+    pub tx_subagent_completion: crate::subagent::SubAgentCompletionSender,
     /// Resolved MCP pool (already ensured by the engine body), when enabled.
     pub mcp_pool: Option<Arc<McpPool>>,
     /// Terminal-agnostic UI bridge (clipboard / notifications).
