@@ -1192,13 +1192,18 @@ async fn deferred_tools_are_exactly_the_reviewed_niche_set() {
         // One-off helpers.
         "finance",
         "fim_edit",
-        "image_ocr",
         "revert_turn",
         "validate_data",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
+    // `image_ocr` is registered only when a local OCR backend exists
+    // (`ToolRegistry::with_image_ocr_tools`), so it is in the catalog on macOS
+    // (Vision) and on hosts with tesseract, and absent on a bare Linux CI runner.
+    if crate::tools::image_ocr::ocr_available() {
+        expected.push("image_ocr".to_string());
+    }
     expected.sort();
     assert_eq!(
         deferred, expected,

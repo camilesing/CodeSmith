@@ -851,7 +851,7 @@ fn echo_then_sleep_command(message: &str, seconds: u64) -> String {
 }
 
 /// Records every checkpoint a tool reports (`tool-execution-update`).
-struct RecordingSink(std::sync::Arc<Mutex<Vec<(String, String, String)>>>);
+struct RecordingSink(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
 #[async_trait::async_trait]
 impl codesmith_agent_runtime::tools::spec::ToolProgressSink for RecordingSink {
     async fn progress(&self, id: &str, name: &str, message: &str) {
@@ -870,7 +870,7 @@ impl codesmith_agent_runtime::tools::spec::ToolProgressSink for RecordingSink {
 #[tokio::test]
 async fn test_exec_shell_foreground_reports_progress_checkpoints() {
     let tmp = tempdir().expect("tempdir");
-    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let ctx = ToolContext::new(tmp.path())
         .with_progress_sink(Some(std::sync::Arc::new(RecordingSink(seen.clone()))));
     let tool = ExecShellTool;
