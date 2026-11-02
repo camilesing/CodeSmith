@@ -639,6 +639,15 @@ pub struct SubAgentRuntime {
     /// `None` when the main turn spawns them. Set when a child's own tool
     /// runtime is built, so a grandchild's turn names its parent.
     pub parent_agent_id: Option<String>,
+    /// The scope this runtime's tools dispatch their own extension emissions
+    /// at: `Global` while the main turn owns the surface, `AgentType(type)`
+    /// on a sub-agent's own surface (`SubAgentToolRegistry::new` sets it).
+    /// Today only the `workflow` engine emits through a tool — a child's
+    /// call dispatches at the child's agent-type scope so dylib-origin
+    /// handlers never run on a child's path (5b), the same rule the child
+    /// turn itself follows. Propagated to descendants; each agent's own
+    /// surface build overwrites it.
+    pub dispatch_scope: codesmith_agent::extension::Scope,
     /// Whether this runtime's children must be a subset of this agent's
     /// effective tool set (`false`, Plan 04 / finding F4 `restrictToSubset`)
     /// or may inherit the full agent surface regardless (`true`, legacy
@@ -727,6 +736,7 @@ impl SubAgentRuntime {
             stream_idle_retry_increment: Duration::ZERO,
             turn_executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
             parent_agent_id: None,
+            dispatch_scope: codesmith_agent::extension::Scope::Global,
             inherit_full_registry: false,
             children_read_only: false,
             child_subset_basis: None,
@@ -984,6 +994,7 @@ impl SubAgentRuntime {
             stream_idle_retry_increment: self.stream_idle_retry_increment,
             turn_executor: self.turn_executor.clone(),
             parent_agent_id: self.parent_agent_id.clone(),
+            dispatch_scope: self.dispatch_scope.clone(),
             inherit_full_registry: self.inherit_full_registry,
             children_read_only: self.children_read_only,
             // Propagate the parent's subset basis so the child's
@@ -6628,8 +6639,11 @@ impl SubAgentToolRegistry {
     /// child can outlive a reload's two-phase `Library` drop (§F5d T4's
     /// safety argument covers the main-turn executor only). Script /
     /// compiled-in contributions hold statically linked code or retained
-    /// ASTs and mount freely. The regression test
-    /// `subagent_ext_tool_origin_tiering` locks this.
+    /// ASTs and mount freely. The tools mounted here emit at the same
+    /// scope (`SubAgentRuntime::dispatch_scope`), so a tool's own
+    /// lifecycle events (the `workflow` family) obey the rule too. The
+    /// regression tests `subagent_ext_tool_origin_tiering` and
+    /// `workflow_events_from_a_child_dispatch_at_its_scope` lock this.
     fn new(
         mut runtime: SubAgentRuntime,
         agent_type: SubAgentType,
@@ -6681,6 +6695,12 @@ impl SubAgentToolRegistry {
         } else {
             explicit_allowed_tools.clone()
         };
+        // This agent's own tools emit at its agent-type scope (5b): the
+        // runtime clone handed to the builder carries it, so a `workflow`
+        // run issued by this child never reaches dylib-origin handlers —
+        // the same scoped dispatch its own turn uses.
+        runtime.dispatch_scope =
+            codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string());
         let mut registry = ToolRegistryBuilder::new().with_full_agent_surface(
             Some(runtime.client.clone()),
             runtime.model.clone(),

@@ -19,16 +19,19 @@
 //! The workflow lifecycle events (`WorkflowStart` / `WorkflowLog` /
 //! `WorkflowAgentStart` / `WorkflowAgentEnd` / `WorkflowEnd`) are emitted
 //! here — run begin/end in the engine, per-child and per-log at the RPC
-//! bridge — through the same `runner.emit(...)` idiom the `ToolsChange`
-//! seam uses (observe-only `Emit`: the outcome is discarded). No runner
-//! attached ⇒ no emissions; the tool works without extensions.
+//! bridge — as observe-only `Emit` dispatches (the outcome is discarded,
+//! the `ToolsChange` idiom) at the **caller's** scope: `Global` when the
+//! main turn calls the tool, the calling sub-agent's `AgentType` scope
+//! when a child does (`SubAgentRuntime::dispatch_scope`), so dylib-origin
+//! handlers never run on a child's path (5b). No runner attached ⇒ no
+//! emissions; the tool works without extensions.
 
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use codesmith_agent::extension::ExtensionEvent;
+use codesmith_agent::extension::{ExtensionEvent, Scope};
 use codesmith_agent::extension::{
     WorkflowAgentEndEvent, WorkflowAgentStartEvent, WorkflowEndEvent, WorkflowLogEvent,
 };
@@ -119,14 +122,16 @@ def log(message):
 "#;
 
 /// Emit one workflow lifecycle event (all `DispatchMode::Emit` — the
-/// outcome is advisory and discarded, the `ToolsChange` idiom). No-op
-/// without a runner: the tool must work with extensions absent.
+/// outcome is advisory and discarded, the `ToolsChange` idiom) at the
+/// caller's dispatch scope. No-op without a runner: the tool must work
+/// with extensions absent.
 async fn emit_workflow_event(
     runner: &Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    scope: &Scope,
     event: ExtensionEvent,
 ) {
     if let Some(runner) = runner {
-        let _ = runner.emit(event).await;
+        let _ = runner.emit_scoped(scope.clone(), event).await;
     }
 }
 
@@ -152,6 +157,8 @@ pub(crate) struct WorkflowRpcBridge {
     /// around each child, `WorkflowLog` per `log(...)` call) — `None` ⇒
     /// no emissions.
     extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// The caller's dispatch scope for those emissions.
+    dispatch_scope: Scope,
     /// Monotonic reservation ledger: every slot asked for, consumed via
     /// `fetch_add` BEFORE the cap check (reserve-before-spawn ordering).
     /// A rejection consumes its slots too, so every later attempt in the
@@ -169,11 +176,13 @@ impl WorkflowRpcBridge {
         spawner: Arc<dyn SubAgentSpawner>,
         max_agents: u32,
         extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+        dispatch_scope: Scope,
     ) -> Self {
         Self {
             spawner,
             max_agents,
             extension_runner,
+            dispatch_scope,
             reserved: AtomicU32::new(0),
             issued: AtomicU32::new(0),
             logs: StdMutex::new(Vec::new()),
@@ -220,6 +229,7 @@ impl WorkflowRpcBridge {
     async fn spawn_with_events(&self, objective: SubAgentObjective) -> SubAgentRunResult {
         emit_workflow_event(
             &self.extension_runner,
+            &self.dispatch_scope,
             ExtensionEvent::WorkflowAgentStart(WorkflowAgentStartEvent {
                 objective: objective.objective.clone(),
             }),
@@ -228,6 +238,7 @@ impl WorkflowRpcBridge {
         let result = self.spawner.spawn_and_run(objective).await;
         emit_workflow_event(
             &self.extension_runner,
+            &self.dispatch_scope,
             ExtensionEvent::WorkflowAgentEnd(WorkflowAgentEndEvent {
                 status: result.status.clone(),
                 steps: result.steps,
@@ -335,6 +346,7 @@ impl RpcDispatcher for WorkflowRpcBridge {
                     let entry = self.push_log(message);
                     emit_workflow_event(
                         &self.extension_runner,
+                        &self.dispatch_scope,
                         ExtensionEvent::WorkflowLog(WorkflowLogEvent { message: entry }),
                     )
                     .await;
@@ -370,6 +382,9 @@ pub struct PythonWorkflowEngine {
     /// Workflow lifecycle emissions (`WorkflowStart`/`WorkflowEnd` here,
     /// the child/log events at the bridge) — `None` ⇒ no emissions.
     extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    /// The caller's dispatch scope for those emissions: `Global` from the
+    /// main turn, the calling sub-agent's `AgentType` from a child.
+    dispatch_scope: Scope,
     /// Receipt of the most recent run — recorded even on failure so the
     /// tool can tell the model how far a failed run got. The tool builds
     /// one engine per call, so "last" is "the" run.
@@ -387,6 +402,7 @@ impl PythonWorkflowEngine {
             ),
             default_max_agents: DEFAULT_MAX_AGENTS,
             extension_runner: None,
+            dispatch_scope: Scope::Global,
             last_agent_calls: AtomicU32::new(0),
             last_logs: StdMutex::new(Vec::new()),
         }
@@ -400,6 +416,14 @@ impl PythonWorkflowEngine {
         runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     ) -> Self {
         self.extension_runner = runner;
+        self
+    }
+
+    /// Dispatch the lifecycle events at the caller's scope (a sub-agent's
+    /// `AgentType`, so dylib-origin handlers are skipped on its path).
+    #[must_use]
+    pub fn with_dispatch_scope(mut self, scope: Scope) -> Self {
+        self.dispatch_scope = scope;
         self
     }
 
@@ -443,6 +467,7 @@ impl PythonWorkflowEngine {
     async fn emit_end_success(&self, agent_calls: u32) {
         emit_workflow_event(
             &self.extension_runner,
+            &self.dispatch_scope,
             ExtensionEvent::WorkflowEnd(WorkflowEndEvent {
                 status: "completed".to_string(),
                 error: None,
@@ -457,6 +482,7 @@ impl PythonWorkflowEngine {
     async fn emit_end_failure(&self, agent_calls: u32, error: &WorkflowError) {
         emit_workflow_event(
             &self.extension_runner,
+            &self.dispatch_scope,
             ExtensionEvent::WorkflowEnd(WorkflowEndEvent {
                 status: "failed".to_string(),
                 error: Some(workflow_error_kind(error).to_string()),
@@ -476,7 +502,12 @@ impl PythonWorkflowEngine {
         }
         let timeout = script.timeout;
         // Run begin — before the kernel spawns.
-        emit_workflow_event(&self.extension_runner, ExtensionEvent::WorkflowStart).await;
+        emit_workflow_event(
+            &self.extension_runner,
+            &self.dispatch_scope,
+            ExtensionEvent::WorkflowStart,
+        )
+        .await;
         let mut kernel = match PythonRuntime::spawn_unbounded().await {
             Ok(kernel) => kernel,
             Err(err) => {
@@ -489,6 +520,7 @@ impl PythonWorkflowEngine {
             Arc::clone(&self.spawner),
             max_agents,
             self.extension_runner.clone(),
+            self.dispatch_scope.clone(),
         );
         let started = Instant::now();
         let code = format!("{WORKFLOW_PRELUDE}\n{}", script.source);

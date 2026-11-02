@@ -1046,6 +1046,127 @@ fn subagent_ext_tool_origin_tiering() {
     }
 }
 
+/// A `workflow` run issued from a sub-agent's own tool surface dispatches
+/// its lifecycle at the child's agent-type scope: a compiled-in Global
+/// handler sees `WorkflowStart`/`WorkflowEnd`, the same handler loaded as a
+/// dylib sees nothing (5b — the rule the child turn itself follows). The
+/// engine used to emit Global regardless of caller, so dylib code ran on a
+/// child's path. Goes through the production path: `SubAgentToolRegistry::new`
+/// stamps the runtime's `dispatch_scope`, `into_surface` wraps the tool, and
+/// `finalize(1)` spawns no child, so the real spawner is never reached.
+#[tokio::test]
+async fn workflow_events_from_a_child_dispatch_at_its_scope() {
+    use codesmith_agent::extension::{ExtensionEvent, ExtensionEventKind, HandlerOutcome};
+    use codesmith_extensions::RegistrationOrigin;
+
+    struct Probe {
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+        label: &'static str,
+    }
+    #[async_trait]
+    impl codesmith_agent::extension::Handler for Probe {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            let kind = match event {
+                ExtensionEvent::WorkflowStart => "WorkflowStart",
+                ExtensionEvent::WorkflowEnd(_) => "WorkflowEnd",
+                _ => return Ok(HandlerOutcome::Continue),
+            };
+            self.seen
+                .lock()
+                .unwrap()
+                .push(format!("{}:{kind}", self.label));
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+    struct ProbeExt {
+        seen: Arc<std::sync::Mutex<Vec<String>>>,
+        label: &'static str,
+    }
+    #[async_trait]
+    impl Extension for ProbeExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("workflow-scope-probe");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            for kind in [
+                ExtensionEventKind::WorkflowStart,
+                ExtensionEventKind::WorkflowEnd,
+            ] {
+                api.on_variant(
+                    kind,
+                    Arc::new(Probe {
+                        seen: self.seen.clone(),
+                        label: self.label,
+                    }),
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    runner
+        .load(&ProbeExt {
+            seen: seen.clone(),
+            label: "compiled",
+        })
+        .await
+        .expect("load compiled-in probe");
+    runner
+        .load_as(
+            &ProbeExt {
+                seen: seen.clone(),
+                label: "dylib",
+            },
+            RegistrationOrigin::Dylib,
+        )
+        .await
+        .expect("load dylib-stamped probe");
+    runner.bind_core(Arc::new(StubExtCtx));
+
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime().with_extension_runner(Some(runner));
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.workflow_timeout = Duration::from_secs(60);
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        Some(vec!["workflow".to_string()]),
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let receipt = delegated_call(
+        registry,
+        "agent_wf_probe",
+        "workflow",
+        json!({"script": "finalize(1)"}),
+    )
+    .await
+    .expect("workflow run from the child surface");
+    assert!(
+        receipt.contains("\"status\":\"ok\"") || receipt.contains("\"status\": \"ok\""),
+        "sanity: the run itself succeeded: {receipt}"
+    );
+
+    let mut observed = seen.lock().unwrap().clone();
+    observed.sort();
+    assert_eq!(
+        observed,
+        vec![
+            "compiled:WorkflowEnd".to_string(),
+            "compiled:WorkflowStart".to_string(),
+        ],
+        "the compiled-in handler sees the child's workflow run; the dylib one sees nothing"
+    );
+}
+
 /// A dylib-stamped stub registering `dylib_echo` — the tier fixture for
 /// `subagent_ext_tool_origin_tiering` (the origin stamp is the whole
 /// difference from `StubFixtureEchoExt`).
@@ -2537,6 +2658,7 @@ fn stub_runtime() -> SubAgentRuntime {
         stream_idle_retry_increment: Duration::ZERO,
         turn_executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
         parent_agent_id: None,
+        dispatch_scope: codesmith_agent::extension::Scope::Global,
         inherit_full_registry: false,
         children_read_only: false,
         child_subset_basis: None,

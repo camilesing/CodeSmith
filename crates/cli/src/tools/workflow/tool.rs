@@ -102,8 +102,11 @@ impl WorkflowTool {
             PythonWorkflowEngine::new(spawner)
                 .with_timeout(self.runtime.workflow_timeout)
                 // Workflow lifecycle emissions (observe-only Emit family) —
-                // same runner the fork-veto threading attached.
+                // same runner the fork-veto threading attached, dispatched
+                // at the caller's scope (Global from the main turn, the
+                // calling sub-agent's type from a child — 5b).
                 .with_extension_runner(self.extension_runner.clone())
+                .with_dispatch_scope(self.runtime.dispatch_scope.clone())
                 .with_default_max_agents(
                     self.runtime
                         .workflow_max_agents
