@@ -29,7 +29,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, broadcast, oneshot, watch};
+use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -737,11 +737,13 @@ struct ActiveTurnState {
 #[derive(Clone)]
 struct ActiveThreadState {
     engine: EngineHandle,
+    /// The runtime turn that owns the engine's next (or running) turn: a
+    /// client `start_turn` / `compact_thread` claims it before sending its
+    /// op, and the thread's single event reader (`run_idle_monitor`)
+    /// attributes the engine's events to it. An idle-wake synthesized turn
+    /// takes the slot for its own duration and hands any pending client
+    /// claim back afterwards (the client's op queues behind it).
     active_turn: Option<ActiveTurnState>,
-    /// Round 10 TODO-69b — `true` while a turn (client-started or
-    /// idle-wake synthesized) owns the engine's event channel; the idle
-    /// monitor parks while this is set. Arc so the state stays `Clone`.
-    turn_active_tx: Arc<watch::Sender<bool>>,
 }
 
 #[derive(Default)]
@@ -1580,14 +1582,37 @@ impl RuntimeThreadManager {
         let mut thread = self.get_thread(thread_id).await?;
         let engine = self.ensure_engine_loaded(&thread).await?;
 
-        {
-            let active = self.active.lock().await;
-            if let Some(active_thread) = active.engines.get(thread_id)
-                && active_thread.active_turn.is_some()
-            {
-                bail!("Thread already has an active turn");
-            }
-        }
+        // Resolve the request before claiming the turn slot: auto-routing
+        // may call a model, and the claim-to-op window below should stay
+        // small (an idle-wake turn the engine synthesizes inside it simply
+        // runs first; the single event reader attributes both).
+        let mode = parse_mode(req.mode.as_deref().unwrap_or(&thread.mode));
+        let requested_model = req.model.unwrap_or_else(|| thread.model.clone());
+        let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
+        let (model, reasoning_effort) = if auto_model {
+            let selection = crate::interactive::commands::auto_route::resolve_auto_route(
+                &self.config,
+                &prompt,
+                "",
+                "auto",
+                "auto",
+            )
+            .await;
+            (
+                selection.model,
+                selection
+                    .reasoning_effort
+                    .map(|effort| effort.as_setting().to_string()),
+            )
+        } else {
+            (requested_model, None)
+        };
+        let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
+        let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
+        let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let show_thinking = settings.show_thinking;
+        let is_simple = settings.is_simple;
 
         let now = Utc::now();
         let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
@@ -1625,147 +1650,117 @@ impl RuntimeThreadManager {
             started_at: Some(now),
             ended_at: Some(now),
         };
-
         turn.item_ids.push(user_item_id.clone());
-        self.store.save_item(&user_item)?;
-        self.store.save_turn(&turn)?;
 
-        thread.latest_turn_id = Some(turn_id.clone());
-        thread.updated_at = now;
-        self.store.save_thread(&thread)?;
-
-        self.emit_event(
-            thread_id,
-            Some(&turn_id),
-            None,
-            "turn.started",
-            json!({ "turn": turn.clone() }),
-        )
-        .await?;
-        self.emit_event(
-            thread_id,
-            Some(&turn_id),
-            Some(&user_item_id),
-            "item.started",
-            json!({ "item": user_item.clone() }),
-        )
-        .await?;
-        self.emit_event(
-            thread_id,
-            Some(&turn_id),
-            Some(&user_item_id),
-            "item.completed",
-            json!({ "item": user_item }),
-        )
-        .await?;
-
+        // Check-and-claim under one lock: the conflict check and the claim
+        // used to be two acquisitions with awaits between them, which let an
+        // idle-wake turn take the slot in the gap and the client overwrite
+        // it. The claim is what the thread's event reader attributes the
+        // engine's next client turn to.
         {
             let mut active = self.active.lock().await;
             let Some(state) = active.engines.get_mut(thread_id) else {
                 bail!("Thread engine not loaded");
             };
+            if state.active_turn.is_some() {
+                bail!("Thread already has an active turn");
+            }
             state.active_turn = Some(ActiveTurnState {
                 turn_id: turn_id.clone(),
                 interrupt_requested: false,
-                auto_approve: req.auto_approve.unwrap_or(thread.auto_approve),
-                trust_mode: req.trust_mode.unwrap_or(thread.trust_mode),
+                auto_approve,
+                trust_mode,
             });
-            let _ = state.turn_active_tx.send(true);
             touch_lru(&mut active.lru, thread_id);
         }
 
-        let mode = parse_mode(req.mode.as_deref().unwrap_or(&thread.mode));
-        let requested_model = req.model.unwrap_or_else(|| thread.model.clone());
-        let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
-        let (model, reasoning_effort) = if auto_model {
-            let selection = crate::interactive::commands::auto_route::resolve_auto_route(
-                &self.config,
-                &prompt,
-                "",
-                "auto",
-                "auto",
-            )
-            .await;
-            (
-                selection.model,
-                selection
-                    .reasoning_effort
-                    .map(|effort| effort.as_setting().to_string()),
-            )
-        } else {
-            (requested_model, None)
-        };
-        let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
-        let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
-        let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
-        let settings = crate::settings::Settings::load().unwrap_or_default();
-        let show_thinking = settings.show_thinking;
-        let is_simple = settings.is_simple;
+        // Everything after the claim releases it on failure, so a thread is
+        // never left with a phantom active turn no op will ever drive.
+        let launched: Result<()> = async {
+            self.store.save_item(&user_item)?;
+            self.store.save_turn(&turn)?;
 
-        engine
-            .send(Op::SendMessage {
-                content: prompt,
-                image_paths: Vec::new(),
-                mode,
-                model: model.clone(),
-                goal_objective: None,
-                reasoning_effort,
-                reasoning_effort_auto: auto_model,
-                auto_model,
-                allow_shell,
-                trust_mode,
-                auto_approve,
-                translation_enabled: false,
-                show_thinking,
-                is_simple,
-                allowed_tools: None,
-                blocked_tools: Vec::new(),
-                approval_mode: if auto_approve {
-                    codesmith_agent_runtime::mode::ApprovalMode::Auto
-                } else {
-                    codesmith_agent_runtime::mode::ApprovalMode::Suggest
-                },
-            })
-            .await
-            .map_err(|e| anyhow!("Failed to start turn: {e}"))?;
+            thread.latest_turn_id = Some(turn_id.clone());
+            thread.updated_at = now;
+            self.store.save_thread(&thread)?;
 
-        let manager = Arc::new(self.clone());
-        let thread_id_owned = thread_id.to_string();
-        let turn_id_owned = turn_id.clone();
-        let engine_clone = engine.clone();
-        let cancel_token = self.cancel_token.clone();
-        tokio::spawn(async move {
-            if cancel_token.is_cancelled() {
-                tracing::debug!("Skipping turn monitor: shutdown requested");
-                return;
-            }
-            use futures_util::FutureExt;
-            let result = std::panic::AssertUnwindSafe(manager.monitor_turn(
-                thread_id_owned,
-                turn_id_owned,
-                engine_clone,
-            ))
-            .catch_unwind()
-            .await;
-            match result {
-                Ok(res) => {
-                    if let Err(err) = res {
-                        tracing::error!("Failed to monitor turn: {err}");
-                    }
-                }
-                Err(panic_err) => {
-                    if let Some(msg) = panic_err.downcast_ref::<&str>() {
-                        tracing::error!("Turn monitor panicked: {}", msg);
-                    } else if let Some(msg) = panic_err.downcast_ref::<String>() {
-                        tracing::error!("Turn monitor panicked: {}", msg);
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                None,
+                "turn.started",
+                json!({ "turn": turn.clone() }),
+            )
+            .await?;
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                Some(&user_item_id),
+                "item.started",
+                json!({ "item": user_item.clone() }),
+            )
+            .await?;
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                Some(&user_item_id),
+                "item.completed",
+                json!({ "item": user_item.clone() }),
+            )
+            .await?;
+
+            engine
+                .send(Op::SendMessage {
+                    content: prompt.clone(),
+                    image_paths: Vec::new(),
+                    mode,
+                    model: model.clone(),
+                    goal_objective: None,
+                    reasoning_effort: reasoning_effort.clone(),
+                    reasoning_effort_auto: auto_model,
+                    auto_model,
+                    allow_shell,
+                    trust_mode,
+                    auto_approve,
+                    translation_enabled: false,
+                    show_thinking,
+                    is_simple,
+                    allowed_tools: None,
+                    blocked_tools: Vec::new(),
+                    approval_mode: if auto_approve {
+                        codesmith_agent_runtime::mode::ApprovalMode::Auto
                     } else {
-                        tracing::error!("Turn monitor panicked with unknown error");
-                    }
-                }
-            }
-        });
+                        codesmith_agent_runtime::mode::ApprovalMode::Suggest
+                    },
+                })
+                .await
+                .map_err(|e| anyhow!("Failed to start turn: {e}"))
+        }
+        .await;
+        if let Err(err) = launched {
+            self.release_claim(thread_id, &turn_id).await;
+            turn.status = RuntimeTurnStatus::Failed;
+            turn.error = Some(err.to_string());
+            turn.ended_at = Some(Utc::now());
+            let _ = self.store.save_turn(&turn);
+            return Err(err);
+        }
 
         Ok(turn)
+    }
+
+    /// Drop a claim that never (or no longer) owns an engine turn. Id-guarded
+    /// so a claim that already moved on is left alone.
+    async fn release_claim(&self, thread_id: &str, turn_id: &str) {
+        let mut active = self.active.lock().await;
+        if let Some(state) = active.engines.get_mut(thread_id)
+            && state
+                .active_turn
+                .as_ref()
+                .is_some_and(|t| t.turn_id == turn_id)
+        {
+            state.active_turn = None;
+        }
     }
 
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<TurnRecord> {
@@ -1887,18 +1882,9 @@ impl RuntimeThreadManager {
         let mut thread = self.get_thread(thread_id).await?;
         let engine = self.ensure_engine_loaded(&thread).await?;
 
-        {
-            let active = self.active.lock().await;
-            if let Some(active_thread) = active.engines.get(thread_id)
-                && active_thread.active_turn.is_some()
-            {
-                bail!("Thread already has an active turn");
-            }
-        }
-
         let now = Utc::now();
         let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-        let turn = TurnRecord {
+        let mut turn = TurnRecord {
             schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
             id: turn_id.clone(),
             thread_id: thread_id.to_string(),
@@ -1919,76 +1905,57 @@ impl RuntimeThreadManager {
             tool_catalog: None,
             base_url: None,
         };
-        self.store.save_turn(&turn)?;
 
-        thread.latest_turn_id = Some(turn_id.clone());
-        thread.updated_at = now;
-        self.store.save_thread(&thread)?;
-
+        // Check-and-claim under one lock (see `start_turn`). A compaction
+        // turn announces itself with no `TurnStarted`; the event reader
+        // attributes its first event to this claim.
         {
             let mut active = self.active.lock().await;
             let Some(state) = active.engines.get_mut(thread_id) else {
                 bail!("Thread engine not loaded");
             };
+            if state.active_turn.is_some() {
+                bail!("Thread already has an active turn");
+            }
             state.active_turn = Some(ActiveTurnState {
                 turn_id: turn_id.clone(),
                 interrupt_requested: false,
                 auto_approve: thread.auto_approve,
                 trust_mode: thread.trust_mode,
             });
-            let _ = state.turn_active_tx.send(true);
             touch_lru(&mut active.lru, thread_id);
         }
 
-        self.emit_event(
-            thread_id,
-            Some(&turn_id),
-            None,
-            "turn.started",
-            json!({ "turn": turn.clone(), "manual_compaction": true }),
-        )
-        .await?;
+        let launched: Result<()> = async {
+            self.store.save_turn(&turn)?;
 
-        engine
-            .send(Op::CompactContext)
-            .await
-            .map_err(|e| anyhow!("Failed to trigger compaction: {e}"))?;
+            thread.latest_turn_id = Some(turn_id.clone());
+            thread.updated_at = now;
+            self.store.save_thread(&thread)?;
 
-        let manager = Arc::new(self.clone());
-        let thread_id_owned = thread_id.to_string();
-        let turn_id_owned = turn_id.clone();
-        let engine_clone = engine.clone();
-        let cancel_token = self.cancel_token.clone();
-        tokio::spawn(async move {
-            if cancel_token.is_cancelled() {
-                tracing::debug!("Skipping compaction monitor: shutdown requested");
-                return;
-            }
-            use futures_util::FutureExt;
-            let result = std::panic::AssertUnwindSafe(manager.monitor_turn(
-                thread_id_owned,
-                turn_id_owned,
-                engine_clone,
-            ))
-            .catch_unwind()
-            .await;
-            match result {
-                Ok(res) => {
-                    if let Err(err) = res {
-                        tracing::error!("Failed to monitor compaction turn: {err}");
-                    }
-                }
-                Err(panic_err) => {
-                    if let Some(msg) = panic_err.downcast_ref::<&str>() {
-                        tracing::error!("Compaction monitor panicked: {}", msg);
-                    } else if let Some(msg) = panic_err.downcast_ref::<String>() {
-                        tracing::error!("Compaction monitor panicked: {}", msg);
-                    } else {
-                        tracing::error!("Compaction monitor panicked with unknown error");
-                    }
-                }
-            }
-        });
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                None,
+                "turn.started",
+                json!({ "turn": turn.clone(), "manual_compaction": true }),
+            )
+            .await?;
+
+            engine
+                .send(Op::CompactContext)
+                .await
+                .map_err(|e| anyhow!("Failed to trigger compaction: {e}"))
+        }
+        .await;
+        if let Err(err) = launched {
+            self.release_claim(thread_id, &turn_id).await;
+            turn.status = RuntimeTurnStatus::Failed;
+            turn.error = Some(err.to_string());
+            turn.ended_at = Some(Utc::now());
+            let _ = self.store.save_turn(&turn);
+            return Err(err);
+        }
 
         Ok(turn)
     }
@@ -2217,7 +2184,6 @@ impl RuntimeThreadManager {
                 .map_err(|e| anyhow!("Failed to sync thread session: {e}"))?;
         }
 
-        let (turn_active_tx, turn_active_rx) = watch::channel(false);
         let mut active = self.active.lock().await;
         let evicted = enforce_lru_capacity(&mut active, self.manager_cfg.max_active_threads);
         active.engines.insert(
@@ -2225,7 +2191,6 @@ impl RuntimeThreadManager {
             ActiveThreadState {
                 engine: engine.clone(),
                 active_turn: None,
-                turn_active_tx: Arc::new(turn_active_tx),
             },
         );
         touch_lru(&mut active.lru, &thread.id);
@@ -2233,10 +2198,11 @@ impl RuntimeThreadManager {
         for handle in evicted {
             let _ = handle.send(Op::Shutdown).await;
         }
-        // Round 10 TODO-69b — the per-thread idle monitor: reads the
-        // engine's event channel while no turn is active, forwards
-        // background events into the thread's event stream, and runs
-        // idle-wake synthesized turns as first-class turn records.
+        // The thread's single event reader (round 10 TODO-69b, round 12
+        // TODO-78): owns the engine's event channel for the engine's whole
+        // life, attributes each turn to its claim or materializes it as an
+        // idle-wake record, and forwards idle-time background events into
+        // the thread's event stream.
         {
             let manager = Arc::new(self.clone());
             let thread = thread.clone();
@@ -2245,9 +2211,7 @@ impl RuntimeThreadManager {
                 "thread-idle-monitor",
                 std::panic::Location::caller(),
                 async move {
-                    manager
-                        .run_idle_monitor(thread, engine, turn_active_rx)
-                        .await;
+                    manager.run_idle_monitor(thread, engine).await;
                 },
             );
         }
@@ -2255,14 +2219,16 @@ impl RuntimeThreadManager {
     }
 
     /// Materialize a turn record for an idle-wake synthesized turn (round 10
-    /// TODO-69b) and hand the event channel to `monitor_turn`. The
-    /// check-and-set of `active_turn` under the active map's lock is the
-    /// single arbiter between this and a concurrent client `start_turn`:
-    /// exactly one wins.
+    /// TODO-69b) and drive it with `monitor_turn` inline. The engine decided
+    /// to synthesize (`TurnStarted { synthesized: true }`), so the turn IS
+    /// running: a client claim that landed in the meantime is not a race to
+    /// arbitrate — its op queues behind this turn — so the claim is parked
+    /// for the duration and handed back afterwards.
     async fn run_idle_wake_turn(
         self: &Arc<Self>,
         thread: &ThreadRecord,
         engine: EngineHandle,
+        started: EngineEvent,
     ) -> Result<String> {
         let now = Utc::now();
         let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
@@ -2309,28 +2275,20 @@ impl RuntimeThreadManager {
         self.store.save_item(&item)?;
         self.store.save_turn(&turn)?;
 
-        {
+        let parked_claim = {
             let mut active = self.active.lock().await;
             let Some(state) = active.engines.get_mut(thread.id.as_str()) else {
                 bail!("Thread engine not loaded");
             };
-            if state.active_turn.is_some() {
-                // A client turn won the race; leave the record we already
-                // wrote terminal so it never shows as in-progress.
-                turn.status = RuntimeTurnStatus::Canceled;
-                turn.ended_at = Some(Utc::now());
-                self.store.save_turn(&turn)?;
-                bail!("Thread already has an active turn");
-            }
-            state.active_turn = Some(ActiveTurnState {
+            let parked = state.active_turn.replace(ActiveTurnState {
                 turn_id: turn_id.clone(),
                 interrupt_requested: false,
                 auto_approve: thread.auto_approve,
                 trust_mode: thread.trust_mode,
             });
-            let _ = state.turn_active_tx.send(true);
             touch_lru(&mut active.lru, thread.id.as_str());
-        }
+            parked
+        };
 
         self.emit_event(
             thread.id.as_str(),
@@ -2341,95 +2299,107 @@ impl RuntimeThreadManager {
         )
         .await?;
 
-        // The inline monitor owns the channel from here; on return it has
-        // cleared `active_turn` and flipped the watch back to false.
-        let monitor = self.clone();
-        let thread_id = thread.id.clone();
-        if let Err(err) = monitor
-            .monitor_turn(thread_id, turn_id.clone(), engine)
-            .await
-        {
+        let monitored = self
+            .monitor_turn(thread.id.clone(), turn_id.clone(), engine, Some(started))
+            .await;
+        if let Err(err) = monitored {
             tracing::error!("Idle-wake turn monitor failed: {err}");
+        }
+        // `monitor_turn` cleared this turn's own claim; hand a parked client
+        // claim back so its queued op is attributed when the engine runs it.
+        if let Some(claim) = parked_claim {
+            let mut active = self.active.lock().await;
+            if let Some(state) = active.engines.get_mut(thread.id.as_str())
+                && state.active_turn.is_none()
+            {
+                state.active_turn = Some(claim);
+            }
         }
         Ok(turn_id)
     }
 
-    /// The per-engine idle monitor loop (round 10 TODO-69b). Owns the
-    /// engine's event channel while no turn is active:
+    /// The thread's single event reader (round 10 TODO-69b, round 12
+    /// TODO-78). Owns the engine's event channel for the engine's whole
+    /// life and attributes each engine turn by what the engine says about
+    /// it, not by inference from the claim state:
     ///
-    /// - A `TurnStarted` with no active turn is an idle-wake synthesized
-    ///   turn — it is materialized as a first-class turn record and driven
-    ///   by `monitor_turn` inline (the same task reads on; no handoff).
-    /// - A `TurnStarted` with an active turn is a client turn whose first
-    ///   event was consumed in the park race window (sub-millisecond); the
-    ///   lifecycle event its monitor will never see is emitted here, so the
-    ///   client stream loses nothing.
-    /// - Other idle-time events (background sub-agent progress, statuses)
-    ///   are forwarded into the thread's event stream instead of leaking
-    ///   into the next client turn's item log (the pre-69b wart).
+    /// - `TurnStarted { synthesized: true }` is an idle-wake turn the engine
+    ///   decided to run — materialized as a first-class turn record and
+    ///   driven by `monitor_turn` inline; a pending client claim is parked
+    ///   for the duration (its op queues behind the synthesized turn).
+    /// - `TurnStarted { synthesized: false }` is the engine running the
+    ///   claimed client turn; `monitor_turn` drives it from this event on.
+    /// - Any other event while a claim is pending belongs to a claimed turn
+    ///   that announces itself with no `TurnStarted` (manual compaction
+    ///   emits only its `TurnComplete`); `monitor_turn` starts from it.
+    /// - Otherwise the event is idle-time background traffic (sub-agent
+    ///   completions, statuses) and is forwarded into the thread's event
+    ///   stream instead of leaking into the next turn's item log.
     ///
-    /// Exits when the engine's event channel closes (LRU eviction sends
-    /// `Op::Shutdown` and drops the engine).
-    async fn run_idle_monitor(
-        self: Arc<Self>,
-        thread: ThreadRecord,
-        engine: EngineHandle,
-        mut turn_active: watch::Receiver<bool>,
-    ) {
+    /// One reader means no park/hand-off race, no lifecycle emitted on a
+    /// monitor's behalf, and no arbitration between an idle wake and a
+    /// client claim. Exits when the engine's event channel closes (LRU
+    /// eviction sends `Op::Shutdown` and drops the engine).
+    async fn run_idle_monitor(self: Arc<Self>, thread: ThreadRecord, engine: EngineHandle) {
         loop {
-            // Park while a turn owns the channel.
-            while *turn_active.borrow_and_update() {
-                if turn_active.changed().await.is_err() {
-                    return;
-                }
-            }
-            let event = tokio::select! {
-                biased;
-                changed = turn_active.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    continue;
-                }
-                event = async {
-                    let mut rx = engine.rx_event.write().await;
-                    rx.recv().await
-                } => {
-                    let Some(event) = event else {
-                        return;
-                    };
-                    event
-                }
+            let event = {
+                let mut rx = engine.rx_event.write().await;
+                rx.recv().await
             };
-            if let EngineEvent::TurnStarted { turn_id, .. } = &event {
-                let active_now = {
-                    let active = self.active.lock().await;
-                    active
-                        .engines
-                        .get(thread.id.as_str())
-                        .is_some_and(|state| state.active_turn.is_some())
-                };
-                if active_now {
-                    // The client turn's monitor never sees this event; emit
-                    // the lifecycle notification on its behalf.
-                    let _ = self
-                        .emit_event(
-                            thread.id.as_str(),
-                            Some(turn_id),
-                            None,
-                            "turn.lifecycle",
-                            json!({ "status": "in_progress" }),
-                        )
-                        .await;
-                } else if let Err(err) = self.run_idle_wake_turn(&thread, engine.clone()).await {
-                    tracing::debug!("Idle wake skipped: {err}");
+            let Some(event) = event else {
+                return;
+            };
+            let claimed = {
+                let active = self.active.lock().await;
+                active
+                    .engines
+                    .get(thread.id.as_str())
+                    .and_then(|state| state.active_turn.as_ref().map(|t| t.turn_id.clone()))
+            };
+            match (event, claimed) {
+                (
+                    started @ EngineEvent::TurnStarted {
+                        synthesized: true, ..
+                    },
+                    _,
+                ) => {
+                    if let Err(err) = self
+                        .run_idle_wake_turn(&thread, engine.clone(), started)
+                        .await
+                    {
+                        tracing::error!("Idle-wake turn failed to record: {err}");
+                    }
                 }
-                continue;
-            }
-            // Background events while idle → thread event stream (no turn
-            // to misattribute them to).
-            match event {
-                EngineEvent::AgentComplete { id, result } => {
+                (EngineEvent::TurnStarted { turn_id, .. }, None) => {
+                    // Only `start_turn` sends `Op::SendMessage`, so a real
+                    // turn without a claim means the claim was released
+                    // underneath it; say so rather than inventing a record.
+                    tracing::error!(
+                        "engine turn {turn_id} on thread {} started with no claimed runtime \
+                         turn; its events are forwarded as background traffic",
+                        thread.id
+                    );
+                }
+                (first, Some(turn_id)) => {
+                    if let Err(err) = self
+                        .monitor_turn(thread.id.clone(), turn_id, engine.clone(), Some(first))
+                        .await
+                    {
+                        tracing::error!("Failed to monitor turn: {err}");
+                    }
+                }
+                // A decision the engine is blocked on, with no runtime turn to
+                // route it to: answer fail-closed rather than leave the engine
+                // waiting — the same answer `monitor_turn` gives when the
+                // claim vanished under it.
+                (EngineEvent::ApprovalRequired { id, .. }, None)
+                | (EngineEvent::ElevationRequired { tool_id: id, .. }, None) => {
+                    let _ = engine.deny_tool_call(id).await;
+                }
+                (EngineEvent::UserInputRequired { id, .. }, None) => {
+                    let _ = engine.cancel_user_input(id).await;
+                }
+                (EngineEvent::AgentComplete { id, result }, None) => {
                     let _ = self
                         .emit_event(
                             thread.id.as_str(),
@@ -2440,7 +2410,7 @@ impl RuntimeThreadManager {
                         )
                         .await;
                 }
-                EngineEvent::Status { message } => {
+                (EngineEvent::Status { message }, None) => {
                     let _ = self
                         .emit_event(
                             thread.id.as_str(),
@@ -2451,7 +2421,7 @@ impl RuntimeThreadManager {
                         )
                         .await;
                 }
-                _ => {}
+                (_, None) => {}
             }
         }
     }
@@ -2489,11 +2459,16 @@ impl RuntimeThreadManager {
         Ok(messages)
     }
 
+    /// Drive one runtime turn from the engine's events until its
+    /// `TurnComplete`. Called inline by the thread's single event reader
+    /// (`run_idle_monitor`); `first` is the event that reader already took
+    /// off the channel when it decided this turn owns what follows.
     async fn monitor_turn(
         &self,
         thread_id: String,
         turn_id: String,
         engine: EngineHandle,
+        mut first: Option<EngineEvent>,
     ) -> Result<()> {
         let mut current_message_item: Option<(String, String)> = None;
         let mut current_reasoning_item: Option<(String, String)> = None;
@@ -2507,9 +2482,12 @@ impl RuntimeThreadManager {
         let mut turn_error: Option<String> = None;
 
         loop {
-            let event = {
-                let mut rx = engine.rx_event.write().await;
-                rx.recv().await
+            let event = match first.take() {
+                Some(event) => Some(event),
+                None => {
+                    let mut rx = engine.rx_event.write().await;
+                    rx.recv().await
+                }
             };
             let Some(event) = event else {
                 if self
@@ -3439,8 +3417,6 @@ impl RuntimeThreadManager {
                     .is_some_and(|t| t.turn_id == turn_id)
             {
                 state.active_turn = None;
-                // Round 10 TODO-69b — the idle monitor may resume reading.
-                let _ = state.turn_active_tx.send(false);
             }
             touch_lru(&mut active.lru, &thread_id);
         }
@@ -3549,7 +3525,6 @@ impl RuntimeThreadManager {
         engine: EngineHandle,
     ) -> Result<()> {
         let thread = self.get_thread(thread_id).await?;
-        let (turn_active_tx, turn_active_rx) = watch::channel(false);
         {
             let mut active = self.active.lock().await;
             active.engines.insert(
@@ -3557,20 +3532,17 @@ impl RuntimeThreadManager {
                 ActiveThreadState {
                     engine: engine.clone(),
                     active_turn: None,
-                    turn_active_tx: Arc::new(turn_active_tx),
                 },
             );
             touch_lru(&mut active.lru, thread_id);
         }
-        // Round 10 TODO-69b — idle monitor parity on the test attach path.
+        // Single event reader parity on the test attach path.
         let manager = Arc::new(self.clone());
         codesmith_agent_runtime::utils::spawn_supervised(
             "thread-idle-monitor-attach",
             std::panic::Location::caller(),
             async move {
-                manager
-                    .run_idle_monitor(thread, engine, turn_active_rx)
-                    .await;
+                manager.run_idle_monitor(thread, engine).await;
             },
         );
         Ok(())
@@ -3892,20 +3864,18 @@ mod tests {
     ) -> crate::core::engine::MockEngineHandle {
         let harness = mock_engine_handle();
         let mut active = manager.active.lock().await;
-        let (turn_active_tx, turn_active_rx) = watch::channel(false);
         active.engines.insert(
             thread_id.to_string(),
             ActiveThreadState {
                 engine: harness.handle.clone(),
                 active_turn: None,
-                turn_active_tx: Arc::new(turn_active_tx),
             },
         );
         touch_lru(&mut active.lru, thread_id);
         drop(active);
-        // Production parity (round 10 TODO-69b): the idle monitor reads the
-        // fake engine's events between turns, exactly as `ensure_engine_loaded`
-        // spawns one for a real engine.
+        // Production parity: the single event reader owns the fake engine's
+        // events, exactly as `ensure_engine_loaded` spawns one for a real
+        // engine.
         if let Ok(thread) = manager.get_thread(thread_id).await {
             let manager = Arc::new(manager.clone());
             let engine = harness.handle.clone();
@@ -3913,9 +3883,7 @@ mod tests {
                 "thread-idle-monitor-test",
                 std::panic::Location::caller(),
                 async move {
-                    manager
-                        .run_idle_monitor(thread, engine, turn_active_rx)
-                        .await;
+                    manager.run_idle_monitor(thread, engine).await;
                 },
             );
         }
@@ -3941,6 +3909,25 @@ mod tests {
             }
             if Instant::now() >= deadline {
                 bail!("Timed out waiting for turn {turn_id}");
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Poll the thread's event stream until one record matches.
+    async fn wait_for_thread_event(
+        manager: &RuntimeThreadManager,
+        thread_id: &str,
+        timeout: Duration,
+        matches: impl Fn(&RuntimeEventRecord) -> bool,
+    ) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if manager.events_since(thread_id, None)?.iter().any(&matches) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("Timed out waiting for a thread event on {thread_id}");
             }
             sleep(Duration::from_millis(20)).await;
         }
@@ -4074,7 +4061,6 @@ mod tests {
                     auto_approve: true,
                     trust_mode: false,
                 }),
-                turn_active_tx: Arc::new(watch::channel(true).0),
             },
         );
         active.engines.insert(
@@ -4087,7 +4073,6 @@ mod tests {
                     auto_approve: true,
                     trust_mode: false,
                 }),
-                turn_active_tx: Arc::new(watch::channel(true).0),
             },
         );
         active.lru.push_back("thr_a".to_string());
@@ -4413,8 +4398,8 @@ mod tests {
         Ok(())
     }
 
-    /// Round 10 TODO-69b — an idle-wake synthesized turn (engine emits
-    /// `TurnStarted` with no client turn active) becomes a first-class,
+    /// Round 10 TODO-69b / round 12 TODO-78 — an idle-wake synthesized turn
+    /// (the engine says so on its `TurnStarted`) becomes a first-class,
     /// terminal turn record on the thread instead of leaking into the next
     /// client turn's item log.
     #[tokio::test]
@@ -4435,13 +4420,14 @@ mod tests {
             .await?;
         let harness = install_mock_engine(&manager, &thread.id).await;
 
-        // No client turn: the engine "synthesizes" one (idle wake). The
-        // idle monitor materializes the record and monitors the turn inline.
+        // No client turn: the engine synthesizes one (idle wake) and tags
+        // its TurnStarted. The reader materializes the record and monitors
+        // the turn inline.
         harness
             .tx_event
             .send(EngineEvent::TurnStarted {
                 turn_id: "turn_synth".to_string(),
-                synthesized: false,
+                synthesized: true,
             })
             .await?;
         harness
@@ -4457,21 +4443,224 @@ mod tests {
             })
             .await?;
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        wait_for_idle_wake_records(&manager, &thread.id, 1, Duration::from_secs(5)).await?;
+        Ok(())
+    }
+
+    /// Poll until exactly `expected` terminal idle-wake records exist on
+    /// the thread (more than `expected` fails at once: the reader invented
+    /// a record it should not have).
+    async fn wait_for_idle_wake_records(
+        manager: &RuntimeThreadManager,
+        thread_id: &str,
+        expected: usize,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = Instant::now() + timeout;
         loop {
-            let turns = manager.store.list_turns_for_thread(&thread.id)?;
-            let settled = turns.iter().any(|turn| {
-                turn.input_summary.contains("idle wake")
-                    && matches!(turn.status, RuntimeTurnStatus::Completed)
-            });
-            if settled {
-                break;
+            let turns = manager.store.list_turns_for_thread(thread_id)?;
+            let settled = turns
+                .iter()
+                .filter(|turn| {
+                    turn.input_summary.contains("idle wake")
+                        && matches!(turn.status, RuntimeTurnStatus::Completed)
+                })
+                .count();
+            if settled > expected {
+                bail!("{settled} idle-wake records, expected {expected}");
+            }
+            if settled == expected {
+                return Ok(());
             }
             if Instant::now() >= deadline {
-                bail!("synthesized idle-wake turn never reached a terminal record");
+                bail!("expected {expected} idle-wake record(s), saw {settled}");
             }
             sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// Round 12 TODO-78 — the reader classifies by the engine's tag, not by
+    /// "no claim ⇒ synthesized": a real (`synthesized: false`) turn start
+    /// with no claimed runtime turn is an error to log, not an idle wake to
+    /// record. The synthesized pair sent afterwards proves the reader kept
+    /// running and that exactly one idle-wake record exists.
+    #[tokio::test]
+    async fn an_unclaimed_real_turn_start_is_not_recorded_as_an_idle_wake() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let complete = || EngineEvent::TurnComplete {
+            usage: Usage::default(),
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+            reported_model: None,
+            failed_attempts: Vec::new(),
+        };
+
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "turn_unclaimed".to_string(),
+                synthesized: false,
+            })
+            .await?;
+        harness.tx_event.send(complete()).await?;
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "turn_synth".to_string(),
+                synthesized: true,
+            })
+            .await?;
+        harness.tx_event.send(complete()).await?;
+
+        wait_for_idle_wake_records(&manager, &thread.id, 1, Duration::from_secs(5)).await?;
+        Ok(())
+    }
+
+    /// Round 12 TODO-78 — the engine may synthesize an idle-wake turn in the
+    /// window between a client's claim and its op landing; the client's op
+    /// then runs second. One event reader attributes each turn by its
+    /// `TurnStarted` tag: the synthesized turn gets its own record and the
+    /// client's record carries the client's reply. (The retired two-reader
+    /// design let the client's monitor swallow the synthesized turn and the
+    /// idle monitor record the client's reply as an "idle wake".)
+    #[tokio::test]
+    async fn a_synthesized_turn_inside_the_claim_window_keeps_both_records_straight() -> Result<()>
+    {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+        let tx_event = harness.tx_event;
+        tokio::spawn(async move {
+            if !matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
+                return;
+            }
+            let complete = || EngineEvent::TurnComplete {
+                usage: Usage::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+                reported_model: None,
+                failed_attempts: Vec::new(),
+            };
+            // The synthesized turn the engine squeezed in first…
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "engine_synth".to_string(),
+                    synthesized: true,
+                })
+                .await;
+            let _ = tx_event.send(complete()).await;
+            // …then the client's own turn.
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "engine_client".to_string(),
+                    synthesized: false,
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageStarted { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageDelta {
+                    index: 0,
+                    content: "client reply".to_string(),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageComplete { index: 0 })
+                .await;
+            let _ = tx_event.send(complete()).await;
+        });
+
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "hello".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                },
+            )
+            .await?;
+        let client_turn =
+            wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(5)).await?;
+        assert!(
+            matches!(client_turn.status, RuntimeTurnStatus::Completed),
+            "client turn ends completed: {client_turn:?}"
+        );
+        let replies: Vec<String> = manager
+            .store
+            .list_items_for_turn(&turn.id)?
+            .into_iter()
+            .filter(|item| item.kind == TurnItemKind::AgentMessage)
+            .map(|item| item.detail.unwrap_or(item.summary))
+            .collect();
+        assert_eq!(
+            replies,
+            vec!["client reply".to_string()],
+            "the client's reply is attributed to the client's turn"
+        );
+        wait_for_idle_wake_records(&manager, &thread.id, 1, Duration::from_secs(5)).await?;
+        let idle: Vec<TurnRecord> = manager
+            .store
+            .list_turns_for_thread(&thread.id)?
+            .into_iter()
+            .filter(|t| t.input_summary.contains("idle wake"))
+            .collect();
+        let idle_replies = manager
+            .store
+            .list_items_for_turn(&idle[0].id)?
+            .into_iter()
+            .filter(|item| item.kind == TurnItemKind::AgentMessage)
+            .count();
+        assert_eq!(
+            idle_replies, 0,
+            "the idle-wake record carries no client reply"
+        );
+        assert!(
+            manager
+                .active
+                .lock()
+                .await
+                .engines
+                .get(thread.id.as_str())
+                .is_some_and(|state| state.active_turn.is_none()),
+            "no claim is left behind once both turns settled"
+        );
         Ok(())
     }
 
@@ -4815,6 +5004,19 @@ mod tests {
             harness.rx_op.recv().await,
             Some(Op::SendMessage { .. })
         ));
+        // The engine runs the claimed turn; once the reader is monitoring it
+        // (its lifecycle event is out), pull the claim from under it.
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "engine_stale".to_string(),
+                synthesized: false,
+            })
+            .await?;
+        wait_for_thread_event(&manager, &thread.id, Duration::from_secs(2), |ev| {
+            ev.event == "turn.lifecycle" && ev.turn_id.as_deref() == Some(turn.id.as_str())
+        })
+        .await?;
         {
             let mut active = manager.active.lock().await;
             let state = active
@@ -5281,6 +5483,19 @@ mod tests {
             harness.rx_op.recv().await,
             Some(Op::SendMessage { .. })
         ));
+        // The engine runs the claimed turn; once the reader is monitoring it
+        // (its lifecycle event is out), pull the claim from under it.
+        harness
+            .tx_event
+            .send(EngineEvent::TurnStarted {
+                turn_id: "engine_stale".to_string(),
+                synthesized: false,
+            })
+            .await?;
+        wait_for_thread_event(&manager, &thread.id, Duration::from_secs(2), |ev| {
+            ev.event == "turn.lifecycle" && ev.turn_id.as_deref() == Some(turn.id.as_str())
+        })
+        .await?;
         {
             let mut active = manager.active.lock().await;
             let state = active

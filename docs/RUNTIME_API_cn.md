@@ -381,7 +381,7 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 
 ### 空闲唤醒 turn（第十轮）
 
-线程引擎开启引擎级空闲唤醒：后台子代理在无运行 turn 时完成，引擎自行合成下一个 turn。每个线程的空闲监视器在 turn 之间持有该引擎的事件通道，因此这样的 turn 会被物化为一等 turn 记录（`input_summary` 以 `idle wake` 开头，`turn.started` 载荷带 `"idle_wake": true`），并与客户端 turn 完全同等地被监视——审批走既有审批模型，`interrupt` 对其 turn id 生效。线程空闲期到达的事件（后台子代理完成、引擎状态行）以线程级 `background.*` 事件转发，不再漏进下一个客户端 turn 的 item 记录。空闲唤醒 turn 活动期间客户端 `POST start_turn` 仍会收到既有的 "thread already has an active turn" 拒绝。
+线程引擎开启引擎级空闲唤醒：后台子代理在无运行 turn 时完成，引擎自行合成下一个 turn。每个线程只有一个事件读者，在引擎整个生命周期内持有其事件通道，并按引擎自己的说法归属每个 turn（第十二轮）：带 `synthesized: true` 标记的 `TurnStarted` 被物化为一等 turn 记录（`input_summary` 以 `idle wake` 开头，`turn.started` 载荷带 `"idle_wake": true`），并与客户端 turn 完全同等地被监视——审批走既有审批模型，`interrupt` 对其 turn id 生效；真实的 `TurnStarted` 就是 `start_turn` 已占位的客户端 turn。线程空闲期到达的事件（后台子代理完成、引擎状态行）以线程级 `background.*` 事件转发，不再漏进下一个客户端 turn 的 item 记录。空闲唤醒 turn 活动期间客户端 `POST start_turn` 仍会收到既有的 "thread already has an active turn" 拒绝；引擎在客户端占位与其 op 落地之间挤进的合成 turn 只是先跑、带自己的记录，客户端 turn 随后带自己的记录运行。
 
 ## 安全边界
 
