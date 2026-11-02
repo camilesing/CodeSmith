@@ -464,7 +464,7 @@ impl ExtensionRunner {
     }
 
     /// Clear all bound handlers (§F2b T7 live reload). Called by
-    /// [`reload_extension_runtime`](crate::reload_extension_runtime) BEFORE
+    /// `reload_extension_runtime` (the host's reload path) BEFORE
     /// re-discovery so re-binding wouldn't duplicate handlers — `bind_core`'s
     /// drain appends to `handlers`, it doesn't replace. A runtime lifecycle
     /// method; does NOT change the §F2a contract (`HandlerOutcome`/`EmitOutcome`
@@ -477,7 +477,7 @@ impl ExtensionRunner {
     }
 
     /// Clear the generation's around-dispatch registrations (DSH
-    /// tools/execute). Same reload lifecycle as [`clear_handlers`]; safe
+    /// tools/execute). Same reload lifecycle as `clear_handlers`; safe
     /// while an in-flight turn holds a snapshot — each handler is
     /// refcounted (`Arc`) and the engine composed its chain at dispatch
     /// time.
@@ -635,7 +635,7 @@ impl ExtensionRunner {
 
     /// Route B (systemPrompt sections) — append `text` as a named section.
     /// Errors on an empty id/text, an unknown id charset, or beyond
-    /// [`MAX_PROMPT_SECTIONS`] sections (fail loud at load, not mid-session).
+    /// `MAX_PROMPT_SECTIONS` sections (fail loud at load, not mid-session).
     pub fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
         validate_prompt_section(&id, &text)?;
         let mut sections = self

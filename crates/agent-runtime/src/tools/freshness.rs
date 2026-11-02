@@ -10,7 +10,7 @@
 //! hashing. Same-second same-length external edits can slip through on
 //! filesystems with coarse mtime granularity; that trade-off keeps the hot
 //! read path allocation-free. Tracking is per-engine and shared across
-//! turns; [`crate::EngineConfig`] carries the handle so every per-turn
+//! turns; `crate::EngineConfig` carries the handle so every per-turn
 //! registry wraps against the same state.
 //!
 //! Gated by `[features].file_freshness` (default on). The gate is evaluated
@@ -214,7 +214,7 @@ enum FreshnessRole {
     ShellProbe,
 }
 
-/// Shell-family tool names that get the [`FreshnessRole::ShellProbe`]
+/// Shell-family tool names that get the `FreshnessRole::ShellProbe`
 /// post-success drift probe. Kept in lockstep with the registered shell
 /// family (`ToolRegistryBuilder::with_shell_tools` /
 /// `with_runtime_task_shell_tools`); a CLI-side test pins the two together

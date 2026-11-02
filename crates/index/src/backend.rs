@@ -81,7 +81,7 @@ pub trait IndexBackend: Send + Sync {
 
 /// Builds [`IndexBackend`]s for a registry id. The plugin seam — implement
 /// this in `codesmith-index` (built-ins) or a downstream crate and register
-/// an `Arc<dyn IndexBackendFactory>` into an [`IndexBackendRegistry`]
+/// an `Arc<dyn IndexBackendFactory>` into an [`crate::registry::IndexBackendRegistry`]
 /// (see crate docs).
 pub trait IndexBackendFactory: Send + Sync {
     /// Registry key selected via `[index.symbols] backend = "…"` (or the

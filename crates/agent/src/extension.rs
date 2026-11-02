@@ -824,7 +824,7 @@ pub trait CommandDefinition: Send + Sync {
 // === HandlerOutcome (§F2a) ================================================
 
 /// What a [`Handler`] returns. Drives the cross-handler chain in
-/// [`ExtensionRunner::emit`](codesmith_extensions::ExtensionRunner::emit)
+/// `ExtensionRunner::emit` (`codesmith_extensions`)
 /// (spec §4: "一个 handler 的修改对下一个可见"). Which outcomes the host
 /// honors is the event's
 /// [`dispatch mode`](ExtensionEventKind::dispatch_mode) — the three DSH
@@ -857,7 +857,7 @@ pub trait CommandDefinition: Send + Sync {
 ///   seams — `Input` / `BeforeAgentStart` / `BeforeProviderRequest` /
 ///   `ToolCall` / `ToolResult`; ignored at `Emit`/`Serial` seams.
 ///
-/// The terminal [`codesmith_extensions::EmitOutcome::outcome`] is never
+/// The terminal `EmitOutcome::outcome` (`codesmith_extensions`) is never
 /// `Transform` — a transform is folded into the running event and the chain
 /// continues; the terminal is `Continue` unless a handler short-circuits
 /// with `Cancel`/`Block`/`Ask`.
@@ -888,7 +888,7 @@ pub enum HandlerOutcome {
 
 /// Lifecycle event handler. §F2a: returns [`HandlerOutcome`]
 /// (cancel/transform/block), chained across handlers in
-/// [`ExtensionRunner::emit`](codesmith_extensions::ExtensionRunner::emit).
+/// `ExtensionRunner::emit` (`codesmith_extensions`).
 /// §F1 was observer-only (`Result<(), _>`); §F2a upgrades to the outcome
 /// chain. `catch_unwind` isolation is in `emit` (§F2a T8), so a panicking
 /// handler cannot tear down the agent loop.
@@ -1113,7 +1113,7 @@ pub fn wrap_turn_dispatch<'a>(
 ///   tool in that agent type's catalog view; the global view (the main
 ///   turn) never sees it.
 /// - A **handler** registered for `AgentType(id)` receives only events
-///   dispatched at that scope ([`ExtensionRunner::emit_scoped`]); the
+///   dispatched at that scope (`ExtensionRunner::emit_scoped` (`codesmith_extensions`)); the
 ///   main turn's `emit` (Global) never reaches it.
 /// - A **restrict entry** (`restrict_tools`) prunes the *global* tool
 ///   layer for the views its scope covers — deny-only, and it never prunes
@@ -1127,8 +1127,6 @@ pub fn wrap_turn_dispatch<'a>(
 /// limitations: no scoped variants of `on` (subscribe-all — register
 /// per-variant instead) or `register_around_tool` (the around chain is
 /// main-turn-only today); script mods do not see scopes.
-///
-/// [`ExtensionRunner::emit_scoped`]: codesmith_extensions::ExtensionRunner::emit_scoped
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scope {
@@ -1368,7 +1366,7 @@ pub trait ExtensionApi: Send + Sync {
         ))
     }
 
-    /// Register a **policy** for a host-behavior seam ([`PolicyKind`]) —
+    /// Register a **policy** for a host-behavior seam ([`crate::policy::PolicyKind`]) —
     /// the "policy in script, effects in host" surface. A policy is data:
     /// `config` is a JSON map whose keys the owning mechanism validates
     /// (bad values warn + fall back to compiled defaults at read time).
@@ -1657,13 +1655,13 @@ impl MessageProjectionHub {
     /// Reset every projection to its `init` and fold the whole transcript
     /// (wholesale replacement: session restore, compaction, rollback).
     ///
-    /// The folds run outside the lock (see [`fold_message`]) but the
+    /// The folds run outside the lock (see [`Self::fold_message`]) but the
     /// resulting states land in ONE lock step, so no window exists where a
     /// concurrent `register`, `clear`, or `fold_message` (the reload thread
     /// races the engine here) can observe a reset-then-partially-folded
     /// hub. A projection registered DURING the fold would otherwise stay
     /// at its init forever; it is picked up by a bounded follow-up pass
-    /// ([`REFOLD_MAX_PASSES`] caps registration storms).
+    /// (`REFOLD_MAX_PASSES` caps registration storms).
     pub fn refold_all(&self, messages: &[crate::models::Message]) {
         let clear_generation;
         let mut pending: Vec<(String, String, u64, Value, MessageFoldFn)> = {

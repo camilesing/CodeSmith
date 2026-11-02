@@ -2,7 +2,7 @@
 //! [`ChatHistory`].
 //!
 //! The framework-core [`ChatHistory`] trait (LangChain `Memory` analog, in
-//! `codesmith-agent`) is the executor's transcript view: an [`AgentExecutor`]
+//! `codesmith-agent`) is the executor's transcript view: an `AgentExecutor`
 //! reads prior turns via [`ChatHistory::messages`] and appends assistant turns
 //! and tool results via [`ChatHistory::push`]. The production [`Session`] in
 //! this crate owns the real conversation bytes (`session.messages`) alongside

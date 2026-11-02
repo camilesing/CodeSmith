@@ -30,7 +30,7 @@ pub fn discover_static() -> Vec<&'static ExtensionRegistration> {
 
 /// A discovered dylib source (phase 2). `config_path` is the
 /// `extension.toml` location (`None` for a bare dylib file with no manifest);
-/// `dylib_path` is the resolved cdylib to hand to [`load_dylib`]. `global`
+/// `dylib_path` is the resolved cdylib to hand to `ExtensionRunner::load_dylib`. `global`
 /// distinguishes a shared install root (e.g. `~/.codesmith/extensions`) from a
 /// project-local one (`.codesmith/extensions`), which the trust gate (§F5
 /// FirstLoad / §F2c) treats differently.

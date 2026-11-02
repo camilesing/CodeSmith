@@ -19,7 +19,7 @@
 //!   its client from it (Volcengine keeps its documented 90 s floor).
 //! - **Cancellation** — requests carry an optional `CancellationToken`;
 //!   the provider races the transport against it and returns
-//!   [`WebError::Cancelled`] instead of finishing the call.
+//!   `WebError::Cancelled` instead of finishing the call.
 //! - **Error classification** — [`WebErrorKind`] is the single taxonomy, and
 //!   the `From<WebError> for ToolError` impl below is the only place a web
 //!   failure becomes a tool error.
@@ -35,7 +35,7 @@
 //!   provider and no config key for one until a second backend exists.
 //! - Fetch outcomes return non-2xx statuses as `Ok` (callers such as
 //!   `fetch_url` want the error body); only search maps HTTP failures to
-//!   [`WebError::Status`].
+//!   `WebError::Status`.
 
 use std::collections::BTreeMap;
 use std::time::Duration;

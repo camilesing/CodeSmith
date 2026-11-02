@@ -21,7 +21,7 @@
 //!   and from the `manage_mods` tool the main turn is the initiator, so
 //!   draining it would be a self-wait (the DSH self-lineage exclusion).
 //! - **Executor replacement guard**
-//!   ([`TurnExecutorRegistry::register`](crate::engine::executor_composition::TurnExecutorRegistry::register)):
+//!   (`TurnExecutorRegistry::register`):
 //!   an id with in-flight leases cannot be replaced (DSH `setFactory`
 //!   conflict semantics); the error names the count.
 //! - **dlclose safety net** (engine op-loop top): `drop_pending` is

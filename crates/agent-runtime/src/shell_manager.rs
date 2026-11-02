@@ -2136,8 +2136,8 @@ pub type SharedShellManager = Arc<Mutex<ShellManager>>;
 /// method locks the inner `std::sync::Mutex` synchronously and delegates to
 /// the inherent [`ShellManager`] method — the pre-trait call sites did the
 /// same under a single `.lock()` guard; the host mutex serializes concurrent
-/// callers. The engine-core [`ShellApi`] impl (returning the reduced
-/// [`ShellExecResult`]) lives in this module (`shell_manager`).
+/// callers. The engine-core `ShellApi` impl (returning the reduced
+/// `ShellExecResult`) lives in this module (`shell_manager`).
 pub struct ShellManagerHost(pub SharedShellManager);
 
 impl ShellManagerHost {

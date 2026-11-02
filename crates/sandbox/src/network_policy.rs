@@ -127,7 +127,7 @@ impl Decision {
 /// Map a network-policy evaluation to the per-input tool-approval gate
 /// requirement (P1-5).
 ///
-/// `Prompt` → [`ApprovalRequirement::Required`]: the standard **inline**
+/// `Prompt` → `ApprovalRequirement::Required`: the standard **inline**
 /// approval gate (with approve-for-session fingerprint dedup) owns the ask.
 /// This replaces the old dead-end error — "requires approval; re-run after
 /// `/network allow <host>`" — which wrote the config file but never

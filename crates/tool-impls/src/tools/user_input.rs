@@ -4,7 +4,7 @@
 //! [`UserInputRequest`], [`UserInputAnswer`], [`UserInputResponse`]) now live
 //! in `codesmith_agent_runtime::user_input` and are re-exported here so that
 //! existing `crate::tools::user_input` references keep resolving. The
-//! [`RequestUserInputTool`] [`ToolSpec`](codesmith_agent_runtime::tools::spec::ToolSpec) implementation
+//! [`RequestUserInputTool`] [`ToolSpec`] implementation
 //! stays in this crate (`codesmith-tool-impls`).
 //!
 //! Known limitations, recorded beside the behaviour it owns — this tool is the

@@ -1,7 +1,7 @@
 //! Mock (echo) provider — a no-network [`LlmClient`] for tests and demos.
 //!
 //! The mock echoes the last user message back as the assistant response. It is
-//! the reference [`ProviderFactory`](codesmith_agent::provider::ProviderFactory)
+//! the reference [`ProviderFactory`]
 //! sample: the smallest self-contained provider that compiles, registers, and
 //! answers — the LangChain `FakeListLLM` analog. No API key, no network, no
 //! global state, so it is safe to build and exercise in any context (including

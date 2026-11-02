@@ -159,7 +159,7 @@ pub fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -
 }
 
 /// Lowercase markers identifying error-bearing content. Shared by the pin
-/// planner ([`should_pin_message`]), the fact ledger's failure extraction,
+/// planner (`should_pin_message`), the fact ledger's failure extraction,
 /// and the summary's failed-attempts section.
 pub const ERROR_MARKERS: &[&str] = &[
     "error:",
@@ -208,7 +208,7 @@ pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
 /// and no `tool_result` orphans a missing call — the pairing invariant a
 /// provider-acceptable transcript (and every compaction cut) must hold
 /// (dsh `toolPairingBalanced` counterpart). Compaction paths enforce this
-/// via [`enforce_tool_call_pairs`]; the session-load repair enforces it by
+/// via `enforce_tool_call_pairs`; the session-load repair enforces it by
 /// appending `TOOL_OUTCOME_UNKNOWN` terminators. This predicate is the
 /// shared post-condition both are checked against.
 #[must_use]

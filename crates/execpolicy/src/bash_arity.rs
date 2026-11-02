@@ -25,7 +25,7 @@
 //! The flag deny-list is not exhaustive. Exec-by-positioning vectors
 //! (`xargs <cmd>`, `ssh host cmd`, `docker run <img> <cmd>`,
 //! `kubectl exec`, `go/cargo/bun run`, `npx <pkg>`, `python -m <module>`)
-//! are denied outright by [`is_exec_by_positioning`] — an allow rule never
+//! are denied outright by `is_exec_by_positioning` — an allow rule never
 //! covers them; they fall back to the ordinary approval path.
 //!
 //! ## Coverage

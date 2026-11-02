@@ -9,7 +9,7 @@
 //! The catalog of kinds this family serves is declared declaratively in
 //! `providers.toml` (one `[[providers]]` entry with `backend = "openai-compat"`
 //! per kind); `default_registry` constructs an [`OpenAiCompatFactory`] for each
-//! such entry, so the [`ProviderRegistry`] resolves any of these kinds by
+//! such entry, so the `ProviderRegistry` resolves any of these kinds by
 //! `cfg.provider` directly — no host-side mapping from kind to factory. The
 //! dedicated `openai` / `deepseek` / `anthropic` features own their kinds; this
 //! feature owns the rest.

@@ -6,7 +6,7 @@
 //! the `tree-sitter` feature) the tree-sitter symbol backend. Hosts select a
 //! backend through `[index.symbols] backend = "..."` in config.toml; the
 //! [`IndexBackendRegistry`] resolves the id to an
-//! [`Arc<dyn IndexBackendFactory>`], mirroring how
+//! `Arc<dyn IndexBackendFactory>`, mirroring how
 //! `codesmith-providers` plugs into `ProviderRegistry`.
 //!
 //! # Adding a backend

@@ -215,7 +215,7 @@ impl RedactedAnalyticsMetadata {
     /// substrings (unix absolute `/x`, home-relative `~x`, and windows
     /// drive `C:\x` paths) and quoted spans (`"..."`, `'...'`, `` `...` ``)
     /// — which may carry code/PII — with placeholders, then truncate to
-    /// [`MAX_LEN`](Self::MAX_LEN) chars. The result is *not* guaranteed
+    /// `MAX_LEN` chars. The result is *not* guaranteed
     /// leak-free; this is a deliberate barrier against the common
     /// path/code-leak shapes, not a guarantee.
     #[must_use]

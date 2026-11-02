@@ -7,7 +7,7 @@
 //! [`codesmith_agent::provider::ProviderRegistry`]) live in `codesmith-agent`;
 //! concrete clients live here, assembled à la carte. Every networked provider
 //! is a thin factory that constructs a rig client and wraps it in the
-//! [`rig_adapter`] — rig does the HTTP, CodeSmith keeps its `LlmClient` seam.
+//! `rig_adapter` — rig does the HTTP, CodeSmith keeps its `LlmClient` seam.
 //!
 //! # Available providers
 //!
@@ -86,7 +86,7 @@ use codesmith_config::{FactoryBackend, ProvidersManifest};
 /// the bundled catalog.
 ///
 /// An entry whose `backend` Cargo feature is not compiled in is registered as
-/// an [`UncompiledBackendFactory`] stub whose `build` errors clearly (naming
+/// an `UncompiledBackendFactory` stub whose `build` errors clearly (naming
 /// the missing feature): a runtime manifest can only select among factories
 /// that are compiled in. With no provider features enabled, every entry is a
 /// stub.

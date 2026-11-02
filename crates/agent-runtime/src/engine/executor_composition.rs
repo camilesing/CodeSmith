@@ -3,8 +3,8 @@
 //!
 //! The engine no longer hard-wires `HostAgentExecutor` into
 //! `handle_send_message`: every turn it snapshots its kernel services into a
-//! [`TurnDeps`], resolves the configured factory from the process-shared
-//! [`TurnExecutorRegistry`] (config key `turn_executor`, default
+//! `TurnDeps`, resolves the configured factory from the process-shared
+//! `TurnExecutorRegistry` (config key `turn_executor`, default
 //! [`BUILTIN_TURN_EXECUTOR_ID`]), and runs whatever the factory built
 //! through the dyn-safe [`AgentExecutor`] seam. A sub-agent turn takes the
 //! same path through [`run_child_turn`](super::child_turn::run_child_turn):
@@ -88,7 +88,7 @@ use codesmith_session::fact_ledger::FactLedger;
 use codesmith_session::store::AttemptRecord;
 
 /// The always-registered id of the default production loop
-/// ([`HostAgentExecutorFactory`]). Config `turn_executor` defaults to this.
+/// (`HostAgentExecutorFactory`). Config `turn_executor` defaults to this.
 pub const BUILTIN_TURN_EXECUTOR_ID: &str = "builtin";
 
 /// Which agent a turn is assembled for — the one shape question a factory

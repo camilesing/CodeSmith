@@ -37,7 +37,7 @@
 //!   oldest are dropped: the capture gate is a heuristic, and noise captured
 //!   by accident must not outlive the high-signal kinds it crowds out.
 //!
-//! Known limitation: [`scrub_credentials`] redaction is a best-effort
+//! Known limitation: `scrub_credentials` redaction is a best-effort
 //! pattern set (connection-string passwords, bearer/basic tokens, secret
 //! assignments, common key shapes), applied because ledger entries are
 //! retained indefinitely and re-rendered into live model context long after
@@ -69,7 +69,7 @@ pub const FACT_BLOCK_MAX_CHARS: usize = 2_000;
 pub const FACT_BLOCKS_PER_MESSAGE: usize = 3;
 
 /// Hard count cap on `TaskConstraint` entries, oldest-first past the cap.
-/// The token-budget eviction in [`FactLedger::enforce_capacity`] never
+/// The token-budget eviction in `FactLedger::enforce_capacity` never
 /// drops constraints; this bounds heuristic capture noise independently.
 pub const FACT_LEDGER_MAX_CONSTRAINTS: usize = 32;
 

@@ -11,7 +11,7 @@
 //! [`McpTransportKind`]): each JSON-RPC message is one `POST` with
 //! `Accept: application/json, text/event-stream`; the server answers with
 //! either a plain JSON body or an SSE stream. SSE-framed responses are
-//! decoded **incrementally** by [`StreamableHttpTransport`] — events become
+//! decoded **incrementally** by `StreamableHttpTransport` — events become
 //! available as chunks arrive (split and coalesced TCP segments, multiple
 //! events per stream), before the response body completes. A best-effort
 //! `GET` preflight captures an early `Mcp-Session-Id`; otherwise the

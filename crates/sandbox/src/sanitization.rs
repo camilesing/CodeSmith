@@ -30,7 +30,7 @@ const SANITIZE_MAX_ITERATIONS: usize = 10;
 ///    Step 3): zero-width/direction controls, BOM, BMP + supplementary PUA, and
 ///    the Unicode Tag block (U+E0000–U+E007F) that is the #3086545 vector.
 ///
-/// Iterates to a fixpoint up to [`SANITIZE_MAX_ITERATIONS`]. If the fixpoint is
+/// Iterates to a fixpoint up to `SANITIZE_MAX_ITERATIONS`. If the fixpoint is
 /// not reached, logs a warning and returns the current value — never panics on
 /// untrusted input.
 pub fn partially_sanitize_unicode(input: &str) -> String {

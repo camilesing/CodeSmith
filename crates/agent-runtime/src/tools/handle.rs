@@ -50,7 +50,7 @@ pub struct VarHandle {
     pub name: String,
     #[serde(rename = "type")]
     pub type_name: String,
-    /// Kind-dependent length — see [`HandleValue::length`] for the exact
+    /// Kind-dependent length — see `HandleValue::length` for the exact
     /// semantics per payload kind. It is NOT a byte size and NOT a bound on
     /// the serialized payload: a 1-element list wrapping a 10 MB string
     /// reports `1`.
@@ -280,7 +280,7 @@ impl HandleStore {
 
 /// Truncate `text` to at most `max_chars` Unicode scalar values.
 ///
-/// Shared by [`HandleValue::repr_preview`] and the projection
+/// Shared by `HandleValue::repr_preview` and the projection
 /// helpers in `codesmith-tool-impls`.
 pub fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()

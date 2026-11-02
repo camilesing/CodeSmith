@@ -124,7 +124,7 @@ pub struct PlanState {
 impl PlanState {
     /// Event-sourcing slice 3 — the plan projection: rebuild the plan
     /// from a transcript by folding every `update_plan` call that actually
-    /// executed (see [`super::executed_tool_call_ids`]); each input
+    /// executed (see `super::executed_tool_call_ids`); each input
     /// replaces the plan — last write wins. Parsing mirrors the live
     /// `UpdatePlanTool::execute` (tool-impls `plan.rs`): a non-string
     /// `explanation` is ignored, a missing or unrecognized `status`

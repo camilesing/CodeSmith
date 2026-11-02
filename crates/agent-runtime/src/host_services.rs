@@ -430,7 +430,7 @@ pub trait NotifierHost: Send + Sync {
 #[async_trait::async_trait]
 pub trait HostServices: Send + Sync {
     /// Post-edit LSP diagnostics service. Returned as an owned, cloneable
-    /// handle so the executor's [`LspProbe`] can capture it for the duration
+    /// handle so the executor's `LspProbe` can capture it for the duration
     /// of a run (matching `bg_registry` / `subagents` / `shell`); a borrow
     /// cannot escape the `&self Engine` accessor into the executor's owned
     /// probe field.
@@ -580,13 +580,13 @@ pub struct TurnDispatchRequest<'a> {
 /// for this turn; the engine body feeds both into the streaming turn loop and
 /// the `TurnComplete` event.
 ///
-/// `framework_tool_set` is the framework-core [`ToolSet`] (§E) derived from the
+/// `framework_tool_set` is the framework-core `ToolSet` (§E) derived from the
 /// concrete `ToolRegistry` *before* it is erased into `Arc<dyn ToolDispatcher>`
 /// — the trait object cannot be recovered, so the `ToolSet` must be built while
 /// the concrete type is still in hand. Unused until `HostAgentExecutor` is
 /// wired into `handle_send_message`; populated here so the wire-in has the
 /// `Arc<ToolSet>` it needs for
-/// [`HostAgentExecutor::new`](crate::engine::HostAgentExecutor::new).
+/// `HostAgentExecutor::new`.
 ///
 /// The registry / catalog / framework set are populated together or not at
 /// all — modeled as an enum so an inconsistent "some fields `Some`, some
@@ -597,7 +597,7 @@ pub enum TurnDispatchPlan {
     NoTools,
     /// Trait-erased registry, model-visible catalog (built-ins + MCP, with
     /// deferral applied), and the framework-core `ToolSet` (§E) for
-    /// [`HostAgentExecutor`], always populated together.
+    /// `HostAgentExecutor`, always populated together.
     Tools {
         tool_registry: Arc<dyn ToolDispatcher>,
         tools: Vec<Tool>,

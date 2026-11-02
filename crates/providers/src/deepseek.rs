@@ -5,7 +5,7 @@
 //! DeepSeek also exposes a FIM endpoint (`/beta/completions`) and the engine
 //! uses a one-shot translate call that returns a plain string — neither is a
 //! chat completion rig models. Those two go through a thin reqwest shim
-//! ([`fim_translate`](crate::rig_adapter::fim_translate)) that reuses the
+//! (`fim_translate` in `rig_adapter`) that reuses the
 //! workspace `reqwest 0.13.x` rig already pulls in, so there is exactly one
 //! HTTP stack in the build.
 //!

@@ -367,7 +367,7 @@ impl SnapshotRepo {
     /// into the side repo's index.
     ///
     /// Before committing, checks whether the snapshot directory exceeds
-    /// [`MAX_SNAPSHOT_SIZE_MB`] and prunes the oldest snapshots if it does.
+    /// `MAX_SNAPSHOT_SIZE_MB` and prunes the oldest snapshots if it does.
     ///
     /// Returns the snapshot's commit SHA.
     pub fn snapshot(&self, label: &str) -> io::Result<SnapshotId> {
@@ -911,7 +911,7 @@ fn io_other(msg: impl Into<String>) -> io::Error {
 /// snapshot commit rather than the raw `du -sh` total.
 ///
 /// The walk is bounded by both `cap_bytes` and
-/// [`SIZE_WALK_MAX_ENTRIES`] — either trip returns `None`. A
+/// `SIZE_WALK_MAX_ENTRIES` — either trip returns `None`. A
 /// `cap_bytes` of `0` disables the cap entirely (returns `Some(total)`
 /// no matter how large), so config can opt out.
 pub fn estimate_workspace_size_bounded(workspace: &Path, cap_bytes: u64) -> Option<u64> {

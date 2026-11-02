@@ -1,5 +1,5 @@
 //! Bridge the production `ToolSpec` + `ToolContext` onto the framework-core
-//! [`Tool`].
+//! `Tool`.
 //!
 //! The framework-core [`codesmith_agent::tools::Tool`] trait (LangChain
 //! `BaseTool` analog, in `codesmith-agent`) is deliberately context-free:

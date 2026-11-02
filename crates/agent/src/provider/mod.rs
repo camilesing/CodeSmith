@@ -193,7 +193,7 @@ impl ProviderRegistry {
 // === SharedProviderRegistry (route A: extension-registered providers) =====
 
 /// Session-shared, clone-cheap provider registry that extensions upsert
-/// into. The builtin [`codesmith_providers::default_registry`] is an
+/// into. The builtin `codesmith_providers::default_registry` is an
 /// immutable `&'static`; hosts that want extension-registered providers
 /// construct one of these (seeded from the builtin set), hand clones to
 /// the `ExtensionRunner` (flush target) and to their client-resolution

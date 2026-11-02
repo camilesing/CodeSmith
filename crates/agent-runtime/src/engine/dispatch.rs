@@ -57,7 +57,7 @@ pub struct ToolExecutionPlan {
     pub approval_required: bool,
     pub approval_description: String,
     /// Whether the call may run concurrently at all (see
-    /// [`tool_plan_is_parallel_safe`]).
+    /// `tool_plan_is_parallel_safe`).
     pub supports_parallel: bool,
     pub read_only: bool,
     /// `WritesFiles`: the call can mutate the workspace. Writers are the one

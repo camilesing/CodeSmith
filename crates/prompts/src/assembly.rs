@@ -23,7 +23,7 @@
 //!   cache-granularity / per-model price claims, which were wrong for every
 //!   non-DeepSeek model (a `claude-sonnet-4-5` session has a 200k window).
 //!   `reasoning_effort` is decided at runtime by config and
-//!   [``codesmith_agent_runtime::auto_reasoning``], never by prose.
+//!   `codesmith_agent_runtime::auto_reasoning`, never by prose.
 //! - **`base.md`'s own `## Context Management`** — [`context_management_prompt`]
 //!   (Agent/Yolo only) is the single copy, so Plan and Coordinator modes no
 //!   longer carry `/compact` advice.

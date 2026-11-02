@@ -304,7 +304,7 @@ pub struct Engine {
     /// lifecycle tasks such as the team inbox poller watcher.
     pub(crate) tx_op: mpsc::Sender<Op>,
     /// Terminal-agnostic UI bridge (notifications + clipboard). Backed by
-    /// [`runtime_traits::ReplRuntimeUi`] here; the trait object keeps the
+    /// `runtime_traits::ReplRuntimeUi` here; the trait object keeps the
     /// engine core decoupled from concrete terminal services so it can later
     /// move to `codesmith-agent-runtime`.
     pub runtime_ui: Arc<dyn crate::runtime_ui::RuntimeUi>,
@@ -1214,9 +1214,9 @@ impl Engine {
 
     /// `<turn_meta>`-enriched `user` message for the session's current model
     /// route. Thin wrapper over the host-agnostic free fn
-    /// [`turn_meta::user_text_message_with_turn_metadata`] (shared with the
+    /// `turn_meta::user_text_message_with_turn_metadata` (shared with the
     /// framework-core `TurnMetaProbe`); locks the now-`Arc<Mutex>`
-    /// [`WorkingSet`] for the read.
+    /// `WorkingSet` for the read.
     pub fn user_text_message_with_turn_metadata(&self, text: String) -> Message {
         self.user_text_message_with_turn_metadata_for_route(
             text,
@@ -3542,7 +3542,7 @@ impl Engine {
     /// Each candidate is prepended with a `<turn_meta>` block (slice 24 §E) —
     /// date / model route / working-set summary / conditional skills — giving
     /// the model current state immediately post-compaction, consistent with
-    /// the `[turn_meta, content]` shape of [`user_text_message_with_turn_metadata`].
+    /// the `[turn_meta, content]` shape of `user_text_message_with_turn_metadata`.
     /// Enrich-only (no `observe_user_message`) — re-inject messages are
     /// synthetic `<system-reminder>`s, not user intent (matches the LSP-flush
     /// precedent, slice 22 §E). Candidates are deduped against existing

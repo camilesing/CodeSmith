@@ -1,4 +1,4 @@
-//! `RhaiMod` — a script mod as an [`Extension`](codesmith_agent::extension::Extension).
+//! `RhaiMod` — a script mod as an [`Extension`].
 //!
 //! Construction = compile + run the top-level script once against an
 //! `Engine` whose natives capture `on` / `on_event` / `register_tool` /

@@ -3,7 +3,7 @@
 //! [`ToolDefinition`]), `ScriptCommandDefinition` (impl
 //! [`CommandDefinition`]).
 //!
-//! Each adapter holds a clone of the mod's [`ScriptRuntime`] (engine + AST)
+//! Each adapter holds a clone of the mod's `ScriptRuntime` (engine + AST)
 //! and the script `FnPtr`. Calls are synchronous `FnPtr::call`s inline
 //! inside the async trait methods — bounded by the engine's
 //! `set_max_operations` cap, so a runaway hook burns its budget and errors

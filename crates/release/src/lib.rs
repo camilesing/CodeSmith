@@ -303,7 +303,7 @@ pub fn fetch_release_json_blocking(url: &str, description: &str) -> Result<Strin
     release_response_body(status, body)
 }
 
-/// Async counterpart of [`fetch_release_json_blocking`].
+/// Async counterpart of `fetch_release_json_blocking` (behind the `blocking` feature).
 pub async fn fetch_release_json_async(url: &str, description: &str) -> Result<String> {
     let client = async_metadata_client()?;
     let response = client

@@ -20,10 +20,10 @@
 //!
 //! ## Format governance (dev-plan TODO-29)
 //!
-//! The persisted shape carries a monotonic [`CURRENT_SESSION_SCHEMA_VERSION`]
+//! The persisted shape carries a monotonic `CURRENT_SESSION_SCHEMA_VERSION`
 //! in its header (`schema_version`). Doctrine (dsh `SESSION_FORMAT_VERSION`):
 //! migrations are **adjacent** (v n → v n+1 only) and run **in memory at
-//! load** ([`migrate_session_format`]) — committed session files on disk are
+//! load** (`migrate_session_format`) — committed session files on disk are
 //! never rewritten by a migration; a newer-than-supported version refuses
 //! loud instead of being silently misread; an absent version field is the
 //! oldest shape (defaults to v1).
@@ -39,7 +39,7 @@
 //! Interrupted turns (assistant `tool_use` with no recorded `tool_result` —
 //! Ctrl-C mid-tool, a crash between call and result) are repaired at load
 //! with `TOOL_OUTCOME_UNKNOWN` terminators inserted right after each call
-//! ([`repair_interrupted_tool_calls`]) so the resumed transcript satisfies
+//! (`repair_interrupted_tool_calls`) so the resumed transcript satisfies
 //! provider tool_call/tool_result pairing and adjacency; the live engine
 //! closes tail calls the same way at turn boundaries
 //! ([`tail_tool_outcome_unknown_terminator`]). Known limitation: the snapshot
@@ -189,7 +189,7 @@ pub(crate) fn repair_interrupted_tool_calls(session: &mut SavedSession) -> Vec<S
     repaired
 }
 
-/// The live counterpart of [`repair_interrupted_tool_calls`] for an
+/// The live counterpart of `repair_interrupted_tool_calls` for an
 /// append-only transcript: a terminator message for the unanswered calls of
 /// the **tail** assistant message — the last assistant message, followed by
 /// nothing but tool-result batches — plus the closed ids; `None` when there

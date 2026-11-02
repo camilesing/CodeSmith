@@ -148,7 +148,7 @@ impl ShellDispatcher {
 
     /// Log a shell execution line when `SHELL_DISPATCHER_LOG` is set.
     ///
-    /// The command line is scrubbed by [`redact_command_credentials`] first:
+    /// The command line is scrubbed by `redact_command_credentials` first:
     /// the log path is operator-chosen and the file outlives the process, so
     /// a raw `curl -H "Authorization: Bearer …"`-style line would persist a
     /// live credential in plaintext.

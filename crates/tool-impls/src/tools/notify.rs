@@ -1,6 +1,6 @@
 //! `notify` tool — model-callable desktop notification (#1322).
 //!
-//! Routes through the host-injected [`NotifierHost`] (see
+//! Routes through the host-injected `NotifierHost` (see
 //! `codesmith_agent_runtime::host_services`), which picks the terminal
 //! protocol — OSC 9 for known capable terminals, BEL fallback on macOS /
 //! Linux, `MessageBeep` on Windows when explicitly opted in — and wraps for

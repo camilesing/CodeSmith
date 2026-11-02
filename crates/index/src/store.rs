@@ -466,7 +466,7 @@ impl IndexStore {
         Ok(out)
     }
 
-    /// Row counts for [`IndexStats`].
+    /// Row counts for `IndexStats` (`codesmith_tools::index_api`).
     pub fn counts(&self) -> Result<(u64, u64)> {
         let conn = self.conn.lock().expect("index store mutex poisoned");
         let files: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;

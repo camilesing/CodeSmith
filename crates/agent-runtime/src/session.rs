@@ -350,7 +350,7 @@ impl Session {
 
     /// Record a successful `read_file` output for post-compaction reminders.
     ///
-    /// Thin wrapper over [`record_read_file_result_into`] — the shared
+    /// Thin wrapper over `record_read_file_result_into` — the shared
     /// implementation also used by the framework-core `ReinjectProbe`
     /// (slice 25b §E follow-on) so the executor's tool-result path can populate
     /// the same `Arc<VecDeque>` *during* `run` (while `&mut self.session` is
@@ -429,7 +429,7 @@ pub(crate) fn record_read_file_result_into(
 /// `recent_read_files` from a transcript by pairing each `read_file`
 /// tool call with its result (success only, matching the live gate at
 /// the executor's record site). Replays in transcript order through
-/// [`record_read_file_result_into`], so dedup-by-path + the size limit
+/// `record_read_file_result_into`, so dedup-by-path + the size limit
 /// behave exactly like the live path. Unmatched ids (a call without a
 /// result, e.g. a blocked call) and error results are skipped.
 #[must_use]

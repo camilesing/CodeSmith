@@ -1,6 +1,6 @@
 //! Anthropic provider factory — rig-backed.
 //!
-//! Uses [`AnthropicShaper`](crate::rig_adapter::AnthropicShaper) so the
+//! Uses `AnthropicShaper` (`rig_adapter`) so the
 //! structured `system` prompt and its per-block `cache_control` breakpoints
 //! round-trip through rig's `additional_params` instead of being flattened to a
 //! plain preamble string. See the shaper docs for the rig serialization

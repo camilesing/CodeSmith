@@ -241,7 +241,7 @@ pub(crate) async fn budgeted_observe_emit(
 /// UI channel as `Event::ToolCallProgress` — best-effort `try_send`; a full
 /// or closed channel drops the checkpoint, the final `ToolResult` still
 /// lands — and (b) reaches subscribed extension handlers through
-/// [`budgeted_observe_emit`] with its own per-turn breaker, so a slow
+/// `budgeted_observe_emit` with its own per-turn breaker, so a slow
 /// handler costs a tool's poll loop at most one budget before checkpoints
 /// go silent for the turn. Emit-only end to end: nothing here can fail
 /// or alter the tool.

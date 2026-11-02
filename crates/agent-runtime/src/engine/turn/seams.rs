@@ -199,7 +199,7 @@ impl HostAgentExecutor {
     /// Mirrors production's `while self.rx_steer.try_recv().is_ok() {}` at the
     /// start of `handle_send_message` (`engine/mod.rs:1013-1014`) — a per-turn
     /// reset so steers queued during an interrupted previous turn don't leak
-    /// into the new turn. Unlike [`drain_steers`](Self::drain_steers), this
+    /// into the new turn. Unlike `drain_steers`, this
     /// **discards** (does not inject into the transcript): stale steers are not
     /// the user's intent for this turn. Async — the tokio mutex guard is
     /// taken and dropped within the loop, never across another `await` (the

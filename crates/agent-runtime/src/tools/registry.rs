@@ -66,10 +66,10 @@ impl ToolRegistry {
 
     /// Register a tool in the registry.
     ///
-    /// Every registration flows through [`build_tool`], the single
+    /// Every registration flows through `build_tool`, the single
     /// fail-closed chokepoint: a tool whose name or schema cannot be
     /// resolved to a well-formed API definition is substituted with a
-    /// [`FailClosedTool`] stub so a single malformed plugin/MCP tool can
+    /// `FailClosedTool` stub so a single malformed plugin/MCP tool can
     /// never 400 the whole request or panic mid-turn. Mirrors Claude
     /// Code's `buildTool` contract.
     pub fn register(&mut self, tool: Arc<dyn ToolSpec>) {

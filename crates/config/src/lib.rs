@@ -491,7 +491,7 @@ pub struct ConfigToml {
     pub output_mode: Option<String>,
     pub log_level: Option<String>,
     /// Configuration preset tier (simple | middle | all | experiment | plan
-    /// | <custom>). Accepted for schema parity with the CLI config so the
+    /// | `<custom>`). Accepted for schema parity with the CLI config so the
     /// key is recognized here too; the tier itself is applied by the CLI
     /// at startup.
     pub preset: Option<String>,

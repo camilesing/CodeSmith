@@ -25,7 +25,7 @@ use crate::mode::ReasoningEffort;
 /// - Everything else → `High`
 ///
 /// ASCII keywords match on word boundaries and CJK keywords on substrings
-/// (see [`matches_keyword`]).
+/// (see `matches_keyword`).
 #[must_use]
 pub fn select(is_subagent: bool, last_msg: &str) -> ReasoningEffort {
     if is_subagent {

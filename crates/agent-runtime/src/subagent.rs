@@ -531,7 +531,7 @@ impl ContextPatch {
 /// Sender half of the parent-completion channel (round 10 TODO-69).
 ///
 /// A thin wrapper over `mpsc::UnboundedSender<SubAgentCompletion>` whose
-/// `send` also pokes the engine's idle-wake [`Notify`] — a side-band signal,
+/// `send` also pokes the engine's idle-wake `Notify` — a side-band signal,
 /// not a second queue: the completion itself stays queued in the channel and
 /// is delivered by the executor's pre-request drain
 /// (`HostAgentExecutor::drain_subagent_completions`) exactly as before. The

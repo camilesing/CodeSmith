@@ -1,8 +1,8 @@
 //! # Agent executor loop
 //!
 //! The LangChain `AgentExecutor` analog: a loop that drives
-//! [`LlmClient::create_message_stream`] → parses tool calls → invokes
-//! [`crate::tools::Tool`]s → feeds [`ToolResult`]s back into the conversation
+//! `LlmClient::create_message_stream` → parses tool calls → invokes
+//! [`crate::tools::Tool`]s → feeds `ToolResult`s back into the conversation
 //! history, with a step cap. This is the **framework-core** executor — minimal
 //! and host-agnostic (no compaction, capacity, steer, or sub-agent branches);
 //! the production loop, `HostAgentExecutor` in `codesmith-agent-runtime`,
@@ -67,7 +67,7 @@ pub trait AgentExecutor: Send + Sync {
     /// Run the agent to completion against `history`, starting from `user_text`.
     ///
     /// Returns the [`StopReason`]. The future borrows `self` and `history` for
-    /// `'a` (boxed, matching [`LlmClient`]'s dyn-safe style).
+    /// `'a` (boxed, matching `LlmClient`'s dyn-safe style).
     fn run<'a>(
         &'a self,
         history: &'a mut dyn ChatHistory,

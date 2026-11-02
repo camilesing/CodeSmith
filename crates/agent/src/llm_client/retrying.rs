@@ -5,8 +5,8 @@
 //! the engine's transparent stream retry only covers `create_message_stream`,
 //! where the committed-content semantics (`Empty` vs `Partial`) live. This
 //! decorator closes that gap by wrapping the non-streaming path in
-//! [`with_retry`](super::with_retry) with the host-resolved
-//! [`RetryConfig`](super::RetryConfig) — the same policy the `[retry]` config
+//! [`with_retry`] with the host-resolved
+//! [`RetryConfig`] — the same policy the `[retry]` config
 //! table expresses. Streaming is forwarded untouched: retrying a stream is
 //! the engine's decision, not a client property.
 //!

@@ -23,11 +23,11 @@
 //! ## Absorbed guardrails
 //!
 //! [`HostAgentExecutor`] runs the LLM↔tool loop (with an inline stream reducer,
-//! [`reduce_stream`](HostAgentExecutor::reduce_stream), that replaced the CORE `accumulate_stream` and emits
+//! `reduce_stream`, that replaced the CORE `accumulate_stream` and emits
 //! streaming deltas to `Callback::on_stream_delta` in real time) and absorbs
 //! the production guardrails slice by slice. Ten are in:
 //!
-//! 1. **loop-guard** ([`LoopGuard`]) — the 3rd identical tool call in a turn is
+//! 1. **loop-guard** (`LoopGuard`) — the 3rd identical tool call in a turn is
 //!    blocked (a `ToolResult` error is fed back instead of executing), and 3 / 8
 //!    consecutive failures of the same tool warn / halt the turn. The guard state
 //!    is a local `LoopGuard` that persists across steps within one `run` (matching
@@ -48,7 +48,7 @@
 //!    the production `Engine.pending_lsp_blocks` field semantics (an edit on a turn
 //!    that ends before the next request — e.g. a `MaxSteps` halt — surfaces its
 //!    diagnostics on the next turn's first pre-request flush).
-//! 3. **transparent-retry** ([`stream_with_transparent_retry`](HostAgentExecutor::stream_with_transparent_retry)) — the **first
+//! 3. **transparent-retry** (`stream_with_transparent_retry`) — the **first
 //!    seam-2 guardrail**. When the stream dies mid-flight before any content is
 //!    committed (`reduce_stream` returns `StreamReduceOutcome::Empty`), the
 //!    executor silently re-issues the SAME request up to
@@ -62,19 +62,19 @@
 //!    pattern); the retry is transparent to the [`Callback`] (`on_llm_start` /
 //!    `on_llm_end` fire once per step, a `Status` event is the only retry
 //!    surfacing). See "Known gaps" below for reactive capacity recovery.
-//! 4. **steer** ([`drain_steers`](HostAgentExecutor::drain_steers)) — lets a
+//! 4. **steer** (`drain_steers`) — lets a
 //!    user inject additional text input into an in-flight turn: at the top of
 //!    each step, queued steers are drained into the transcript as `user`
 //!    messages (plus the mid-stream buffer flush and the sub-agent hold's
 //!    steer arm). Full semantics, receiver rationale, and the drain-site map
 //!    live in the `engine/turn/seams.rs` module docs.
-//! 5. **approval** ([`request_approval`](HostAgentExecutor::request_approval))
+//! 5. **approval** (`request_approval`)
 //!    — gates write / code-execution tools behind user permission: emits
 //!    `Event::ApprovalRequired` and blocks on the decision channel (denied ⇒
 //!    `permission_denied` error, tool skipped). Full semantics and the
 //!    by-design gap inventory live in the `engine/turn/approval.rs` module
 //!    docs.
-//! 6. **compaction** ([`run_compaction`](HostAgentExecutor::run_compaction)) —
+//! 6. **compaction** (`run_compaction`) —
 //!    keeps the transcript within the model's context window. At the top of
 //!    each step (after steer drain, before the LSP flush), the executor runs a
 //!    two-stage shrink mirroring the retired turn handler's pre-request
@@ -101,19 +101,19 @@
 //!    post-compact cleanup (25c) and enhancements deferrals (summary-prompt
 //!    merge absorbed ✅ in slice 25a §E; attachment reinject absorbed ✅ in
 //!    slice 25b §E).
-//! 7. **capacity** ([`run_capacity_preflight`](HostAgentExecutor::run_capacity_preflight))
+//! 7. **capacity** (`run_capacity_preflight`)
 //!    — the **always-on hard token-budget preflight** (Gate B). After
 //!    compaction (so the estimate reflects the just-compacted transcript) and
 //!    before the LSP flush, the executor estimates input tokens via
 //!    [`estimate_input_tokens_conservative`] and, if the estimate exceeds the
 //!    provider's input budget ([`context_input_budget_for_provider`]),
-//!    attempts emergency recovery via [`recover_context_overflow`]
+//!    attempts emergency recovery via `recover_context_overflow`
 //!    (mirrors the retired turn handler). The recovery cascade runs
 //!    micro-compaction (best-effort, fresh state) → forced full LLM compaction
 //!    (`compact_messages_safe` with `enabled = true`, lowered
 //!    `token_threshold`, zeroed `auto_floor_tokens` — bypassing the
 //!    cache-preservation floor) → hard trim of oldest messages (keeping
-//!    [`MIN_RECENT_MESSAGES_TO_KEEP`]). On success, the step restarts so the
+//!    `MIN_RECENT_MESSAGES_TO_KEEP`). On success, the step restarts so the
 //!    request snapshot picks up the compacted transcript; on budget exhaustion
 //!    (`MAX_CONTEXT_RECOVERY_ATTEMPTS = 2`), the turn hard-fails with
 //!    `StopReason::Error`. The probe is stateless — the per-run recovery
@@ -127,9 +127,9 @@
 //!    rejection → recovery) is absorbed — `stream_with_transparent_retry`
 //!    classifies a pre-stream `Err` and runs the same
 //!    `recover_context_overflow`. See "Known gaps in capacity" below.
-//! 8. **early-tool-start** (`early_start_safe` + [`EarlyToolTask`]) — the
+//! 8. **early-tool-start** (`early_start_safe` + `EarlyToolTask`) — the
 //!    **second seam-2 guardrail**. When a tool block reaches
-//!    `ContentBlockStop` mid-stream, [`reduce_stream`](HostAgentExecutor::reduce_stream) finalizes its input and
+//!    `ContentBlockStop` mid-stream, `reduce_stream` finalizes its input and
 //!    — if `early_start_safe` passes (read-only + no approval + no
 //!    code-exec / file-write) — `tokio::spawn`s the tool immediately so its
 //!    result is ready by the time the executor reaches the tool loop, mirroring
@@ -145,7 +145,7 @@
 //!    so the constructor signature is unchanged; on a `continue` (capacity
 //!    `RetryStep` / reactive `RecoveredContextOverflow`) the stream either
 //!    never opened or died before any content ⇒ no `ContentBlockStop` ⇒ the
-//!    map is empty. [`EarlyToolTask::Drop`] aborts the `JoinHandle` so an
+//!    map is empty. `EarlyToolTask::Drop` aborts the `JoinHandle` so an
 //!    unreused task never leaks a background task (aborting a completed task is
 //!    a no-op, so the reuse path's await-then-drop is safe). See "Known gaps in
 //!    early-tool-start" below for the ToolCallStarted bridge dedup, the
@@ -162,7 +162,7 @@
 //!    handled as a terminal status — slice 39 §E — not a resume), so this single
 //!    drain site (the `tool_uses.is_empty()` arm) covers both production drains.
 //!    A second, pre-request drain
-//!    ([`drain_subagent_completions`](HostAgentExecutor::drain_subagent_completions),
+//!    (`drain_subagent_completions`,
 //!    in the step-top seam) delivers completions parked between steps or
 //!    between turns ahead of the next request, so a settled child is read on
 //!    this request rather than after the model's next reply; the post-stream
@@ -175,8 +175,8 @@
 //!    (matching `Engine.rx_subagent_completion`). The **blocking hold** for
 //!    still-running children (`should_hold_turn_for_subagents` + a `biased
 //!    select!` over cancel / completion `recv().await` / steer `recv().await`)
-//!    is **absorbed ✅** — it uses [`SubAgentApi::running_count`] (the
-//!    [`Self::subagent_api`] field) and the `tokio::sync::Mutex` receiver; the
+//!    is **absorbed ✅** — it uses `SubAgentApi::running_count` (the
+//!    `Self::subagent_api` field) and the `tokio::sync::Mutex` receiver; the
 //!    hold's own `select!` cancel arm is **Checkpoint E** (the executor's
 //!    `CancellationToken` is absorbed — see guardrail 10 — and the hold's cancel
 //!    race is wired there). The steer arm of the same `select!` closes the steer
@@ -185,12 +185,12 @@
 //!    `Session` state not reachable through `ChatHistory`, and production
 //!    hardcodes `context_patch: None` today. See "Known gaps in subagent" below.
 //! 10. **cancel-token** (`cancel_token` field +
-//!     [`is_cancelled`](HostAgentExecutor::is_cancelled)) — the
+//!     `is_cancelled`) — the
 //!     **first cross-cutting guardrail**. An optional
-//!     [`CancellationToken`](tokio_util::sync::CancellationToken) (`None` ⇒ all
+//!     [`CancellationToken`] (`None` ⇒ all
 //!     cancel checks are no-ops) mirrors production's seven turn-cancellation
 //!     checkpoints; a cancelled turn surfaces
-//!     [`StopReason::Interrupted`](codesmith_agent::callback::StopReason::Interrupted)
+//!     [`StopReason::Interrupted`]
 //!     (distinct from `Error`) so the host can show "cancelled" rather than
 //!     "failed". The checkpoint map (A/B/C/D/G + the approval cancel race +
 //!     the steer stale-drain + Checkpoint E) lives in the
@@ -243,7 +243,7 @@
 //!    thinking-only assistant message, since DeepSeek's chat API rejects
 //!    assistant messages containing only a thinking block, and emit a single
 //!    status at the clean no-tool-calls tail via
-//!    [`should_emit_thinking_only_status`], the decision deferred past the steer
+//!    `should_emit_thinking_only_status`, the decision deferred past the steer
 //!    flush / sub-agent drain resume branches so a resume never shows a
 //!    spurious "turn ended" notice — slice 39 §E).
 //! 3. **per-tool** — ✅ **loop-guard `record_attempt`** (block the 3rd identical
@@ -270,9 +270,9 @@
 //!
 //! Streaming deltas (`MessageDelta` / `ThinkingDelta`) now flow through the
 //! framework `Callback::on_stream_delta` seam — the inline stream reducer
-//! ([`reduce_stream`](HostAgentExecutor::reduce_stream)) replaced the CORE `accumulate_stream` call, emitting
+//! (`reduce_stream`) replaced the CORE `accumulate_stream` call, emitting
 //! each text/thinking delta to the callback in real time (§E inline-stream-
-//! reduction slice). The [`CallbackBridge`] maps them onto the host's
+//! reduction slice). The `CallbackBridge` maps them onto the host's
 //! `Event::MessageDelta` / `Event::ThinkingDelta` channel. Block-lifecycle
 //! events (`MessageStarted` / `ThinkingStarted` / `ThinkingComplete` /
 //! `MessageComplete`) **are** synthesized at `ContentBlockStart` /
@@ -299,7 +299,7 @@
 //!   re-assembles it once per turn pre-`run` at `mod.rs:1127`; config/memory/skills
 //!   don't change mid-turn), so the executor folds *only* the accumulated
 //!   compaction summary (the sole mid-turn-changing input) via
-//!   [`refresh_system_prompt_snapshot`]. This narrows the slice-25a static-snapshot
+//!   `refresh_system_prompt_snapshot`. This narrows the slice-25a static-snapshot
 //!   rationale ("base static; summary folded mid-loop"), closing the same-turn
 //!   visibility gap: a compaction summary produced this turn now reaches the model
 //!   on the next step's request, not next turn's.
@@ -369,12 +369,12 @@
 //!   clones, the last mirroring slice 22's `working_set` Arc-ification) plus
 //!   its own `subagent_api` (`live_running_snapshots`) and `turn_meta`
 //!   (the `<turn_meta>` enrich block). It fires right after the transcript
-//!   replace in both full-compact `Ok(result)` arms of [`run_compaction`] /
-//!   [`recover_context_overflow`] — `None` budget for auto-compact (dedup +
+//!   replace in both full-compact `Ok(result)` arms of `run_compaction` /
+//!   `recover_context_overflow` — `None` budget for auto-compact (dedup +
 //!   push only), `Some(target_budget)` for the hard-ceiling recovery (dedup +
 //!   budget trial + push). The micro-compact arms are untouched (they clear
 //!   tool-result content in place, not attachment messages). See
-//!   [`HostAgentExecutor::reinject_compaction_attachments`].
+//!   `HostAgentExecutor::reinject_compaction_attachments`.
 //!   - **read-file observe site absorbed ✅** — `recent_read_files` is now
 //!     populated *during* `run` by the (3) per-tool seam: when a `read_file`
 //!     tool succeeds, the executor feeds the compacted/sanitized output
@@ -398,7 +398,7 @@
 //!   set was derived from is now stale). The three plain `Session` fields are
 //!   only reachable through `&mut Session`, which the executor can't hold
 //!   during `run`; the reset only matters for the next turn anyway (like the
-//!   25a summary merge), so the executor records a [`signal_post_compact_cleanup`]
+//!   25a summary merge), so the executor records a `signal_post_compact_cleanup`
 //!   slot and the host runs the existing `post_compact_cleanup(&mut
 //!   self.session)` free fn post-`run` (single source — no mid-run `CleanupProbe`
 //!   or Arc-ification of the plain fields needed; the probe's
@@ -527,7 +527,7 @@
 //! - **pre-request delivery absorbed ✅** — completions that land between
 //!   steps (a child settling while a tool batch runs) or between turns (a
 //!   cancelled / step-capped turn left children running) are delivered by
-//!   [`drain_subagent_completions`](HostAgentExecutor::drain_subagent_completions)
+//!   `drain_subagent_completions`
 //!   at the step-top seam, ahead of the request snapshot — DSH's pre-step
 //!   settlement delivery. Before this they waited for the post-stream
 //!   no-tool-calls drain, so the model answered a new user message first and
@@ -558,7 +558,7 @@
 //!   `try_recv`s into it after every polled event (`:721-731`, emitting "Steer
 //!   input queued"), then flushes at two points: post-stream no-tools (`:1297-
 //!   1307`, flush + resume) and post-tool (`:2632-2637`, flush + fall through).
-//!   This executor now mirrors all three: [`reduce_stream`](HostAgentExecutor::reduce_stream)
+//!   This executor now mirrors all three: `reduce_stream`
 //!   buffers steers during streaming, the no-tool-calls arm flushes + resumes
 //!   (before the sub-agent drain), the post-tool arm flushes, and the blocking
 //!   hold's `biased select!` steer arm injects a steer arriving during the hold.
@@ -678,8 +678,8 @@ impl LspProbe {
 /// `micro_state` and `circuit_breaker`, both `Arc<std::sync::Mutex<…>>` —
 /// because [`AgentExecutor::run`] takes `&self` while compaction mutates them
 /// (micro-compact accumulates `bytes_cleared`; the circuit breaker records
-/// success/failure). This mirrors the [`LspProbe::pending`] /
-/// [`HostAgentExecutor::steer`] pattern: a `std::sync::Mutex` whose guard is
+/// success/failure). This mirrors the `LspProbe::pending` /
+/// `HostAgentExecutor::steer` pattern: a `std::sync::Mutex` whose guard is
 /// never held across an `await` (the LLM summary call happens outside the
 /// lock). Because the `Mutex`es live on the executor struct (via this
 /// `Option<CompactionProbe>` field), both persist across `run` invocations on
@@ -832,8 +832,8 @@ impl ReinjectProbe {
     }
 
     /// Record a successful `read_file` output into the shared
-    /// `recent_read_files` queue (mirrors [`Session::record_read_file_result`]
-    /// via the shared [`record_read_file_result_into`]). Called by the
+    /// `recent_read_files` queue (mirrors `Session::record_read_file_result`
+    /// via the shared `record_read_file_result_into`). Called by the
     /// executor's tool-result path when a `read_file` tool succeeds, so the
     /// data is live for the next compaction reinject.
     pub fn record_read_file_result(&self, input: &serde_json::Value, output_for_context: &str) {
@@ -851,9 +851,9 @@ impl ReinjectProbe {
 /// workspace root for [`compact_messages_safe`].
 ///
 /// The probe itself is stateless — the per-run recovery counter
-/// (`context_recovery_attempts`) lives as a local in [`HostAgentExecutor::run_inner`],
+/// (`context_recovery_attempts`) lives as a local in `HostAgentExecutor::run_inner`,
 /// matching the production per-turn counter (the retired turn handler). The forced
-/// compaction inside [`HostAgentExecutor::recover_context_overflow`] uses a
+/// compaction inside `HostAgentExecutor::recover_context_overflow` uses a
 /// local [`MicroCompactState`] (best-effort pass; the persistent micro-compact
 /// state lives on [`CompactionProbe`] if present).
 pub struct CapacityProbe {
@@ -930,7 +930,7 @@ fn accumulate_cleared_facts(
 /// `<turn_meta>` enrichment probe (§E). Carries an `Arc` clone of the
 /// session's `WorkingSet` so it can observe + enrich messages pushed *during*
 /// `executor.run` — the window in which `&mut self.session` is borrowed by
-/// [`SessionChatHistory`] and the host cannot reach the live working set /
+/// `SessionChatHistory` and the host cannot reach the live working set /
 /// config directly. The probe is constructed at executor-build time (before
 /// the borrow) and `Arc`-shared with `Session::working_set`, matching the
 /// established `LspProbe` / `CompactionProbe` / `CapacityProbe` pattern.
@@ -1027,7 +1027,7 @@ impl TurnMetaProbe {
     /// snapshotted state. Slice 25b §E: used by the mid-`run` reinject path to
     /// prepend a `<turn_meta>` block to each re-inject candidate (matching
     /// slice 24's host-side `[turn_meta, content]` shape). Same std `Mutex`
-    /// lock-then-release precedent as [`enrich_user_text_message`].
+    /// lock-then-release precedent as `enrich_user_text_message`.
     pub fn turn_metadata_block(&self) -> ContentBlock {
         let working_set = self.working_set.lock().expect("working_set poisoned");
         super::turn_meta::turn_metadata_block(
@@ -1629,8 +1629,8 @@ impl HostAgentExecutor {
     }
 
     /// Opt into per-input approval consultation (slice 20 §E). The production
-    /// wire-in calls this after [`new`] with `plan.tool_registry.clone()` so
-    /// [`request_approval`] consults [`ToolDispatcher::approval_requirement_for`]
+    /// wire-in calls this after `new` with `plan.tool_registry.clone()` so
+    /// `request_approval` consults [`ToolDispatcher::approval_requirement_for`]
     /// before the static capability gate. Embeds/tests skip it — the field
     /// defaults to `None`. Consumes and returns `self` (builder).
     #[must_use]
@@ -1658,7 +1658,7 @@ impl HostAgentExecutor {
     }
 
     /// Opt into `<turn_meta>` enrichment for steer / LSP-flush pushes (slice
-    /// 22 §E). The production wire-in calls this after [`new`] with a
+    /// 22 §E). The production wire-in calls this after `new` with a
     /// [`TurnMetaProbe`] built from an `Arc` clone of `session.working_set`
     /// plus the config / session model-routing fields (snapshotted before the
     /// `&mut self.session` borrow held by `SessionChatHistory`). Embeds /
@@ -1672,12 +1672,12 @@ impl HostAgentExecutor {
     }
 
     /// Opt into post-compaction attachment re-inject (slice 25b §E). The
-    /// production wire-in calls this after [`new`] with a [`ReinjectProbe`]
+    /// production wire-in calls this after `new` with a [`ReinjectProbe`]
     /// built from `Arc` clones of `config.plan_state` / `config.todos` /
     /// `session.recent_read_files` (snapshotted before the `&mut self.session`
-    /// borrow) so [`Self::reinject_compaction_attachments`] can re-insert plan /
+    /// borrow) so `Self::reinject_compaction_attachments` can re-insert plan /
     /// todos / subagents / read_files candidates during `run`, right after
-    /// [`run_compaction`] / [`recover_context_overflow`] replace the
+    /// `run_compaction` / `recover_context_overflow` replace the
     /// transcript. Embeds / tests skip it — the field defaults to `None`, so
     /// the mid-`run` reinject is a no-op (the pre-slice-25b behavior) and
     /// existing tests stay unchanged. Consumes and returns `self` (builder).
@@ -1702,8 +1702,8 @@ impl HostAgentExecutor {
     }
 
     /// Opt into the opt-in `CapacityController` (Gate A) probe (slice 33 §E).
-    /// The production wire-in calls this after [`new`] with a
-    /// [`CapacityGateProbe`] built from an `Arc` clone of
+    /// The production wire-in calls this after `new` with a
+    /// `CapacityGateProbe` built from an `Arc` clone of
     /// `self.capacity_controller` + `session.working_set` (snapshotted before
     /// the `&mut self.session` borrow held by `SessionChatHistory`). Embeds /
     /// tests skip it — the field defaults to `None`, so no capacity-gate
@@ -1730,7 +1730,7 @@ impl HostAgentExecutor {
     }
 
     /// Dispatch this turn's extension events at `scope` (see
-    /// [`Self::dispatch_scope`]). Consumes and returns `self` (builder).
+    /// `Self::dispatch_scope`). Consumes and returns `self` (builder).
     #[must_use]
     pub fn with_dispatch_scope(mut self, scope: codesmith_agent::extension::Scope) -> Self {
         self.dispatch_scope = scope;
@@ -1739,7 +1739,7 @@ impl HostAgentExecutor {
 
     /// Send `model` / `reasoning_effort` on every request of this turn
     /// instead of the client's own model and no effort override (see
-    /// [`Self::request_model`]). Consumes and returns `self` (builder).
+    /// `Self::request_model`). Consumes and returns `self` (builder).
     #[must_use]
     pub fn with_request_overrides(
         mut self,
@@ -1853,7 +1853,7 @@ impl HostAgentExecutor {
     /// Tell the executor which mode this turn runs in. The production wire-in
     /// passes the same `mode` it built the tool registry with, so the
     /// post-batch seam can end a Plan turn once its plan is approved
-    /// ([`Self::turn_mode`]). Embeds/tests skip it — the default is Agent.
+    /// (`Self::turn_mode`). Embeds/tests skip it — the default is Agent.
     /// Consumes and returns `self` (builder).
     #[must_use]
     pub fn with_turn_mode(mut self, mode: AppMode) -> Self {
@@ -1863,7 +1863,7 @@ impl HostAgentExecutor {
 
     /// Attach the shared plan-session state, so the execution gate can refuse a
     /// call that a model-initiated plan session does not allow
-    /// ([`Self::plan_mode_refusal`]). The production wire-in passes the same
+    /// (`Self::plan_mode_refusal`). The production wire-in passes the same
     /// handle the plan-mode tools use; embeds/tests skip it (no gate).
     /// Consumes and returns `self` (builder).
     #[must_use]
@@ -1889,7 +1889,7 @@ impl HostAgentExecutor {
         self
     }
 
-    /// Attach the host-built request catalog ([`Self::request_catalog`]): the
+    /// Attach the host-built request catalog (`Self::request_catalog`): the
     /// per-turn `TurnDispatchPlan::tools` with selection applied and the
     /// deferral marks stripped. Progressive disclosure (tool search) is not
     /// wired to the request path, and an unknown `defer_loading` field on the
@@ -1903,7 +1903,7 @@ impl HostAgentExecutor {
     }
 
     /// Turn progressive disclosure on for this turn
-    /// ([`Self::progressive_disclosure`]). Consumes and returns `self`.
+    /// (`Self::progressive_disclosure`). Consumes and returns `self`.
     #[must_use]
     pub fn with_progressive_disclosure(mut self, on: bool) -> Self {
         self.progressive_disclosure = on;
@@ -2043,7 +2043,7 @@ impl HostAgentExecutor {
     /// (behavior-equivalent to merging mid-`run` since the executor's system
     /// prompt is a static snapshot — the merged summary only matters for the
     /// next turn's snapshot). Drains the slot; the executor is constructed
-    /// fresh per turn, so no cross-turn leakage. Mirrors the [`take_usage`]
+    /// fresh per turn, so no cross-turn leakage. Mirrors the `take_usage`
     /// read-back pattern.
     #[must_use]
     pub fn take_pending_compaction_summary(&self) -> Option<SystemPrompt> {
@@ -2122,7 +2122,7 @@ impl HostAgentExecutor {
     /// on `&mut self.session` (force-rebuild working set + reset
     /// `last_system_prompt_hash` / `circuit_breaker` / `micro_compact_state`).
     /// Drains the slot (one-shot); the executor is constructed fresh per turn,
-    /// so no cross-turn leakage. Mirrors the [`take_pending_compaction_summary`]
+    /// so no cross-turn leakage. Mirrors the `take_pending_compaction_summary`
     /// read-back pattern. Idempotent: multiple non-merge compactions in one
     /// turn collapse to a single cleanup.
     #[must_use]
@@ -2171,7 +2171,7 @@ impl HostAgentExecutor {
     /// (`apply_targeted_context_refresh` / `apply_verify_with_tool_replay` /
     /// `apply_verify_and_replan`). Drains the slot (one-shot); the executor is
     /// constructed fresh per turn, so no cross-turn leakage. Mirrors the
-    /// [`take_pending_compaction_summary`] / [`take_pending_post_compact_cleanup`]
+    /// `take_pending_compaction_summary` / `take_pending_post_compact_cleanup`
     /// read-back pattern.
     #[must_use]
     pub fn take_pending_capacity_decision(&self) -> Option<CapacityDecision> {

@@ -91,7 +91,7 @@ answers.";
 /// Tool for entering plan mode.
 ///
 /// Sets `PlanModeState.active = true`, generates a plan slug, and returns the
-/// plan-file pointers ([`PLAN_MODE_INSTRUCTIONS`]) — the binding rules follow
+/// plan-file pointers (`PLAN_MODE_INSTRUCTIONS`) — the binding rules follow
 /// as a runtime reminder on the next step.
 pub struct EnterPlanModeTool {
     plan_mode_state: SharedPlanModeState,

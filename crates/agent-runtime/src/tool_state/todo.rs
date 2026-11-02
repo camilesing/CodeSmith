@@ -74,7 +74,7 @@ impl TodoList {
 
     /// Event-sourcing slice 3 — the todo projection: rebuild the list from
     /// a transcript by folding every checklist tool call that actually
-    /// executed (see [`super::executed_tool_call_ids`]). Mirrors the live
+    /// executed (see `super::executed_tool_call_ids`). Mirrors the live
     /// tools registered by `with_todo_tool` (tool-impls `todo.rs`):
     /// `*_write` replaces the whole list, `*_add` appends, `*_update`
     /// updates one status, and a missing or unrecognized `status` defaults

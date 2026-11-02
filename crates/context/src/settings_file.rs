@@ -70,7 +70,7 @@ pub(crate) fn lock_path_for(path: &Path) -> PathBuf {
 /// (`settings.toml` → `settings.toml.lock`, `config.json` →
 /// `config.json.lock`) so sibling files with different extensions never
 /// share a lock. Known limitation: the wait polls `try_write` every 50 ms
-/// on the calling thread for up to [`SETTINGS_LOCK_TIMEOUT`] — callers on
+/// on the calling thread for up to `SETTINGS_LOCK_TIMEOUT` — callers on
 /// an async executor block for that long under contention (the lock body
 /// is expected to be short file IO).
 pub fn with_settings_lock<T>(settings: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
