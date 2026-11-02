@@ -110,7 +110,7 @@ config.toml 的 `[tools].overrides <name> = { type = "disabled" }` 形态
 | `/extension info <id>` | 显示单个扩展的元数据（版本、来源、dylib 路径、配置、来源记录、启用状态）。 |
 | `/extension enable <id>` | 在 `extensions_state.toml` 中标记启用；在下次 `/extension reload` 生效。 |
 | `/extension disable <id>` | 标记禁用；同样等重载生效。 |
-| `/extension status` | 报告绑定的 runner 代数 + 已绑定工具/命令数（外加启动审计中的失败加载）。 |
+| `/extension status` | 报告绑定的 runner 代数 + 已绑定工具/命令数（外加启动审计中的失败加载），然后列出 turn 执行器槽位（DSH D1）：每个已注册的 `turn_executor` id、本会话选中的是哪个、各自在飞的 turn 数——主 turn 与按 spawn 深度分组的子代理，数据来自租约注册表（无在飞时显示 `idle`）。只读；注册表类型保持 crate 私有。 |
 | `/extension reload` | 重新填充共享 runner `Arc` —— 与 `manage_mods` 工具同一 chokepoint（见下文）。 |
 | `/extension install <source> [--global]` | 拉取（`git:` / `path:` / `crate:` / `prebuilt:`）→ 构建（源码类走 `cargo build`）→ 放置到 `<root>/<id>/`，写 `extension.toml` 与加载器校验的 sha256 边车，并记录 `installed[]` 来源。默认装到项目根；`--global` 选择 `~/.codesmith/extensions`。向**未受信任**工作区做项目安装会打印警告（发现侧信任门仍会拒载——用 `/trust add <path>` 信任该工作区）。`/extension reload` 加载它。 |
 | `/extension uninstall <id>` | 移除 `<root>/<id>/` 并清除来源记录；绑定在下次重载清除，dylib 在下一个轮边界卸载。 |

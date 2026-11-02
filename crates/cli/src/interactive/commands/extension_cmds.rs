@@ -186,6 +186,33 @@ fn status(state: &ReplState) {
             "no extension runner bound in this session (embed or pre-engine start)".dimmed()
         ),
     }
+    // DSH D1 — the turn-executor slots (process-shared registry) and this
+    // session's selection; in-flight counts are the lease census.
+    let selected = state.config.turn_executor_id();
+    println!("turn executors:");
+    for slot in codesmith_agent_runtime::engine::turn_executor_status() {
+        let marker = if slot.id == selected {
+            " (selected)"
+        } else {
+            ""
+        };
+        println!("  {}{marker}  {}", slot.id, in_flight_summary(&slot));
+    }
+}
+
+/// One line of in-flight census for a turn-executor slot.
+fn in_flight_summary(slot: &codesmith_agent_runtime::engine::TurnExecutorSlot) -> String {
+    if slot.main_turns == 0 && slot.subagent_turns.is_empty() {
+        return "idle".to_string();
+    }
+    let mut parts = Vec::new();
+    if slot.main_turns > 0 {
+        parts.push(format!("main turn ×{}", slot.main_turns));
+    }
+    for (depth, count) in &slot.subagent_turns {
+        parts.push(format!("sub-agents depth {depth} ×{count}"));
+    }
+    format!("in flight: {}", parts.join(", "))
 }
 
 async fn set_enabled(id: &str, enabled: bool) {
@@ -362,5 +389,58 @@ async fn uninstall(state: &ReplState, id: &str) {
         }
         Ok(Err(err)) => println!("{} uninstall failed: {err}", "✗".red()),
         Err(err) => println!("{} uninstall worker failed: {err}", "✗".red()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codesmith_agent_runtime::engine::TurnExecutorSlot;
+
+    /// `/extension status` runs end to end against the process-shared
+    /// registry (the builtin slot is always there) and the census line
+    /// names main turn and sub-agent depths.
+    #[test]
+    fn status_lists_turn_executor_slots() {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let state = ReplState::new(options, &crate::config::Config::default());
+        status(&state);
+        assert!(
+            codesmith_agent_runtime::engine::turn_executor_status()
+                .iter()
+                .any(|slot| slot.id == state.config.turn_executor_id()),
+            "the session's selection is a registered slot"
+        );
+
+        let idle = TurnExecutorSlot {
+            id: "builtin".to_string(),
+            main_turns: 0,
+            subagent_turns: Vec::new(),
+        };
+        assert_eq!(in_flight_summary(&idle), "idle");
+        let busy = TurnExecutorSlot {
+            id: "builtin".to_string(),
+            main_turns: 1,
+            subagent_turns: vec![(1, 2), (2, 1)],
+        };
+        assert_eq!(
+            in_flight_summary(&busy),
+            "in flight: main turn ×1, sub-agents depth 1 ×2, sub-agents depth 2 ×1"
+        );
     }
 }

@@ -146,7 +146,7 @@ is the user-facing surface:
 | `/extension info <id>` | Shows metadata for one extension (version, source, dylib path, config, provenance, enabled). |
 | `/extension enable <id>` | Marks it enabled in `extensions_state.toml`; takes effect on the next `/extension reload`. |
 | `/extension disable <id>` | Marks it disabled; same reload caveat. |
-| `/extension status` | Reports the bound runner's generation + bound tool/command counts (plus failed loads from the startup audit). |
+| `/extension status` | Reports the bound runner's generation + bound tool/command counts (plus failed loads from the startup audit), then the turn-executor slots (DSH D1): every registered `turn_executor` id, which one this session selected, and the turns in flight on each — main turn and sub-agents by spawn depth, read off the lease registry (`idle` when none). Read-only; the registry types stay crate-private. |
 | `/extension reload` | Re-populates the shared runner `Arc` — the same chokepoint the `manage_mods` tool uses (see below). |
 | `/extension install <source> [--global]` | Fetches (`git:` / `path:` / `crate:` / `prebuilt:`) → builds (`cargo build` for source kinds) → places under `<root>/<id>/`, writes `extension.toml` + the sha256 sidecar the loader verifies, and records `installed[]` provenance. Default scope is the project root; `--global` opts into `~/.codesmith/extensions`. A project-scope install into an **untrusted** workspace prints a warning (the discovery-side gate still refuses to load it — `/trust add <path>` to trust the workspace). `/extension reload` loads it. |
 | `/extension uninstall <id>` | Removes `<root>/<id>/` and clears the provenance record; bindings clear on the next reload, the dylib unloads at the next turn boundary. |

@@ -161,6 +161,29 @@ impl TurnLeaseRegistry {
             .count()
     }
 
+    /// Read-only census of the leases held on `executor`, per spawn depth:
+    /// `(depth, count)` pairs, depth ascending — depth 0 is a main turn,
+    /// depth ≥ 1 a sub-agent. Empty when nothing is in flight. Operator
+    /// observability (DSH D1), never a decision input.
+    #[must_use]
+    pub fn in_flight_by_depth(&self, executor: &str) -> Vec<(u32, usize)> {
+        let mut counts: Vec<(u32, usize)> = Vec::new();
+        for entry in self.lock_entries().iter() {
+            if entry.spec.key.executor != executor {
+                continue;
+            }
+            match counts
+                .iter_mut()
+                .find(|(depth, _)| *depth == entry.spec.depth)
+            {
+                Some((_, count)) => *count += 1,
+                None => counts.push((entry.spec.depth, 1)),
+            }
+        }
+        counts.sort_unstable();
+        counts
+    }
+
     /// Leases in `scope` that may still hold dylib-origin handles from a
     /// generation older than `current_generation`. The dlclose safety
     /// net: while this is non-zero, the runner's `drop_pending` must wait.

@@ -3953,7 +3953,9 @@ use self::dispatch::{
     ParallelToolResult, ParallelToolResultEntry, ToolExecGuard, mcp_tool_is_parallel_safe,
     mcp_tool_is_read_only, parse_parallel_tool_calls,
 };
-pub use self::executor_composition::{BUILTIN_TURN_EXECUTOR_ID, validate_turn_executor_id};
+pub use self::executor_composition::{
+    BUILTIN_TURN_EXECUTOR_ID, TurnExecutorSlot, turn_executor_status, validate_turn_executor_id,
+};
 pub use self::lsp_hooks::edited_paths_for_tool;
 pub use self::streaming::TOOL_CALL_START_MARKERS;
 pub use self::streaming::{

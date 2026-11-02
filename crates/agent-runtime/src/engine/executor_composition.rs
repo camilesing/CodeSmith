@@ -374,12 +374,60 @@ impl TurnExecutorRegistry {
         ids
     }
 
+    /// Read-only snapshot of every slot with its in-flight census, sorted
+    /// by id (DSH D1 observability — see [`turn_executor_status`]).
+    #[must_use]
+    pub fn slots(&self) -> Vec<TurnExecutorSlot> {
+        self.ids()
+            .into_iter()
+            .map(|id| {
+                let mut main_turns = 0;
+                let mut subagent_turns = Vec::new();
+                for (depth, count) in self.leases.in_flight_by_depth(&id) {
+                    if depth == 0 {
+                        main_turns += count;
+                    } else {
+                        subagent_turns.push((depth, count));
+                    }
+                }
+                TurnExecutorSlot {
+                    id,
+                    main_turns,
+                    subagent_turns,
+                }
+            })
+            .collect()
+    }
+
     fn clone_handle(&self) -> TurnExecutorRegistry {
         TurnExecutorRegistry {
             inner: Arc::clone(&self.inner),
             leases: self.leases.clone(),
         }
     }
+}
+
+/// One registered turn-executor slot as an operator sees it (DSH D1): the
+/// id and the turns in flight on it, main turn and sub-agents by spawn
+/// depth. Which slot is the session's selection is the host's
+/// `turn_executor` config, not registry state — the host marks it. The
+/// registry types themselves stay crate-private; this snapshot is the whole
+/// public surface `/extension status` reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnExecutorSlot {
+    pub id: String,
+    /// Turns in flight at depth 0 (main turns; the registry is process-wide,
+    /// so several engines can each contribute one).
+    pub main_turns: usize,
+    /// `(spawn depth, count)` for sub-agent turns (depth ≥ 1), depth ascending.
+    pub subagent_turns: Vec<(u32, usize)>,
+}
+
+/// Snapshot of the process-shared turn-executor registry for status
+/// display: one [`TurnExecutorSlot`] per registered id, sorted by id.
+#[must_use]
+pub fn turn_executor_status() -> Vec<TurnExecutorSlot> {
+    shared_turn_executors().slots()
 }
 
 /// The registration guard returned by [`TurnExecutorRegistry::register`].
@@ -667,6 +715,54 @@ mod tests {
             registry.resolve(BUILTIN_TURN_EXECUTOR_ID).is_some(),
             "the builtin seeds even with a builtin turn in flight"
         );
+    }
+
+    /// D1 observability: the slot snapshot counts the leases in flight per
+    /// executor — main turn and sub-agents by spawn depth — and follows
+    /// releases.
+    #[test]
+    fn slots_report_in_flight_turns_by_depth() {
+        let leases = crate::turn_lease::TurnLeaseRegistry::new();
+        let registry = TurnExecutorRegistry::with_builtin(leases.clone());
+        let lease = |agent: &str, depth: u32| {
+            leases.acquire(crate::turn_lease::TurnLeaseSpec {
+                key: crate::turn_lease::TurnLeaseKey {
+                    agent: agent.to_string(),
+                    generation: 0,
+                    executor: BUILTIN_TURN_EXECUTOR_ID.to_string(),
+                },
+                depth,
+                cancel: CancellationToken::new(),
+                dylib_exposed: false,
+                scope: None,
+            })
+        };
+        let idle = TurnExecutorSlot {
+            id: BUILTIN_TURN_EXECUTOR_ID.to_string(),
+            main_turns: 0,
+            subagent_turns: Vec::new(),
+        };
+        assert_eq!(registry.slots(), vec![idle.clone()]);
+
+        let main = lease("session", 0);
+        let child_a = lease("agent-a", 1);
+        let child_b = lease("agent-b", 1);
+        let grandchild = lease("agent-c", 2);
+        assert_eq!(
+            registry.slots(),
+            vec![TurnExecutorSlot {
+                id: BUILTIN_TURN_EXECUTOR_ID.to_string(),
+                main_turns: 1,
+                subagent_turns: vec![(1, 2), (2, 1)],
+            }]
+        );
+
+        drop(child_a);
+        drop(grandchild);
+        assert_eq!(registry.slots()[0].subagent_turns, vec![(1, 1)]);
+        drop(main);
+        drop(child_b);
+        assert_eq!(registry.slots(), vec![idle]);
     }
 
     /// The process-shared registry always carries the builtin factory.
