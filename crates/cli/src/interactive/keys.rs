@@ -32,25 +32,31 @@
 /// Keys the tap reports while a turn runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnKey {
-    /// Ctrl+O — toggle collapsed/expanded tool-call detail.
+    /// Toggle collapsed/expanded tool-call detail (`app.tools.expand`;
+    /// `Ctrl+O` by default).
     ToggleDetail,
-    /// Ctrl+T — toggle the task checklist.
+    /// Toggle the task checklist (`app.tasks.toggle`; `Ctrl+T`).
     TaskList,
-    /// Shift+Tab — walk the run-mode ring.
+    /// Walk the run-mode ring (`app.mode.cycle`; `Shift+Tab`).
     CycleMode,
+    /// Walk the reasoning-effort ring (`app.thinking.cycle`;
+    /// `Alt+Shift+T`).
+    CycleThinking,
     /// A printable character (paste payloads included).
     Char(char),
     /// Enter — take the composer line and queue it.
     Queue,
     /// Ctrl+J — insert a newline in the composer.
     Newline,
-    /// Ctrl+Enter (CSI-u terminals only) or Ctrl+X Ctrl+S — send now.
+    /// Send now (`app.queue.sendNow`; `Ctrl+S`, `Ctrl+Enter` on CSI-u
+    /// terminals, `Ctrl+X Ctrl+S`).
     SendNow,
     /// Escape — interrupt, or background what is running.
     Esc,
-    /// Ctrl+B — send the running shell to the background.
+    /// Send the running shell to the background (`app.queue.background`;
+    /// `Ctrl+B`).
     Background,
-    /// Ctrl+X Ctrl+K — stop all background work.
+    /// Stop all background work (`app.stopAll`; `Ctrl+X Ctrl+K`).
     StopAll,
     Backspace,
     Delete,
@@ -66,6 +72,34 @@ pub enum TurnKey {
     KillToStart,
     /// Ctrl+W — kill back to whitespace.
     KillWord,
+}
+
+impl TurnKey {
+    /// The mid-turn key a keymap action dispatches to. Prompt-only actions
+    /// have no turn key — they never enter the turn table, so `None`.
+    pub fn from_action(action: super::keymap::ActionId) -> Option<TurnKey> {
+        Some(match action {
+            super::keymap::ActionId::ModeCycle => TurnKey::CycleMode,
+            super::keymap::ActionId::ToolsExpand => TurnKey::ToggleDetail,
+            super::keymap::ActionId::TasksToggle => TurnKey::TaskList,
+            super::keymap::ActionId::StopAll => TurnKey::StopAll,
+            super::keymap::ActionId::ThinkingCycle => TurnKey::CycleThinking,
+            super::keymap::ActionId::QueueSendNow => TurnKey::SendNow,
+            super::keymap::ActionId::QueueBackground => TurnKey::Background,
+            _ => return None,
+        })
+    }
+}
+
+/// Longest-prefix match of the active keymap's turn patterns (built
+/// longest-first, so a two-key sequence beats its one-key prefix).
+fn match_action_pattern(rest: &[u8]) -> Option<(TurnKey, usize)> {
+    for (pattern, action) in super::keymap::active().turn_patterns() {
+        if rest.starts_with(pattern.as_slice()) {
+            return TurnKey::from_action(*action).map(|key| (key, pattern.len()));
+        }
+    }
+    None
 }
 
 /// Byte-level key decoder. Pure over the byte stream, so every sequence and
@@ -156,28 +190,29 @@ impl Decoder {
         let Some(&byte) = rest.first() else {
             return Decoded::Incomplete;
         };
+        // Action chords the keymap owns are matched first, so a remap can
+        // take bytes the composer's structural table below would otherwise
+        // claim (binding an action to Ctrl+E costs the composer Home).
+        if let Some((key, used)) = match_action_pattern(rest) {
+            return Decoded::Key(key, used);
+        }
         match byte {
             0x1b => self.decode_escape(rest),
             // CR (Enter) queues; LF (Ctrl+J) starts a new line.
             0x0d => Decoded::Key(TurnKey::Queue, 1),
             0x0a => Decoded::Key(TurnKey::Newline, 1),
             0x7f | 0x08 => Decoded::Key(TurnKey::Backspace, 1),
-            // Ctrl+letter.
+            // Ctrl+letter: the composer's own editing keys.
             0x01..=0x1a => match byte {
-                0x0f => Decoded::Key(TurnKey::ToggleDetail, 1),
-                0x14 => Decoded::Key(TurnKey::TaskList, 1),
-                0x02 => Decoded::Key(TurnKey::Background, 1),
                 0x0b => Decoded::Key(TurnKey::KillToEnd, 1),
                 0x15 => Decoded::Key(TurnKey::KillToStart, 1),
                 0x17 => Decoded::Key(TurnKey::KillWord, 1),
-                0x13 => Decoded::Key(TurnKey::SendNow, 1),
                 0x01 => Decoded::Key(TurnKey::Home, 1),
                 0x05 => Decoded::Key(TurnKey::End, 1),
-                // Ctrl+X Ctrl+S is the portable "send now"; a bare Ctrl+X
-                // with anything else is ignored.
+                // A bare Ctrl+X paired with nothing the user bound: consume
+                // it and the byte after (an unknown pair), or wait for that
+                // byte to arrive.
                 0x18 => match rest.get(1) {
-                    Some(0x13) => Decoded::Key(TurnKey::SendNow, 2),
-                    Some(0x0b) => Decoded::Key(TurnKey::StopAll, 2),
                     Some(_) => Decoded::Key(TurnKey::Char('\0'), 2),
                     None => Decoded::Incomplete,
                 },
@@ -203,10 +238,10 @@ impl Decoder {
                 Some(_) => Decoded::Key(TurnKey::Char('\0'), 3),
                 None => Decoded::Incomplete,
             },
-            // Alt+<char> and other ESC-prefixed keys are not rebound
-            // mid-turn; drop the ESC and let the character through without
-            // spuriously firing the Escape binding (interrupt) on every
-            // Alt-keypress.
+            // Alt+<char> chords the keymap bound were matched before this
+            // point; anything else ESC-prefixed drops the ESC and lets the
+            // character through without spuriously firing the Escape
+            // binding (interrupt) on every Alt-keypress.
             Some(_) => Decoded::Key(TurnKey::Char('\0'), 1),
         }
     }
@@ -223,10 +258,11 @@ impl Decoder {
             b'D' => Decoded::Key(TurnKey::Left, 1),
             b'H' => Decoded::Key(TurnKey::Home, 1),
             b'F' => Decoded::Key(TurnKey::End, 1),
-            b'Z' => Decoded::Key(TurnKey::CycleMode, 1),
-            // Modified Enter from a CSI-u terminal: `CSI 13 ; 5 u` is
-            // Ctrl+Enter.
-            b'1' if body.starts_with(b"13;5u") => Decoded::Key(TurnKey::SendNow, 5),
+            // `CSI Z` (Shift+Tab) and `CSI 13;5u` (Ctrl+Enter on CSI-u
+            // terminals) are action chords: they were matched against the
+            // keymap's turn patterns before this structural table ran, so
+            // reaching here means the owning action is disabled or remapped
+            // away — the sequence falls through and is consumed below.
             b'3' => match body.get(1) {
                 Some(b'~') => Decoded::Key(TurnKey::Delete, 2),
                 // `CSI 3;5~` (Ctrl+Delete) and friends can never match the
@@ -408,6 +444,26 @@ mod tests {
         assert_eq!(keys(b"\x18\x0b"), vec![TurnKey::StopAll]);
         // Kitty-protocol Ctrl+Enter.
         assert_eq!(keys(b"\x1b[13;5u"), vec![TurnKey::SendNow]);
+    }
+
+    #[test]
+    fn alt_chords_fire_only_when_the_keymap_binds_them() {
+        // Defaults bind Alt+Shift+T mid-turn (thinking cycle): `ESC T`
+        // matches the turn pattern.
+        assert_eq!(keys(b"\x1bT"), vec![TurnKey::CycleThinking]);
+        // An unbound Alt chord still drops only the ESC; the letter types.
+        // (Alt+P is prompt-scope, so it is not in the turn table.)
+        assert_eq!(
+            keys(b"\x1bp"),
+            vec![TurnKey::Char('\0'), TurnKey::Char('p')]
+        );
+    }
+
+    #[test]
+    fn a_ctrl_byte_no_action_owns_is_consumed() {
+        // Ctrl+F is bound to nothing in the default table (nor structurally),
+        // so it is swallowed rather than leaking into the composer.
+        assert_eq!(keys(b"\x06"), vec![TurnKey::Char('\0')]);
     }
 
     #[test]

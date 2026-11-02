@@ -2,7 +2,9 @@
 
 Everything the REPL binds at the prompt and while a turn is running. `/help`
 lists commands; this file lists keys. `?` on an empty prompt prints the same
-table in the terminal, and `/keybindings` reprints it.
+table in the terminal, and `/keybindings` (alias `/hotkeys`) reprints it —
+with the bindings your `keybindings.toml` actually produced, remapped rows
+marked `*`.
 
 Two layers are in play:
 
@@ -12,6 +14,55 @@ Two layers are in play:
 - **While a turn runs**, a small byte decoder owns stdin (only line
   buffering and echo are off; `Ctrl+C` still arrives as an interrupt) and
   feeds a composer: you can type, edit, and queue while the model works.
+
+## Customize keybindings
+
+Application actions are remappable through `~/.codesmith/keybindings.toml`
+(the file is created by you; a missing file means the defaults). It is a
+flat TOML mapping of action id to one chord string or an array of them:
+
+```toml
+app.tools.expand = "Ctrl+O"
+app.thinking.cycle = ["Alt+Shift+T", "Ctrl+X Ctrl+T"]
+app.tasks.toggle = []          # empty array disables the action
+```
+
+Chord names are case-insensitive and use the notation shown throughout this
+file (`Ctrl+O`, `Alt+Shift+P`, `Shift+Tab`, `F5`, `Ctrl+X Ctrl+K`). The file
+is read once at REPL startup; `CODESMITH_KEYBINDINGS_FILE` points elsewhere
+(ops/tests). A malformed file — an unknown action id, an unparsable chord,
+or one chord claimed by two actions in the same layer — fails startup with
+the file's path. Chords a layer cannot decode (see
+[What the terminal has to do](#what-the-terminal-has-to-do)) load with a
+warning instead of failing.
+
+The rebindable actions and their defaults:
+
+| Action ID | Default | Where | Meaning |
+| :- | :- | :- | :- |
+| `app.mode.cycle` | `Shift+Tab` | both | Cycle the run mode (agent · plan · yolo) |
+| `app.tools.expand` | `Ctrl+O` | both | Toggle collapsed/expanded tool-call detail |
+| `app.tasks.toggle` | `Ctrl+T` | both | Toggle the task checklist |
+| `app.thinking.cycle` | `Alt+Shift+T` | both | Cycle the thinking level (off · high · max) |
+| `app.stopAll` | `Ctrl+X Ctrl+K` | both | Stop all background work (press twice) |
+| `app.model.cycle` | `Alt+P` | prompt | Switch model (session default ↔ configured default) |
+| `app.thinking.toggle` | `Alt+T` | prompt | Toggle extended thinking (off ↔ high) |
+| `app.editor.external` | `Ctrl+G`, `Ctrl+X Ctrl+E` | prompt | Edit the prompt in `$VISUAL`/`$EDITOR` |
+| `app.clipboard.pasteImage` | `Ctrl+V` | prompt | Paste a clipboard image as an attachment |
+| `app.clipboard.copyPrompt` | `Alt+Shift+C` | prompt | Copy the whole prompt draft |
+| `app.clipboard.copyLine` | `Alt+Shift+L` | prompt | Copy the line under the cursor |
+| `app.retry` | `F5`, `Alt+R` | prompt | Retry the last request (same as `/retry`) |
+| `app.draft.stash` | `Ctrl+S` | prompt | Stash the draft; press again on an empty prompt to restore |
+| `app.prompt.newline` | `Ctrl+J`, `Alt+Enter` | prompt | Insert a newline (multiline prompt) |
+| `app.prompt.recall` | `Up` | prompt | Recall the cleared draft, then queued messages, then history |
+| `app.queue.sendNow` | `Ctrl+S`, `Ctrl+Enter`, `Ctrl+X Ctrl+S` | turn | Send what is queued to the running turn now |
+| `app.queue.background` | `Ctrl+B` | turn | Send the running shell to the background |
+
+Not remappable, deliberately: `Ctrl+C`, `Ctrl+D`, `Esc`, `?`, `Tab`, `Enter`
+and the readline editing keys (the whole Editing table below) — they are the
+typing and interrupt surface itself. A mid-turn binding takes precedence
+over the composer's own use of the same bytes, so binding an action to
+`Ctrl+E` costs the composer its Home key while a turn runs.
 
 ## While a turn is running (the composer)
 
@@ -28,6 +79,7 @@ Two layers are in play:
 | `Ctrl+O` | Toggles collapsed/expanded tool-call detail |
 | `Ctrl+T` | Toggles the model's task checklist |
 | `Shift+Tab` | Cycles the run mode (applies from the next turn) |
+| `Alt+Shift+T` | Cycles the thinking level (off · high · max; applies from the next turn) |
 | `Up` | With an empty composer, takes back the newest queued message for editing |
 | `Down · Tab · completion` | Not available mid-turn (no history, no completion) |
 | `Ctrl+C` | Interrupts the turn; press twice to quit |
@@ -53,6 +105,11 @@ typing.
 | `Ctrl+X Ctrl+K` | Stops all background work (press twice within 3 seconds) |
 | `Alt+P` (`⌥P`) | Toggles between the session model and the configured default model — `/model <id>` picks any |
 | `Alt+T` (`⌥T`) | Toggles extended thinking (off ↔ high) |
+| `Alt+Shift+T` | Cycles the thinking level through the full ring (off · high · max — `max` is session-only) |
+| `Ctrl+V` | Pastes a clipboard image as an attachment for the next message (needs a paste tool — see the terminal table) |
+| `Alt+Shift+C` | Copies the whole prompt draft to the clipboard |
+| `Alt+Shift+L` | Copies the line under the cursor to the clipboard |
+| `F5` / `Alt+R` | Retries the last request (same as `/retry`: drops the last exchange, re-sends the text) |
 | `Shift+Tab` | Cycles the run mode: `agent → plan → yolo` (plus `coordinator` when its feature is enabled). Nothing is printed — the `🚥` segment of the status row flips in place, and the draft keeps its text and cursor |
 | `Esc` | In vi insert mode: leaves insert mode |
 | `Esc`, `Esc` | With text: clears the draft and keeps it for `Up`. On an empty prompt: no-op (rewind's menu is not built; files are `/rewind`, the exchange is `/undo`) |
@@ -78,6 +135,7 @@ terminal to send Option as Meta; on macOS that is a terminal setting — see
 | `Alt+D` | Kill to the end of the word |
 | `Ctrl+_` | Undo the last edit |
 | `Ctrl+T` (emacs transpose) | Shadowed: `Ctrl+T` is the task checklist |
+| `Ctrl+V` (quoted insert) | Shadowed: `Ctrl+V` pastes a clipboard image |
 
 ### Multiline input
 
@@ -85,8 +143,12 @@ terminal to send Option as Meta; on macOS that is a terminal setting — see
 | :- | :- |
 | A line ending in `\` then `Enter` | Every terminal. The `\` is a marker and is removed before the message is sent |
 | `Ctrl+J` | Every terminal |
-| `Shift+Enter` / `Alt+Enter` | Only terminals that report the modifier with Enter |
+| `Alt+Enter` | Terminals that send Option/Alt with Enter as `ESC CR` |
 | Pasting multi-line text | Every terminal (bracketed paste); the newlines survive |
+
+`Shift+Enter` is not bound: rustyline cannot decode it from any sequence a
+real terminal sends, so it never reaches a handler. `Ctrl+J` and a trailing
+`\` are the portable spellings.
 
 ### History
 
@@ -141,17 +203,17 @@ vi insert mode, so a handler cannot synthesize the `Escape`.
 | :- | :- |
 | `Shift+Tab` | The terminal must send `ESC [ Z` (Terminal.app, iTerm2, tmux defaults do); the kitty protocol's `CSI 1;2Z` is not decoded by rustyline 14 |
 | `Alt`/`Option` keys | Option-as-Meta in the terminal (`/terminal-setup` prints the setting for each) |
-| `Ctrl+Enter` | A terminal that reports the modifier with Enter; `Ctrl+X Ctrl+S` is the portable spelling |
-| `Shift+Enter` | Same as above; `Ctrl+J` and trailing `\` work everywhere |
-| Composer, mid-turn keys | A real TTY. Piped input (`codesmith < file`) leaves the mid-turn tap inert by design |
-| `/copy`, image paste | A clipboard tool on `PATH` (`pbcopy`, `wl-copy`, `xclip`, `clip`); the command names what to install when none is found |
+| `Ctrl+Enter` (mid-turn) | A CSI-u terminal that reports the modifier with Enter; `Ctrl+X Ctrl+S` is the portable spelling |
+| `Ctrl+Shift+<key>` | Not decodable anywhere: the terminal sends the same bytes as `Ctrl+<key>` — such chords are rejected at load |
+| `Ctrl+Enter`, `Shift+Enter` (at the prompt) | Not decodable at the prompt (rustyline 14 has no kitty keyboard protocol); they load with a warning and never fire there |
+| Composer, mid-turn keys | A real TTY. Piped input (`codesmith < file`) leaves the mid-turn tap inert by design; on Windows the tap is inert everywhere |
+| `/copy`, copy keys | A clipboard text tool on `PATH` (`pbcopy`, `wl-copy`, `xclip`, `clip`); the key names what to install when none is found |
+| `Ctrl+V` image paste | An image clipboard tool on `PATH` — `pngpaste` (macOS), `wl-paste` (Wayland), or `xclip` (X11); the error names the missing one |
 
 ## Not bound here
 
-- Block-wise visual mode (`Ctrl+V` in Claude Code's vim mode).
-- A keybindings configuration file: the bindings are compiled in, and
-  `/keybindings` is a read-only table (`/config editor_mode` is the only
-  keyboard setting).
+- Block-wise visual mode (`Ctrl+V` in Claude Code's vim mode — ours pastes
+  an image).
 - Fullscreen-only interactions (transcript viewer keys such as `{`/`}`,
   mouse support, `/scroll-speed`, `/focus`).
 - Voice dictation.

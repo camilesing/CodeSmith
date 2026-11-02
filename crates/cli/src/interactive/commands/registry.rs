@@ -891,9 +891,9 @@ impl Command {
             name: "keybindings",
             usage: "",
             args: &[],
-            aliases: &[],
+            aliases: &["hotkeys"],
             group: Group::Diagnostics,
-            help: "print the keyboard shortcut table (also `?` on an empty prompt)",
+            help: "print the active keyboard shortcuts, remaps included (also `?` on an empty prompt)",
         },
         CommandInfo {
             command: Command::Slop,

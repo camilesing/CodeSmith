@@ -127,8 +127,10 @@ mod 侧也可在运行期用 `disable_command(name)` 达到同样效果——两
   永不加进对话、永不发给模型，也不会上传。单独的 `/feedback` 打印用法与提 bug 的入口。
 - **`/effort`、`/autocompact`、`/usage`、`/tasks`、`/plugins`、`/reload-skills`、
   `/reload-plugins`、`/theme`、`/color`、`/statusline`、`/copy`、`/doctor`、
-  `/debug`、`/release-notes`、`/terminal-setup`、`/keybindings`** 覆盖模型档位、
-  后台视图、扩展面，以及外观与诊断杂项。`/permissions` 展示哪些操作不必询问
+  `/debug`、`/release-notes`、`/terminal-setup`、`/keybindings`（别名 `/hotkeys`）**
+  覆盖模型档位、后台视图、扩展面，以及外观与诊断杂项。`/keybindings` 打印的是
+  **生效表** —— 默认键位加上 `~/.codesmith/keybindings.toml` 的重映射（带 `*`
+  标记；见 [KEYBINDINGS.md](./KEYBINDINGS.md)）。`/permissions` 展示哪些操作不必询问
   —— 会话授权、持久授权、受信任路径，以及 `[sandbox] auto_allow` 规则 ——
   并写入持久授权存储（`/permissions allow "git status"` 覆盖 `git status -s`
   而不覆盖 `git push`，用的是审批提示同一套 arity 词典）。`/cd <path>` 把会话移到
@@ -173,10 +175,9 @@ mod 侧也可在运行期用 `disable_command(name)` 达到同样效果——两
 的语义 —— 与 `/branch` 相同的"开分支并切过去" —— 因为 Claude Code 的 `/fork` 正是
 上述排除项之一：游离的后台会话。
 
-同样在范围之外并写明原因的：键位配置文件（绑定编译在程序内，`/keybindings` 只读）、
-emoji 短代码与拼写检查（二者都需要本 REPL 未随附的数据表）、全屏渲染器的
-transcript viewer 按键，以及 `/pr-comments`（Claude Code 在 v2.1.91 删除它并建议
-直接让模型读评论 —— `/pr` 准备的正是让会话这么做的上下文）。
+同样在范围之外并写明原因的：emoji 短代码与拼写检查（二者都需要本 REPL 未随附的
+数据表）、全屏渲染器的 transcript viewer 按键，以及 `/pr-comments`（Claude Code
+在 v2.1.91 删除它并建议直接让模型读评论 —— `/pr` 准备的正是让会话这么做的上下文）。
 
 `/pr` 与 `codesmith pr <N>` 都走 `gh`：没有安装（或没跑过 `gh auth login`）时
 `/pr` 会明说，并且什么都不取回。

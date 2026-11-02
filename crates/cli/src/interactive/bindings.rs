@@ -17,6 +17,13 @@
 //! (Ctrl+C, Esc Esc) is covered because the hint hook snapshots the line into
 //! the same cell on every keystroke, and every handler snapshots it too.
 //!
+//! Which key fires which [`Bind`] is not this module's decision: the table
+//! the editor registers comes from [`super::keymap`] (the compiled-in
+//! defaults overlaid with the user's `keybindings.toml`; see
+//! [`Bind::from_action`]). Variants added before that keep names from their
+//! historical default chords — `Bind::CtrlO` fires for whatever chord
+//! `app.tools.expand` is set to, not necessarily `Ctrl+O`.
+//!
 //! Known limitations (recorded beside the behaviour it owns):
 //!
 //! - An action key re-renders the prompt: the terminal transcript cannot be
@@ -32,9 +39,10 @@
 //! - `jj` → Escape (Claude Code's `vimInsertModeRemaps`) is not implemented:
 //!   rustyline 14 exposes no `Cmd` that switches vi input mode, so a handler
 //!   cannot synthesize the Escape. Press Escape.
-//! - Shift+Enter only reaches the binding in terminals that report the
-//!   modifier; most send a bare CR, which submits. `Ctrl+J` and a trailing
-//!   `\` work everywhere.
+//! - Shift+Enter is not a default binding: rustyline cannot decode it from
+//!   any sequence a real terminal sends (it never reaches a handler), so
+//!   `Ctrl+J` and a trailing `\` are the multiline spellings. Binding it in
+//!   `keybindings.toml` loads with a warning and never fires.
 //! - Alt/Option keys (`Alt+P`, `Alt+T`) need the terminal to send Option as
 //!   Meta. macOS terminals do not by default (see `/terminal-setup`).
 
@@ -90,6 +98,16 @@ pub enum Action {
     ToggleThinking,
     /// Edit the prompt in `$VISUAL`/`$EDITOR` (`Ctrl+G`, `Ctrl+X Ctrl+E`).
     EditInEditor,
+    /// Cycle the thinking level through the effort ring (`Alt+Shift+T`).
+    CycleThinking,
+    /// Paste a clipboard image as an attachment (`Ctrl+V`).
+    PasteImage,
+    /// Copy the whole prompt draft (`Alt+Shift+C`).
+    CopyPrompt,
+    /// Copy the line under the cursor (`Alt+Shift+L`).
+    CopyLine,
+    /// Retry the last request (`F5`, `Alt+R` — same as `/retry`).
+    Retry,
     /// Print the shortcut panel (`?` on an empty line).
     Help,
     /// `Up` on an empty prompt with messages still queued from the last
@@ -124,7 +142,9 @@ pub enum Edit {
 }
 
 /// Which key produced the callback. One handler type serves them all; the
-/// binding table in [`super::build_editor`] maps keys to these.
+/// binding table in [`super::build_editor`] maps keys to these. Most
+/// variants are named for their *default* chord (see the module note) — the
+/// actual chord comes from [`super::keymap`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bind {
     /// `Shift+Tab` — the run-mode ring.
@@ -153,6 +173,43 @@ pub enum Bind {
     RecallDraft,
     /// `?`
     Question,
+    /// The thinking-level ring (`Alt+Shift+T`).
+    CycleThinking,
+    /// Clipboard image paste (`Ctrl+V`).
+    PasteImage,
+    /// Copy the whole draft (`Alt+Shift+C`).
+    CopyPrompt,
+    /// Copy the cursor's line (`Alt+Shift+L`).
+    CopyLine,
+    /// Retry the last request (`F5`, `Alt+R`).
+    Retry,
+}
+
+impl Bind {
+    /// The prompt-layer [`Bind`] a keymap action dispatches to. `None` for
+    /// the turn-only actions, which generate no prompt rows.
+    pub fn from_action(action: super::keymap::ActionId) -> Option<Bind> {
+        Some(match action {
+            super::keymap::ActionId::ModeCycle => Bind::ShiftTab,
+            super::keymap::ActionId::ToolsExpand => Bind::CtrlO,
+            super::keymap::ActionId::TasksToggle => Bind::CtrlT,
+            super::keymap::ActionId::StopAll => Bind::StopAll,
+            super::keymap::ActionId::ThinkingCycle => Bind::CycleThinking,
+            super::keymap::ActionId::ModelCycle => Bind::AltP,
+            super::keymap::ActionId::ThinkingToggle => Bind::AltT,
+            super::keymap::ActionId::EditorExternal => Bind::CtrlG,
+            super::keymap::ActionId::PasteImage => Bind::PasteImage,
+            super::keymap::ActionId::CopyPrompt => Bind::CopyPrompt,
+            super::keymap::ActionId::CopyLine => Bind::CopyLine,
+            super::keymap::ActionId::Retry => Bind::Retry,
+            super::keymap::ActionId::DraftStash => Bind::CtrlS,
+            super::keymap::ActionId::PromptNewline => Bind::Newline,
+            super::keymap::ActionId::PromptRecall => Bind::RecallDraft,
+            super::keymap::ActionId::QueueSendNow | super::keymap::ActionId::QueueBackground => {
+                return None;
+            }
+        })
+    }
 }
 
 /// The editing state a decision reads — a plain copy of what
@@ -178,6 +235,9 @@ pub struct Bindings {
     /// The line as of the last keystroke or hint refresh. A key that
     /// discards the buffer has no other way to know what was in it.
     line: String,
+    /// The cursor (byte offset) as of the last keystroke — what
+    /// [`Bind::CopyLine`] needs to pick a line out of a multiline draft.
+    cursor: usize,
     /// `Ctrl+S` stash: text only — the cursor offset comes back with the
     /// text's end (see the module note).
     stash: Option<String>,
@@ -238,6 +298,27 @@ impl Bindings {
     pub fn note_line(&mut self, line: &str) {
         self.line.clear();
         self.line.push_str(line);
+    }
+
+    /// Record the cursor alongside [`Self::note_line`] — the key handler is
+    /// the only place that sees it.
+    pub fn note_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor;
+    }
+
+    /// The line of the draft the cursor sits on (a whole single-line draft).
+    #[must_use]
+    pub fn line_at_cursor(&self) -> &str {
+        let offset = self.cursor.min(self.line.len());
+        // A cursor that splits a multi-byte character reads as line zero;
+        // rustyline reports char boundaries, this only guards the slicing.
+        let head = if self.line.is_char_boundary(offset) {
+            &self.line[..offset]
+        } else {
+            &self.line[..0]
+        };
+        let index = head.matches('\n').count();
+        self.line.split('\n').nth(index).unwrap_or("")
     }
 
     /// The most recently seen line text.
@@ -384,6 +465,7 @@ impl Bindings {
     /// other visible affordance. Empty when there is nothing to say.
     #[must_use]
     pub fn status_hint(&self, line: &str, todo_summary: Option<&str>) -> Option<String> {
+        let keymap = super::keymap::active();
         let mut parts: Vec<String> = Vec::new();
         if self.tasks_shown
             && let Some(summary) = todo_summary
@@ -392,15 +474,22 @@ impl Bindings {
         }
         if line.is_empty() {
             if self.stash.is_some() {
-                parts.push("Ctrl+S restores the stashed prompt".to_string());
+                parts.push(format!(
+                    "{} restores the stashed prompt",
+                    keymap.first_label(super::keymap::ActionId::DraftStash)
+                ));
             }
             if self.cleared_draft.is_some() {
-                parts.push("Up recalls the cleared draft".to_string());
+                parts.push(format!(
+                    "{} recalls the cleared draft",
+                    keymap.first_label(super::keymap::ActionId::PromptRecall)
+                ));
             }
             if self.queue_pending > 0 {
                 parts.push(format!(
-                    "{} queued message(s) — Up takes them back",
-                    self.queue_pending
+                    "{} queued message(s) — {} takes them back",
+                    self.queue_pending,
+                    keymap.first_label(super::keymap::ActionId::PromptRecall)
                 ));
             }
         }
@@ -434,6 +523,7 @@ impl ConditionalEventHandler for KeyHandler {
     ) -> Option<Cmd> {
         let mut bindings = Bindings::lock(&self.bindings);
         bindings.note_line(ctx.line());
+        bindings.note_cursor(ctx.pos());
         // In vi insert mode a bare `Esc` is how you leave insert mode; only
         // emacs-style editing can spare it.
         let state = EditState {
@@ -517,6 +607,11 @@ fn decide(bind: Bind, state: EditState<'_>, bindings: &mut Bindings, now: Instan
         Bind::CtrlG => act(Action::EditInEditor, bindings),
         Bind::AltP => act(Action::CycleModel, bindings),
         Bind::AltT => act(Action::ToggleThinking, bindings),
+        Bind::CycleThinking => act(Action::CycleThinking, bindings),
+        Bind::PasteImage => act(Action::PasteImage, bindings),
+        Bind::CopyPrompt => act(Action::CopyPrompt, bindings),
+        Bind::CopyLine => act(Action::CopyLine, bindings),
+        Bind::Retry => act(Action::Retry, bindings),
         Bind::StopAll => {
             let double = within(bindings.last_stop_all, STOP_ALL_WINDOW, now);
             bindings.last_stop_all = Some(now);
@@ -583,48 +678,128 @@ fn to_cmd(edit: Edit) -> Option<Cmd> {
 }
 
 /// The shortcut panel printed by `?` on an empty prompt and by
-/// `/keybindings`. Kept here because this module owns the key table.
+/// `/keybindings`. The action rows are generated from the active keymap
+/// (so remaps show), the fixed rows list what is deliberately not
+/// rebindable.
 #[must_use]
 pub fn help_panel() -> String {
-    [
-        (
-            "Ctrl+C",
-            "interrupt · clear the draft (Up recalls it) · twice exits",
-        ),
-        (
-            "Ctrl+D",
-            "delete the character after the cursor · twice exits",
-        ),
-        ("Ctrl+S", "stash the draft · press again on an empty prompt"),
-        ("Ctrl+O", "toggle tool-call detail"),
-        ("Ctrl+T", "toggle the task checklist"),
-        ("Ctrl+G", "edit the prompt in $VISUAL/$EDITOR"),
-        ("Ctrl+X Ctrl+K", "stop all background work (press twice)"),
-        ("Ctrl+J", "insert a newline (works in every terminal)"),
-        ("\\ + Enter", "continue the prompt on the next line"),
-        ("Esc, Esc", "clear the draft · on an empty prompt: rewind"),
-        ("Esc", "in vim insert mode: leave insert mode"),
-        ("Alt/⌥+P", "switch model"),
-        ("Alt/⌥+T", "toggle extended thinking"),
-        ("Shift+Tab", "cycle the run mode (agent · plan · yolo)"),
-        ("Tab", "complete a command, argument, or @path"),
-        ("Up / Down", "history · Ctrl+P / Ctrl+N do the same"),
-        ("Ctrl+R", "reverse history search"),
-        ("Ctrl+L", "redraw the screen"),
-        ("Ctrl+Z", "suspend to the shell (fg returns)"),
-        ("Ctrl+A / Ctrl+E", "start / end of line"),
-        ("Ctrl+K / Ctrl+U", "kill to end / start of line"),
-        ("Ctrl+W", "kill back to whitespace"),
-        ("Ctrl+Y / Alt+Y", "paste killed text / cycle the kill ring"),
-        ("Alt+B / Alt+F", "back / forward one word"),
-        ("Alt+D", "kill to end of word"),
-        ("Ctrl+_", "undo the last edit"),
-        ("?", "this panel (on an empty prompt)"),
-    ]
-    .iter()
-    .map(|(key, what)| format!("{key:<16} {what}"))
-    .collect::<Vec<_>>()
-    .join("\n")
+    let map = super::keymap::active();
+    let mut rows: Vec<(String, &str)> = Vec::new();
+
+    rows.push((
+        "Ctrl+C".to_string(),
+        "interrupt · clear the draft · twice exits",
+    ));
+    action_rows(map, &mut rows, false);
+    rows.push((
+        "\\ + Enter".to_string(),
+        "continue the prompt on the next line",
+    ));
+    rows.push((
+        "Esc, Esc".to_string(),
+        "clear the draft · on an empty prompt: no-op",
+    ));
+    rows.push(("Esc".to_string(), "in vim insert mode: leave insert mode"));
+    rows.push((
+        "Ctrl+D".to_string(),
+        "delete forward · twice on an empty prompt exits",
+    ));
+    rows.push(("Tab".to_string(), "complete a command, argument, or @path"));
+    rows.push(("Ctrl+R".to_string(), "reverse history search"));
+    rows.push(("Ctrl+L".to_string(), "redraw the screen"));
+    rows.push(("Ctrl+Z".to_string(), "suspend to the shell (fg returns)"));
+    rows.push(("Ctrl+A / Ctrl+E".to_string(), "start / end of line"));
+    rows.push(("Ctrl+K / Ctrl+U".to_string(), "kill to end / start of line"));
+    rows.push(("Ctrl+W".to_string(), "kill back to whitespace"));
+    rows.push((
+        "Ctrl+Y / Alt+Y".to_string(),
+        "paste killed text / cycle the kill ring",
+    ));
+    rows.push(("Alt+B / Alt+F".to_string(), "back / forward one word"));
+    rows.push(("Alt+D".to_string(), "kill to end of word"));
+    rows.push(("Ctrl+_".to_string(), "undo the last edit"));
+    rows.push(("?".to_string(), "this panel (on an empty prompt)"));
+
+    rows.push(("while a turn runs".to_string(), ""));
+    action_rows(map, &mut rows, true);
+    rows.push(("Enter".to_string(), "queue the composed message"));
+    rows.push(("Ctrl+C".to_string(), "interrupt the turn · twice quits"));
+    rows.push((
+        "Esc".to_string(),
+        "background the running tool · else interrupt",
+    ));
+
+    let width = rows
+        .iter()
+        .filter(|(_, help)| !help.is_empty())
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut panel = rows
+        .into_iter()
+        .map(|(key, help)| {
+            if help.is_empty() {
+                key
+            } else {
+                format!("{key:<width$} {help}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if super::keymap::action_specs()
+        .iter()
+        .any(|spec| map.is_remapped(spec.id))
+    {
+        let source = map
+            .source_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "keybindings.toml".to_string());
+        panel.push_str(&format!(
+            "\n* remapped in {source} — app.* actions are rebindable there"
+        ));
+    }
+    // Disabled actions stay visible so the file's effect is legible.
+    let disabled: Vec<&str> = super::keymap::action_specs()
+        .iter()
+        .filter(|spec| map.labels(spec.id) == "(disabled)")
+        .map(|spec| spec.name)
+        .collect();
+    if !disabled.is_empty() {
+        panel.push_str(&format!(
+            "\ndisabled by keybindings.toml: {}",
+            disabled.join(", ")
+        ));
+    }
+    panel
+}
+
+/// Append one section's action rows. A `Scope::Both` action appears at the
+/// prompt and in the turn section; remapped rows carry the `*` marker.
+fn action_rows(
+    map: &super::keymap::Keymap,
+    rows: &mut Vec<(String, &'static str)>,
+    mid_turn: bool,
+) {
+    for spec in super::keymap::action_specs() {
+        let fires = if mid_turn {
+            spec.scope.fires_mid_turn()
+        } else {
+            spec.scope.fires_at_prompt()
+        };
+        if !fires {
+            continue;
+        }
+        let labels = map.labels(spec.id);
+        if labels == "(disabled)" {
+            continue;
+        }
+        let marked = if map.is_remapped(spec.id) {
+            format!("{labels} *")
+        } else {
+            labels
+        };
+        rows.push((marked, spec.help));
+    }
 }
 
 #[cfg(test)]
@@ -779,6 +954,11 @@ mod tests {
             (Bind::CtrlG, Action::EditInEditor),
             (Bind::AltP, Action::CycleModel),
             (Bind::AltT, Action::ToggleThinking),
+            (Bind::CycleThinking, Action::CycleThinking),
+            (Bind::PasteImage, Action::PasteImage),
+            (Bind::CopyPrompt, Action::CopyPrompt),
+            (Bind::CopyLine, Action::CopyLine),
+            (Bind::Retry, Action::Retry),
         ] {
             let mut b = Bindings::default();
             assert_eq!(
@@ -787,6 +967,49 @@ mod tests {
                 "{bind:?} must hand control back so the loop can act"
             );
             assert_eq!(b.drain(), vec![action.clone()], "{bind:?}");
+        }
+    }
+
+    #[test]
+    fn line_at_cursor_picks_the_cursor_line_of_a_multiline_draft() {
+        let mut b = Bindings::default();
+        b.note_line("first\nsecond\nthird");
+        b.note_cursor("first\nsec".len());
+        assert_eq!(b.line_at_cursor(), "second");
+        b.note_cursor(0);
+        assert_eq!(b.line_at_cursor(), "first");
+        b.note_cursor("first\nsecond\nthird".len());
+        assert_eq!(b.line_at_cursor(), "third");
+        // A cursor past the end clamps; one that splits a character reads
+        // as line zero rather than panicking on the slice.
+        b.note_cursor(999);
+        assert_eq!(b.line_at_cursor(), "third");
+        b.note_line("é\nx");
+        b.note_cursor(1);
+        assert_eq!(b.line_at_cursor(), "é\nx".split('\n').next().unwrap());
+    }
+
+    #[test]
+    fn every_action_has_a_bind_and_vice_versa() {
+        // The keymap's prompt registrations dispatch through
+        // `Bind::from_action`; a drifted table would silently drop an
+        // action's chords, so the mapping is checked exhaustively against
+        // the action list.
+        use super::super::keymap;
+        for spec in keymap::action_specs() {
+            if spec.scope.fires_at_prompt() {
+                assert!(
+                    Bind::from_action(spec.id).is_some(),
+                    "{} has no prompt Bind",
+                    spec.name
+                );
+            } else {
+                assert!(
+                    Bind::from_action(spec.id).is_none(),
+                    "{} is turn-only but has a prompt Bind",
+                    spec.name
+                );
+            }
         }
     }
 
@@ -1048,11 +1271,22 @@ mod tests {
             "Ctrl+T",
             "Ctrl+O",
             "Ctrl+G",
+            "Ctrl+X Ctrl+E",
             "Ctrl+X Ctrl+K",
             "Esc, Esc",
             "Shift+Tab",
+            "Ctrl+V",
+            "F5",
+            "Alt+Shift+T",
+            "while a turn runs",
         ] {
             assert!(panel.contains(key), "{key} missing from the panel");
         }
+        // Default table: nothing remapped, no marker, no disabled section.
+        assert!(!panel.contains('*'), "no remaps are loaded in tests");
+        assert!(
+            !panel.contains("disabled by"),
+            "nothing is disabled by default"
+        );
     }
 }

@@ -1261,6 +1261,26 @@ no-op（工具名有增有减）；文件格式错误会在启动时报出字段
 `/tools` 按来源分组展示当前目录，并列出被禁用名字。文件每进程读一次
 ——修改后需重启。
 
+## 键位文件
+
+`~/.codesmith/keybindings.toml` 重映射 REPL 的键盘动作。它是一个扁平的
+TOML 映射：`app.*` 动作 id 对一个和弦字符串，或一个和弦数组；空数组表示
+禁用该动作：
+
+```toml
+app.tools.expand = "Ctrl+O"
+app.thinking.cycle = ["Alt+Shift+T", "Ctrl+X Ctrl+T"]
+app.tasks.toggle = []          # 禁用
+```
+
+动作表、和弦记法、以及各层能解码什么，见归属文档
+[KEYBINDINGS.md](./KEYBINDINGS.md)（`KEYBINDINGS_cn.md` 为中文对）。没有该文件
+即用编译在内的默认键位。内容有误 —— 未知动作 id、无法解析的和弦、同一层里
+一个和弦被两个动作争用 —— 会在 REPL 启动时带文件路径直接失败；某一层无法
+解码的和弦以 stderr 警告加载。`CODESMITH_KEYBINDINGS_FILE` 可覆盖文件路径
+（运维/测试）。文件每进程读一次 —— 修改后需重启。`/keybindings`（别名
+`/hotkeys`）打印生效表，重映射过的行带 `*` 标记。
+
 ## 功能开关
 
 功能开关位于 `[features]` 表之下，并跨 profile 合并。内置工具的默认值

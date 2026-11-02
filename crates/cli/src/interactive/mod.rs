@@ -28,6 +28,7 @@ pub mod bindings;
 pub mod commands;
 pub mod completion;
 pub mod inbox_journal;
+pub mod keymap;
 pub mod keys;
 pub mod path_index;
 pub mod plan_view;
@@ -199,6 +200,11 @@ pub async fn run_repl(
     // the grant set the approval path reads (in memory, so removing a rule
     // leaves no stale grant behind).
     commands::permission_cmds::apply_config_rules(&mut state);
+
+    // The user's keybinding overlay, before the editor is built from it.
+    // A missing file is the defaults; anything malformed fails loud here
+    // with the file's path (see `keymap`).
+    keymap::load_active().map_err(|message| anyhow::anyhow!(message))?;
 
     // Prompt-time keys record what they want here; the loop applies it once
     // `readline` returns (see `bindings` for why the handler cannot act
@@ -413,6 +419,20 @@ pub async fn run_repl(
                     Some(queued) if !queued.is_empty() => format!("{queued}\n{edited}"),
                     _ => edited,
                 });
+                continue;
+            }
+            // The copy pair needs the editor's mirrors, which `apply_action`
+            // cannot reach — the same reason EditInEditor is handled here.
+            if action == Action::CopyPrompt || action == Action::CopyLine {
+                let text = {
+                    let cell = Bindings::lock(&bindings);
+                    if action == Action::CopyPrompt {
+                        cell.snapshot().to_string()
+                    } else {
+                        cell.line_at_cursor().to_string()
+                    }
+                };
+                copy_draft_text(text).await;
                 continue;
             }
             if let Err(err) = apply_action(&mut state, action).await {
@@ -937,11 +957,18 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
     match action {
         Action::ToggleDetail => {
             state.tool_detail = !state.tool_detail;
+            let label = keymap::active().first_label(keymap::ActionId::ToolsExpand);
             if state.tool_detail {
-                println!("{}", "— tool detail expanded (Ctrl+O to collapse)".dimmed());
+                println!(
+                    "{}",
+                    format!("— tool detail expanded ({label} to collapse)").dimmed()
+                );
                 render::replay_turn_tool_detail(state);
             } else {
-                println!("{}", "— tool detail collapsed (Ctrl+O to expand)".dimmed());
+                println!(
+                    "{}",
+                    format!("— tool detail collapsed ({label} to expand)").dimmed()
+                );
             }
         }
         Action::ToggleTaskList => {
@@ -949,7 +976,8 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
             if state.show_tasks {
                 print_task_list(state).await;
             } else {
-                println!("{}", "— task list hidden (Ctrl+T)".dimmed());
+                let label = keymap::active().first_label(keymap::ActionId::TasksToggle);
+                println!("{}", format!("— task list hidden ({label})").dimmed());
             }
         }
         Action::Stashed => println!(
@@ -974,6 +1002,12 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
         },
         Action::CycleModel => cycle_model(state).await,
         Action::ToggleThinking => toggle_thinking(state),
+        Action::CycleThinking => cycle_thinking_level(state),
+        Action::Retry => {
+            // Same path as `/retry`: drop the last exchange, re-send it.
+            commands::debug_cmds::retry(state).await;
+        }
+        Action::PasteImage => paste_clipboard_image(state).await,
         Action::Help => {
             println!("{}", "keyboard shortcuts:".bold());
             println!("{}", bindings::help_panel().dimmed());
@@ -981,6 +1015,8 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
         Action::TakeBackQueue => println!("{}", "— nothing queued".dimmed()),
         // Handled by the caller, which has the prompt to restore.
         Action::EditInEditor => {}
+        // Handled by the caller, which owns the editor's mirrors.
+        Action::CopyPrompt | Action::CopyLine => {}
     }
     Ok(())
 }
@@ -1008,9 +1044,10 @@ async fn cycle_model(state: &mut ReplState) {
                     })
                     .await;
             }
+            let label = keymap::active().first_label(keymap::ActionId::ModelCycle);
             println!(
                 "{}",
-                format!("model → {next} (Alt+P toggles · /model picks any id)").dimmed()
+                format!("model → {next} ({label} toggles · /model picks any id)").dimmed()
             );
         }
         None => println!(
@@ -1035,10 +1072,104 @@ fn toggle_thinking(state: &mut ReplState) {
     };
     state.reasoning_effort = next;
     state.update_model_compaction_budget();
+    let label = keymap::active().first_label(keymap::ActionId::ThinkingToggle);
     println!(
         "{}",
-        format!("extended thinking {} (Alt+T)", next.short_label()).dimmed()
+        format!(
+            "extended thinking {} ({label}; the cycle key walks the ring)",
+            next.short_label()
+        )
+        .dimmed()
     );
+}
+
+/// `Alt+Shift+T`: walk the whole reasoning-effort ring — the toggle's two
+/// stops plus `max`, the session-only tier (`ReasoningEffort::cycle_next`).
+fn cycle_thinking_level(state: &mut ReplState) {
+    let next = state.reasoning_effort.cycle_next();
+    state.reasoning_effort = next;
+    state.update_model_compaction_budget();
+    let label = keymap::active().first_label(keymap::ActionId::ThinkingCycle);
+    println!(
+        "{}",
+        format!("thinking level {} ({label})", next.short_label()).dimmed()
+    );
+}
+
+/// The copy pair's shared body: clipboard tools are external processes, so
+/// the write runs under `spawn_blocking`.
+async fn copy_draft_text(text: String) {
+    if text.trim().is_empty() {
+        println!("{}", "— nothing to copy".dimmed());
+        return;
+    }
+    let chars = text.chars().count();
+    match tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&text)).await {
+        Ok(Ok(())) => println!("{}", format!("— copied {chars} char(s)").dimmed()),
+        Ok(Err(err)) => println!("{} {err}", "✗".red()),
+        Err(err) => println!("{} clipboard worker failed: {err}", "✗".red()),
+    }
+}
+
+/// `Ctrl+V`: pull an image off the clipboard, land it in the stable
+/// pasted-images directory, and queue it exactly as `/attach` would. The
+/// clipboard tool and the file write are blocking, so they run under
+/// `spawn_blocking`; the metadata precheck is inline, as in `/attach`.
+async fn paste_clipboard_image(state: &mut ReplState) {
+    let workspace = state.workspace.clone();
+    let pasted = tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
+        let png = crate::clipboard::read_image_png()?;
+        let dir = crate::media::clipboard_images_dir(&workspace);
+        std::fs::create_dir_all(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!("paste-{stamp}.png"));
+        std::fs::write(&path, &png).map_err(|err| format!("write {}: {err}", path.display()))?;
+        Ok(path)
+    })
+    .await;
+    let path = match pasted {
+        Ok(Ok(path)) => path,
+        Ok(Err(err)) => {
+            println!("{} {err}", "✗".red());
+            return;
+        }
+        Err(err) => {
+            println!("{} clipboard worker failed: {err}", "✗".red());
+            return;
+        }
+    };
+    use codesmith_agent_runtime::attachments::{AttachmentStore, MAX_ATTACHMENTS_PER_MESSAGE};
+    use codesmith_session::store::ContextReferenceSource;
+    let next_message = state.api_messages.len();
+    match AttachmentStore::precheck(&path) {
+        Ok((_, bytes)) => {
+            state.pending_attachments.push(path.clone());
+            println!(
+                "{}",
+                format!(
+                    "pasted image attached: {} ({bytes} bytes; {}/{} queued)",
+                    path.display(),
+                    state.pending_attachments.len(),
+                    MAX_ATTACHMENTS_PER_MESSAGE
+                )
+                .dimmed()
+            );
+        }
+        Err(err) => {
+            println!("{} pasted image refused: {err}", "✗".red());
+            state
+                .context_references
+                .push(crate::media::rejected_reference(
+                    &path,
+                    ContextReferenceSource::Attachment,
+                    next_message,
+                    &err.to_string(),
+                ));
+        }
+    }
 }
 
 /// The `Ctrl+T` panel: the model's own checklist, which otherwise only
@@ -1156,7 +1287,10 @@ fn print_banner(state: &ReplState) {
 type ReplEditor = rustyline::Editor<ReplHelper, rustyline::history::DefaultHistory>;
 
 /// Every prompt-time binding, as `(key sequence, action)`. The decision
-/// table itself lives in [`bindings::decide`]; this is only the key map.
+/// table itself lives in [`bindings::decide`]; the key map is generated
+/// from [`keymap::active`] (the compiled-in defaults overlaid with the
+/// user's `keybindings.toml`), plus the fixed keys that are deliberately
+/// not rebindable.
 ///
 /// Registering `Shift+Tab` also takes BackTab away from rustyline's default
 /// `Cmd::CompleteBackward`: custom bindings are looked up before the default
@@ -1168,38 +1302,23 @@ fn key_bindings() -> Vec<(rustyline::Event, Bind)> {
     fn one(code: KeyCode, modifiers: Modifiers) -> Event {
         Event::KeySeq(vec![KeyEvent(code, modifiers)])
     }
-    fn ctrl(c: char) -> Event {
-        one(KeyCode::Char(c), Modifiers::CTRL)
-    }
-    fn alt(c: char) -> Event {
-        one(KeyCode::Char(c), Modifiers::ALT)
-    }
-    fn ctrl_pair(first: char, second: char) -> Event {
-        Event::KeySeq(vec![
-            KeyEvent(KeyCode::Char(first), Modifiers::CTRL),
-            KeyEvent(KeyCode::Char(second), Modifiers::CTRL),
-        ])
-    }
 
-    vec![
-        (one(KeyCode::BackTab, Modifiers::NONE), Bind::ShiftTab),
+    // The keymap's prompt registrations, longest sequence first so a
+    // two-key chord wins its one-key prefix; turn-only actions have no
+    // prompt `Bind` and generate no row here.
+    let mut table = keymap::active()
+        .prompt_events()
+        .iter()
+        .filter_map(|(event, action)| Bind::from_action(*action).map(|bind| (event.clone(), bind)))
+        .collect::<Vec<_>>();
+    // Fixed keys: multi-press behaviours and typing guards that the remap
+    // table deliberately does not own.
+    table.extend([
         (one(KeyCode::Esc, Modifiers::NONE), Bind::Esc),
-        (ctrl('d'), Bind::CtrlD),
-        (ctrl('s'), Bind::CtrlS),
-        (ctrl('o'), Bind::CtrlO),
-        (ctrl('t'), Bind::CtrlT),
-        (ctrl('g'), Bind::CtrlG),
-        (ctrl_pair('x', 'k'), Bind::StopAll),
-        (alt('p'), Bind::AltP),
-        (alt('t'), Bind::AltT),
-        // Newline: Ctrl+J reaches every terminal; the modifier forms only
-        // fire where the terminal reports the modifier (see bindings.rs).
-        (ctrl('j'), Bind::Newline),
-        (one(KeyCode::Enter, Modifiers::ALT), Bind::Newline),
-        (one(KeyCode::Enter, Modifiers::SHIFT), Bind::Newline),
-        (one(KeyCode::Up, Modifiers::NONE), Bind::RecallDraft),
+        (one(KeyCode::Char('d'), Modifiers::CTRL), Bind::CtrlD),
         (one(KeyCode::Char('?'), Modifiers::NONE), Bind::Question),
-    ]
+    ]);
+    table
 }
 
 fn build_editor(

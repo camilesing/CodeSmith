@@ -162,8 +162,11 @@ this fork's users asked for. The ones worth knowing:
 - **`/effort`, `/autocompact`, `/usage`, `/tasks`, `/plugins`,
   `/reload-skills`, `/reload-plugins`, `/theme`, `/color`, `/statusline`,
   `/copy`, `/doctor`, `/debug`, `/release-notes`, `/terminal-setup`,
-  `/keybindings`** cover the model tier, the background view, the extension
-  surfaces, and the appearance/diagnostic odds and ends. `/permissions`
+  `/keybindings` (alias `/hotkeys`)** cover the model tier, the background
+  view, the extension surfaces, and the appearance/diagnostic odds and ends.
+  `/keybindings` prints the *active* table — defaults plus whatever
+  `~/.codesmith/keybindings.toml` remapped (marked `*`; see
+  [KEYBINDINGS.md](./KEYBINDINGS.md)). `/permissions`
   shows what runs without asking — session grants, persisted grants, trusted
   paths, and the `[sandbox] auto_allow` rules — and writes the persisted
   grant store (`/permissions allow "git status"` covers `git status -s` and
@@ -216,8 +219,7 @@ surface. `/fork` keeps its CodeSmith meaning — the same branch-and-switch
 `/branch` performs — because Claude Code's `/fork` is one of these: a
 detached background session.
 
-Also out of scope, with the reason: a keybindings configuration file (the
-bindings are compiled in; `/keybindings` is read-only), emoji shortcodes and
+Also out of scope, with the reason: emoji shortcodes and
 spell checking (both need data tables this REPL does not ship), the
 fullscreen renderer's transcript-viewer keys, and `/pr-comments` (Claude Code
 removed it in v2.1.91 with the advice to ask the model to read the comments —

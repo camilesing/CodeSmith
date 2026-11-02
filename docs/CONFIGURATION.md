@@ -1420,6 +1420,28 @@ malformed file fails startup with the offending field path. The
 the disabled names. The file is read once per process — restart after
 edits.
 
+## Keybindings File
+
+`~/.codesmith/keybindings.toml` remaps the REPL's keyboard actions. It is a
+flat TOML mapping of `app.*` action id to one chord string or an array of
+them; an empty array disables the action:
+
+```toml
+app.tools.expand = "Ctrl+O"
+app.thinking.cycle = ["Alt+Shift+T", "Ctrl+X Ctrl+T"]
+app.tasks.toggle = []          # disable
+```
+
+The action table, the chord notation, and what each layer can decode live
+in [KEYBINDINGS.md](./KEYBINDINGS.md) (the owning guide). A missing file
+means the compiled-in defaults. A malformed file — unknown action id,
+unparsable chord, one chord claimed by two actions in the same layer —
+fails REPL startup with the file's path; chords a layer cannot decode load
+with a stderr warning instead. `CODESMITH_KEYBINDINGS_FILE` overrides the
+file path (ops/tests). The file is read once per process — restart after
+edits. `/keybindings` (alias `/hotkeys`) prints the active table with
+remapped rows marked `*`.
+
 ## Feature Flags
 
 Feature flags live under the `[features]` table and are merged across profiles.

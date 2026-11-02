@@ -1207,11 +1207,18 @@ async fn handle_turn_key(
         TurnKey::ToggleDetail => {
             state.tool_detail = !state.tool_detail;
             view.clear_live();
+            let label = super::keymap::active().first_label(super::keymap::ActionId::ToolsExpand);
             if state.tool_detail {
-                println!("{}", "— tool detail expanded (Ctrl+O to collapse)".dimmed());
+                println!(
+                    "{}",
+                    format!("— tool detail expanded ({label} to collapse)").dimmed()
+                );
                 replay_turn_tool_detail(state);
             } else {
-                println!("{}", "— tool detail collapsed (Ctrl+O to expand)".dimmed());
+                println!(
+                    "{}",
+                    format!("— tool detail collapsed ({label} to expand)").dimmed()
+                );
             }
         }
         TurnKey::TaskList => {
@@ -1220,8 +1227,25 @@ async fn handle_turn_key(
             if state.show_tasks {
                 super::print_task_list(state).await;
             } else {
-                println!("{}", "— task list hidden (Ctrl+T)".dimmed());
+                let label =
+                    super::keymap::active().first_label(super::keymap::ActionId::TasksToggle);
+                println!("{}", format!("— task list hidden ({label})").dimmed());
             }
+        }
+        TurnKey::CycleThinking => {
+            // Same ring the prompt's Alt+Shift+T walks (`cycle_next`);
+            // mid-turn it applies from the next request the engine builds.
+            state.reasoning_effort = state.reasoning_effort.cycle_next();
+            state.update_model_compaction_budget();
+            view.clear_live();
+            println!(
+                "{}",
+                format!(
+                    "thinking level {} — applies from the next turn",
+                    state.reasoning_effort.short_label()
+                )
+                .dimmed()
+            );
         }
         TurnKey::CycleMode => {
             state.cycle_mode();

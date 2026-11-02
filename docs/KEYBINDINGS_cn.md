@@ -1,7 +1,8 @@
 # 键盘与交互参考
 
 REPL 在提示符处与回合运行中绑定的全部按键。`/help` 列出命令，本文件列出按键。
-空提示符下按 `?` 会在终端里打印同一张表，`/keybindings` 也可以重新打印。
+空提示符下按 `?` 会在终端里打印同一张表，`/keybindings`（别名 `/hotkeys`）也可以
+重新打印 —— 打印的是你的 `keybindings.toml` 实际生效的表，重映射过的行带 `*`。
 
 涉及两层：
 
@@ -11,6 +12,51 @@ REPL 在提示符处与回合运行中绑定的全部按键。`/help` 列出命�
 - **回合运行中**：一个小的字节解码器接管 stdin（仅关闭行缓冲与回显，`Ctrl+C`
   仍以中断信号到达），并喂给一个 composer：模型工作期间你可以继续输入、编辑、
   排队。
+
+## 自定义键位
+
+应用动作可以通过 `~/.codesmith/keybindings.toml` 重映射（文件由你自己创建；没有
+该文件即用默认键位）。它是一个扁平的 TOML 映射：动作 id 对一个和弦字符串，或
+一个和弦数组：
+
+```toml
+app.tools.expand = "Ctrl+O"
+app.thinking.cycle = ["Alt+Shift+T", "Ctrl+X Ctrl+T"]
+app.tasks.toggle = []          # 空数组表示禁用该动作
+```
+
+和弦名大小写不敏感，记法与本文件各表一致（`Ctrl+O`、`Alt+Shift+P`、
+`Shift+Tab`、`F5`、`Ctrl+X Ctrl+K`）。文件在 REPL 启动时读取一次；
+`CODESMITH_KEYBINDINGS_FILE` 可指向别处（运维/测试用）。内容有误 —— 未知动作
+id、无法解析的和弦、同一层里一个和弦被两个动作争用 —— 会在启动时带文件路径
+直接失败。某一层无法解码的和弦（见[终端需要具备什么](#终端需要具备什么)）则以
+警告加载，不会失败。
+
+可重绑定的动作及默认键位：
+
+| 动作 ID | 默认 | 生效层 | 含义 |
+| :- | :- | :- | :- |
+| `app.mode.cycle` | `Shift+Tab` | 两层 | 循环运行模式（agent · plan · yolo） |
+| `app.tools.expand` | `Ctrl+O` | 两层 | 切换工具调用详情折叠/展开 |
+| `app.tasks.toggle` | `Ctrl+T` | 两层 | 切换任务清单 |
+| `app.thinking.cycle` | `Alt+Shift+T` | 两层 | 循环思考级别（off · high · max） |
+| `app.stopAll` | `Ctrl+X Ctrl+K` | 两层 | 停掉全部后台工作（按两次） |
+| `app.model.cycle` | `Alt+P` | 提示符 | 切换模型（会话默认 ↔ 配置默认） |
+| `app.thinking.toggle` | `Alt+T` | 提示符 | 切换 extended thinking（off ↔ high） |
+| `app.editor.external` | `Ctrl+G`、`Ctrl+X Ctrl+E` | 提示符 | 用 `$VISUAL`/`$EDITOR` 编辑提示词 |
+| `app.clipboard.pasteImage` | `Ctrl+V` | 提示符 | 把剪贴板图片粘贴为附件 |
+| `app.clipboard.copyPrompt` | `Alt+Shift+C` | 提示符 | 复制整份提示词草稿 |
+| `app.clipboard.copyLine` | `Alt+Shift+L` | 提示符 | 复制光标所在行 |
+| `app.retry` | `F5`、`Alt+R` | 提示符 | 重试上一条请求（同 `/retry`） |
+| `app.draft.stash` | `Ctrl+S` | 提示符 | 暂存草稿；空提示符下再按一次恢复 |
+| `app.prompt.newline` | `Ctrl+J`、`Alt+Enter` | 提示符 | 插入换行（多行提示词） |
+| `app.prompt.recall` | `Up` | 提示符 | 取回被清空的草稿，再取回排队消息，最后是历史 |
+| `app.queue.sendNow` | `Ctrl+S`、`Ctrl+Enter`、`Ctrl+X Ctrl+S` | 回合中 | 立即把排队内容发给正在运行的回合 |
+| `app.queue.background` | `Ctrl+B` | 回合中 | 把正在运行的 shell 转后台 |
+
+刻意不可重绑定的：`Ctrl+C`、`Ctrl+D`、`Esc`、`?`、`Tab`、`Enter` 以及 readline
+编辑键（下文整张编辑表）—— 它们本身就是输入与中断面。回合中的绑定优先于
+composer 对同样字节的用法：把某个动作绑到 `Ctrl+E` 会让回合中的 Home 失效。
 
 ## 回合运行中（composer）
 
@@ -27,6 +73,7 @@ REPL 在提示符处与回合运行中绑定的全部按键。`/help` 列出命�
 | `Ctrl+O` | 切换工具调用详情的折叠/展开 |
 | `Ctrl+T` | 切换模型的任务清单 |
 | `Shift+Tab` | 循环运行模式（从下一轮生效） |
+| `Alt+Shift+T` | 循环思考级别（off · high · max；从下一轮生效） |
 | `Up` | composer 为空时，取回最新一条已排队消息继续编辑 |
 | `Down · Tab · 补全` | 回合中不可用（没有历史、没有补全） |
 | `Ctrl+C` | 中断回合；按两次退出 |
@@ -51,6 +98,11 @@ REPL 在提示符处与回合运行中绑定的全部按键。`/help` 列出命�
 | `Ctrl+X Ctrl+K` | 停掉全部后台工作（3 秒内按两次） |
 | `Alt+P`（`⌥P`） | 在本会话模型与配置的默认模型之间切换 —— `/model <id>` 可选任意模型 |
 | `Alt+T`（`⌥T`） | 切换 extended thinking（off ↔ high） |
+| `Alt+Shift+T` | 循环完整思考级别环（off · high · max —— `max` 仅本会话有效） |
+| `Ctrl+V` | 把剪贴板图片粘贴为下一条消息的附件（需要粘贴工具 —— 见终端表） |
+| `Alt+Shift+C` | 把整份提示词草稿复制到剪贴板 |
+| `Alt+Shift+L` | 把光标所在行复制到剪贴板 |
+| `F5` / `Alt+R` | 重试上一条请求（同 `/retry`：丢弃上一轮交互，重发文本） |
 | `Shift+Tab` | 循环运行模式：`agent → plan → yolo`（启用对应 feature 时还有 `coordinator`）。不打印任何东西 —— 状态行的 `🚥` 段原地翻转，草稿的文字与光标保持原样 |
 | `Esc` | vi 插入模式下：退出插入模式 |
 | `Esc`, `Esc` | 行内有文本：清空草稿并保留给 `Up`。空提示符：无操作（rewind 菜单未实现；文件用 `/rewind`，对话用 `/undo`） |
@@ -75,6 +127,7 @@ Option 作为 Meta 发送；macOS 上这是终端设置 —— 见 `/terminal-se
 | `Alt+D` | 删到词尾 |
 | `Ctrl+_` | 撤销上一次编辑 |
 | `Ctrl+T`（emacs 转置） | 已被占用：`Ctrl+T` 是任务清单 |
+| `Ctrl+V`（字符引用插入） | 已被占用：`Ctrl+V` 粘贴剪贴板图片 |
 
 ### 多行输入
 
@@ -82,8 +135,11 @@ Option 作为 Meta 发送；macOS 上这是终端设置 —— 见 `/terminal-se
 | :- | :- |
 | 行尾 `\` 后按 `Enter` | 所有终端。`\` 只是标记，发送前会移除 |
 | `Ctrl+J` | 所有终端 |
-| `Shift+Enter` / `Alt+Enter` | 仅在把修饰键随 Enter 上报的终端 |
+| `Alt+Enter` | 把 Option/Alt 与 Enter 作为 `ESC CR` 发送的终端 |
 | 粘贴多行文本 | 所有终端（括号粘贴）；换行会保留 |
+
+`Shift+Enter` 不在绑定里：真实终端发出的任何序列都无法被 rustyline 解码成它，
+永远到不了处理器。`Ctrl+J` 与行尾 `\` 是通用写法。
 
 ### 历史
 
@@ -135,16 +191,17 @@ rustyline 14 没有向按键处理器暴露任何可用于退出 vi 插入模式
 | :- | :- |
 | `Shift+Tab` | 终端需发送 `ESC [ Z`（Terminal.app、iTerm2、tmux 默认如此）；kitty 协议的 `CSI 1;2Z` 不被 rustyline 14 解析 |
 | `Alt`/`Option` 组合键 | 终端里把 Option 设为 Meta（`/terminal-setup` 会打印各终端的设置项） |
-| `Ctrl+Enter` | 把修饰键随 Enter 上报的终端；通用写法是 `Ctrl+X Ctrl+S` |
-| `Shift+Enter` | 同上；`Ctrl+J` 与行尾 `\` 到处可用 |
-| composer、回合中按键 | 需要真实 TTY。管道输入（`codesmith < file`）按设计让回合中的按键捕获保持惰性 |
-| `/copy`、粘贴图片 | `PATH` 上有剪贴板工具（`pbcopy`、`wl-copy`、`xclip`、`clip`）；找不到时命令会指明要装什么 |
+| `Ctrl+Enter`（回合中） | 把修饰键随 Enter 上报的 CSI-u 终端；通用写法是 `Ctrl+X Ctrl+S` |
+| `Ctrl+Shift+<键>` | 任何层都不可解码：终端发送的字节与 `Ctrl+<键>` 相同 —— 此类和弦在加载时即被拒绝 |
+| `Ctrl+Enter`、`Shift+Enter`（提示符处） | 提示符层不可解码（rustyline 14 无 kitty 键盘协议）；以警告加载，在提示符处永不触发 |
+| composer、回合中按键 | 需要真实 TTY。管道输入（`codesmith < file`）按设计让回合中的按键捕获保持惰性；Windows 上按键捕获恒为惰性 |
+| `/copy`、复制键 | `PATH` 上有剪贴板文本工具（`pbcopy`、`wl-copy`、`xclip`、`clip`）；找不到时按键会指明要装什么 |
+| `Ctrl+V` 粘贴图片 | `PATH` 上有图片剪贴板工具 —— `pngpaste`（macOS）、`wl-paste`（Wayland）或 `xclip`（X11）；报错会指明缺哪个 |
 
 ## 这里没有绑定
 
-- 块状可视模式（Claude Code vim 模式里的 `Ctrl+V`）。
-- 键位配置文件：绑定是编译进去的，`/keybindings` 是只读表（唯一的键盘设置是
-  `/config editor_mode`）。
+- 块状可视模式（Claude Code vim 模式里的 `Ctrl+V` —— 我们的 `Ctrl+V` 用来粘贴
+  图片）。
 - 全屏渲染专属交互（transcript viewer 的 `{`/`}`、鼠标支持、`/scroll-speed`、
   `/focus`）。
 - 语音听写。

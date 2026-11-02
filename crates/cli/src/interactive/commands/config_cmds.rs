@@ -501,9 +501,9 @@ pub fn lsp(state: &ReplState) {
     }
 }
 
-/// `/keybindings` — the prompt-time key table. Read-only: the bindings are
-/// compiled in (see `interactive::bindings` for what is and is not
-/// rebindable).
+/// `/keybindings` — the active key table: the compiled-in defaults plus
+/// whatever `~/.codesmith/keybindings.toml` remapped (marked `*`). The
+/// rebindable `app.*` action ids are listed in `interactive::keymap`.
 pub fn keybindings() {
     println!("{}", "keyboard shortcuts:".bold());
     println!("{}", crate::interactive::bindings::help_panel().dimmed());
