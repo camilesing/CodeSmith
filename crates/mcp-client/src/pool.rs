@@ -6224,7 +6224,7 @@ mod tests {
                     } else if request.starts_with("POST /messages ") {
                         post_seen.store(true, AtomicOrdering::SeqCst);
                         socket
-                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                             .await
                             .unwrap();
                     }
@@ -6316,7 +6316,7 @@ mod tests {
                     } else if request.starts_with("POST /messages ") {
                         post_seen.store(true, AtomicOrdering::SeqCst);
                         socket
-                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                             .await
                             .unwrap();
                     }
@@ -6417,7 +6417,7 @@ mod tests {
                             post_header_seen.store(true, AtomicOrdering::SeqCst);
                         }
                         socket
-                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                             .await
                             .unwrap();
                     }
@@ -6882,7 +6882,9 @@ mod tests {
                     }
 
                     socket
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
                         .await
                         .unwrap();
 
@@ -7029,7 +7031,7 @@ mod tests {
             );
 
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await
                 .unwrap();
         });
@@ -7096,7 +7098,7 @@ mod tests {
             }
 
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await
                 .unwrap();
         });
