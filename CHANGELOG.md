@@ -34,6 +34,16 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
+- **Sub-agent execution limits aligned with the main turn** — the blanket
+  30-second cap on delegated tool calls is gone: each tool bounds its own
+  execution exactly as in the main turn (`exec_shell` via `timeout_ms`,
+  120s default / 600s max), and cancelling the child still kills a long
+  call. A child response's `max_tokens` is now derived from the provider
+  and model (`effective_max_output_tokens_for_provider`, up to 65 536,
+  honouring `CODESMITH_MAX_OUTPUT_TOKENS`) instead of a flat 4096 — an
+  implementer's single large `write_file` no longer trips the truncation
+  gate. The model-stream idle watchdog (`[subagents] api_timeout_secs`)
+  is unchanged.
 - **ACP sessions idle-wake** — a background sub-agent finishing while the
   editor session sits idle now synthesizes the next turn there too (the
   goal round driver likewise). A queued `session/prompt` is completed only

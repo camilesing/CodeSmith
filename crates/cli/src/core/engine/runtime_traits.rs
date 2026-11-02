@@ -202,6 +202,7 @@ impl HostServices for super::EngineHost {
         )
         .with_role_models(req.config.subagent_model_overrides.clone())
         .with_auto_route(req.config.auto_route.clone())
+        .with_api_provider(self.api_provider)
         .with_auto_model(req.session.auto_model)
         .with_reasoning_effort(
             req.session.reasoning_effort.clone(),
@@ -403,6 +404,7 @@ impl HostServices for super::EngineHost {
                         )
                         .with_role_models(config.subagent_model_overrides.clone())
                         .with_auto_route(config.auto_route.clone())
+                        .with_api_provider(self.api_provider)
                         .with_auto_model(session.auto_model)
                         .with_reasoning_effort(
                             session.reasoning_effort.clone(),
@@ -496,6 +498,7 @@ impl HostServices for super::EngineHost {
                     )
                     .with_role_models(config.subagent_model_overrides.clone())
                     .with_auto_route(config.auto_route.clone())
+                    .with_api_provider(self.api_provider)
                     .with_auto_model(session.auto_model)
                     .with_reasoning_effort(
                         session.reasoning_effort.clone(),

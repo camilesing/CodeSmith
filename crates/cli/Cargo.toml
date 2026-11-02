@@ -103,6 +103,9 @@ zeroize = "1.8.2"
 # Enables agent-runtime's test-support mock module for this crate's unit
 # and integration tests.
 codesmith-agent-runtime = { workspace = true, features = ["test-support"] }
+# Paused tokio time (`#[tokio::test(start_paused = true)]`) for the
+# delegated-cap regression test — a >30s tool call must complete virtually.
+tokio = { workspace = true, features = ["test-util"] }
 pretty_assertions = "1.4"
 wiremock = "0.6"
 

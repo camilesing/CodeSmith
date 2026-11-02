@@ -224,11 +224,15 @@ default. Each retry widens the window by the session's
 Known limitations of a child's turn (by design): it carries no
 compaction or capacity gate, no approval prompt (its delegated tool
 surface refuses or asks path questions through the parent's UI
-instead), and no completion delivery for its own children; each
-delegated tool call is capped at 30 seconds and each response at 4096
-output tokens. `agent_send_input` messages are delivered in order at the
-child's next step boundary (`interrupt` is accepted for compatibility
-and no longer discards earlier queued input).
+instead), and no completion delivery for its own children. Execution
+limits are the main turn's: a delegated tool call has no blanket cap
+(`exec_shell` bounds itself via `timeout_ms`, 120s default / 600s max;
+cancelling the child stops a long call), and each response's
+`max_tokens` is derived from the provider and model the same way the
+main turn derives it (up to 65 536; the `CODESMITH_MAX_OUTPUT_TOKENS`
+override applies too). `agent_send_input` messages are delivered in
+order at the child's next step boundary (`interrupt` is accepted for
+compatibility and no longer discards earlier queued input).
 
 ## Lifecycle
 

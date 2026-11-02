@@ -287,6 +287,12 @@ pub struct EngineHost {
     /// flush cannot clobber another's — the runtime-thread manager (HTTP
     /// API threads, automations) does.
     pub policy_store: Option<codesmith_agent::policy::PolicyStore>,
+    /// The engine's API provider, set by `build_engine` so the sub-agent
+    /// runtimes this host builds derive `max_tokens` through the same
+    /// provider-aware path the main turn uses. `None` for hosts built
+    /// outside `build_engine` (embeds/tests) — their children fall back to
+    /// the provider-blind heuristic.
+    pub api_provider: Option<crate::config::ApiProvider>,
 }
 
 // Manual `Debug` (mirroring `RuntimeToolServices`): `subagent_api` /
@@ -311,6 +317,7 @@ impl std::fmt::Debug for EngineHost {
             .field("tool_catalog", &self.tool_catalog)
             .field("approval_router", &self.approval_router)
             .field("policy_store", &self.policy_store)
+            .field("api_provider", &self.api_provider)
             .finish()
     }
 }
@@ -356,6 +363,7 @@ impl Default for EngineHost {
             tool_catalog: Default::default(),
             approval_router: None,
             policy_store: None,
+            api_provider: None,
         }
     }
 }
@@ -1700,8 +1708,11 @@ pub fn build_engine(
 
     let api_provider = api_config.api_provider();
     // Wrap the wired host behind the `HostServices` trait object. The router
-    // rides the host so `spawn_subagent` can hand it to children.
+    // rides the host so `spawn_subagent` can hand it to children; so does the
+    // provider, so the sub-agent runtimes the host builds derive `max_tokens`
+    // the same way this engine's main turn does.
     host.approval_router = Some(Arc::clone(&approval_router));
+    host.api_provider = Some(api_provider);
     let host_concrete: Arc<EngineHost> = Arc::new(host);
     let host: Arc<dyn HostServices> = host_concrete.clone();
 

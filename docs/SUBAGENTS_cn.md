@@ -195,7 +195,10 @@ api_timeout_secs = 900  # 15 minutes; clamped to 1..=1800
 
 子代理 turn 的已知限制（刻意如此）：没有压缩与容量门、没有审批提示（其
 委托工具面直接拒绝，或经父级 UI 询问路径），也不向它自己的子代理投递
-完成项；每次委托工具调用上限 30 秒，每次回复上限 4096 输出 token。
+完成项。执行限额与主 turn 一致：委托工具调用没有统一上限（`exec_shell`
+经 `timeout_ms` 自管，默认 120 秒、上限 600 秒；取消子代理会终止长调用），
+每次回复的 `max_tokens` 按主 turn 相同的方式由 provider 与模型推导
+（上限 65 536；`CODESMITH_MAX_OUTPUT_TOKENS` 覆盖同样生效）。
 `agent_send_input` 的消息在子代理下一步边界按序投递（`interrupt` 为兼容
 保留，不再丢弃此前排队的输入）。
 

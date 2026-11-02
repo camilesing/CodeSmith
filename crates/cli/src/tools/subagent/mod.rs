@@ -104,32 +104,17 @@ fn release_resident_leases_for(agent_id: &str) {
 /// explicit budget. Callers that want a hard bound can override `max_steps` on
 /// the `SubAgentManager`.
 const DEFAULT_MAX_STEPS: u32 = u32::MAX;
-/// Wall-clock cap on one delegated tool call (the delegation policy's, not
-/// the turn loop's — the main turn has none). Kept from the retired child
-/// loop; lifting it is a separate decision (round-12 TODO-80 evaluation:
-/// drop it and let each tool's own bound — `exec_shell`'s `timeout_ms`,
-/// 120s default / 600s cap — govern, as the main turn does).
-///
-/// Known limitation: the timeout drops the *polling* future, not the work.
-/// A foreground `exec_shell` is a manager-tracked task
-/// (`execute_foreground_via_background`), so on timeout the process keeps
-/// running — until its own `timeout_ms` or completion — with nobody
-/// reading it, while the child is told the call timed out; a retry then
-/// runs two copies. Cancellation (`cancel_token`) does kill it.
-const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+// A delegated tool call has no blanket wall-clock cap (round-13 TODO-83
+// removed the retired 30s one): each tool bounds its own execution exactly
+// as in the main turn — `exec_shell` via `timeout_ms` (120s default, 600s
+// cap) — and cancellation through the context's token kills a long call
+// (the foreground poll loop watches it and calls `manager.kill`).
 /// Default idle watchdog window for a child's model streams — the
 /// fallback for `[subagents] api_timeout_secs`. Production runtimes set the
 /// field from config explicitly (#1806, #1808); this default exists for
 /// tests and stub runtimes.
 const DEFAULT_CHILD_STREAM_IDLE_TIMEOUT: Duration =
     Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS);
-/// `max_tokens` on every child request (the retired loop's value; the main
-/// turn's provider-derived cap — `effective_max_output_tokens_for_provider`,
-/// up to 65 536 — is not inherited). Known limitation: a child's single
-/// `write_file` above ~4 096 tokens trips the P0-2 truncation gate and must
-/// be split; round-12 TODO-80 evaluated deriving this from the provider the
-/// way the main turn does — a founder decision.
-const SUBAGENT_MAX_OUTPUT_TOKENS: u32 = 4096;
 /// Bound on queued `agent_send_input` messages a child has not yet read.
 const CHILD_INPUT_CAPACITY: usize = 64;
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -578,6 +563,12 @@ pub struct ForkedToolCall {
 pub struct SubAgentRuntime {
     pub client: LlmClientHandle,
     pub model: String,
+    /// The parent engine's API provider, so children derive `max_tokens` the
+    /// same way the main turn does (`effective_max_output_tokens_for_provider`).
+    /// `None` (embeds, tests) ⇒ the provider-blind heuristic
+    /// (`effective_max_output_tokens`). Propagated to descendants via the
+    /// runtime clone; hosts set it from the engine at construction.
+    pub api_provider: Option<crate::config::ApiProvider>,
     pub auto_model: bool,
     pub reasoning_effort: Option<String>,
     pub reasoning_effort_auto: bool,
@@ -727,6 +718,7 @@ impl SubAgentRuntime {
         Self {
             client,
             model,
+            api_provider: None,
             auto_model: false,
             reasoning_effort: None,
             reasoning_effort_auto: false,
@@ -926,6 +918,16 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Attach the parent engine's API provider. Set by the engine host at
+    /// every `SubAgentRuntime::new` construction site; children then derive
+    /// `max_tokens` through the same provider-aware path the main turn uses.
+    /// `None` keeps the provider-blind heuristic.
+    #[must_use]
+    pub fn with_api_provider(mut self, api_provider: Option<crate::config::ApiProvider>) -> Self {
+        self.api_provider = api_provider;
+        self
+    }
+
     /// Attach the resolved `[workflow]` limits (run timeout + default
     /// agent cap) from the engine config so the `workflow` tool sees the
     /// same bounds at every spawn depth.
@@ -985,6 +987,7 @@ impl SubAgentRuntime {
         Self {
             client: self.client.clone(),
             model: self.model.clone(),
+            api_provider: self.api_provider,
             auto_model: self.auto_model,
             reasoning_effort: self.reasoning_effort.clone(),
             reasoning_effort_auto: self.reasoning_effort_auto,
@@ -5322,7 +5325,15 @@ async fn run_subagent(
         client: runtime.client.clone(),
         model: runtime.model.clone(),
         reasoning_effort: runtime.reasoning_effort.clone(),
-        max_tokens: SUBAGENT_MAX_OUTPUT_TOKENS,
+        max_tokens: runtime.api_provider.map_or_else(
+            || codesmith_agent_runtime::engine::effective_max_output_tokens(&runtime.model),
+            |provider| {
+                codesmith_agent_runtime::engine::effective_max_output_tokens_for_provider(
+                    provider,
+                    &runtime.model,
+                )
+            },
+        ),
         max_steps,
         system: request_system,
         messages,
@@ -7097,8 +7108,10 @@ impl DelegationPolicy {
 /// [`DelegationPolicy`]. Metadata is the inner spec's, except that the
 /// loop is told every call is approval-free and names no escaped path —
 /// the child never prompts through the loop; `execute` admits (or refuses,
-/// or asks about the path) itself, then runs the inner spec under the
-/// delegated-call cap.
+/// or asks about the path) itself, then runs the inner spec under its own
+/// bounds (the same self-managed execution limits — e.g. `exec_shell`'s
+/// `timeout_ms` — the main turn's tools have; no blanket delegated-call
+/// cap). Cancellation through the context's token stops a long call.
 struct DelegatedTool {
     inner: Arc<dyn ToolSpec>,
     policy: Arc<DelegationPolicy>,
@@ -7174,11 +7187,7 @@ impl ToolSpec for DelegatedTool {
         self.policy
             .admit(self.inner.as_ref(), &input, context)
             .await?;
-        tokio::time::timeout(TOOL_TIMEOUT, self.inner.execute(input, context))
-            .await
-            .unwrap_or(Err(ToolError::Timeout {
-                seconds: TOOL_TIMEOUT.as_secs(),
-            }))
+        self.inner.execute(input, context).await
     }
 }
 

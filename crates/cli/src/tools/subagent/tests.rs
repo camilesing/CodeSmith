@@ -2636,6 +2636,7 @@ fn stub_runtime() -> SubAgentRuntime {
     SubAgentRuntime {
         client: stub_client(),
         model: "deepseek-v4-flash".to_string(),
+        api_provider: None,
         auto_model: false,
         reasoning_effort: None,
         reasoning_effort_auto: false,
@@ -4393,4 +4394,112 @@ async fn child_turn_uses_the_session_turn_executor() {
         settled.status
     );
     assert_eq!(mock.call_count(), 0, "nothing was sent");
+}
+
+// ---------------------------------------------------------------------------
+// Delegation limits align with the main turn (round 13, TODO-83): no blanket
+// delegated-call timeout (tools bound their own execution, `exec_shell` via
+// `timeout_ms`), and a child's `max_tokens` derived the way the main turn
+// derives it — provider-aware, not a fixed 4096.
+// ---------------------------------------------------------------------------
+
+/// A stub tool whose only job is to outlive the retired 30s delegated-call
+/// cap. Paused tokio time makes the 31s virtual.
+struct SlowProbeTool;
+#[async_trait::async_trait]
+impl codesmith_agent_runtime::tools::spec::ToolSpec for SlowProbeTool {
+    fn name(&self) -> &str {
+        "slow_probe"
+    }
+    fn description(&self) -> &str {
+        "sleeps past the retired delegated-call cap"
+    }
+    fn input_schema(&self) -> Value {
+        serde_json::json!({})
+    }
+    fn capabilities(&self) -> Vec<codesmith_agent_runtime::tools::spec::ToolCapability> {
+        Vec::new()
+    }
+    async fn execute(
+        &self,
+        _input: Value,
+        _context: &codesmith_agent_runtime::tools::spec::ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        tokio::time::sleep(Duration::from_secs(31)).await;
+        Ok(ToolResult::success("finally done"))
+    }
+}
+
+/// A delegated call older than 30 seconds runs to completion: the wrapper
+/// cap is gone, and the tool's own bound (here: none; in production
+/// `exec_shell`'s `timeout_ms`) governs exactly as it does in the main turn.
+/// Cancellation remains the way to stop a long delegated call.
+#[tokio::test(start_paused = true)]
+async fn a_delegated_call_older_than_30s_runs_to_completion() {
+    let workspace = std::env::temp_dir().join("codesmith-test-delegated-cap");
+    let context = ToolContext::new(workspace);
+    let tool = DelegatedTool {
+        inner: std::sync::Arc::new(SlowProbeTool),
+        policy: std::sync::Arc::new(DelegationPolicy {
+            agent_id: "agent_delegated_cap".to_string(),
+            agent_type: SubAgentType::Implementer,
+            allowed_tools: None,
+            auto_approve: true,
+            path_ask: None,
+            asks: std::sync::atomic::AtomicU64::new(0),
+        }),
+    };
+    let result = tool
+        .execute(serde_json::json!({}), &context)
+        .await
+        .expect("the delegated call completes");
+    assert!(result.success);
+    assert_eq!(result.content, "finally done");
+}
+
+/// A child request carries the provider-derived `max_tokens` — the same
+/// `effective_max_output_tokens_for_provider` the main turn uses, not the
+/// retired flat 4096. The assertion recomputes the expectation under the
+/// same env, so an env override applies to both sides.
+#[tokio::test]
+async fn a_child_request_carries_the_provider_derived_max_tokens() {
+    use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
+
+    const MODEL: &str = "claude-sonnet-4-20250514";
+    let workspace = tempdir().expect("workspace");
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::simple_text_turn("done")]));
+    let mut runtime = stub_runtime().background_runtime();
+    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.context.auto_approve = true;
+    runtime.client = mock.clone();
+    runtime.model = MODEL.to_string();
+    runtime.api_provider = Some(crate::config::ApiProvider::Anthropic);
+
+    let (_input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+    let result = run_subagent(
+        &runtime,
+        "agent_max_tokens_probe".to_string(),
+        SubAgentType::General,
+        "say done".to_string(),
+        make_assignment(),
+        None,
+        false,
+        None,
+        std::time::Instant::now(),
+        DEFAULT_MAX_STEPS,
+        input_rx,
+    )
+    .await
+    .expect("child run");
+
+    assert_eq!(result.status, SubAgentStatus::Completed, "{result:?}");
+    let request = mock.last_request().expect("one child model request");
+    assert_eq!(
+        request.max_tokens,
+        codesmith_agent_runtime::engine::effective_max_output_tokens_for_provider(
+            crate::config::ApiProvider::Anthropic,
+            MODEL
+        ),
+        "the child derives max_tokens the same way the main turn does"
+    );
 }
