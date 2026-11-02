@@ -8,6 +8,9 @@ categories = ["command-line-utilities", "development-tools"]
 license.workspace = true
 repository.workspace = true
 description = "Agentic terminal coding agent for open-weight models"
+# Two `[[bin]]`s below; `cargo run -p codesmith-cli` (CI's eval harness, the
+# operations runbook) must pick the product binary, not the launcher.
+default-run = "codesmith"
 
 [[bin]]
 name = "codesmith"

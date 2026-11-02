@@ -61,10 +61,10 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
     let mut cmd = tokio::process::Command::new(&shell);
     // Windows: cmd.exe does not follow MSVCRT quoting rules, so `.arg()`
     // (which applies them) mangles commands containing quotes, `&`, `|`,
-    // `%`, or `&&`/`||` chains — pass the command raw.
+    // `%`, or `&&`/`||` chains — pass the command raw (tokio's own
+    // `raw_arg`; the std `CommandExt` one is for `std::process::Command`).
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         cmd.arg("/C").raw_arg(command);
     }
     #[cfg(not(windows))]

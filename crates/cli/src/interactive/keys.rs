@@ -21,6 +21,13 @@
 //!   sequence split across two reads by the terminal would lose its prefix.
 //! - Non-TTY stdin (or a termios failure) leaves the input inert; the
 //!   composer is then unavailable and `/expand` remains the detail view.
+//! - No Windows producer: the `imp` there is an inert tap (no termios, no
+//!   console input path yet), so on that platform nothing in this module
+//!   constructs a key — the decoder, paste markers and `TurnKey` variants
+//!   are reachable only through the Unix tap. The composer that consumes
+//!   them compiles everywhere, hence the allowance below rather than a
+//!   `cfg(unix)` cascade through `render.rs`.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 /// Keys the tap reports while a turn runs.
 #[derive(Debug, Clone, PartialEq, Eq)]

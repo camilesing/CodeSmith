@@ -73,10 +73,11 @@ pub fn get_abi_version() -> Option<i32> {
     }
 }
 
-// Landlock syscall constants (not yet in libc crate). The access-right list
-// mirrors the kernel uapi; rights not folded into the READ/WRITE combinations
-// below stay as ABI reference (they are never granted by our rule
-// translation — see `from_policy`).
+// Landlock syscall constants (not yet in libc crate). Only the access rights
+// our rule translation folds into the READ/WRITE combinations below are
+// defined; the uapi bits it never grants (MAKE_CHAR = 1<<6, MAKE_SOCK = 1<<9,
+// MAKE_FIFO = 1<<10, MAKE_BLOCK = 1<<11, REFER = 1<<13) are listed here for
+// reference instead of carried as dead constants — see `from_policy`.
 #[cfg(target_os = "linux")]
 const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1 << 0;
 
@@ -93,26 +94,11 @@ const LANDLOCK_ACCESS_FS_REMOVE_DIR: u64 = 1 << 4;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_REMOVE_FILE: u64 = 1 << 5;
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
-const LANDLOCK_ACCESS_FS_MAKE_CHAR: u64 = 1 << 6;
-#[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_MAKE_DIR: u64 = 1 << 7;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_MAKE_REG: u64 = 1 << 8;
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
-const LANDLOCK_ACCESS_FS_MAKE_SOCK: u64 = 1 << 9;
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
-#[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_TRUNCATE: u64 = 1 << 14;
 
@@ -160,19 +146,24 @@ const LANDLOCK_RULE_PATH_BENEATH: u32 = 1;
 
 /// A configured Landlock sandbox
 ///
-/// Crate-private by design: `apply()` irreversibly restricts the calling
-/// thread and everything it subsequently spawns, so the only legitimate
-/// call site is between fork and exec — the `pre_exec` closure installed by
-/// `install_sandbox_preexec` (shell_manager) and reached through the
-/// `ExecEnv::landlock` handle built by `SandboxManager::prepare_landlock`.
-/// The ruleset is created and fully populated with rules in the parent by
+/// `apply()` irreversibly restricts the calling thread and everything it
+/// subsequently spawns, so the only legitimate call site is between fork
+/// and exec — the `pre_exec` closure installed by
+/// `install_sandbox_preexec` (`codesmith-agent-runtime::shell_manager`,
+/// the in-child half of an [`ExecEnv`](super::ExecEnv)) and reached
+/// through the `ExecEnv::landlock` handle built by
+/// `SandboxManager::prepare_landlock`. The type and `apply` are public
+/// because that consumer lives in the kernel crate; the constructor stays
+/// crate-private (`from_policy`, reached only via `SandboxManager::prepare`),
+/// so a foreign caller can never build one — it can only apply the ruleset
+/// the sandbox plane already derived from the policy. The ruleset is
+/// created and fully populated with rules in the parent by
 /// [`from_policy`](Self::from_policy); only `prctl` +
 /// `landlock_restrict_self` run post-fork, both async-signal-safe raw
-/// syscalls. Keeping the surface crate-private prevents a caller from
-/// applying it to the long-lived agent runtime thread by mistake.
+/// syscalls.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
-pub(crate) struct LandlockSandbox {
+pub struct LandlockSandbox {
     /// Owned descriptor: `Drop` closes it on every path — including the
     /// `try_from` error branch in the constructor — instead of relying on
     /// a manual `Drop` impl plus ad-hoc closes.
@@ -370,8 +361,10 @@ impl LandlockSandbox {
     ///
     /// WARNING: This is irreversible for the current process! Intended to
     /// run between fork and exec (or inside a `pre_exec` closure) — never
-    /// on a long-lived runtime thread.
-    pub(crate) fn apply(&self) -> std::io::Result<()> {
+    /// on a long-lived runtime thread. Public for the kernel crate's
+    /// `install_sandbox_preexec`; see the type-level doc for why that is
+    /// the only caller.
+    pub fn apply(&self) -> std::io::Result<()> {
         // First, drop privileges using prctl
         // Safety: prctl call uses constant arguments and does not access memory.
         let result = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };

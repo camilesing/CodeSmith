@@ -5160,7 +5160,6 @@ modle = "x"
     use std::collections::HashMap;
     use std::env;
     use std::ffi::OsString;
-    #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // GHSA-72w5-pf8h-xfp4 — regression: `allow_shell` must be opt-in.

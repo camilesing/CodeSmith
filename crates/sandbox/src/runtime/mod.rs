@@ -935,10 +935,11 @@ pub struct ExecEnv {
 
     /// Prepared Landlock ruleset for Linux spawns: created and fully
     /// populated with rules in the parent at `prepare` time, applied only
-    /// between fork and exec (`install_sandbox_preexec`). `None` when this
+    /// between fork and exec by the kernel crate's `install_sandbox_preexec`
+    /// (`codesmith-agent-runtime::shell_manager`). `None` when this
     /// environment is not Landlock-confined.
     #[cfg(target_os = "linux")]
-    pub(crate) landlock: Option<std::sync::Arc<landlock::LandlockSandbox>>,
+    pub landlock: Option<std::sync::Arc<landlock::LandlockSandbox>>,
 }
 
 impl ExecEnv {

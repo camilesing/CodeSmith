@@ -26,7 +26,9 @@ pub mod runtime;
 
 pub mod sanitization;
 pub mod shell_dispatcher;
-#[cfg(test)]
+// Only the Seatbelt tests mutate HOME / CARGO_HOME today; on the other
+// platforms the lock would be dead code under `-D warnings`.
+#[cfg(all(test, target_os = "macos"))]
 mod test_support;
 
 pub use runtime::{
