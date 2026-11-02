@@ -106,7 +106,16 @@ fn release_resident_leases_for(agent_id: &str) {
 const DEFAULT_MAX_STEPS: u32 = u32::MAX;
 /// Wall-clock cap on one delegated tool call (the delegation policy's, not
 /// the turn loop's — the main turn has none). Kept from the retired child
-/// loop; lifting it is a separate decision.
+/// loop; lifting it is a separate decision (round-12 TODO-80 evaluation:
+/// drop it and let each tool's own bound — `exec_shell`'s `timeout_ms`,
+/// 120s default / 600s cap — govern, as the main turn does).
+///
+/// Known limitation: the timeout drops the *polling* future, not the work.
+/// A foreground `exec_shell` is a manager-tracked task
+/// (`execute_foreground_via_background`), so on timeout the process keeps
+/// running — until its own `timeout_ms` or completion — with nobody
+/// reading it, while the child is told the call timed out; a retry then
+/// runs two copies. Cancellation (`cancel_token`) does kill it.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default idle watchdog window for a child's model streams — the
 /// fallback for `[subagents] api_timeout_secs`. Production runtimes set the
@@ -115,7 +124,11 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_CHILD_STREAM_IDLE_TIMEOUT: Duration =
     Duration::from_secs(crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS);
 /// `max_tokens` on every child request (the retired loop's value; the main
-/// turn's provider-derived cap is not inherited).
+/// turn's provider-derived cap — `effective_max_output_tokens_for_provider`,
+/// up to 65 536 — is not inherited). Known limitation: a child's single
+/// `write_file` above ~4 096 tokens trips the P0-2 truncation gate and must
+/// be split; round-12 TODO-80 evaluated deriving this from the provider the
+/// way the main turn does — a founder decision.
 const SUBAGENT_MAX_OUTPUT_TOKENS: u32 = 4096;
 /// Bound on queued `agent_send_input` messages a child has not yet read.
 const CHILD_INPUT_CAPACITY: usize = 64;
