@@ -70,6 +70,11 @@ Linux 上被跳过，指向一条并不运行的 CNB 镜像车道——见下文
 "CNB Cool 镜像"一节。Linux 的 clippy 和 fmt 有独立的 GitHub
 承载方：`lint` 作业在 `ubuntu-latest` 上运行。
 
+所有 CI 车道都用 `rust-toolchain.toml` 钉住的工具链构建：
+`dtolnay/rust-toolchain` 步骤只提供 rustup，后续每个 cargo/rustc
+步骤由 rustup 解析该钉住版本（首次使用时自动安装），因此本地与
+CI 的构建版本天然一致——详见该文件的头部注释。
+
 `publish-crates.sh dry-run` 会对没有未发布工作区依赖的 crate 执行
 完整的 `cargo publish --dry-run`，并对依赖工作区的 crate 执行打包
 预检。这样既避免了 crates.io 尚未包含新工作区版本时产生的误报，

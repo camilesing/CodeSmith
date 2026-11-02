@@ -67,6 +67,12 @@ Linux while pointing at a CNB mirror lane that does not operate — see
 "CNB Cool mirror" below. Linux clippy and fmt have their own GitHub carrier
 in the `lint` job on `ubuntu-latest`.
 
+Every CI lane builds with the toolchain pinned in `rust-toolchain.toml`:
+the `dtolnay/rust-toolchain` step only supplies rustup, and rustup resolves
+that pin for each later cargo/rustc step (installing it on first use), so
+local and CI builds are the same version by construction — see the header
+comment in that file.
+
 `publish-crates.sh dry-run` performs a full `cargo publish --dry-run` for crates
 without unpublished workspace dependencies and a packaging preflight for dependent
 workspace crates. That avoids false negatives from crates.io not yet containing the
