@@ -1,20 +1,29 @@
-//! Idle wake — the op loop's synthesized next turn (round 10 TODO-69).
+//! Idle wake — the op loop's synthesized next turn (round 10 TODO-69;
+//! inbox vocabulary P1-1).
+//!
+//! Under the unified inbox vocabulary (`engine::inbox`), this module is the
+//! **Followup wake**: when a wakeup-flagged inbox entry (a sub-agent or
+//! shell-job completion — the producers registered in
+//! [`followup_wake_pending`](super::inbox::followup_wake_pending)) lands
+//! while no turn is running, the engine synthesizes the next turn so the
+//! entry is delivered at its target.
 //!
 //! The seam's three roles:
 //!
 //! - **signal** — [`crate::subagent::SubAgentCompletionSender::send`] pokes
 //!   the engine's `Arc<Notify>` after enqueueing a completion. The
 //!   completion stays queued in the parent-completion channel; this is a
-//!   side-band signal, not a second queue (no inbox framework). A poke that
-//!   lands while a turn is running leaves a stored permit; the next idle
-//!   wait consumes it and re-checks the channel, where the running turn's
-//!   own drains have usually already consumed the completion — the wake is
-//!   then a silent no-op.
+//!   side-band signal, not a second queue. A poke that lands while the
+//!   loop is busy (a turn, or a maintenance op) is **latched** — the
+//!   stored permit survives the window and the next idle wait consumes it,
+//!   replaying the wake at the convergence point (regression pinned in the
+//!   cli engine tests).
 //! - **decision** — [`Engine::idle_wake_op`]: synthesize only when the host
 //!   opted in (`EngineConfig::idle_wake`), no op is waiting (a user-queued
 //!   message must never be delayed by a synthesized turn; its own turn's
 //!   pre-request drain delivers the completions anyway), a client exists,
-//!   and completions are actually parked. Parameters come from the last
+//!   and a followup-class entry is actually parked
+//!   ([`inbox::followup_wake_pending`]). Parameters come from the last
 //!   real `Op::SendMessage` snapshot, so a synthesized turn runs under the
 //!   session's current mode / model / approval posture.
 //! - **delivery** — the synthesized op goes through the *same*
@@ -41,6 +50,7 @@
 //!   means logged"); it is NOT prefix-cache-frozen content.
 
 use super::RUNTIME_EVENT_PREFIX;
+use super::inbox::followup_wake_pending;
 use crate::engine::{Engine, TurnEnd};
 use crate::events::TurnOutcomeStatus;
 use crate::ops::Op;
@@ -60,7 +70,7 @@ impl Engine {
         // No client, no turn — a synthesized op would only fail loudly.
         self.llm_client.as_ref()?;
         let parked = self.rx_subagent_completion.lock().await.len();
-        if parked == 0 {
+        if !followup_wake_pending(parked) {
             return None;
         }
         let mut op = self.last_send_op.clone()?;

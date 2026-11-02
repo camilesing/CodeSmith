@@ -238,6 +238,88 @@ async fn handle_unattended(engine: &EngineHandle, event: Event, assistant: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codesmith_agent_runtime::events::TurnOutcomeStatus;
+
+    /// P1-1 — the REPL pump-path invariant: a synthesized (idle-wake) turn's
+    /// full event sequence flows through `handle_unattended` like any other
+    /// turn — streamed text accumulates and prints, the turn end renders,
+    /// nothing special-cases (or drops) `synthesized` turns at the prompt.
+    /// The ACP side of the invariant (a synthesized turn never completes a
+    /// pending client prompt) is pinned in `acp_server`'s tests.
+    #[tokio::test]
+    async fn synthesized_turn_sequence_flows_through_the_unattended_handler() {
+        use crate::config::Config;
+        use crate::core::engine::{EngineConstruct, HeadlessEngineOptions, headless_engine_config};
+        use codesmith_agent_runtime::engine::Engine;
+
+        // A real (idle) engine so the deny paths have a live handle; the
+        // synthesized-turn sequence below never asks for one.
+        let engine_config = headless_engine_config(
+            &Config::default(),
+            &crate::settings::Settings::default(),
+            HeadlessEngineOptions {
+                model: "pump-test".to_string(),
+                workspace: std::env::temp_dir(),
+                auto_approve: true,
+                trust_mode: true,
+                max_subagents: 1,
+                override_system_prompt: None,
+                append_system_prompts: Vec::new(),
+                cache_breaker: None,
+                allowed_tools: None,
+                team_context: None,
+            },
+        )
+        .expect("engine config");
+        let (engine, handle) = <Engine as EngineConstruct>::new_with_client(
+            engine_config,
+            &Config::default(),
+            std::sync::Arc::new(
+                codesmith_agent_runtime::test_support::mock_llm::MockLlmClient::new(Vec::new()),
+            ),
+        );
+        tokio::spawn(async move {
+            engine.run().await;
+        });
+
+        let mut assistant = String::new();
+        // The exact event shape an idle-wake synthesized turn emits.
+        for event in [
+            Event::TurnStarted {
+                turn_id: "t1".to_string(),
+                synthesized: true,
+            },
+            Event::MessageDelta {
+                index: 0,
+                content: "coordinated ".to_string(),
+            },
+            Event::MessageDelta {
+                index: 0,
+                content: "after wake".to_string(),
+            },
+            Event::MessageComplete { index: 0 },
+            Event::TurnComplete {
+                usage: Default::default(),
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+                reported_model: None,
+                failed_attempts: Vec::new(),
+            },
+        ] {
+            handle_unattended(&handle, event, &mut assistant).await;
+        }
+        // The deltas accumulated (MessageComplete printed and took them).
+        assert!(assistant.is_empty(), "complete flushed the buffer");
+        // The engine is still alive — the handler never kills the pump.
+        assert!(
+            handle
+                .send(codesmith_agent_runtime::ops::Op::Shutdown)
+                .await
+                .is_ok()
+        );
+    }
 
     /// The gate alone (no engine, no pump): `hold` parks the reading side
     /// before returning and `release` unparks it. This is the ownership

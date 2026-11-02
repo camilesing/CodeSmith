@@ -1,19 +1,29 @@
-//! Local-only telemetry scaffolding (Plan 05 / findings 2, 5a, 5c).
+//! Telemetry seam (P1-2): two channels, independently switchable, behind
+//! the [`TelemetrySink`] trait.
 //!
-//! CodeSmith ships **no networked telemetry** by design — every outbound
-//! request targets an LLM provider, MCP server, web-search provider,
-//! localhost runtime, sandbox, hook webhook, or OAuth endpoint. This module
-//! provides the defensive scaffolding that would protect a real sink, plus a
-//! minimal **local-only** jsonl sink so the gating, type barrier, and
-//! ephemeral id have something concrete to protect.
+//! - **Events channel** — low-volume product events (capacity decisions,
+//!   interventions, persistence failures). Existing emission points mirror
+//!   their events into the sink; telemetry is a consumer, never a new event
+//!   vocabulary.
+//! - **Session-log channel** — high-volume per-turn session summaries. Every
+//!   provider must enforce [`SESSION_LOG_BYTE_BUDGET`]: once the budget is
+//!   spent the record is dropped, never truncated mid-record, so a runaway
+//!   session cannot push unbounded traffic at a collector.
+//!
+//! Providers: [`LocalJsonlSink`] (this module — local-only jsonl, gated by
+//! the `telemetry` config flag and the workspace-trust `attach` discipline)
+//! and the CLI's OTLP/HTTP exporter (`crates/cli/src/telemetry_otlp.rs` —
+//! opt-in via `[telemetry_otlp]` in config.toml, default off, zero network
+//! while off). Hosts fan out to several sinks with [`TelemetryFanout`].
 //!
 //! ## Trust-timed attach
 //!
-//! The sink is constructed *pre-trust* via [`TelemetrySink::new_skeleton`]:
-//! it registers the in-memory queue but writes nothing. Only after the
-//! workspace trust check passes does the host call [`TelemetrySink::attach`],
-//! which flips `attached` and drains the queue to the jsonl file. An
-//! untrusted workspace never attaches, so no jsonl is ever written.
+//! Sinks are constructed *pre-trust*: [`LocalJsonlSink::new_skeleton`] (and
+//! the OTLP exporter's constructor) register an in-memory queue but emit
+//! nothing. Only after the workspace trust check passes does the host call
+//! [`TelemetrySink::attach`], which flips the sink live and drains the
+//! queue. An untrusted workspace never attaches, so nothing is ever emitted
+//! — locally or over the network.
 //!
 //! ## Type barrier
 //!
@@ -24,45 +34,119 @@
 //! Every string field assembled into a sink event should be a
 //! `VerifiedAnalyticsMetadata` so a stray file path or code snippet cannot
 //! leak into telemetry without an explicit assertion that it is neither.
+//!
+//! # Known limitations
+//!
+//! - The session-log channel's producer mirrors only the normal turn-completion
+//!   harvest (`engine/mod.rs`, post-executor `take_usage`); early-failure
+//!   `TurnComplete`s that never ran the executor emit no session-log record
+//!   (capacity events still capture those failures).
+//! - No batching, retry, or backoff: a failed OTLP export is dropped, not
+//!   retried — telemetry must never block or break the engine.
 
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// A local-only jsonl telemetry sink.
+/// Total byte budget every provider enforces on the session-log channel.
+/// Records beyond it are dropped whole — the channel is capped by contract,
+/// not by hope.
+pub const SESSION_LOG_BYTE_BUDGET: u64 = 256 * 1024;
+
+/// The telemetry seam (P1-2): where product events and byte-capped session
+/// summaries go. Definition lives here (framework); providers are
+/// [`LocalJsonlSink`] (local jsonl) and the CLI's OTLP/HTTP exporter;
+/// consumers are the engine's event-emission mirror sites. All methods must
+/// be non-blocking and must never fail loudly — telemetry must not break the
+/// engine (providers swallow IO/export errors internally).
+pub trait TelemetrySink: Send + Sync + std::fmt::Debug {
+    /// One product event (low volume): capacity decisions and kin. `Value`
+    /// is the mirrored form of an existing event — no new vocabulary.
+    fn emit_event(&self, event: serde_json::Value);
+    /// One session-log record (high volume, byte-capped to
+    /// [`SESSION_LOG_BYTE_BUDGET`] by the provider). Beyond the budget the
+    /// provider drops records silently.
+    fn emit_session_log(&self, record: serde_json::Value);
+    /// Whether the events channel is on. Hosts consult this to skip
+    /// serializing events nobody will take.
+    fn events_enabled(&self) -> bool;
+    /// Whether the session-log channel is on.
+    fn session_log_enabled(&self) -> bool;
+    /// Post-trust activation. Providers that gate on workspace trust
+    /// override this; the default is a no-op (always-live providers).
+    fn attach(&self) {}
+}
+
+/// Fan several sinks onto one trait object — the host wires local jsonl +
+/// OTLP behind a single `Arc<dyn TelemetrySink>`.
+#[derive(Debug, Clone)]
+pub struct TelemetryFanout(pub Vec<Arc<dyn TelemetrySink>>);
+
+impl TelemetrySink for TelemetryFanout {
+    fn emit_event(&self, event: serde_json::Value) {
+        for sink in &self.0 {
+            sink.emit_event(event.clone());
+        }
+    }
+    fn emit_session_log(&self, record: serde_json::Value) {
+        for sink in &self.0 {
+            sink.emit_session_log(record.clone());
+        }
+    }
+    fn events_enabled(&self) -> bool {
+        self.0.iter().any(|sink| sink.events_enabled())
+    }
+    fn session_log_enabled(&self) -> bool {
+        self.0.iter().any(|sink| sink.session_log_enabled())
+    }
+    fn attach(&self) {
+        for sink in &self.0 {
+            sink.attach();
+        }
+    }
+}
+
+/// A local-only jsonl telemetry sink (the `telemetry = true` local mode).
 ///
-/// Gated by the existing `telemetry: bool` config (`enabled`). The sink path
-/// is `~/.codesmith/telemetry/events.jsonl` (resolved by the host; never
-/// networked). Pre-`attach`, [` Self::emit`] enqueues events in memory; after
-/// `attach`, the queue is drained to the file and new events are written
+/// Gated by the existing `telemetry: bool` config (`enabled`). The events
+/// channel writes `~/.codesmith/telemetry/events.jsonl`; the session-log
+/// channel writes a sibling `session-log.jsonl`, byte-capped to
+/// [`SESSION_LOG_BYTE_BUDGET`]. Pre-`attach`, emissions enqueue in memory;
+/// after `attach`, the queue drains to the files and new events are written
 /// directly. IO errors are swallowed — the sink must never break the engine.
 ///
 /// All fields are `Arc`-shared so cheap clones can be handed to long-lived
 /// tasks (the engine, sub-agent runtimes).
 #[derive(Clone, Debug)]
-pub struct TelemetrySink {
+pub struct LocalJsonlSink {
     enabled: Arc<AtomicBool>,
     sink_path: Option<PathBuf>,
+    session_log_path: Option<PathBuf>,
+    session_log_bytes: Arc<AtomicU64>,
     queue: Arc<Mutex<VecDeque<serde_json::Value>>>,
     attached: Arc<AtomicBool>,
 }
 
-impl TelemetrySink {
+impl LocalJsonlSink {
     /// Pre-trust constructor: register the queue, do NOT emit. `enabled`
-    /// mirrors the resolved `telemetry` config flag — when `false`, [`emit`]
-    /// drops events immediately (the sink is opt-in). `sink_path` is the jsonl
-    /// target; `None` disables writing entirely (queue only, useful in tests
-    /// or when the home dir is unavailable).
-    ///
-    /// [`emit`]: Self::emit
+    /// mirrors the resolved `telemetry` config flag — when `false`, both
+    /// channels drop events immediately (the sink is opt-in). `sink_path`
+    /// is the events jsonl target; the session-log channel writes a sibling
+    /// `session-log.jsonl`. `None` disables writing entirely (queue only,
+    /// useful in tests or when the home dir is unavailable).
     #[must_use]
     pub fn new_skeleton(enabled: bool, sink_path: Option<PathBuf>) -> Self {
+        let session_log_path = sink_path
+            .as_ref()
+            .map(|path| path.with_file_name("session-log.jsonl"));
         Self {
             enabled: Arc::new(AtomicBool::new(enabled)),
             sink_path,
+            session_log_path,
+            session_log_bytes: Arc::new(AtomicU64::new(0)),
             queue: Arc::new(Mutex::new(VecDeque::new())),
             attached: Arc::new(AtomicBool::new(false)),
         }
@@ -83,19 +167,26 @@ impl TelemetrySink {
         self.enabled.store(enabled, Ordering::Relaxed);
     }
 
-    /// Whether [`attach`] has been called (post-trust).
-    ///
-    /// [`attach`]: Self::attach
+    /// Whether [`attach`](TelemetrySink::attach) has been called
+    /// (post-trust).
     #[must_use]
     pub fn is_attached(&self) -> bool {
         self.attached.load(Ordering::Relaxed)
     }
+}
 
-    /// Post-trust: flip `attached` and drain the queue to the jsonl file.
-    /// Safe to call once, after the workspace trust check passes. If the sink
-    /// is disabled or has no path, this is a no-op (the queue is cleared so
-    /// pre-trust events do not accumulate unbounded).
-    pub fn attach(&self) {
+impl TelemetrySink for LocalJsonlSink {
+    fn events_enabled(&self) -> bool {
+        self.is_enabled() && self.sink_path.is_some()
+    }
+
+    fn session_log_enabled(&self) -> bool {
+        // Same local flag gates both channels: the local sink is one config
+        // (`telemetry = true`), not two.
+        self.is_enabled() && self.session_log_path.is_some()
+    }
+
+    fn attach(&self) {
         self.attached.store(true, Ordering::Relaxed);
         // Drain the queue regardless of enabled/path so pre-trust events do
         // not pile up forever when the sink is disabled or pathless.
@@ -117,10 +208,7 @@ impl TelemetrySink {
         }
     }
 
-    /// Emit one event. Pre-`attach` → enqueue; post-`attach` → write directly
-    /// (after first draining any queued events so ordering is preserved). When
-    /// the sink is disabled, events are dropped.
-    pub fn emit(&self, event: serde_json::Value) {
+    fn emit_event(&self, event: serde_json::Value) {
         if !self.is_enabled() {
             return;
         }
@@ -142,6 +230,37 @@ impl TelemetrySink {
             let _ = write_event(path, &e);
         }
         let _ = write_event(path, &event);
+    }
+
+    fn emit_session_log(&self, record: serde_json::Value) {
+        if !self.session_log_enabled() || !self.is_attached() {
+            return;
+        }
+        let Some(path) = self.session_log_path.as_ref() else {
+            return;
+        };
+        // Byte-cap the channel: estimate the serialized size, claim it
+        // atomically, drop whole records once the budget is spent.
+        let Ok(line) = serde_json::to_string(&record) else {
+            return;
+        };
+        let cost = line.len() as u64 + 1;
+        let mut current = self.session_log_bytes.load(Ordering::Relaxed);
+        loop {
+            if current + cost > SESSION_LOG_BYTE_BUDGET {
+                return; // over budget: drop the record, never truncate
+            }
+            match self.session_log_bytes.compare_exchange_weak(
+                current,
+                current + cost,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+        let _ = write_event(path, &record);
     }
 }
 
@@ -292,10 +411,10 @@ mod tests {
     #[test]
     fn pre_attach_events_are_queued_not_written() {
         let path = tmp_sink_path();
-        let sink = TelemetrySink::new_skeleton(true, Some(path.clone()));
+        let sink = LocalJsonlSink::new_skeleton(true, Some(path.clone()));
         assert!(!sink.is_attached());
-        sink.emit(json!({"e": 1}));
-        sink.emit(json!({"e": 2}));
+        sink.emit_event(json!({"e": 1}));
+        sink.emit_event(json!({"e": 2}));
         // Not attached → nothing on disk.
         assert!(!path.exists(), "no file should exist before attach");
         // Both events queued.
@@ -306,9 +425,9 @@ mod tests {
     #[test]
     fn attach_drains_queue_to_jsonl() {
         let path = tmp_sink_path();
-        let sink = TelemetrySink::new_skeleton(true, Some(path.clone()));
-        sink.emit(json!({"i": 1}));
-        sink.emit(json!({"i": 2}));
+        let sink = LocalJsonlSink::new_skeleton(true, Some(path.clone()));
+        sink.emit_event(json!({"i": 1}));
+        sink.emit_event(json!({"i": 2}));
         sink.attach();
         assert!(sink.is_attached());
         assert!(path.exists());
@@ -327,10 +446,10 @@ mod tests {
     #[test]
     fn emit_after_attach_writes_directly() {
         let path = tmp_sink_path();
-        let sink = TelemetrySink::new_skeleton(true, Some(path.clone()));
+        let sink = LocalJsonlSink::new_skeleton(true, Some(path.clone()));
         sink.attach();
-        sink.emit(json!({"i": 10}));
-        sink.emit(json!({"i": 11}));
+        sink.emit_event(json!({"i": 10}));
+        sink.emit_event(json!({"i": 11}));
         let lines: Vec<String> = std::fs::read_to_string(path)
             .unwrap()
             .lines()
@@ -344,23 +463,23 @@ mod tests {
     #[test]
     fn disabled_sink_drops_events() {
         let path = tmp_sink_path();
-        let sink = TelemetrySink::new_skeleton(false, Some(path.clone()));
-        sink.emit(json!({"x": 1}));
+        let sink = LocalJsonlSink::new_skeleton(false, Some(path.clone()));
+        sink.emit_event(json!({"x": 1}));
         sink.attach();
-        sink.emit(json!({"x": 2}));
+        sink.emit_event(json!({"x": 2}));
         assert!(!path.exists(), "disabled sink must not write");
         assert!(sink.queue.lock().unwrap().is_empty());
     }
 
     #[test]
     fn pathless_sink_queues_pre_attach_and_noops_post_attach() {
-        let sink = TelemetrySink::new_skeleton(true, None);
-        sink.emit(json!({"y": 1}));
+        let sink = LocalJsonlSink::new_skeleton(true, None);
+        sink.emit_event(json!({"y": 1}));
         assert_eq!(sink.queue.lock().unwrap().len(), 1);
         sink.attach();
         // attach clears the queue even with no path (no unbounded growth).
         assert!(sink.queue.lock().unwrap().is_empty());
-        sink.emit(json!({"y": 2}));
+        sink.emit_event(json!({"y": 2}));
         // Post-attach with no path: dropped, not queued.
         assert!(sink.queue.lock().unwrap().is_empty());
     }
@@ -379,16 +498,95 @@ mod tests {
         // Plan 06 / 6.2: the host re-applies the merged `telemetry` flag via
         // `set_enabled`; the Arc-shared flag is what the engine clone reads.
         let path = tmp_sink_path();
-        let sink = TelemetrySink::new_skeleton(false, Some(path.clone()));
+        let sink = LocalJsonlSink::new_skeleton(false, Some(path.clone()));
         sink.attach();
         // Disabled at construction: emit is a no-op (no file created).
-        sink.emit(json!({"e": "dropped"}));
+        sink.emit_event(json!({"e": "dropped"}));
         assert!(!path.exists(), "disabled sink must not write");
         // Flip on: subsequent emit writes through.
         sink.set_enabled(true);
-        sink.emit(json!({"e": "written"}));
+        sink.emit_event(json!({"e": "written"}));
         let contents = std::fs::read_to_string(&path).expect("file written after set_enabled");
         assert!(contents.contains("\"written\""), "got: {contents}");
+    }
+
+    #[test]
+    fn session_log_channel_writes_a_capped_side_file() {
+        let path = tmp_sink_path();
+        let session_log = path.with_file_name("session-log.jsonl");
+        let sink = LocalJsonlSink::new_skeleton(true, Some(path));
+        sink.attach();
+        assert!(sink.session_log_enabled());
+        sink.emit_session_log(json!({"turn": 1, "n": "aaaa"}));
+        sink.emit_session_log(json!({"turn": 2, "n": "bbbb"}));
+        let contents = std::fs::read_to_string(&session_log).expect("side file written");
+        assert_eq!(contents.lines().count(), 2);
+        assert!(contents.contains("\"turn\":1"));
+
+        // Byte budget: records past SESSION_LOG_BYTE_BUDGET are dropped
+        // whole — the file never exceeds the budget by more than one record
+        // already claimed under it.
+        let big = "x".repeat(1024);
+        let mut written = 2usize;
+        for _ in 0..(SESSION_LOG_BYTE_BUDGET / 1024 + 8) {
+            let before = sink.session_log_bytes.load(Ordering::Relaxed);
+            sink.emit_session_log(json!({"n": big}));
+            if sink.session_log_bytes.load(Ordering::Relaxed) > before {
+                written += 1;
+            }
+        }
+        let final_lines = std::fs::read_to_string(&session_log)
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(final_lines, written, "claimed budget == written records");
+        assert!(
+            sink.session_log_bytes.load(Ordering::Relaxed) <= SESSION_LOG_BYTE_BUDGET,
+            "budget is never exceeded"
+        );
+        assert!(final_lines < (SESSION_LOG_BYTE_BUDGET / 1024 + 16) as usize);
+    }
+
+    #[test]
+    fn session_log_channel_follows_the_disabled_flag_and_pre_attach_gate() {
+        let path = tmp_sink_path();
+        let session_log = path.with_file_name("session-log.jsonl");
+        // Disabled: no session-log writes even after attach.
+        let sink = LocalJsonlSink::new_skeleton(false, Some(path.clone()));
+        sink.attach();
+        sink.emit_session_log(json!({"turn": 1}));
+        assert!(!session_log.exists());
+
+        // Enabled but pre-attach: dropped (the local session-log channel
+        // does not queue — unlike events, these are high-volume records).
+        let sink = LocalJsonlSink::new_skeleton(true, Some(path.clone()));
+        sink.emit_session_log(json!({"turn": 1}));
+        assert!(!session_log.exists());
+    }
+
+    #[test]
+    fn fanout_routes_both_channels_to_every_sink() {
+        let a = tmp_sink_path();
+        let b_dir =
+            std::env::temp_dir().join(format!("codesmith-telemetry-test-{}", uuid::Uuid::new_v4()));
+        let b = b_dir.join("events.jsonl");
+        let sink_a = Arc::new(LocalJsonlSink::new_skeleton(true, Some(a.clone())));
+        let sink_b = Arc::new(LocalJsonlSink::new_skeleton(true, Some(b.clone())));
+        let fanout = TelemetryFanout(vec![
+            sink_a.clone() as Arc<dyn TelemetrySink>,
+            sink_b.clone() as Arc<dyn TelemetrySink>,
+        ]);
+        assert!(fanout.events_enabled());
+        fanout.attach();
+        fanout.emit_event(json!({"e": 1}));
+        fanout.emit_session_log(json!({"turn": 1}));
+        for (sink, path) in [(sink_a, a), (sink_b, b)] {
+            let events = std::fs::read_to_string(&path).unwrap();
+            assert!(events.contains("\"e\":1"));
+            let logs = std::fs::read_to_string(path.with_file_name("session-log.jsonl")).unwrap();
+            assert!(logs.contains("\"turn\":1"));
+            assert!(sink.is_attached(), "fanout attach reaches every sink");
+        }
     }
 
     #[test]

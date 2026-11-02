@@ -229,7 +229,13 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   way headless runs do). exec/embeds leave it off; ACP runs it on (its
   prompt outcome is turn-scoped — a synthesized turn's `TurnStarted` is
   tagged `synthesized`, and its `TurnComplete` never completes a queued
-  client prompt).
+  client prompt). The unified inbox vocabulary (P1-1,
+  `engine/inbox.rs`): target × delivery — completions/goal rounds are
+  `Followup` wakes (latched across turns and maintenance ops via the
+  stored `Notify` permit), the steer channel is `Steer`, host-side queues
+  are `Inject`; `NextTurn` is claimed at the op loop's select, `NextStep`
+  at the executor's pre-request drain. New wakeup-flagged producers
+  register in `inbox::followup_wake_pending`, nowhere else.
 - Verify consumers before removing "looks-dead" modules; standing live
   examples: `session/src/zones.rs` (re-exported as
   `agent_runtime::prompt_zones`) and

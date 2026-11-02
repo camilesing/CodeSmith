@@ -120,6 +120,25 @@ npm 包装器冒烟的 Linux 腿在同一个 `npm-wrapper-smoke` 作业中运行
 `--allow-npm-binary-mismatch` 运行，并在 release 说明中明确声明
 没有交付新的 Rust 二进制版本。
 
+## 性能预算（bench dry-run → 转正执法）
+
+`codesmith bench`（CI 道路：Linux，产物 `benchmark-report`）度量三条
+用户路径——会话打开、回合首 token、session 检索（稳态索引查询）——
+预算是源码常量（`crates/cli/src/bench.rs`；有意不可用 env 覆盖）。
+执法目前是 **dry-run**：超预算会记录进 `report.json` 并打印，但绝不
+让道路变红。
+
+把预算转正为执法需要按序满足：
+
+1. 至少两周的 `benchmark-report` 产物显示 Linux 道路上均值在可重复
+   界限内稳定（cv ≤ 0.35）。
+2. 预算以 **release** profile（`cargo run --release … -- bench`）重新
+   定基线；已发布的常量旁的源码注释记录了 debug-profile 首次基线。
+3. 把道路从 dry-run 翻转为执法的 PR 中有明确批准记录（仓库"新执法
+   先 dry-run"规则）。
+4. 转正后执行"先修后松"：变红的预算道路是发布阻断项，不是调松的
+   理由——调松必须在同一 PR 中附书面回归说明。
+
 ## Rust Crates 发布
 
 向 crates.io 发布 crate 是**手动的**——没有自动化的

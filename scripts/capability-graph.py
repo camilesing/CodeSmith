@@ -55,6 +55,7 @@ SEAMS = [
     "SessionJournal",
     "SessionStore",
     "SubAgentSpawner",
+    "TelemetrySink",
     "ToolDefinition",
     "TurnExecutorFactory",
     "TurnHarvest",

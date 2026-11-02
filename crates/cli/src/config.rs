@@ -446,6 +446,44 @@ pub struct SearchConfig {
     pub api_key: Option<String>,
 }
 
+/// OTLP/HTTP telemetry export (`[telemetry_otlp]` table in config.toml,
+/// P1-2). Opt-in: absent table means no exporter and zero network. Records
+/// are OTLP/HTTP-JSON logs (`<url>/v1/logs`) carrying a stable anonymous
+/// install id — never session content, never on model requests.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, schemars::JsonSchema)]
+pub struct TelemetryOtlpConfig {
+    /// Collector base URL (e.g. `https://collector.example.com:4318`).
+    /// Empty or absent disables the exporter entirely.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Events channel switch (capacity decisions and kin). Default `true`
+    /// when the table is present with a `url`.
+    #[serde(default)]
+    pub events: Option<bool>,
+    /// Session-log channel switch (byte-capped per-turn summaries).
+    /// Default `false`.
+    #[serde(default)]
+    pub session_log: Option<bool>,
+}
+
+impl TelemetryOtlpConfig {
+    /// The resolved exporter inputs, or `None` when the exporter must not
+    /// exist (no table, or an empty `url`) — that `None` is the
+    /// zero-network-while-off contract.
+    #[must_use]
+    pub fn exporter_settings(&self) -> Option<(&str, bool, bool)> {
+        let url = self.url.as_deref()?.trim();
+        if url.is_empty() {
+            return None;
+        }
+        Some((
+            url,
+            self.events.unwrap_or(true),
+            self.session_log.unwrap_or(false),
+        ))
+    }
+}
+
 /// Re-export of the resolved retry policy (canonical home: `codesmith_agent::retry`).
 pub use codesmith_agent::retry::RetryPolicy;
 pub use codesmith_agent_runtime::config_types::{
@@ -792,6 +830,11 @@ pub struct Config {
     /// attaches (writes to disk) once the workspace trust boundary passes.
     #[serde(default)]
     pub telemetry: Option<bool>,
+    /// OTLP/HTTP telemetry export (`[telemetry_otlp]`). Opt-in and
+    /// default-off: absent table (or empty `url`) means the exporter is
+    /// never constructed — zero network. See `docs/CONFIGURATION.md`.
+    #[serde(default)]
+    pub telemetry_otlp: Option<TelemetryOtlpConfig>,
     /// Script Mods (§F script mod layer) controls: `enabled` gates the whole
     /// script-mod layer (discovery, `manage_mods` tool, watcher), `watch`
     /// gates only the hot-reload file watcher. Both default to `true`.
@@ -4357,6 +4400,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         preset: override_cfg.preset.or(base.preset),
         preset_deviated: false,
         telemetry: override_cfg.telemetry.or(base.telemetry),
+        telemetry_otlp: override_cfg.telemetry_otlp.or(base.telemetry_otlp),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),
         sandbox_mode: override_cfg.sandbox_mode.or(base.sandbox_mode),
         sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),

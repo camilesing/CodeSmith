@@ -36,6 +36,7 @@ construct it, consumers take it by value).
 | `SessionJournal` | `session` | `session` | `agent-runtime`, `cli` |
 | `SessionStore` | `session` | `session` | `cli` |
 | `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |
+| `TelemetrySink` | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime`, `cli` |
 | `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
 | `TurnExecutorFactory` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `TurnHarvest` | `agent-runtime` | `agent-runtime` | `agent-runtime` |

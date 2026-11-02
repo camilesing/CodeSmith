@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codesmith_agent_runtime::telemetry::TelemetrySink;
+use codesmith_agent_runtime::telemetry::{LocalJsonlSink, TelemetryFanout, TelemetrySink};
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
@@ -248,6 +248,9 @@ The command prints the completion script to stdout; redirect it to a path your s
     Apply(ApplyArgs),
     /// Run the offline evaluation harness (no network/LLM calls)
     Eval(EvalArgs),
+    /// Run the three user-path performance benchmarks (dry-run budgets;
+    /// writes report.json under --out)
+    Bench(crate::bench::BenchArgs),
     /// Manage MCP servers
     Mcp {
         #[command(subcommand)]
@@ -1171,6 +1174,7 @@ pub(crate) async fn real_main() -> Result<()> {
             }
             Commands::Apply(args) => run_apply(args),
             Commands::Eval(args) => run_eval(args),
+            Commands::Bench(args) => crate::bench::run(args).await,
             Commands::Mcp { command } => {
                 let config = load_config_from_cli(&cli)?;
                 run_mcp_command(&config, command).await
@@ -4096,7 +4100,10 @@ pub(crate) fn load_workspace_dotenv_if_allowed(
 /// jsonl file here (a no-op on an empty queue — no file is created). When the
 /// workspace is untrusted the sink stays detached and keeps queuing, so no
 /// workspace-controlled data reaches disk before the user has consented.
-pub(crate) fn attach_telemetry_if_trusted(sink: &TelemetrySink, boundary: &WorkspaceInitBoundary) {
+pub(crate) fn attach_telemetry_if_trusted(
+    sink: &dyn TelemetrySink,
+    boundary: &WorkspaceInitBoundary,
+) {
     if boundary.allow_workspace_initialization {
         sink.attach();
     }
@@ -5493,7 +5500,7 @@ pub(crate) async fn run_interactive(
     // `AtomicBool` keeps this handle's `set_enabled` in sync with the
     // engine's view.
     let telemetry_sink =
-        TelemetrySink::new_skeleton(config.telemetry_enabled(), telemetry_sink_path());
+        LocalJsonlSink::new_skeleton(config.telemetry_enabled(), telemetry_sink_path());
 
     let boundary = resolve_workspace_init_boundary(&workspace, cli.skip_onboarding, startup_yolo);
     attach_telemetry_if_trusted(&telemetry_sink, &boundary);
@@ -5546,6 +5553,27 @@ pub(crate) async fn run_interactive(
     // The sink is Arc-shared with the engine clone handed to `run_repl` below,
     // so this flip propagates to capacity-event emission routing.
     telemetry_sink.set_enabled(config.telemetry_enabled());
+
+    // P1-2 — the OTLP/HTTP exporter: constructed only when the merged
+    // `[telemetry_otlp]` table resolves to a collector URL (absent table or
+    // empty url ⇒ no exporter ⇒ zero network by construction). Like the
+    // local sink it starts detached and attaches only inside the workspace
+    // trust boundary; pre-trust records queue bounded in memory.
+    let mut engine_sinks: Vec<std::sync::Arc<dyn TelemetrySink>> =
+        vec![std::sync::Arc::new(telemetry_sink.clone())];
+    if let Some((url, events, session_log)) = config
+        .telemetry_otlp
+        .as_ref()
+        .and_then(crate::config::TelemetryOtlpConfig::exporter_settings)
+    {
+        let otlp = crate::telemetry_otlp::OtlpHttpSink::new(url.to_string(), events, session_log);
+        if boundary.allow_workspace_initialization {
+            otlp.attach();
+        }
+        engine_sinks.push(std::sync::Arc::new(otlp));
+    }
+    let engine_telemetry: std::sync::Arc<dyn TelemetrySink> =
+        std::sync::Arc::new(TelemetryFanout(engine_sinks));
 
     if !cli.skip_onboarding {
         match crate::config::ensure_config_file_exists(cli.config.clone()) {
@@ -5660,7 +5688,7 @@ pub(crate) async fn run_interactive(
         initial_input,
         max_subagents,
     };
-    crate::interactive::run_repl(config, options, telemetry_sink).await
+    crate::interactive::run_repl(config, options, engine_telemetry).await
 }
 
 pub(crate) struct CliAutoRoute {
@@ -8431,7 +8459,7 @@ mod telemetry_startup_tests {
     fn attach_telemetry_if_trusted_attaches_when_boundary_allows() {
         // Enabled + pathless so attach() touches no disk; it only flips the
         // attached flag and drains the (empty) queue.
-        let sink = TelemetrySink::new_skeleton(true, None);
+        let sink = LocalJsonlSink::new_skeleton(true, None);
         assert!(!sink.is_attached(), "sink starts detached");
         attach_telemetry_if_trusted(&sink, &boundary(true));
         assert!(sink.is_attached(), "trusted boundary must attach the sink");
@@ -8439,7 +8467,7 @@ mod telemetry_startup_tests {
 
     #[test]
     fn attach_telemetry_if_trusted_skips_when_boundary_blocks() {
-        let sink = TelemetrySink::new_skeleton(true, None);
+        let sink = LocalJsonlSink::new_skeleton(true, None);
         attach_telemetry_if_trusted(&sink, &boundary(false));
         assert!(
             !sink.is_attached(),

@@ -114,6 +114,20 @@ jobs:
         run: git diff --exit-code -- Cargo.lock
       - name: Run Offline Eval Harness
         run: cargo run -p codesmith-cli --all-features -- eval
+      # P1-3 performance benchmarks — dry-run: the report records budget
+      # breaches but never fails the lane (promotion is the explicit
+      # approval step in docs/RELEASE_RUNBOOK.md). Linux only: trends
+      # within one lane are the signal, not cross-OS comparisons.
+      - name: Run Performance Benchmarks (dry-run)
+        if: runner.os == 'Linux'
+        run: cargo run -p codesmith-cli --all-features --locked -- bench --out .codesmith-bench
+      - name: Upload Benchmark Report
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmark-report
+          path: .codesmith-bench/report.json
+          if-no-files-found: warn
 
   npm-wrapper-smoke:
     name: npm wrapper smoke

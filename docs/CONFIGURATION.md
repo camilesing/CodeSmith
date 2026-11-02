@@ -874,6 +874,27 @@ and the capacity controller remains disabled unless configured.
 - `allow_shell` (bool, optional): defaults to `false` — shell execution must
   be opted into explicitly.
 - `telemetry` (bool, optional, default `false`): opt-in **local-only** telemetry. When `true`, capacity-decision analytics events are written to `~/.codesmith/telemetry/events.jsonl` after the workspace trust boundary passes. Never networked; the sink queues in-memory pre-trust and attaches (writes) only post-trust, so no workspace-controlled data reaches disk before consent. Events carry an ephemeral per-session id, not the durable thread id.
+- `telemetry_otlp` (table, optional): opt-in OTLP/HTTP export — the networked
+  counterpart of the local sink. Absent table (or empty `url`) means the
+  exporter is never constructed: zero network while off is a tested contract.
+
+  ```toml
+  [telemetry_otlp]
+  url = "https://collector.example.com:4318"  # collector base; required
+  events = true       # events channel (capacity decisions…); default true
+  session_log = false # byte-capped per-turn session summaries; default false
+  ```
+
+  Records are OTLP/HTTP-JSON logs (`<url>/v1/logs`), one POST per record,
+  fire-and-forget (failed exports are dropped, never retried). The
+  session-log channel is byte-capped (256 KiB per process); records past the
+  budget are dropped whole. Exports start only after the workspace trust
+  boundary passes — pre-trust records queue bounded in memory. Every record
+  carries a stable **anonymous install id** (`~/.codesmith/anonymous-id`, a
+  random UUID minted once): it groups records per install at the collector,
+  is read only by the exporter, and never enters a model request, session
+  file, or prompt. See `docs/OPERATIONS_RUNBOOK.md` for collector-side
+  expectations.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, `never`, `auto`, or `suggest`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `yolo` (bool, optional, default `false`): YOLO mode — auto-approve every
   tool call for the session. Equivalent to `--yolo` on the CLI or
@@ -1497,8 +1518,9 @@ provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volce
 ## Local Media Attachments
 
 Use `@path/to/file` in the composer to add local text file or directory context
-to the next message. Use `/attach <path>` for local image/video media paths, or
-`Ctrl+V` to attach an image from the clipboard.
+to the next message. Use `/attach <path>` to attach any local file (not just
+images), or `Ctrl+V` to attach an image from the clipboard. Audio/video files
+are refused at intake — nothing in this build can transcribe or view them.
 
 When the active provider+model supports vision, attached images are sent as
 **native image content blocks** (OpenAI-compatible `image_url` payloads) with
@@ -1518,19 +1540,28 @@ is not supported, attachments degrade to the text-reference mode: the
 model at the `image_analyze` tool (when `[vision_model]` is configured) or
 `read_file`'s OCR extraction.
 
-Every image that reaches a message is first copied into the content-addressed
+Non-image attachments dispatch by type. Text files (`md`, source code, `json`,
+`csv`, …) have their content **inlined into the message** — up to 64 KiB per
+file; a larger text file, like every other binary (`zip`, `pdf`, `bin`, …),
+attaches as a **durable path reference**: one line in the message naming the
+store path, byte size, and media type, which the model reads with `read_file`
+or shell tools on demand. PDFs are path references by choice — `read_file`
+already extracts their text, so the attachment path does not duplicate that.
+
+Every file that reaches a message is first copied into the content-addressed
 store `~/.codesmith/attachments/<sha256>.<ext>` (identical content is stored
 once), and the transcript references the store path rather than your original
-file — so a resumed session still carries its images and can re-send them even
-if the original was moved or deleted. Intake limits are fixed: at most
-10 MiB per image and 8 images per message, images only (`png`, `jpg`/`jpeg`,
-`gif`, `webp`). An attachment over a limit is refused out loud — at `/attach`
-time for type, size and count, and again at send time for `@path` images — and
-the refusal is written into the session file alongside the admitted ones
-(`context_references`, with the reason), never dropped silently. After a
-context compaction summarizes the message that carried an image, the most
-recent images (up to four) are re-sent to the model as native blocks through the
-same post-compaction re-inject hook that restores plans and todos.
+file — so a resumed session still carries its attachments and can re-send them
+even if the original was moved or deleted. Intake limits are fixed: at most
+10 MiB per file and 8 attachments per message; any file type is admitted
+except audio/video. An attachment over a limit is refused out loud — at
+`/attach` time for type, size and count, and again at send time for `@path`
+images — and the refusal is written into the session file alongside the
+admitted ones (`context_references`, with the reason), never dropped silently.
+After a context compaction summarizes the message that carried an image, the
+most recent images (up to four) are re-sent to the model as native blocks
+through the same post-compaction re-inject hook that restores plans and todos
+— inline text and path references are plain message text and compact with it.
 
 Attachment rows appear above the composer before submit; move to the start of
 the composer, press `↑` to select an attachment row, then press `Backspace` or

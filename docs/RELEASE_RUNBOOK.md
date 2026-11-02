@@ -116,6 +116,27 @@ on npm and every `codesmith-*` crate at `X.Y.Z` on crates.io. For a rare
 npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
 release notes explicit that no new Rust binary version shipped.
 
+## Performance Budgets (bench dry-run → enforcement)
+
+`codesmith bench` (CI lane: Linux, artifact `benchmark-report`) measures three
+user paths — session-open, turn-first-token, session-search-warm — with
+budgets that are source constants (`crates/cli/src/bench.rs`; deliberately
+not env-overridable). Enforcement is **dry-run**: breaches are recorded in
+`report.json` and printed, but never fail the lane.
+
+Promoting a budget to enforcement requires, in order:
+
+1. At least two weeks of `benchmark-report` artifacts showing the mean
+   stable within the repeatability bound (cv ≤ 0.35) on the Linux lane.
+2. Budgets re-baselined from the **release** profile (`cargo run --release
+   … -- bench`); the shipped constants' debug-profile baselines are in the
+   source comments next to them.
+3. An explicit approval recorded in the PR that flips the lane from
+   dry-run to enforcing (the repo's "new enforcement starts dry-run" rule).
+4. A fix-first policy once enforcing: a red budget lane is a release
+   blocker, not a dial to loosen — loosen only with a written regression
+   rationale in the same PR.
+
 ## Rust Crates Release
 
 Crate publishing to crates.io is **manual** — there is no automated

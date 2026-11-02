@@ -1140,16 +1140,18 @@ impl Engine {
             .await;
     }
 
-    /// Mirror a capacity [`Event`] into the local telemetry sink (Plan 06/6.1).
+    /// Mirror a capacity [`Event`] into the telemetry events channel (Plan
+    /// 06/6.1, P1-2).
     ///
     /// Builds a `serde_json::Value` from the three capacity event variants and
-    /// hands it to [`TelemetrySink::emit`] when `config.telemetry_sink` is
-    /// `Some`. Non-capacity events are ignored. Potentially-leaky string
-    /// fields (`replay_outcome`, `error`) arrive as `RedactedAnalyticsMetadata`
-    /// (Plan 06 / 6.3) and are emitted via `.as_str()`, so only the sanitized
-    /// values reach the sink. IO failures are swallowed by the sink —
-    /// telemetry never breaks the engine. The same `Event` is still sent on
-    /// `tx_event` for the UI, so this routing is purely additive.
+    /// hands it to [`TelemetrySink::emit_event`] when
+    /// `config.telemetry_sink` is `Some`. Non-capacity events are ignored.
+    /// Potentially-leaky string fields (`replay_outcome`, `error`) arrive as
+    /// `RedactedAnalyticsMetadata` (Plan 06 / 6.3) and are emitted via
+    /// `.as_str()`, so only the sanitized values reach the sink. IO failures
+    /// are swallowed by the sink — telemetry never breaks the engine. The
+    /// same `Event` is still sent on `tx_event` for the UI, so this routing
+    /// is purely additive.
     fn emit_telemetry(&self, event: &Event) {
         let Some(sink) = self.config.telemetry_sink.as_ref() else {
             return;
@@ -1217,7 +1219,7 @@ impl Engine {
             }),
             _ => return,
         };
-        sink.emit(value);
+        sink.emit_event(value);
     }
 
     pub async fn emit_capacity_decision(

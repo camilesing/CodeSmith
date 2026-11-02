@@ -799,6 +799,23 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
 - `reasoning_effort`（字符串，可选）：`off`、`low`、`medium`、`high`、`max` 或 `auto`；默认为已配置的 UI 档位。DeepSeek 平台通过顶层 `thinking` / `reasoning_effort` 字段接收。NVIDIA NIM 通过 `chat_template_kwargs` 接收等价设置。
 - `allow_shell`（布尔，可选）：默认为 `false`——shell 执行必须显式开启。
 - `telemetry`（布尔，可选，默认 `false`）：可选择加入的**仅本地**遥测。当为 `true` 时，容量决策分析事件会在通过工作区信任边界后写入 `~/.codesmith/telemetry/events.jsonl`。绝不联网；接收器在信任前在内存中排队，仅在信任后才附加（写入），因此在获得同意之前不会有任何工作区控制的数据落盘。事件携带临时的按会话 id，而不是持久线程 id。
+- `telemetry_otlp`（表，可选）：可选择加入的 OTLP/HTTP 导出——本地接收器的联网对应物。表不存在（或 `url` 为空）意味着导出器从不构造：关闭时零网络是有测试保障的合同。
+
+  ```toml
+  [telemetry_otlp]
+  url = "https://collector.example.com:4318"  # 收集器基地址；必填
+  events = true       # 事件通道（容量决策等）；默认 true
+  session_log = false # 字节封顶的按回合会话摘要；默认 false
+  ```
+
+  记录为 OTLP/HTTP-JSON logs（`<url>/v1/logs`），每条记录一个 POST，
+  即发即忘（导出失败直接丢弃，不重试）。session-log 通道有字节上限
+  （每进程 256 KiB）；超预算的记录整条丢弃。导出只在通过工作区信任
+  边界后开始——信任前的记录有界地在内存中排队。每条记录携带稳定的
+  **匿名安装 id**（`~/.codesmith/anonymous-id`，只生成一次的随机
+  UUID）：它让收集器能按安装分组记录，只被导出器读取，绝不进入模型
+  请求、会话文件或提示词。收集器侧的预期见
+  `docs/OPERATIONS_RUNBOOK.md`。
 - `approval_policy`（字符串，可选）：`on-request`、`untrusted`、`never`、`auto` 或 `suggest`。在 `/config` 中运行时编辑 `approval_mode` 时也接受 `on-request` 和 `untrusted` 别名。
 - `yolo`（布尔，可选，默认 `false`）：YOLO 模式——为会话自动批准全部
   工具调用。等价于 CLI 的 `--yolo` 或环境变量 `CODESMITH_YOLO=1`。
@@ -1332,8 +1349,9 @@ provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volce
 ## 本地媒体附件
 
 在输入框中使用 `@path/to/file` 可将本地文本文件或目录上下文添加到
-下一条消息。使用 `/attach <path>` 附加本地图像/视频媒体路径，或使用
-`Ctrl+V` 从剪贴板附加图像。
+下一条消息。使用 `/attach <path>` 附加任意本地文件（不限于图像），或使用
+`Ctrl+V` 从剪贴板附加图像。音频/视频文件在摄入时被拒绝——本构建没有任何
+可以转录或查看它们的消费者。
 
 当活跃的 provider+模型支持视觉时，附加的图像会作为**原生图像内容块**
 （OpenAI 兼容的 `image_url` 载荷）随消息发送——无需工具往返。视觉
@@ -1351,15 +1369,23 @@ vision = true             # 网关前端是矩阵看不到的视觉模型时
 指引模型使用 `image_analyze` 工具（配置了 `[vision_model]` 时）或
 `read_file` 的 OCR 提取的说明。
 
-每张进入消息的图像都会先拷贝到内容寻址存储
+非图像附件按类型分派。文本文件（`md`、源代码、`json`、`csv` 等）的
+内容会**内联进消息**——每个文件最多 64 KiB；超过上限的文本文件与其余
+二进制（`zip`、`pdf`、`bin` 等）一样以**持久路径引用**附加：消息中
+一行给出存储路径、字节数与媒体类型，模型按需用 `read_file` 或 shell
+工具读取。PDF 有意走路径引用——`read_file` 已有文本提取，附件路径
+不重复造一份。
+
+每个进入消息的文件都会先拷贝到内容寻址存储
 `~/.codesmith/attachments/<sha256>.<ext>`（相同内容只存一份），对话记录引用
-的是存储路径而非你的原始文件——因此恢复的会话仍带着它的图像并可重新发送
-给模型，即便原文件已被移动或删除。摄入上限固定：每张图像最多 10 MiB、每条
-消息最多 8 张，且仅限图像（`png`、`jpg`/`jpeg`、`gif`、`webp`）。超限附件会被
-明确拒绝——`/attach` 时检查类型、大小与数量，发送时对 `@path` 图像再检一次——
-且拒绝记录与已接纳的一起写入会话文件（`context_references`，附原因），绝不
-静默丢弃。上下文压缩把携带图像的消息摘要掉之后，最近的图像（最多四张）会
-经由恢复 plan/todo 的同一个压缩后重注入挂点，以原生图像块重新发给模型。
+的是存储路径而非你的原始文件——因此恢复的会话仍带着它的附件并可重新发送
+给模型，即便原文件已被移动或删除。摄入上限固定：每个文件最多 10 MiB、每条
+消息最多 8 个附件；除音频/视频外任何类型都可摄入。超限附件会被
+明确拒绝——`/attach` 时检查类型、大小与数量，发送时对 `@path` 图像再检
+一次——且拒绝记录与已接纳的一起写入会话文件（`context_references`，附
+原因），绝不静默丢弃。上下文压缩把携带图像的消息摘要掉之后，最近的图像
+（最多四张）会经由恢复 plan/todo 的同一个压缩后重注入挂点，以原生图像块
+重新发给模型——内联文本与路径引用是普通消息文本，随消息一起被压缩。
 
 附件行在提交前显示在输入框上方；移动到输入框开头，按 `↑` 选择附件
 行，然后按 `Backspace` 或 `Delete` 将其移除，无需手动编辑占位文本。

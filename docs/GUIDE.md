@@ -209,8 +209,9 @@ completes the name (press it twice to list the candidates when several
 match), and the dim text after the cursor previews the match with a one-line
 description. `Shift+Tab` cycles the run mode (section 5).
 Use an `@path` mention to attach an image file to the next message, or
-`/attach <path>` for local media. `Ctrl+C` cancels a running turn; press it
-twice in a row to quit.
+`/attach <path>` for any local file (text is inlined, binaries attach by
+durable path reference; audio/video are refused). `Ctrl+C` cancels a running
+turn; press it twice in a row to quit.
 
 Next: [CLI.md](CLI.md) is the command and subcommand reference.
 

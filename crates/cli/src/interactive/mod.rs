@@ -53,14 +53,16 @@ use codesmith_agent_runtime::ops::Op;
 use completion::ReplHelper;
 use state::ReplState;
 
-/// Image extensions accepted for `@path` attachments in the composer — the
-/// single wire-representable set (see `WIRE_IMAGE_EXTENSIONS`).
+/// Image extensions accepted for `@path` attachments in the composer. The
+/// `@`-mention channel stays image-only on purpose: a non-image `@path` is
+/// working-set vocabulary (the mention text feeds the path extractor), and
+/// any file — text or binary — can be attached explicitly with `/attach`.
 const IMAGE_EXTENSIONS: &[&str] = codesmith_agent::models::WIRE_IMAGE_EXTENSIONS;
 
 pub async fn run_repl(
     config: &Config,
     options: InteractiveOptions,
-    telemetry_sink: codesmith_agent_runtime::telemetry::TelemetrySink,
+    telemetry_sink: std::sync::Arc<dyn codesmith_agent_runtime::telemetry::TelemetrySink>,
 ) -> Result<()> {
     let mut state = ReplState::new(options.clone(), config);
     state.telemetry_sink = Some(telemetry_sink);
@@ -501,22 +503,19 @@ pub async fn run_repl(
         }
 
         let (content, at_images) = extract_attachments(trimmed, &state.workspace);
-        let mut images: Vec<crate::media::PendingImage> = at_images
+        let mut images: Vec<crate::media::PendingAttachment> = at_images
             .into_iter()
-            .map(|path| crate::media::PendingImage {
+            .map(|path| crate::media::PendingAttachment {
                 path: PathBuf::from(path),
                 source: codesmith_session::store::ContextReferenceSource::AtMention,
             })
             .collect();
-        images.extend(
-            state
-                .pending_attachments
-                .drain(..)
-                .map(|path| crate::media::PendingImage {
-                    path,
-                    source: codesmith_session::store::ContextReferenceSource::Attachment,
-                }),
-        );
+        images.extend(state.pending_attachments.drain(..).map(|path| {
+            crate::media::PendingAttachment {
+                path,
+                source: codesmith_session::store::ContextReferenceSource::Attachment,
+            }
+        }));
         idle_pump.hold().await;
         if let Err(err) = submit_with_images(&mut state, content, images).await {
             println!("{} {err}", "✗".red());
@@ -1328,7 +1327,9 @@ fn save_history(editor: &mut ReplEditor, history: Option<&std::path::Path>) -> R
 }
 
 /// Split `@path` image attachments out of the input line. Non-image
-/// tokens and non-existent paths stay in the message text. Relative paths
+/// tokens and non-existent paths stay in the message text — a non-image
+/// `@path` mention is working-set vocabulary, not an attachment; any file
+/// type attaches explicitly via `/attach`. Relative paths
 /// resolve against the session workspace (the REPL can be started with a
 /// workspace other than the process CWD); the resolved path is what gets
 /// attached.
@@ -1389,7 +1390,7 @@ pub(crate) async fn submit(state: &mut ReplState, content: String) -> Result<()>
 async fn submit_with_images(
     state: &mut ReplState,
     mut content: String,
-    images: Vec<crate::media::PendingImage>,
+    images: Vec<crate::media::PendingAttachment>,
 ) -> Result<()> {
     // message_submit hooks transform or block the submitted text before it
     // reaches routing, session history, or the model — the transformed text
@@ -1427,15 +1428,22 @@ async fn submit_with_images(
 
     let engine = state.engine()?.clone();
 
-    // TODO-50: admit this message's images into the content-addressed store
-    // (after the hook gate, so a blocked submission records nothing). The
-    // engine receives store paths; the session record gets one reference per
-    // image, admitted or refused, under the index this message will take.
+    // TODO-50: admit this message's attachments into the content-addressed
+    // store (after the hook gate, so a blocked submission records nothing).
+    // The engine receives store paths for wire images; text and binary
+    // attachments fold into the outgoing message content (inline text, or a
+    // durable path reference) so they ride — and are logged with — the user
+    // message. The session record gets one reference per attachment,
+    // admitted or refused, under the index this message will take.
     let intake = crate::media::ingest_for_message(images, state.api_messages.len()).await;
     for line in &intake.rejections {
         println!("{} {line}", "✗".red());
     }
     let image_paths = intake.accepted;
+    if !intake.content_appendix.is_empty() {
+        content.push_str("\n\n");
+        content.push_str(&intake.content_appendix);
+    }
 
     // Auto-model routing per request (mirror of the retired dispatch path
     // / `resolve_cli_auto_route` in exec).

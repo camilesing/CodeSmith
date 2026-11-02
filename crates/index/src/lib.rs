@@ -60,6 +60,7 @@ pub mod builtin;
 pub mod config;
 pub mod registry;
 pub mod service;
+pub mod session_index;
 pub mod store;
 #[cfg(feature = "tree-sitter")]
 pub mod tree_sitter;

@@ -172,7 +172,8 @@ files yet. Return the likely cause, evidence, and a proposed patch plan.
 会显示命令数量，`Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色
 文字预览匹配到的命令及其一行说明。`Shift+Tab` 循环运行模式（见第 5 节）。
 使用 `@path` 引用为下一条消息附加
-图像文件，或用 `/attach <path>` 附加本地媒体。`Ctrl+C` 取消运行中的
+图像文件，或用 `/attach <path>` 附加任意本地文件（文本内联进消息、二进制
+以持久路径引用附加；音频/视频被拒绝）。`Ctrl+C` 取消运行中的
 一轮；连续按两次退出。
 
 下一步：[CLI.md](CLI.md) 是命令与子命令参考。

@@ -28,7 +28,8 @@ use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
 use codesmith_agent_runtime::capacity_memory::load_last_k_capacity_records;
 use codesmith_agent_runtime::engine::compact_tool_result_for_context;
 use codesmith_agent_runtime::mode::ApprovalMode;
-use codesmith_agent_runtime::telemetry::TelemetrySink;
+use codesmith_agent_runtime::telemetry::LocalJsonlSink;
+use codesmith_agent_runtime::telemetry::TelemetrySink as _;
 use codesmith_agent_runtime::turn::{TurnContext, TurnToolCall};
 
 use super::*;
@@ -173,13 +174,13 @@ async fn capacity_decision_routes_to_telemetry_sink() {
     let _env = HermeticEnv::new();
     let tmp = tempdir().expect("tempdir");
     let sink_path = tmp.path().join("events.jsonl");
-    let sink = TelemetrySink::new_skeleton(true, Some(sink_path.clone()));
+    let sink = LocalJsonlSink::new_skeleton(true, Some(sink_path.clone()));
     // Post-trust: writes go straight to disk (no queueing).
     sink.attach();
 
     let engine_config = EngineConfig {
         capacity: CapacityControllerConfig::default(),
-        telemetry_sink: Some(sink),
+        telemetry_sink: Some(std::sync::Arc::new(sink)),
         ..Default::default()
     };
     let (mut engine, _handle) = Engine::new(engine_config, &Config::default());
@@ -4447,6 +4448,74 @@ async fn idle_wake_synthesizes_turn_when_completion_lands_while_idle() {
     assert_eq!(requests[1].messages[wake].role, "user");
 }
 
+/// P1-1 — the latched-wake cell of the {followup, steer, inject} × {idle,
+/// running, maintenance} matrix: a followup wake whose permit is stored
+/// while the op loop is inside a maintenance (non-turn) op is NOT lost —
+/// the loop replays the wake decision at the convergence point after the
+/// op finishes. Deterministic by ordering: the completion (and its stored
+/// `Notify` permit) lands strictly before the maintenance op is queued, so
+/// the loop is guaranteed to execute the op arm with the permit already
+/// held; a lossy signal would leave the engine silent after the op.
+#[tokio::test]
+async fn wake_arriving_during_a_maintenance_op_is_latched_and_replayed() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("first turn done"),
+        canned::simple_text_turn("coordinated after maintenance"),
+    ]);
+    let mut config = test_engine_config(tmp.path());
+    config.idle_wake = true;
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    // Turn 1: a normal user turn, driven to completion.
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let first = collect_until_turn_complete(&handle).await;
+    assert!(!turn_started_tag(&first));
+
+    // Park the followup completion FIRST — its Notify permit is stored
+    // while the engine is (about to be) busy with the maintenance op.
+    handle
+        .tx_subagent_completion
+        .send(parked_completion("agent_a", "Built the widget"));
+
+    // Queue a maintenance (non-turn) op; the loop's biased select executes
+    // it with the wake permit already latched.
+    handle
+        .send(Op::CancelAllBackgroundTasks)
+        .await
+        .expect("maintenance op");
+    // Drain the maintenance op's acknowledgement (a Status event) without
+    // consuming the turn we are waiting for: collect until the next
+    // TurnStarted of any kind appears, then keep collecting to completion.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        collect_until_turn_complete(&handle),
+    )
+    .await
+    .expect("latched wake must replay after the maintenance op");
+
+    // The maintenance window did not swallow the wake: a synthesized turn
+    // ran and completed.
+    assert!(
+        turn_started_tag(&second),
+        "the wake replayed after the maintenance op as a synthesized turn"
+    );
+    assert!(!handle.turn_in_flight());
+    // And it delivered the parked completion to the model: its drain put
+    // the sentinel into the request.
+    let requests = mock_arc.captured_requests();
+    assert_eq!(requests.len(), 2, "exactly two model requests");
+    let texts = user_text_blocks(&requests[1]);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("kind=\"subagent_completion\"")
+                && t.contains("<codesmith:subagent.done>")),
+        "the latched completion reached the synthesized turn's request"
+    );
+}
+
 /// Round 10 TODO-70, end to end: a background shell job finishing while
 /// the engine is idle is bridged onto the drain seam and reaches the model
 /// through an idle-wake synthesized turn.
@@ -5988,6 +6057,112 @@ async fn session_journal_folds_to_the_transcript_and_keeps_rolled_back_history()
         entry,
         JournalEntry::Rebuild { reason, .. } if reason.contains("edit rollback")
     )));
+}
+
+/// P1-4 — the binary-attachment chain, end to end at the intake→engine→
+/// journal seam: `/attach`-ing a non-image file copies it into the store,
+/// the send path folds the path-reference line into the message content,
+/// and the journal's `Append` record carries both that text and a wire
+/// image's native block — the durable record shows exactly what the model
+/// was shown.
+#[tokio::test]
+async fn binary_attachment_reaches_the_model_and_the_session_journal() {
+    use codesmith_session::journal::{
+        FileSessionJournal, JournalEntry, journal_path, read_journal,
+    };
+
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let sessions = tmp.path().join("sessions");
+    let store =
+        codesmith_agent_runtime::attachments::AttachmentStore::new(tmp.path().join("attachments"));
+    let mut config = test_engine_config(tmp.path());
+    config.session_journal = Some(std::sync::Arc::new(FileSessionJournal::new(&sessions)));
+    let (handle, _mock) = spawn_engine_with_mock(
+        config,
+        MockLlmClient::new(vec![canned::simple_text_turn("got it")]),
+    );
+
+    // Intake exactly as the REPL send path performs it: a wire image goes
+    // to the engine image paths, a binary folds a path reference into the
+    // outgoing content.
+    let img_src = tmp.path().join("shot.png");
+    std::fs::write(&img_src, b"\x89PNG fake").unwrap();
+    let bin_src = tmp.path().join("weights.bin");
+    std::fs::write(&bin_src, b"\x00\x01binary").unwrap();
+    let intake = crate::media::ingest_into(
+        &store,
+        &[
+            crate::media::PendingAttachment {
+                path: img_src,
+                source: codesmith_session::store::ContextReferenceSource::Attachment,
+            },
+            crate::media::PendingAttachment {
+                path: bin_src,
+                source: codesmith_session::store::ContextReferenceSource::Attachment,
+            },
+        ],
+        0,
+    );
+    assert!(intake.references.iter().all(|r| r.reference.included));
+    assert_eq!(intake.accepted.len(), 1, "only the image is a wire block");
+    assert!(
+        intake.content_appendix.contains("weights.bin"),
+        "{}",
+        intake.content_appendix
+    );
+    assert!(
+        intake.content_appendix.contains("application/octet-stream"),
+        "{}",
+        intake.content_appendix
+    );
+
+    let mut op = make_send_op(&format!("analyze these\n\n{}", intake.content_appendix));
+    if let Op::SendMessage { image_paths, .. } = &mut op {
+        *image_paths = intake.accepted;
+    }
+    handle.send(op).await.expect("send op");
+    let mut session_id = None;
+    for event in collect_until_turn_complete(&handle).await {
+        if let Event::SessionUpdated { session_id: id, .. } = event {
+            session_id = Some(id);
+        }
+    }
+    let session_id = session_id.expect("the engine reported its transcript");
+
+    let entries = read_journal(&journal_path(&sessions, &session_id).expect("path"))
+        .expect("the journal is readable");
+    let user_text = |m: &Message| {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>()
+    };
+    let appended: Vec<&Message> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            JournalEntry::Append { messages } => Some(messages.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(
+        appended
+            .iter()
+            .any(|m| user_text(m).contains("application/octet-stream")
+                && user_text(m).contains("analyze these")),
+        "the binary's path reference rides the journaled user message"
+    );
+    assert!(
+        appended.iter().any(|m| m
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))),
+        "the wire image's native block is journaled with the same message"
+    );
 }
 
 /// "Model-visible means logged", checked mechanically: every main-turn

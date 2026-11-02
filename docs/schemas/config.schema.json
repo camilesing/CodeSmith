@@ -201,6 +201,18 @@
       ],
       "default": null
     },
+    "telemetry_otlp": {
+      "description": "OTLP/HTTP telemetry export (`[telemetry_otlp]`). Opt-in and\ndefault-off: absent table (or empty `url`) means the exporter is\nnever constructed — zero network. See `docs/CONFIGURATION.md`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TelemetryOtlpConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "mods": {
       "description": "Script Mods (§F script mod layer) controls: `enabled` gates the whole\nscript-mod layer (discovery, `manage_mods` tool, watcher), `watch`\ngates only the hot-reload file watcher. Both default to `true`.\nDocumented in `config.example.toml` + `docs/MODS.md`.",
       "anyOf": [
@@ -727,6 +739,36 @@
           ]
         }
       ]
+    },
+    "TelemetryOtlpConfig": {
+      "description": "OTLP/HTTP telemetry export (`[telemetry_otlp]` table in config.toml,\nP1-2). Opt-in: absent table means no exporter and zero network. Records\nare OTLP/HTTP-JSON logs (`<url>/v1/logs`) carrying a stable anonymous\ninstall id — never session content, never on model requests.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Collector base URL (e.g. `https://collector.example.com:4318`).\nEmpty or absent disables the exporter entirely.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "events": {
+          "description": "Events channel switch (capacity decisions and kin). Default `true`\nwhen the table is present with a `url`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "session_log": {
+          "description": "Session-log channel switch (byte-capped per-turn summaries).\nDefault `false`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
     },
     "ModsConfig": {
       "description": "`[mods]` table (§F script mod layer).",
@@ -2878,6 +2920,18 @@
           "type": [
             "boolean",
             "null"
+          ],
+          "default": null
+        },
+        "telemetry_otlp": {
+          "description": "OTLP/HTTP telemetry export (`[telemetry_otlp]`). Opt-in and\ndefault-off: absent table (or empty `url`) means the exporter is\nnever constructed — zero network. See `docs/CONFIGURATION.md`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TelemetryOtlpConfig"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null
         },

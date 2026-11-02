@@ -1,23 +1,32 @@
-//! `search_sessions` tool — cross-session content search (round-3 TODO-43).
+//! `search_sessions` tool — cross-session content search (round-3 TODO-43;
+//! persistent index P1-5).
 //!
-//! Model-visible, workspace-scoped lazy search over the saved session
+//! Model-visible, workspace-scoped search over the saved session
 //! transcripts (`<sessions>/*.json`, the same directory `FileSessionStore`
-//! writes). Each call enumerates candidate files (newest first, capped),
-//! parses the ones within the per-file size cap, keeps sessions whose
-//! `metadata.workspace` matches the invoking session's workspace, and
-//! BM25-scores every message (the ranking core, tokenizer, and excerpt
-//! window are shared with `recall_archive`).
+//! writes). The primary path is a **persistent per-workspace FTS5 index**
+//! (`codesmith_index::session_index`, `~/.codesmith/index/<ws-hash>/
+//! sessions.db`): each query lazily refreshes it — sessions whose
+//! *generation* (journal file mtime+size when one exists, snapshot
+//! mtime+size otherwise) is unchanged are not re-read — then queries it.
+//! The scan path survives verbatim as the explicit fallback when the index
+//! cannot open; the payload's `via` field says which one ran
+//! (`"index"` / `"scan"`).
 //!
-//! Known limitations (deliberate, round-3 plan §2.4): no persistent index
-//! and no background refresh — a call is O(sessions × messages) over local
-//! disk, acceptable while session counts stay bounded (prove the value
-//! first; an FTS read model is the follow-up shape). Scope is the workspace
-//! key only — the `parent_session_id` lineage chain is NOT traversed (a
-//! forked session saved under another workspace stays invisible). Files past
-//! the scan cap (oldest dropped) and oversized files are skipped and
-//! counted, never fatal. Only the shared REPL sessions dir is covered; the
-//! RLM/background session stores are separate surfaces. The current
-//! session's own file participates as last saved (turn-boundary autosave).
+//! Reconciliation (P1-5): every indexed row carries the generation it was
+//! indexed under, and every hit is re-checked against the live session
+//! file's generation before it is returned — a session rewritten by
+//! compaction or edit rollback invalidates its old hits instead of silently
+//! serving content the current transcript no longer holds.
+//!
+//! Known limitations (deliberate): refresh is lazy and caller-driven (no
+//! background writer); sessions beyond the refresh cap keep their indexed
+//! rows, guarded by the hit-time generation check. FTS5's bm25 ranks close
+//! to but not identically with the scan path's hand-rolled BM25, and CJK
+//! text still collapses to one long token. Scope is the workspace key only
+//! — the `parent_session_id` lineage chain is NOT traversed. Only the
+//! shared REPL sessions dir is covered; RLM/background session stores are
+//! separate surfaces. The current session's own file participates as last
+//! saved (turn-boundary autosave).
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +37,7 @@ use serde_json::{Value, json};
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
+use codesmith_index::session_index::{SessionIndex, SessionProjection, fts_query_from_terms};
 use codesmith_session::store::SavedSession;
 
 use super::recall_archive::{
@@ -153,6 +163,12 @@ impl ToolSpec for SessionSearchTool {
                     )));
                 }
             };
+            // P1-5: the persistent per-workspace FTS index is the primary
+            // path; `None` falls back to the scan path (payload says which
+            // ran via `via`).
+            if let Some(result) = index_search(&sessions_dir, &workspace, &query, max_results) {
+                return result;
+            }
             let (docs, stats) = scan_saved_sessions(&sessions_dir, &workspace);
             let query_tokens = tokenize(&query);
             if query_tokens.is_empty() {
@@ -181,6 +197,7 @@ impl ToolSpec for SessionSearchTool {
             let payload = json!({
                 "query": query,
                 "workspace": workspace.display().to_string(),
+                "via": "scan",
                 "sessions_parsed": stats.sessions_parsed,
                 "sessions_in_workspace": stats.sessions_in_workspace,
                 "skipped_other_workspace": stats.skipped_other_workspace,
@@ -235,19 +252,9 @@ fn comparable(path: &Path) -> PathBuf {
     canonical
 }
 
-enum CappedRead {
-    // Boxed: `SavedSession` is ~550 bytes and the other variants carry
-    // none, so an unboxed variant bloated every `CappedRead` on the stack.
-    Parsed(Box<SavedSession>),
-    /// Larger than the cap (fstat or the take() bound tripped).
-    Oversize,
-    /// Vanished, unreadable, non-UTF-8, or invalid JSON.
-    Corrupt,
-}
-
 /// Read at most `MAX_SESSION_FILE_BYTES + 1` bytes from `file` and parse,
 /// so the cap holds even if the file grows between fstat and read.
-fn read_capped(file: std::fs::File) -> CappedRead {
+fn read_capped(file: std::fs::File) -> ReadOutcome {
     use std::io::Read;
     let mut buf = Vec::new();
     if file
@@ -255,17 +262,17 @@ fn read_capped(file: std::fs::File) -> CappedRead {
         .read_to_end(&mut buf)
         .is_err()
     {
-        return CappedRead::Corrupt;
+        return ReadOutcome::Corrupt;
     }
     if buf.len() > MAX_SESSION_FILE_BYTES as usize {
-        return CappedRead::Oversize;
+        return ReadOutcome::Oversize;
     }
     match String::from_utf8(buf)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
     {
-        Some(session) => CappedRead::Parsed(Box::new(session)),
-        None => CappedRead::Corrupt,
+        Some(session) => ReadOutcome::Parsed(Box::new(session)),
+        None => ReadOutcome::Corrupt,
     }
 }
 
@@ -275,53 +282,23 @@ fn scan_saved_sessions(sessions_dir: &Path, workspace: &Path) -> (Vec<SessionDoc
     let mut stats = ScanStats::default();
     let mut docs: Vec<SessionDoc> = Vec::new();
 
-    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
-        return (docs, stats);
-    };
     // Candidates: *.json files with mtimes, newest first (the scan cap then
     // drops the OLDEST sessions, the least likely to be relevant).
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                return None;
-            }
-            let mtime = entry.metadata().ok()?.modified().ok()?;
-            Some((mtime, path))
-        })
-        .collect();
-    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    if candidates.len() > MAX_SESSIONS_SCANNED {
+    let candidates = enumerate_candidates(sessions_dir);
+    if candidates.truncated {
         stats.scan_truncated = true;
-        candidates.truncate(MAX_SESSIONS_SCANNED);
     }
 
     let workspace_key = comparable(workspace);
     let mut retained_text_bytes = 0usize;
-    'sessions: for (_mtime, path) in &candidates {
-        // Cap the read atomically on the opened handle: a stat-then-read
-        // race (the current session's file rewritten by turn-boundary
-        // autosave mid-scan) could otherwise pull unbounded bytes into
-        // memory past the cap before the JSON parse rejects them.
-        let outcome = match std::fs::File::open(path) {
-            Ok(file) => match file.metadata() {
-                // Non-regular files (FIFO, device) report len 0 — never
-                // read them unboundedly.
-                Ok(meta) if !meta.is_file() => CappedRead::Corrupt,
-                Ok(meta) if meta.len() > MAX_SESSION_FILE_BYTES => CappedRead::Oversize,
-                Ok(_) => read_capped(file),
-                Err(_) => CappedRead::Corrupt,
-            },
-            Err(_) => CappedRead::Corrupt,
-        };
-        let session = match outcome {
-            CappedRead::Parsed(session) => session,
-            CappedRead::Oversize => {
+    'sessions: for (_mtime, path) in &candidates.files {
+        let session = match read_session_file(path) {
+            ReadOutcome::Parsed(session) => session,
+            ReadOutcome::Oversize => {
                 stats.skipped_oversize += 1;
                 continue;
             }
-            CappedRead::Corrupt => {
+            ReadOutcome::Corrupt => {
                 stats.skipped_corrupt += 1;
                 continue;
             }
@@ -361,6 +338,211 @@ fn scan_saved_sessions(sessions_dir: &Path, workspace: &Path) -> (Vec<SessionDoc
         }
     }
     (docs, stats)
+}
+
+/// The generation of one session's durable content: the journal file's
+/// (mtime_ms, size) when the session keeps a journal (the journal moves on
+/// every append and rebuild, so it is the finer-grained boundary), else the
+/// snapshot file's. `None` when neither file states — the session is gone.
+fn generation_of(session_id: &str, sessions_dir: &Path) -> Option<(i64, i64)> {
+    let journal = sessions_dir.join(format!("{session_id}.journal.jsonl"));
+    let snapshot = sessions_dir.join(format!("{session_id}.json"));
+    let file = if journal.is_file() { journal } else { snapshot };
+    let meta = std::fs::metadata(file).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    Some((mtime_ms, i64::try_from(meta.len()).ok()?))
+}
+
+/// The persistent-index path (P1-5): lazily refresh the per-workspace FTS
+/// index, query it, and reconcile every hit against the live session files.
+/// `None` means "index unusable" — the caller falls back to the scan path.
+fn index_search(
+    sessions_dir: &Path,
+    workspace: &Path,
+    query: &str,
+    max_results: usize,
+) -> Option<Result<ToolResult, ToolError>> {
+    let mut index = SessionIndex::open_default(workspace).ok()?;
+
+    // Refresh, newest-first over the same candidate set the scan path uses.
+    let candidates = enumerate_candidates(sessions_dir);
+    let mut stats = ScanStats::default();
+    if candidates.truncated {
+        stats.scan_truncated = true;
+    }
+    let workspace_key = comparable(workspace);
+    let mut live_ids: Vec<String> = Vec::new();
+    for (_mtime, path) in &candidates.files {
+        let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        live_ids.push(session_id.to_string());
+        // The incremental win: a session whose generation is unchanged is
+        // not re-read at all — stat only.
+        let Some(generation) = generation_of(session_id, sessions_dir) else {
+            continue;
+        };
+        if index.tracked_generation(session_id).ok().flatten() == Some(generation) {
+            // Unchanged: counted as an in-workspace session this call, but
+            // not re-read — the incremental win.
+            stats.sessions_in_workspace += 1;
+            continue;
+        }
+        let session = match read_session_file(path) {
+            ReadOutcome::Parsed(session) => session,
+            ReadOutcome::Oversize => {
+                stats.skipped_oversize += 1;
+                continue;
+            }
+            ReadOutcome::Corrupt => {
+                stats.skipped_corrupt += 1;
+                continue;
+            }
+        };
+        stats.sessions_parsed += 1;
+        if comparable(&session.metadata.workspace) != workspace_key {
+            stats.skipped_other_workspace += 1;
+            continue;
+        }
+        stats.sessions_in_workspace += 1;
+        let messages = project_messages(&session);
+        let projection = SessionProjection {
+            session_id: session.metadata.id.clone(),
+            workspace_key: workspace_key.display().to_string(),
+            title: session.metadata.title.clone(),
+            updated_at: session.metadata.updated_at.to_rfc3339(),
+            generation,
+            messages,
+        };
+        index.upsert_session(&projection).ok()?;
+    }
+    let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
+    let _pruned = index.prune_missing(&live_refs).unwrap_or(0);
+
+    let fts_query = fts_query_from_terms(query);
+    if fts_query.is_empty() {
+        // Same error contract as the scan path for a tokenless query.
+        return Some(Err(ToolError::invalid_input(
+            "query has no scoring tokens after tokenization",
+        )));
+    }
+
+    // Reconcile: a hit survives only when the session's live generation
+    // still matches the one it was indexed under — a compaction or rollback
+    // rewrite invalidates it rather than serving dropped content.
+    let raw = index.search(&fts_query, max_results * 3).ok()?;
+    let mut hits: Vec<Value> = Vec::new();
+    let mut stale_dropped = 0usize;
+    for hit in raw {
+        if hits.len() >= max_results {
+            break;
+        }
+        let live = generation_of(&hit.session_id, sessions_dir);
+        if live != Some(hit.generation) {
+            stale_dropped += 1;
+            continue;
+        }
+        hits.push(json!({
+            "session_id": hit.session_id,
+            "title": hit.title,
+            "updated_at": hit.updated_at,
+            "message_index": hit.message_index,
+            "role": hit.role,
+            "score": hit.score,
+            "excerpt": hit.excerpt,
+        }));
+    }
+
+    let payload = json!({
+        "query": query,
+        "workspace": workspace.display().to_string(),
+        "via": "index",
+        "sessions_parsed": stats.sessions_parsed,
+        "sessions_in_workspace": stats.sessions_in_workspace,
+        "skipped_other_workspace": stats.skipped_other_workspace,
+        "skipped_oversize": stats.skipped_oversize,
+        "skipped_corrupt": stats.skipped_corrupt,
+        "scan_truncated": stats.scan_truncated,
+        "stale_hits_dropped": stale_dropped,
+        "hits": hits,
+    });
+    Some(Ok(ToolResult::success(payload.to_string())))
+}
+
+/// Candidate session files, newest first, capped at
+/// [`MAX_SESSIONS_SCANNED`] — shared by the index refresh and the scan
+/// fallback so both examine the same corpus.
+struct Candidates {
+    files: Vec<(std::time::SystemTime, PathBuf)>,
+    truncated: bool,
+}
+
+fn enumerate_candidates(sessions_dir: &Path) -> Candidates {
+    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+        return Candidates {
+            files: Vec::new(),
+            truncated: false,
+        };
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                return None;
+            }
+            let mtime = entry.metadata().ok()?.modified().ok()?;
+            Some((mtime, path))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let truncated = files.len() > MAX_SESSIONS_SCANNED;
+    if truncated {
+        files.truncate(MAX_SESSIONS_SCANNED);
+    }
+    Candidates { files, truncated }
+}
+
+enum ReadOutcome {
+    // `Parsed` is boxed: `SavedSession` is ~550 bytes and the other
+    // variants carry none, so an unboxed variant bloated every outcome on
+    // the stack.
+    Parsed(Box<SavedSession>),
+    /// Larger than the cap (fstat or the take() bound tripped).
+    Oversize,
+    /// Vanished, unreadable, non-UTF-8, or invalid JSON.
+    Corrupt,
+}
+
+/// Size-capped open+read+parse of one session file (the same discipline the
+/// scan path applies: cap on the opened handle, non-regular files never
+/// read unboundedly).
+fn read_session_file(path: &Path) -> ReadOutcome {
+    match std::fs::File::open(path) {
+        Ok(file) => match file.metadata() {
+            Ok(meta) if !meta.is_file() => ReadOutcome::Corrupt,
+            Ok(meta) if meta.len() > MAX_SESSION_FILE_BYTES => ReadOutcome::Oversize,
+            Ok(_) => read_capped(file),
+            Err(_) => ReadOutcome::Corrupt,
+        },
+        Err(_) => ReadOutcome::Corrupt,
+    }
+}
+
+/// Project a saved session into indexable `(role, text)` messages with the
+/// same `message_text` extraction the scan path scores with.
+fn project_messages(session: &SavedSession) -> Vec<(String, String)> {
+    session
+        .messages
+        .iter()
+        .map(|message| (message.role.clone(), message_text(message)))
+        .filter(|(_, text)| !text.trim().is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -671,5 +853,99 @@ mod tests {
         let payload = payload_of(&result);
         assert_eq!(payload["sessions_in_workspace"], 1, "{payload}");
         assert!(!payload["hits"].as_array().expect("hits").is_empty());
+    }
+
+    /// P1-5: the persistent index is the primary path — the payload says
+    /// `via: "index"`, and a second query re-reads nothing (the generation
+    /// check skips unchanged sessions).
+    #[tokio::test]
+    async fn index_path_serves_queries_and_skips_unchanged_sessions() {
+        let home = HomeGuard::new();
+        let ws = TempDir::new().expect("ws");
+        save_session(
+            &home,
+            "sess-idx",
+            ws.path(),
+            &[("user", "how did we fix the flaky cache test")],
+        );
+
+        let tool = SessionSearchTool;
+        let first = tool
+            .execute(json!({"query": "flaky cache"}), &ctx_for(ws.path()))
+            .await
+            .expect("first search");
+        let payload = payload_of(&first);
+        assert_eq!(payload["via"], "index", "{payload}");
+        assert_eq!(
+            payload["sessions_parsed"], 1,
+            "first run indexes: {payload}"
+        );
+        let hits = payload["hits"].as_array().expect("hits");
+        assert_eq!(hits[0]["session_id"], "sess-idx", "{payload}");
+
+        let second = tool
+            .execute(json!({"query": "flaky cache"}), &ctx_for(ws.path()))
+            .await
+            .expect("second search");
+        let payload = payload_of(&second);
+        assert_eq!(payload["via"], "index", "{payload}");
+        assert_eq!(
+            payload["sessions_parsed"], 0,
+            "unchanged generation ⇒ no re-read: {payload}"
+        );
+        assert_eq!(payload["sessions_in_workspace"], 1, "{payload}");
+        assert!(!payload["hits"].as_array().expect("hits").is_empty());
+    }
+
+    /// P1-5 reconciliation: a session rewritten by compaction (same id,
+    /// fewer messages, new mtime) must not serve the dropped content — the
+    /// stale hit is invalidated and the refresh re-projects the session.
+    #[tokio::test]
+    async fn rewritten_session_invalidates_stale_hits() {
+        let home = HomeGuard::new();
+        let ws = TempDir::new().expect("ws");
+        save_session(
+            &home,
+            "sess-compact",
+            ws.path(),
+            &[("user", "needle: the flaky cache test discussion")],
+        );
+        let tool = SessionSearchTool;
+        let first = tool
+            .execute(json!({"query": "flaky cache"}), &ctx_for(ws.path()))
+            .await
+            .expect("first search");
+        assert!(!payload_of(&first)["hits"].as_array().unwrap().is_empty());
+
+        // Compaction rewrite: new mtime (size may coincidentally match),
+        // the old message is gone, new content present.
+        std::fs::remove_file(home.sessions_dir().join("sess-compact.json"))
+            .expect("remove old snapshot");
+        save_session(
+            &home,
+            "sess-compact",
+            ws.path(),
+            &[("assistant", "summary: we discussed the weather instead")],
+        );
+
+        let second = tool
+            .execute(json!({"query": "flaky cache"}), &ctx_for(ws.path()))
+            .await
+            .expect("second search");
+        let payload = payload_of(&second);
+        assert_eq!(payload["via"], "index", "{payload}");
+        assert!(
+            payload["hits"].as_array().unwrap().is_empty(),
+            "dropped content must not be served: {payload}"
+        );
+
+        let third = tool
+            .execute(json!({"query": "weather"}), &ctx_for(ws.path()))
+            .await
+            .expect("third search");
+        assert!(
+            !payload_of(&third)["hits"].as_array().unwrap().is_empty(),
+            "the rewritten session is re-projected and searchable"
+        );
     }
 }

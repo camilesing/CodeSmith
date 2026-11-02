@@ -217,7 +217,7 @@ pub struct ReplState {
     /// straight into a writable turn instead of waiting for the user's next
     /// message. Cleared when the turn ends any other way.
     pub plan_implementation_pending: bool,
-    pub telemetry_sink: Option<TelemetrySink>,
+    pub telemetry_sink: Option<std::sync::Arc<dyn TelemetrySink>>,
     pub current_session_id: Option<String>,
     pub approval_grants: ApprovalGrants,
     /// **Grouping** keys approved for this session (`shell:<prefix>`,

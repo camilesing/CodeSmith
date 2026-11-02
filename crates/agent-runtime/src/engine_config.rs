@@ -345,14 +345,15 @@ pub struct EngineConfig {
     /// read-before-edit validation (`[features].file_freshness`) sees reads
     /// from earlier turns.
     pub file_freshness_tracker: crate::tools::freshness::FileFreshnessTracker,
-    /// Local-only telemetry sink handle (Plan 06 / 6.1). Carried on
-    /// `EngineConfig` because [`TelemetrySink`] lives in this same crate
-    /// (it is *not* a host-injected OS-bridging manager like
-    /// `RuntimeToolServices`/`HookExecutor`), is `Arc`-shared so `Clone` is
-    /// cheap, and writes only to a local jsonl file. The engine reads it at
-    /// capacity-event emission sites (`capacity_flow::emit_telemetry`).
-    /// `None` (the default) disables emission; the sink is opt-in.
-    pub telemetry_sink: Option<TelemetrySink>,
+    /// Telemetry sink seam handle (P1-2): events channel + byte-capped
+    /// session-log channel, independently switchable. Carried on
+    /// `EngineConfig` as the [`TelemetrySink`] trait object; providers are
+    /// the local jsonl sink (this crate) and the CLI's OTLP/HTTP exporter,
+    /// fanned out by the host with [`TelemetryFanout`]. The engine reads it
+    /// at event-emission mirror sites (`capacity_flow::emit_telemetry` for
+    /// events, the post-executor turn harvest for session-log records).
+    /// `None` (the default) disables emission; telemetry is opt-in.
+    pub telemetry_sink: Option<std::sync::Arc<dyn TelemetrySink>>,
     // Note: `runtime_services` (RuntimeToolServices) and `hooks`
     // (HookExecutor) are intentionally *not* stored on `EngineConfig` so it
     // stays portable to `codesmith-agent-runtime`. They are host-injected by

@@ -1850,6 +1850,23 @@ impl Engine {
         // requested id — see `ReplState::reported_model`); flows into
         // `Event::TurnComplete.reported_model`.
         turn.reported_model = built.harvest.take_reported_model();
+        // P1-2 — the byte-capped session-log channel: one compact record
+        // per completed turn, mirrored from the same harvest the UI's
+        // TurnComplete reads (no new event vocabulary). Early-failure
+        // completions that never ran the executor are not mirrored — see
+        // `telemetry`'s known limitations.
+        if let Some(sink) = self.config.telemetry_sink.as_ref()
+            && sink.session_log_enabled()
+        {
+            sink.emit_session_log(serde_json::json!({
+                "type": "turn_summary",
+                "session_id": self.session.telemetry_session_id,
+                "turn_id": turn.id,
+                "input_tokens": turn.usage.input_tokens,
+                "output_tokens": turn.usage.output_tokens,
+                "reported_model": turn.reported_model,
+            }));
+        }
         // Round-3 TODO-42 — failed-attempt bookkeeping: harvest the turn's
         // failed model rounds (stamping each with the engine turn id the UI
         // saw in `TurnStarted`) onto `Event::TurnComplete`; the REPL persists
@@ -3921,6 +3938,7 @@ mod deliverables;
 mod dispatch;
 pub mod executor_composition;
 mod idle_wake;
+mod inbox;
 mod loop_guard;
 mod lsp_hooks;
 mod plan_reminder;

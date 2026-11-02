@@ -93,9 +93,9 @@ Actions:
 
 ## Telemetry (local jsonl sink)
 
-CodeSmith ships no networked telemetry. The opt-in `telemetry = true` config
-flag writes capacity-decision analytics events to a **local-only** jsonl file
-at `~/.codesmith/telemetry/events.jsonl`.
+CodeSmith ships no networked telemetry by default. The opt-in `telemetry = true`
+config flag writes capacity-decision analytics events to a **local-only** jsonl
+file at `~/.codesmith/telemetry/events.jsonl`.
 
 - Off by default; the file is never created when the flag is unset or `false`.
 - The sink is constructed pre-trust (events queue in-memory) and attaches
@@ -107,6 +107,34 @@ at `~/.codesmith/telemetry/events.jsonl`.
 To inspect: `cat ~/.codesmith/telemetry/events.jsonl | jq .`
 To disable: unset `telemetry` (or set `telemetry = false`) in
 `~/.codesmith/config.toml`. The file can be deleted safely at any time.
+
+## Telemetry (opt-in OTLP/HTTP export)
+
+`[telemetry_otlp]` in config.toml turns on OTLP/HTTP-JSON export to a collector
+of your choice (e.g. an OpenTelemetry Collector at `:4318`). This is opt-in
+network telemetry — the operator configures the endpoint, so the operator owns
+what the collector sees.
+
+- Absent table (or empty `url`) ⇒ no exporter exists and no network call is
+  ever made; with both channels off the exporter still makes zero calls
+  (tested contract).
+- Two independently switchable channels: `events` (capacity decisions and kin,
+  default `true` when the table is present) and `session_log` (byte-capped
+  per-turn summaries, default `false`, hard budget 256 KiB/process).
+- Records are one OTLP logs record per POST to `<url>/v1/logs`,
+  fire-and-forget: a collector outage drops records, it never blocks or
+  breaks the engine, and there is no retry.
+- Export starts only after the workspace trust boundary passes; pre-trust
+  records queue bounded in memory (256 records, oldest dropped).
+- Records carry a stable anonymous install id (`~/.codesmith/anonymous-id`,
+  random UUID, minted once). It is read only by the exporter, rides only the
+  OTLP resource attributes, and never enters a model request, session file,
+  or prompt. Delete the file to rotate the id.
+- What the collector receives: mirrored capacity/turn-summary counters and
+  ids — never file paths, code, or prompt content (string fields pass the
+  redaction barrier in `crates/agent-runtime/src/telemetry.rs`).
+
+To disable: remove the `[telemetry_otlp]` table (or empty its `url`).
 
 ## Post-Incident Checklist
 

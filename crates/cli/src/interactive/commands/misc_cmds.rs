@@ -821,22 +821,25 @@ pub fn note(state: &ReplState, content: Option<&str>) {
     }
 }
 
-/// `/attach <image path>` — queue an image for the next message.
+/// `/attach <file path>` — queue any file for the next message.
 ///
 /// Admission is the metadata-level [`AttachmentStore::precheck`] (TODO-50):
-/// wire-representable type (`WIRE_IMAGE_EXTENSIONS` — the request builder
-/// drops anything else without a trace, so refusing here is the loud-failure
-/// point; video has no wire form), per-file byte cap, and the per-message
-/// count cap against what is already queued. A refusal is printed and
-/// recorded on the session as an excluded context reference. The hash + copy
-/// into the content-addressed store happens at send time
-/// (`crate::media::ingest_for_message`), off the runtime thread.
+/// audio/video are refused (no consumer in this build), per-file byte cap,
+/// and the per-message count cap against what is already queued. A refusal
+/// is printed and recorded on the session as an excluded context reference.
+/// Consumption dispatches on the file's kind: wire images
+/// (`WIRE_IMAGE_EXTENSIONS`) travel as native image blocks; text files
+/// inline into the message (up to 64 KiB); every other binary attaches as a
+/// durable path + size + media-type reference the model reads with
+/// `read_file` / shell tools. The hash + copy into the content-addressed
+/// store happens at send time (`crate::media::ingest_for_message`), off the
+/// runtime thread.
 pub fn attach(state: &mut ReplState, arg: Option<&str>) {
     use codesmith_agent_runtime::attachments::{AttachmentStore, MAX_ATTACHMENTS_PER_MESSAGE};
     use codesmith_session::store::ContextReferenceSource;
 
     let Some(raw_path) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
-        println!("{} usage: /attach <image-path>", "✗".red());
+        println!("{} usage: /attach <file-path>", "✗".red());
         return;
     };
     let path = std::path::PathBuf::from(raw_path);

@@ -10,6 +10,13 @@
 //! CodeSmith home does. The hash in the file name *is* the durable identity;
 //! no new `ImageSource` variant and no session-format change are needed.
 //!
+//! Any file type is admitted except audio/video (no consumer in this
+//! build). How an admitted attachment reaches the model is
+//! [`AttachmentKind`]: wire images ride native image blocks, text inlines
+//! into the message (bounded by [`MAX_INLINE_TEXT_BYTES`]), every other
+//! binary attaches as a durable path reference the model reads with
+//! `read_file` / shell tools on demand.
+//!
 //! # Intake limits (loud rejection — round-4 §2.6 trigger)
 //!
 //! [`MAX_ATTACHMENT_BYTES`] per file and [`MAX_ATTACHMENTS_PER_MESSAGE`] per
@@ -19,7 +26,12 @@
 //!
 //! # Known limitations
 //!
-//! - Images only ([`WIRE_IMAGE_EXTENSIONS`]); nothing else has a wire form.
+//! - Audio/video files are refused at the gate: no consumer exists in this
+//!   build (no transcription, no video wire form) — see
+//!   [`AUDIO_VIDEO_EXTENSIONS`]. Everything else is admitted.
+//! - Text attachments inline up to [`MAX_INLINE_TEXT_BYTES`]; a larger text
+//!   file degrades to a path reference, and PDFs are path references by
+//!   choice (`read_file` already extracts them — not duplicated here).
 //! - No garbage collection: the store only grows. Dedup keeps repeated
 //!   attachments from multiplying it, but nothing prunes orphans.
 //! - Blocking filesystem I/O. [`AttachmentStore::ingest`] is synchronous;
@@ -30,7 +42,6 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use codesmith_agent::models::WIRE_IMAGE_EXTENSIONS;
 use sha2::{Digest, Sha256};
 
 /// Per-file byte cap. Comfortably under every targeted vision provider's
@@ -39,6 +50,72 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 /// Per-message attachment cap. Bounds both the request size and the
 /// post-compaction re-send cost.
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
+/// Largest text attachment whose content is inlined into the message (the
+/// consumer reads this at intake). A larger text file degrades to a path
+/// reference so one attachment cannot crowd out the context window.
+pub const MAX_INLINE_TEXT_BYTES: u64 = 64 * 1024;
+
+/// Extensions refused at the gate: audio/video have no consumer in this
+/// build (no transcription, no video wire form), so admitting them would
+/// only store bytes the model can never be shown.
+pub const AUDIO_VIDEO_EXTENSIONS: &[&str] = &[
+    // audio
+    "mp3", "wav", "ogg", "flac", "aac", "m4a", "opus", "wma", // video
+    "mp4", "m4v", "mov", "avi", "mkv", "webm", "mpg", "mpeg", "wmv", "3gp",
+];
+
+/// Extensions whose content is inlined into the message text (up to
+/// [`MAX_INLINE_TEXT_BYTES`]). Everything non-image that is not on this list
+/// — and not audio/video — attaches as a durable path reference.
+pub const TEXT_INLINE_EXTENSIONS: &[&str] = &[
+    "txt", "md", "markdown", "rst", "log", "json", "jsonl", "jsonc", "toml", "yaml", "yml", "csv",
+    "tsv", "xml", "html", "htm", "css", "ini", "cfg", "conf", "env", "diff", "patch", "js", "mjs",
+    "cjs", "ts", "tsx", "jsx", "py", "pyi", "rs", "go", "c", "h", "cc", "cpp", "hpp", "java", "kt",
+    "swift", "rb", "php", "sh", "bash", "zsh", "fish", "ps1", "sql", "lua", "vim", "r", "m", "pl",
+    "hs", "ex", "exs", "zig", "nim", "scala", "clj", "scm",
+];
+
+/// How an admitted attachment reaches the model. Derived from the extension
+/// and the byte size at intake; the consumer (CLI media intake) dispatches
+/// on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    /// A wire-representable image ([`WIRE_IMAGE_EXTENSIONS`](codesmith_agent::models::WIRE_IMAGE_EXTENSIONS))
+    /// promoted to a native `Image` content block.
+    WireImage,
+    /// Text content inlined into the message (≤ [`MAX_INLINE_TEXT_BYTES`]).
+    InlineText,
+    /// Any other binary: the message carries the durable store path, the
+    /// byte size, and the media type; the model reads it with `read_file` /
+    /// shell tools on demand.
+    PathReference,
+}
+
+impl AttachmentKind {
+    /// Terminal badge for the session's context-reference record.
+    #[must_use]
+    pub fn badge(self) -> &'static str {
+        match self {
+            Self::WireImage => "image",
+            Self::InlineText => "text",
+            Self::PathReference => "file",
+        }
+    }
+}
+
+/// Classify an admitted extension at `bytes` size. Metadata-only: the kind
+/// of a text file flips to [`AttachmentKind::PathReference`] once it exceeds
+/// [`MAX_INLINE_TEXT_BYTES`].
+#[must_use]
+pub fn classify_attachment(ext: &str, bytes: u64) -> AttachmentKind {
+    if matches!(media_type_for_extension(ext), m if m.starts_with("image/")) {
+        AttachmentKind::WireImage
+    } else if TEXT_INLINE_EXTENSIONS.contains(&ext) && bytes <= MAX_INLINE_TEXT_BYTES {
+        AttachmentKind::InlineText
+    } else {
+        AttachmentKind::PathReference
+    }
+}
 
 /// Per-call nonce for ingest temp-file names (see `ingest`): distinguishes
 /// concurrent ingests within one process.
@@ -52,8 +129,12 @@ pub struct StoredAttachment {
     /// Lowercase hex SHA-256 of the file bytes.
     pub sha256: String,
     pub bytes: u64,
-    /// MIME type derived from the extension (`image/png`, …).
+    /// MIME type derived from the extension (`image/png`, …), falling back
+    /// to `application/octet-stream` for unknown binary types.
     pub media_type: String,
+    /// How this attachment reaches the model (wire image / inline text /
+    /// path reference).
+    pub kind: AttachmentKind,
     /// `true` when identical content was already in the store (nothing was
     /// written).
     pub deduplicated: bool,
@@ -82,10 +163,11 @@ pub enum AttachmentError {
     #[error("attachment not found or not a regular file: {}", path.display())]
     NotAFile { path: PathBuf },
     #[error(
-        "unsupported attachment type .{ext} — providers can only carry {supported} on the wire \
-         (video has no wire representation; text files go in the message as @path)"
+        "unsupported attachment type .{ext} — audio/video have no consumer in this build; \
+         every other file is admitted (images travel on the wire, text is inlined, other \
+         binaries attach by path)"
     )]
-    UnsupportedType { ext: String, supported: String },
+    UnsupportedType { ext: String },
     #[error(
         "attachment {} is {bytes} bytes; the per-file limit is {limit} bytes",
         path.display()
@@ -107,15 +189,35 @@ pub enum AttachmentError {
     },
 }
 
-/// MIME type for a wire-representable image extension (lowercase).
+/// MIME type for an admitted extension (lowercase). Unknown binary types
+/// fall back to `application/octet-stream` — a path-reference attachment
+/// reports what it is, not `None`.
 #[must_use]
-pub fn media_type_for_extension(ext: &str) -> Option<&'static str> {
+pub fn media_type_for_extension(ext: &str) -> &'static str {
     match ext {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
+        // Wire images — the set the providers can serialize.
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        // Inlined text types (the inlining decision is
+        // [`classify_attachment`]'s; the MIME here describes the file).
+        "md" | "markdown" => "text/markdown",
+        "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" => "text/javascript",
+        "json" | "jsonl" | "jsonc" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        "toml" => "application/toml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" => "application/gzip",
+        "tar" => "application/x-tar",
+        _ if TEXT_INLINE_EXTENSIONS.contains(&ext) => "text/plain",
+        _ => "application/octet-stream",
     }
 }
 
@@ -158,8 +260,10 @@ impl AttachmentStore {
 
     /// Metadata-only admission check (type, existence, size) — cheap enough
     /// for the REPL to run inline at `/attach` time so the user hears a
-    /// refusal immediately rather than at send time. Returns the lowercase
-    /// extension and byte size on success.
+    /// refusal immediately rather than at send time. Any file type is
+    /// admitted except audio/video ([`AUDIO_VIDEO_EXTENSIONS`]); the byte
+    /// cap applies to all kinds alike. Returns the lowercase extension and
+    /// byte size on success.
     pub fn precheck(source: &Path) -> Result<(String, u64), AttachmentError> {
         let metadata = fs::metadata(source).map_err(|_| AttachmentError::NotAFile {
             path: source.to_path_buf(),
@@ -174,11 +278,8 @@ impl AttachmentStore {
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        if !WIRE_IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-            return Err(AttachmentError::UnsupportedType {
-                ext,
-                supported: WIRE_IMAGE_EXTENSIONS.join("/"),
-            });
+        if AUDIO_VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(AttachmentError::UnsupportedType { ext });
         }
         let bytes = metadata.len();
         if bytes > MAX_ATTACHMENT_BYTES {
@@ -196,12 +297,8 @@ impl AttachmentStore {
     /// known limitations for where this may run.
     pub fn ingest(&self, source: &Path) -> Result<StoredAttachment, AttachmentError> {
         let (ext, bytes) = Self::precheck(source)?;
-        let media_type = media_type_for_extension(&ext)
-            .ok_or_else(|| AttachmentError::UnsupportedType {
-                ext: ext.clone(),
-                supported: WIRE_IMAGE_EXTENSIONS.join("/"),
-            })?
-            .to_string();
+        let media_type = media_type_for_extension(&ext).to_string();
+        let kind = classify_attachment(&ext, bytes);
         let data = fs::read(source).map_err(|source_err| AttachmentError::Io {
             path: source.to_path_buf(),
             source: source_err,
@@ -215,6 +312,7 @@ impl AttachmentStore {
                 sha256,
                 bytes,
                 media_type,
+                kind,
                 deduplicated: true,
             });
         }
@@ -254,6 +352,7 @@ impl AttachmentStore {
             sha256,
             bytes,
             media_type,
+            kind,
             deduplicated: false,
         })
     }
@@ -289,6 +388,7 @@ mod tests {
         let stored = store.ingest(&src).expect("ingest");
 
         assert_eq!(stored.media_type, "image/png");
+        assert_eq!(stored.kind, AttachmentKind::WireImage);
         assert_eq!(stored.bytes, 9);
         assert!(!stored.deduplicated);
         assert_eq!(stored.sha256.len(), 64);
@@ -305,6 +405,54 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn arbitrary_binaries_are_admitted_as_path_references() {
+        let src_dir = tempdir().expect("src");
+        let store = AttachmentStore::new(src_dir.path().join("store"));
+        let blob = write_file(src_dir.path(), "model.safetensors", b"\x00\x01binary");
+
+        let stored = store.ingest(&blob).expect("arbitrary binary is admitted");
+
+        assert_eq!(stored.kind, AttachmentKind::PathReference);
+        assert_eq!(stored.kind.badge(), "file");
+        assert_eq!(stored.media_type, "application/octet-stream");
+        // A PDF is a path reference by choice: `read_file` already extracts.
+        let pdf = write_file(src_dir.path(), "spec.pdf", b"%PDF-1.7");
+        let stored = store.ingest(&pdf).expect("pdf is admitted");
+        assert_eq!(stored.kind, AttachmentKind::PathReference);
+        assert_eq!(stored.media_type, "application/pdf");
+    }
+
+    #[test]
+    fn text_files_inline_up_to_the_cap_and_reference_beyond_it() {
+        let src_dir = tempdir().expect("src");
+        let store = AttachmentStore::new(src_dir.path().join("store"));
+
+        let small = write_file(src_dir.path(), "notes.md", b"# notes");
+        let stored = store.ingest(&small).expect("text is admitted");
+        assert_eq!(stored.kind, AttachmentKind::InlineText);
+        assert_eq!(stored.kind.badge(), "text");
+        assert_eq!(stored.media_type, "text/markdown");
+
+        // One byte over the inline cap: still admitted, by path reference.
+        let big = src_dir.path().join("big.log");
+        fs::write(&big, vec![b'x'; (MAX_INLINE_TEXT_BYTES + 1) as usize]).unwrap();
+        let stored = store.ingest(&big).expect("oversize text is admitted");
+        assert_eq!(stored.kind, AttachmentKind::PathReference);
+        assert_eq!(stored.media_type, "text/plain");
+
+        // The classifier is metadata-only, so the boundary is checkable
+        // without touching the filesystem.
+        assert_eq!(
+            classify_attachment("md", MAX_INLINE_TEXT_BYTES),
+            AttachmentKind::InlineText
+        );
+        assert_eq!(
+            classify_attachment("md", MAX_INLINE_TEXT_BYTES + 1),
+            AttachmentKind::PathReference
+        );
     }
 
     #[test]
@@ -342,22 +490,25 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_type_and_missing_file_are_refused_loudly() {
+    fn audio_and_video_are_refused_and_missing_files_are_loud() {
         let src_dir = tempdir().expect("src");
         let store = AttachmentStore::new(src_dir.path().join("store"));
         let mov = write_file(src_dir.path(), "clip.mov", b"video");
+        let mp3 = write_file(src_dir.path(), "track.mp3", b"audio");
 
-        let err = store.ingest(&mov).expect_err("video has no wire form");
-        assert!(
-            matches!(err, AttachmentError::UnsupportedType { .. }),
-            "{err}"
-        );
-        assert!(err.to_string().contains("png"));
+        for refused in [&mov, &mp3] {
+            let err = store.ingest(refused).expect_err("no consumer exists");
+            assert!(
+                matches!(err, AttachmentError::UnsupportedType { .. }),
+                "{err}"
+            );
+            assert!(err.to_string().contains("audio/video have no consumer"));
+        }
 
         let err = store
             .ingest(&src_dir.path().join("nope.png"))
             .expect_err("missing file");
-        assert!(matches!(err, AttachmentError::NotAFile { .. }), "{err}");
+        assert!(matches!(err, AttachmentError::NotAFile { .. }));
     }
 
     #[test]
@@ -371,12 +522,18 @@ mod tests {
     }
 
     #[test]
-    fn precheck_accepts_wire_types_and_reports_size() {
+    fn precheck_accepts_admitted_types_and_reports_size() {
         let src_dir = tempdir().expect("src");
         let jpg = write_file(src_dir.path(), "photo.JPEG", b"jpegdata");
         let (ext, bytes) = AttachmentStore::precheck(&jpg).expect("ok");
         assert_eq!(ext, "jpeg");
         assert_eq!(bytes, 8);
-        assert_eq!(media_type_for_extension(&ext), Some("image/jpeg"));
+        assert_eq!(media_type_for_extension(&ext), "image/jpeg");
+
+        let zip = write_file(src_dir.path(), "bundle.zip", b"zipdata");
+        let (ext, bytes) = AttachmentStore::precheck(&zip).expect("binary is admitted");
+        assert_eq!(ext, "zip");
+        assert_eq!(bytes, 7);
+        assert_eq!(media_type_for_extension(&ext), "application/zip");
     }
 }
