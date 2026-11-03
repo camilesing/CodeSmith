@@ -197,7 +197,11 @@ impl FactLedger {
     where
         I: IntoIterator<Item = &'a Message>,
     {
-        let before = self.entries.len();
+        // Count successful pushes instead of diffing `entries.len()`
+        // around `enforce_capacity()`: eviction can remove MORE entries
+        // than this call added, making the old `len() - before` underflow
+        // (panic in debug, huge wrapped count in release).
+        let mut added = 0usize;
 
         let mut path_count = self
             .entries
@@ -219,11 +223,11 @@ impl FactLedger {
             for block in &message.content {
                 match block {
                     ContentBlock::Text { text, .. } => {
-                        self.accumulate_fenced_blocks(text, false, &mut captured_blocks);
+                        added += self.accumulate_fenced_blocks(text, false, &mut captured_blocks);
                     }
                     ContentBlock::ToolResult { content, .. } => {
-                        self.accumulate_fenced_blocks(content, true, &mut captured_blocks);
-                        self.accumulate_failure_lines(content);
+                        added += self.accumulate_fenced_blocks(content, true, &mut captured_blocks);
+                        added += self.accumulate_failure_lines(content);
                     }
                     _ => {}
                 }
@@ -234,12 +238,13 @@ impl FactLedger {
                 }
                 if self.push(FactKind::PathSignature, path) {
                     path_count += 1;
+                    added += 1;
                 }
             }
         }
 
         self.enforce_capacity();
-        self.entries.len() - before
+        added
     }
 
     /// Capture fenced ``` blocks. When `from_tool_result`, only blocks that
@@ -252,7 +257,8 @@ impl FactLedger {
         text: &str,
         from_tool_result: bool,
         captured: &mut usize,
-    ) {
+    ) -> usize {
+        let mut added = 0usize;
         for (info, block) in fenced_blocks(text) {
             if *captured >= FACT_BLOCKS_PER_MESSAGE {
                 break;
@@ -263,14 +269,16 @@ impl FactLedger {
             let truncated = truncate(block, FACT_BLOCK_MAX_CHARS);
             if self.push(FactKind::TaskConstraint, truncated.to_string()) {
                 *captured += 1;
+                added += 1;
             }
         }
+        added
     }
 
-    fn accumulate_failure_lines(&mut self, content: &str) {
+    fn accumulate_failure_lines(&mut self, content: &str) -> usize {
         let lower = content.to_lowercase();
         if !ERROR_MARKERS.iter().any(|m| lower.contains(m)) {
-            return;
+            return 0;
         }
         for line in content.lines() {
             let trimmed = line.trim();
@@ -284,9 +292,10 @@ impl FactLedger {
                     truncate(trimmed, FACT_FAILURE_LINE_MAX_CHARS).to_string(),
                 )
             {
-                return; // one line per result is enough
+                return 1; // one line per result is enough
             }
         }
+        0
     }
 
     fn push(&mut self, kind: FactKind, text: String) -> bool {
@@ -309,24 +318,28 @@ impl FactLedger {
         &mut self,
         lines: I,
     ) -> usize {
-        let before = self.entries.len();
+        let mut added = 0usize;
         for text in lines {
-            self.push(FactKind::RefutedAssumption, text);
+            if self.push(FactKind::RefutedAssumption, text) {
+                added += 1;
+            }
         }
         self.enforce_capacity();
-        self.entries.len() - before
+        added
     }
 
     /// Record the model-authored file map (parsed out of the layered
     /// summary's optional file-map section). Same dedup semantics as
     /// [`Self::record_refuted_assumptions`].
     pub fn record_file_map<I: IntoIterator<Item = String>>(&mut self, lines: I) -> usize {
-        let before = self.entries.len();
+        let mut added = 0usize;
         for text in lines {
-            self.push(FactKind::FileIntent, text);
+            if self.push(FactKind::FileIntent, text) {
+                added += 1;
+            }
         }
         self.enforce_capacity();
-        self.entries.len() - before
+        added
     }
 
     /// Evict oldest `FailureCause` entries until the rendered ledger fits
