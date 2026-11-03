@@ -223,7 +223,14 @@ fn policy_builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let decision = match decision {
             Some(raw) => Decision::parse(raw)?,
-            None => Decision::Allow,
+            // A missing decision must not silently default to allow:
+            // fail-open is the wrong direction for a security policy.
+            None => {
+                return Err(Error::InvalidRule(
+                    "prefix_rule requires an explicit `decision` (allow|deny|ask)".to_string(),
+                )
+                .into());
+            }
         };
 
         let justification = match justification {
@@ -265,5 +272,27 @@ fn policy_builtins(builder: &mut GlobalsBuilder) {
 
         rules.into_iter().for_each(|rule| builder.add_rule(rule));
         Ok(NoneType)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_rule_without_decision_is_a_parse_error() {
+        // A missing `decision` used to default to Allow — fail-open for a
+        // security policy; it must be an explicit parse-time error.
+        let err = PolicyParser::new().parse("test-no-decision", r#"prefix_rule(pattern=["ls"])"#);
+        assert!(err.is_err(), "omitting decision must not default to allow");
+    }
+
+    #[test]
+    fn prefix_rule_with_explicit_decision_still_parses() {
+        let ok = PolicyParser::new().parse(
+            "test-with-decision",
+            r#"prefix_rule(pattern=["ls"], decision="allow")"#,
+        );
+        assert!(ok.is_ok());
     }
 }
