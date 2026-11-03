@@ -78,8 +78,23 @@ impl ApprovalGrants {
     /// (never fatal — see the module doc).
     #[must_use]
     pub fn load(path: &Path) -> Self {
+        let doc = load_doc(path).unwrap_or_else(|err| {
+            // Only NotFound is legitimately empty (mapped inside load_doc).
+            // Every other error (PermissionDenied, IsADirectory, transient
+            // EIO) degrades the in-memory view, but save() refuses to
+            // overwrite the unreadable file, so the on-disk history is
+            // never destroyed by this session.
+            tracing::warn!(
+                target: "codesmith::approvals",
+                path = %path.display(),
+                error = %err,
+                "approvals.toml is unreadable; starting with no persistent grants \
+                 (saves are refused until the read error is fixed)"
+            );
+            GrantsDoc::default()
+        });
         Self {
-            projects: load_doc(path)
+            projects: doc
                 .projects
                 .into_iter()
                 .map(|(key, project)| (key, project.grants))
@@ -153,7 +168,10 @@ impl ApprovalGrants {
         codesmith_agent_runtime::settings_file::with_settings_lock(
             path,
             || -> anyhow::Result<()> {
-                let mut doc = load_doc(path);
+                // Refuse to overwrite an unreadable file: merging onto an
+                // empty view would rewrite it with only this session's
+                // grants and destroy every other workspace's history.
+                let mut doc = load_doc(path)?;
                 for (key, grants) in &self.projects {
                     let project = doc.projects.entry(key.clone()).or_default();
                     for grant in grants {
@@ -192,12 +210,15 @@ impl ApprovalGrants {
 }
 
 /// Read the raw on-disk document. Missing or corrupt file → empty doc,
-/// never fatal (same degradation as [`ApprovalGrants::load`]).
-fn load_doc(path: &Path) -> GrantsDoc {
+/// never fatal for [`ApprovalGrants::load`]; any OTHER read error is
+/// returned so [`ApprovalGrants::save`] can refuse to overwrite an
+/// unreadable-but-intact file instead of destroying every other
+/// workspace's grant history.
+fn load_doc(path: &Path) -> std::io::Result<GrantsDoc> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return GrantsDoc::default();
+            return Ok(GrantsDoc::default());
         }
         Err(err) => {
             // Only NotFound is legitimately empty. Every other error
@@ -206,17 +227,10 @@ fn load_doc(path: &Path) -> GrantsDoc {
             // overwrite the unreadable-but-intact file with only this
             // session's grants. Surface it loudly; the save side's lock
             // and atomic write keep the torn-overwrite window small.
-            tracing::warn!(
-                target: "codesmith::approvals",
-                path = %path.display(),
-                error = %err,
-                "approvals.toml is unreadable; starting with no persistent grants \
-                 (the file was NOT overwritten — fix the read error to recover them)"
-            );
-            return GrantsDoc::default();
+            return Err(err);
         }
     };
-    toml::from_str::<GrantsDoc>(&raw).unwrap_or_else(|err| {
+    Ok(toml::from_str::<GrantsDoc>(&raw).unwrap_or_else(|err| {
         tracing::warn!(
             target: "codesmith::approvals",
             path = %path.display(),
@@ -228,7 +242,7 @@ fn load_doc(path: &Path) -> GrantsDoc {
         // user's grant history.
         codesmith_agent_runtime::utils::preserve_corrupt_state_file(path);
         GrantsDoc::default()
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -248,6 +262,23 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    #[test]
+    fn save_refuses_to_overwrite_an_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.toml");
+        std::fs::write(&path, "[projects]\n").unwrap();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
+        let grants = ApprovalGrants::default();
+        let res = grants.save(&path);
+        std::fs::set_permissions(&path, original).unwrap();
+        assert!(res.is_err(), "save must refuse when the file is unreadable");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(raw, "[projects]\n", "unreadable file must stay intact");
+    }
+
     fn load_corrupt_file_degrades_to_empty() {
         let path = temp_path("corrupt.toml");
         std::fs::write(&path, "not [ valid toml {{{{").expect("write");
