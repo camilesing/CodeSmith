@@ -275,7 +275,7 @@ impl HttpWebService {
         })?;
 
         let results = parse_generic_results(
-            &parsed,
+            results_envelope(&parsed, &["results"]),
             &[&["title"], &["url"], &["content", "snippet"]],
             req.max_results,
         );
@@ -427,7 +427,7 @@ impl HttpWebService {
         }
 
         let results = parse_generic_results(
-            &parsed,
+            results_envelope(&parsed, &["data"]),
             &[&["title"], &["link"], &["snippet", "summary"]],
             size,
         );
@@ -488,7 +488,7 @@ impl HttpWebService {
         }
 
         let results = parse_generic_results(
-            &parsed,
+            results_envelope(&parsed, &["references"]),
             &[
                 &["title", "name"],
                 &["url", "link"],
@@ -1113,6 +1113,19 @@ fn response_headers(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, St
 /// Extract `SearchHit`s from a provider JSON array using per-field alias
 /// lists. Shared by the API-backed providers so each keeps its original
 /// field-tolerant behavior.
+/// Extract a provider's results array from the full response body.
+/// Tavily nests hits under `results`, Metaso under `data`, Baidu under
+/// `references`; `parse_generic_results` only walks array nodes, so call
+/// sites must pre-extract the envelope — passing the whole response
+/// object silently yields zero hits (an empty result set is not an
+/// error, so users just see "no results").
+fn results_envelope<'a>(parsed: &'a Value, keys: &[&str]) -> &'a Value {
+    keys.iter()
+        .find_map(|key| parsed.get(*key))
+        .filter(|node| !node.is_null())
+        .unwrap_or(&Value::Null)
+}
+
 fn parse_generic_results(
     node: &Value,
     field_aliases: &[&[&str]],
@@ -2465,7 +2478,7 @@ mod tests {
         });
 
         let results = parse_generic_results(
-            &body["references"],
+            results_envelope(&body, &["references"]),
             &[
                 &["title", "name"],
                 &["url", "link"],
@@ -2482,6 +2495,48 @@ mod tests {
             Some("Rust 是一门注重性能和可靠性的语言。")
         );
         assert_eq!(results[1].url, "https://doc.rust-lang.org/cargo/");
+    }
+
+    #[test]
+    fn tavily_and_metaso_envelopes_extract_results_arrays() {
+        // Full response bodies (OCR review 2026-11-03): Tavily nests under
+        // `results`, Metaso under `data` — passing the whole object to
+        // parse_generic_results silently returned zero hits.
+        let tavily = json!({
+            "answer": "x",
+            "results": [{"title": "T", "url": "https://t.example", "content": "c"}]
+        });
+        let hits = parse_generic_results(
+            results_envelope(&tavily, &["results"]),
+            &[&["title"], &["url"], &["content", "snippet"]],
+            5,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://t.example");
+
+        let metaso = json!({
+            "data": [{"title": "M", "link": "https://m.example", "snippet": "s"}],
+            "status": "ok"
+        });
+        let hits = parse_generic_results(
+            results_envelope(&metaso, &["data"]),
+            &[&["title"], &["link"], &["snippet", "summary"]],
+            5,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://m.example");
+
+        // No envelope key present: an explicit empty result set, not an
+        // error.
+        let bare = json!({"answer": "no hits"});
+        assert!(
+            parse_generic_results(
+                results_envelope(&bare, &["results"]),
+                &[&["title"], &["url"], &["content"]],
+                5,
+            )
+            .is_empty()
+        );
     }
 
     #[test]
