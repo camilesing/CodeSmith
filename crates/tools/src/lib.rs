@@ -621,7 +621,31 @@ impl ToolRegistry {
             source: call.source,
         };
 
-        let _guard = self.runtime.acquire(supports_parallel).await;
+        // Bound the LOCK WAIT by the same timeout: a dispatch configured
+        // with a timeout could still hang forever waiting for the FIFO-
+        // fair RwLock behind a hung serial tool (registered with
+        // timeout_ms: None), starving every subsequent dispatch with no
+        // recovery path.
+        let _guard = match timeout_ms {
+            Some(ms) => {
+                let name = invocation.tool_name.clone();
+                match tokio::time::timeout(
+                    Duration::from_millis(ms),
+                    self.runtime.acquire(supports_parallel),
+                )
+                .await
+                {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        return Err(FunctionCallError::TimedOut {
+                            name,
+                            timeout_ms: ms,
+                        });
+                    }
+                }
+            }
+            None => self.runtime.acquire(supports_parallel).await,
+        };
 
         TOOL_EXECUTION_LOCK_HELD
             .scope(
