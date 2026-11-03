@@ -258,6 +258,13 @@ pub fn with_team_file<T>(
 }
 
 /// Write the team config.json back to disk (full overwrite).
+///
+/// NOTE: does NOT take the team fd-lock. A read_team_file → mutate →
+/// write_team_file sequence races with a concurrent `with_team_file`
+/// cycle across processes and silently loses one side's roster change
+/// (last writer wins). Mutate existing teams only via `with_team_file`;
+/// this entry point is for creation and restore, which have no prior
+/// state to lose.
 pub fn write_team_file(team_file: &TeamFile) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let path = team_config_path(&team_file.name)?;
