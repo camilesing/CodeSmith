@@ -199,32 +199,76 @@ fn run_with_timeout(
             Ok(None) => {
                 child.kill().expect("kill runaway codesmith");
                 child.wait().expect("reap codesmith");
-                let stderr = stderr_reader
-                    .join()
-                    .unwrap_or_else(|_| "stderr reader panicked".to_string());
+                let stderr = stderr_reader.finish(READER_GRACE);
                 panic!("codesmith did not exit within {timeout:?}; stderr so far:\n{stderr}");
             }
             Err(error) => panic!("failed to wait for codesmith: {error}"),
         }
     };
-    let stdout = stdout_reader
-        .join()
-        .unwrap_or_else(|_| "stdout reader panicked".to_string());
-    let stderr = stderr_reader
-        .join()
-        .unwrap_or_else(|_| "stderr reader panicked".to_string());
+    let stdout = stdout_reader.finish(READER_GRACE);
+    let stderr = stderr_reader.finish(READER_GRACE);
     (status, stdout, stderr)
 }
 
-/// Read a piped child stream to EOF on a dedicated thread.
-fn spawn_reader(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut out = String::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_string(&mut out);
+/// How long `Reader::finish` waits for EOF before detaching: an orphaned
+/// grandchild holding an inherited pipe write end must not hang the helper
+/// forever with no diagnostic — the partial snapshot is what the panic
+/// message needs anyway.
+const READER_GRACE: Duration = Duration::from_secs(2);
+
+use std::sync::Arc;
+
+/// A detached-capable pipe reader: the thread publishes into a shared
+/// buffer and flags completion, so a bounded `finish` can snapshot partial
+/// output instead of joining forever.
+struct Reader {
+    done: Arc<std::sync::atomic::AtomicBool>,
+    buffer: Arc<std::sync::Mutex<String>>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
+impl Reader {
+    /// Wait up to `grace` for the reader to hit EOF, then return whatever
+    /// arrived. Dropping `self` detaches a still-running thread (its pipe
+    /// write end dies with process teardown) instead of blocking on join.
+    fn finish(self, grace: Duration) -> String {
+        let deadline = Instant::now() + grace;
+        while !self.done.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
-        out
-    })
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+/// Read a piped child stream on a dedicated thread.
+fn spawn_reader(pipe: Option<impl Read + Send + 'static>) -> Reader {
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let buffer = Arc::new(std::sync::Mutex::new(String::new()));
+    let done_flag = Arc::clone(&done);
+    let sink = Arc::clone(&buffer);
+    let handle = std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut guard = sink.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    }
+                }
+            }
+        }
+        done_flag.store(true, std::sync::atomic::Ordering::Release);
+    });
+    Reader {
+        done,
+        buffer,
+        _handle: handle,
+    }
 }
 
 /// The `exec --json` summary: the last JSON document on stdout, parsed the
