@@ -166,6 +166,12 @@ pub struct BashFacts {
     /// A substitution appears outside any command segment (e.g. the value of
     /// a standalone `x=$(cmd)` assignment).
     pub has_command_substitution: bool,
+    /// A top-level statement has no segment form of its own (subshell /
+    /// for / while / if / case / function bodies): reconstructed top-level
+    /// strings would silently drop their executing commands, so
+    /// [`BashFacts::top_level_segments`] returns `None` and callers must
+    /// fall back to conservative whole-string handling.
+    pub unrepresented_top_level_statements: bool,
 }
 
 impl BashFacts {
@@ -197,6 +203,13 @@ impl BashFacts {
     ///   conservative string handling rather than treat it as an empty
     ///   command.
     pub fn top_level_segments(&self) -> Option<Vec<&CommandSegment>> {
+        // Top-level statement forms with no segment representation
+        // (subshell / compound bodies) execute but would be invisible in
+        // the reconstruction: bail so callers fall back to conservative
+        // whole-string handling.
+        if self.unrepresented_top_level_statements {
+            return None;
+        }
         let top: Vec<&CommandSegment> = self.segments.iter().filter(|s| !s.is_nested).collect();
         if top.is_empty() && !self.segments.is_empty() {
             return None;
@@ -634,5 +647,58 @@ mod tests {
         assert!(f.segments.is_empty());
         let f = ok("   ");
         assert!(f.segments.is_empty());
+    }
+
+    // ── top-level statement coverage + redirect visibility (OCR 2026-11-03) ──
+
+    #[test]
+    fn subshell_or_compound_alongside_simple_command_bails_out() {
+        // `(cat ~/.ssh/id_rsa); echo ok` reconstructs to just "echo ok"
+        // when only non-nested segments count — the executing body would
+        // be invisible to policy matching. `None` forces the
+        // conservative whole-string path.
+        assert!(
+            ok("(cat ~/.ssh/id_rsa); echo ok")
+                .top_level_segment_strings()
+                .is_none()
+        );
+        assert!(
+            ok("for f in *; do cat ~/.ssh/id_rsa; done; echo ok")
+                .top_level_segment_strings()
+                .is_none()
+        );
+        // Plain top-level chains keep their strings.
+        let plain = ok("echo ok; ls").top_level_segment_strings().unwrap();
+        assert_eq!(plain, vec!["echo ok", "ls"]);
+    }
+
+    #[test]
+    fn descriptor_less_amp_write_stays_a_write_target() {
+        // `>&word` (no fd) is bash's `>word 2>&1` — a real file write
+        // that must remain visible to write-target analysis.
+        let f = ok("echo x >& ~/.zshrc");
+        let targets: Vec<&str> = f
+            .segments
+            .iter()
+            .flat_map(|s| s.redirects.iter().map(|r| r.target.as_str()))
+            .collect();
+        assert!(targets.contains(&"~/.zshrc"), "targets: {targets:?}");
+        // Real dup forms stay excluded.
+        let f = ok("cargo build 2>&1");
+        assert!(f.segments.iter().all(|s| s.redirects.is_empty()));
+    }
+
+    #[test]
+    fn substitution_in_redirect_destination_is_flagged_and_walked() {
+        // `echo hi > $(rm -rf /tmp/x)` executes rm via the destination
+        // expansion; it must surface as a substitution flag and as its
+        // own segment.
+        let f = ok("echo hi > $(rm -rf /tmp/x)");
+        assert!(f.any_command_substitution());
+        assert!(
+            f.segments
+                .iter()
+                .any(|s| s.argv.first().map(String::as_str) == Some("rm"))
+        );
     }
 }

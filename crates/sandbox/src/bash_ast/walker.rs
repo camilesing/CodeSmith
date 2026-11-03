@@ -56,12 +56,14 @@ pub(super) fn parse_facts(source: &str) -> Result<BashFacts, AstParseFailure> {
         source,
         segments: Vec::new(),
         substitution_outside_segments: false,
+        unrepresented_top_level_statements: false,
         nested_depth: 0,
     };
     walker.walk_statement(root, None);
     Ok(BashFacts {
         segments: walker.segments,
         has_command_substitution: walker.substitution_outside_segments,
+        unrepresented_top_level_statements: walker.unrepresented_top_level_statements,
     })
 }
 
@@ -103,6 +105,10 @@ struct Walker<'a> {
     source: &'a str,
     segments: Vec<CommandSegment>,
     substitution_outside_segments: bool,
+    /// Set when a top-level statement has no segment form of its own
+    /// (subshell / compound bodies): see
+    /// [`BashFacts::top_level_segments`].
+    unrepresented_top_level_statements: bool,
     /// Nonzero while walking nested positions (substitution bodies,
     /// assignment values, subshells, compound-statement bodies); emitted
     /// segments are marked `is_nested` so policy matching can reconstruct
@@ -167,7 +173,10 @@ impl<'a> Walker<'a> {
                 self.emit_command(node, join)
             }
             "list" | "pipeline" => self.walk_statement(node, join),
-            "subshell" => self.walk_nested(node, join),
+            "subshell" => {
+                self.note_unrepresented_top_level();
+                self.walk_nested(node, join)
+            }
             "redirected_statement" => self.walk_redirected(node, join),
             "negated_command" => {
                 let before = self.segments.len();
@@ -187,7 +196,21 @@ impl<'a> Walker<'a> {
             }
             // Compound statements (for/while/if/case/function bodies): walk
             // the container; inner commands surface as nested segments.
-            _ => self.walk_nested(node, join),
+            _ => {
+                self.note_unrepresented_top_level();
+                self.walk_nested(node, join)
+            }
+        }
+    }
+
+    /// Record that a top-level statement has no segment form of its own
+    /// (subshell / compound bodies): its flattened commands execute but
+    /// would be invisible in reconstructed policy strings, so
+    /// [`BashFacts::top_level_segments`] must bail and callers fall back
+    /// to conservative whole-string handling.
+    fn note_unrepresented_top_level(&mut self) {
+        if self.nested_depth == 0 {
+            self.unrepresented_top_level_statements = true;
         }
     }
 
@@ -195,11 +218,19 @@ impl<'a> Walker<'a> {
         let mut redirects: Vec<Redirect> = Vec::new();
         let mut has_heredoc = false;
         let mut expansion_in_target = false;
+        // A substitution in a redirect destination executes and must not
+        // hide behind the redirect (same treatment as the inline
+        // `file_redirect` arm in `emit_command`).
+        let mut subst_in_redirect = false;
+        let mut proc_subst_in_redirect = false;
         let mut body: Option<Node> = None;
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "file_redirect" => {
+                    subst_in_redirect |= self.subtree_has_kind(child, "command_substitution");
+                    proc_subst_in_redirect |= self.subtree_has_kind(child, "process_substitution");
+                    self.walk_nested(child, None);
                     if let Some(redirect) = self.collect_redirect(child) {
                         expansion_in_target |= self.subtree_has_expansion(child);
                         redirects.push(redirect);
@@ -224,6 +255,8 @@ impl<'a> Walker<'a> {
             segment.redirects.extend(redirects);
             segment.has_heredoc |= has_heredoc;
             segment.expansion_in_redirect_target |= expansion_in_target;
+            segment.has_command_substitution |= subst_in_redirect;
+            segment.has_process_substitution |= proc_subst_in_redirect;
         }
     }
 
@@ -293,6 +326,16 @@ impl<'a> Walker<'a> {
                     segment.argv.push(self.token_text(child));
                 }
                 "file_redirect" => {
+                    // A substitution in the destination executes (full
+                    // word expansion applies to redirect targets) and must
+                    // not hide behind the redirect: flag it and walk the
+                    // subtree so the inner command flattens into its own
+                    // segment.
+                    segment.has_command_substitution |=
+                        self.subtree_has_kind(child, "command_substitution");
+                    segment.has_process_substitution |=
+                        self.subtree_has_kind(child, "process_substitution");
+                    self.walk_nested(child, None);
                     if let Some(redirect) = self.collect_redirect(child) {
                         segment.expansion_in_redirect_target |= self.subtree_has_expansion(child);
                         segment.redirects.push(redirect);
@@ -346,11 +389,15 @@ impl<'a> Walker<'a> {
         }
         let destination = node.child_by_field_name("destination")?;
         let target = self.token_text(destination);
-        // Dup redirections (`2>&1`, `>&2`) point at another descriptor, not
-        // a path — not a write target. They carry the `&` *after* the `>`;
-        // whole-output forms (`&>`, `&>>`) redirect stdout+stderr to a path
-        // and must stay visible to write-target analysis.
-        if operator.contains(">&") || target.starts_with('&') {
+        // Dup redirections point at another *descriptor*, not a path: the
+        // destination is a bare number (`2>&1`, `>&2`), `&…`, or `>&-`.
+        // A descriptor-less `>&word` with a non-numeric word is bash's
+        // alternate form of `>word 2>&1` — a stdout+stderr file write
+        // that must stay visible to write-target analysis.
+        if target.starts_with('&')
+            || target == "-"
+            || (!target.is_empty() && target.bytes().all(|b| b.is_ascii_digit()))
+        {
             return None;
         }
         Some(Redirect { operator, target })
