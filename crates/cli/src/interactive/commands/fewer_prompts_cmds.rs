@@ -66,8 +66,10 @@ pub fn tally(commands: &[String]) -> HashMap<String, (Vec<String>, u32)> {
     let mut counts: HashMap<String, (Vec<String>, u32)> = HashMap::new();
     for command in commands {
         let key = permission_cmds::shell_grant_key(command);
-        // `shell:<empty>` is what an all-whitespace command keys to; it
-        // cannot be granted and must not be proposed.
+        // `shell:<empty>` is the synthetic key for an all-whitespace
+        // command; it cannot be granted and must not be proposed (the
+        // engine's grouping builder scopes such inputs to `exact:` keys,
+        // so this also keeps tallies free of the synthetic shape).
         if key.is_empty() || key == "shell:<empty>" {
             continue;
         }

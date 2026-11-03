@@ -18,7 +18,7 @@
 //!   |---------------|------------------------------------------|
 //!   | file writes    | `file:<tool_name>:<hash of args>`        |
 //!   | shell tools    | `shell:<tool_name>:<hash of args>`       |
-//!   | `fetch_url`    | `net:<hostname>`                         |
+//!   | `fetch_url`    | `net:<tool_name>:<hash of input>`        |
 //!   | everything else| `tool:<tool_name>:<hash of input>`       |
 //!
 //! * [`build_approval_grouping_key`] — a **lossy / arity-aware** digest.
@@ -29,7 +29,7 @@
 //!   |---------------|------------------------------------------|
 //!   | `apply_patch`  | `patch:<hash of file paths>`             |
 //!   | shell tools    | `shell:<family> + <family> …`            |
-//!   | `fetch_url`    | `net:<hostname>`                         |
+//!   | `fetch_url`    | `net:<scheme>://<hostname>`              |
 //!   | everything else| `tool:<tool_name>`                       |
 //!
 //!   The last row is the widest scope the prompt can offer: for a tool with
@@ -159,8 +159,11 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
             format!("shell:{tool_name}:{}", hash_json_value(input))
         }
         "fetch_url" | "web.fetch" | "web_fetch" => {
-            let host = parse_host(input);
-            format!("net:{host}")
+            // Denials must stay exact-call scoped: the grouping side keys
+            // by host so a grant covers the host, but a denial recorded
+            // under the same host key would silently suppress every later
+            // URL on that host without prompting (#1617 invariant).
+            format!("net:{tool_name}:{}", hash_json_value(input))
         }
         _ => format!("tool:{tool_name}:{}", hash_json_value(input)),
     };
@@ -177,7 +180,7 @@ pub fn build_approval_key(tool_name: &str, input: &serde_json::Value) -> Approva
 pub enum GroupingKeyKind {
     /// `shell:<classified command prefix>`
     ShellPrefix,
-    /// `net:<url host>`
+    /// `net:<scheme>://<url host>`
     NetHost,
     /// `patch:<hash of touched paths>`
     PatchPaths,
@@ -221,10 +224,14 @@ pub fn build_approval_grouping_key(tool_name: &str, input: &serde_json::Value) -
             format!("patch:{paths_hash}")
         }
         GroupingKeyKind::ShellPrefix => shell_grouping_key(input),
-        GroupingKeyKind::NetHost => {
-            let host = parse_host(input);
-            format!("net:{host}")
-        }
+        GroupingKeyKind::NetHost => match parse_net_host(input) {
+            // Scheme-qualified so an https grant never covers plain http
+            // on the same host (a transport downgrade riding the grant).
+            Some(net) => format!("net:{net}"),
+            // Malformed or hostless URL (or a missing field): do not
+            // collapse onto one shared key — scope to the exact call.
+            None => format!("{EXACT_CALL_KEY_PREFIX}{}", hash_json_value(input)),
+        },
         GroupingKeyKind::ToolName => format!("tool:{tool_name}"),
     };
     ApprovalKey(fingerprint)
@@ -266,7 +273,11 @@ fn shell_grouping_key(input: &serde_json::Value) -> String {
     families.sort();
     families.dedup();
     if families.is_empty() {
-        return "shell:<empty>".to_string();
+        // No classified command to group by (missing `command`, or
+        // keystroke-shaped input like exec_shell_interact): a shared
+        // `shell:<empty>` key would let one approval cover every later
+        // interaction for every shell tool — scope to the exact call.
+        return format!("{EXACT_CALL_KEY_PREFIX}{}", hash_json_value(input));
     }
     format!("shell:{}", families.join(" + "))
 }
@@ -306,15 +317,14 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
     format!("{:x}", hasher.finish())
 }
 
-/// Parse the host portion from a URL input.
-fn parse_host(input: &serde_json::Value) -> String {
-    let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
-
-    if let Ok(parsed) = reqwest::Url::parse(url) {
-        parsed.host_str().unwrap_or(url).to_string()
-    } else {
-        url.to_string()
-    }
+/// Parse the scheme-qualified host from a URL input. `None` when the
+/// input has no URL or it parses to a hostless form (`file:///etc/passwd`)
+/// — callers scope those to the exact call instead of a shared key.
+fn parse_net_host(input: &serde_json::Value) -> Option<String> {
+    let url = input.get("url").and_then(|v| v.as_str())?;
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    Some(format!("{}://{host}", parsed.scheme()))
 }
 
 fn hash_json_value(value: &Value) -> String {
@@ -640,6 +650,51 @@ mod tests {
         let key_a = build_approval_key("fetch_url", &json!({"url": "https://example.com"}));
         let key_b = build_approval_key("fetch_url", &json!({"url": "https://other.org"}));
         assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn fetch_denials_stay_exact_per_url_and_grouping_carries_scheme() {
+        // Denying one URL must not suppress a later, different URL on the
+        // same host (#1617 invariant applies to fetch too).
+        let exact_a = build_approval_key("fetch_url", &json!({"url": "https://example.com/a"}));
+        let exact_b = build_approval_key("fetch_url", &json!({"url": "https://example.com/b"}));
+        assert_ne!(exact_a, exact_b, "denials must remain exact-call scoped");
+
+        // Grouping keys carry the scheme so an https grant never covers a
+        // plain-http transport downgrade on the same host.
+        let group_https =
+            build_approval_grouping_key("fetch_url", &json!({"url": "https://example.com"}));
+        let group_http =
+            build_approval_grouping_key("fetch_url", &json!({"url": "http://example.com"}));
+        assert_ne!(group_https, group_http, "scheme must ride the grant");
+
+        // Malformed/hostless inputs do not collapse onto one shared key.
+        let file_a = build_approval_grouping_key("fetch_url", &json!({"url": "file:///etc/a"}));
+        let file_b = build_approval_grouping_key("fetch_url", &json!({"url": "file:///etc/b"}));
+        assert_ne!(file_a, file_b, "hostless URLs scope to the exact call");
+        let missing = build_approval_grouping_key("fetch_url", &json!({}));
+        assert!(
+            missing.0.starts_with(EXACT_CALL_KEY_PREFIX),
+            "missing URL must not create a shared net: key, got {}",
+            missing.0
+        );
+    }
+
+    #[test]
+    fn shell_grouping_without_command_scopes_to_exact_call() {
+        // Keystroke-shaped inputs (exec_shell_interact et al.) must never
+        // share one `shell:<empty>` key: one approval would cover every
+        // later interaction for every shell tool.
+        let a = build_approval_grouping_key(
+            "exec_shell_interact",
+            &json!({"session": "s1", "input": "ls\n"}),
+        );
+        let b = build_approval_grouping_key(
+            "exec_shell_interact",
+            &json!({"session": "s1", "input": "rm -rf /\n"}),
+        );
+        assert_ne!(a, b, "no shared key for command-less inputs");
+        assert!(a.0.starts_with(EXACT_CALL_KEY_PREFIX));
     }
 
     #[test]

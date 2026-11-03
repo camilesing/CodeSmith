@@ -309,8 +309,10 @@ pub fn apply_config_rules(state: &mut ReplState) {
     for rule in auto_allow_rules(state) {
         let trimmed = rule.trim();
         if trimmed.is_empty() {
-            // An empty entry would grant the synthetic `shell:<empty>` key,
-            // which the engine's classifier really can produce.
+            // An empty entry would grant the synthetic `shell:<empty>`
+            // key. The engine's grouping builder now scopes command-less
+            // inputs to `exact:` keys, so this grant would match nothing —
+            // the guard stays as hygiene against the synthetic shape.
             continue;
         }
         state
