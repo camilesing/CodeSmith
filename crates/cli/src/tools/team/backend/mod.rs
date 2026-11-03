@@ -493,6 +493,15 @@ pub(crate) fn write_env_file(
         backend,
         message: format!("failed to persist env file for {agent_id}: {e}"),
     })?;
+    // Mirror write_prompt_file: a non-UTF-8 TMPDIR (env-controlled) would
+    // be lossy-corrupted in the pane command, the `. <path>` source fails
+    // silently, and the 0600 env file (API keys) is never unlinked.
+    if path.to_str().is_none() {
+        let _ = std::fs::remove_file(&path);
+        return Err(BackendError::InvalidSpec(format!(
+            "env file path is not valid UTF-8: {path:?}"
+        )));
+    }
     Ok(Some(path))
 }
 
