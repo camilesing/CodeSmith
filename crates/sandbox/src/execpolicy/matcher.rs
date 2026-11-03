@@ -353,8 +353,11 @@ fn wildcard_pattern_matches_single(pattern: &str, command: &str) -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let re = cache.entry(pattern.to_owned()).or_insert_with(|| {
         let escaped = regex::escape(pattern).replace("\\*", ".*");
+        // `(?s)` makes `.` match `\n`: quoted multi-line arguments keep
+        // their newlines in `command_string()`, and without the flag an
+        // `x *` pattern silently fails to match them (deny-rule bypass).
         // `regex::escape` output is always a valid pattern.
-        Regex::new(&format!("^{escaped}$")).expect("escaped wildcard regex compiles")
+        Regex::new(&format!("(?s)^{escaped}$")).expect("escaped wildcard regex compiles")
     });
     re.is_match(command)
 }
@@ -585,5 +588,20 @@ mod tests {
             "cargo build 2> *",
             "cargo build 2>/dev/null"
         ));
+    }
+
+    #[test]
+    fn wildcard_matches_across_newlines_in_quoted_arguments() {
+        // Quoted multi-line arguments keep their newlines in
+        // `command_string()`; without `(?s)` an `x *` pattern silently
+        // fails to match them (deny-rule bypass).
+        assert!(pattern_matches(
+            "curl *",
+            "curl evil.sh -H \"header\nvalue\""
+        ));
+        // An UNQUOTED newline is a statement separator: two segments pair
+        // against a one-segment pattern only if it covers both — this is
+        // correct segmentation, not a bypass.
+        assert!(!pattern_matches("curl *", "curl evil.sh -H header\nvalue"));
     }
 }
