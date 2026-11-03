@@ -934,19 +934,30 @@ async fn fetch_outcome_from(
         .unwrap_or("application/octet-stream")
         .to_string();
     let headers = response_headers(resp.headers());
-    let bytes = resp
-        .bytes()
+    // Stream the body and stop as soon as the cap is reached: buffering
+    // the whole response first (`resp.bytes()`) let an LLM-directed fetch
+    // of a huge file consume memory before the cap ever applied.
+    let mut body: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| WebError::new(WebErrorKind::Body, format!("failed to read body: {e}")))?;
-    let total_bytes = bytes.len() as u64;
-    let truncated = total_bytes > max_bytes;
-    let keep = max_bytes.min(total_bytes) as usize;
+        .map_err(|e| WebError::new(WebErrorKind::Body, format!("failed to read body: {e}")))?
+    {
+        if body.len() + chunk.len() > max_bytes as usize {
+            let keep = max_bytes as usize - body.len();
+            body.extend_from_slice(&chunk[..keep]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
     Ok(FetchOutcome {
         url,
         status: status.as_u16(),
         headers,
         content_type,
-        body: bytes[..keep].to_vec(),
+        body,
         truncated,
     })
 }
@@ -1040,18 +1051,33 @@ async fn validate_fetch_target(
         return Ok(None);
     }
 
+    // Fail closed on DNS: an unresolved (or empty) answer means the
+    // resolved-IP policy check below cannot run, and returning Ok(None)
+    // would let the fetch proceed unpinned — reqwest would resolve and
+    // connect on its own, past every SSRF check above.
+    let addrs = tokio::net::lookup_host((host.as_str(), 0u16))
+        .await
+        .map_err(|e| {
+            WebError::new(
+                WebErrorKind::Transport,
+                format!("DNS resolution for {host} failed ({e}); refusing unpinned fetch"),
+            )
+        })?;
     let mut first_valid: Option<IpAddr> = None;
-    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), 0u16)).await {
-        for addr in addrs {
-            validate_dns_resolved_ip(&host, &addr.ip(), req.policy.as_ref(), req.tool)?;
-            if first_valid.is_none() {
-                first_valid = Some(addr.ip());
-            }
+    for addr in addrs {
+        validate_dns_resolved_ip(&host, &addr.ip(), req.policy.as_ref(), req.tool)?;
+        if first_valid.is_none() {
+            first_valid = Some(addr.ip());
         }
     }
+    let Some(first_valid) = first_valid else {
+        return Err(WebError::new(
+            WebErrorKind::Transport,
+            format!("{host} resolved to no usable addresses; refusing unpinned fetch"),
+        ));
+    };
 
-    // If DNS resolution fails, let the HTTP request proceed and fail naturally.
-    Ok(first_valid.map(|validated_ip| (host, validated_ip)))
+    Ok(Some((host, first_valid)))
 }
 
 fn validate_dns_resolved_ip(
