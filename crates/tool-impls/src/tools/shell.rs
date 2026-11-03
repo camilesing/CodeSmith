@@ -558,6 +558,14 @@ impl ToolSpec for ExecShellTool {
         let Ok(command) = required_str(input, "command") else {
             return ApprovalRequirement::Required;
         };
+        // An execpolicy `AskUser` decision ("no allow rule matched") must
+        // reach the user: a predicted sandbox never overrides the policy.
+        if context.features.enabled(Feature::ExecPolicy)
+            && let Ok(Some(policy)) = load_default_policy()
+            && matches!(policy.evaluate(command), ExecPolicyDecision::AskUser(_))
+        {
+            return ApprovalRequirement::Required;
+        }
         if context.sandbox_runtime.auto_allow_bash_if_sandboxed
             && command_would_be_sandboxed(context, command)
         {
@@ -619,18 +627,39 @@ impl ToolSpec for ExecShellTool {
         {
             let decision = policy.evaluate(command);
             execpolicy_decision = Some(decision.clone());
-            if let ExecPolicyDecision::Deny(reason) = decision {
-                return Ok(ToolResult {
-                    canonical: None,
-                    content: format!("BLOCKED: {reason}"),
-                    success: false,
-                    metadata: Some(json!({
-                        "execpolicy": {
-                            "decision": "deny",
-                            "reason": reason,
-                        }
-                    })),
-                });
+            match decision {
+                ExecPolicyDecision::Deny(reason) => {
+                    return Ok(ToolResult {
+                        canonical: None,
+                        content: format!("BLOCKED: {reason}"),
+                        success: false,
+                        metadata: Some(json!({
+                            "execpolicy": {
+                                "decision": "deny",
+                                "reason": reason,
+                            }
+                        })),
+                    });
+                }
+                // YOLO skips the approval prompt entirely — a policy that
+                // says "ask" must still stop the run, not just be recorded.
+                ExecPolicyDecision::AskUser(reason) if context.auto_approve => {
+                    return Ok(ToolResult {
+                        canonical: None,
+                        content: format!(
+                            "BLOCKED: execpolicy requires user approval for this command: {reason}"
+                        ),
+                        success: false,
+                        metadata: Some(json!({
+                            "execpolicy": {
+                                "decision": "ask",
+                                "reason": reason,
+                                "unattended": true,
+                            }
+                        })),
+                    });
+                }
+                ExecPolicyDecision::Allow | ExecPolicyDecision::AskUser(_) => {}
             }
         }
 

@@ -213,6 +213,55 @@ fn exec_shell_auto_allows_only_when_sandbox_would_enforce() {
     );
 }
 
+/// An execpolicy `AskUser` decision must reach the user: the predictive
+/// sandbox Auto path defers to the policy, and an unattended
+/// (auto-approve) run is blocked instead of silently executing (OCR
+/// review 2026-11-03).
+#[cfg(unix)]
+#[tokio::test]
+async fn execpolicy_ask_user_is_enforced_not_recorded() {
+    let _guard = env_lock();
+    let _restore = EnvRestore::new(&["CODESMITH_HOME"]);
+    let home = tempdir().expect("tempdir");
+    // SAFETY: held under env_lock; restored by EnvRestore on drop.
+    unsafe { std::env::set_var("CODESMITH_HOME", home.path()) };
+    // No allow rules: every command evaluates to AskUser.
+    std::fs::write(
+        home.path().join("execpolicy.toml"),
+        "[rules.default]\nallow = []\ndeny = []\n",
+    )
+    .expect("write policy");
+
+    let tmp = tempdir().expect("tempdir");
+    let tool = ExecShellTool;
+    let input = json!({ "command": "printf ok" });
+
+    // Predicted-sandbox Auto must not override a policy that says ask.
+    let sandboxed = ToolContext::new(tmp.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::ExternalSandbox {
+            network_access: true,
+        })
+        .with_sandbox_backend(std::sync::Arc::new(StubSandboxBackend))
+        .with_sandbox_runtime(SandboxRuntimeConfig {
+            auto_allow_bash_if_sandboxed: true,
+            ..SandboxRuntimeConfig::default()
+        });
+    assert_eq!(
+        tool.approval_requirement_for_input(&input, &sandboxed),
+        ApprovalRequirement::Required,
+        "execpolicy AskUser must force approval"
+    );
+
+    // Unattended (auto-approve) runs are blocked outright.
+    let unattended = ToolContext::with_auto_approve(tmp.path(), true, "notes.md", "mcp.json", true);
+    let result = tool.execute(input, &unattended).await.expect("execute");
+    assert!(
+        result.content.contains("execpolicy"),
+        "expected an execpolicy block, got: {}",
+        result.content
+    );
+}
+
 #[tokio::test]
 async fn shell_result_metadata_reports_sandbox_effective_state() {
     let tmp = tempdir().expect("tempdir");
