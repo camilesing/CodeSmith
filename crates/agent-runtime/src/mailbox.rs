@@ -195,6 +195,10 @@ struct MailboxInner {
 pub struct MailboxReceiver {
     rx: mpsc::UnboundedReceiver<MailboxEnvelope>,
     pending: VecDeque<MailboxEnvelope>,
+    /// Close-as-termination for [`Self::recv`]: mpsc never reports `None`
+    /// while any sender clone lives (the tx sits in the shared inner), so
+    /// the receiver watches the bound token instead.
+    cancel_token: CancellationToken,
 }
 
 impl Mailbox {
@@ -212,7 +216,7 @@ impl Mailbox {
             seq_tx,
             publish: std::sync::Mutex::new(()),
             closed: AtomicBool::new(false),
-            cancel_token,
+            cancel_token: cancel_token.clone(),
         };
         (
             Self {
@@ -221,6 +225,7 @@ impl Mailbox {
             MailboxReceiver {
                 rx,
                 pending: VecDeque::new(),
+                cancel_token: cancel_token.clone(),
             },
         )
     }
@@ -238,16 +243,18 @@ impl Mailbox {
     /// mailbox is already closed (callers should treat this as "the
     /// receiver is gone, stop publishing").
     pub fn send(&self, message: MailboxMessage) -> Option<u64> {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return None;
-        }
-        // Hold the publish lock across alloc + enqueue + watch bump so seq
-        // order == enqueue order == watch watermark order.
+        // Take the publish lock BEFORE checking `closed` (close() takes
+        // the same lock): an unlocked early check let close() interleave
+        // between the check and the enqueue, publishing mail after the
+        // cancel had already fired.
         let _publish = self
             .inner
             .publish
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.inner.closed.load(Ordering::Acquire) {
+            return None;
+        }
         let seq = self.inner.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let envelope = MailboxEnvelope { seq, message };
         if self.inner.tx.send(envelope).is_err() {
@@ -271,6 +278,14 @@ impl Mailbox {
     /// children observe it, while detached `agent_open` sessions rely on their
     /// own explicit cancellation.
     pub fn close(&self) {
+        // Serialize with in-flight publishes so the closed flag and the
+        // cancel cannot interleave between a sender's check and its
+        // enqueue.
+        let _publish = self
+            .inner
+            .publish
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.inner.closed.swap(true, Ordering::AcqRel) {
             self.inner.cancel_token.cancel();
         }
@@ -302,7 +317,22 @@ impl MailboxReceiver {
         if let Some(env) = self.pending.pop_front() {
             return Some(env);
         }
-        self.rx.recv().await
+        // Close-as-termination: once cancelled, drain what is buffered
+        // and then end the stream — the mpsc channel itself stays open
+        // while any sender clone lives. Closing the receiver also fails
+        // in-flight sends fast instead of letting them enqueue into a
+        // buffer nobody drains.
+        if self.cancel_token.is_cancelled() {
+            self.rx.close();
+            return self.rx.recv().await;
+        }
+        tokio::select! {
+            env = self.rx.recv() => env,
+            _ = self.cancel_token.cancelled() => {
+                self.rx.close();
+                self.rx.recv().await
+            }
+        }
     }
 
     /// Awaits the next envelope with a timeout. Useful in tests.
@@ -393,6 +423,27 @@ mod tests {
         mb.send(MailboxMessage::progress("x", "tick2"));
         sub_a.changed().await.expect("a sees second bump");
         assert_eq!(*sub_a.borrow(), 2);
+    }
+
+    #[tokio::test]
+    async fn recv_ends_after_close_while_senders_still_live() {
+        let (mb, mut rx, _token) = open();
+        // The sender clone keeps the mpsc channel open; close-as-cancel
+        // must still terminate the receiver loop.
+        mb.close();
+        let ended = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("recv must return, not hang");
+        assert!(ended.is_none(), "recv after close must end the stream");
+    }
+
+    #[tokio::test]
+    async fn close_then_recv_drains_already_buffered_mail() {
+        let (mb, mut rx, _token) = open();
+        mb.send(MailboxMessage::progress("a", "buffered before close"));
+        mb.close();
+        assert!(rx.recv().await.is_some(), "buffered mail drains first");
+        assert!(rx.recv().await.is_none(), "then the stream ends");
     }
 
     #[tokio::test]
