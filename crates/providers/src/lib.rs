@@ -64,7 +64,7 @@ pub mod openai_compat;
 
 use std::sync::{Arc, OnceLock};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use codesmith_agent::llm_client::LlmClientHandle;
 use codesmith_agent::provider::{ProviderConfig, ProviderFactory, ProviderId, ProviderRegistry};
 use codesmith_config::{FactoryBackend, ProvidersManifest};

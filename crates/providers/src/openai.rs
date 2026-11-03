@@ -66,7 +66,7 @@ impl ProviderFactory for OpenAiFactory {
         // A host-overridable endpoint gets the same fail-loud scheme and
         // credential-safety guard as the OpenAI-compat family.
         if !base_url.is_empty() {
-            crate::validate_provider_base_url(self.id.as_str(), &self.name, &base_url)?;
+            crate::validate_provider_base_url(self.id.as_str(), "openai", &base_url)?;
             builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
