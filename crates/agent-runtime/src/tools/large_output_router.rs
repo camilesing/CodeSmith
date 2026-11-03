@@ -219,22 +219,7 @@ impl LargeOutputRouter {
     /// re-frame trailing payload as synthesis instructions.
     #[must_use]
     pub fn synthesis_prompt(tool_name: &str, raw_output: &str, estimated_tokens: usize) -> String {
-        // Tool names may come from dynamically registered/MCP tools where
-        // the server controls the string: flatten to a short identifier so
-        // a crafted name cannot break out of the backtick frame or inject
-        // instructions into the region the SECURITY preamble (which covers
-        // only <raw_tool_output>) treats as trusted.
-        let safe_name: String = tool_name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':') {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .take(64)
-            .collect();
+        let safe_name = Self::safe_tool_ident(tool_name);
         format!(
             "You are a synthesis assistant. The tool `{safe_name}` produced {estimated_tokens} tokens \
              of output that is too large to include directly in the parent context.\n\n\
@@ -282,10 +267,31 @@ impl LargeOutputRouter {
         estimated_tokens: usize,
         threshold: usize,
     ) -> String {
+        // The header enters the transcript like the synthesis prompt does:
+        // a server-controlled MCP tool name must not inject through it.
+        let safe_name = Self::safe_tool_ident(tool_name);
         format!(
-            "[workshop-synthesis: tool={tool_name}, raw_tokens≈{estimated_tokens}, \
+            "[workshop-synthesis: tool={safe_name}, raw_tokens≈{estimated_tokens}, \
              threshold={threshold}, raw_stored_in={WORKSHOP_LAST_TOOL_RESULT_VAR}]\n\n{synthesis}"
         )
+    }
+
+    /// Flatten a (possibly server-controlled) tool name to a short safe
+    /// identifier so a crafted name cannot break out of a backtick frame
+    /// or inject instructions into regions the SECURITY preamble treats
+    /// as trusted.
+    fn safe_tool_ident(tool_name: &str) -> String {
+        tool_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(64)
+            .collect()
     }
 }
 
