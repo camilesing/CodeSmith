@@ -143,39 +143,46 @@ pub fn parse_tool_calls(text: &str) -> ParseResult {
     let thinking_regex = get_thinking_regex();
     clean_text = thinking_regex.replace_all(&clean_text, "").to_string();
 
-    // Parse [TOOL_CALL] format
+    // Parse [TOOL_CALL] format — over the think-stripped text so that a
+    // call emitted inside discarded reasoning never executes and its
+    // removal from `clean_text` cannot no-op. Collect matches first so
+    // the loop can mutate `clean_text` without borrowing it per capture.
     let regex = get_tool_call_regex();
-    for cap in regex.captures_iter(text) {
-        let (Some(full_match), Some(inner)) = (cap.get(0), cap.get(1)) else {
-            continue;
-        };
-        let full_match = full_match.as_str();
-        let inner = inner.as_str().trim();
-
-        if let Some(parsed) = parse_tool_call_inner(inner, &mut id_counter) {
+    let matches: Vec<(String, String)> = regex
+        .captures_iter(&clean_text)
+        .filter_map(|cap| {
+            let (full, inner) = (cap.get(0)?, cap.get(1)?);
+            Some((full.as_str().to_string(), inner.as_str().trim().to_string()))
+        })
+        .collect();
+    for (full_match, inner) in matches {
+        if let Some(parsed) = parse_tool_call_inner(&inner, &mut id_counter) {
             tool_calls.push(parsed);
         }
-
-        clean_text = clean_text.replace(full_match, "");
+        clean_text = clean_text.replace(&full_match, "");
     }
 
-    // Parse XML-style <codesmith:tool_call> or <tool_call> format
+    // Parse XML-style <codesmith:tool_call> or <tool_call> format — also
+    // over the think-stripped text (the standalone <invoke> sweep below
+    // runs on `clean_text`, and re-parsing a call that only existed in a
+    // think block used to duplicate it into a real call).
     let xml_regex = get_xml_tool_call_regex();
-    for cap in xml_regex.captures_iter(text) {
-        let (Some(full_match), Some(inner)) = (cap.get(0), cap.get(1)) else {
-            continue;
-        };
-        let full_match = full_match.as_str();
-        let inner = inner.as_str().trim();
-
+    let xml_matches: Vec<(String, String)> = xml_regex
+        .captures_iter(&clean_text)
+        .filter_map(|cap| {
+            let (full, inner) = (cap.get(0)?, cap.get(1)?);
+            Some((full.as_str().to_string(), inner.as_str().trim().to_string()))
+        })
+        .collect();
+    for (full_match, inner) in xml_matches {
         // Parse invoke blocks inside
-        if let Some(parsed) = parse_invoke_block(inner, &mut id_counter) {
+        if let Some(parsed) = parse_invoke_block(&inner, &mut id_counter) {
             tool_calls.push(parsed);
-        } else if let Some(parsed) = parse_tool_call_inner(inner, &mut id_counter) {
+        } else if let Some(parsed) = parse_tool_call_inner(&inner, &mut id_counter) {
             tool_calls.push(parsed);
         }
 
-        clean_text = clean_text.replace(full_match, "");
+        clean_text = clean_text.replace(&full_match, "");
     }
 
     // Also parse standalone <invoke> blocks that might not be wrapped.
@@ -496,6 +503,34 @@ pub fn has_tool_call_markers(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // ── discarded-reasoning isolation (OCR 2026-11-03) ─────────────────────
+
+    #[test]
+    fn tool_calls_inside_discarded_thinking_never_execute() {
+        // A tool call emitted inside a <think> block is discarded
+        // reasoning: it must not run, must not survive into the clean
+        // text, and must not be re-parsed by the later invoke sweep
+        // (which used to duplicate it into a real call).
+        let bracket = super::parse_tool_calls(
+            "<think>plan: [TOOL_CALL] shell {\"command\": \"echo pwned\"} [/TOOL_CALL]</think>Done.",
+        );
+        assert!(
+            bracket.tool_calls.is_empty(),
+            "bracket call inside think must not execute"
+        );
+        assert!(bracket.clean_text.contains("Done."));
+        assert!(!bracket.clean_text.contains("TOOL_CALL"));
+
+        let xml = super::parse_tool_calls(
+            "<think><tool_call>{\"tool\": \"shell\", \"command\": \"echo pwned\"}</tool_call></think>Done.",
+        );
+        assert!(
+            xml.tool_calls.is_empty(),
+            "xml call inside think must not execute"
+        );
+        assert!(xml.clean_text.contains("Done."));
+    }
+
     use super::*;
 
     #[test]
