@@ -87,7 +87,7 @@ impl ProviderFactory for OpenAiCompatFactory {
         // Fail loud at the configuration site (not as an opaque reqwest
         // failure at the first request), and never send the provider's
         // Bearer credential in plaintext to a non-loopback host.
-        crate::validate_provider_base_url(self.id.as_str(), &self.name, &base_url)?;
+        crate::validate_provider_base_url(self.id.as_str(), self.name, &base_url)?;
         // Same resolution for the model: an empty model id would otherwise
         // defer to an obscure provider-side failure at the first request.
         let default_model =
