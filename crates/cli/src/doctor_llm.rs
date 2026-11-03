@@ -163,7 +163,7 @@ impl DoctorFindings {
             "environment": {
                 "os": os,
                 "provider": provider,
-                "base_url": redact_home(base_url),
+                "base_url": redact_credentials(&redact_home(base_url)),
                 "model": model,
             },
             "findings": findings,
@@ -218,7 +218,7 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     static CREDENTIAL_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = CREDENTIAL_RUN.get_or_init(|| {
         regex::Regex::new(
-            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|\b(?:api[\s_-]?keys?|access[\s_-]?keys?|access[\s_-]?tokens?|refresh[\s_-]?tokens?|client[\s_-]?secrets?|signature|sig|keys?|tokens?|secrets?|passwords?|passwd|pwd)["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
+            r#"(?i)\bauthorization\b["']?\s*[:=][^\n]*|(?:api[\s_-]?keys?|access[\s_-]?keys?|access[\s_-]?tokens?|refresh[\s_-]?tokens?|client[\s_-]?secrets?|signature|sig|keys?|tokens?|secrets?|passwords?|passwd|pwd)[\w.-]*["']?\s*[:=]\s*\S+|\bbearer\s+\S+"#,
         )
         .expect("static credential regex compiles")
     });
@@ -422,6 +422,16 @@ Apply the analysis contract from your instructions."
 mod tests {
     use super::*;
     use crate::llm_client::mock::{MockLlmClient, canned};
+
+    #[test]
+    fn redact_credentials_handles_prefixed_compound_names() {
+        // `DEEPSEEK_API_KEY=sk-x` has no word boundary before `API` — the
+        // compound must still be masked (identifiers embed with `_`).
+        let red = redact_credentials("DEEPSEEK_API_KEY=sk-12345");
+        assert!(!red.contains("sk-12345"), "{red}");
+        let red = redact_credentials("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI");
+        assert!(!red.contains("wJalrXUtnFEMI"), "{red}");
+    }
 
     #[test]
     fn findings_record_and_summarize() {
