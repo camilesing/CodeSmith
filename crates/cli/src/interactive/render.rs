@@ -141,10 +141,12 @@ impl Composer {
     /// Claude Code (one press removes a whole path).
     fn kill_word(&mut self) -> String {
         let head = &self.buffer[..self.cursor];
-        let cut = head
-            .trim_end()
-            .rfind(char::is_whitespace)
-            .map_or(0, |i| i + 1);
+        // `rfind` returns the START byte of the matched whitespace: a
+        // multi-byte space (U+3000, U+00A0 — common in CJK input) makes
+        // `i + 1` a mid-character boundary and the slice below panics.
+        let cut = head.trim_end().rfind(char::is_whitespace).map_or(0, |i| {
+            i + head[i..].chars().next().map_or(1, char::len_utf8)
+        });
         let removed = self.buffer[cut..self.cursor].to_string();
         self.buffer.replace_range(cut..self.cursor, "");
         self.cursor = cut;
