@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use uuid::Uuid;
 
@@ -189,6 +189,10 @@ pub struct PythonRuntime {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// Partial stdout line carried across `select!` cancellations (see
+    /// [`read_line_resumable`]), plus a latched end-of-stream flag.
+    partial_line: Vec<u8>,
+    stdout_eof: bool,
     /// stderr, drained continuously by a background reader task into this
     /// bounded tail buffer so a chatty child can never fill the OS pipe and
     /// block mid-round.
@@ -205,6 +209,50 @@ pub struct PythonRuntime {
     /// calls must fail fast instead of writing protocol frames into a
     /// dead stream.
     poisoned: bool,
+}
+
+/// Cancellation-safe line reader for [`PythonRuntime`]'s stdout loop.
+///
+/// `AsyncBufReadExt::read_until` is documented NOT cancellation-safe: once
+/// a poll moves partial-line bytes out of the reader into the future's
+/// local buffer, dropping the future (the `select!` in
+/// [`PythonRuntime::run`] drops the read arm whenever a dispatch
+/// completes) loses those bytes forever — user stdout truncates
+/// mid-line, and a lost `__RLM_REQ_` prefix wedges Python's blocking
+/// `_rpc` for the rest of the round. This reader keeps the partial line
+/// in caller-owned state instead: `fill_buf` only lends the reader's
+/// buffer, and `consume` runs in the same poll that appends to
+/// `partial`, so a dropped future resumes exactly where it left off.
+async fn read_line_resumable<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    partial: &mut Vec<u8>,
+    eof: &mut bool,
+) -> std::io::Result<Option<String>> {
+    loop {
+        if let Some(pos) = partial.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = partial.drain(..=pos).collect();
+            return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+        }
+        if *eof {
+            if partial.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(
+                String::from_utf8_lossy(&std::mem::take(partial)).into_owned(),
+            ));
+        }
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            *eof = true;
+            continue;
+        }
+        let take = chunk
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(chunk.len(), |pos| pos + 1);
+        partial.extend_from_slice(&chunk[..take]);
+        reader.consume(take);
+    }
 }
 
 impl PythonRuntime {
@@ -321,6 +369,8 @@ impl PythonRuntime {
             child,
             stdin,
             stdout,
+            partial_line: Vec::new(),
+            stdout_eof: false,
             stderr_buffer,
             session_id: session_id.clone(),
             context_path: context_path.map(Path::to_path_buf),
@@ -396,18 +446,18 @@ impl PythonRuntime {
         }
     }
 
+    /// Read one stdout line. Delegates to the cancellation-safe
+    /// [`read_line_resumable`]: the `select!` in [`Self::run`] drops this
+    /// future whenever a dispatch completes, and a `read_until`-based
+    /// body would lose any partially buffered line bytes with it.
     async fn read_stdout_line_lossy(&mut self) -> Result<Option<String>, String> {
-        let mut buf = Vec::new();
-        let n = self
-            .stdout
-            .read_until(b'\n', &mut buf)
-            .await
-            .map_err(|e| format!("stdout read: {e}"))?;
-        if n == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
-        }
+        read_line_resumable(
+            &mut self.stdout,
+            &mut self.partial_line,
+            &mut self.stdout_eof,
+        )
+        .await
+        .map_err(|e| format!("stdout read: {e}"))
     }
 
     /// Execute a Python code block with no RPC dispatcher. Used for inline
@@ -1203,7 +1253,100 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::Mutex;
+
+    // ── read_line_resumable: cancellation-safe stdout lines ──────────────
+
+    #[tokio::test]
+    async fn dropped_read_loses_no_partial_line_bytes() {
+        let (client, mut server) = tokio::io::duplex(64);
+        let mut client = tokio::io::BufReader::new(client);
+        let mut partial = Vec::new();
+        let mut eof = false;
+
+        // A partial line without a newline: the read consumes the bytes
+        // into caller state, then parks in fill_buf for the rest. The
+        // timeout elapses and drops the future — the same thing the
+        // select! dispatch arm does to the read arm in `run`.
+        server.write_all(b"__RLM_REQ_s1__::").await.unwrap();
+        server.flush().await.unwrap();
+        let parked = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            read_line_resumable(&mut client, &mut partial, &mut eof),
+        )
+        .await
+        .is_err();
+        assert!(parked, "read must park waiting for the rest of the line");
+        assert_eq!(
+            partial, b"__RLM_REQ_s1__::",
+            "partial bytes live in caller state, not in the dropped future"
+        );
+
+        // Completing the line later: a fresh read resumes from the
+        // preserved partial instead of starting mid-line.
+        server.write_all(b"{}\n").await.unwrap();
+        server.flush().await.unwrap();
+        let line = read_line_resumable(&mut client, &mut partial, &mut eof)
+            .await
+            .unwrap()
+            .expect("full line available");
+        assert_eq!(line, "__RLM_REQ_s1__::{}\n");
+    }
+
+    #[tokio::test]
+    async fn read_line_resumable_multi_line_chunk_and_eof_tail() {
+        let (client, mut server) = tokio::io::duplex(64);
+        let mut client = tokio::io::BufReader::new(client);
+        server.write_all(b"one\ntwo\n").await.unwrap();
+        server.flush().await.unwrap();
+        drop(server);
+        let mut partial = Vec::new();
+        let mut eof = false;
+        assert_eq!(
+            read_line_resumable(&mut client, &mut partial, &mut eof)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("one\n")
+        );
+        assert_eq!(
+            read_line_resumable(&mut client, &mut partial, &mut eof)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("two\n")
+        );
+        assert_eq!(
+            read_line_resumable(&mut client, &mut partial, &mut eof)
+                .await
+                .unwrap(),
+            None
+        );
+
+        // An unterminated tail flushes exactly once at EOF, like
+        // read_until's final partial line.
+        let (c2, mut s2) = tokio::io::duplex(64);
+        let mut c2 = tokio::io::BufReader::new(c2);
+        s2.write_all(b"tail").await.unwrap();
+        s2.flush().await.unwrap();
+        drop(s2);
+        let mut partial = Vec::new();
+        let mut eof = false;
+        assert_eq!(
+            read_line_resumable(&mut c2, &mut partial, &mut eof)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("tail")
+        );
+        assert_eq!(
+            read_line_resumable(&mut c2, &mut partial, &mut eof)
+                .await
+                .unwrap(),
+            None
+        );
+    }
 
     /// In-process dispatcher that records what was asked and replies with
     /// canned text. Lets tests verify the round-trip without real network.
