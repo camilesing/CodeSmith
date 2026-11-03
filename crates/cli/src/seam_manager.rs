@@ -202,11 +202,15 @@ impl SeamManager {
         workspace: Option<&Path>,
         pinned_indices: &[usize],
     ) -> Result<String> {
-        if messages.is_empty() || start_idx >= end_idx {
+        // Clamp BEFORE the guard: a shrunken list or stale `start_idx`
+        // would pass `start_idx >= end_idx` against the unclamped end and
+        // then slice `[start_idx..end]` with end < start, panicking.
+        let end = end_idx.min(messages.len());
+        if messages.is_empty() || start_idx >= end {
             return Ok(String::new());
         }
 
-        let range = &messages[start_idx..end_idx.min(messages.len())];
+        let range = &messages[start_idx..end];
         if range.is_empty() {
             return Ok(String::new());
         }
