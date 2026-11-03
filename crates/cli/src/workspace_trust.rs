@@ -89,11 +89,14 @@ impl WorkspaceTrust {
     /// normalization) starts with one of the trusted prefixes. Directory
     /// trust grants access to anything under the directory.
     ///
-    /// Both the canonicalized and the raw candidate form are matched, and the
-    /// trusted prefix is re-canonicalized at check time: a grant recorded for
-    /// a not-yet-existing path keeps its verbatim form (macOS
-    /// `/var/folders/...` vs. canonical `/private/var/folders/...`), so a
-    /// single-form comparison silently never matches once the path exists.
+    /// The canonical form is matched once the candidate exists (the trusted
+    /// prefix is re-canonicalized at check time, so a grant recorded for a
+    /// not-yet-existing path keeps its verbatim form and still matches once
+    /// the path exists). The raw form is a fallback only for candidates that
+    /// do not exist yet, and only when it contains no `..` component:
+    /// `Path::starts_with` is a component-prefix test, so
+    /// `/trusted/dir/../../etc/passwd` would prefix-match the raw form while
+    /// the OS resolves the `..` components outside the trusted tree.
     ///
     /// Known limitation (TOCTOU): the check and the file tool's actual open
     /// are separate steps; a symlink swapped in between can redirect access
@@ -102,7 +105,18 @@ impl WorkspaceTrust {
     #[must_use]
     #[allow(dead_code)]
     pub fn permits(&self, candidate: &Path) -> bool {
-        let forms = [candidate.canonicalize().ok(), Some(candidate.to_path_buf())];
+        // Never match the raw candidate verbatim: canonicalize when the
+        // path exists; otherwise accept the raw form only when it is free
+        // of `..` components (see the doc comment above).
+        let forms: [Option<PathBuf>; 2] = match candidate.canonicalize() {
+            Ok(canonical) => [Some(canonical), None],
+            Err(_) => {
+                let clean = !candidate
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir));
+                [None, clean.then(|| candidate.to_path_buf())]
+            }
+        };
         self.paths.iter().any(|trusted| {
             let trusted = trusted.canonicalize().unwrap_or_else(|_| trusted.clone());
             forms.iter().flatten().any(|c| c.starts_with(&trusted))
@@ -350,5 +364,32 @@ mod tests {
             "grant must also match itself in canonical form"
         );
         assert!(!trust.permits(Path::new("/etc/passwd")));
+    }
+
+    /// The raw candidate form must never prefix-match a path that resolves
+    /// outside the trusted tree: `/trusted/dir/../../etc/passwd`
+    /// component-prefix-matches the raw form while the OS resolves the
+    /// `..` components elsewhere (deterministic bypass, not the documented
+    /// TOCTOU limitation).
+    #[test]
+    fn permits_rejects_parent_dir_traversal_in_raw_form() {
+        let (tmp, _trust_path) = isolated_trust_path();
+        let trusted = tmp.path().join("trusted");
+        std::fs::create_dir_all(&trusted).unwrap();
+        // Store the canonical grant form (as `add` does once the path
+        // exists) so the re-canonicalized prefix inside `permits` and the
+        // raw candidate share one spelling — the shape the bypass needs.
+        let trusted = trusted.canonicalize().unwrap();
+
+        let trust = WorkspaceTrust {
+            paths: vec![trusted.clone()],
+        };
+        let escape = trusted.join("..").join("..").join("etc").join("passwd");
+        assert!(
+            !trust.permits(&escape),
+            "`..` traversal must not prefix-match the raw form"
+        );
+        let missing = trusted.join("..").join("definitely-missing-target");
+        assert!(!trust.permits(&missing));
     }
 }
