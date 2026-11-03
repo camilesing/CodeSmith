@@ -129,18 +129,32 @@ impl Evaluation {
             .any(|rule_match| !matches!(rule_match, RuleMatch::HeuristicsRuleMatch { .. }))
     }
 
-    /// Caller is responsible for ensuring that `matched_rules` is non-empty.
     fn from_matches(matched_rules: Vec<RuleMatch>) -> Self {
+        // `check_multiple` aggregates per-command matches and cannot
+        // uphold a non-empty invariant for an empty command iterator:
+        // fail closed instead of panicking on ordinary input.
         let decision = matched_rules
             .iter()
             .map(RuleMatch::decision)
-            .reduce(Decision::most_restrictive);
-        #[expect(clippy::expect_used)]
-        let decision = decision.expect("invariant failed: matched_rules must be non-empty");
+            .reduce(Decision::most_restrictive)
+            .unwrap_or(Decision::Forbidden);
 
         Self {
             decision,
             matched_rules,
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_multiple_with_no_commands_fails_closed() {
+        // An empty command iterator aggregates zero matches; the reducer
+        // used to `expect` and panic on this ordinary input.
+        let policy = Policy::empty();
+        let evaluation = policy.check_multiple(Vec::<Vec<String>>::new(), &|_| Decision::Allow);
+        assert_eq!(evaluation.decision, Decision::Forbidden);
     }
 }
