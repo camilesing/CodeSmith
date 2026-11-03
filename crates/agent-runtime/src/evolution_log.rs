@@ -143,7 +143,22 @@ fn rotate_if_oversized(path: &Path, max_bytes: u64) {
     if metadata.len() <= max_bytes {
         return;
     }
-    let records = load_verdicts(path);
+    // A failed read (transient EIO, or a crash-truncated multibyte tail
+    // making the whole file invalid UTF-8) must abort rotation: rewriting
+    // from an empty set would truncate the log to zero bytes and destroy
+    // all history instead of keeping an oversized file.
+    let Ok(content) = fs::read_to_string(path) else {
+        tracing::warn!(
+            "evolution log unreadable; rotation skipped at {}",
+            path.display()
+        );
+        return;
+    };
+    let records: Vec<VerdictRecord> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
     let keep_bytes = max_bytes / 2;
     let line_len =
         |record: &VerdictRecord| serde_json::to_string(record).map(|s| s.len() as u64 + 1);
