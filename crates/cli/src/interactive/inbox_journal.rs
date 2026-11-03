@@ -200,13 +200,16 @@ impl InboxJournal {
 /// id if the queue outlives the first persist (`saved_session_from_state`
 /// adopts the same id, so journal and session file stay paired). A write
 /// failure is loud but never blocks the in-memory queue.
-pub(crate) fn journal_enqueue(state: &mut super::state::ReplState, text: &str) {
+/// Returns whether the entry is durably journaled — callers that delete
+/// another durable copy (the orphan sweep) must only do so when this is
+/// true for every entry.
+pub(crate) fn journal_enqueue(state: &mut super::state::ReplState, text: &str) -> bool {
     let id = state
         .current_session_id
         .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
         .clone();
     let Some(journal) = default_journal(&id) else {
-        return;
+        return false;
     };
     if let Err(err) = journal.append(text) {
         println!(
@@ -214,7 +217,9 @@ pub(crate) fn journal_enqueue(state: &mut super::state::ReplState, text: &str) {
             format!("warning: could not persist the queued message to the inbox journal: {err}")
                 .yellow()
         );
+        return false;
     }
+    true
 }
 
 /// Mirror the live queue into the journal after a successful session
@@ -390,14 +395,35 @@ pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<OrphanHarvest> {
             .map(|age| age < ORPHAN_HARVEST_WINDOW)
             .unwrap_or(true);
         if recent {
-            let entries = InboxJournal::for_session(sessions_dir, stem)
-                .map(|journal| journal.load().entries)
-                .unwrap_or_default();
+            let Some(journal) = InboxJournal::for_session(sessions_dir, stem) else {
+                // A stem this module never manages (invalid characters,
+                // reserved name): not ours to harvest — or to delete.
+                tracing::warn!(
+                    target: "codesmith::inbox",
+                    "orphan inbox journal skipped: unmanaged stem {stem:?}"
+                );
+                continue;
+            };
+            let loaded = journal.load();
+            if loaded.unreadable {
+                // Existing but unreadable: the load contract says callers
+                // must not rewrite or remove it — leave it for manual
+                // recovery instead of harvesting it as empty.
+                tracing::warn!(
+                    target: "codesmith::inbox",
+                    "orphan inbox journal {} is unreadable; left in place",
+                    path.display()
+                );
+                continue;
+            }
             // Do NOT delete here: the entries only become durable again
             // once the caller re-journals them; deleting inside the sweep
             // lost exactly the queued text it was rescuing on a crash
             // between the two.
-            harvested.push(OrphanHarvest { path, entries });
+            harvested.push(OrphanHarvest {
+                path,
+                entries: loaded.entries,
+            });
         } else if let Err(err) = std::fs::remove_file(&path) {
             // Out of the rescue window: nothing left to harvest, clean up.
             tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
@@ -427,14 +453,20 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
         .map(|orphan| orphan.entries.len())
         .sum::<usize>();
     for orphan in harvested {
+        let mut all_durable = true;
         for text in orphan.entries {
-            journal_enqueue(state, &text);
+            if !journal_enqueue(state, &text) {
+                all_durable = false;
+            }
             state.queued_messages.push(text);
         }
-        // The entries are durably re-journaled under the current id — now
-        // the orphan file can go.
-        if let Err(err) = std::fs::remove_file(&orphan.path) {
-            tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
+        // The orphan file is the sole durable copy until every entry is
+        // re-journaled under the current id ("duplicates, never loss") —
+        // a partial failure keeps it for the next sweep to retry.
+        if all_durable {
+            if let Err(err) = std::fs::remove_file(&orphan.path) {
+                tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
+            }
         }
     }
     count
