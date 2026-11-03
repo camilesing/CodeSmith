@@ -693,6 +693,14 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         );
     }
 
+    // Screen redirections before the chain early-return: chaining
+    // (`echo x > ~/.zshrc && true`) must not downgrade a Dangerous
+    // redirect to RequiresApproval, which auto-approve flows pass
+    // through.
+    if let Some(analysis) = redirect_analysis(&facts, command) {
+        return analysis;
+    }
+
     if facts.has_chain() {
         // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
         // routine for build+test workflows. Instead of hard-blocking,
@@ -2307,6 +2315,18 @@ mod tests {
             analyze_command("touch notes.md").level,
             SafetyLevel::WorkspaceSafe
         ));
+    }
+
+    #[test]
+    fn chaining_does_not_downgrade_outside_workspace_redirects() {
+        // `echo x > ~/.zshrc && true` must stay Dangerous: appending a
+        // known-safe segment must not downgrade the redirect verdict that
+        // auto-approve flows would pass through (OCR 2026-11-03).
+        let a = analyze_command("echo x > ~/.zshrc && true");
+        assert!(matches!(a.level, SafetyLevel::Dangerous));
+        // Benign chains with harmless redirections are unaffected.
+        let b = analyze_command("cargo build 2>/dev/null && cargo test");
+        assert!(!matches!(b.level, SafetyLevel::Dangerous));
     }
 
     #[test]
