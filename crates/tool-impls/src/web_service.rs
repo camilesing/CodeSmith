@@ -922,7 +922,7 @@ async fn read_body(
 }
 
 async fn fetch_outcome_from(
-    resp: reqwest::Response,
+    mut resp: reqwest::Response,
     max_bytes: u64,
 ) -> Result<FetchOutcome, WebError> {
     let url = resp.url().to_string();
