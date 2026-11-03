@@ -333,8 +333,10 @@ fn clean_pdf_text(raw: &str) -> String {
     // would also strip intentional indentation (e.g. centred titles).
     if any_content {
         let start = out.find(|c: char| c != '\n').unwrap_or(0);
-        // Walk back from end to find the last non-newline character.
-        let end = out.rfind(|c: char| c != '\n').map_or(out.len(), |i| i + 1);
+        // Strip the trailing '\n' run: `rfind(..) + 1` returned the START
+        // byte of the last non-newline char and sliced mid-character when
+        // that char was multi-byte (CJK PDF text).
+        let end = out.trim_end_matches('\n').len();
         out[start..end].to_string()
     } else {
         String::new()
@@ -1910,6 +1912,15 @@ mod tests {
 
     fn sample_pdf_present() -> bool {
         std::path::Path::new(SAMPLE_PDF_PATH).exists()
+    }
+
+    #[test]
+    #[test]
+    fn clean_pdf_text_handles_multibyte_last_char() {
+        // `rfind(..) + 1` sliced mid-character when the last content char
+        // was multi-byte (CJK PDF text) and panicked.
+        let cleaned = clean_pdf_text("\n\n正文结尾\n\n\n");
+        assert_eq!(cleaned, "正文结尾");
     }
 
     #[test]
