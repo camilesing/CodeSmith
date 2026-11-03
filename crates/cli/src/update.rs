@@ -19,7 +19,21 @@ use reqwest::Proxy;
 use std::io::Write;
 
 /// Run the self-update workflow.
+///
+/// `reqwest::blocking` panics on a tokio runtime worker, and this is
+/// dispatched directly from the async `real_main`; hop to a plain thread
+/// when an async context is active (mirroring the
+/// `refresh_kimi_oauth_token` guard).
 pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Result<()> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => std::thread::spawn(move || run_update_impl(beta, check_only, proxy_arg))
+            .join()
+            .map_err(|_| anyhow::anyhow!("update worker thread panicked"))?,
+        Err(_) => run_update_impl(beta, check_only, proxy_arg),
+    }
+}
+
+fn run_update_impl(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Result<()> {
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
     // macOS reports the invoked path, so a symlinked `codes` alias would
