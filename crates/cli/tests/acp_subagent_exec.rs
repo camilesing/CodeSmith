@@ -277,7 +277,12 @@ fn tool_entries(summary: &serde_json::Value) -> &Vec<serde_json::Value> {
 /// "ACP-compatible editor" system prompt. Requiring BOTH markers is what
 /// proves the run really crossed the process boundary through the
 /// protocol, not an in-process shortcut.
-#[tokio::test]
+// multi_thread: run_with_timeout blocks the test thread in a
+// try_wait/sleep loop, and the wiremock MockServer in AcpE2E::new is
+// driven by this same runtime — a current-thread flavor starves it and
+// degrades the run to the 180 s timeout-kill panic (same shape
+// headless_exec.rs documents on its own run_with_timeout).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn acp_external_provider_round_trips_with_real_acp_server_child() {
     assert!(
         !BIN.contains('\''),
@@ -414,7 +419,9 @@ async fn acp_external_provider_round_trips_with_real_acp_server_child() {
 /// auto-answers allow under the parent's `--auto` posture. The proof is the
 /// file actually landing in the scratch workspace — under the earlier
 /// fail-closed behaviour (approvals denied outright) no file appeared.
-#[tokio::test]
+// multi_thread for the same run_with_timeout/MockServer starvation
+// reason as the round-trip test above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn acp_child_tool_permission_round_trips_through_the_provider() {
     assert!(
         !BIN.contains('\''),
