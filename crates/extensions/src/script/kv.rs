@@ -131,15 +131,25 @@ impl KvInner {
             self.map = Some(BTreeMap::new());
             return;
         };
-        self.map = Some(match std::fs::read_to_string(path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-                tracing::warn!(
-                    "mod kv file {} malformed ({e}); treating as empty",
-                    path.display()
-                );
-                BTreeMap::new()
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        let (map, load_failed) = match std::fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(map) => (map, false),
+                Err(e) => {
+                    tracing::warn!(
+                        "mod kv file {} malformed ({e}); quarantining before treating as empty",
+                        path.display()
+                    );
+                    // Quarantine before defaulting: a later persist would
+                    // otherwise atomically rename over a truncated-but-
+                    // mostly-recoverable file (disk-full crash) and destroy
+                    // it. If the quarantine rename itself fails, refuse
+                    // writes instead of risking that overwrite.
+                    let quarantined =
+                        std::fs::rename(path, path.with_extension("malformed")).is_ok();
+                    (BTreeMap::new(), !quarantined)
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (BTreeMap::new(), false),
             Err(e) => {
                 // An unreadable-but-present file is NOT the same as an empty
                 // store. Reads see empty so the mod keeps working, but the
@@ -147,13 +157,15 @@ impl KvInner {
                 // on-disk state with a map built from a read that never
                 // succeeded.
                 tracing::warn!(
-                    "mod kv file {} unreadable ({e}); reads return empty and                      writes are refused until reload",
+                    "mod kv file {} unreadable ({e}); reads return empty and \
+                     writes are refused until reload",
                     path.display()
                 );
-                self.load_failed = true;
-                BTreeMap::new()
+                (BTreeMap::new(), true)
             }
-        });
+        };
+        self.load_failed = load_failed;
+        self.map = Some(map);
     }
 
     fn persist(&self) -> std::io::Result<()> {
@@ -186,13 +198,23 @@ impl KvInner {
         // wait, not a new class of blocking.
         with_kv_lock(path, || {
             let mut merged = match std::fs::read_to_string(path) {
-                Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "mod kv file {} malformed on persist ({e}); writing this store's view only",
-                        path.display()
-                    );
-                    BTreeMap::new()
-                }),
+                Ok(raw) => match serde_json::from_str(&raw) {
+                    Ok(map) => map,
+                    Err(e) => {
+                        // A file that became malformed between load and
+                        // persist may still be recoverable, and replacing
+                        // it with this store's view would permanently drop
+                        // every key other sessions wrote: refuse.
+                        tracing::warn!(
+                            "mod kv file {} malformed on persist ({e}); refusing to overwrite",
+                            path.display()
+                        );
+                        return Err(std::io::Error::other(format!(
+                            "kv file {} became malformed; persist refused",
+                            path.display()
+                        )));
+                    }
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
                 Err(e) => {
                     return Err(e);
@@ -322,6 +344,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let kv = ModKvStore::new(dir.path().join("global-x.json"));
         assert!(kv.get("anything").is_none());
+    }
+
+    #[test]
+    fn malformed_file_is_quarantined_and_writes_start_fresh() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("global-x.json");
+        // A disk-full crash truncation: mostly recoverable content.
+        std::fs::write(&path, "{\"keep\": trun").unwrap();
+        let kv = ModKvStore::new(path.clone());
+        assert!(kv.get("keep").is_none(), "malformed file reads as empty");
+        // The recoverable original is quarantined aside, never destroyed
+        // by a later persist.
+        let quarantine = path.with_extension("malformed");
+        let saved = std::fs::read_to_string(&quarantine)
+            .expect("malformed kv file must be quarantined, not replaced");
+        assert_eq!(saved, "{\"keep\": trun");
+        kv.set("k", json!("v"));
+        assert!(kv.get("k").is_some());
     }
 
     #[test]
