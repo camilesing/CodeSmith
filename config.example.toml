@@ -161,6 +161,22 @@ memory_path = "~/.codesmith/memory.md"
 # stream_idle_retry_increment_secs = 30
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Security
+# ─────────────────────────────────────────────────────────────────────────────────
+# Shell access is opt-in (GHSA-72w5-pf8h-xfp4 regression default): when unset
+# the shell tool stays gated behind approval. Uncomment only for trusted,
+# local workflows where the shell gate is genuinely in the way.
+# allow_shell = true
+approval_policy = "on-request" # on-request | untrusted | never
+sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
+
+# Root-level sub-agent cap: optional (1-20). The commented [subagents] table
+# further down (max_concurrent) overrides it. Root-scope keys must stay above
+# the [memory] table header — anything below it parses as memory.* and is
+# silently dropped (MemoryConfig has no deny_unknown_fields).
+max_subagents = 10
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # User memory (#489) — default ON. When enabled, CodeSmith reads memory_path on
 # startup and injects its contents into the system prompt as a
 # <user_memory> block, intercepts `# foo` typed in the composer to append
@@ -195,16 +211,6 @@ memory_path = "~/.codesmith/memory.md"
 # [tools]
 # progressive_disclosure = true
 # always_load = ["git_show", "notify"]
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# Security
-# ─────────────────────────────────────────────────────────────────────────────────
-# Shell access is opt-in (GHSA-72w5-pf8h-xfp4 regression default): when unset
-# the shell tool stays gated behind approval. Uncomment only for trusted,
-# local workflows where the shell gate is genuinely in the way.
-# allow_shell = true
-approval_policy = "on-request" # on-request | untrusted | never
-sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Preset (detailed reference)
@@ -273,7 +279,6 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 #
 # Read at startup and applied as approval grants; `/permissions` shows the
 # rules in force and `/permissions allow <prefix>` persists a grant instead.
-max_subagents = 10 # optional (1-20)
 
 # Optional sub-agent tuning. max_concurrent overrides top-level max_subagents.
 # [subagents]
