@@ -37,7 +37,12 @@ fn hooks_disabled_path() -> String {
                 .to_string_lossy()
                 .into_owned()
         })
-        .unwrap_or_default()
+        // No home directory (unset $HOME plus a failed passwd lookup —
+        // plausible in exactly the containers/sandboxes this scrub
+        // targets): an empty value falls back to git's default hooks
+        // directory and silently re-enables repo hooks. Point at a path
+        // guaranteed to hold no hook scripts instead.
+        .unwrap_or_else(|| "/nonexistent/codesmith-hooks-disabled".to_string())
 }
 
 /// Build the git-config overlay that disables `core.fsmonitor` and
