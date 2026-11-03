@@ -171,10 +171,18 @@ impl WebRunState {
         }
     }
 
-    fn get_page(&mut self, ref_id: &str) -> Option<WebPage> {
+    fn get_page(&mut self, ref_id: &str, namespace: &str) -> Option<WebPage> {
         self.cleanup();
-        let stored = self.pages.get(ref_id)?.clone();
-        if let Some(session) = self.sessions.get_mut(&stored.namespace) {
+        let stored = self.pages.get(ref_id)?;
+        // ref_ids are echoed into model output and shared transcripts, and
+        // the scoped_ref_prefix hash is deterministic and non-secret: the
+        // stored page belongs to `namespace` only, never to whichever
+        // caller learned the string.
+        if stored.namespace != namespace {
+            return None;
+        }
+        let stored = stored.clone();
+        if let Some(session) = self.sessions.get_mut(namespace) {
             session.last_access = Instant::now();
         }
         Some(stored.page)
@@ -667,7 +675,7 @@ impl ToolSpec for WebRunTool {
                 if link_id == 0 {
                     return Err(ToolError::invalid_input("click.id must be >= 1"));
                 }
-                let page = get_page(&ref_id).ok_or_else(|| {
+                let page = get_page(&ref_id, &context.state_namespace).ok_or_else(|| {
                     ToolError::invalid_input(format!("Unknown ref_id '{ref_id}'"))
                 })?;
                 let link = page.links.iter().find(|l| l.id == link_id).ok_or_else(|| {
@@ -694,7 +702,7 @@ impl ToolSpec for WebRunTool {
             for find_req in find_requests {
                 let ref_id = required_str(find_req, "ref_id")?.to_string();
                 let pattern = required_str(find_req, "pattern")?.to_string();
-                let page = get_page(&ref_id).ok_or_else(|| {
+                let page = get_page(&ref_id, &context.state_namespace).ok_or_else(|| {
                     ToolError::invalid_input(format!("Unknown ref_id '{ref_id}'"))
                 })?;
                 let find_result = find_in_page(&ref_id, &pattern, &page, response_length);
@@ -710,7 +718,7 @@ impl ToolSpec for WebRunTool {
             for shot in shots {
                 let ref_id = required_str(shot, "ref_id")?.to_string();
                 let pageno = optional_u64(shot, "pageno", 0)? as usize;
-                let page = get_page(&ref_id).ok_or_else(|| {
+                let page = get_page(&ref_id, &context.state_namespace).ok_or_else(|| {
                     ToolError::invalid_input(format!("Unknown ref_id '{ref_id}'"))
                 })?;
                 let screenshot = screenshot_page(&ref_id, pageno, &page)?;
@@ -746,8 +754,8 @@ fn store_page(namespace: &str, ref_id: &str, page: WebPage) {
     });
 }
 
-fn get_page(ref_id: &str) -> Option<WebPage> {
-    with_state(|state| state.get_page(ref_id))
+fn get_page(ref_id: &str, namespace: &str) -> Option<WebPage> {
+    with_state(|state| state.get_page(ref_id, namespace))
 }
 
 #[cfg(test)]
@@ -767,7 +775,7 @@ async fn resolve_or_fetch_page(
     timeout_ms: u64,
     context: &ToolContext,
 ) -> Result<WebPage, ToolError> {
-    if let Some(page) = get_page(ref_id) {
+    if let Some(page) = get_page(ref_id, &context.state_namespace) {
         return Ok(page);
     }
     if looks_like_url(ref_id) {
@@ -1554,8 +1562,28 @@ mod tests {
             sample_page("https://example.com/alpha"),
         );
 
-        assert!(get_page(&ref_alpha).is_some());
-        assert!(get_page(&ref_beta).is_none());
+        assert!(get_page(&ref_alpha, "session-alpha").is_some());
+        assert!(get_page(&ref_beta, "session-beta").is_none());
+    }
+
+    #[test]
+    fn get_page_rejects_foreign_namespace_refs() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let shared_suffix = "turn1search1";
+        let ref_alpha = format!("{}{}", scoped_ref_prefix("session-alpha"), shared_suffix);
+
+        store_page(
+            "session-alpha",
+            &ref_alpha,
+            sample_page("https://example.com/alpha"),
+        );
+
+        assert!(get_page(&ref_alpha, "session-alpha").is_some());
+        // The very same ref string, learned or guessed by another session:
+        // the scoped_ref_prefix hash is deterministic and non-secret, so
+        // the namespace check is the actual isolation boundary.
+        assert!(get_page(&ref_alpha, "session-beta").is_none());
     }
 
     #[test]
@@ -1600,7 +1628,7 @@ mod tests {
 
         let _ = next_turn_for_namespace("session-beta");
 
-        assert!(get_page(&ref_id).is_none());
+        assert!(get_page(&ref_id, "session-alpha").is_none());
     }
 
     #[test]
@@ -1683,7 +1711,8 @@ mod tests {
         );
         // The ref_id the model cites resolves back to a stored page.
         let ref_id = searches[0]["ref_id"].as_str().unwrap().to_string();
-        let page = get_page(&ref_id).expect("search results are stored under ref_id");
+        let page =
+            get_page(&ref_id, "web-run-tests").expect("search results are stored under ref_id");
         assert!(
             page.links
                 .iter()
