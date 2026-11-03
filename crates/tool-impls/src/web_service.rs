@@ -1864,9 +1864,14 @@ fn percent_decode(input: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'%' if i + 2 < bytes.len() => {
-                let hex = &input[i + 1..i + 3];
-                if let Ok(val) = u8::from_str_radix(hex, 16) {
-                    out.push(val);
+                // Decode the hex digits from bytes: slicing
+                // `&input[i + 1..i + 3]` panicked mid-character when the
+                // two bytes after '%' straddled a UTF-8 boundary (crafted
+                // SERP hrefs are untrusted input).
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi * 16 + lo) as u8);
                     i += 3;
                     continue;
                 }
@@ -2730,5 +2735,13 @@ mod tests {
             Some("Provider-native web search error (1113): insufficient balance".into())
         );
         assert_eq!(provider_native_error_message(&json!({"content": []})), None);
+    }
+    #[test]
+    fn percent_decode_handles_multibyte_after_percent() {
+        // `%` followed by a multi-byte char: slicing &input[i+1..i+3] used
+        // to panic mid-character on crafted SERP hrefs.
+        assert_eq!(percent_decode("%€"), "%€");
+        assert_eq!(percent_decode("%41%42"), "AB");
+        assert_eq!(percent_decode("a+b%20c"), "a b c");
     }
 }
