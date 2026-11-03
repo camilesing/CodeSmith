@@ -87,38 +87,7 @@ impl ProviderFactory for OpenAiCompatFactory {
         // Fail loud at the configuration site (not as an opaque reqwest
         // failure at the first request), and never send the provider's
         // Bearer credential in plaintext to a non-loopback host.
-        let parsed_url = reqwest::Url::parse(&base_url).with_context(|| {
-            format!(
-                "provider '{}' ({}) base_url is not a valid URL: '{base_url}'",
-                self.id.as_str(),
-                self.name
-            )
-        })?;
-        let host = parsed_url.host_str().unwrap_or("");
-        let host_unbracketed = host.trim_start_matches('[').trim_end_matches(']');
-        let is_loopback = host_unbracketed == "localhost"
-            || host_unbracketed
-                .parse::<std::net::Ipv4Addr>()
-                .is_ok_and(|a| a.is_loopback())
-            || host_unbracketed
-                .parse::<std::net::Ipv6Addr>()
-                .is_ok_and(|a| a.is_loopback());
-        if !matches!(parsed_url.scheme(), "http" | "https") {
-            anyhow::bail!(
-                "provider '{}' ({}) base_url must use http(s): '{base_url}'",
-                self.id.as_str(),
-                self.name
-            );
-        }
-        if parsed_url.scheme() == "http" && !is_loopback {
-            anyhow::bail!(
-                "provider '{}' ({}) base_url must use https (or a loopback \
-                 host) — refusing to send the provider credential in \
-                 plaintext to '{base_url}'",
-                self.id.as_str(),
-                self.name
-            );
-        }
+        crate::validate_provider_base_url(self.id.as_str(), &self.name, &base_url)?;
         // Same resolution for the model: an empty model id would otherwise
         // defer to an obscure provider-side failure at the first request.
         let default_model =

@@ -229,6 +229,47 @@ pub(crate) fn resolve_with_manifest_default(cfg_val: &str, manifest: Option<&str
     }
 }
 
+/// Validate a resolved provider `base_url`: it must parse as a URL, use
+/// http(s), and use plain `http` only for a loopback host — the Bearer
+/// credential derived from the provider's api key must never travel in
+/// plaintext to a non-loopback endpoint. Shared by the OpenAI and
+/// OpenAI-compat factories so host-overridable endpoints (proxies,
+/// gateways) get the same fail-loud guard at the configuration site
+/// instead of an opaque reqwest failure at the first request.
+#[cfg(feature = "rig")]
+pub(crate) fn validate_provider_base_url(
+    provider_id: &str,
+    provider_name: &str,
+    base_url: &str,
+) -> anyhow::Result<()> {
+    let parsed_url = reqwest::Url::parse(base_url).with_context(|| {
+        format!(
+            "provider '{provider_id}' ({provider_name}) base_url is not a valid URL: '{base_url}'"
+        )
+    })?;
+    let host = parsed_url.host_str().unwrap_or("");
+    let host_unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+    let is_loopback = host_unbracketed == "localhost"
+        || host_unbracketed
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|a| a.is_loopback())
+        || host_unbracketed
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|a| a.is_loopback());
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "provider '{provider_id}' ({provider_name}) base_url must use http(s): '{base_url}'"
+        );
+    }
+    if parsed_url.scheme() == "http" && !is_loopback {
+        anyhow::bail!(
+            "provider '{provider_id}' ({provider_name}) base_url must use https (or a loopback \
+             host) — refusing to send the provider credential in plaintext to '{base_url}'"
+        );
+    }
+    Ok(())
+}
+
 /// Diagnostic factory registered for a manifest entry whose `FactoryBackend`
 /// Cargo feature is not compiled in. `build` errors clearly so a resolve
 /// attempt points at the missing feature rather than the generic

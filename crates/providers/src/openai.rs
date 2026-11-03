@@ -55,13 +55,18 @@ impl ProviderFactory for OpenAiFactory {
         // Host value wins; empty falls back to the manifest default; both empty
         // keeps the rig compile-time default (api.openai.com/v1).
         let base_url =
-            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref());
+            crate::resolve_with_manifest_default(&cfg.base_url, self.base_url.as_deref())
+                .trim()
+                .to_string();
         let default_model =
             crate::resolve_with_manifest_default(&cfg.default_model, self.model.as_deref());
         let mut builder = openai::CompletionsClient::builder().api_key(cfg.api_key.clone());
         // Only override the rig default (api.openai.com/v1) when resolved to a
         // non-empty base_url — an empty string would otherwise clobber it.
+        // A host-overridable endpoint gets the same fail-loud scheme and
+        // credential-safety guard as the OpenAI-compat family.
         if !base_url.is_empty() {
+            crate::validate_provider_base_url(self.id.as_str(), &self.name, &base_url)?;
             builder = builder.base_url(&base_url);
         }
         builder = builder.http_headers(build_header_map(&cfg.http_headers));
