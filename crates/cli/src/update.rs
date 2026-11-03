@@ -294,7 +294,9 @@ fn parse_checksum_manifest(text: &str) -> Result<HashMap<String, String>> {
             continue;
         }
 
-        if trimmed.len() < 66 {
+        // `split_at(64)` panics when byte offset 64 falls inside a
+        // multi-byte character (crafted manifest) — gate the boundary.
+        if trimmed.len() < 66 || !trimmed.is_char_boundary(64) {
             bail!("invalid SHA256 manifest line {}: {trimmed}", index + 1);
         }
 
@@ -746,6 +748,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn parse_checksum_manifest_rejects_multibyte_prefix_without_panicking() {
+        // 63 hex chars + a 2-byte char + padding: byte offset 64 falls
+        // mid-character, and split_at(64) used to panic instead of
+        // returning the intended invalid-line error.
+        let crafted = format!(
+            "{}\u{80}00  codesmith-aarch64-apple-darwin.tar.gz",
+            "a".repeat(63)
+        );
+        let res = parse_checksum_manifest(&crafted);
+        assert!(res.is_err(), "crafted manifest must be rejected, not panic");
+    }
+
     fn parse_checksum_manifest_accepts_sha256sum_format() {
         let manifest = "\
 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  codesmith-macos-arm64
