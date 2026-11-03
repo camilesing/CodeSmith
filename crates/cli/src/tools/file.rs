@@ -1915,7 +1915,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn clean_pdf_text_handles_multibyte_last_char() {
         // `rfind(..) + 1` sliced mid-character when the last content char
         // was multi-byte (CJK PDF text) and panicked.

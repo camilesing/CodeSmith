@@ -463,10 +463,8 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
         // The orphan file is the sole durable copy until every entry is
         // re-journaled under the current id ("duplicates, never loss") —
         // a partial failure keeps it for the next sweep to retry.
-        if all_durable {
-            if let Err(err) = std::fs::remove_file(&orphan.path) {
-                tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
-            }
+        if all_durable && let Err(err) = std::fs::remove_file(&orphan.path) {
+            tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
         }
     }
     count

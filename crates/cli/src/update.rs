@@ -748,7 +748,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn parse_checksum_manifest_rejects_multibyte_prefix_without_panicking() {
         // 63 hex chars + a 2-byte char + padding: byte offset 64 falls
         // mid-character, and split_at(64) used to panic instead of
@@ -761,6 +760,7 @@ mod tests {
         assert!(res.is_err(), "crafted manifest must be rejected, not panic");
     }
 
+    #[test]
     fn parse_checksum_manifest_accepts_sha256sum_format() {
         let manifest = "\
 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  codesmith-macos-arm64

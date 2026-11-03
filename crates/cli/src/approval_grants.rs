@@ -263,7 +263,6 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[test]
     fn save_refuses_to_overwrite_an_unreadable_file() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -279,6 +278,7 @@ mod tests {
         assert_eq!(raw, "[projects]\n", "unreadable file must stay intact");
     }
 
+    #[test]
     fn load_corrupt_file_degrades_to_empty() {
         let path = temp_path("corrupt.toml");
         std::fs::write(&path, "not [ valid toml {{{{").expect("write");
