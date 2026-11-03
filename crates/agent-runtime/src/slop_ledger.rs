@@ -836,6 +836,10 @@ impl ToolSpec for SlopLedgerQueryTool {
                 out.push_str(&format!("  {desc}\n"));
             }
         }
+        // Entry titles/descriptions are captured from transcript text;
+        // the other read paths (`export_markdown`, `summary`) redact, and
+        // this tool output enters the model transcript too.
+        redact_exported_text(&mut out);
         Ok(ToolResult::success(out))
     }
 }
