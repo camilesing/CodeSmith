@@ -118,6 +118,11 @@ impl WorkspaceTrust {
             }
         };
         self.paths.iter().any(|trusted| {
+            // An empty stored grant would prefix-match every path
+            // (`Path::starts_with("")` is true for any candidate).
+            if trusted.as_os_str().is_empty() {
+                return false;
+            }
             let trusted = trusted.canonicalize().unwrap_or_else(|_| trusted.clone());
             forms.iter().flatten().any(|c| c.starts_with(&trusted))
         })
@@ -135,6 +140,11 @@ pub fn add(workspace: &Path, path: &Path) -> Result<PathBuf> {
 
 fn add_at(workspace: &Path, path: &Path, trust_path: &Path) -> Result<PathBuf> {
     let canonical = canonicalize_or_keep(path);
+    // `/trust add ""` would store an empty prefix that matches everything
+    // in `permits`; refuse at the mint.
+    if canonical.as_os_str().is_empty() {
+        anyhow::bail!("refusing to trust an empty path");
+    }
     let key = workspace_key(workspace);
     // The whole read-modify-write runs under the shared fd-lock helper
     // (sibling `workspace-trust.json.lock`): two CLI processes mutating
@@ -391,5 +401,23 @@ mod tests {
         );
         let missing = trusted.join("..").join("definitely-missing-target");
         assert!(!trust.permits(&missing));
+    }
+
+    /// An empty stored grant must never act as a global allowlist:
+    /// `Path::starts_with("")` is true for any path.
+    #[test]
+    fn permits_never_honors_an_empty_grant() {
+        let trust = WorkspaceTrust {
+            paths: vec![PathBuf::new()],
+        };
+        assert!(!trust.permits(Path::new("/etc/passwd")));
+        assert!(!trust.permits(Path::new("anything")));
+    }
+
+    #[test]
+    fn add_at_refuses_an_empty_path() {
+        let (tmp, trust_path) = isolated_trust_path();
+        let workspace = tmp.path().join("ws");
+        assert!(add_at(&workspace, Path::new(""), &trust_path).is_err());
     }
 }
