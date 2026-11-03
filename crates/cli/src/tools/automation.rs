@@ -42,10 +42,14 @@ impl ToolSpec for AutomationCreateTool {
                     "type": "string",
                     "description": "Supported: FREQ=HOURLY;INTERVAL=N[;BYDAY=MO,TU] or FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30"
                 },
-                "cwds": { "type": "array", "items": { "type": "string" } },
+                "cwds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Absolute working directories for the unattended, auto-approved runs; at least one entry is required"
+                },
                 "paused": { "type": "boolean", "default": false }
             },
-            "required": ["name", "prompt", "rrule"],
+            "required": ["name", "prompt", "rrule", "cwds"],
             "additionalProperties": false
         })
     }
@@ -412,9 +416,12 @@ fn string_array(input: &Value, field: &str) -> Result<Vec<String>, ToolError> {
 /// Parse the `cwds` working-directory list. Entries become the workspace of
 /// unattended, auto-approved runs downstream, so every entry must be an
 /// absolute path — a relative path would resolve against wherever the
-/// scheduler happens to run, granting the run an unintended directory.
+/// scheduler happens to run, granting the run an unintended directory. An
+/// absent or empty list is rejected for the same reason: downstream falls
+/// back to the ambient CLI working directory, executing unattended and
+/// auto-approved in a directory the caller never chose.
 fn cwds_from_input(input: &Value) -> Result<Vec<PathBuf>, ToolError> {
-    string_array(input, "cwds")?
+    let cwds = string_array(input, "cwds")?
         .into_iter()
         .map(|raw| {
             let path = PathBuf::from(&raw);
@@ -425,7 +432,14 @@ fn cwds_from_input(input: &Value) -> Result<Vec<PathBuf>, ToolError> {
             }
             Ok(path)
         })
-        .collect()
+        .collect::<Result<Vec<PathBuf>, _>>()?;
+    if cwds.is_empty() {
+        return Err(ToolError::invalid_input(
+            "field 'cwds' must list at least one absolute working directory — \
+             an unattended auto-approved run needs an explicit workspace",
+        ));
+    }
+    Ok(cwds)
 }
 
 #[cfg(test)]
@@ -469,5 +483,15 @@ mod tests {
         let rel = json!({ "cwds": ["repo"] });
         let err = cwds_from_input(&rel).expect_err("relative path must be rejected");
         assert!(err.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn cwds_must_not_be_empty() {
+        // An absent or empty list would fall back to the ambient CLI cwd
+        // for an unattended auto-approved run — fail closed instead.
+        let absent = json!({});
+        assert!(cwds_from_input(&absent).is_err(), "absent cwds must error");
+        let empty = json!({ "cwds": [] });
+        assert!(cwds_from_input(&empty).is_err(), "empty cwds must error");
     }
 }
