@@ -216,7 +216,10 @@ struct GitContext {
 fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {
     let workspace = canonical_or_workspace(&context.workspace);
     let mut working_dir = workspace.clone();
-    let mut pathspec = None;
+    // Default to "." so git's upward repository discovery can never report
+    // paths (or diff contents) outside the workspace when the workspace
+    // sits inside a larger repo; both callers append this after `--`.
+    let mut pathspec = Some(PathBuf::from("."));
 
     if let Some(raw) = path {
         let resolved = context.resolve_path(raw)?;
