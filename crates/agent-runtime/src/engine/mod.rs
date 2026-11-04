@@ -2186,6 +2186,7 @@ impl Engine {
                     .with_extension_runner_if_some(self.extension_runner.clone()),
                 );
                 let cancel_token = self.cancel_token.clone();
+                let extension_runner = self.extension_runner.clone();
                 spawn_supervised(
                     "result-verifier",
                     std::panic::Location::caller(),
@@ -2223,6 +2224,22 @@ impl Engine {
                                 failure_type: block.failure_type(),
                             })
                             .await;
+                        // The same verdict reaches extension handlers as
+                        // `result-verified` (emit-only) at the main-turn
+                        // scope — a behavior mod (e.g. a reflexion ledger)
+                        // reacts without parsing the transcript.
+                        if let Some(runner) = extension_runner {
+                            let _ = runner
+                                .emit(codesmith_agent::extension::ExtensionEvent::ResultVerified(
+                                    codesmith_agent::extension::ResultVerifiedEvent {
+                                        verdict: block.kind.as_str().to_string(),
+                                        claim: block.phrase.clone(),
+                                        command: block.command.clone(),
+                                        exit_code: block.exit_code,
+                                    },
+                                ))
+                                .await;
+                        }
                     },
                 );
             }

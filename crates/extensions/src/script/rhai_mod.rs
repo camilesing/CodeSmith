@@ -169,6 +169,7 @@ pub(crate) fn event_kind_from_name(name: &str) -> Option<ExtensionEventKind> {
         "session-shutdown" => ExtensionEventKind::SessionShutdown,
         "session-before-compact" => ExtensionEventKind::SessionBeforeCompact,
         "session-compact" => ExtensionEventKind::SessionCompact,
+        "result-verified" => ExtensionEventKind::ResultVerified,
         "tools-change" => ExtensionEventKind::ToolsChange,
         "workflow-start" => ExtensionEventKind::WorkflowStart,
         "workflow-log" => ExtensionEventKind::WorkflowLog,
@@ -208,6 +209,7 @@ pub(crate) fn event_name_from_kind(kind: ExtensionEventKind) -> &'static str {
         ExtensionEventKind::SessionShutdown => "session-shutdown",
         ExtensionEventKind::SessionBeforeCompact => "session-before-compact",
         ExtensionEventKind::SessionCompact => "session-compact",
+        ExtensionEventKind::ResultVerified => "result-verified",
         ExtensionEventKind::ToolsChange => "tools-change",
         ExtensionEventKind::WorkflowStart => "workflow-start",
         ExtensionEventKind::WorkflowLog => "workflow-log",
@@ -282,13 +284,30 @@ pub(crate) fn dynamic_to_json(value: &Dynamic) -> Result<serde_json::Value, Stri
         .map_err(|e| format!("convert Rhai value to JSON: {e}"))
 }
 
-/// The handler-side context map: `#{cwd, mode, idle, generation}`.
+/// The handler-side context map: `#{cwd, mode, idle, generation, agent}`.
+/// `agent` is `#{main, type}` — the dispatch's agent identity (`type` is
+/// `()` on the main turn), so a callback can tell a sub-agent turn from
+/// the main turn.
 pub(crate) fn ctx_to_dynamic(ctx: &dyn ExtensionContext) -> Dynamic {
+    let identity = ctx.agent_identity();
     dynamic_map(vec![
         ("cwd", Dynamic::from(ctx.cwd().display().to_string())),
         ("mode", Dynamic::from(mode_string(ctx.mode()))),
         ("idle", Dynamic::from(ctx.is_idle())),
         ("generation", Dynamic::from(ctx.generation() as i64)),
+        (
+            "agent",
+            dynamic_map(vec![
+                ("main", Dynamic::from(identity.is_main())),
+                (
+                    "type",
+                    identity
+                        .agent_type
+                        .map(Dynamic::from)
+                        .unwrap_or(Dynamic::UNIT),
+                ),
+            ]),
+        ),
     ])
 }
 
@@ -401,17 +420,59 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
             ]
         }
         ExtensionEvent::ToolExecutionEnd => vec![],
-        ExtensionEvent::TurnEnd { turn_id, reason } => vec![
+        ExtensionEvent::TurnEnd {
+            turn_id,
+            reason,
+            steps,
+            tool_calls,
+            usage,
+        } => vec![
             ("turn_id", Dynamic::from(turn_id.clone())),
             ("reason", Dynamic::from(turn_end_reason(*reason))),
+            ("steps", Dynamic::from(i64::from(*steps))),
+            ("tool_calls", Dynamic::from(i64::from(*tool_calls))),
+            (
+                "usage",
+                dynamic_map(vec![
+                    ("input_tokens", Dynamic::from(i64::from(usage.input_tokens))),
+                    (
+                        "output_tokens",
+                        Dynamic::from(i64::from(usage.output_tokens)),
+                    ),
+                ]),
+            ),
         ],
         ExtensionEvent::AgentEnd => vec![],
         ExtensionEvent::AgentSettled => vec![],
         ExtensionEvent::SessionBeforeSwitch => vec![],
         ExtensionEvent::SessionBeforeFork => vec![],
         ExtensionEvent::SessionShutdown => vec![],
-        ExtensionEvent::SessionBeforeCompact => vec![],
+        ExtensionEvent::SessionBeforeCompact(e) => vec![
+            (
+                "current_tokens",
+                Dynamic::from(i64::try_from(e.current_tokens).unwrap_or(i64::MAX)),
+            ),
+            (
+                "threshold",
+                Dynamic::from(i64::try_from(e.threshold).unwrap_or(i64::MAX)),
+            ),
+        ],
         ExtensionEvent::SessionCompact => vec![],
+        ExtensionEvent::ResultVerified(e) => vec![
+            ("verdict", Dynamic::from(e.verdict.clone())),
+            ("claim", Dynamic::from(e.claim.clone())),
+            (
+                "command",
+                e.command
+                    .clone()
+                    .map(Dynamic::from)
+                    .unwrap_or(Dynamic::UNIT),
+            ),
+            (
+                "exit_code",
+                e.exit_code.map(Dynamic::from).unwrap_or(Dynamic::UNIT),
+            ),
+        ],
         ExtensionEvent::ToolsChange { added, removed } => vec![
             (
                 "added",
@@ -1620,6 +1681,153 @@ mod tests {
         assert!(msg.contains("no-such-event"), "{msg}");
     }
 
+    // === examples/mods (behavior-plugin exemplars) ==========================
+    //
+    // The shipped example mods are data files no compiler checks, and a mod
+    // whose script errors fails OPEN in a user's session — these tests are
+    // the rot guard: a Rhai API change that breaks an example turns the
+    // build red here instead of silently disabling it out there.
+
+    #[test]
+    fn example_reflexion_records_failure_and_injects_once() {
+        let dir = TempDir::new().unwrap();
+        let kv = kv_for(&dir, "reflexion");
+        let source = include_str!("../../../../examples/mods/reflexion/mod.rhai");
+        let m = RhaiMod::load_source(
+            "reflexion",
+            "Reflexion",
+            "0.1.0",
+            source.to_string(),
+            kv,
+            hub(),
+        )
+        .expect("load reflexion example");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        // A failing tool result on the main turn records a lesson.
+        let _ = rt.block_on(runner.emit(ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "edit_file".into(),
+            result: Err(codesmith_tools::ToolError::execution_failed(
+                "patch did not apply",
+            )),
+        })));
+        assert_eq!(
+            kv_for(&dir, "reflexion").get("dirty"),
+            Some(serde_json::json!(true)),
+            "tool-result handler must set dirty"
+        );
+
+        // The next attempt's start injects the reflection ledger…
+        let out = rt.block_on(runner.emit(ExtensionEvent::BeforeAgentStart(
+            codesmith_agent::extension::AgentStartEvent {
+                system_prompt: None,
+                inject_message: None,
+            },
+        )));
+        match out.event {
+            ExtensionEvent::BeforeAgentStart(e) => {
+                let msg = e.inject_message.expect("reflection injected");
+                assert!(msg.contains("Reflections"), "{msg}");
+                assert!(msg.contains("edit_file"), "{msg}");
+            }
+            other => panic!("expected transformed BeforeAgentStart, got {other:?}"),
+        }
+        // …and only once: the ledger is not re-injected before new failures.
+        let out = rt.block_on(runner.emit(ExtensionEvent::BeforeAgentStart(
+            codesmith_agent::extension::AgentStartEvent {
+                system_prompt: None,
+                inject_message: None,
+            },
+        )));
+        match out.event {
+            ExtensionEvent::BeforeAgentStart(e) => {
+                assert!(e.inject_message.is_none(), "second start re-injected");
+            }
+            other => panic!("expected BeforeAgentStart, got {other:?}"),
+        }
+
+        // A clean turn (no-tool-calls end, zero errors) expires the ledger.
+        let _ = rt.block_on(runner.emit(ExtensionEvent::TurnStart {
+            turn_id: "t-clean".into(),
+        }));
+        let _ = rt.block_on(runner.emit(ExtensionEvent::TurnEnd {
+            turn_id: "t-clean".into(),
+            reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+            steps: 2,
+            tool_calls: 0,
+            usage: codesmith_agent::models::Usage::default(),
+        }));
+        let kv = kv_for(&dir, "reflexion");
+        assert_eq!(kv.get("reflections"), Some(serde_json::json!([])));
+    }
+
+    #[test]
+    fn example_voyager_captures_a_clean_flow_and_reregisters_it() {
+        let dir = TempDir::new().unwrap();
+        let source = include_str!("../../../../examples/mods/voyager-capture/mod.rhai");
+        let load = || {
+            RhaiMod::load_source(
+                "voyager-capture",
+                "Voyager Capture",
+                "0.1.0",
+                source.to_string(),
+                kv_for(&dir, "voyager-capture"),
+                hub(),
+            )
+        };
+        let m = load().expect("load voyager example");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        // Three successful action-class calls, then a clean turn end.
+        for i in 0..3 {
+            let _ = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: format!("c{i}"),
+                name: "write_file".into(),
+                input: serde_json::json!({"path": format!("f{i}.rs"), "content": "x"}),
+            })));
+            let _ = rt.block_on(runner.emit(ExtensionEvent::ToolResult(ToolResultEvent {
+                id: format!("c{i}"),
+                name: "write_file".into(),
+                result: Ok(ToolResult::success("written")),
+            })));
+        }
+        let _ = rt.block_on(runner.emit(ExtensionEvent::TurnEnd {
+            turn_id: "t1".into(),
+            reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+            steps: 1,
+            tool_calls: 3,
+            usage: codesmith_agent::models::Usage::default(),
+        }));
+
+        let skills = kv_for(&dir, "voyager-capture")
+            .get("skills")
+            .expect("one captured skill");
+        assert_eq!(
+            skills.as_array().map(std::vec::Vec::len),
+            Some(1),
+            "captured: {skills}"
+        );
+
+        // A fresh load over the same KV re-registers the captured skill —
+        // the library survives reloads through the mod's persistent state.
+        let m2 = load().expect("reload voyager example");
+        assert!(
+            m2.registrations().iter().any(|r| matches!(
+                r,
+                ScriptRegistration::Skill { name, .. } if name == "captured-flow-0"
+            )),
+            "re-registered {} registrations",
+            m2.registrations().len()
+        );
+    }
+
     // === on_event (DSH-aligned Emit/Serial registration) ====================
 
     /// An Emit-kind on_event callback runs at dispatch: the hook records
@@ -1643,6 +1851,9 @@ mod tests {
         rt.block_on(runner.load(&m)).expect("configure");
         runner.bind_core(Arc::new(PerModCtx));
         let out = rt.block_on(runner.emit(ExtensionEvent::TurnEnd {
+            steps: 0,
+            tool_calls: 0,
+            usage: codesmith_agent::models::Usage::default(),
             turn_id: "t9".into(),
             reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
         }));
@@ -2351,6 +2562,7 @@ mod tests {
             ExtensionEventKind::SessionShutdown,
             ExtensionEventKind::SessionBeforeCompact,
             ExtensionEventKind::SessionCompact,
+            ExtensionEventKind::ResultVerified,
             ExtensionEventKind::ToolsChange,
             ExtensionEventKind::ProviderRequestError,
             ExtensionEventKind::TurnStopping,
@@ -2360,12 +2572,169 @@ mod tests {
             ExtensionEventKind::WorkflowAgentEnd,
             ExtensionEventKind::WorkflowEnd,
         ];
-        assert_eq!(kinds.len(), 31);
+        assert_eq!(kinds.len(), 32);
         for kind in kinds {
             let name = event_name_from_kind(kind);
             assert_eq!(event_kind_from_name(name), Some(kind), "round-trip {name}");
         }
         assert_eq!(event_kind_from_name("bogus"), None);
+    }
+
+    #[test]
+    fn turn_end_payload_carries_summary_and_usage() {
+        let event = ExtensionEvent::TurnEnd {
+            turn_id: "t9".into(),
+            reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+            steps: 4,
+            tool_calls: 7,
+            usage: codesmith_agent::models::Usage {
+                input_tokens: 1_200,
+                output_tokens: 300,
+                ..codesmith_agent::models::Usage::default()
+            },
+        };
+        let map = event_to_dynamic(&event)
+            .try_cast::<rhai::Map>()
+            .expect("payload map");
+        assert_eq!(
+            map.get("steps").and_then(|d| d.clone().try_cast::<i64>()),
+            Some(4)
+        );
+        assert_eq!(
+            map.get("tool_calls")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(7)
+        );
+        let usage = map
+            .get("usage")
+            .and_then(|d| d.clone().try_cast::<rhai::Map>())
+            .expect("usage map");
+        assert_eq!(
+            usage
+                .get("input_tokens")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(1_200)
+        );
+        assert_eq!(
+            usage
+                .get("output_tokens")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn session_before_compact_payload_carries_token_stats() {
+        let event = ExtensionEvent::SessionBeforeCompact(
+            codesmith_agent::extension::SessionBeforeCompactEvent {
+                current_tokens: 968_000,
+                threshold: 967_000,
+            },
+        );
+        let map = event_to_dynamic(&event)
+            .try_cast::<rhai::Map>()
+            .expect("payload map");
+        assert_eq!(
+            map.get("current_tokens")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(968_000)
+        );
+        assert_eq!(
+            map.get("threshold")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(967_000)
+        );
+    }
+
+    #[test]
+    fn result_verified_payload_carries_verdict() {
+        let event =
+            ExtensionEvent::ResultVerified(codesmith_agent::extension::ResultVerifiedEvent {
+                verdict: "verified-fail".into(),
+                claim: "tests pass".into(),
+                command: Some("cargo test -p x".into()),
+                exit_code: Some(101),
+            });
+        let map = event_to_dynamic(&event)
+            .try_cast::<rhai::Map>()
+            .expect("payload map");
+        assert_eq!(
+            map.get("kind").and_then(|d| d.clone().try_cast::<String>()),
+            Some("result-verified".into())
+        );
+        assert_eq!(
+            map.get("verdict")
+                .and_then(|d| d.clone().try_cast::<String>()),
+            Some("verified-fail".into())
+        );
+        assert_eq!(
+            map.get("exit_code")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(101)
+        );
+    }
+
+    #[test]
+    fn ctx_map_carries_dispatch_agent_identity() {
+        struct Ctx {
+            identity: codesmith_agent::extension::AgentIdentity,
+        }
+        #[async_trait::async_trait]
+        impl codesmith_agent::extension::ExtensionContext for Ctx {
+            fn cwd(&self) -> &std::path::Path {
+                std::path::Path::new(".")
+            }
+            fn mode(&self) -> codesmith_agent::extension::ExtensionMode {
+                codesmith_agent::extension::ExtensionMode::Interactive
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> tokio_util::sync::CancellationToken {
+                tokio_util::sync::CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                1
+            }
+            fn agent_identity(&self) -> codesmith_agent::extension::AgentIdentity {
+                self.identity.clone()
+            }
+        }
+
+        let main = ctx_to_dynamic(&Ctx {
+            identity: codesmith_agent::extension::AgentIdentity::main(),
+        })
+        .try_cast::<rhai::Map>()
+        .expect("ctx map");
+        let agent = main
+            .get("agent")
+            .and_then(|d| d.clone().try_cast::<rhai::Map>())
+            .expect("agent map");
+        assert_eq!(
+            agent.get("main").and_then(|d| d.clone().try_cast::<bool>()),
+            Some(true)
+        );
+        assert!(agent.get("type").is_none_or(|d| d.is_unit()));
+
+        let child = ctx_to_dynamic(&Ctx {
+            identity: codesmith_agent::extension::AgentIdentity::child("explore"),
+        })
+        .try_cast::<rhai::Map>()
+        .expect("ctx map");
+        let agent = child
+            .get("agent")
+            .and_then(|d| d.clone().try_cast::<rhai::Map>())
+            .expect("agent map");
+        assert_eq!(
+            agent.get("main").and_then(|d| d.clone().try_cast::<bool>()),
+            Some(false)
+        );
+        assert_eq!(
+            agent
+                .get("type")
+                .and_then(|d| d.clone().try_cast::<String>()),
+            Some("explore".into())
+        );
     }
 
     #[test]

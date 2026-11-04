@@ -408,6 +408,50 @@ pub struct ExtensionRunner {
     transition_lock: tokio::sync::Mutex<()>,
 }
 
+/// Per-dispatch context wrapper: delegates every observation to the bound
+/// host context and answers `agent_identity` from the dispatch scope
+/// (scripts: `ctx.agent`) — the identity the bound context itself cannot
+/// know, because it is shared across every dispatch. Lives only for the
+/// duration of one [`ExtensionRunner::emit_scoped`] call.
+struct ScopedContext<'a> {
+    inner: &'a dyn ExtensionContext,
+    identity: AgentIdentity,
+}
+
+#[async_trait::async_trait]
+impl ExtensionContext for ScopedContext<'_> {
+    fn cwd(&self) -> &Path {
+        self.inner.cwd()
+    }
+    fn mode(&self) -> ExtensionMode {
+        self.inner.mode()
+    }
+    fn is_idle(&self) -> bool {
+        self.inner.is_idle()
+    }
+    fn signal(&self) -> tokio_util::sync::CancellationToken {
+        self.inner.signal()
+    }
+    fn generation(&self) -> u64 {
+        self.inner.generation()
+    }
+    fn agent_identity(&self) -> AgentIdentity {
+        self.identity.clone()
+    }
+    async fn abort(&self) -> Result<(), ExtensionError> {
+        self.inner.abort().await
+    }
+    async fn shutdown(&self) -> Result<(), ExtensionError> {
+        self.inner.shutdown().await
+    }
+    async fn compact(&self) -> Result<(), ExtensionError> {
+        self.inner.compact().await
+    }
+    async fn get_context_usage(&self) -> Result<ContextUsage, ExtensionError> {
+        self.inner.get_context_usage().await
+    }
+}
+
 impl ExtensionRunner {
     /// Create an empty runner at generation 0.
     #[must_use]
@@ -1314,6 +1358,10 @@ impl ExtensionRunner {
             .collect();
         let mut event = event;
         let mut outcome = HandlerOutcome::Continue;
+        let scoped = ScopedContext {
+            inner: ctx.as_ref(),
+            identity: AgentIdentity::from_scope(&scope),
+        };
         for rh in matching {
             // The variant filter binds to the RUNNING event kind: a handler
             // earlier in the chain may have `Transform`ed the event to a
@@ -1324,8 +1372,10 @@ impl ExtensionRunner {
             }
             let h = rh.handler;
             // §F2a: catch_unwind so a panicking handler can't tear down the
-            // agent loop (§8.3 error isolation).
-            let result = AssertUnwindSafe(h.handle(&event, &*ctx))
+            // agent loop (§8.3 error isolation). Handlers receive the
+            // per-dispatch `ScopedContext`, whose `agent_identity` reflects
+            // this dispatch's scope.
+            let result = AssertUnwindSafe(h.handle(&event, &scoped))
                 .catch_unwind()
                 .await;
             match result {
@@ -1633,6 +1683,86 @@ mod tests {
     // impl the sub-trait (a marker in slice 1) for the coercion to fire.
     impl ExtensionCommandContext for Ctx {}
 
+    /// Dispatch identity reaches handlers: `emit_scoped` at an
+    /// `AgentType(t)` scope hands handlers the child identity
+    /// (`ctx.agent_identity()`), while the plain `emit` (Global) reports the
+    /// main turn. The bound `Ctx` itself does not implement
+    /// `agent_identity` — the default (main) would be reported if the
+    /// wrapper were missing at the scoped dispatch.
+    struct IdentityRecExt {
+        identities: Arc<Mutex<Vec<Option<String>>>>,
+    }
+    #[async_trait::async_trait]
+    impl Extension for IdentityRecExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("identity-rec");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on_variant(
+                ExtensionEventKind::TurnStart,
+                Arc::new(IdentityRecHandler {
+                    identities: self.identities.clone(),
+                }),
+            )?;
+            Ok(())
+        }
+    }
+
+    struct IdentityRecHandler {
+        identities: Arc<Mutex<Vec<Option<String>>>>,
+    }
+    #[async_trait::async_trait]
+    impl Handler for IdentityRecHandler {
+        async fn handle(
+            &self,
+            _event: &ExtensionEvent,
+            ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            self.identities
+                .lock()
+                .unwrap()
+                .push(ctx.agent_identity().agent_type);
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_scoped_reports_dispatch_identity_to_handlers() {
+        let runner = ExtensionRunner::new();
+        let identities = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&IdentityRecExt {
+                identities: identities.clone(),
+            })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        let _ = runner
+            .emit(ExtensionEvent::TurnStart {
+                turn_id: "t1".into(),
+            })
+            .await;
+        let _ = runner
+            .emit_scoped(
+                Scope::AgentType("explore".into()),
+                ExtensionEvent::TurnStart {
+                    turn_id: "t2".into(),
+                },
+            )
+            .await;
+
+        let identities = identities.lock().unwrap();
+        assert_eq!(
+            *identities,
+            vec![
+                None,                        // Global dispatch → main turn
+                Some("explore".to_string()), // AgentType dispatch → child
+            ]
+        );
+    }
+
     struct RecExt {
         seen: Arc<Mutex<Vec<&'static str>>>,
     }
@@ -1871,7 +2001,7 @@ mod tests {
             event: &ExtensionEvent,
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
-            if matches!(event, ExtensionEvent::SessionBeforeCompact) {
+            if matches!(event, ExtensionEvent::SessionBeforeCompact(_)) {
                 Ok(HandlerOutcome::Cancel {
                     reason: "user aborted".into(),
                 })
@@ -1894,7 +2024,14 @@ mod tests {
             .await
             .unwrap();
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
-        let out = runner.emit(ExtensionEvent::SessionBeforeCompact).await;
+        let out = runner
+            .emit(ExtensionEvent::SessionBeforeCompact(
+                SessionBeforeCompactEvent {
+                    current_tokens: 1_000,
+                    threshold: 967_000,
+                },
+            ))
+            .await;
         assert!(matches!(out.outcome, HandlerOutcome::Cancel { .. }));
         // The observer after the cancel handler never fired.
         assert!(seen.lock().unwrap().is_empty());

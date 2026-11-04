@@ -1,0 +1,4 @@
+id = "voyager-capture"
+name = "Voyager Capture"
+version = "0.1.0"
+description = "Wang et al. style skill accumulation: a clean main-turn action sequence (>= 3 successful calls, no failures) is distilled into a reusable skill and re-registered from the mod's KV at load."

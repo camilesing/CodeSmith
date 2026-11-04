@@ -1,0 +1,4 @@
+id = "reflexion"
+name = "Reflexion"
+version = "0.1.0"
+description = "Shinn et al. style self-reflection: tool failures and failed verification verdicts accumulate into a reflection ledger that is injected ahead of the next attempt, and cleared on the first clean turn."

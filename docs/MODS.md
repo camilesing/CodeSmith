@@ -124,7 +124,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 
 ### Event hooks
 
-`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). Event names are the kebab-case spelling of all 31 `ExtensionEventKind` variants:
+`on("<event>", |e, ctx| { ... })` — `e` is the event payload map (every payload carries `kind`), `ctx` is `#{cwd, mode, idle, generation, agent}` (`mode` is `"tui"` for the interactive terminal REPL — the retired frontend's name, kept for compatibility — or `"rpc"` / `"json"` / `"print"`); **ctx is optional** (`|e|` works). `agent` is the dispatch's agent identity — `#{main, type}` where `main` is `true` on the main turn and `type` is the sub-agent type (`()` on the main turn) — so a callback can tell a child turn from the main turn (`if !ctx.agent.main { return (); }` is the standard "main turn only" guard). Event names are the kebab-case spelling of all 32 `ExtensionEventKind` variants:
 
 | Event | Payload fields |
 |---|---|
@@ -136,7 +136,7 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `provider-request-error` | `failure` (`#{category, message}`), `attempt`, `plan` (`#{action: "retry" \| "give-up", delay_ms}`) |
 | `tool-call` | `id`, `name`, `input` (JSON value) |
 | `tool-result` | `id`, `name`, `content`, `success`, `is_error`, `canonical` (JSON value, `()` when the tool produced none) |
-| `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` |
+| `turn-start` / `turn-end` | `turn_id`; `turn-end` also `reason` plus the activity summary `steps` (loop iterations begun), `tool_calls`, `usage` (`#{input_tokens, output_tokens}`) |
 | `turn-stopping` | `reason` (why the turn would end — `no-tool-calls` at the only emit site); fires just before the turn ends on no tool calls; `cancel("note")` steers — the note is appended as a user message and the turn resumes (capped at 3 steers per turn) |
 | `assistant-stream` | `text` (one incremental chunk; fires per text delta, emit-only) |
 | `tool-execution-update` | `id`, `name`, `message` |
@@ -147,7 +147,9 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `workflow-agent-end` | `status`, `steps` (one workflow child finished) |
 | `workflow-end` | `status`, `error` (error kind on failure), `agent_calls` (a workflow run's terminal outcome; no return value — the transcript's tool result is the record) |
 | `project-trust` / `session-start` | `reason` |
-| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | (`kind` only) |
+| `result-verified` | `verdict` (`verified-pass` \| `verified-fail` \| `verify-error` \| `unsubstantiated`), `claim`, `command` (`()` when nothing could be re-run), `exit_code` (`()` when it did not run) — the result-claim verifier's outcome, fired from the post-turn background replay, so it lands between turns |
+| `session-before-compact` | `current_tokens` (whole-transcript estimate), `threshold` (the configured token threshold) — advisory readings of the trigger inputs; the decision itself compares a plan-shaped subset against a pinned-adjusted effective threshold, so a veto weighs these, not the literal operands |
+| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-compact` | (`kind` only) |
 
 `tool-execution-update` fires from the shell tools' own poll loops while a command keeps
 running (`exec_shell` foreground and `exec_shell_wait`): at most once per second and only
@@ -203,11 +205,11 @@ Scope: `on_event` registrations are global-scope, script-origin — a
 global registration covers every dispatch scope, so an `on_event`
 callback observes the main turn's emit/serial events and every
 sub-agent turn's (`turn-start`, `turn-end`, `agent-start`, `agent-end`,
-`turn-stopping`, the provider emits, `assistant-stream`, `tool-execution-*`). Known
-limitation: the payloads carry no agent identity, so a callback cannot
-tell a child's turn from the main turn's (the scope unit is the agent
-type — a compiled-in extension that must tell them apart registers
-`on_variant_scoped`). There is no `on_event_scoped` — scripts do
+`turn-stopping`, the provider emits, `assistant-stream`, `tool-execution-*`).
+The dispatch identity rides `ctx.agent` (`#{main, type}`): a callback
+tells a child's turn from the main turn's by `ctx.agent.main` — but not
+one child instance from another (`type` is the scope unit; there is no
+per-instance id). There is no `on_event_scoped` — scripts do
 not see registration scopes (a compiled-in extension can register
 `on_variant_scoped`). Around-execute and `ask` have no script form in
 any channel (async / UI decision channel — see
@@ -490,6 +492,15 @@ or `/extension reload` removes the alias.
 ### Resource limits and error posture
 
 Per script call: 200,000 operations, 64 call levels, 8 MiB strings / 100k array & map elements. On limit breach or script error: **hooks fail open** (`warn` + `Continue` — one broken mod cannot break the chain); tools/commands return a normal error to the model. No fs/net/process — the engine registers no I/O natives; absence is the sandbox.
+
+One Rhai semantic worth knowing before a handler silently fails open: **a named top-level `fn` cannot see top-level `const`s** (its call state is fresh each call), while event callbacks can (closures capture them). Pass everything a named fn needs as a parameter — `fn record(lesson, max)` called as `record(lesson, MAX_REFLECTIONS)`, never `fn record(lesson)` reading `MAX_REFLECTIONS` inside.
+
+## Example mods
+
+The repository ships two behavior-plugin exemplars under [`examples/mods/`](../examples/mods/) — copy either into `~/.codesmith/mods/` (or the workspace's `.codesmith/mods/`) and activate it with `/mods activate <id>`. Both are covered by load-and-behave tests in `crates/extensions`, so they cannot rot silently.
+
+- **`reflexion`** — Shinn et al. (2023) as a mod: failing tool results and `result-verified` `verified-fail` verdicts accumulate into a reflection ledger (the mod's KV), the ledger rides the next attempt as one injected user message (the `before-agent-start` waterfall), and the first clean turn expires it. Main-turn only (`ctx.agent.main` guard).
+- **`voyager-capture`** — the capture half of Wang et al. (2023): a clean main-turn action sequence (≥ 3 successful action-class calls, zero failures) is distilled into a skill and stored in the mod's KV; every load re-registers the accumulated library via `register_skill`, so captured flows come back after `/mods reload`.
 
 ## mod.toml Fields
 

@@ -120,7 +120,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 
 ### 事件钩子
 
-`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 31 种：
+`on("<event>", |e, ctx| { ... })`——`e` 是事件 payload map（都带 `kind` 字段），`ctx` 是 `#{cwd, mode, idle, generation, agent}`（`mode` 在交互终端 REPL 下为 `"tui"`——沿用已移除前端的名字以保兼容——其余为 `"rpc"` / `"json"` / `"print"`），**ctx 可省略**（写 `|e|` 即可）。`agent` 是本次分发的 agent 身份——`#{main, type}`，主 turn 下 `main` 为 `true`、`type` 为 `()`，子代理 turn 下 `type` 为其类型——回调由此区分子代理 turn 与主 turn（`if !ctx.agent.main { return (); }` 即标准的"仅主 turn"守卫）。事件名是 `ExtensionEventKind` 的 kebab-case 全量 32 种：
 
 | 事件 | payload 字段 |
 |---|---|
@@ -132,7 +132,7 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `provider-request-error` | `failure`（`#{category, message}`）、`attempt`、`plan`（`#{action: "retry" \| "give-up", delay_ms}`） |
 | `tool-call` | `id`、`name`、`input`（JSON 值） |
 | `tool-result` | `id`、`name`、`content`、`success`、`is_error`、`canonical`（JSON 值，工具未产出时为 `()`） |
-| `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` |
+| `turn-start` / `turn-end` | `turn_id`；`turn-end` 另有 `reason` 与活动摘要 `steps`（本轮开始的循环迭代数）、`tool_calls`、`usage`（`#{input_tokens, output_tokens}`） |
 | `turn-stopping` | `reason`（轮即将结束的原因——唯一 emit 位点处为 `no-tool-calls`）；在轮因无工具调用而结束前发出；`cancel("提示")` 即 steer——提示追加为 user 消息并续轮（每轮上限 3 次） |
 | `assistant-stream` | `text`（单个增量块；随文本 delta 逐次触发，仅 emit） |
 | `tool-execution-update` | `id`、`name`、`message` |
@@ -143,7 +143,9 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `workflow-agent-end` | `status`、`steps`（一个 workflow 子级结束） |
 | `workflow-end` | `status`、`error`（失败时的错误类别）、`agent_calls`（workflow 运行的终态结果；不携带返回值——转录中的工具结果即记录） |
 | `project-trust` / `session-start` | `reason` |
-| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-before-compact` / `session-compact` | （仅 `kind`） |
+| `result-verified` | `verdict`（`verified-pass` \| `verified-fail` \| `verify-error` \| `unsubstantiated`）、`claim`、`command`（无可重跑命令时为 `()`）、`exit_code`（未运行时为 `()`）——结果声明验证器的判定，由 turn 结束后的后台重放触发，落在两个 turn 之间 |
+| `session-before-compact` | `current_tokens`（整个转录的估算）、`threshold`（配置的 token 阈值）——触发输入的参考读数；实际决策对比的是按计划形状选取的子集与按 pin 调整后的有效阈值，因此否决时衡量的是这两个输入，而非字面操作数 |
+| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-compact` | （仅 `kind`） |
 
 `tool-execution-update` 由 shell 工具自己的轮询循环在命令持续运行时发射（`exec_shell`
 前台与 `exec_shell_wait`）：至多每秒一次、且仅当有新输出。`id` 是 shell 任务 id（工具
@@ -191,10 +193,10 @@ emit 事件下一切返回值仅具参考性；serial 事件下 `cancel(reason)`
 作用域：`on_event` 注册是 global 作用域、script 来源——global 注册覆盖
 所有分发作用域，因此 `on_event` 回调既观察到主 turn 的 emit/serial 事件，
 也观察到每个子代理 turn 的（`turn-start`、`turn-end`、`agent-start`、
-`agent-end`、`turn-stopping`、provider emit、`assistant-stream`、`tool-execution-*`）。已知
-限制：载荷不带 agent 身份，回调无法区分子代理的 turn 与主 turn（作用域
-单位是 agent 类型——必须区分的编译内置扩展请注册 `on_variant_scoped`）。
-没有 `on_event_scoped`——脚本看不到
+`agent-end`、`turn-stopping`、provider emit、`assistant-stream`、`tool-execution-*`）。
+分发身份随 `ctx.agent`（`#{main, type}`）携带：回调以 `ctx.agent.main` 区分
+子代理的 turn 与主 turn——但无法区分同一类型的两个子代理实例（`type` 是
+作用域单位，没有按实例的 id）。没有 `on_event_scoped`——脚本看不到
 注册作用域（编译内置扩展可注册 `on_variant_scoped`）。around-execute 与
 `ask` 在任何通道都没有脚本形态（异步 / UI 决策通道——见
 [EXTENSIONS_cn.md](EXTENSIONS_cn.md)；不存在 `ask()` 控制值，脚本永远
@@ -435,6 +437,15 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 ### 资源限制与错误姿态
 
 每次脚本调用上限 200,000 操作数、64 层调用深度、8 MiB 字符串 / 100k 数组与 map 元素。超限或脚本出错：**钩子 fail-open**（`warn` + `Continue`，一个坏 mod 不会打断链）；工具/命令返回普通错误给模型。不暴露文件/网络/进程——引擎未注册任何 I/O native，不注入即不存在。
+
+一个值得先知道的 Rhai 语义（否则 handler 会静默 fail-open）：**命名的顶层 `fn` 看不到顶层 `const`**（每次调用的调用状态是全新的），而事件回调可以（闭包会捕获）。命名 fn 需要的一切都走参数传入——写 `fn record(lesson, max)` 并以 `record(lesson, MAX_REFLECTIONS)` 调用，不要写 `fn record(lesson)` 在体内读 `MAX_REFLECTIONS`。
+
+## 示例 mod
+
+仓库在 [`examples/mods/`](../examples/mods/) 下内置两个行为插件范例——把任一目录复制进 `~/.codesmith/mods/`（或工作区 `.codesmith/mods/`）后用 `/mods activate <id>` 激活。两者都有加载并驱动行为的测试（`crates/extensions`），不会静默腐烂。
+
+- **`reflexion`**——Shinn et al.（2023）的 mod 化：失败的 `tool-result` 与 `result-verified` 的 `verified-fail` 判定累积进反思账本（mod 的 KV），下一次尝试开始时以一条注入的 user 消息携带（`before-agent-start` 瀑布），首个干净 turn 将其清空。仅主 turn（`ctx.agent.main` 守卫）。
+- **`voyager-capture`**——Wang et al.（2023）的采集半边：干净的主 turn 动作序列（≥ 3 次成功的动作类调用、零失败）被蒸馏为技能存入 mod 的 KV；每次装载经 `register_skill` 重新注册累积的库，采集到的流程在 `/mods reload` 后回归。
 
 ## mod.toml 字段
 

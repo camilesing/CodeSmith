@@ -248,7 +248,7 @@ inventory::submit! {
 - **`ExtensionCommandContext: ExtensionContext`** —— 交给命令处理器
   的严格子 trait；它不携带任何会话变更方法（这一拆分是为了类型
   安全）。
-- **`ExtensionEvent`** —— `#[non_exhaustive]`，31 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入；`turn-stopping` 随 DSH 串行 steer 加入；五个 workflow 生命周期事件随模型可写的 `workflow` 工具加入）：
+- **`ExtensionEvent`** —— `#[non_exhaustive]`，32 个变体（`resources-discover` 已于 0.11.0 移除；`provider-request-error` 随 DSH 重试瀑布加入；`turn-stopping` 随 DSH 串行 steer 加入；五个 workflow 生命周期事件随模型可写的 `workflow` 工具加入；`result-verified` 随结果声明验证器的 turn 后判定加入）：
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /

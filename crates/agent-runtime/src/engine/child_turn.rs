@@ -970,6 +970,7 @@ mod tests {
             (K::SessionBeforeSwitch, false),
             (K::SessionBeforeCompact, false),
             (K::SessionCompact, false),
+            (K::ResultVerified, false),
             (K::AgentSettled, false),
             (K::ToolsChange, false),
             (K::WorkflowStart, false),
@@ -978,7 +979,7 @@ mod tests {
             (K::WorkflowAgentEnd, false),
             (K::WorkflowEnd, false),
         ];
-        assert_eq!(table.len(), 31, "every ExtensionEventKind has a row");
+        assert_eq!(table.len(), 32, "every ExtensionEventKind has a row");
 
         let workspace = tempfile::tempdir().expect("workspace");
         let global = Arc::new(StdMutex::new(Vec::new()));

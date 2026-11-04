@@ -618,7 +618,8 @@ use crate::compaction::micro_compact::{
     MicroCompactState, micro_compact_messages, should_trigger_micro_compact,
 };
 use crate::compaction::{
-    CompactionConfig, CompactionEnhancements, compact_messages_safe, message_text, should_compact,
+    CompactionConfig, CompactionEnhancements, compact_messages_safe, estimate_tokens, message_text,
+    should_compact,
 };
 use crate::config_types::ApiProvider;
 use crate::error_taxonomy::ErrorEnvelope;
@@ -2656,7 +2657,12 @@ impl HostAgentExecutor {
             let out = runner
                 .emit_scoped(
                     self.dispatch_scope.clone(),
-                    codesmith_agent::extension::ExtensionEvent::SessionBeforeCompact,
+                    codesmith_agent::extension::ExtensionEvent::SessionBeforeCompact(
+                        codesmith_agent::extension::SessionBeforeCompactEvent {
+                            current_tokens: estimate_tokens(&history.messages()) as u64,
+                            threshold: probe.config.token_threshold as u64,
+                        },
+                    ),
                 )
                 .await;
             if matches!(
@@ -3449,12 +3455,18 @@ impl HostAgentExecutor {
                 self.emit_status("Request cancelled".to_string()).await;
                 callback.on_complete(&StopReason::Interrupted).await;
                 if let Some(runner) = &extension {
+                    // Bind before the emit so the usage mutex guard drops at
+                    // the `;` — the guard is not `Send` across the await.
+                    let usage = self.usage.lock().expect("usage mutex poisoned").clone();
                     let _ = runner
                         .emit_scoped(
                             self.dispatch_scope.clone(),
                             codesmith_agent::extension::ExtensionEvent::TurnEnd {
                                 turn_id: turn_id.clone(),
                                 reason: codesmith_agent::extension::TurnEndReason::Interrupted,
+                                steps: step,
+                                tool_calls: tool_call_ids_this_run.len() as u32,
+                                usage,
                             },
                         )
                         .await;
@@ -4282,12 +4294,18 @@ impl HostAgentExecutor {
                 }
                 callback.on_complete(&StopReason::NoToolCalls).await;
                 if let Some(runner) = &extension {
+                    // Bind before the emit so the usage mutex guard drops at
+                    // the `;` — the guard is not `Send` across the await.
+                    let usage = self.usage.lock().expect("usage mutex poisoned").clone();
                     let _ = runner
                         .emit_scoped(
                             self.dispatch_scope.clone(),
                             codesmith_agent::extension::ExtensionEvent::TurnEnd {
                                 turn_id: turn_id.clone(),
                                 reason: codesmith_agent::extension::TurnEndReason::NoToolCalls,
+                                steps: step,
+                                tool_calls: tool_call_ids_this_run.len() as u32,
+                                usage,
                             },
                         )
                         .await;
@@ -19162,7 +19180,7 @@ mod tests {
             event: &ExtensionEvent,
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
-            if matches!(event, ExtensionEvent::SessionBeforeCompact) {
+            if matches!(event, ExtensionEvent::SessionBeforeCompact(_)) {
                 return Ok(HandlerOutcome::Cancel {
                     reason: "vetoed by f2b test".to_string(),
                 });
@@ -19268,7 +19286,7 @@ mod tests {
             _ctx: &dyn ExtensionContext,
         ) -> Result<HandlerOutcome, ExtensionError> {
             let label = match event {
-                ExtensionEvent::SessionBeforeCompact => "SessionBeforeCompact",
+                ExtensionEvent::SessionBeforeCompact(_) => "SessionBeforeCompact",
                 ExtensionEvent::SessionCompact => "SessionCompact",
                 _ => return Ok(HandlerOutcome::Continue),
             };

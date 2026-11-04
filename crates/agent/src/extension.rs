@@ -402,6 +402,41 @@ pub struct ToolExecutionUpdateEvent {
     pub message: String,
 }
 
+/// Payload for [`ExtensionEvent::SessionBeforeCompact`] — the token reading
+/// that had the compaction trigger consider firing. `current_tokens` is the
+/// whole-transcript estimate (`estimate_tokens`) and `threshold` the
+/// configured `token_threshold`; the actual trigger compares a plan-shaped
+/// subset against a pinned-adjusted effective threshold (see
+/// `should_compact`), so these are the inputs a veto decision weighs, not
+/// the literal comparison operands.
+#[derive(Debug, Clone)]
+pub struct SessionBeforeCompactEvent {
+    /// Estimated tokens in the whole transcript at the trigger check.
+    pub current_tokens: u64,
+    /// The configured compaction token threshold.
+    pub threshold: u64,
+}
+
+/// Payload for [`ExtensionEvent::ResultVerified`] — the result-claim
+/// verifier re-ran a verification-class command the model itself executed
+/// and reached a verdict. Emit-only: the verdict text itself is appended to
+/// the transcript by the host; this event lets a mod react to the outcome
+/// (e.g. a reflexion ledger recording a `verified-fail`). Fired from the
+/// post-turn background replay, so it lands between turns.
+#[derive(Debug, Clone)]
+pub struct ResultVerifiedEvent {
+    /// `verified-pass` | `verified-fail` | `verify-error` | `unsubstantiated`
+    /// (the wire vocabulary; stringly because the typed verdict lives in an
+    /// implementation crate this framework crate cannot name).
+    pub verdict: String,
+    /// The claim phrase the model asserted (e.g. "tests pass").
+    pub claim: String,
+    /// The re-run command, when one existed to re-run.
+    pub command: Option<String>,
+    /// The re-run's exit code, when it ran.
+    pub exit_code: Option<i64>,
+}
+
 // --- workflow lifecycle (§W2: observe-only Emit family) ====================
 
 /// Payload for [`ExtensionEvent::WorkflowLog`] — one `log(...)` helper
@@ -449,10 +484,11 @@ pub struct WorkflowEndEvent {
 }
 
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
-/// §10.2 + §4): 31 variants total (23 §F2a + `AssistantStream` +
+/// §10.2 + §4): 32 variants total (23 §F2a + `AssistantStream` +
 /// `ToolsChange`, minus the removed `ResourcesDiscover`, plus the
 /// DSH-alignment `ProviderRequestError` + `TurnStopping`, plus the
-/// 5-variant workflow lifecycle family — all `Emit`), `#[non_exhaustive]`
+/// 5-variant workflow lifecycle family and `ResultVerified` — all `Emit`),
+/// `#[non_exhaustive]`
 /// so future
 /// slices can add variants without breaking downstream match arms. Handler dispatch is
 /// open (any `Handler` may subscribe to any variant via `on` /
@@ -479,6 +515,13 @@ pub enum ExtensionEvent {
     TurnEnd {
         turn_id: String,
         reason: TurnEndReason,
+        /// Loop iterations begun this run (advisory activity reading for
+        /// behavior mods; the exact step semantics are the executor's).
+        steps: u32,
+        /// Tool calls issued this run.
+        tool_calls: u32,
+        /// Token usage accumulated this run at the time the turn ended.
+        usage: crate::models::Usage,
     },
     SessionShutdown,
     // --- §F2a additions (spec §10.2 + §4) ---
@@ -507,8 +550,11 @@ pub enum ExtensionEvent {
     AgentSettled,
     SessionBeforeSwitch,
     SessionBeforeFork,
-    SessionBeforeCompact,
+    SessionBeforeCompact(SessionBeforeCompactEvent),
     SessionCompact,
+    /// The result-claim verifier reached a verdict (emit-only; see
+    /// [`ResultVerifiedEvent`]).
+    ResultVerified(ResultVerifiedEvent),
     // --- capability composition (tools-change) ---
     /// The model-visible tool catalog changed between main turns. Emitted
     /// at the dispatcher-build chokepoint after every selection source has
@@ -567,6 +613,7 @@ pub enum ExtensionEventKind {
     SessionShutdown,
     SessionBeforeCompact,
     SessionCompact,
+    ResultVerified,
     ToolsChange,
     WorkflowStart,
     WorkflowLog,
@@ -605,8 +652,9 @@ impl ExtensionEvent {
             ExtensionEvent::SessionBeforeSwitch => ExtensionEventKind::SessionBeforeSwitch,
             ExtensionEvent::SessionBeforeFork => ExtensionEventKind::SessionBeforeFork,
             ExtensionEvent::SessionShutdown => ExtensionEventKind::SessionShutdown,
-            ExtensionEvent::SessionBeforeCompact => ExtensionEventKind::SessionBeforeCompact,
+            ExtensionEvent::SessionBeforeCompact(_) => ExtensionEventKind::SessionBeforeCompact,
             ExtensionEvent::SessionCompact => ExtensionEventKind::SessionCompact,
+            ExtensionEvent::ResultVerified(_) => ExtensionEventKind::ResultVerified,
             ExtensionEvent::ToolsChange { .. } => ExtensionEventKind::ToolsChange,
             ExtensionEvent::WorkflowStart => ExtensionEventKind::WorkflowStart,
             ExtensionEvent::WorkflowLog(_) => ExtensionEventKind::WorkflowLog,
@@ -692,6 +740,7 @@ impl ExtensionEventKind {
             | ExtensionEventKind::AgentSettled
             | ExtensionEventKind::SessionShutdown
             | ExtensionEventKind::SessionCompact
+            | ExtensionEventKind::ResultVerified
             | ExtensionEventKind::ToolsChange
             | ExtensionEventKind::WorkflowStart
             | ExtensionEventKind::WorkflowLog
@@ -745,6 +794,16 @@ pub trait ExtensionContext: Send + Sync {
     /// live `ExtensionApi::generation()` and returns `StaleContext` on
     /// mismatch.
     fn generation(&self) -> u64;
+
+    /// The agent this dispatch belongs to (scripts: `ctx.agent`, a
+    /// `#{main, type}` map). The extension runner wraps the bound context
+    /// with the dispatch's identity at `emit_scoped`, so handlers see the
+    /// dispatch-time value; the default is the main turn, so contexts that
+    /// predate per-dispatch identity and direct host constructions keep
+    /// compiling.
+    fn agent_identity(&self) -> AgentIdentity {
+        AgentIdentity::main()
+    }
 
     async fn abort(&self) -> Result<(), ExtensionError> {
         Err(ExtensionError::Unimplemented("abort".into()))
@@ -1164,6 +1223,52 @@ impl Scope {
             ));
         }
         Ok(())
+    }
+}
+
+/// Which agent a dispatch belongs to — what a handler reads from its
+/// context's [`ExtensionContext::agent_identity`] (scripts: `ctx.agent`).
+///
+/// Derived from the dispatch scope, the one fact every emit site already
+/// carries: `AgentType(t)` → a child turn of type `t`, `Global` → the main
+/// turn. The agent *instance* id and spawn depth are deliberately not
+/// modeled — the gap this closes is the documented "a callback cannot tell
+/// a child turn from the main turn", and no consumer needs per-instance
+/// identity yet.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentIdentity {
+    /// The sub-agent type id; `None` on the main turn.
+    pub agent_type: Option<String>,
+}
+
+impl AgentIdentity {
+    /// The main turn's identity (a `Global`-scope dispatch).
+    #[must_use]
+    pub fn main() -> Self {
+        Self { agent_type: None }
+    }
+
+    /// A child turn's identity (an `AgentType(t)`-scope dispatch).
+    #[must_use]
+    pub fn child(agent_type: &str) -> Self {
+        Self {
+            agent_type: Some(agent_type.to_string()),
+        }
+    }
+
+    /// `true` when the dispatch belongs to the main turn.
+    #[must_use]
+    pub fn is_main(&self) -> bool {
+        self.agent_type.is_none()
+    }
+
+    /// The identity a dispatch at `scope` belongs to.
+    #[must_use]
+    pub fn from_scope(scope: &Scope) -> Self {
+        match scope {
+            Scope::Global => Self::main(),
+            Scope::AgentType(t) => Self::child(t),
+        }
     }
 }
 
@@ -1891,12 +1996,14 @@ mod tests {
             (K::WorkflowAgentStart, M::Emit),
             (K::WorkflowAgentEnd, M::Emit),
             (K::WorkflowEnd, M::Emit),
+            // Result-claim verifier outcome (observe-only).
+            (K::ResultVerified, M::Emit),
         ];
         assert_eq!(
             contract.len(),
-            31,
+            32,
             "the full §F2a set + assistant-stream + tools-change + provider-request-error \
-             + turn-stopping + the workflow lifecycle family"
+             + turn-stopping + the workflow lifecycle family + result-verified"
         );
         for (kind, mode) in contract {
             assert_eq!(&kind.dispatch_mode(), mode, "contract drift at {kind:?}");
@@ -2067,6 +2174,9 @@ mod tests {
             ExtensionEvent::TurnEnd {
                 turn_id: "t1".into(),
                 reason: TurnEndReason::NoToolCalls,
+                steps: 2,
+                tool_calls: 1,
+                usage: crate::models::Usage::default(),
             },
             ExtensionEvent::SessionShutdown,
         ];
@@ -2144,8 +2254,21 @@ mod tests {
         let stop = TurnStoppingEvent {
             reason: TurnEndReason::NoToolCalls,
         };
+        let before_compact = SessionBeforeCompactEvent {
+            current_tokens: 1_000,
+            threshold: 967_000,
+        };
+        let verified = ResultVerifiedEvent {
+            verdict: "verified-fail".into(),
+            claim: "tests pass".into(),
+            command: None,
+            exit_code: None,
+        };
         // Debug renders without panic for every new type.
-        let _ = format!("{start:?} {req:?} {resp:?} {upd:?} {hdrs:?} {pre:?} {stop:?}");
+        let _ = format!(
+            "{start:?} {req:?} {resp:?} {upd:?} {hdrs:?} {pre:?} {stop:?} \
+             {before_compact:?} {verified:?}"
+        );
     }
 
     #[test]
@@ -2277,6 +2400,9 @@ mod tests {
                 ExtensionEvent::TurnEnd {
                     turn_id: "t".into(),
                     reason: TurnEndReason::NoToolCalls,
+                    steps: 0,
+                    tool_calls: 0,
+                    usage: crate::models::Usage::default(),
                 },
                 K::TurnEnd,
             ),
@@ -2286,10 +2412,22 @@ mod tests {
             (ExtensionEvent::SessionBeforeFork, K::SessionBeforeFork),
             (ExtensionEvent::SessionShutdown, K::SessionShutdown),
             (
-                ExtensionEvent::SessionBeforeCompact,
+                ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
+                    current_tokens: 12_000,
+                    threshold: 967_000,
+                }),
                 K::SessionBeforeCompact,
             ),
             (ExtensionEvent::SessionCompact, K::SessionCompact),
+            (
+                ExtensionEvent::ResultVerified(ResultVerifiedEvent {
+                    verdict: "verified-pass".into(),
+                    claim: "tests pass".into(),
+                    command: Some("cargo test".into()),
+                    exit_code: Some(0),
+                }),
+                K::ResultVerified,
+            ),
             (
                 ExtensionEvent::AssistantStream(AssistantStreamEvent { text: "x".into() }),
                 K::AssistantStream,
@@ -2333,7 +2471,7 @@ mod tests {
                 K::WorkflowEnd,
             ),
         ];
-        assert_eq!(cases.len(), 31, "all variants covered");
+        assert_eq!(cases.len(), 32, "all variants covered");
         for (ev, kind) in cases {
             assert_eq!(ev.kind(), kind, "kind mismatch for {ev:?}");
         }

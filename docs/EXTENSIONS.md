@@ -285,7 +285,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 31 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer; the five workflow lifecycle events with the model-writable `workflow` tool):
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 32 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer; the five workflow lifecycle events with the model-writable `workflow` tool; `result-verified` with the result-claim verifier's post-turn verdict):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
