@@ -1900,9 +1900,12 @@ impl SubAgentManager {
             .collect()
     }
 
-    /// Clean up completed agents older than the given duration.
-    pub fn cleanup(&mut self, max_age: Duration) {
-        let before = self.agents.len();
+    /// Drop finished agents older than `max_age` without touching the state
+    /// file. Foreground completion uses this: its records are memory-only
+    /// (see [`Self::record_finished_result`]), so an eviction there has
+    /// nothing to persist, and the tool path must not block the runtime on
+    /// synchronous file I/O.
+    fn cleanup_in_memory(&mut self, max_age: Duration) {
         self.agents.retain(|_, agent| {
             if agent.status == SubAgentStatus::Running {
                 true
@@ -1910,6 +1913,12 @@ impl SubAgentManager {
                 agent.started_at.elapsed() < max_age
             }
         });
+    }
+
+    /// Clean up completed agents older than the given duration.
+    pub fn cleanup(&mut self, max_age: Duration) {
+        let before = self.agents.len();
+        self.cleanup_in_memory(max_age);
         if self.agents.len() != before {
             self.persist_state_best_effort();
         }
@@ -1919,8 +1928,13 @@ impl SubAgentManager {
     /// finished. Background children register when they spawn; the
     /// synchronous path never did, so `agent_eval` could not resolve the id
     /// the inline result and its recovery pointer advertise.
+    ///
+    /// Memory-only by design: the transcript handle lives in this process's
+    /// handle store, so a persisted record could not restore the same
+    /// recovery path after a restart. Background children keep their
+    /// existing persisted lifecycle.
     fn record_finished_result(&mut self, result: &SubAgentResult) {
-        self.cleanup(COMPLETED_AGENT_RETENTION);
+        self.cleanup_in_memory(COMPLETED_AGENT_RETENTION);
         let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
         let mut agent = SubAgent::new(
             result.agent_id.clone(),
@@ -1946,7 +1960,6 @@ impl SubAgentManager {
         agent.steps_taken = result.steps_taken;
         agent.agent_memory = result.agent_memory.clone();
         self.agents.insert(result.agent_id.clone(), agent);
-        self.persist_state_best_effort();
     }
 
     fn update_from_result(&mut self, agent_id: &str, result: SubAgentResult) {
@@ -5234,7 +5247,11 @@ struct SubAgentTask {
 
 #[allow(clippy::too_many_lines)]
 async fn run_subagent_task(task: SubAgentTask) {
-    let result = match external_provider_for(&task.runtime, &task.agent_type) {
+    let provider = external_provider_for(&task.runtime, &task.agent_type);
+    // Only the in-process path parks a transcript handle; an out-of-process
+    // child has none, so its completion sentinel must not advertise one.
+    let transcript_stored = provider.is_none();
+    let result = match provider {
         Some(provider) => {
             // Close the input channel up front: an out-of-process child
             // cannot take follow-up input, so `agent_send_input` fails
@@ -5281,7 +5298,7 @@ async fn run_subagent_task(task: SubAgentTask) {
     let (summary, sentinel) = match &result {
         Ok(res) => (
             summarize_subagent_result(res),
-            subagent_done_sentinel(&task.agent_id, res),
+            subagent_done_sentinel(&task.agent_id, res, transcript_stored),
         ),
         Err(err) => (
             format!("Failed: {err}"),
@@ -5378,18 +5395,22 @@ pub(crate) fn emit_parent_completion(
 /// line immediately before the sentinel; duplicating it here bloats the next
 /// parent request's cache-miss tail. Wall-clock duration is useful UI
 /// telemetry, but it is volatile and not useful for model coordination.
-fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult) -> String {
-    let payload = json!({
+fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult, transcript_stored: bool) -> String {
+    let mut payload = json!({
         "agent_id": agent_id,
         "agent_type": res.agent_type.as_str(),
         "status": subagent_status_name(&res.status),
         "summary_location": "previous_line",
         "details": "agent_eval",
-        // Bounded completion tails truncate the summary line; the id and
-        // handle in the sentinel stay intact so the report stays reachable.
+        // Bounded completion tails truncate the summary line; the id stays
+        // intact so the report stays reachable.
         "report_available": res.result.is_some(),
-        "transcript_handle": transcript_handle_for(agent_id),
     });
+    if transcript_stored {
+        // Bounded completion tails truncate the summary line; the handle
+        // stays intact so the report stays reachable.
+        payload["transcript_handle"] = json!(transcript_handle_for(agent_id));
+    }
     format!("<codesmith:subagent.done>{payload}</codesmith:subagent.done>")
 }
 

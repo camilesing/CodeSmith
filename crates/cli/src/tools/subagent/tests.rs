@@ -2110,7 +2110,7 @@ fn build_subagent_system_prompt_skips_role_when_blank() {
 #[test]
 fn subagent_done_sentinel_format_is_well_formed() {
     let res = make_snapshot(SubAgentStatus::Completed);
-    let sentinel = subagent_done_sentinel("agent_xyz", &res);
+    let sentinel = subagent_done_sentinel("agent_xyz", &res, true);
     assert!(sentinel.starts_with("<codesmith:subagent.done>"));
     assert!(sentinel.ends_with("</codesmith:subagent.done>"));
 
@@ -2132,6 +2132,47 @@ fn subagent_done_sentinel_format_is_well_formed() {
     assert!(parsed.get("summary").is_none());
     assert!(parsed.get("duration_ms").is_none());
     assert!(parsed.get("steps").is_none());
+}
+
+/// An out-of-process child never parks a transcript handle. The sentinel
+/// must not advertise one it cannot resolve; `agent_eval` stays the pointer.
+#[test]
+fn external_subagent_done_sentinel_omits_transcript_handle() {
+    let res = make_snapshot(SubAgentStatus::Completed);
+    let sentinel = subagent_done_sentinel("agent_ext", &res, false);
+    let inner = sentinel
+        .trim_start_matches("<codesmith:subagent.done>")
+        .trim_end_matches("</codesmith:subagent.done>");
+    let parsed: serde_json::Value = serde_json::from_str(inner).expect("inner JSON parses");
+    assert_eq!(parsed["agent_id"], "agent_ext");
+    assert_eq!(parsed["details"], "agent_eval");
+    assert!(
+        parsed.get("transcript_handle").is_none(),
+        "external completion must not point at an in-process-only handle"
+    );
+}
+
+/// Foreground records exist for in-session `agent_eval` only. Writing the
+/// whole agent map (full reports included) on every `agent_run` completion
+/// is blocking I/O on the tool path and O(n²) disk churn, so registration
+/// stays memory-only.
+#[test]
+fn foreground_registration_is_memory_only() {
+    let dir = tempdir().expect("tempdir");
+    let state_path = dir.path().join("subagents.v1.json");
+    let mut manager =
+        SubAgentManager::new(dir.path().to_path_buf(), 1).with_state_path(state_path.clone());
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_id = "agent_run_mem".to_string();
+    snapshot.name = "agent_run_mem".to_string();
+
+    manager.record_finished_result(&snapshot);
+
+    assert!(manager.get_result("agent_run_mem").is_ok());
+    assert!(
+        !state_path.exists(),
+        "foreground completion must not write the state file"
+    );
 }
 
 #[test]
@@ -3284,7 +3325,7 @@ fn subagent_completion_payload_carries_existing_sentinel_format() {
     snap.result = Some("Found three errors.".to_string());
 
     let summary = summarize_subagent_result(&snap);
-    let sentinel = subagent_done_sentinel("agent_test", &snap);
+    let sentinel = subagent_done_sentinel("agent_test", &snap, true);
     let payload = format!("{summary}\n{sentinel}");
 
     let mut lines = payload.lines();
