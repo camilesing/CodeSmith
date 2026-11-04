@@ -290,13 +290,16 @@ neither, the tool returns the status line plus the `agent_id` and an explicit
 The result metadata carries `report_available` (the child produced a final
 report), `report_source` (`child_final_text`, `recovered_last_assistant_text`,
 `recovered_last_tool_result`, or `none`), and `transcript_handle`. Reports over
-50,000 bytes are truncated with the `agent_id` in the notice. The completion
-sentinel carries `report_available` and `transcript_handle` too, so a summary
-line shortened by the bounded completion tails still leaves a recovery path.
-Foreground children are registered in the manager when they finish, so
-`agent_eval` resolves the same id; the transcript payload records where the
-child's own messages start so recovery never mistakes the forked parent prefix
-for the child's output.
+50,000 characters are truncated with the `agent_id` in the notice. The
+successful completion sentinel carries `report_available`, plus
+`transcript_handle` when the child ran in-process and a transcript was stored,
+so a summary line shortened by the bounded completion tails still leaves a
+recovery path. Foreground children are registered in the manager for the rest
+of the process, so `agent_eval` resolves the same id; the record is memory-only
+(its transcript handle dies with the process, so it is not persisted).
+Background children keep their persisted lifecycle. The transcript payload
+records where the child's own messages start so recovery never mistakes the
+forked parent prefix for the child's output.
 
 ## Scoped agent memory
 

@@ -257,11 +257,14 @@ Running → (Completed | Failed(reason) | Cancelled | Interrupted(reason))
 结果 metadata 携带 `report_available`（子代理是否产出了最终报告）、
 `report_source`（`child_final_text`、`recovered_last_assistant_text`、
 `recovered_last_tool_result` 或 `none`）和 `transcript_handle`。超过
-50,000 字节的报告会被截断，截断文案保留 `agent_id`。完成哨兵同样携带
-`report_available` 和 `transcript_handle`，因此被有界完成尾部截短的
-摘要行仍留有恢复路径。前台子代理结束后会登记到管理器，`agent_eval`
-可按同一 id 解析；transcript 载荷记录子代理自身消息的起始位置，
-恢复时不会把分叉的父前缀误当成子代理输出。
+50,000 个字符的报告会被截断，截断文案保留 `agent_id`。成功的完成哨兵
+携带 `report_available`；当子代理在进程内运行且 transcript 已存储时，
+还携带 `transcript_handle`，因此被有界完成尾部截短的摘要行仍留有
+恢复路径。前台子代理会在本进程内登记到管理器，`agent_eval` 可按同一
+id 解析；该记录仅存在于内存中（transcript handle 随进程结束失效，
+因此不持久化）。后台子代理保留原有的持久化生命周期。transcript 载荷
+记录子代理自身消息的起始位置，恢复时不会把分叉的父前缀误当成
+子代理输出。
 
 ## 作用域代理记忆
 

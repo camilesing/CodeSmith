@@ -2348,6 +2348,71 @@ fn agent_run_truncation_notice_keeps_agent_id() {
     assert!(output.len() < 50_001 + 512);
 }
 
+/// The 50,000 limit counts characters, not bytes: a multi-byte report must
+/// not be cut earlier than the notice claims (and must not split a char).
+#[test]
+fn agent_run_truncation_counts_chars_not_bytes() {
+    let report = "汉".repeat(50_001);
+    let output = truncate_inline_report(report, "agent_run_cjk");
+    let body = output
+        .split("\n\n[Result truncated:")
+        .next()
+        .expect("body precedes the notice");
+
+    assert_eq!(body.chars().count(), 50_000);
+    assert!(output.contains("50001 chars → 50000 chars"));
+    assert!(output.contains("agent_run_cjk"));
+}
+
+/// A corrupt or non-JSON transcript is not the same as "the child produced
+/// no text": the notice must say the transcript could not be read.
+#[tokio::test]
+async fn agent_run_marks_unreadable_transcript_instead_of_claiming_no_text() {
+    let runtime = stub_runtime();
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_id = "agent_run_bad".to_string();
+    snapshot.name = "agent_run_bad".to_string();
+    snapshot.result = None;
+    {
+        let mut store = runtime.context.runtime.handle_store.lock().await;
+        store.insert_text("agent:agent_run_bad", "full_transcript", "not json");
+    }
+
+    let inline = inline_subagent_report(&snapshot, &runtime).await;
+
+    assert!(inline.text.contains("could not be read"));
+    assert!(!inline.text.contains("ended without a text answer"));
+    assert_eq!(inline.report_source, "none");
+    assert!(!inline.report_available);
+    assert!(inline.transcript_handle.is_none());
+}
+
+/// The compacted-context summary keeps the id and both recovery tools, and
+/// stays inside the 320-char cap the context compactor applies.
+#[test]
+fn agent_run_metadata_exposes_report_provenance() {
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_id = "agent_run_meta".to_string();
+    snapshot.name = "agent_run_meta".to_string();
+    let handle = Some("agent:agent_run_meta/full_transcript".to_string());
+
+    let metadata = inline_report_metadata(&snapshot, false, "none", &handle);
+
+    assert_eq!(metadata["agent_id"], "agent_run_meta");
+    assert_eq!(metadata["terminal"], true);
+    assert_eq!(metadata["report_available"], false);
+    assert_eq!(metadata["report_source"], "none");
+    assert_eq!(
+        metadata["transcript_handle"],
+        "agent:agent_run_meta/full_transcript"
+    );
+    let summary = metadata["summary"].as_str().expect("summary is a string");
+    assert!(summary.contains("agent_run_meta"));
+    assert!(summary.contains("agent_eval"));
+    assert!(summary.contains("handle_read"));
+    assert!(summary.chars().count() <= 320);
+}
+
 /// The inline fallback tells the model to call `agent_eval` with the child
 /// id, so a foreground child must be resolvable there after it finishes.
 #[tokio::test]

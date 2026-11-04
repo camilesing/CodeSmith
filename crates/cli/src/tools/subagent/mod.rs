@@ -1952,9 +1952,7 @@ impl SubAgentManager {
         // The record is created after the turn, so anchor `started_at` to
         // the run's real start: `snapshot()` derives `duration_ms` from
         // `elapsed()` and cleanup ages records from it.
-        agent.started_at = Instant::now()
-            .checked_sub(Duration::from_millis(result.duration_ms))
-            .unwrap_or_else(Instant::now);
+        agent.started_at = instant_from_duration(Duration::from_millis(result.duration_ms));
         agent.status = result.status.clone();
         agent.result = result.result.clone();
         agent.steps_taken = result.steps_taken;
@@ -3593,27 +3591,12 @@ impl SubagentRunTool {
             report_source,
             transcript_handle,
         } = inline_subagent_report(&result, &self.runtime).await;
-        let summary = inline_report_summary(&result, report_available, &transcript_handle);
+        let metadata =
+            inline_report_metadata(&result, report_available, report_source, &transcript_handle);
         let truncated = truncate_inline_report(text, &result.agent_id);
 
         let mut tool_result = ToolResult::success(truncated);
-        tool_result.metadata = Some(json!({
-            "agent_id": result.agent_id,
-            "agent_type": result.agent_type.as_str(),
-            "status": subagent_status_name(&result.status),
-            "context_mode": result.context_mode,
-            "fork_context": result.fork_context,
-            "model": result.model,
-            "steps_taken": result.steps_taken,
-            "duration_ms": result.duration_ms,
-            "terminal": true,
-            "report_available": report_available,
-            "report_source": report_source,
-            "transcript_handle": transcript_handle,
-            // Lifted into the compacted context whenever the body exceeds
-            // the tool-result limit: keeps the id/handle after compaction.
-            "summary": summary,
-        }));
+        tool_result.metadata = Some(metadata);
         Ok(tool_result)
     }
 
@@ -3657,7 +3640,7 @@ struct InlineReport {
 
 fn subagent_status_line(result: &SubAgentResult) -> String {
     format!(
-        "Sub-agent completed (status: {}, steps: {}, duration: {}ms)",
+        "Sub-agent finished (status: {}, steps: {}, duration: {}ms)",
         subagent_status_name(&result.status),
         result.steps_taken,
         result.duration_ms,
@@ -3671,14 +3654,17 @@ struct StoredChildTranscript {
     messages_start: usize,
 }
 
-/// Load the transcript `insert_subagent_full_transcript_handle` parked under
-/// `agent:<id>/full_transcript`. Missing or unreadable payloads degrade to
-/// `None` — the caller then returns the status line plus a recovery pointer
-/// rather than pretending a report exists.
-async fn load_child_transcript(
-    runtime: &SubAgentRuntime,
-    agent_id: &str,
-) -> Option<StoredChildTranscript> {
+/// Outcome of looking up the transcript `insert_subagent_full_transcript_handle`
+/// parked under `agent:<id>/full_transcript`. The caller must distinguish a
+/// missing transcript from an unreadable one: only the former lets it claim
+/// the child "ended without a text answer".
+enum TranscriptRead {
+    Missing,
+    Unreadable,
+    Loaded(StoredChildTranscript),
+}
+
+async fn load_child_transcript(runtime: &SubAgentRuntime, agent_id: &str) -> TranscriptRead {
     let lookup = VarHandle {
         kind: "var_handle".to_string(),
         session_id: format!("agent:{agent_id}"),
@@ -3690,19 +3676,27 @@ async fn load_child_transcript(
     };
     let record = {
         let store = runtime.context.runtime.handle_store.lock().await;
-        store.get(&lookup)?
+        store.get(&lookup)
+    };
+    let Some(record) = record else {
+        return TranscriptRead::Missing;
     };
     let HandleValue::Json(payload) = record.value else {
-        return None;
+        return TranscriptRead::Unreadable;
     };
-    let messages: Vec<Message> = serde_json::from_value(payload.get("messages")?.clone()).ok()?;
+    let Some(messages) = payload.get("messages") else {
+        return TranscriptRead::Unreadable;
+    };
+    let Ok(messages) = serde_json::from_value::<Vec<Message>>(messages.clone()) else {
+        return TranscriptRead::Unreadable;
+    };
     let messages_start = payload
         .get("messages_start")
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(0)
         .min(messages.len());
-    Some(StoredChildTranscript {
+    TranscriptRead::Loaded(StoredChildTranscript {
         messages,
         messages_start,
     })
@@ -3790,9 +3784,10 @@ async fn inline_subagent_report(
     }
 
     let transcript = load_child_transcript(runtime, &result.agent_id).await;
-    let transcript_handle = transcript
-        .as_ref()
-        .map(|_| transcript_handle_for(&result.agent_id));
+    let transcript_handle = match &transcript {
+        TranscriptRead::Loaded(_) => Some(transcript_handle_for(&result.agent_id)),
+        TranscriptRead::Missing | TranscriptRead::Unreadable => None,
+    };
 
     let agent_id = result.agent_id.as_str();
     let pointer = transcript_handle.as_deref().map_or_else(
@@ -3801,7 +3796,9 @@ async fn inline_subagent_report(
     );
     let status_line = subagent_status_line(result);
 
-    if let Some(recovered) = transcript.as_ref().and_then(recover_child_text) {
+    if let TranscriptRead::Loaded(stored) = &transcript
+        && let Some(recovered) = recover_child_text(stored)
+    {
         let reason = if recovered.source == "recovered_last_assistant_text" {
             "No final answer was recorded; recovered the child's last assistant text from its transcript."
         } else {
@@ -3818,6 +3815,11 @@ async fn inline_subagent_report(
         };
     }
 
+    let missing_reason = if matches!(transcript, TranscriptRead::Unreadable) {
+        "The child's stored transcript could not be read."
+    } else {
+        "No final report text was captured: the child ended without a text answer."
+    };
     let transcript_note = if transcript_handle.is_some() {
         " The transcript keeps every message the child produced."
     } else {
@@ -3826,8 +3828,7 @@ async fn inline_subagent_report(
     InlineReport {
         text: format!(
             "{status_line}\nagent_id: {agent_id}\n\
-             No final report text was captured: the child ended without a text answer. \
-             Recover its work with {pointer}.{transcript_note}"
+             {missing_reason} Recover its work with {pointer}.{transcript_note}"
         ),
         report_available: false,
         report_source: "none",
@@ -3867,22 +3868,52 @@ fn inline_report_summary(
     }
 }
 
+/// Tool-result metadata for a foreground child. Kept separate from
+/// `execute_sync` so the provenance fields can be asserted without a model.
+fn inline_report_metadata(
+    result: &SubAgentResult,
+    report_available: bool,
+    report_source: &'static str,
+    transcript_handle: &Option<String>,
+) -> Value {
+    json!({
+        "agent_id": result.agent_id,
+        "agent_type": result.agent_type.as_str(),
+        "status": subagent_status_name(&result.status),
+        "context_mode": result.context_mode,
+        "fork_context": result.fork_context,
+        "model": result.model,
+        "steps_taken": result.steps_taken,
+        "duration_ms": result.duration_ms,
+        "terminal": true,
+        "report_available": report_available,
+        "report_source": report_source,
+        "transcript_handle": transcript_handle,
+        // Lifted into the compacted context whenever the body exceeds the
+        // tool-result limit: keeps the id/handle after compaction.
+        "summary": inline_report_summary(result, report_available, transcript_handle),
+    })
+}
+
 /// Bound the inline report so one child cannot flood the parent context.
 /// The truncation notice names the agent id, which is the recovery pointer
 /// the model needs after the body is cut.
 fn truncate_inline_report(text: String, agent_id: &str) -> String {
     const MAX_RESULT_CHARS: usize = 50_000;
-    if text.len() <= MAX_RESULT_CHARS {
+    let total_chars = text.chars().count();
+    if total_chars <= MAX_RESULT_CHARS {
         return text;
     }
-    let mut cut = MAX_RESULT_CHARS;
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    // The index of the first char past the limit is a UTF-8 boundary by
+    // construction, so the slice cannot split a multi-byte character.
+    let cut = text
+        .char_indices()
+        .nth(MAX_RESULT_CHARS)
+        .map_or(text.len(), |(index, _)| index);
     format!(
         "{}\n\n[Result truncated: {} chars → {} chars. Use agent_eval with id '{}' for full transcript.]",
         &text[..cut],
-        text.len(),
+        total_chars,
         MAX_RESULT_CHARS,
         agent_id,
     )
