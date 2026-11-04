@@ -828,7 +828,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         max_steps: u32::MAX,
         max_subagents: state.max_subagents,
         turn_executor: config.turn_executor_id(),
-        rhai_loop: Default::default(),
+        rhai_loop: config.rhai_loop_settings(),
         features: config.features(),
         parse_gate: config.edit_config().parse_gate_enabled(),
         compaction: state.compaction_config(),

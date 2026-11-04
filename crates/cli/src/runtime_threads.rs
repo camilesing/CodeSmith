@@ -2039,7 +2039,7 @@ impl RuntimeThreadManager {
             // while no client turn is running.
             idle_wake: true,
             turn_executor: self.config.turn_executor_id(),
-            rhai_loop: Default::default(),
+            rhai_loop: self.config.rhai_loop_settings(),
             notes_path: self.config.notes_path(),
             mcp_config_path: self.config.mcp_config_path(),
             skills_dir: self.config.skills_dir(),

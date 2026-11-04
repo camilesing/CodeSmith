@@ -1500,8 +1500,8 @@ impl RhaiMod {
         let registrations =
             std::mem::take(&mut *cell.lock().expect("mod registration cell poisoned"));
         // `register_loop` validation (post-compile — natives register before
-        // the AST exists): the declared entry must be a named fn taking at
-        // least one parameter (the loop context object).
+        // the AST exists): the declared entry must be a named top-level fn
+        // (the loop executor calls it with no arguments).
         for reg in &registrations {
             if let ScriptRegistration::Loop { entry } = reg
                 && !ast.iter_functions().any(|f| f.name == *entry)

@@ -478,7 +478,8 @@ impl RhaiTurnExecutor {
 
         // Live children this turn's script spawned (spawn_child handles):
         // joined by eval_child, aborted on eval timeout, cancelled with
-        // the turn (each child token is a child of the turn's).
+        // the turn (each child token is a child of the turn's), and
+        // aborted at serve exit when the script never evaluated them.
         let mut children: HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>> = HashMap::new();
         let mut next_handle: u64 = 0;
 
@@ -555,6 +556,13 @@ impl RhaiTurnExecutor {
             let _ = script.join();
         })
         .await;
+        // Children the script spawned but never evaluated must not
+        // outlive the turn as detached tasks: their tokens stop on the
+        // cancel path, and this reaps every other exit (a normal `Done`,
+        // the budget) the same way.
+        for task in children.into_values() {
+            task.abort();
+        }
         outcome
     }
 

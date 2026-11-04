@@ -1175,7 +1175,6 @@ impl Config {
 }
 
 /// `[mods]` table (§F script mod layer).
-/// `[mods]` table (§F script mod layer).
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct ModsConfig {
     pub enabled: Option<bool>,
@@ -2010,11 +2009,8 @@ impl Config {
             .filter(|s| !s.is_empty())
     }
 
-    /// Selected main-turn executor id (kernel composition,
-    /// `engine::executor_composition`); defaults to the builtin production
-    /// loop. Validated against the process-shared registry at startup by
-    /// [`validate`](Self::validate).
-    /// The `[rhai_loop]` settings resolved into engine form.
+    /// The `[rhai_loop]` settings resolved into engine form (read by the
+    /// `rhai` turn executor; defaults when the table is absent).
     pub fn rhai_loop_settings(
         &self,
     ) -> codesmith_agent_runtime::engine::rhai_executor::RhaiLoopSettings {
@@ -2027,6 +2023,10 @@ impl Config {
         }
     }
 
+    /// Selected main-turn executor id (kernel composition,
+    /// `engine::executor_composition`); defaults to the builtin production
+    /// loop. Validated against the process-shared registry at startup by
+    /// [`validate`](Self::validate).
     pub fn turn_executor_id(&self) -> String {
         self.turn_executor
             .as_deref()
