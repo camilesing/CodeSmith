@@ -256,6 +256,8 @@ When you open a sub-agent via `agent_open`, the child runs independently. The ru
 - `status` — `"completed"` or `"failed"`
 - `summary_location` / `error_location` — the summary or error is on the line immediately before the sentinel
 - `details` — currently `agent_eval`, the tool to call for the full projection or transcript handle
+- `report_available` — `false` when the child ended without a final text report; the line before the sentinel says so
+- `transcript_handle` — compact `handle_read` reference (`agent:<id>/full_transcript`) for the child's full transcript; the summary line is bounded and may omit the report body
 
 **Integration protocol:**
 1. When you see `<codesmith:subagent.done>`, read the human summary line immediately before it first.

@@ -278,6 +278,26 @@ The exact format lives in `crates/agent-runtime/src/prompts/subagent_output_form
 The parent reads `EVIDENCE` as a working set for the next turn, so
 explorers and reviewers should be precise here.
 
+## Inline results and report recovery
+
+A foreground `agent_run` returns the child's final assistant text. A child can
+end on a tool call instead, leaving no final text; `agent_run` then recovers the
+child's last assistant text (or, failing that, its last tool result) from the
+stored transcript and says where the text came from. If the transcript has
+neither, the tool returns the status line plus the `agent_id` and an explicit
+`agent_eval` / `handle_read` pointer instead of a bare "completed" line.
+
+The result metadata carries `report_available` (the child produced a final
+report), `report_source` (`child_final_text`, `recovered_last_assistant_text`,
+`recovered_last_tool_result`, or `none`), and `transcript_handle`. Reports over
+50,000 bytes are truncated with the `agent_id` in the notice. The completion
+sentinel carries `report_available` and `transcript_handle` too, so a summary
+line shortened by the bounded completion tails still leaves a recovery path.
+Foreground children are registered in the manager when they finish, so
+`agent_eval` resolves the same id; the transcript payload records where the
+child's own messages start so recovery never mistakes the forked parent prefix
+for the child's output.
+
 ## Scoped agent memory
 
 Sub-agents do not inherit the parent's memory file and do not get the

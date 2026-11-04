@@ -54,7 +54,7 @@ use crate::core::events::Event;
 use crate::hooks::{HookContext, HookEvent, emit_detached};
 use crate::llm_client::LlmClientHandle;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool};
-use crate::tools::handle::VarHandle;
+use crate::tools::handle::{HandleValue, VarHandle};
 use crate::tools::plan::{PlanState, SharedPlanState};
 use crate::tools::registry::{ToolRegistry, ToolRegistryBuilder};
 use crate::tools::spec::{
@@ -1915,6 +1915,40 @@ impl SubAgentManager {
         }
     }
 
+    /// Record a foreground (`agent_run`, synchronous) child once its turn
+    /// finished. Background children register when they spawn; the
+    /// synchronous path never did, so `agent_eval` could not resolve the id
+    /// the inline result and its recovery pointer advertise.
+    fn record_finished_result(&mut self, result: &SubAgentResult) {
+        self.cleanup(COMPLETED_AGENT_RETENTION);
+        let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+        let mut agent = SubAgent::new(
+            result.agent_id.clone(),
+            result.agent_type.clone(),
+            result.assignment.objective.clone(),
+            result.assignment.clone(),
+            result.model.clone(),
+            result.nickname.clone(),
+            None,
+            input_tx,
+            self.current_session_boot_id.clone(),
+        );
+        agent.session_name = result.name.clone();
+        agent.fork_context = result.fork_context;
+        // The record is created after the turn, so anchor `started_at` to
+        // the run's real start: `snapshot()` derives `duration_ms` from
+        // `elapsed()` and cleanup ages records from it.
+        agent.started_at = Instant::now()
+            .checked_sub(Duration::from_millis(result.duration_ms))
+            .unwrap_or_else(Instant::now);
+        agent.status = result.status.clone();
+        agent.result = result.result.clone();
+        agent.steps_taken = result.steps_taken;
+        agent.agent_memory = result.agent_memory.clone();
+        self.agents.insert(result.agent_id.clone(), agent);
+        self.persist_state_best_effort();
+    }
+
     fn update_from_result(&mut self, agent_id: &str, result: SubAgentResult) {
         let mut changed = false;
         if let Some(agent) = self.agents.get_mut(agent_id) {
@@ -3532,29 +3566,22 @@ impl SubagentRunTool {
         .await
         .map_err(|e| ToolError::execution_failed(format!("Sub-agent failed: {e}")))?;
 
-        // Format the result for inline return
-        let final_text = result.result.unwrap_or_else(|| {
-            format!(
-                "Sub-agent completed (status: {}, steps: {}, duration: {}ms)",
-                subagent_status_name(&result.status),
-                result.steps_taken,
-                result.duration_ms,
-            )
-        });
+        // The inline result advertises `agent_eval` as the recovery path, so
+        // the manager must be able to resolve this foreground child — it does
+        // not register at spawn the way background children do.
+        {
+            let mut manager = self.manager.write().await;
+            manager.record_finished_result(&result);
+        }
 
-        // Truncate if too long to avoid context overflow
-        let max_result_chars = 50_000;
-        let truncated = if final_text.len() > max_result_chars {
-            let truncation_notice = format!(
-                "\n\n[Result truncated: {} chars → {} chars. Use agent_eval with id '{}' for full transcript.]",
-                final_text.len(),
-                max_result_chars,
-                result.agent_id,
-            );
-            format!("{}{}", &final_text[..max_result_chars], truncation_notice)
-        } else {
-            final_text
-        };
+        let InlineReport {
+            text,
+            report_available,
+            report_source,
+            transcript_handle,
+        } = inline_subagent_report(&result, &self.runtime).await;
+        let summary = inline_report_summary(&result, report_available, &transcript_handle);
+        let truncated = truncate_inline_report(text, &result.agent_id);
 
         let mut tool_result = ToolResult::success(truncated);
         tool_result.metadata = Some(json!({
@@ -3567,6 +3594,12 @@ impl SubagentRunTool {
             "steps_taken": result.steps_taken,
             "duration_ms": result.duration_ms,
             "terminal": true,
+            "report_available": report_available,
+            "report_source": report_source,
+            "transcript_handle": transcript_handle,
+            // Lifted into the compacted context whenever the body exceeds
+            // the tool-result limit: keeps the id/handle after compaction.
+            "summary": summary,
         }));
         Ok(tool_result)
     }
@@ -3594,6 +3627,252 @@ impl SubagentRunTool {
         }
         spawn_tool.execute(spawn_input, context).await
     }
+}
+
+/// One foreground `agent_run` report plus the provenance its tool-result
+/// metadata advertises.
+struct InlineReport {
+    text: String,
+    /// The child's own final assistant text was recorded.
+    report_available: bool,
+    /// `child_final_text` | `recovered_last_assistant_text` |
+    /// `recovered_last_tool_result` | `none`.
+    report_source: &'static str,
+    /// Compact `handle_read` reference for the stored child transcript.
+    transcript_handle: Option<String>,
+}
+
+fn subagent_status_line(result: &SubAgentResult) -> String {
+    format!(
+        "Sub-agent completed (status: {}, steps: {}, duration: {}ms)",
+        subagent_status_name(&result.status),
+        result.steps_taken,
+        result.duration_ms,
+    )
+}
+
+/// A child transcript recovered from the handle store.
+struct StoredChildTranscript {
+    messages: Vec<Message>,
+    /// Where the child's own messages start (the forked prefix ends here).
+    messages_start: usize,
+}
+
+/// Load the transcript `insert_subagent_full_transcript_handle` parked under
+/// `agent:<id>/full_transcript`. Missing or unreadable payloads degrade to
+/// `None` — the caller then returns the status line plus a recovery pointer
+/// rather than pretending a report exists.
+async fn load_child_transcript(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+) -> Option<StoredChildTranscript> {
+    let lookup = VarHandle {
+        kind: "var_handle".to_string(),
+        session_id: format!("agent:{agent_id}"),
+        name: "full_transcript".to_string(),
+        type_name: String::new(),
+        length: 0,
+        repr_preview: String::new(),
+        sha256: String::new(),
+    };
+    let record = {
+        let store = runtime.context.runtime.handle_store.lock().await;
+        store.get(&lookup)?
+    };
+    let HandleValue::Json(payload) = record.value else {
+        return None;
+    };
+    let messages: Vec<Message> = serde_json::from_value(payload.get("messages")?.clone()).ok()?;
+    let messages_start = payload
+        .get("messages_start")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0)
+        .min(messages.len());
+    Some(StoredChildTranscript {
+        messages,
+        messages_start,
+    })
+}
+
+struct RecoveredChildText {
+    text: String,
+    source: &'static str,
+}
+
+/// The last text the child itself produced: its last non-empty assistant
+/// text, else its last tool result. Messages before `messages_start` are the
+/// forked parent prefix and are ignored.
+fn recover_child_text(transcript: &StoredChildTranscript) -> Option<RecoveredChildText> {
+    let child_messages = &transcript.messages[transcript.messages_start..];
+    for message in child_messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == "assistant")
+    {
+        for block in message.content.iter().rev() {
+            if let ContentBlock::Text { text, .. } = block
+                && !text.trim().is_empty()
+            {
+                return Some(RecoveredChildText {
+                    text: text.clone(),
+                    source: "recovered_last_assistant_text",
+                });
+            }
+        }
+    }
+    for message in child_messages.iter().rev() {
+        for block in message.content.iter().rev() {
+            if let ContentBlock::ToolResult {
+                content,
+                content_blocks,
+                ..
+            } = block
+            {
+                let text = tool_result_block_text(content, content_blocks);
+                if !text.trim().is_empty() {
+                    return Some(RecoveredChildText {
+                        text,
+                        source: "recovered_last_tool_result",
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Tool results sometimes carry their payload in `content_blocks` with
+/// `content` only a short fallback (see the transcript rebuild in
+/// `session.rs`); recover whichever holds the text.
+fn tool_result_block_text(content: &str, content_blocks: &Option<Vec<Value>>) -> String {
+    if !content.trim().is_empty() {
+        return content.to_string();
+    }
+    content_blocks
+        .iter()
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn transcript_handle_for(agent_id: &str) -> String {
+    format!("agent:{agent_id}/full_transcript")
+}
+
+async fn inline_subagent_report(
+    result: &SubAgentResult,
+    runtime: &SubAgentRuntime,
+) -> InlineReport {
+    // The normal path already has the report: name the transcript handle
+    // without deserializing the child transcript just to confirm it exists.
+    if let Some(text) = result.result.clone() {
+        return InlineReport {
+            text,
+            report_available: true,
+            report_source: "child_final_text",
+            transcript_handle: Some(transcript_handle_for(&result.agent_id)),
+        };
+    }
+
+    let transcript = load_child_transcript(runtime, &result.agent_id).await;
+    let transcript_handle = transcript
+        .as_ref()
+        .map(|_| transcript_handle_for(&result.agent_id));
+
+    let agent_id = result.agent_id.as_str();
+    let pointer = transcript_handle.as_deref().map_or_else(
+        || format!("agent_eval with id '{agent_id}'"),
+        |handle| format!("agent_eval with id '{agent_id}' (or handle_read with handle '{handle}')"),
+    );
+    let status_line = subagent_status_line(result);
+
+    if let Some(recovered) = transcript.as_ref().and_then(recover_child_text) {
+        let reason = if recovered.source == "recovered_last_assistant_text" {
+            "No final answer was recorded; recovered the child's last assistant text from its transcript."
+        } else {
+            "No final report text was captured; recovered the child's last tool result from its transcript."
+        };
+        return InlineReport {
+            text: format!(
+                "{status_line}\nagent_id: {agent_id}\n{reason} Full transcript: {pointer}.\n\n{}",
+                recovered.text,
+            ),
+            report_available: false,
+            report_source: recovered.source,
+            transcript_handle,
+        };
+    }
+
+    let transcript_note = if transcript_handle.is_some() {
+        " The transcript keeps every message the child produced."
+    } else {
+        ""
+    };
+    InlineReport {
+        text: format!(
+            "{status_line}\nagent_id: {agent_id}\n\
+             No final report text was captured: the child ended without a text answer. \
+             Recover its work with {pointer}.{transcript_note}"
+        ),
+        report_available: false,
+        report_source: "none",
+        transcript_handle,
+    }
+}
+
+/// A short line the tool-result context compactor lifts into its
+/// "Summary:" slot (`tool_result_metadata_summary`). It keeps the id and
+/// handle visible when the body is compacted for the parent context.
+fn inline_report_summary(
+    result: &SubAgentResult,
+    report_available: bool,
+    transcript_handle: &Option<String>,
+) -> String {
+    let pointer = transcript_handle.as_deref().map_or_else(
+        || format!("agent_eval id '{}'", result.agent_id),
+        |handle| {
+            format!(
+                "agent_eval id '{}' or handle_read '{}'",
+                result.agent_id, handle
+            )
+        },
+    );
+    if report_available {
+        format!(
+            "Sub-agent {} final report follows ({} steps); full transcript: {pointer}.",
+            result.agent_type.as_str(),
+            result.steps_taken,
+        )
+    } else {
+        format!(
+            "No final report text from sub-agent {} ({} steps); recover via {pointer}.",
+            result.agent_type.as_str(),
+            result.steps_taken,
+        )
+    }
+}
+
+/// Bound the inline report so one child cannot flood the parent context.
+/// The truncation notice names the agent id, which is the recovery pointer
+/// the model needs after the body is cut.
+fn truncate_inline_report(text: String, agent_id: &str) -> String {
+    const MAX_RESULT_CHARS: usize = 50_000;
+    if text.len() <= MAX_RESULT_CHARS {
+        return text;
+    }
+    let mut cut = MAX_RESULT_CHARS;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(
+        "{}\n\n[Result truncated: {} chars → {} chars. Use agent_eval with id '{}' for full transcript.]",
+        &text[..cut],
+        text.len(),
+        MAX_RESULT_CHARS,
+        agent_id,
+    )
 }
 
 #[async_trait]
@@ -5106,6 +5385,10 @@ fn subagent_done_sentinel(agent_id: &str, res: &SubAgentResult) -> String {
         "status": subagent_status_name(&res.status),
         "summary_location": "previous_line",
         "details": "agent_eval",
+        // Bounded completion tails truncate the summary line; the id and
+        // handle in the sentinel stay intact so the report stays reachable.
+        "report_available": res.result.is_some(),
+        "transcript_handle": transcript_handle_for(agent_id),
     });
     format!("<codesmith:subagent.done>{payload}</codesmith:subagent.done>")
 }
@@ -5129,6 +5412,10 @@ async fn insert_subagent_full_transcript_handle(
     status: &SubAgentStatus,
     result: Option<&String>,
     messages: &[Message],
+    // Index where the child's own messages start; a later reader recovers
+    // text from here so the forked parent prefix is never mistaken for the
+    // child's report.
+    messages_start: usize,
     steps_taken: u32,
     duration_ms: u64,
     fork_context: bool,
@@ -5144,6 +5431,7 @@ async fn insert_subagent_full_transcript_handle(
         "steps_taken": steps_taken,
         "duration_ms": duration_ms,
         "assignment": assignment,
+        "messages_start": messages_start,
         "messages": messages,
     });
     let mut store = runtime.context.runtime.handle_store.lock().await;
@@ -5371,6 +5659,7 @@ async fn run_subagent(
         &status,
         outcome.final_text.as_ref(),
         &outcome.messages,
+        outcome.child_messages_start,
         outcome.steps,
         duration_ms,
         fork_context_enabled,
@@ -7296,7 +7585,9 @@ fn intersect_tool_names(tools: Vec<String>, basis: Option<&[String]>) -> Vec<Str
 fn summarize_subagent_result(result: &SubAgentResult) -> String {
     match (&result.status, result.result.as_ref()) {
         (SubAgentStatus::Completed, Some(text)) => truncate_preview(text),
-        (SubAgentStatus::Completed, None) => "Completed (no output)".to_string(),
+        (SubAgentStatus::Completed, None) => {
+            "Completed (no final report text; transcript retained)".to_string()
+        }
         (SubAgentStatus::Interrupted(error), _) => format!("Interrupted: {error}"),
         (SubAgentStatus::Cancelled, _) => "Cancelled".to_string(),
         (SubAgentStatus::Failed(error), _) => format!("Failed: {error}"),

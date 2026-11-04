@@ -246,6 +246,23 @@ Running → (Completed | Failed(reason) | Cancelled | Interrupted(reason))
 父代理会把 `EVIDENCE` 当作下一轮的工作集，因此探索者和审查者
 应在这一部分保持精确。
 
+## 同步结果与报告恢复
+
+前台 `agent_run` 返回子代理的最终助手文本。子代理也可能以工具调用
+收尾，此时没有最终文本；`agent_run` 会从已存储的 transcript 中恢复
+子代理最后一段助手文本（没有则恢复最后一条工具结果），并说明文本
+来源。若 transcript 里两者都没有，工具会返回状态行、`agent_id`，以及
+明确的 `agent_eval` / `handle_read` 指引，而不是只回一行"completed"。
+
+结果 metadata 携带 `report_available`（子代理是否产出了最终报告）、
+`report_source`（`child_final_text`、`recovered_last_assistant_text`、
+`recovered_last_tool_result` 或 `none`）和 `transcript_handle`。超过
+50,000 字节的报告会被截断，截断文案保留 `agent_id`。完成哨兵同样携带
+`report_available` 和 `transcript_handle`，因此被有界完成尾部截短的
+摘要行仍留有恢复路径。前台子代理结束后会登记到管理器，`agent_eval`
+可按同一 id 解析；transcript 载荷记录子代理自身消息的起始位置，
+恢复时不会把分叉的父前缀误当成子代理输出。
+
 ## 作用域代理记忆
 
 子代理不继承父代理的记忆文件，也没有 `remember` 工具——该工具

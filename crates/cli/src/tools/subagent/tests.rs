@@ -2124,6 +2124,11 @@ fn subagent_done_sentinel_format_is_well_formed() {
     assert_eq!(parsed["agent_type"], "general");
     assert_eq!(parsed["summary_location"], "previous_line");
     assert_eq!(parsed["details"], "agent_eval");
+    assert_eq!(parsed["report_available"], false);
+    assert_eq!(
+        parsed["transcript_handle"],
+        "agent:agent_xyz/full_transcript"
+    );
     assert!(parsed.get("summary").is_none());
     assert!(parsed.get("duration_ms").is_none());
     assert!(parsed.get("steps").is_none());
@@ -2141,6 +2146,205 @@ fn subagent_failed_sentinel_format_is_well_formed() {
     assert_eq!(parsed["error_location"], "previous_line");
     assert_eq!(parsed["details"], "agent_eval");
     assert!(parsed.get("error").is_none());
+}
+
+/// Case 3 (2026-11-04 REPL): a child ended on a tool call after ~200s, so
+/// `result.result` was `None` and `agent_run` returned only a status line.
+/// The inline result must name the child and the recovery tools instead of
+/// presenting the run as a finished report.
+#[tokio::test]
+async fn agent_run_without_final_text_returns_recovery_pointer() {
+    let runtime = stub_runtime();
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_id = "agent_run_none".to_string();
+    snapshot.name = "agent_run_none".to_string();
+    snapshot.result = None;
+
+    let inline = inline_subagent_report(&snapshot, &runtime).await;
+
+    assert!(
+        inline.text.contains("agent_id: agent_run_none"),
+        "inline result must name the child it describes: {}",
+        inline.text
+    );
+    assert!(
+        inline.text.contains("agent_eval"),
+        "inline result must point at agent_eval: {}",
+        inline.text
+    );
+    assert!(
+        inline.text.contains("No final report text was captured"),
+        "a missing report must be stated, not hidden: {}",
+        inline.text
+    );
+    assert!(!inline.report_available);
+    assert_eq!(inline.report_source, "none");
+    assert!(inline.transcript_handle.is_none());
+}
+
+/// A child that ends with a tool call keeps its last tool output in the
+/// stored transcript; the inline result recovers it instead of dropping the
+/// work. The forked prefix (messages before `messages_start`) must not be
+/// mistaken for the child's own output.
+#[tokio::test]
+async fn agent_run_recovers_last_tool_result_from_child_transcript() {
+    let runtime = stub_runtime();
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_id = "agent_run_case3".to_string();
+    snapshot.name = "agent_run_case3".to_string();
+    snapshot.result = None;
+    {
+        let mut store = runtime.context.runtime.handle_store.lock().await;
+        store.insert_json(
+            "agent:agent_run_case3",
+            "full_transcript",
+            json!({
+                "kind": "subagent_full_transcript",
+                "agent_id": "agent_run_case3",
+                "messages_start": 1,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "parent prefix analysis"}]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "call_1",
+                            "name": "exec_shell",
+                            "input": {"command": "mvn verify"}
+                        }]
+                    },
+                    {
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": "Maven verify: BUILD SUCCESS"
+                        }]
+                    }
+                ]
+            }),
+        );
+    }
+
+    let inline = inline_subagent_report(&snapshot, &runtime).await;
+
+    assert!(inline.text.contains("Maven verify: BUILD SUCCESS"));
+    assert!(!inline.text.contains("parent prefix analysis"));
+    assert_eq!(inline.report_source, "recovered_last_tool_result");
+    assert!(!inline.report_available);
+    assert!(inline.text.contains("agent_eval"));
+    assert!(
+        inline
+            .text
+            .contains("agent:agent_run_case3/full_transcript")
+    );
+    assert_eq!(
+        inline.transcript_handle.as_deref(),
+        Some("agent:agent_run_case3/full_transcript")
+    );
+}
+
+/// A cancelled child can still have written analysis before its final tool
+/// call; recovery must prefer that child-scoped assistant text over a tool
+/// result.
+#[tokio::test]
+async fn agent_run_recovery_prefers_child_assistant_text() {
+    let runtime = stub_runtime();
+    let mut snapshot = make_snapshot(SubAgentStatus::Cancelled);
+    snapshot.agent_id = "agent_run_cancelled".to_string();
+    snapshot.name = "agent_run_cancelled".to_string();
+    snapshot.result = None;
+    {
+        let mut store = runtime.context.runtime.handle_store.lock().await;
+        store.insert_json(
+            "agent:agent_run_cancelled",
+            "full_transcript",
+            json!({
+                "messages_start": 1,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "forked parent text"}]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "child partial analysis"}]
+                    },
+                    {
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": "tool output"
+                        }]
+                    }
+                ]
+            }),
+        );
+    }
+
+    let inline = inline_subagent_report(&snapshot, &runtime).await;
+
+    assert!(inline.text.contains("child partial analysis"));
+    assert!(!inline.text.contains("forked parent text"));
+    assert_eq!(inline.report_source, "recovered_last_assistant_text");
+    assert!(!inline.report_available);
+}
+
+#[test]
+fn agent_run_truncation_notice_keeps_agent_id() {
+    let report = "x".repeat(50_001);
+    let output = truncate_inline_report(report, "agent_run_long");
+
+    assert!(output.contains("Result truncated"));
+    assert!(
+        output.contains("agent_run_long"),
+        "the recovery pointer must survive truncation: {output}"
+    );
+    assert!(output.len() < 50_001 + 512);
+}
+
+/// The inline fallback tells the model to call `agent_eval` with the child
+/// id, so a foreground child must be resolvable there after it finishes.
+#[tokio::test]
+async fn foreground_result_registers_for_agent_eval_recovery() {
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 1)));
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_id = "agent_run_sync1".to_string();
+    snapshot.name = "agent_run_sync1".to_string();
+    snapshot.result = None;
+    {
+        let mut guard = manager.write().await;
+        guard.record_finished_result(&snapshot);
+    }
+
+    let ctx = ToolContext::new(".");
+    {
+        let mut store = ctx.runtime.handle_store.lock().await;
+        store.insert_json(
+            "agent:agent_run_sync1",
+            "full_transcript",
+            json!({
+                "kind": "subagent_full_transcript",
+                "agent_id": "agent_run_sync1",
+                "messages": []
+            }),
+        );
+    }
+
+    let result = AgentEvalTool::new(manager)
+        .execute(json!({"agent_id": "agent_run_sync1", "block": false}), &ctx)
+        .await
+        .expect("agent_eval must resolve a finished foreground child");
+
+    let projection: SubAgentSessionProjection =
+        serde_json::from_str(&result.content).expect("projection deserializes");
+    assert_eq!(projection.agent_id, "agent_run_sync1");
+    assert_eq!(projection.transcript_handle.name, "full_transcript");
+    assert!(projection.terminal);
 }
 
 #[test]

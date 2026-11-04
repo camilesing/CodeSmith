@@ -157,6 +157,10 @@ pub struct ChildTurnOutcome {
     pub steps: u32,
     /// The whole transcript, opening messages included.
     pub messages: Vec<Message>,
+    /// Index in `messages` where the child's own turn begins. The messages
+    /// before it are the forked parent prefix, so a transcript reader must
+    /// not recover their text as the child's output.
+    pub child_messages_start: usize,
     pub usage: Usage,
 }
 
@@ -193,6 +197,8 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
                 status: ChildTurnStatus::Failed(message),
                 final_text: None,
                 steps: 0,
+                // Nothing ran: there is no child-owned message.
+                child_messages_start: messages.len(),
                 messages,
                 usage: Usage::default(),
             };
@@ -331,6 +337,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         status,
         final_text,
         steps: callback.steps.load(Ordering::SeqCst),
+        child_messages_start: opening.min(messages.len()),
         messages,
         usage,
     }
