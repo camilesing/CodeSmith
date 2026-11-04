@@ -66,6 +66,12 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         description: "Default working-set policy (recent-read window + preview size)",
         source: include_str!("builtin/working_set.rhai"),
     },
+    BuiltinMod {
+        id: "builtin-knowledge-on-demand",
+        version: "0.1.0",
+        description: "Default Knowledge On Demand policy (memory budgets + enabled types)",
+        source: include_str!("builtin/knowledge_policy.rhai"),
+    },
 ];
 
 /// Compile + run every builtin mod against the runner (used by the host's

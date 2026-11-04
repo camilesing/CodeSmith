@@ -89,6 +89,10 @@ pub enum PolicyKind {
     /// keeps (`recent_read_file_limit`, `recent_read_file_snippet_chars`)
     /// — retention mechanics (dedup, ordering, eviction) stay in Rust.
     WorkingSet,
+    /// Knowledge On Demand budgets + eligibility (`max_session_bytes`,
+    /// `max_entrypoint_lines`, `max_entrypoint_bytes`, `enabled_types`)
+    /// — scan, the relevance side-query and truncation stay in Rust.
+    KnowledgeOnDemand,
 }
 
 impl PolicyKind {
@@ -102,6 +106,7 @@ impl PolicyKind {
             Self::CompactPolicy => "compact-policy",
             Self::LargeOutputRoute => "large-output-route",
             Self::WorkingSet => "working-set",
+            Self::KnowledgeOnDemand => "knowledge-on-demand",
         }
     }
 
@@ -115,6 +120,7 @@ impl PolicyKind {
             "compact-policy" => Some(Self::CompactPolicy),
             "large-output-route" => Some(Self::LargeOutputRoute),
             "working-set" => Some(Self::WorkingSet),
+            "knowledge-on-demand" => Some(Self::KnowledgeOnDemand),
             _ => None,
         }
     }
@@ -127,6 +133,7 @@ impl PolicyKind {
         PolicyKind::CompactPolicy,
         PolicyKind::LargeOutputRoute,
         PolicyKind::WorkingSet,
+        PolicyKind::KnowledgeOnDemand,
     ];
 }
 

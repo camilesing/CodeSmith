@@ -3498,6 +3498,10 @@ mod tests {
                     "builtin-large-output-route".to_string()
                 ),
                 ("working-set", "builtin-working-set".to_string()),
+                (
+                    "knowledge-on-demand",
+                    "builtin-knowledge-on-demand".to_string()
+                ),
             ]
         );
         assert_eq!(
@@ -3510,7 +3514,7 @@ mod tests {
         // Unload pol-a: snapshot falls back per kind, survivors stay.
         let outcome = rt.block_on(runner.unload_retained_mod("pol-a"));
         assert!(outcome.evicted, "{outcome:?}");
-        assert_eq!(outcome.replayed, 6, "{outcome:?}"); // 5 builtins + pol-b
+        assert_eq!(outcome.replayed, 7, "{outcome:?}"); // 6 builtins + pol-b
         assert!(outcome.errors.is_empty(), "{outcome:?}");
         // Survivor's override still effective (not fallen back to builtin).
         assert_eq!(
@@ -3595,5 +3599,17 @@ mod tests {
             .expect("builtin large-output-route policy present");
         assert_eq!(route["threshold_tokens"], serde_json::json!(4_096));
         assert_eq!(route["per_tool"], serde_json::json!({}));
+        let kod = defaults
+            .iter()
+            .find(|(k, _)| *k == codesmith_agent::policy::PolicyKind::KnowledgeOnDemand)
+            .map(|(_, v)| v.clone())
+            .expect("builtin knowledge-on-demand policy present");
+        assert_eq!(kod["max_session_bytes"], serde_json::json!(500_000));
+        assert_eq!(kod["max_entrypoint_lines"], serde_json::json!(200));
+        assert_eq!(kod["max_entrypoint_bytes"], serde_json::json!(25_000));
+        assert_eq!(
+            kod["enabled_types"],
+            serde_json::json!(["user", "feedback", "project", "reference"])
+        );
     }
 }

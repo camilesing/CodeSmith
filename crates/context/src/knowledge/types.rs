@@ -3,6 +3,9 @@
 //! Each type determines when and how a memory should be saved and surfaced,
 //! mirroring the TypeScript Claude Code memory type definitions.
 
+use std::collections::HashSet;
+
+use codesmith_agent::policy::{PolicyKind, policy_string_list};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -63,6 +66,56 @@ impl fmt::Display for MemoryType {
             Self::Reference => "reference",
         })
     }
+}
+
+/// Every memory type — the compiled default for `enabled_types`.
+const ALL_TYPE_NAMES: &[&str] = &["user", "feedback", "project", "reference"];
+
+fn all_memory_types() -> HashSet<MemoryType> {
+    [
+        MemoryType::User,
+        MemoryType::Feedback,
+        MemoryType::Project,
+        MemoryType::Reference,
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// The memory types eligible for surfacing — the `enabled_types` knob of
+/// the `knowledge-on-demand` policy kind, read ambiently with an
+/// all-types compiled fallback (same posture as micro-compaction's
+/// `policy_read`: an unknown type name warns and falls back wholesale;
+/// an empty list means "disable everything" and also falls back — a
+/// policy list is tuning, not a way to silence memory). Memories
+/// without a frontmatter type are always eligible: the knob disables
+/// typed categories, it does not silence untyped files.
+pub fn enabled_memory_types() -> HashSet<MemoryType> {
+    let names = policy_string_list(
+        PolicyKind::KnowledgeOnDemand,
+        "enabled_types",
+        ALL_TYPE_NAMES,
+        16,
+    );
+    let mut out = HashSet::with_capacity(names.len());
+    for name in &names {
+        match MemoryType::from_str_loose(name) {
+            Some(t) => {
+                out.insert(t);
+            }
+            None => {
+                tracing::warn!(
+                    target: "codesmith_policy",
+                    "policy knowledge-on-demand field enabled_types has unknown type {name}; using default"
+                );
+                return all_memory_types();
+            }
+        }
+    }
+    if out.is_empty() {
+        return all_memory_types();
+    }
+    out
 }
 
 /// A memory file selected and read for surfacing into context.

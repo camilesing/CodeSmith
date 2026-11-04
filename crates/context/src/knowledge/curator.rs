@@ -31,6 +31,35 @@ use std::path::{Path, PathBuf};
 
 use super::budget::{MAX_ENTRYPOINT_BYTES, MAX_ENTRYPOINT_LINES};
 
+/// Policy-read ceilings for the entrypoint budgets — over-ceiling values
+/// warn and fall back to the compiled defaults (a mod bug must not
+/// unbound the index).
+const MAX_ENTRYPOINT_LINES_CEILING: usize = 10_000;
+const MAX_ENTRYPOINT_BYTES_CEILING: usize = 1_000_000;
+
+/// The entrypoint budgets this pass enforces (`max_entrypoint_lines`,
+/// `max_entrypoint_bytes` of the `knowledge-on-demand` policy kind) —
+/// ambient read with the compiled fallbacks, same posture as
+/// micro-compaction's `policy_read`. Reads twice per call site pair; the
+/// values are only consulted after the deterministic passes.
+fn entrypoint_budgets_read() -> (usize, usize) {
+    let kind = codesmith_agent::policy::PolicyKind::KnowledgeOnDemand;
+    (
+        codesmith_agent::policy::policy_usize(
+            kind,
+            "max_entrypoint_lines",
+            MAX_ENTRYPOINT_LINES,
+            MAX_ENTRYPOINT_LINES_CEILING,
+        ),
+        codesmith_agent::policy::policy_usize(
+            kind,
+            "max_entrypoint_bytes",
+            MAX_ENTRYPOINT_BYTES,
+            MAX_ENTRYPOINT_BYTES_CEILING,
+        ),
+    )
+}
+
 /// Result of the deterministic consolidation pass.
 #[derive(Debug, Clone)]
 pub struct CuratorReport {
@@ -189,8 +218,9 @@ pub fn curate_index(memory_dir: &Path) -> CuratorReport {
         out.push('\n');
         out
     };
-    report.over_line_budget = report.cleaned_index.lines().count() > MAX_ENTRYPOINT_LINES;
-    report.over_byte_budget = report.cleaned_index.len() > MAX_ENTRYPOINT_BYTES;
+    let (max_lines, max_bytes) = entrypoint_budgets_read();
+    report.over_line_budget = report.cleaned_index.lines().count() > max_lines;
+    report.over_byte_budget = report.cleaned_index.len() > max_bytes;
     report
 }
 
@@ -241,16 +271,15 @@ pub fn validate_proposed_index(memory_dir: &Path, proposed: &str) -> Result<(), 
             missing.join(", ")
         ));
     }
-    if proposed.lines().count() > MAX_ENTRYPOINT_LINES {
+    let (max_lines, max_bytes) = entrypoint_budgets_read();
+    if proposed.lines().count() > max_lines {
         return Err(format!(
-            "proposal exceeds the {}-line entrypoint budget",
-            MAX_ENTRYPOINT_LINES
+            "proposal exceeds the {max_lines}-line entrypoint budget"
         ));
     }
-    if proposed.len() > MAX_ENTRYPOINT_BYTES {
+    if proposed.len() > max_bytes {
         return Err(format!(
-            "proposal exceeds the {}-byte entrypoint budget",
-            MAX_ENTRYPOINT_BYTES
+            "proposal exceeds the {max_bytes}-byte entrypoint budget"
         ));
     }
     Ok(())
@@ -259,6 +288,7 @@ pub fn validate_proposed_index(memory_dir: &Path, proposed: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
 
     fn setup_dir() -> tempfile::TempDir {
@@ -420,5 +450,94 @@ mod tests {
         }
         let err = validate_proposed_index(tmp.path(), &huge).unwrap_err();
         assert!(err.contains("line"), "got: {err}");
+    }
+
+    /// End-to-end for the `knowledge-on-demand` entrypoint budgets: a
+    /// tighter published policy changes what the curator reports and
+    /// what the validator accepts. Scoped to a private store so sibling
+    /// tests' ambient reads never see this registration.
+    #[tokio::test]
+    async fn tighter_entrypoint_budget_changes_curator_output() {
+        let tmp = setup_dir();
+        let proposal = "# Agent Memory\n\n\
+             - [Editor](editor.md) — prefers vim\n\
+             - [Rust role](rust-role.md) — User is a Rust developer\n";
+
+        // Lines: the cleaned index (header + blank + 2 pointers) crosses
+        // a 2-line budget; the byte check keeps its default.
+        let lines_store = kod_store(&[("max_entrypoint_lines", json!(2))]);
+        lines_store
+            .scope({
+                let tmp = tmp.path().to_path_buf();
+                let proposal = proposal.to_string();
+                async move {
+                    let report = curate_index(&tmp);
+                    assert!(report.over_line_budget, "line budget must trip");
+                    assert!(!report.over_byte_budget);
+                    let err = validate_proposed_index(&tmp, &proposal).unwrap_err();
+                    assert!(err.contains("line"), "got: {err}");
+                }
+            })
+            .await;
+
+        // Bytes: a 40-byte budget rejects the same proposal the compiled
+        // default accepts (validate_accepts_complete_proposal); lines
+        // keep their default.
+        let bytes_store = kod_store(&[("max_entrypoint_bytes", json!(40))]);
+        bytes_store
+            .scope({
+                let tmp = tmp.path().to_path_buf();
+                let proposal = proposal.to_string();
+                async move {
+                    let report = curate_index(&tmp);
+                    assert!(report.over_byte_budget, "byte budget must trip");
+                    assert!(!report.over_line_budget);
+                    let err = validate_proposed_index(&tmp, &proposal).unwrap_err();
+                    assert!(err.contains("byte"), "got: {err}");
+                }
+            })
+            .await;
+    }
+
+    /// Over-ceiling knob values warn and fall back: the compiled-default
+    /// behavior the sibling tests pin stays in force.
+    #[tokio::test]
+    async fn over_ceiling_entrypoint_budgets_fall_back() {
+        let tmp = setup_dir();
+        let proposal = "# Agent Memory\n\n\
+             - [Editor](editor.md) — prefers vim\n\
+             - [Rust role](rust-role.md) — User is a Rust developer\n";
+        let store = kod_store(&[
+            ("max_entrypoint_lines", json!(999_999)),
+            ("max_entrypoint_bytes", json!(999_999_999)),
+        ]);
+        store
+            .scope({
+                let tmp = tmp.path().to_path_buf();
+                let proposal = proposal.to_string();
+                async move {
+                    let report = curate_index(&tmp);
+                    assert!(!report.over_line_budget);
+                    assert!(!report.over_byte_budget);
+                    assert!(validate_proposed_index(&tmp, &proposal).is_ok());
+                }
+            })
+            .await;
+    }
+
+    /// One `knowledge-on-demand` registration over the given knob pairs.
+    fn kod_store(knobs: &[(&str, serde_json::Value)]) -> codesmith_agent::policy::PolicyStore {
+        let mut map = serde_json::Map::new();
+        for (field, value) in knobs {
+            map.insert((*field).to_string(), value.clone());
+        }
+        let mut set = std::collections::HashMap::new();
+        set.insert(
+            codesmith_agent::policy::PolicyKind::KnowledgeOnDemand,
+            serde_json::Value::Object(map),
+        );
+        let store = codesmith_agent::policy::PolicyStore::new();
+        store.publish(set);
+        store
     }
 }

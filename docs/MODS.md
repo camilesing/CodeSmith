@@ -287,7 +287,14 @@ recompile.
   `working-set` (`recent_read_file_limit`,
   `recent_read_file_snippet_chars` — the recent-read-files window the
   session retains so compacted-away reads stay available; the retention
-  mechanics stay in Rust).
+  mechanics stay in Rust), `knowledge-on-demand`
+  (`max_session_bytes`, `max_entrypoint_lines`, `max_entrypoint_bytes`,
+  `enabled_types` — the surfaced-memory session budget, the MEMORY.md
+  index budgets, and the memory-type subset eligible for surfacing;
+  scanning, the relevance side-query and truncation stay in Rust.
+  Budgets are bytes, not tokens. A relevance *threshold* is
+  deliberately absent — the side-query picks filenames, it does not
+  score them).
 - Resolution is **last-wins by load order** (builtin < global < project):
   a user mod overrides the builtin default by registering the same kind —
   deliberately unlike tools/commands, where the incumbent keeps the name.
@@ -301,7 +308,8 @@ recompile.
   cannot brick the mechanism it tunes.
 - **Builtin tier**: the defaults themselves ship as embedded Rhai mods
   (`builtin-output-diff`, `builtin-shell-output`, `builtin-compact-policy`,
-  `builtin-large-output-route`, `builtin-working-set` — sources under
+  `builtin-large-output-route`, `builtin-working-set`,
+  `builtin-knowledge-on-demand` — sources under
   `crates/extensions/src/script/builtin/`). They always load (even with
   `[mods] enabled = false`; the flag gates user mods only), skip
   consent/hash gates (they ship in the binary), use ephemeral KV, and are

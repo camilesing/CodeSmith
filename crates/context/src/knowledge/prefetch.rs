@@ -147,11 +147,16 @@ pub async fn run_prefetch(
         });
     }
 
-    // Filter out already-surfaced paths.
+    // Filter out already-surfaced paths and policy-disabled memory types
+    // (the `knowledge-on-demand` kind's `enabled_types` — disabled types
+    // never reach the relevance manifest; untyped memories stay
+    // eligible).
+    let enabled_types = super::types::enabled_memory_types();
     let surfaced_set = already_surfaced.lock().await;
     let unsurfaced_headers: Vec<MemoryHeader> = headers
         .iter()
         .filter(|h| !surfaced_set.contains(&h.file_path))
+        .filter(|h| h.memory_type.is_none_or(|t| enabled_types.contains(&t)))
         .cloned()
         .collect();
     drop(surfaced_set);
@@ -393,5 +398,60 @@ mod tests {
 
         assert!(result.surfaced.is_empty());
         assert!(result.scan_headers.is_empty());
+    }
+
+    /// End-to-end for `enabled_types`: a project-type memory never reaches
+    /// the relevance manifest, so even a side-query that names it cannot
+    /// surface it (parse validation drops the unknown filename).
+    /// `scan_headers` keeps every file — it is diagnostics, not selection.
+    #[tokio::test]
+    async fn prefetch_filters_policy_disabled_types() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join("user_role.md"),
+            "---\nname: role\ndescription: user role\ntype: user\n---\nI am a developer.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("project_build.md"),
+            "---\nname: build\ndescription: build notes\ntype: project\n---\nMerge freeze 2026-03-05.",
+        )
+        .unwrap();
+
+        let store = codesmith_agent::policy::PolicyStore::new();
+        let mut set = std::collections::HashMap::new();
+        set.insert(
+            codesmith_agent::policy::PolicyKind::KnowledgeOnDemand,
+            serde_json::json!({"enabled_types": ["user"]}),
+        );
+        store.publish(set);
+
+        let budget = Arc::new(Mutex::new(SessionByteBudget::new()));
+        let surfaced = Arc::new(Mutex::new(HashSet::new()));
+        let cancel = CancellationToken::new();
+
+        let result = store
+            .scope(run_prefetch(
+                "test query",
+                dir,
+                surfaced,
+                budget,
+                cancel,
+                &[],
+                |_, _| {
+                    Box::pin(async {
+                        Ok(String::from(
+                            "{\"selected_memories\": [\"user_role.md\", \"project_build.md\"]}",
+                        ))
+                    })
+                },
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(result.surfaced.len(), 1);
+        assert!(result.surfaced[0].content.contains("I am a developer."));
+        assert_eq!(result.scan_headers.len(), 2);
     }
 }

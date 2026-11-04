@@ -3,6 +3,11 @@
 //! Limits how many memories are surfaced per turn and per session,
 //! mirroring the TypeScript `MAX_SESSION_BYTES`, `MAX_MEMORIES_PER_TURN`,
 //! and per-memory line/byte caps.
+//!
+//! `max_session_bytes` is script-tunable through the
+//! `knowledge-on-demand` policy kind (ambient read with the compiled
+//! [`MAX_SESSION_BYTES`] fallback — same posture as micro-compaction's
+//! `policy_read`); the per-memory and per-turn caps stay compiled.
 
 /// Maximum number of memories surfaced in a single turn.
 pub const MAX_MEMORIES_PER_TURN: usize = 5;
@@ -26,6 +31,22 @@ pub const MAX_MEMORY_FILES: usize = 200;
 /// no more memories are surfaced in the session.
 pub const MAX_SESSION_BYTES: usize = 500_000;
 
+/// Policy-read ceiling for `max_session_bytes` — over-ceiling values
+/// warn and fall back to the compiled default (a mod bug must not
+/// unbound the session budget).
+const MAX_SESSION_BYTES_CEILING: usize = 10_000_000;
+
+/// The effective session byte budget — ambient `knowledge-on-demand`
+/// policy read with the compiled fallback.
+pub(crate) fn session_budget_read() -> usize {
+    codesmith_agent::policy::policy_usize(
+        codesmith_agent::policy::PolicyKind::KnowledgeOnDemand,
+        "max_session_bytes",
+        MAX_SESSION_BYTES,
+        MAX_SESSION_BYTES_CEILING,
+    )
+}
+
 /// Tracks session-wide byte consumption for surfaced memories.
 #[derive(Debug)]
 pub struct SessionByteBudget {
@@ -36,7 +57,7 @@ pub struct SessionByteBudget {
 impl SessionByteBudget {
     pub fn new() -> Self {
         Self {
-            max_bytes: MAX_SESSION_BYTES,
+            max_bytes: session_budget_read(),
             bytes_consumed: 0,
         }
     }
@@ -98,5 +119,44 @@ mod tests {
         let mut budget = SessionByteBudget::new();
         assert!(budget.try_consume(100_000));
         assert_eq!(budget.remaining(), MAX_SESSION_BYTES - 100_000);
+    }
+
+    /// `max_session_bytes` is policy-tunable; the ambient store here (no
+    /// scope) has no `knowledge-on-demand` registration, so the existing
+    /// tests above pin the compiled default. These two scope a private
+    /// store so they cannot race the ambient reads of sibling tests.
+    #[tokio::test]
+    async fn session_budget_reads_knowledge_policy() {
+        let store = codesmith_agent::policy::PolicyStore::new();
+        let mut set = std::collections::HashMap::new();
+        set.insert(
+            codesmith_agent::policy::PolicyKind::KnowledgeOnDemand,
+            serde_json::json!({"max_session_bytes": 1000}),
+        );
+        store.publish(set);
+        store
+            .scope(async {
+                let mut budget = SessionByteBudget::new();
+                assert!(budget.try_consume(1000));
+                assert!(!budget.can_afford(1));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn session_budget_bad_value_falls_back_to_compiled_default() {
+        let store = codesmith_agent::policy::PolicyStore::new();
+        let mut set = std::collections::HashMap::new();
+        set.insert(
+            codesmith_agent::policy::PolicyKind::KnowledgeOnDemand,
+            serde_json::json!({"max_session_bytes": 999_999_999}),
+        );
+        store.publish(set);
+        store
+            .scope(async {
+                // Over the read ceiling → warn + compiled default.
+                assert_eq!(SessionByteBudget::new().remaining(), MAX_SESSION_BYTES);
+            })
+            .await;
     }
 }
