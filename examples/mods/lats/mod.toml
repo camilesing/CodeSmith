@@ -1,0 +1,4 @@
+id = "lats"
+name = "LATS Tree Search"
+version = "0.1.0"
+description = "Best-first tree search as a loop script — spawn_child fan-out, llm_request scoring, beam backtracking (needs turn_executor = \"rhai\")."

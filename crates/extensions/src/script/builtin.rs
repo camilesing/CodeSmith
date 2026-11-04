@@ -72,6 +72,12 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         description: "Default Knowledge On Demand policy (memory budgets + enabled types)",
         source: include_str!("builtin/knowledge_policy.rhai"),
     },
+    BuiltinMod {
+        id: "builtin-lats-policy",
+        version: "0.1.0",
+        description: "Default loop-script search policy (width / depth / beam)",
+        source: include_str!("builtin/lats_policy.rhai"),
+    },
 ];
 
 /// Compile + run every builtin mod against the runner (used by the host's

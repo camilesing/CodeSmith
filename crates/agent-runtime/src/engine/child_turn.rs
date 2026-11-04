@@ -277,6 +277,10 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         context: None,
         mode: AppMode::Agent,
         max_subagents: 0,
+        // Script-side fan-out is one level in v1: a child's own
+        // `spawn_child` calls are rejected loudly against this zero (see
+        // the rhai_executor module's known limitations).
+        max_spawn_depth: 0,
         plan_mode_state: None,
         progressive_disclosure: false,
         stream_idle_timeout,

@@ -93,6 +93,10 @@ pub enum PolicyKind {
     /// `max_entrypoint_lines`, `max_entrypoint_bytes`, `enabled_types`)
     /// — scan, the relevance side-query and truncation stay in Rust.
     KnowledgeOnDemand,
+    /// Loop-script search parameters (`width`, `depth`, `beam`) — read by
+    /// the `loop_policy_int` capability native on the loop surface
+    /// (compiled fallback per field); the search itself is script.
+    LatsPolicy,
 }
 
 impl PolicyKind {
@@ -107,6 +111,7 @@ impl PolicyKind {
             Self::LargeOutputRoute => "large-output-route",
             Self::WorkingSet => "working-set",
             Self::KnowledgeOnDemand => "knowledge-on-demand",
+            Self::LatsPolicy => "lats-policy",
         }
     }
 
@@ -121,6 +126,7 @@ impl PolicyKind {
             "large-output-route" => Some(Self::LargeOutputRoute),
             "working-set" => Some(Self::WorkingSet),
             "knowledge-on-demand" => Some(Self::KnowledgeOnDemand),
+            "lats-policy" => Some(Self::LatsPolicy),
             _ => None,
         }
     }
@@ -134,6 +140,7 @@ impl PolicyKind {
         PolicyKind::LargeOutputRoute,
         PolicyKind::WorkingSet,
         PolicyKind::KnowledgeOnDemand,
+        PolicyKind::LatsPolicy,
     ];
 }
 

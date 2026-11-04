@@ -448,6 +448,8 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 
 一个值得先知道的 Rhai 语义（否则 handler 会静默 fail-open）：**命名的顶层 `fn` 看不到顶层 `const`**（每次调用的调用状态是全新的），而事件回调可以（闭包会捕获）。命名 fn 需要的一切都走参数传入——写 `fn record(lesson, max)` 并以 `record(lesson, MAX_REFLECTIONS)` 调用，不要写 `fn record(lesson)` 在体内读 `MAX_REFLECTIONS`。
 
+第二个，写给致密的 loop 脚本：**Rhai 按函数体限制表达式深度（默认 32）**——很长的双重嵌套块（`for` 套 `for`，每条语句又是 map 字面量调用）会在编译时报 "Expression exceeds maximum complexity"。把循环体提升为命名函数（`fn search_round(frontier, …)`）即可——每个函数体重新获得完整的解析预算。
+
 ## 示例 mod
 
 仓库在 [`examples/mods/`](../examples/mods/) 下内置两个行为插件范例——把任一目录复制进 `~/.codesmith/mods/`（或工作区 `.codesmith/mods/`）后用 `/mods activate <id>` 激活。两者都有加载并驱动行为的测试（`crates/extensions`），不会静默腐烂。
@@ -455,6 +457,7 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 - **`reflexion`**——Shinn et al.（2023）的 mod 化：失败的 `tool-result` 与 `result-verified` 的 `verified-fail` 判定累积进反思账本（mod 的 KV），下一次尝试开始时以一条注入的 user 消息携带（`before-agent-start` 瀑布），首个干净 turn 将其清空。仅主 turn（`ctx.agent.main` 守卫）。
 - **`voyager-capture`**——Wang et al.（2023）的采集半边：干净的主 turn 动作序列（≥ 3 次成功的动作类调用、零失败）被蒸馏为技能存入 mod 的 KV；每次装载经 `register_skill` 重新注册累积的库，采集到的流程在 `/mods reload` 后回归。
 - **`react-min`**——loop 范例：builtin 的 ReAct 形状写成 ~20 行脚本。激活它并设 `turn_executor = "rhai"`，turn 即运行该脚本而非编译循环——流式、审批、事件纪律全部一致，因为每次 `llm_request()` / `run_tools()` 调用执行的都是宿主的步骤服务。引擎的等价性测试以 mock provider 驱动它。
+- **`lats`**——带**扇出**的 loop 范例：best-first 树搜索——`llm_request(#{prompt})` 扩展与评分、`spawn_child` 候选模拟、beam 回溯。子代理也运行会话的 loop，因此脚本按 `spawn_depth()` 分角色（0 为搜索者，之上为评估者）。旋钮走 `lats-policy` 策略种类（`width`/`depth`/`beam`，经 `loop_policy_int` 读取）。教程见"编写 loop 脚本"。
 
 ## 编写 loop 脚本
 
@@ -465,7 +468,12 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 | 调用 | 返回 / 行为 |
 |---|---|
 | `llm_request()` | `#{text, tool_uses: [#{id, name, input}], stop_reason, usage: #{input_tokens, output_tokens}, interrupted}`——一个 LLM 轮：请求组装（三区、prefix-cache 观测）、`before-provider-headers` / `before-provider-request` 瀑布、带透明重试的流式、转录持久化。排队的 steer 在请求前排入转录（builtin 循环的步首行为）。 |
+| `llm_request(#{prompt})` | 同一轮，但先把 `prompt` 作为 user 消息排入转录（持久化——模型可见即有记录）。脚本借此在一份共享转录上按用途区分轮次——扩展、评分、作答。 |
 | `run_tools(calls)` | `#{halt, plan_approved, errors}`——一个工具批：审批、沙箱、guard、`tool-call` / `tool-result` 瀑布与结果持久化。`halt != ()` 表示 loop guard 触发——应结束 turn。 |
+| `spawn_child(spec)` | `handle`（int）——从 `#{prompt, type?, allowed_tools?}` 起一个进程内子代理 turn，走宿主 spawn 路径同一条 child-turn 接缝（`run_child_turn`：子代理运行会话的 loop、触发 `SessionBeforeFork` 否决、继承父工具面——`allowed_tools` 命名子集时收窄，未知名响亮失败）。上限越界响亮报错：`[runtime] max_spawn_depth`（v1 扇出**仅一层**——子代理自己的 `spawn_child` 会被拒绝）与 `max_subagents`（每 turn 存活子代理数）。 |
+| `eval_child(handle, timeout_ms)` | `#{status, final_text, steps}`——等待一个已 spawn 的子代理（`status` 为 `completed`/`cancelled`/`failed`；未完成时 `final_text` 为 `()`）。超时中止该子代理并报错——被放弃的分支不得滞留。 |
+| `spawn_depth()` | 本 turn 的深度（`0` = 主 turn）——子代理运行同一脚本，搜索/评估的角色切换就靠它。 |
+| `loop_policy_int(field, default)` | 读一个 `lats-policy` 旋钮（`width`/`depth`/`beam`）——按后写者胜解析策略，脚本的编译 `default` 兜底；用户 mod 的 `register_policy("lats-policy", …)` 无需重编译即可调参运行中的 loop。 |
 | `cancelled()` | turn 的取消令牌触发后返回 `true`——长循环里要检查。 |
 | `note(text)` | 把脚本决策记录到会话日志路径（现场呈现与持久记录一致）。 |
 
@@ -474,6 +482,31 @@ config.toml 的 `[rhai_loop]` 固定 mod（`mod = "react-min"`）并限定单个
 turn 的脚本执行时长（`timeout_secs`，默认 3600）。脚本 loop 不继承
 builtin 循环的 compaction 预检、LSP 冲洗、容量门与 `turn-stopping`
 steer 接缝——移植需要这些的循环前，先看 `rhai_executor` 模块的已知限制。
+
+### 教程：LATS——一个搜索型 loop
+
+[`examples/mods/lats`](../examples/mods/lats/) 把 best-first 树搜索
+（Zhou et al., 2023）写成一个 loop 脚本——补上 react-min 缺的形状：
+脚本*主导*下一问什么，而不是对一条流被动反应。四个动作覆盖整个模式：
+
+1. **按用途区分轮次。** 每次 `llm_request(#{prompt})` 先把 prompt 追加进
+   转录再发起该轮，于是扩展（"提出 W 个细化方向"）、评分与最终作答是
+   同一份共享历史上的独立模型调用——且全部持久化（模型可见即有记录）。
+2. **扇出。** `spawn_child(#{prompt, type})` 经宿主使用的同一条
+   child-turn 接缝起一个子代理 turn；`eval_child(handle, timeout_ms)`
+   等待并返回 `#{status, final_text, steps}`。子代理运行*会话的* loop
+   ——同一个脚本——所以有：
+3. **角色切换。** `if spawn_depth() > 0 { llm_request(); return; }` 让
+   子代理成为评估者：对它的任务跑一轮即止。没有这个分支，搜索型脚本
+   会在自己的子代理里继续搜索（它们的 spawn 在 v1 单层上限下也会被
+   拒绝）。
+4. **回溯。** frontier 是纯脚本状态——评分后的子节点连同父节点，每轮
+   按 best-first 剪到 `beam`。转录无需回退；搜索叙事本身就是日志。
+
+搜索旋钮（`width`/`depth`/`beam`）走 `lats-policy` 策略种类：内置层
+发布缺省，`loop_policy_int("width", 3)` 以脚本的编译兜底读解析值，用户
+mod 的 `register_policy("lats-policy", …)` 即可调参运行中的会话——数据
+而非代码，经 `/mods list` 的已解析策略节自证。
 
 ## mod.toml 字段
 

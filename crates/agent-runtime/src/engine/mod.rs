@@ -1718,6 +1718,7 @@ impl Engine {
             }),
             mode,
             max_subagents: self.config.max_subagents,
+            max_spawn_depth: self.config.max_spawn_depth,
             plan_mode_state: Some(self.config.plan_mode_state.clone()),
             progressive_disclosure: tool_catalog_for_event.as_deref().is_some_and(|catalog| {
                 progressive_disclosure_active(catalog, self.config.progressive_disclosure)

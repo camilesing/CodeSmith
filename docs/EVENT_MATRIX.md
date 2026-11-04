@@ -30,7 +30,7 @@ vocabularies are not covered.
 | `ProviderRequestError` | Waterfall (can_deny: true) | `agent-runtime/engine/turn/stream.rs` | — |
 | `ResultVerified` | Emit | `agent-runtime/engine/mod.rs` | — |
 | `SessionBeforeCompact` | Serial | `agent-runtime/engine/host_executor.rs` | — |
-| `SessionBeforeFork` | Serial | `cli/core/engine/runtime_traits.rs`, `cli/tools/subagent/mod.rs` ×2 | — |
+| `SessionBeforeFork` | Serial | `agent-runtime/engine/rhai_executor.rs`, `cli/core/engine/runtime_traits.rs`, `cli/tools/subagent/mod.rs` ×2 | — |
 | `SessionBeforeSwitch` | Serial | `cli/interactive/commands/dir_cmds.rs` | — |
 | `SessionCompact` | Emit | `agent-runtime/engine/host_executor.rs` | — |
 | `SessionShutdown` | Emit | `agent-runtime/engine/mod.rs` | — |

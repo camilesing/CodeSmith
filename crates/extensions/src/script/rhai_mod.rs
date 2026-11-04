@@ -2023,6 +2023,24 @@ mod tests {
         );
     }
 
+    /// The LATS example is a LOOP exemplar: its rot guard is the load
+    /// (compile + register_loop) — the driving surface is covered by the
+    /// engine's fan-out equivalence tests (`rhai_executor` tests).
+    #[test]
+    fn example_lats_compiles_and_declares_the_loop() {
+        let source = include_str!("../../../../examples/mods/lats/mod.rhai");
+        let m = RhaiMod::load_source(
+            "lats",
+            "LATS Tree Search",
+            "0.1.0",
+            source.to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load lats example");
+        assert_eq!(m.loop_entry(), Some("main"));
+    }
+
     // === on_event (DSH-aligned Emit/Serial registration) ====================
 
     /// An Emit-kind on_event callback runs at dispatch: the hook records
@@ -3695,6 +3713,7 @@ mod tests {
                     "knowledge-on-demand",
                     "builtin-knowledge-on-demand".to_string()
                 ),
+                ("lats-policy", "builtin-lats-policy".to_string()),
             ]
         );
         assert_eq!(
@@ -3707,7 +3726,7 @@ mod tests {
         // Unload pol-a: snapshot falls back per kind, survivors stay.
         let outcome = rt.block_on(runner.unload_retained_mod("pol-a"));
         assert!(outcome.evicted, "{outcome:?}");
-        assert_eq!(outcome.replayed, 7, "{outcome:?}"); // 6 builtins + pol-b
+        assert_eq!(outcome.replayed, 8, "{outcome:?}"); // 7 builtins + pol-b
         assert!(outcome.errors.is_empty(), "{outcome:?}");
         // Survivor's override still effective (not fallen back to builtin).
         assert_eq!(
@@ -3804,5 +3823,13 @@ mod tests {
             kod["enabled_types"],
             serde_json::json!(["user", "feedback", "project", "reference"])
         );
+        let lats = defaults
+            .iter()
+            .find(|(k, _)| *k == codesmith_agent::policy::PolicyKind::LatsPolicy)
+            .map(|(_, v)| v.clone())
+            .expect("builtin lats-policy present");
+        assert_eq!(lats["width"], serde_json::json!(3));
+        assert_eq!(lats["depth"], serde_json::json!(2));
+        assert_eq!(lats["beam"], serde_json::json!(2));
     }
 }

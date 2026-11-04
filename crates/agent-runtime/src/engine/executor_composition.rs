@@ -188,6 +188,10 @@ pub(crate) struct TurnDeps {
     // --- turn-shape config ---------------------------------------------------
     pub mode: AppMode,
     pub max_subagents: usize,
+    /// Sub-agent recursion ceiling (`[runtime] max_spawn_depth`) — the
+    /// loop surface's `spawn_child` enforces it loudly. `0` in a child's
+    /// own bundle: script-side fan-out is one level in v1.
+    pub max_spawn_depth: u32,
     pub plan_mode_state: Option<SharedPlanModeState>,
     pub progressive_disclosure: bool,
     pub stream_idle_timeout: Option<Duration>,

@@ -46,6 +46,14 @@
 //!   the builtin loop (algorithm is core by declared contract).
 //! - Plan-mode reminders and the thinking-only status tail are builtin
 //!   behaviors a script loop does not inherit.
+//! - **Sub-agent fan-out is one level in v1** (`spawn_child`): children
+//!   run the session's loop like any child turn, but a child's own
+//!   `spawn_child` calls are rejected loudly (its bundle carries
+//!   `max_spawn_depth: 0`) — grandchildren need a real delegation-policy
+//!   assembly (the CLI spawn path's per-type narrowing), which this seam
+//!   does not rebuild. Script-spawned children inherit the parent's tool
+//!   surface (optionally narrowed by `allowed_tools`), a fixed evaluator
+//!   system prompt, and the parent's `SessionBeforeFork` veto.
 //! - The assembly glue this file carries (request assembly, event
 //!   prologue/epilogue) mirrors `run_inner` rather than sharing it;
 //!   extracting a shared `llm_step` is a future cleanup if the two loops
@@ -57,13 +65,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use codesmith_agent::callback::StopReason;
 use codesmith_agent::executor::AgentExecutor;
 use codesmith_agent::memory::ChatHistory;
-use codesmith_agent::models::{ContentBlock, Message, SystemPrompt, Usage};
+use codesmith_agent::models::{ContentBlock, Message, SystemPrompt, Tool as ModelTool, Usage};
 use codesmith_agent::tools::ToolSet;
 
+use super::child_turn::{ChildToolSurface, ChildTurnOutcome, ChildTurnSpec, run_child_turn};
 use super::executor_composition::{
     BuiltTurn, TurnDeps, TurnExecutorFactory, TurnHarvest, build_host_executor,
 };
@@ -71,6 +81,9 @@ use super::host_executor::HostAgentExecutor;
 use super::loop_guard::LoopGuard;
 use super::turn::stream::EarlyToolTask;
 use crate::error_taxonomy::ErrorEnvelope;
+use crate::host_services::SubAgentApi;
+use crate::subagent::SubAgentType;
+use crate::tool_dispatch::ToolDispatcher;
 
 /// The registry id of the script-driven loop factory.
 pub const RHAI_TURN_EXECUTOR_ID: &str = "rhai";
@@ -97,13 +110,30 @@ impl Default for RhaiLoopSettings {
 /// One capability call from the script thread, with its private reply
 /// channel (std unbounded: `send` never blocks the async side).
 enum LoopCall {
-    Llm,
+    Llm {
+        /// A script-authored steer for this round: pushed as a user
+        /// message ahead of the request (model-visible ⇒ persisted).
+        prompt: Option<String>,
+    },
     RunTools {
         calls: Vec<(String, String, serde_json::Value)>,
     },
     Cancelled,
     Note {
         text: String,
+    },
+    Spawn {
+        prompt: String,
+        agent_type: String,
+        allowed_tools: Option<Vec<String>>,
+    },
+    Eval {
+        handle: u64,
+        timeout_ms: u64,
+    },
+    Policy {
+        field: String,
+        default: i64,
     },
 }
 
@@ -113,7 +143,60 @@ enum LoopReply {
     Tools(ToolsRound),
     Cancelled(bool),
     Noted,
+    Spawn(u64),
+    Eval(ChildEval),
+    PolicyInt(i64),
     Err(String),
+}
+
+/// A finished (or timed-out) child as the script sees it
+/// (`eval_child`'s return map).
+#[derive(Clone)]
+struct ChildEval {
+    status: String,
+    final_text: Option<String>,
+    steps: u32,
+}
+
+/// The system prompt script-spawned children run with. v1 is a fixed
+/// evaluator prompt — the per-type template assembly lives in the CLI
+/// spawn path and is deliberately not rebuilt on this seam.
+const SCRIPT_CHILD_SYSTEM: &str = "You are a sub-agent spawned by a loop script. \
+     Complete the assignment directly and reply with your final answer.";
+
+/// Cap one script-authored round prompt (fail loud — a runaway build of a
+/// scoring prompt must not silently flood the transcript).
+const MAX_SCRIPT_PROMPT_CHARS: usize = 64 * 1024;
+
+/// Cap per-field reads on the loop-tier policy (`loop_policy_int`).
+const LOOP_POLICY_INT_MAX: i64 = 255;
+
+/// The spawn-side pieces of [`TurnDeps`] the executor keeps to build
+/// [`ChildTurnSpec`]s for `spawn_child` (extracted before the factory
+/// hands the rest to [`build_host_executor`]).
+struct LoopSpawnDeps {
+    /// This turn's spawn depth (0 = the main turn).
+    depth: u32,
+    executor_id: String,
+    client: codesmith_agent::llm_client::LlmClientHandle,
+    model: String,
+    reasoning_effort: Option<String>,
+    max_tokens: u32,
+    max_steps: u32,
+    tools: Arc<ToolSet>,
+    dispatcher: Option<Arc<dyn ToolDispatcher>>,
+    catalog: Option<Arc<Vec<ModelTool>>>,
+    cancel: CancellationToken,
+    tx_event: Option<mpsc::Sender<crate::events::Event>>,
+    subagents: Arc<dyn SubAgentApi>,
+    extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+    stream_idle_timeout: Option<Duration>,
+    stream_idle_retry_increment: Duration,
+    /// Live-children ceiling (`[runtime]` `max_subagents`): enforced
+    /// against this turn's own outstanding handles.
+    max_children: usize,
+    /// Recursion ceiling (`[runtime] max_spawn_depth`).
+    max_spawn_depth: u32,
 }
 
 /// The llm round as the script sees it (`llm_request()`'s return map).
@@ -182,12 +265,38 @@ impl TurnExecutorFactory for RhaiTurnExecutorFactory {
             .loop_entry()
             .expect("loop mod without an entry")
             .to_string();
+        // Extract the spawn-side pieces before `deps` is consumed — the
+        // child-turn seam (run_child_turn) needs them for `spawn_child`.
+        let spawn = LoopSpawnDeps {
+            depth: match &deps.shape {
+                super::executor_composition::TurnShape::Main => 0,
+                super::executor_composition::TurnShape::Child { depth, .. } => *depth,
+            },
+            executor_id: RHAI_TURN_EXECUTOR_ID.to_string(),
+            client: deps.client.clone(),
+            model: deps.request_model.clone().unwrap_or_default(),
+            reasoning_effort: deps.reasoning_effort.clone(),
+            max_tokens: deps.executor_config.max_tokens,
+            max_steps: deps.executor_config.max_steps,
+            tools: Arc::clone(&deps.tools),
+            dispatcher: deps.tool_dispatcher.clone(),
+            catalog: deps.request_catalog.clone(),
+            cancel: deps.cancel_token.clone(),
+            tx_event: deps.tx_event.clone(),
+            subagents: Arc::clone(&deps.subagents),
+            extension: deps.extension_runner.clone(),
+            stream_idle_timeout: deps.stream_idle_timeout,
+            stream_idle_retry_increment: deps.stream_idle_retry_increment,
+            max_children: deps.max_subagents,
+            max_spawn_depth: deps.max_spawn_depth,
+        };
         let host = build_host_executor(deps);
         let executor = Arc::new(RhaiTurnExecutor {
             host: Arc::clone(&host),
             rhai_mod,
             entry,
             settings,
+            spawn,
         });
         // The wrapped host IS the harvest — every take_* reads the same
         // accumulators its step services wrote.
@@ -204,6 +313,7 @@ pub struct RhaiTurnExecutor {
     rhai_mod: Arc<codesmith_extensions::script::RhaiMod>,
     entry: String,
     settings: RhaiLoopSettings,
+    spawn: LoopSpawnDeps,
 }
 
 /// Turn-level counters the epilogue reports (`turn-end` payload parity
@@ -366,6 +476,12 @@ impl RhaiTurnExecutor {
         let mut stream_retry_attempts: u32 = 0;
         let mut context_recovery_attempts: u8 = 0;
 
+        // Live children this turn's script spawned (spawn_child handles):
+        // joined by eval_child, aborted on eval timeout, cancelled with
+        // the turn (each child token is a child of the turn's).
+        let mut children: HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>> = HashMap::new();
+        let mut next_handle: u64 = 0;
+
         let script = self.spawn_script_thread(tx, Arc::clone(&aborted));
 
         let budget = Duration::from_secs(self.settings.timeout_secs.max(1));
@@ -416,6 +532,8 @@ impl RhaiTurnExecutor {
                                 stats,
                                 &mut stream_retry_attempts,
                                 &mut context_recovery_attempts,
+                                &mut children,
+                                &mut next_handle,
                             )
                             .await;
                         if let Some(stop) = answered {
@@ -448,10 +566,34 @@ impl RhaiTurnExecutor {
         stats: &mut LoopStats,
         stream_retry_attempts: &mut u32,
         context_recovery_attempts: &mut u8,
+        children: &mut HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>>,
+        next_handle: &mut u64,
     ) -> Option<StopReason> {
         match call {
-            LoopCall::Llm => {
+            LoopCall::Llm { prompt } => {
                 stats.steps += 1;
+                // A script-authored round prompt is a steer: persisted as
+                // a user message ahead of the request (model-visible ⇒
+                // logged), so purpose-distinguished rounds (expand /
+                // score / answer) stay reconstructable from the log.
+                if let Some(prompt) = prompt {
+                    if prompt.chars().count() > MAX_SCRIPT_PROMPT_CHARS {
+                        let _ = reply.send(LoopReply::Err(format!(
+                            "llm_request(): prompt exceeds {} chars",
+                            MAX_SCRIPT_PROMPT_CHARS
+                        )));
+                        return None;
+                    }
+                    if !prompt.trim().is_empty() {
+                        history.push(Message {
+                            role: "user".to_string(),
+                            content: vec![ContentBlock::Text {
+                                text: prompt,
+                                cache_control: None,
+                            }],
+                        });
+                    }
+                }
                 // Top-of-step steer drain (run_inner's loop-top behavior):
                 // queued user steers land in the transcript before this
                 // round's request snapshot.
@@ -506,6 +648,210 @@ impl RhaiTurnExecutor {
                 self.host.emit_status(text).await;
                 let _ = reply.send(LoopReply::Noted);
                 None
+            }
+            LoopCall::Spawn {
+                prompt,
+                agent_type,
+                allowed_tools,
+            } => match self
+                .spawn_child(
+                    prompt,
+                    &agent_type,
+                    allowed_tools,
+                    extension,
+                    children,
+                    next_handle,
+                )
+                .await
+            {
+                Ok(handle) => {
+                    let _ = reply.send(LoopReply::Spawn(handle));
+                    None
+                }
+                Err(e) => {
+                    let _ = reply.send(LoopReply::Err(e.to_string()));
+                    None
+                }
+            },
+            LoopCall::Eval { handle, timeout_ms } => {
+                match self.eval_child(handle, timeout_ms, children).await {
+                    Ok(eval) => {
+                        let _ = reply.send(LoopReply::Eval(eval));
+                        None
+                    }
+                    Err(e) => {
+                        let _ = reply.send(LoopReply::Err(e.to_string()));
+                        None
+                    }
+                }
+            }
+            LoopCall::Policy { field, default } => {
+                let value = codesmith_agent::policy::policy_usize(
+                    codesmith_agent::policy::PolicyKind::LatsPolicy,
+                    &field,
+                    default.unsigned_abs() as usize,
+                    LOOP_POLICY_INT_MAX.unsigned_abs() as usize,
+                ) as i64;
+                let _ = reply.send(LoopReply::PolicyInt(value));
+                None
+            }
+        }
+    }
+
+    /// Spawn one child turn (`spawn_child`): depth/count guards, the
+    /// `SessionBeforeFork` veto, then a [`ChildTurnSpec`] through the same
+    /// child-turn seam the CLI spawn path uses. Errors are loud — they
+    /// surface as Rhai errors in the script.
+    async fn spawn_child(
+        &self,
+        prompt: String,
+        agent_type: &str,
+        allowed_tools: Option<Vec<String>>,
+        extension: &Option<Arc<codesmith_extensions::ExtensionRunner>>,
+        children: &mut HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>>,
+        next_handle: &mut u64,
+    ) -> anyhow::Result<u64> {
+        let s = &self.spawn;
+        let depth = s.depth + 1;
+        if depth > s.max_spawn_depth {
+            anyhow::bail!(
+                "spawn_child rejected: depth {depth} would exceed [runtime] max_spawn_depth {}",
+                s.max_spawn_depth
+            );
+        }
+        if children.len() >= s.max_children {
+            anyhow::bail!(
+                "spawn_child rejected: {} live children already at the max_subagents ceiling",
+                children.len()
+            );
+        }
+        let Some(agent_type) = SubAgentType::from_str(agent_type) else {
+            anyhow::bail!("spawn_child rejected: unknown agent type '{agent_type}'");
+        };
+        // The fork veto fires exactly as it does on the CLI spawn path —
+        // a serial emit; `Cancel` refuses the fork.
+        if let Some(runner) = extension {
+            let out = runner
+                .emit_scoped(
+                    self.host.dispatch_scope().clone(),
+                    codesmith_agent::extension::ExtensionEvent::SessionBeforeFork,
+                )
+                .await;
+            if let codesmith_agent::extension::HandlerOutcome::Cancel { reason } = out.outcome {
+                anyhow::bail!("spawn_child vetoed (SessionBeforeFork): {reason}");
+            }
+        }
+        // Tool surface: the parent's, narrowed by `allowed_tools` when the
+        // script names a subset (unknown names fail loud). Execution flows
+        // through the ToolSet, so narrowing it narrows what the child can
+        // actually run; the dispatcher stays the parent's (metadata,
+        // approval classification — the delegation surface).
+        let dispatcher = s.dispatcher.clone().ok_or_else(|| {
+            anyhow::anyhow!("spawn_child unavailable: this turn has no tool dispatcher")
+        })?;
+        let (tool_set, catalog) = match &allowed_tools {
+            None => (
+                Arc::clone(&s.tools),
+                s.catalog
+                    .as_ref()
+                    .map(|c| c.as_ref().clone())
+                    .unwrap_or_default(),
+            ),
+            Some(names) => {
+                let mut narrowed = ToolSet::new();
+                for name in names {
+                    let Some(tool) = s.tools.get(name) else {
+                        anyhow::bail!(
+                            "spawn_child rejected: allowed_tools names unknown tool '{name}'"
+                        );
+                    };
+                    narrowed.register(Arc::clone(tool));
+                }
+                let catalog = s
+                    .catalog
+                    .as_ref()
+                    .map(|c| {
+                        c.iter()
+                            .filter(|t| names.iter().any(|n| n == &t.name))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (Arc::new(narrowed), catalog)
+            }
+        };
+        // Follow-up input is not offered in v1: a closed channel means
+        // "no agent_send_input" to the child's loop.
+        let (_input_tx, input_rx) = mpsc::channel::<String>(1);
+        let spec = ChildTurnSpec {
+            agent_id: format!("script-child-{}", uuid::Uuid::new_v4()),
+            agent_type,
+            depth,
+            parent: None,
+            executor_id: s.executor_id.clone(),
+            client: s.client.clone(),
+            model: s.model.clone(),
+            reasoning_effort: s.reasoning_effort.clone(),
+            max_tokens: s.max_tokens,
+            max_steps: s.max_steps,
+            system: SystemPrompt::Text(SCRIPT_CHILD_SYSTEM.to_string()),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: prompt,
+                    cache_control: None,
+                }],
+            }],
+            tools: ChildToolSurface {
+                tool_set,
+                dispatcher,
+                catalog,
+            },
+            input: input_rx,
+            cancel: s.cancel.child_token(),
+            events: super::child_turn::ChildEventSink {
+                event_tx: s.tx_event.clone(),
+                mailbox: None,
+            },
+            stream_idle_timeout: s.stream_idle_timeout,
+            stream_idle_retry_increment: s.stream_idle_retry_increment,
+            extension_runner: s.extension.clone(),
+            subagents: Arc::clone(&s.subagents),
+        };
+        let handle = *next_handle;
+        *next_handle += 1;
+        children.insert(handle, tokio::spawn(run_child_turn(spec)));
+        Ok(handle)
+    }
+
+    /// Await one spawned child (`eval_child`). A timeout aborts the child
+    /// task (dropping its lease) and errors loudly — an abandoned branch
+    /// must not linger as a live child.
+    async fn eval_child(
+        &self,
+        handle: u64,
+        timeout_ms: u64,
+        children: &mut HashMap<u64, tokio::task::JoinHandle<ChildTurnOutcome>>,
+    ) -> anyhow::Result<ChildEval> {
+        let Some(mut task) = children.remove(&handle) else {
+            anyhow::bail!("eval_child rejected: unknown handle {handle}");
+        };
+        let timeout = Duration::from_millis(timeout_ms.max(1));
+        match tokio::time::timeout(timeout, &mut task).await {
+            Ok(Ok(outcome)) => Ok(ChildEval {
+                status: match outcome.status {
+                    super::child_turn::ChildTurnStatus::Completed => "completed",
+                    super::child_turn::ChildTurnStatus::Cancelled => "cancelled",
+                    super::child_turn::ChildTurnStatus::Failed(_) => "failed",
+                }
+                .to_string(),
+                final_text: outcome.final_text,
+                steps: outcome.steps,
+            }),
+            Ok(Err(join_err)) => anyhow::bail!("eval_child: child task failed: {join_err}"),
+            Err(_) => {
+                task.abort();
+                anyhow::bail!("eval_child: timed out after {timeout_ms}ms; child aborted");
             }
         }
     }
@@ -745,6 +1091,7 @@ impl RhaiTurnExecutor {
         let entry = self.entry.clone();
         let cancel = self.host.host_cancel_token();
         let timeout = self.settings.timeout_secs;
+        let self_spawn_depth = self.spawn.depth;
         std::thread::Builder::new()
             .name("rhai-loop".into())
             .spawn(move || {
@@ -860,7 +1207,23 @@ impl RhaiTurnExecutor {
 
                     let call = make_call();
                     engine.register_fn("llm_request", move || -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
-                        match call(LoopCall::Llm)? {
+                        match call(LoopCall::Llm { prompt: None })? {
+                            LoopReply::Llm(round) => Ok(map_round(&round)),
+                            LoopReply::Err(e) => Err(llm_error(e)),
+                            _ => Err(llm_error("llm_request(): unexpected reply".into())),
+                        }
+                    });
+                    let call = make_call();
+                    engine.register_fn("llm_request", move |spec: rhai::Map| -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+                        let prompt = match spec.get("prompt") {
+                            Some(d) => d.clone().try_cast::<String>().ok_or_else(|| {
+                                llm_error("llm_request(): `prompt` must be a string".into())
+                            })?,
+                            None => return Err(llm_error(
+                                "llm_request(map): only `prompt` is recognized — pass #{prompt: \"…\"}".into(),
+                            )),
+                        };
+                        match call(LoopCall::Llm { prompt: Some(prompt) })? {
                             LoopReply::Llm(round) => Ok(map_round(&round)),
                             LoopReply::Err(e) => Err(llm_error(e)),
                             _ => Err(llm_error("llm_request(): unexpected reply".into())),
@@ -907,6 +1270,76 @@ impl RhaiTurnExecutor {
                         let _ = call(LoopCall::Note {
                             text: text.to_string(),
                         });
+                    });
+
+                    // --- capability v2: sub-agent fan-out + loop policy ----
+                    let call = make_call();
+                    engine.register_fn("spawn_child", move |spec: rhai::Map| -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+                        let prompt = spec.get("prompt").and_then(|d| d.clone().try_cast::<String>())
+                            .ok_or_else(|| llm_error("spawn_child(): needs a string `prompt`".into()))?;
+                        let agent_type = spec.get("type").and_then(|d| d.clone().try_cast::<String>())
+                            .unwrap_or_else(|| "general".to_string());
+                        let allowed_tools = match spec.get("allowed_tools") {
+                            None => None,
+                            Some(d) => {
+                                let items = d.clone().try_cast::<rhai::Array>()
+                                    .ok_or_else(|| llm_error("spawn_child(): `allowed_tools` must be an array of strings".into()))?;
+                                let mut names = Vec::with_capacity(items.len());
+                                for item in items {
+                                    names.push(item.try_cast::<String>().ok_or_else(|| {
+                                        llm_error("spawn_child(): `allowed_tools` entries must be strings".into())
+                                    })?);
+                                }
+                                Some(names)
+                            }
+                        };
+                        match call(LoopCall::Spawn { prompt, agent_type, allowed_tools })? {
+                            LoopReply::Spawn(handle) => Ok(rhai::Dynamic::from(handle as i64)),
+                            LoopReply::Err(e) => Err(llm_error(e)),
+                            _ => Err(llm_error("spawn_child(): unexpected reply".into())),
+                        }
+                    });
+                    let call = make_call();
+                    engine.register_fn("eval_child", move |handle: rhai::INT, timeout_ms: rhai::INT| -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+                        if handle < 0 {
+                            return Err(llm_error("eval_child(): handle must be non-negative".into()));
+                        }
+                        if timeout_ms <= 0 {
+                            return Err(llm_error("eval_child(): timeout_ms must be positive".into()));
+                        }
+                        match call(LoopCall::Eval {
+                            handle: handle as u64,
+                            timeout_ms: timeout_ms as u64,
+                        })? {
+                            LoopReply::Eval(eval) => {
+                                let mut m = rhai::Map::new();
+                                m.insert("status".into(), rhai::Dynamic::from(eval.status.clone()));
+                                m.insert(
+                                    "final_text".into(),
+                                    eval.final_text.clone().map(rhai::Dynamic::from).unwrap_or(rhai::Dynamic::UNIT),
+                                );
+                                m.insert("steps".into(), rhai::Dynamic::from(i64::from(eval.steps)));
+                                Ok(rhai::Dynamic::from(m))
+                            }
+                            LoopReply::Err(e) => Err(llm_error(e)),
+                            _ => Err(llm_error("eval_child(): unexpected reply".into())),
+                        }
+                    });
+                    // Static per-turn fact: no channel round-trip needed.
+                    let depth = self_spawn_depth;
+                    engine.register_fn("spawn_depth", move || -> rhai::INT {
+                        i64::from(depth)
+                    });
+                    let call = make_call();
+                    engine.register_fn("loop_policy_int", move |field: &str, default: rhai::INT| -> Result<rhai::INT, Box<rhai::EvalAltResult>> {
+                        match call(LoopCall::Policy {
+                            field: field.to_string(),
+                            default,
+                        })? {
+                            LoopReply::PolicyInt(v) => Ok(v),
+                            LoopReply::Err(e) => Err(llm_error(e)),
+                            _ => Err(llm_error("loop_policy_int(): unexpected reply".into())),
+                        }
                     });
                 });
 
@@ -1132,6 +1565,7 @@ mod tests {
             rhai_mod: Arc::new(rhai_mod),
             entry,
             settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(Arc::new(RoutedMockLlm::new(Vec::new())), None, 3),
         };
 
         let mut history = VecChatHistory::new();
@@ -1154,5 +1588,337 @@ mod tests {
             executor.host.take_usage().output_tokens > 0,
             "usage harvested from the wrapped host"
         );
+    }
+
+    // === capability v2: sub-agent fan-out + loop policy ======================
+
+    struct NoSubAgents;
+
+    #[async_trait::async_trait]
+    impl crate::host_services::SubAgentApi for NoSubAgents {
+        async fn running_count(&self) -> usize {
+            0
+        }
+        async fn list(&self) -> Vec<crate::subagent::SubAgentResult> {
+            Vec::new()
+        }
+        async fn cleanup(&self, _max_age: Duration) {}
+        async fn live_running_snapshots(&self) -> Vec<crate::subagent::SubAgentResult> {
+            Vec::new()
+        }
+    }
+
+    fn test_dispatcher() -> Arc<dyn ToolDispatcher> {
+        let registry =
+            crate::tools::registry::ToolRegistry::new(crate::tools::spec::ToolContext::new(
+                std::path::PathBuf::from("/tmp/codesmith-rhai-loop-test"),
+            ));
+        Arc::new(registry)
+    }
+
+    fn test_spawn_deps(
+        client: codesmith_agent::llm_client::LlmClientHandle,
+        extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+        max_spawn_depth: u32,
+    ) -> LoopSpawnDeps {
+        LoopSpawnDeps {
+            depth: 0,
+            executor_id: RHAI_TURN_EXECUTOR_ID.to_string(),
+            client,
+            model: String::new(),
+            reasoning_effort: None,
+            max_tokens: 4096,
+            max_steps: 8,
+            tools: Arc::new(ToolSet::new()),
+            dispatcher: Some(test_dispatcher()),
+            catalog: None,
+            cancel: CancellationToken::new(),
+            tx_event: None,
+            subagents: Arc::new(NoSubAgents),
+            extension,
+            stream_idle_timeout: None,
+            stream_idle_retry_increment: Duration::ZERO,
+            max_children: 4,
+            max_spawn_depth,
+        }
+    }
+
+    /// Routes mock rounds by needle-in-last-user-message — the parent and
+    /// its concurrently-running children share one client handle, so
+    /// pop-order mocks would be nondeterministic; content routing is not.
+    struct RoutedMockLlm {
+        routes: Vec<(&'static str, &'static str)>,
+    }
+
+    impl RoutedMockLlm {
+        fn new(routes: Vec<(&'static str, &'static str)>) -> Self {
+            Self { routes }
+        }
+    }
+
+    impl LlmClient for RoutedMockLlm {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+        fn model(&self) -> &str {
+            "mock-v0"
+        }
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = anyhow::Result<codesmith_agent::models::MessageResponse>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { anyhow::bail!("mock does not implement create_message") })
+        }
+        fn create_message_stream(
+            &self,
+            request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<StreamEventBox>> + Send + '_>> {
+            let needle = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user")
+                .and_then(|m| {
+                    m.content.iter().find_map(|b| match b {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or("");
+            let reply = self
+                .routes
+                .iter()
+                .find(|(n, _)| needle.contains(n))
+                .map(|(_, r)| (*r).to_string())
+                .unwrap_or_else(|| "no route".to_string());
+            let mut events = text_block(0, &reply);
+            events.extend(finish("end_turn"));
+            Box::pin(async move {
+                Ok(
+                    Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
+                        as StreamEventBox,
+                )
+            })
+        }
+    }
+
+    /// A bound runner hosting one loop mod — children resolve the same
+    /// entry through it (the rhai factory requires a runner).
+    async fn runner_with(source: &str) -> Arc<codesmith_extensions::ExtensionRunner> {
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "test-loop-mod",
+            "Test Loop",
+            "0.1.0",
+            format!("register_loop(\"main\");\n{source}"),
+            codesmith_extensions::script::kv::ModKvStore::ephemeral(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("loop mod compiles");
+        let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+        runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
+            std::path::PathBuf::from("/tmp/codesmith-rhai-loop-test"),
+            codesmith_agent::extension::ExtensionMode::Interactive,
+            Arc::new(std::sync::Mutex::new(true)),
+            Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+        // bind_mod flushes resolved policies into the ambient process
+        // store — serialize the whole transition with the ambient policy
+        // tests (the shared crate lock) so a concurrent publish→assert
+        // window can't be wiped by this flush. The bind runs on the
+        // blocking pool so the std guard is never held across an await.
+        let bind_runner = Arc::clone(&runner);
+        let bind = tokio::task::spawn_blocking(move || {
+            let handle = tokio::runtime::Handle::current();
+            let _guard = crate::policy_test_lock();
+            handle.block_on(bind_runner.bind_mod(std::sync::Arc::new(rhai_mod)))
+        });
+        bind.await.expect("bind task runs").expect("bind loop mod");
+        runner
+    }
+
+    fn scripted_executor(
+        source: &str,
+        routes: Vec<(&'static str, &'static str)>,
+        extension: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+        max_spawn_depth: u32,
+    ) -> RhaiTurnExecutor {
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "test-loop-mod",
+            "Test Loop",
+            "0.1.0",
+            format!("register_loop(\"main\");\n{source}"),
+            codesmith_extensions::script::kv::ModKvStore::ephemeral(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("loop mod compiles");
+        let entry = rhai_mod.loop_entry().expect("declares a loop").to_string();
+        let client: codesmith_agent::llm_client::LlmClientHandle =
+            Arc::new(RoutedMockLlm::new(routes));
+        let host = Arc::new(HostAgentExecutor::new(
+            client.clone(),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+        RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry,
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(client, extension, max_spawn_depth),
+        }
+    }
+
+    /// Best-first over a two-leaf fan-out: both children run the same
+    /// script (evaluator branch at depth > 0), the parent picks the higher
+    /// embedded score and spends its final round on the winner — the
+    /// deterministic shallow tree the LATS example generalizes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn script_fan_out_evals_children_and_picks_best_branch() {
+        let source = r#"
+            fn text_of(t) { "" + t }
+            fn main() {
+                if spawn_depth() > 0 {
+                    // Evaluator child: one round against the assignment.
+                    llm_request();
+                    return;
+                }
+                let a = spawn_child(#{prompt: "BRANCH alpha: assess", type: "general"});
+                let b = spawn_child(#{prompt: "BRANCH beta: assess", type: "general"});
+                let ra = eval_child(a, 60000);
+                let rb = eval_child(b, 60000);
+                // Best-first pick: the higher embedded score wins the round.
+                let pick = if text_of(rb.final_text) >= text_of(ra.final_text) { "beta" } else { "alpha" };
+                llm_request(#{prompt: "final answer for " + pick});
+            }
+        "#;
+        let runner = runner_with(source).await;
+        let executor = scripted_executor(
+            source,
+            vec![
+                ("BRANCH alpha", "score 40"),
+                ("BRANCH beta", "score 90"),
+                ("final answer", "chosen"),
+            ],
+            Some(runner),
+            3,
+        );
+
+        let mut history = VecChatHistory::new();
+        let reason = executor
+            .run(&mut history, "pick the best branch".to_string())
+            .await
+            .expect("the scripted turn runs");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let messages = history.messages();
+        let final_prompt = messages
+            .iter()
+            .rev()
+            .find_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    ContentBlock::Text { text, .. } if m.role == "user" => Some(text.clone()),
+                    _ => None,
+                })
+            })
+            .expect("a final round prompt");
+        assert_eq!(
+            final_prompt, "final answer for beta",
+            "the higher-scoring child wins the final round"
+        );
+        let last_text = messages
+            .iter()
+            .rev()
+            .find_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    ContentBlock::Text { text, .. } if m.role == "assistant" => Some(text.clone()),
+                    _ => None,
+                })
+            })
+            .expect("a final assistant text");
+        assert_eq!(last_text, "chosen");
+    }
+
+    /// The depth ceiling is loud: `spawn_child` past
+    /// `[runtime] max_spawn_depth` errors the script, which fails the turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn script_spawn_past_max_depth_fails_loud() {
+        let source = r#"
+            fn main() {
+                spawn_child(#{prompt: "too deep", type: "general"});
+            }
+        "#;
+        let executor = scripted_executor(source, vec![], None, 0);
+
+        let mut history = VecChatHistory::new();
+        let err = executor
+            .run(&mut history, "try to fan out".to_string())
+            .await
+            .expect_err("the depth ceiling must fail the turn");
+        assert!(
+            err.to_string().contains("max_spawn_depth"),
+            "error names the ceiling: {err}"
+        );
+    }
+
+    /// `loop_policy_int` reads the `lats-policy` kind with the script's
+    /// compiled fallback, and a published override wins (last-wins store).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loop_policy_int_reads_lats_policy_with_fallback() {
+        let source = r#"
+            fn main() {
+                let w = loop_policy_int("width", 7);
+                llm_request(#{prompt: "width is " + w});
+            }
+        "#;
+        // No registration in this private store → the compiled fallback.
+        let empty = codesmith_agent::policy::PolicyStore::new();
+        let executor = scripted_executor(source, vec![("width is", "ok")], None, 3);
+        let mut history = VecChatHistory::new();
+        empty
+            .scope(executor.run(&mut history, "tune".to_string()))
+            .await
+            .expect("runs on the fallback");
+        assert!(history.messages().iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 7"))
+        }));
+
+        // A published override wins.
+        let store = codesmith_agent::policy::PolicyStore::new();
+        let mut set = std::collections::HashMap::new();
+        set.insert(
+            codesmith_agent::policy::PolicyKind::LatsPolicy,
+            serde_json::json!({"width": 9}),
+        );
+        store.publish(set);
+        let executor = scripted_executor(source, vec![("width is", "ok")], None, 3);
+        let mut history = VecChatHistory::new();
+        store
+            .scope(executor.run(&mut history, "tune".to_string()))
+            .await
+            .expect("runs on the override");
+        assert!(history.messages().iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 9"))
+        }));
     }
 }

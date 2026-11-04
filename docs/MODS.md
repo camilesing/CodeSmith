@@ -505,6 +505,8 @@ Per script call: 200,000 operations, 64 call levels, 8 MiB strings / 100k array 
 
 One Rhai semantic worth knowing before a handler silently fails open: **a named top-level `fn` cannot see top-level `const`s** (its call state is fresh each call), while event callbacks can (closures capture them). Pass everything a named fn needs as a parameter — `fn record(lesson, max)` called as `record(lesson, MAX_REFLECTIONS)`, never `fn record(lesson)` reading `MAX_REFLECTIONS` inside.
 
+A second, for dense loop scripts: **Rhai caps expression depth per body (default 32)** — a long doubly-nested block (a `for` inside a `for`, each statement a map-literal call) trips "Expression exceeds maximum complexity" at compile time. Hoist loop bodies into named functions (`fn search_round(frontier, …)`), which parse with a fresh budget.
+
 ## Example mods
 
 The repository ships two behavior-plugin exemplars under [`examples/mods/`](../examples/mods/) — copy either into `~/.codesmith/mods/` (or the workspace's `.codesmith/mods/`) and activate it with `/mods activate <id>`. Both are covered by load-and-behave tests in `crates/extensions`, so they cannot rot silently.
@@ -512,6 +514,7 @@ The repository ships two behavior-plugin exemplars under [`examples/mods/`](../e
 - **`reflexion`** — Shinn et al. (2023) as a mod: failing tool results and `result-verified` `verified-fail` verdicts accumulate into a reflection ledger (the mod's KV), the ledger rides the next attempt as one injected user message (the `before-agent-start` waterfall), and the first clean turn expires it. Main-turn only (`ctx.agent.main` guard).
 - **`voyager-capture`** — the capture half of Wang et al. (2023): a clean main-turn action sequence (≥ 3 successful action-class calls, zero failures) is distilled into a skill and stored in the mod's KV; every load re-registers the accumulated library via `register_skill`, so captured flows come back after `/mods reload`.
 - **`react-min`** — a LOOP exemplar: the builtin ReAct shape as a ~20-line script. Activate it, set `turn_executor = "rhai"`, and the turn runs the script instead of the compiled loop — same streaming, approval and event discipline, because every `llm_request()` / `run_tools()` call executes the host's step services. The engine's equivalence test drives it against a mock provider.
+- **`lats`** — a LOOP exemplar with **fan-out**: best-first tree search — `llm_request(#{prompt})` expansion and scoring, `spawn_child` candidate simulation, beam backtracking. Children run the session's loop too, so the script branches on `spawn_depth()` (searcher at 0, evaluator above). Knobs ride the `lats-policy` policy kind (`width`/`depth`/`beam`, read via `loop_policy_int`). See "Writing a loop script" for the tutorial.
 
 ## Writing a loop script
 
@@ -522,7 +525,12 @@ capability surface is a set of global functions the loop engine registers:
 | Call | Returns / does |
 |---|---|
 | `llm_request()` | `#{text, tool_uses: [#{id, name, input}], stop_reason, usage: #{input_tokens, output_tokens}, interrupted}` — one LLM round: request assembly (three-zone, prefix-cache-observed), the `before-provider-headers` / `before-provider-request` waterfalls, streaming with transparent retry, transcript persistence. Queued steers are drained into the transcript ahead of the request (the builtin loop's top-of-step behavior). |
+| `llm_request(#{prompt})` | Same round, but pushes `prompt` as a user message first (persisted — model-visible means logged). This is how a script distinguishes rounds by purpose — expand, score, answer — over one shared transcript. |
 | `run_tools(calls)` | `#{halt, plan_approved, errors}` — one tool batch through approval, sandbox, guards, the `tool-call` / `tool-result` waterfalls and result persistence. `halt != ()` means the loop guard tripped — stop the turn. |
+| `spawn_child(spec)` | `handle` (int) — spawn an in-process child turn from `#{prompt, type?, allowed_tools?}` through the same child-turn seam the CLI spawn path uses (`run_child_turn`: the session's loop runs in the child, `SessionBeforeFork` veto fires, the child inherits the parent's tool surface — narrowed when `allowed_tools` names a subset, unknown names fail loud). Ceilings error loudly: `[runtime] max_spawn_depth` (fan-out is **one level** in v1 — a child's own `spawn_child` is rejected) and `max_subagents` (live children per turn). |
+| `eval_child(handle, timeout_ms)` | `#{status, final_text, steps}` — await a spawned child (`status` is `completed`/`cancelled`/`failed`; `final_text` is `()` unless completed). A timeout aborts the child and errors — an abandoned branch must not linger. |
+| `spawn_depth()` | This turn's depth (`0` = the main turn) — the role switch for mods that both search and evaluate, since children run the same script. |
+| `loop_policy_int(field, default)` | Read one `lats-policy` knob (`width`/`depth`/`beam`) — last-wins policy resolution with the script's compiled `default` as fallback, so a user mod's `register_policy("lats-policy", …)` retunes a running loop without a recompile. |
 | `cancelled()` | `true` once the turn's cancel token fired — check it in long-running loops. |
 | `note(text)` | Records a script decision on the session log path (live presentation and the persisted record agree). |
 
@@ -533,6 +541,37 @@ error fails the turn. `[rhai_loop]` in `config.toml` pins the mod
 loop's compaction preflight, LSP flush, capacity gates or the `turn-stopping`
 steer seam — see the `rhai_executor` module's known limitations before
 porting a loop that needs them.
+
+### Tutorial: LATS — a searching loop
+
+[`examples/mods/lats`](../examples/mods/lats/) is best-first tree search
+(Zhou et al., 2023) as one loop script — the shape react-min lacks: the
+script *drives* what gets asked next instead of reacting to one stream.
+Four moves cover the whole pattern:
+
+1. **Purpose-distinguished rounds.** Every `llm_request(#{prompt})` call
+   appends its prompt to the transcript before the round, so expansion
+   ("propose W refinements"), scoring and the final answer are separate
+   model calls over one shared history — and every one of them is
+   persisted (model-visible means logged).
+2. **Fan-out.** `spawn_child(#{prompt, type})` starts a child turn
+   through the same child-turn seam the host uses; `eval_child(handle,
+   timeout_ms)` awaits it and returns `#{status, final_text, steps}`.
+   Children run the *session's* loop — the same script — so:
+3. **Role switch.** `if spawn_depth() > 0 { llm_request(); return; }`
+   makes the child an evaluator: one round against its assignment, then
+   done. Without this branch a searching script would search in its own
+   children (and their spawns are rejected at the one-level v1 ceiling
+   anyway).
+4. **Backtrack.** The frontier is plain script state — scored children
+   and their parents, pruned best-first to `beam` each round. Nothing in
+   the transcript needs unwinding; the search narrative *is* the log.
+
+Search knobs (`width`/`depth`/`beam`) ride the `lats-policy` policy
+kind: the builtin tier ships defaults, `loop_policy_int("width", 3)`
+reads the resolved value with the script's compiled fallback, and a user
+mod's `register_policy("lats-policy", …)` retunes a running session —
+data, not code, verified via `/mods list`'s resolved-policies section.
 
 ## mod.toml Fields
 
