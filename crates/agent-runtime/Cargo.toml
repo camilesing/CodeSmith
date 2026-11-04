@@ -18,6 +18,7 @@ clap.workspace = true
 codesmith-agent.workspace = true
 codesmith-config.workspace = true
 codesmith-extensions.workspace = true
+rhai.workspace = true
 codesmith-secrets.workspace = true
 codesmith-session.workspace = true
 codesmith-sandbox.workspace = true

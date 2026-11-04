@@ -1,0 +1,4 @@
+id = "react-min"
+name = "React Minimal"
+version = "0.1.0"
+description = "The builtin ReAct loop shape in ~20 lines of Rhai — the equivalence exemplar for turn_executor = \"rhai\"."

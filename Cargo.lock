@@ -809,6 +809,7 @@ dependencies = [
  "proc-macro2",
  "regex",
  "reqwest",
+ "rhai",
  "schemars",
  "serde",
  "serde_json",

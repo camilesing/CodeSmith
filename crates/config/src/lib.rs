@@ -486,6 +486,11 @@ pub struct ConfigToml {
     /// plus any factory a host registers on the turn-executor registry. An
     /// unknown id fails loud at startup. Defaults to `builtin`.
     pub turn_executor: Option<String>,
+    /// `[rhai_loop]` — settings for the script-driven executor
+    /// (`turn_executor = "rhai"`). The CLI parses `mod` / `timeout_secs`;
+    /// this shared crate preserves the table through config reads/writes.
+    #[serde(default)]
+    pub rhai_loop: Option<toml::Table>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,

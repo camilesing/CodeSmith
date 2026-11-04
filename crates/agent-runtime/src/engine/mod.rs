@@ -1736,6 +1736,7 @@ impl Engine {
             tool_durations: Some(Arc::clone(&self.tool_durations)),
             subagents: self.host.subagents(),
             session_id: Some(self.session.id.clone()),
+            rhai_loop: Some(self.config.rhai_loop.clone()),
         };
         let factory = match executor_composition::resolve_turn_executor(&self.config.turn_executor)
         {
@@ -4019,6 +4020,7 @@ mod loop_guard;
 mod lsp_hooks;
 mod plan_reminder;
 mod result_verifier;
+pub mod rhai_executor;
 mod shell_bridge;
 mod streaming;
 mod team_inbox;

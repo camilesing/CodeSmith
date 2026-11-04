@@ -334,6 +334,9 @@ pub struct EngineConfig {
     /// an unknown id fails loud at startup (host validation) and at turn
     /// assembly. Resolved from the `turn_executor` config key.
     pub turn_executor: String,
+    /// `[rhai_loop]` settings for the script-driven executor (read by the
+    /// `rhai` factory; defaults when absent).
+    pub rhai_loop: crate::engine::rhai_executor::RhaiLoopSettings,
     /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     #[allow(dead_code)] // Wired through ShellManager in follow-up PR
@@ -460,6 +463,7 @@ impl Default for EngineConfig {
             tools_always_load: HashSet::new(),
             progressive_disclosure: false,
             turn_executor: crate::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+            rhai_loop: Default::default(),
             prefer_bwrap: false,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             tools: None,

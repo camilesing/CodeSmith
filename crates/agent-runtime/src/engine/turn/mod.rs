@@ -35,7 +35,7 @@ mod approval;
 mod batches;
 mod postprocess;
 mod seams;
-mod stream;
+pub(crate) mod stream;
 mod truncation;
 mod user_input;
 

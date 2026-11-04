@@ -289,6 +289,10 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         tool_durations: None,
         subagents,
         session_id: None,
+        // A child turn runs the default `[rhai_loop]` settings (mod pin and
+        // budget): the child spec carries the executor id, not the settings
+        // — see the rhai_executor module's known limitations.
+        rhai_loop: None,
     };
     let built = factory.build(deps);
 

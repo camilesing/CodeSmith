@@ -1968,6 +1968,7 @@ pub(crate) fn headless_engine_config(
         // turn, skipping synthesized ones).
         idle_wake: false,
         turn_executor: config.turn_executor_id(),
+        rhai_loop: config.rhai_loop_settings(),
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         skills_dir: config.skills_dir(),

@@ -3277,6 +3277,99 @@ impl HostAgentExecutor {
     }
 }
 
+// === rhai-loop accessors ===================================================
+//
+// The minimal per-turn surface the script-driven loop's serve side
+// (`engine::rhai_executor`) needs from the executor it wraps. pub(crate)
+// methods here because the fields are module-private; the scripted loop
+// reads state through these instead of reaching into the struct.
+impl HostAgentExecutor {
+    pub(crate) fn extension_runner(&self) -> Option<Arc<codesmith_extensions::ExtensionRunner>> {
+        self.extension.clone()
+    }
+
+    pub(crate) fn dispatch_scope(&self) -> &codesmith_agent::extension::Scope {
+        &self.dispatch_scope
+    }
+
+    pub(crate) fn base_system_prompt(&self) -> Option<codesmith_agent::models::SystemPrompt> {
+        self.config.system.clone()
+    }
+
+    pub(crate) fn client_handle(&self) -> codesmith_agent::llm_client::LlmClientHandle {
+        self.client.clone()
+    }
+
+    pub(crate) fn tool_set(&self) -> Arc<codesmith_agent::tools::ToolSet> {
+        self.tools.clone()
+    }
+
+    pub(crate) fn callback_handle(&self) -> Arc<dyn codesmith_agent::callback::Callback> {
+        self.callback.clone()
+    }
+
+    pub(crate) fn request_model_name(&self) -> String {
+        self.request_model
+            .clone()
+            .unwrap_or_else(|| self.client.model().to_string())
+    }
+
+    pub(crate) fn refresh_system_prompt_for(
+        &self,
+        base: &Option<codesmith_agent::models::SystemPrompt>,
+    ) -> Option<codesmith_agent::models::SystemPrompt> {
+        self.refresh_system_prompt_snapshot(base.as_ref())
+    }
+
+    pub(crate) fn api_tools_for(
+        &self,
+        history: &mut dyn codesmith_agent::memory::ChatHistory,
+    ) -> Vec<codesmith_agent::models::Tool> {
+        match &self.request_catalog {
+            Some(catalog) => {
+                let mut catalog = catalog.as_ref().clone();
+                if self.progressive_disclosure {
+                    let mut active = crate::engine::initial_active_tools(&catalog);
+                    active.extend(crate::engine::activated_by_transcript(&history.messages()));
+                    catalog = crate::engine::active_tool_list_from_catalog(&catalog, &active);
+                }
+                for tool in &mut catalog {
+                    tool.defer_loading = None;
+                }
+                catalog
+            }
+            None => self.tools.to_api_tools(),
+        }
+    }
+
+    pub(crate) fn max_tokens(&self) -> u32 {
+        self.config.max_tokens
+    }
+
+    pub(crate) fn reasoning_effort(&self) -> Option<String> {
+        self.request_reasoning_effort.clone()
+    }
+
+    pub(crate) fn temperature(&self) -> Option<f32> {
+        self.config.temperature
+    }
+
+    pub(crate) fn host_cancel_token(&self) -> Option<tokio_util::sync::CancellationToken> {
+        self.cancel_token.clone()
+    }
+
+    pub(crate) fn accumulate_usage_external(&self, usage: &codesmith_agent::models::Usage) {
+        self.accumulate_usage(usage);
+    }
+
+    pub(crate) fn set_interrupted_text(&self, shown: String) {
+        *self
+            .pending_interrupted_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(shown);
+    }
+}
+
 impl AgentExecutor for HostAgentExecutor {
     fn run<'a>(
         &'a self,

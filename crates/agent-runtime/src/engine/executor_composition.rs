@@ -180,6 +180,9 @@ pub(crate) struct TurnDeps {
     pub turn_meta: Option<TurnMetaProbe>,
     pub reinject: Option<ReinjectProbe>,
     pub deliverables: Option<DeliverablesProbe>,
+    /// `[rhai_loop]` settings for the script-driven executor (`None` in
+    /// embeds/tests that never select it; the factory applies defaults).
+    pub rhai_loop: Option<crate::engine::rhai_executor::RhaiLoopSettings>,
     pub context: Option<TurnContextSources>,
 
     // --- turn-shape config ---------------------------------------------------
@@ -302,6 +305,13 @@ impl TurnExecutorRegistry {
         let registry = Self::new(leases);
         let guard = registry
             .register(Arc::new(HostAgentExecutorFactory))
+            .expect("a first registration is never refused");
+        std::mem::forget(guard);
+        // The script-driven loop ships as a second process-lifetime entry
+        // (selection is config `turn_executor = "rhai"`; see
+        // `engine::rhai_executor`). Same leaked-guard rule as the builtin.
+        let guard = registry
+            .register(Arc::new(super::rhai_executor::RhaiTurnExecutorFactory))
             .expect("a first registration is never refused");
         std::mem::forget(guard);
         registry
@@ -492,83 +502,91 @@ pub fn validate_turn_executor_id(id: &str) -> Result<(), String> {
 /// build from the `TurnDeps` snapshots, as before.
 pub(crate) struct HostAgentExecutorFactory;
 
+/// The per-turn `HostAgentExecutor` construction shared by the builtin
+/// factory and the `rhai` loop factory (the scripted loop wraps a host
+/// built exactly the way the builtin loop's is — same services, same
+/// probes, same builders).
+pub(crate) fn build_host_executor(deps: TurnDeps) -> Arc<HostAgentExecutor> {
+    let dispatch_scope = match &deps.shape {
+        TurnShape::Main => codesmith_agent::extension::Scope::Global,
+        TurnShape::Child { agent_type, .. } => {
+            codesmith_agent::extension::Scope::AgentType(agent_type.clone())
+        }
+    };
+    let (compaction, capacity, capacity_gate) = match deps.context {
+        Some(ctx) => (
+            Some(
+                CompactionProbe::new(ctx.compaction.clone(), ctx.workspace.clone())
+                    .with_fact_ledger(Some(ctx.fact_ledger.clone())),
+            ),
+            Some(
+                CapacityProbe::new(
+                    ctx.api_provider,
+                    ctx.model.clone(),
+                    ctx.effective_context_window,
+                    ctx.compaction,
+                    ctx.workspace.clone(),
+                )
+                .with_fact_ledger(Some(ctx.fact_ledger)),
+            ),
+            Some(CapacityGateProbe::new(
+                ctx.capacity_controller,
+                ctx.model,
+                ctx.effective_context_window,
+                ctx.workspace,
+                ctx.working_set,
+                ctx.capacity_profile_window,
+                ctx.turn_counter,
+            )),
+        ),
+        None => (None, None, None),
+    };
+    Arc::new(
+        HostAgentExecutor::new(
+            deps.client,
+            deps.tools,
+            deps.callback,
+            deps.executor_config,
+            deps.tx_event,
+            deps.lsp,
+            Some(deps.rx_steer),
+            deps.rx_approval,
+            compaction,
+            capacity,
+            deps.rx_subagent_completion,
+            Some(deps.cancel_token),
+            Some(deps.subagents),
+        )
+        .with_capacity_gate(capacity_gate)
+        .with_turn_mode(deps.mode)
+        .with_subagent_cap(deps.max_subagents)
+        .with_plan_mode_state(deps.plan_mode_state)
+        .with_request_catalog(deps.request_catalog)
+        .with_progressive_disclosure(deps.progressive_disclosure)
+        .with_tool_dispatcher(deps.tool_dispatcher)
+        .with_user_input(deps.rx_user_input)
+        .with_turn_meta(deps.turn_meta)
+        .with_reinject(deps.reinject)
+        .with_extension_runner(deps.extension_runner)
+        .with_dispatch_scope(dispatch_scope)
+        .with_request_overrides(deps.request_model, deps.reasoning_effort)
+        .with_stream_idle_timeout(deps.stream_idle_timeout)
+        .with_stream_idle_retry_increment(deps.stream_idle_retry_increment)
+        .with_prefix_stability(deps.prefix_stability)
+        .with_result_verifications(deps.pending_result_verifications)
+        .with_tool_durations(deps.tool_durations)
+        .with_session_id(deps.session_id)
+        .with_deliverables(deps.deliverables),
+    )
+}
+
 impl TurnExecutorFactory for HostAgentExecutorFactory {
     fn id(&self) -> &'static str {
         BUILTIN_TURN_EXECUTOR_ID
     }
 
     fn build(&self, deps: TurnDeps) -> BuiltTurn {
-        let dispatch_scope = match &deps.shape {
-            TurnShape::Main => codesmith_agent::extension::Scope::Global,
-            TurnShape::Child { agent_type, .. } => {
-                codesmith_agent::extension::Scope::AgentType(agent_type.clone())
-            }
-        };
-        let (compaction, capacity, capacity_gate) = match deps.context {
-            Some(ctx) => (
-                Some(
-                    CompactionProbe::new(ctx.compaction.clone(), ctx.workspace.clone())
-                        .with_fact_ledger(Some(ctx.fact_ledger.clone())),
-                ),
-                Some(
-                    CapacityProbe::new(
-                        ctx.api_provider,
-                        ctx.model.clone(),
-                        ctx.effective_context_window,
-                        ctx.compaction,
-                        ctx.workspace.clone(),
-                    )
-                    .with_fact_ledger(Some(ctx.fact_ledger)),
-                ),
-                Some(CapacityGateProbe::new(
-                    ctx.capacity_controller,
-                    ctx.model,
-                    ctx.effective_context_window,
-                    ctx.workspace,
-                    ctx.working_set,
-                    ctx.capacity_profile_window,
-                    ctx.turn_counter,
-                )),
-            ),
-            None => (None, None, None),
-        };
-        let executor = Arc::new(
-            HostAgentExecutor::new(
-                deps.client,
-                deps.tools,
-                deps.callback,
-                deps.executor_config,
-                deps.tx_event,
-                deps.lsp,
-                Some(deps.rx_steer),
-                deps.rx_approval,
-                compaction,
-                capacity,
-                deps.rx_subagent_completion,
-                Some(deps.cancel_token),
-                Some(deps.subagents),
-            )
-            .with_capacity_gate(capacity_gate)
-            .with_turn_mode(deps.mode)
-            .with_subagent_cap(deps.max_subagents)
-            .with_plan_mode_state(deps.plan_mode_state)
-            .with_request_catalog(deps.request_catalog)
-            .with_progressive_disclosure(deps.progressive_disclosure)
-            .with_tool_dispatcher(deps.tool_dispatcher)
-            .with_user_input(deps.rx_user_input)
-            .with_turn_meta(deps.turn_meta)
-            .with_reinject(deps.reinject)
-            .with_extension_runner(deps.extension_runner)
-            .with_dispatch_scope(dispatch_scope)
-            .with_request_overrides(deps.request_model, deps.reasoning_effort)
-            .with_stream_idle_timeout(deps.stream_idle_timeout)
-            .with_stream_idle_retry_increment(deps.stream_idle_retry_increment)
-            .with_prefix_stability(deps.prefix_stability)
-            .with_result_verifications(deps.pending_result_verifications)
-            .with_tool_durations(deps.tool_durations)
-            .with_session_id(deps.session_id)
-            .with_deliverables(deps.deliverables),
-        );
+        let executor = build_host_executor(deps);
         let harvest: Arc<dyn TurnHarvest> = executor.clone();
         BuiltTurn { executor, harvest }
     }
@@ -744,12 +762,16 @@ mod tests {
                 scope: None,
             })
         };
-        let idle = TurnExecutorSlot {
-            id: BUILTIN_TURN_EXECUTOR_ID.to_string(),
+        let slot = |id: &str| TurnExecutorSlot {
+            id: id.to_string(),
             main_turns: 0,
             subagent_turns: Vec::new(),
         };
-        assert_eq!(registry.slots(), vec![idle.clone()]);
+        // The registry now seeds two process-lifetime entries (builtin +
+        // the script-driven `rhai` loop).
+        let idle = slot(BUILTIN_TURN_EXECUTOR_ID);
+        let idle_rhai = slot(crate::engine::rhai_executor::RHAI_TURN_EXECUTOR_ID);
+        assert_eq!(registry.slots(), vec![idle.clone(), idle_rhai.clone()]);
 
         let main = lease("session", 0);
         let child_a = lease("agent-a", 1);
@@ -757,11 +779,14 @@ mod tests {
         let grandchild = lease("agent-c", 2);
         assert_eq!(
             registry.slots(),
-            vec![TurnExecutorSlot {
-                id: BUILTIN_TURN_EXECUTOR_ID.to_string(),
-                main_turns: 1,
-                subagent_turns: vec![(1, 2), (2, 1)],
-            }]
+            vec![
+                TurnExecutorSlot {
+                    id: BUILTIN_TURN_EXECUTOR_ID.to_string(),
+                    main_turns: 1,
+                    subagent_turns: vec![(1, 2), (2, 1)],
+                },
+                idle_rhai.clone(),
+            ]
         );
 
         drop(child_a);
@@ -769,7 +794,7 @@ mod tests {
         assert_eq!(registry.slots()[0].subagent_turns, vec![(1, 1)]);
         drop(main);
         drop(child_b);
-        assert_eq!(registry.slots(), vec![idle]);
+        assert_eq!(registry.slots(), vec![idle, idle_rhai]);
     }
 
     /// The process-shared registry always carries the builtin factory.

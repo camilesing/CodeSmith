@@ -763,6 +763,9 @@ pub struct Config {
     /// registers on the process-shared turn-executor registry. An unknown id
     /// fails loud at startup.
     pub turn_executor: Option<String>,
+    /// `[rhai_loop]` — settings for the script-driven executor
+    /// (`turn_executor = "rhai"`).
+    pub rhai_loop: Option<RhaiLoopToml>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     /// Optional extra HTTP headers sent to model API requests.
@@ -1172,9 +1175,21 @@ impl Config {
 }
 
 /// `[mods]` table (§F script mod layer).
+/// `[mods]` table (§F script mod layer).
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct ModsConfig {
     pub enabled: Option<bool>,
+}
+
+/// The `[rhai_loop]` config table (script-driven executor settings).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+pub struct RhaiLoopToml {
+    /// Pin the loop-hosting mod by id (default: the first mod that
+    /// declared `register_loop`).
+    pub r#mod: Option<String>,
+    /// Wall-clock budget for one turn's script execution, in seconds
+    /// (default 3600).
+    pub timeout_secs: Option<u64>,
 }
 
 /// `[commands]` table — built-in slash-command controls.
@@ -1999,6 +2014,19 @@ impl Config {
     /// `engine::executor_composition`); defaults to the builtin production
     /// loop. Validated against the process-shared registry at startup by
     /// [`validate`](Self::validate).
+    /// The `[rhai_loop]` settings resolved into engine form.
+    pub fn rhai_loop_settings(
+        &self,
+    ) -> codesmith_agent_runtime::engine::rhai_executor::RhaiLoopSettings {
+        match &self.rhai_loop {
+            None => codesmith_agent_runtime::engine::rhai_executor::RhaiLoopSettings::default(),
+            Some(t) => codesmith_agent_runtime::engine::rhai_executor::RhaiLoopSettings {
+                mod_id: t.r#mod.clone(),
+                timeout_secs: t.timeout_secs.unwrap_or(3600),
+            },
+        }
+    }
+
     pub fn turn_executor_id(&self) -> String {
         self.turn_executor
             .as_deref()
@@ -4376,6 +4404,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         provider: override_cfg.provider.or(base.provider),
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         turn_executor: override_cfg.turn_executor.or(base.turn_executor),
+        rhai_loop: override_cfg.rhai_loop.or_else(|| base.rhai_loop.clone()),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         edit: override_cfg.edit.or(base.edit),

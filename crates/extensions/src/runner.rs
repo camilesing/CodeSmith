@@ -1421,6 +1421,45 @@ impl ExtensionRunner {
         EmitOutcome { event, outcome }
     }
 
+    /// The mod that declared a loop entry (`register_loop`), if any — how
+    /// the `rhai` turn executor resolves its script. First declaration
+    /// wins when more than one mod declares a loop (warned); the
+    /// executor's own selection can pin a mod id so the ambiguity never
+    /// matters in practice.
+    pub fn loop_mod(&self) -> Option<Arc<crate::script::rhai_mod::RhaiMod>> {
+        let slots = self.mod_slots.lock().expect("mod slots lock poisoned");
+        let found: Vec<&Arc<crate::script::rhai_mod::RhaiMod>> =
+            slots.iter().filter(|m| m.loop_entry().is_some()).collect();
+        match found.as_slice() {
+            [] => None,
+            [only] => Some(Arc::clone(only)),
+            _ => {
+                tracing::warn!(
+                    target: "codesmith_extensions::runner",
+                    "multiple mods declare a loop entry ({}) — using the first",
+                    found
+                        .iter()
+                        .map(|m| m.metadata().id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                Some(Arc::clone(found[0]))
+            }
+        }
+    }
+
+    /// A retained mod by id (the `rhai` turn executor's pinned-mod
+    /// resolution). Script mods only — dylib/compiled-in extensions are
+    /// not retained in slots.
+    pub fn mod_by_id(&self, id: &str) -> Option<Arc<crate::script::rhai_mod::RhaiMod>> {
+        self.mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .iter()
+            .find(|m| m.metadata().id == id)
+            .map(Arc::clone)
+    }
+
     /// Look up a registered command by name (exact match; `:N` conflict
     /// suffixing is §F2 — slice 1 uses first-wins via HashMap insert). Used
     /// by the CLI `extension_commands::try_dispatch` (Task 8).

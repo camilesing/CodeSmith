@@ -73,6 +73,15 @@ pub enum ScriptRegistration {
         kind: ExtensionEventKind,
         callback: rhai::FnPtr,
     },
+    /// The mod declares a loop entry (`register_loop("main")`) — consumed
+    /// by the `rhai` turn executor, never replayed at `configure` (there
+    /// is no `ExtensionApi` surface for it; the executor reads it off the
+    /// retained mod through [`ExtensionRunner::loop_mod`]).
+    Loop {
+        /// Name of the named top-level fn the executor calls per turn
+        /// (`fn main() { ... }` — capability calls are global functions).
+        entry: String,
+    },
     Tool {
         name: String,
         description: String,
@@ -1021,6 +1030,34 @@ fn register_natives(
         },
     );
 
+    // register_loop(entry) — declare this mod a turn-loop host: the `rhai`
+    // turn executor (config `turn_executor = "rhai"`) calls the named
+    // top-level fn once per turn as `fn <entry>() { ... }`; the host
+    // capability calls (llm_request, run_tools, cancelled, note) are global
+    // functions the loop engine registers. The entry's existence as a named
+    // fn is validated after compile in `load_source` (natives register
+    // before the AST exists). This registration is not replayed at
+    // configure — the executor consumes it directly.
+    let cell_loop = Arc::clone(cell);
+    engine.register_fn(
+        "register_loop",
+        move |entry: &str| -> Result<(), Box<rhai::EvalAltResult>> {
+            let mut cell = cell_loop.lock().expect("mod registration cell poisoned");
+            if cell
+                .iter()
+                .any(|r| matches!(r, ScriptRegistration::Loop { .. }))
+            {
+                return Err(script_error(
+                    "register_loop(): a mod declares at most one loop entry",
+                ));
+            }
+            cell.push(ScriptRegistration::Loop {
+                entry: entry.to_string(),
+            });
+            Ok(())
+        },
+    );
+
     // register_guard(callback) — route B (1.2 alignment): a deny-only tool
     // guard (dsh `ctx.tools.guard()`). The closure takes the tool-call
     // payload (`|e|` — `#{kind, id, name, input}`, same shape as a
@@ -1315,6 +1352,12 @@ pub struct RhaiMod {
     metadata: ExtensionMetadata,
     pub(crate) runtime: Arc<ScriptRuntime>,
     pub(crate) registrations: Vec<ScriptRegistration>,
+    /// The mod's KV + the host's projection hub, retained so
+    /// [`RhaiMod::engine_for_loop`] can rebuild the native surface on a
+    /// fresh engine (the shared runtime engine cannot carry per-turn
+    /// loop-capability state).
+    pub(crate) kv: ModKvStore,
+    pub(crate) hub: codesmith_agent::extension::MessageProjectionHubArc,
 }
 
 impl RhaiMod {
@@ -1364,7 +1407,7 @@ impl RhaiMod {
         // natives are registered: absence is the sandbox (plan §三.4).
 
         let cell: RegistrationCell = Arc::new(Mutex::new(Vec::new()));
-        register_natives(&mut engine, &kv, &cell, id, hub);
+        register_natives(&mut engine, &kv, &cell, id, hub.clone());
 
         let ast = engine
             .compile(&source)
@@ -1375,6 +1418,19 @@ impl RhaiMod {
 
         let registrations =
             std::mem::take(&mut *cell.lock().expect("mod registration cell poisoned"));
+        // `register_loop` validation (post-compile — natives register before
+        // the AST exists): the declared entry must be a named fn taking at
+        // least one parameter (the loop context object).
+        for reg in &registrations {
+            if let ScriptRegistration::Loop { entry } = reg
+                && !ast.iter_functions().any(|f| f.name == *entry)
+            {
+                return Err(ExtensionError::Load(format!(
+                    "run {id}: register_loop(): no named fn '{entry}' — declare \
+                     `fn {entry}() {{ ... }}` at the top level"
+                )));
+            }
+        }
         Ok(Self {
             metadata: ExtensionMetadata::from_strings(
                 id.to_string(),
@@ -1386,12 +1442,64 @@ impl RhaiMod {
                 ast: Arc::new(ast),
             }),
             registrations,
+            kv: kv.clone(),
+            hub,
         })
     }
 
     /// The captured registrations (for introspection / tests).
     pub fn registrations(&self) -> &[ScriptRegistration] {
         &self.registrations
+    }
+
+    /// The mod's compiled AST (the loop executor calls its entry fn
+    /// against a fresh engine built by [`Self::engine_for_loop`]).
+    #[must_use]
+    pub fn loop_ast(&self) -> rhai::AST {
+        (*self.runtime.ast).clone()
+    }
+
+    /// The loop entry this mod declared, if any (`register_loop("main")`).
+    /// The `rhai` turn executor resolves its script through this.
+    #[must_use]
+    pub fn loop_entry(&self) -> Option<&str> {
+        self.registrations.iter().find_map(|reg| match reg {
+            ScriptRegistration::Loop { entry } => Some(entry.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Build a fresh engine for a loop-execution run: the mod's native
+    /// surface (KV, control values, projections) rebuilt on a private
+    /// engine — the shared runtime engine is `Arc` and cannot carry the
+    /// per-turn loop-capability natives — with the host's loop natives
+    /// (`loop_ctx.llm_request` & co) injected by `inject_loop_natives`.
+    /// The mod's compiled AST is reused verbatim, so the entry fn the
+    /// executor calls is the same code the mod registered.
+    #[must_use]
+    pub fn engine_for_loop(
+        &self,
+        inject_loop_natives: impl FnOnce(&mut rhai::Engine),
+    ) -> rhai::Engine {
+        let mut engine = rhai::Engine::new();
+        engine
+            .set_max_operations(MAX_OPERATIONS)
+            .set_max_call_levels(MAX_CALL_LEVELS)
+            .set_max_string_size(MAX_STRING_SIZE)
+            .set_max_array_size(MAX_ARRAY_SIZE)
+            .set_max_map_size(MAX_MAP_SIZE);
+        // Registrations captured during a loop run are dropped: the turn's
+        // registrations were fixed at load time (next-turn-boundary rule).
+        let discard: RegistrationCell = Arc::new(Mutex::new(Vec::new()));
+        register_natives(
+            &mut engine,
+            &self.kv,
+            &discard,
+            &self.metadata.id,
+            self.hub.clone(),
+        );
+        inject_loop_natives(&mut engine);
+        engine
     }
 }
 
@@ -1581,6 +1689,11 @@ impl Extension for RhaiMod {
                     // resolved entry for the policy observability view.
                     api.register_policy(self.metadata.id.to_string(), *kind, config.clone())?;
                 }
+                ScriptRegistration::Loop { .. } => {
+                    // Consumed by the `rhai` turn executor (resolved through
+                    // `ExtensionRunner::loop_mod`), never replayed here —
+                    // there is no `ExtensionApi` surface for a loop.
+                }
             }
         }
         Ok(())
@@ -1658,6 +1771,7 @@ mod tests {
                     ScriptRegistration::MessageProjection { key, .. } => format!("m:{key}"),
                     ScriptRegistration::Guard { .. } => "g:guard".to_string(),
                     ScriptRegistration::Policy { kind, .. } => format!("y:{:?}", kind),
+                    ScriptRegistration::Loop { entry } => format!("l:{entry}"),
                     ScriptRegistration::DisableCommand { name } => format!("d:{name}"),
                 })
                 .collect::<Vec<_>>()
