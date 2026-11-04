@@ -36,7 +36,8 @@ use async_trait::async_trait;
 use codesmith_agent::extension::{
     AgentStartEvent, DispatchMode, Extension, ExtensionApi, ExtensionContext, ExtensionError,
     ExtensionEvent, ExtensionEventKind, ExtensionMetadata, ExtensionMode, InputEvent,
-    ProviderFailure, ProviderRequestErrorEvent, RetryPlan, ToolCallEvent, ToolResultEvent,
+    ProviderFailure, ProviderRequestErrorEvent, RetryPlan, SessionBeforeCompactEvent,
+    ToolCallEvent, ToolResultEvent,
 };
 use codesmith_agent::provider::ProviderId;
 use codesmith_tools::{ToolError, ToolResult};
@@ -48,6 +49,10 @@ use super::mod_manifest::DiscoveredMod;
 /// Script-side operation budget per call (plan §三.4). Generous for hook
 /// logic, instant-death for runaway loops.
 pub(crate) const MAX_OPERATIONS: u64 = 200_000;
+
+/// Entry cap for a `session-before-compact` `pinned_hints` transform —
+/// the hints ride the serial chain, so a runaway script must not bloat it.
+pub(crate) const MAX_PINNED_HINTS: usize = 16;
 /// Script-side call depth cap.
 pub(crate) const MAX_CALL_LEVELS: usize = 64;
 /// String/array/map size caps — bound worst-case per-op allocations while
@@ -465,8 +470,24 @@ pub(crate) fn event_to_dynamic(event: &ExtensionEvent) -> Dynamic {
                 "threshold",
                 Dynamic::from(i64::try_from(e.threshold).unwrap_or(i64::MAX)),
             ),
+            (
+                "pinned_hints",
+                Dynamic::from(
+                    e.pinned_hints
+                        .iter()
+                        .cloned()
+                        .map(Dynamic::from)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
         ],
-        ExtensionEvent::SessionCompact => vec![],
+        ExtensionEvent::SessionCompact(e) => vec![
+            ("summary", Dynamic::from(e.summary.clone())),
+            (
+                "kept_messages",
+                Dynamic::from(i64::try_from(e.kept_messages).unwrap_or(i64::MAX)),
+            ),
+        ],
         ExtensionEvent::ResultVerified(e) => vec![
             ("verdict", Dynamic::from(e.verdict.clone())),
             ("claim", Dynamic::from(e.claim.clone())),
@@ -560,7 +581,7 @@ fn map_field_bool(map: &rhai::Map, key: &str) -> Option<bool> {
 }
 
 /// Merge a `transform(#{...})` field map into the running event (plan §三.3:
-/// "按事件种类合并可变字段后继续链"). Only the four transform-capable kinds
+/// "按事件种类合并可变字段后继续链"). Only the transform-capable kinds
 /// have actionable fields; a transform at any other seam (or with no
 /// recognized fields) degrades to `Continue`, mirroring the runner's
 /// "越权 seam 忽略" semantics.
@@ -626,6 +647,66 @@ pub(crate) fn merge_transform(
                 tracing::warn!(target: "codesmith_mods", "before-agent-start transform recognized no fields (need system_prompt / inject_message)");
                 HandlerOutcome::Continue
             }
+        }
+        ExtensionEvent::SessionBeforeCompact(cur) => {
+            // `pinned_hints` is the writable field — chain-visible but v1
+            // host-unconsumed (see the field doc): a transform writes what
+            // later handlers in this serial chain read. Same three-way
+            // contract as `inject_message`: array-of-strings = set, `()` =
+            // clear, absent = keep; anything else warns and keeps.
+            let Some(d) = map.get("pinned_hints") else {
+                tracing::warn!(
+                    target: "codesmith_mods",
+                    "session-before-compact transform requires an array-of-strings `pinned_hints` field"
+                );
+                return HandlerOutcome::Continue;
+            };
+            let hints: Vec<String> = if d.is_unit() {
+                Vec::new()
+            } else {
+                match d.clone().try_cast::<rhai::Array>() {
+                    Some(items) => {
+                        let mut hints = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item.try_cast::<String>() {
+                                Some(s) if hints.len() < MAX_PINNED_HINTS => hints.push(s),
+                                Some(_) => {
+                                    tracing::warn!(
+                                        target: "codesmith_mods",
+                                        "session-before-compact transform: pinned_hints exceeds \
+                                         {MAX_PINNED_HINTS} entries — ignored"
+                                    );
+                                    return HandlerOutcome::Continue;
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        target: "codesmith_mods",
+                                        "session-before-compact transform: pinned_hints entries \
+                                         must be strings — ignored"
+                                    );
+                                    return HandlerOutcome::Continue;
+                                }
+                            }
+                        }
+                        hints
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "codesmith_mods",
+                            "session-before-compact transform: pinned_hints must be an array of \
+                             strings — ignored"
+                        );
+                        return HandlerOutcome::Continue;
+                    }
+                }
+            };
+            HandlerOutcome::Transform(ExtensionEvent::SessionBeforeCompact(
+                SessionBeforeCompactEvent {
+                    current_tokens: cur.current_tokens,
+                    threshold: cur.threshold,
+                    pinned_hints: hints,
+                },
+            ))
         }
         ExtensionEvent::BeforeProviderRequest(_) => {
             if let Some(d) = map.get("messages") {
@@ -2743,6 +2824,7 @@ mod tests {
             codesmith_agent::extension::SessionBeforeCompactEvent {
                 current_tokens: 968_000,
                 threshold: 967_000,
+                pinned_hints: vec!["keep OUTPUT_SCHEMA".into()],
             },
         );
         let map = event_to_dynamic(&event)
@@ -2757,6 +2839,37 @@ mod tests {
             map.get("threshold")
                 .and_then(|d| d.clone().try_cast::<i64>()),
             Some(967_000)
+        );
+        let hints = map
+            .get("pinned_hints")
+            .and_then(|d| d.clone().try_cast::<rhai::Array>())
+            .expect("pinned_hints array");
+        assert_eq!(hints.len(), 1);
+        assert_eq!(
+            hints[0].clone().try_cast::<String>(),
+            Some("keep OUTPUT_SCHEMA".to_string())
+        );
+    }
+
+    #[test]
+    fn session_compact_payload_carries_summary_head_and_kept() {
+        let event =
+            ExtensionEvent::SessionCompact(codesmith_agent::extension::SessionCompactEvent {
+                summary: "The session so far…".into(),
+                kept_messages: 4,
+            });
+        let map = event_to_dynamic(&event)
+            .try_cast::<rhai::Map>()
+            .expect("payload map");
+        assert_eq!(
+            map.get("summary")
+                .and_then(|d| d.clone().try_cast::<String>()),
+            Some("The session so far…".to_string())
+        );
+        assert_eq!(
+            map.get("kept_messages")
+                .and_then(|d| d.clone().try_cast::<i64>()),
+            Some(4)
         );
     }
 
@@ -2907,6 +3020,86 @@ mod tests {
             }
             other => panic!("expected a ToolCall transform, got {other:?}"),
         }
+    }
+
+    /// `session-before-compact`'s writable field: `pinned_hints` — set,
+    /// clear (`()`), keep (absent), and the bad-shape warns-and-continues
+    /// paths. Chain-visible only (v1 host-unconsumed).
+    #[test]
+    fn merge_transform_before_compact_sets_and_clears_pinned_hints() {
+        let event = ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
+            current_tokens: 1_000,
+            threshold: 967_000,
+            pinned_hints: vec!["seed".into()],
+        });
+        // Set: array of strings replaces, token readings ride along.
+        let mut fields = rhai::Map::new();
+        fields.insert(
+            "pinned_hints".into(),
+            Dynamic::from(vec![
+                Dynamic::from("keep OUTPUT_SCHEMA".to_string()),
+                Dynamic::from("pin the constraint table".to_string()),
+            ]),
+        );
+        let out = merge_transform(&event, &Dynamic::from(fields));
+        match out {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::SessionBeforeCompact(e),
+            ) => {
+                assert_eq!(e.current_tokens, 1_000);
+                assert_eq!(e.threshold, 967_000);
+                assert_eq!(
+                    e.pinned_hints,
+                    vec![
+                        "keep OUTPUT_SCHEMA".to_string(),
+                        "pin the constraint table".to_string()
+                    ]
+                );
+            }
+            other => panic!("expected a SessionBeforeCompact transform, got {other:?}"),
+        }
+
+        // Clear: `()` empties the hints.
+        let mut fields = rhai::Map::new();
+        fields.insert("pinned_hints".into(), Dynamic::UNIT);
+        match merge_transform(&event, &Dynamic::from(fields)) {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::SessionBeforeCompact(e),
+            ) => assert!(e.pinned_hints.is_empty()),
+            other => panic!("expected a clear transform, got {other:?}"),
+        }
+
+        // Bad shapes warn + Continue (keep the running event): a non-array
+        // value, a non-string entry, an over-cap list, and no recognized
+        // field at all.
+        let mut fields = rhai::Map::new();
+        fields.insert("pinned_hints".into(), Dynamic::from(42_i64));
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(fields)),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        let mut fields = rhai::Map::new();
+        fields.insert(
+            "pinned_hints".into(),
+            Dynamic::from(vec![Dynamic::UNIT, Dynamic::from("ok".to_string())]),
+        );
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(fields)),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        let too_many: Vec<Dynamic> = (0..=MAX_PINNED_HINTS)
+            .map(|i| Dynamic::from(format!("hint {i}")))
+            .collect();
+        let mut fields = rhai::Map::new();
+        fields.insert("pinned_hints".into(), Dynamic::from(too_many));
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(fields)),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(rhai::Map::new())),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
     }
 
     #[test]

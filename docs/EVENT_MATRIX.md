@@ -18,13 +18,13 @@ vocabularies are not covered.
 | Event | Dispatch | Producers | In-tree subscribers |
 |---|---|---|---|
 | `AfterProviderResponse` | Emit | `agent-runtime/engine/host_executor.rs` | — |
-| `AgentEnd` | Emit | `agent-runtime/engine/host_executor.rs` ×4 | — |
+| `AgentEnd` | Emit | `agent-runtime/engine/host_executor.rs` ×4, `agent-runtime/engine/rhai_executor.rs` | — |
 | `AgentSettled` | Emit | `agent-runtime/engine/mod.rs` | — |
-| `AgentStart` | Emit | `agent-runtime/engine/host_executor.rs` | — |
+| `AgentStart` | Emit | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
 | `AssistantStream` | Emit | `agent-runtime/callback_bridge.rs`, `agent-runtime/engine/child_turn.rs` | — |
-| `BeforeAgentStart` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |
-| `BeforeProviderHeaders` | Emit | `agent-runtime/engine/host_executor.rs` | — |
-| `BeforeProviderRequest` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs` | — |
+| `BeforeAgentStart` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
+| `BeforeProviderHeaders` | Emit | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
+| `BeforeProviderRequest` | Waterfall (can_deny: false) | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
 | `Input` | Waterfall (can_deny: false) | `agent-runtime/engine/mod.rs` | — |
 | `ProjectTrust` | Emit | `cli/core/engine/runtime_traits.rs` ×2 | — |
 | `ProviderRequestError` | Waterfall (can_deny: true) | `agent-runtime/engine/turn/stream.rs` | — |
@@ -41,8 +41,8 @@ vocabularies are not covered.
 | `ToolExecutionUpdate` | Emit | `agent-runtime/callback_bridge.rs` | — |
 | `ToolResult` | Waterfall (can_deny: false) | `agent-runtime/engine/turn/batches.rs` ×2 | — |
 | `ToolsChange` | Emit | `cli/core/engine/runtime_traits.rs` | — |
-| `TurnEnd` | Emit | `agent-runtime/engine/host_executor.rs` ×2 | — |
-| `TurnStart` | Emit | `agent-runtime/engine/host_executor.rs` | — |
+| `TurnEnd` | Emit | `agent-runtime/engine/host_executor.rs` ×2, `agent-runtime/engine/rhai_executor.rs` | — |
+| `TurnStart` | Emit | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
 | `TurnStopping` | Serial | `agent-runtime/engine/host_executor.rs` | — |
 | `WorkflowAgentEnd` | Emit | `cli/tools/workflow/engine.rs` | — |
 | `WorkflowAgentStart` | Emit | `cli/tools/workflow/engine.rs` | — |

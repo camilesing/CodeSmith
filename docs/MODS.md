@@ -148,8 +148,9 @@ You've now touched all four registration surfaces: event hooks, tools, commands,
 | `workflow-end` | `status`, `error` (error kind on failure), `agent_calls` (a workflow run's terminal outcome; no return value — the transcript's tool result is the record) |
 | `project-trust` / `session-start` | `reason` |
 | `result-verified` | `verdict` (`verified-pass` \| `verified-fail` \| `verify-error` \| `unsubstantiated`), `claim`, `command` (`()` when nothing could be re-run), `exit_code` (`()` when it did not run) — the result-claim verifier's outcome, fired from the post-turn background replay, so it lands between turns |
-| `session-before-compact` | `current_tokens` (whole-transcript estimate), `threshold` (the configured token threshold) — advisory readings of the trigger inputs; the decision itself compares a plan-shaped subset against a pinned-adjusted effective threshold, so a veto weighs these, not the literal operands |
-| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-compact` | (`kind` only) |
+| `session-before-compact` | `current_tokens` (whole-transcript estimate), `threshold` (the configured token threshold), `pinned_hints` (string array — transform-writable, chain-visible, not consumed by the host in v1) — advisory readings of the trigger inputs; the decision itself compares a plan-shaped subset against a pinned-adjusted effective threshold, so a veto weighs these, not the literal operands |
+| `session-compact` | `summary` (head of the compaction summary, truncated for preview — the full prompt is recorded for the host's post-run merge), `kept_messages` (transcript length after the compacted replacement and reinjection applied) |
+| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` | (`kind` only) |
 
 `tool-execution-update` fires from the shell tools' own poll loops while a command keeps
 running (`exec_shell` foreground and `exec_shell_wait`): at most once per second and only
@@ -233,6 +234,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 - `before-provider-request`: `messages`
 - `tool-result`: `content`, `success`, `is_error`, `canonical` (JSON value — the machine-readable result; rewriting `content` alone leaves it untouched, and it can be replaced explicitly)
 - `provider-request-error`: `retry` (bool — `false` gives up), `delay_ms` (int; kept from the current plan when absent; forced retries are capped engine-side)
+- `session-before-compact`: `pinned_hints` (array of strings = set, `()` = clear, absent = keep) — chain-visible only in v1: the host does not consume text hints yet (the compaction planner pins by message index), so a transform writes what later handlers in the chain read
 
 ### Capability functions
 

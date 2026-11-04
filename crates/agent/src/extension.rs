@@ -415,6 +415,40 @@ pub struct SessionBeforeCompactEvent {
     pub current_tokens: u64,
     /// The configured compaction token threshold.
     pub threshold: u64,
+    /// Text hints a `transform` chain may set for downstream consumers.
+    /// **Not consumed in v1**: the compaction planner pins by message
+    /// *index* (`plan_compaction`'s `external_pins` face), so text hints
+    /// have no clean intake without bending the algorithm — the field is
+    /// chain-visible (a later handler reads what an earlier one pinned)
+    /// but no host mechanism reads it yet.
+    pub pinned_hints: Vec<String>,
+}
+
+/// Payload for [`ExtensionEvent::SessionCompact`] — what the completed
+/// compaction kept. Emit-only (a veto belongs on `SessionBeforeCompact`).
+#[derive(Debug, Clone)]
+pub struct SessionCompactEvent {
+    /// Head of the merged summary system prompt, truncated to
+    /// [`SESSION_COMPACT_SUMMARY_HEAD_CHARS`] chars — a preview; the full
+    /// prompt is recorded for the host's post-run merge.
+    pub summary: String,
+    /// Messages in the transcript after the compacted replacement (and
+    /// reinjected attachments) applied.
+    pub kept_messages: usize,
+}
+
+/// Preview length for [`SessionCompactEvent::summary`] — payload heads
+/// are observations, not transports; the full text lives in the
+/// session record.
+pub const SESSION_COMPACT_SUMMARY_HEAD_CHARS: usize = 400;
+
+/// First `max_chars` characters of `text` on a char boundary.
+#[must_use]
+pub fn head_chars(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => text[..idx].to_string(),
+        None => text.to_string(),
+    }
 }
 
 /// Payload for [`ExtensionEvent::ResultVerified`] — the result-claim
@@ -551,7 +585,7 @@ pub enum ExtensionEvent {
     SessionBeforeSwitch,
     SessionBeforeFork,
     SessionBeforeCompact(SessionBeforeCompactEvent),
-    SessionCompact,
+    SessionCompact(SessionCompactEvent),
     /// The result-claim verifier reached a verdict (emit-only; see
     /// [`ResultVerifiedEvent`]).
     ResultVerified(ResultVerifiedEvent),
@@ -653,7 +687,7 @@ impl ExtensionEvent {
             ExtensionEvent::SessionBeforeFork => ExtensionEventKind::SessionBeforeFork,
             ExtensionEvent::SessionShutdown => ExtensionEventKind::SessionShutdown,
             ExtensionEvent::SessionBeforeCompact(_) => ExtensionEventKind::SessionBeforeCompact,
-            ExtensionEvent::SessionCompact => ExtensionEventKind::SessionCompact,
+            ExtensionEvent::SessionCompact(_) => ExtensionEventKind::SessionCompact,
             ExtensionEvent::ResultVerified(_) => ExtensionEventKind::ResultVerified,
             ExtensionEvent::ToolsChange { .. } => ExtensionEventKind::ToolsChange,
             ExtensionEvent::WorkflowStart => ExtensionEventKind::WorkflowStart,
@@ -2257,6 +2291,7 @@ mod tests {
         let before_compact = SessionBeforeCompactEvent {
             current_tokens: 1_000,
             threshold: 967_000,
+            pinned_hints: vec!["keep the OUTPUT_SCHEMA example".into()],
         };
         let verified = ResultVerifiedEvent {
             verdict: "verified-fail".into(),
@@ -2415,10 +2450,17 @@ mod tests {
                 ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
                     current_tokens: 12_000,
                     threshold: 967_000,
+                    pinned_hints: Vec::new(),
                 }),
                 K::SessionBeforeCompact,
             ),
-            (ExtensionEvent::SessionCompact, K::SessionCompact),
+            (
+                ExtensionEvent::SessionCompact(SessionCompactEvent {
+                    summary: "The session so far…".into(),
+                    kept_messages: 4,
+                }),
+                K::SessionCompact,
+            ),
             (
                 ExtensionEvent::ResultVerified(ResultVerifiedEvent {
                     verdict: "verified-pass".into(),

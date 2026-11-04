@@ -2661,6 +2661,10 @@ impl HostAgentExecutor {
                         codesmith_agent::extension::SessionBeforeCompactEvent {
                             current_tokens: estimate_tokens(&history.messages()) as u64,
                             threshold: probe.config.token_threshold as u64,
+                            // Emit-side the hints are empty; a transform
+                            // chain may set them (v1 host-unconsumed — see
+                            // the field doc).
+                            pinned_hints: Vec::new(),
                         },
                     ),
                 )
@@ -2741,11 +2745,28 @@ impl HostAgentExecutor {
                     .await;
                 // §F2b T3 — `SessionCompact` fires after the compacted
                 // transcript (summary + reinjected attachments) is applied.
+                // The payload is an observation: the summary head
+                // (truncated; the full prompt was recorded above for the
+                // host's post-run merge) + the kept message count.
                 if let Some(runner) = &self.extension {
+                    use codesmith_agent::extension::{
+                        SESSION_COMPACT_SUMMARY_HEAD_CHARS, SessionCompactEvent, head_chars,
+                    };
+                    let summary_head = result
+                        .summary_prompt
+                        .as_ref()
+                        .map(crate::compaction::prompt_summary_text)
+                        .map(|text| head_chars(&text, SESSION_COMPACT_SUMMARY_HEAD_CHARS))
+                        .unwrap_or_default();
                     let _ = runner
                         .emit_scoped(
                             self.dispatch_scope.clone(),
-                            codesmith_agent::extension::ExtensionEvent::SessionCompact,
+                            codesmith_agent::extension::ExtensionEvent::SessionCompact(
+                                SessionCompactEvent {
+                                    summary: summary_head,
+                                    kept_messages: history.len(),
+                                },
+                            ),
                         )
                         .await;
                 }
@@ -19366,9 +19387,11 @@ mod tests {
         );
     }
 
-    /// Handler that records `SessionBeforeCompact` / `SessionCompact` labels.
+    /// Handler that records `SessionBeforeCompact` / `SessionCompact` labels
+    /// (and the `SessionCompact` payload).
     struct CompactRecorderHandler {
         seen: Arc<Mutex<Vec<&'static str>>>,
+        compacts: Arc<Mutex<Vec<(String, usize)>>>,
     }
 
     #[async_trait]
@@ -19380,7 +19403,13 @@ mod tests {
         ) -> Result<HandlerOutcome, ExtensionError> {
             let label = match event {
                 ExtensionEvent::SessionBeforeCompact(_) => "SessionBeforeCompact",
-                ExtensionEvent::SessionCompact => "SessionCompact",
+                ExtensionEvent::SessionCompact(e) => {
+                    self.compacts
+                        .lock()
+                        .unwrap()
+                        .push((e.summary.clone(), e.kept_messages));
+                    "SessionCompact"
+                }
                 _ => return Ok(HandlerOutcome::Continue),
             };
             self.seen.lock().unwrap().push(label);
@@ -19391,6 +19420,7 @@ mod tests {
     /// Extension that registers [`CompactRecorderHandler`].
     struct CompactRecorderExt {
         seen: Arc<Mutex<Vec<&'static str>>>,
+        compacts: Arc<Mutex<Vec<(String, usize)>>>,
     }
 
     #[async_trait]
@@ -19402,19 +19432,25 @@ mod tests {
         async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
             api.on(Arc::new(CompactRecorderHandler {
                 seen: self.seen.clone(),
+                compacts: self.compacts.clone(),
             }))?;
             Ok(())
         }
     }
 
     /// §F2b T3 — `SessionBeforeCompact` fires before + `SessionCompact` after
-    /// the LLM-summary compaction runs (proves both seams + their order).
+    /// the LLM-summary compaction runs (proves both seams + their order; the
+    /// payload row proves the observation face: summary head + kept count).
     #[tokio::test]
     async fn f2b_session_compact_fires_after_summary() {
         let runner = Arc::new(ExtensionRunner::new());
         let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let compacts: Arc<Mutex<Vec<(String, usize)>>> = Arc::new(Mutex::new(Vec::new()));
         runner
-            .load(&CompactRecorderExt { seen: seen.clone() })
+            .load(&CompactRecorderExt {
+                seen: seen.clone(),
+                compacts: compacts.clone(),
+            })
             .await
             .unwrap();
         runner.bind_core(Arc::new(HostExtensionContext::new(
@@ -19467,6 +19503,17 @@ mod tests {
             *seen.lock().unwrap(),
             vec!["SessionBeforeCompact", "SessionCompact"],
             "SessionBeforeCompact fires before, SessionCompact after the summary"
+        );
+        let compacts = compacts.lock().unwrap();
+        assert_eq!(compacts.len(), 1, "one SessionCompact payload recorded");
+        let (summary, kept) = &compacts[0];
+        assert!(
+            summary.contains("Conversation summary."),
+            "summary head carries the compaction summary text: {summary:?}"
+        );
+        assert!(
+            *kept > 0,
+            "kept_messages counts the post-compact transcript"
         );
     }
 

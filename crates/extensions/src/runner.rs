@@ -2068,6 +2068,7 @@ mod tests {
                 SessionBeforeCompactEvent {
                     current_tokens: 1_000,
                     threshold: 967_000,
+                    pinned_hints: Vec::new(),
                 },
             ))
             .await;

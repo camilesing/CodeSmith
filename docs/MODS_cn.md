@@ -144,8 +144,9 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 | `workflow-end` | `status`、`error`（失败时的错误类别）、`agent_calls`（workflow 运行的终态结果；不携带返回值——转录中的工具结果即记录） |
 | `project-trust` / `session-start` | `reason` |
 | `result-verified` | `verdict`（`verified-pass` \| `verified-fail` \| `verify-error` \| `unsubstantiated`）、`claim`、`command`（无可重跑命令时为 `()`）、`exit_code`（未运行时为 `()`）——结果声明验证器的判定，由 turn 结束后的后台重放触发，落在两个 turn 之间 |
-| `session-before-compact` | `current_tokens`（整个转录的估算）、`threshold`（配置的 token 阈值）——触发输入的参考读数；实际决策对比的是按计划形状选取的子集与按 pin 调整后的有效阈值，因此否决时衡量的是这两个输入，而非字面操作数 |
-| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` / `session-compact` | （仅 `kind`） |
+| `session-before-compact` | `current_tokens`（整个转录的估算）、`threshold`（配置的 token 阈值）、`pinned_hints`（字符串数组——transform 可写、链上可见、v1 宿主未消费）——触发输入的参考读数；实际决策对比的是按计划形状选取的子集与按 pin 调整后的有效阈值，因此否决时衡量的是这两个输入，而非字面操作数 |
+| `session-compact` | `summary`（压缩摘要的头部，截断作预览——完整提示词已记录供宿主 run 后合并）、`kept_messages`（压缩替换与回注应用后的转录消息数） |
+| `agent-start` / `tool-execution-start` / `tool-execution-end` / `agent-end` / `agent-settled` / `session-before-switch` / `session-before-fork` / `session-shutdown` | （仅 `kind`） |
 
 `tool-execution-update` 由 shell 工具自己的轮询循环在命令持续运行时发射（`exec_shell`
 前台与 `exec_shell_wait`）：至多每秒一次、且仅当有新输出。`id` 是 shell 任务 id（工具
@@ -218,6 +219,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 - `before-provider-request`：`messages`
 - `tool-result`：`content`、`success`、`is_error`、`canonical`（JSON 值——结果的机器可读值；仅改写 `content` 不动它，可显式替换）
 - `provider-request-error`：`retry`（布尔——`false` 放弃）、`delay_ms`（整数；缺省时保持当前 plan 的值；强制重试在引擎侧有上限）
+- `session-before-compact`：`pinned_hints`（字符串数组=设置，`()`=清除，缺省=保持）——v1 仅链上可见：宿主尚未消费文本提示（压缩计划器按消息序号 pin），transform 写入的是链上后续 handler 读到的值
 
 ### 能力面函数
 

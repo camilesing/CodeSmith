@@ -732,8 +732,8 @@ pub struct SessionMemorySidecar {
 }
 
 /// Flatten a compaction summary prompt to plain text (block texts joined),
-/// for section-parsing (reflection capture).
-fn prompt_summary_text(prompt: &SystemPrompt) -> String {
+/// for section-parsing (reflection capture) and event payload previews.
+pub(crate) fn prompt_summary_text(prompt: &SystemPrompt) -> String {
     match prompt {
         SystemPrompt::Text(text) => text.clone(),
         SystemPrompt::Blocks(blocks) => blocks
