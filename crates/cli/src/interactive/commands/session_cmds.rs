@@ -447,6 +447,9 @@ async fn adopt_loaded_session(
         },
     )
     .await;
+    // The loaded session may carry a different model; its compaction trigger
+    // is model-derived, so push the adopted threshold/window to the engine.
+    super::config_cmds::apply_compaction(state).await;
 }
 
 /// `/compact [memory|from=N|up_to=N]`

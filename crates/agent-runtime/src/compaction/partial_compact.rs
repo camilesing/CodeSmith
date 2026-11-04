@@ -29,6 +29,10 @@ pub struct PartialCompactRequest {
     pub pivot_index: usize,
     /// Model to use for summary generation.
     pub model: String,
+    /// The resolved context window for `model` (override → provider
+    /// capability → static table → 128K). `None` falls back to the static
+    /// table for callers that never resolved one.
+    pub context_window: Option<u32>,
     /// Custom user feedback to include in the summary.
     pub user_feedback: Option<String>,
 }
@@ -277,9 +281,23 @@ pub async fn partial_compact(
             },
         );
     }
-    let summary_text = crate::compaction::create_summary(client, &summarize_input, &request.model)
-        .await?
-        .text;
+    let summary_text = match request.context_window {
+        Some(window) => {
+            crate::compaction::create_summary_for_window(
+                client,
+                &summarize_input,
+                &request.model,
+                window,
+            )
+            .await?
+            .text
+        }
+        None => {
+            crate::compaction::create_summary(client, &summarize_input, &request.model)
+                .await?
+                .text
+        }
+    };
 
     let summary_block = SystemBlock {
         block_type: "text".to_string(),

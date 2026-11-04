@@ -596,8 +596,9 @@ pub async fn autocompact(state: &mut ReplState, arg: Option<&str>) {
 ///
 /// Both failure modes are surfaced: a dropped `SetCompaction` or a missing
 /// engine would otherwise leave the running engine on the old window while
-/// the caller prints success.
-async fn apply_compaction(state: &ReplState) {
+/// the caller printed success. Model switches call this after `SetModel` so
+/// `compaction.model` and `token_threshold` follow the new model too.
+pub(crate) async fn apply_compaction(state: &ReplState) {
     let config = state.compaction_config();
     match state.engine() {
         Ok(engine) => {

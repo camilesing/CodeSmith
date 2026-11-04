@@ -1037,12 +1037,19 @@ async fn cycle_model(state: &mut ReplState) {
     match configured {
         Some(next) => {
             state.set_model_selection(next.clone());
-            if let Ok(engine) = state.engine() {
-                let _ = engine
+            let applied = match state.engine() {
+                Ok(engine) => engine
                     .send(Op::SetModel {
                         model: next.clone(),
                     })
-                    .await;
+                    .await
+                    .is_ok(),
+                Err(_) => false,
+            };
+            if applied {
+                // Compaction is model-derived; keep the engine's trigger and
+                // window on the new selection rather than the previous one.
+                crate::interactive::commands::config_cmds::apply_compaction(state).await;
             }
             let label = keymap::active().first_label(keymap::ActionId::ModelCycle);
             println!(

@@ -862,8 +862,15 @@ impl Engine {
                         )))
                         .await;
                 }
-                Op::SetCompaction { config } => {
+                Op::SetCompaction { mut config } => {
                     let enabled = config.enabled;
+                    // The op is a host API: a caller that builds a config
+                    // without the resolved window must not silently revert
+                    // compaction to the static table. Fill it from the
+                    // config's own model, which drives the summary request.
+                    if config.context_window.is_none() {
+                        config.context_window = Some(self.effective_context_window(&config.model));
+                    }
                     self.config.compaction = config;
                     let _ = self
                         .tx_event
@@ -2702,9 +2709,13 @@ impl Engine {
         )
     }
 
-    /// Re-resolve compaction's cached window after a model switch. The
-    /// compaction limits and the preflight must keep reading the same answer.
+    /// Re-resolve compaction's model and cached window after a model switch.
+    /// The window must describe the model the summary request names, so both
+    /// move together. `token_threshold` stays host-owned: a host may pin it
+    /// (`/autocompact <tokens>`), and it pushes it through
+    /// `Op::SetCompaction` — recomputing here would clobber that pin.
     fn refresh_compaction_context_window(&mut self) {
+        self.config.compaction.model.clone_from(&self.session.model);
         let window = self.effective_context_window(&self.session.model);
         self.config.compaction.context_window = Some(window);
     }
@@ -2820,6 +2831,7 @@ impl Engine {
                         direction,
                         pivot_index: pivot,
                         model: self.config.compaction.model.clone(),
+                        context_window: self.config.compaction.context_window,
                         user_feedback: Some(reason.to_string()),
                     };
                     match crate::compaction::partial_compact::partial_compact(

@@ -1181,6 +1181,10 @@ async fn cmd_model(state: &mut ReplState, arg: &str) {
                     "{}",
                     format!("warning: engine did not accept the model change: {err}").yellow()
                 );
+            } else {
+                // The engine's compaction threshold/window are model-derived;
+                // follow the switch instead of keeping the previous model's.
+                config_cmds::apply_compaction(state).await;
             }
         }
         Err(err) => println!(
