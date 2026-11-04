@@ -4,7 +4,7 @@ This document provides an overview of the codesmith architecture for developers 
 For the deep design narrative (provider seam, framework-core agent executor, guardrail
 absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
 
-Current boundary note (v0.11.0):
+Current boundary note (v0.12.0):
 - **Framework / implementation layer split.** The workspace is divided into a
   framework group — `protocol`, `tools`, `agent`, `config`, `secrets`,
   `extensions`, `session` (the session data plane: transcript zones,

@@ -19,7 +19,8 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
      splits this file on `## ` headings, so a trailing link block would be
      printed as part of v0.1.0's body. -->
 
-[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/camilesing/CodeSmith/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/camilesing/CodeSmith/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/camilesing/CodeSmith/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/camilesing/CodeSmith/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/camilesing/CodeSmith/compare/v0.8.0...v0.9.0
@@ -34,135 +35,38 @@ to v0.8.48 — is archived in [docs/legacy/CHANGELOG-upstream.md](docs/legacy/CH
 
 ## [Unreleased]
 
-- **Sub-agent execution limits aligned with the main turn** — the blanket
-  30-second cap on delegated tool calls is gone: each tool bounds its own
-  execution exactly as in the main turn (`exec_shell` via `timeout_ms`,
-  120s default / 600s max), and cancelling the child still kills a long
-  call. A child response's `max_tokens` is now derived from the provider
-  and model (`effective_max_output_tokens_for_provider`, up to 65 536,
-  honouring `CODESMITH_MAX_OUTPUT_TOKENS`) instead of a flat 4096 — an
-  implementer's single large `write_file` no longer trips the truncation
-  gate. The model-stream idle watchdog (`[subagents] api_timeout_secs`)
-  is unchanged.
-- **ACP sessions idle-wake** — a background sub-agent finishing while the
-  editor session sits idle now synthesizes the next turn there too (the
-  goal round driver likewise). A queued `session/prompt` is completed only
-  by the turn that is its own (synthesized turns are tagged on
-  `TurnStarted` and never complete a prompt early).
-- **Sub-agents run on the main turn loop** — an in-process sub-agent is now
-  built by the same `turn_executor` factory as the main turn and runs its
-  loop: it streams with the idle watchdog (`[subagents] api_timeout_secs`
-  is now that window), retries a dropped stream, keeps the loop guard and
-  truncation gate, and runs read-only tool calls in parallel. Its
-  extension events (turn, provider and tool) dispatch at its agent-type
-  scope, so global script and compiled-in handlers now see child turns;
-  dylib handlers still never do. The completion sentinel and result shape
-  are unchanged. `agent_send_input` messages arrive in order at the
-  child's next step (`interrupt` no longer discards earlier input).
-- **Active goals now drive themselves** — after a turn ends cleanly while a
-  goal is active, the engine queues the next round on its own (goal state +
-  continuation prompt as the round message), until the goal completes, is
-  blocked, its `token_budget` is spent, or the 25-round cap is hit — at
-  which point the goal auto-pauses with the reason in `/goal` status and
-  `resume` (or a raised budget) continues it.
+## [0.12.0] - 2026-11-04
 
-- **Background shell jobs now report back to the model** — a background
-  `exec_shell` / `task_shell_start` job finishing is bridged onto the same
-  drain seam as sub-agent completions: the model receives a
-  `<codesmith:shell_job.done>` internal event with exit status and output
-  tails, and (with the idle wake) the engine continues on its own. The UI
-  registry intentionally stays shell-free; `/jobs` is unchanged.
+### Added
 
-- **The agent wakes itself when background work finishes** — a background
-  sub-agent completing while no turn is running now synthesizes the next
-  turn instead of waiting for you to type: the engine's idle op-loop listens
-  for the completion (a side-band notify on the parent-completion channel —
-  no new inbox), and the new turn's pre-request drain hands the result to
-  the model. While the prompt is showing, the REPL's unattended pump keeps
-  the engine streaming (approvals it cannot show you are denied, exactly
-  like a headless run — submit anything to take over). Runtime-API threads
-  get the same wake: a per-thread idle monitor owns the engine's event
-  channel between turns, records synthesized turns as first-class turn
-  records (approvals and interrupt work as usual), and forwards idle-time
-  background events as thread-scoped `background.*` SSE events instead of
-  leaking them into the next client turn. Off by default for embeds/`exec`;
-  ACP stays off pending turn-scoped prompt resolution.
+- **Background work drives turns.** A sub-agent or shell job finishing while
+  idle starts a turn; an active goal queues rounds until it completes, blocks,
+  or spends its budget; shell jobs report status and output.
+- Remappable keybindings, any-binary attachments, opt-in OTLP telemetry, FTS5
+  session search, the `codes` alias, config/protocol schemas, unknown-key
+  warnings, and `config dump`.
 
-- **The `input` hook sees what you typed** — an extension or Rhai mod
-  subscribed to `input` now receives the text of each submitted message and
-  of each message typed while a turn runs, and its rewrite is what the model
-  gets. On the interactive and ACP paths the hook previously received an
-  empty string, so a rewrite never applied.
+### Changed
 
-- **Machine-readable contracts for config and the app-server protocol** —
-  `docs/schemas/config.schema.json` describes every `config.toml` key the CLI
-  reads (profiles included), so an editor with TOML schema support can
-  complete and check the file; `docs/schemas/protocol.schema.json` describes
-  the app-server messages for client authors. Both are generated from the
-  types the program actually decodes and a test fails when either falls
-  behind, so they cannot drift from the implementation.
+- Sub-agents run on the main turn loop — streaming, parallel read-only tools,
+  provider-derived `max_tokens`, no 30-second cap.
+- Sessions journal appends and requests, so compaction and edits keep
+  discarded history reachable; cancelling keeps the seen text and closes
+  dangling calls with `TOOL_OUTCOME_UNKNOWN`. One context window feeds status
+  and compaction.
 
-- **Config typos get named** — a key in `config.toml` that no part of
-  CodeSmith reads (`aproval_mode`, a key from another release, a misspelled
-  key inside a table or a profile) is now reported on stderr at startup and
-  listed by `codesmith doctor` (`config_unknown_keys` in `--json`), instead of
-  being silently ignored. Keys that only the app server or the workspace-trust
-  store read are not flagged. It is a warning for now; the run continues.
-  `codesmith config dump` prints the configuration a session in the current
-  workspace would actually run with — every layer folded, secrets redacted.
+### Fixed
 
-- **Sessions keep an append-only journal** — every REPL and ACP session now
-  writes `<id>.journal.jsonl` beside its snapshot: each appended message and
-  each wholesale replacement, in order, so the history a `/compact`, `/purge`,
-  or `/edit` removes from the live conversation stays on disk and the
-  conversation at any point can be rebuilt from the file. The snapshot
-  records how much of the journal it covers; when a crash lands between the
-  two writes, or an operation changed the conversation after the last save,
-  the next load recovers the transcript from the journal. The journal also
-  records each main-turn model request — the system prompt and tool catalog
-  whenever they change — and every failed model round, so any request the
-  session sent can be rebuilt from the file. Exec runs and runtime-API
-  threads keep no journal.
+- Char-boundary panics (CJK, PDF, manifests), mailbox close, fact-ledger
+  underflow, unreadable grants, journals, and mods preserved, and dispatch
+  timeouts that could not bound hung tools.
 
-- **Cancelling mid-answer keeps what you saw** — Ctrl+C (or Esc, an ACP
-  `session/cancel`, a runtime-API interrupt) now stops the stream at once
-  instead of letting the model finish a response nobody reads, and the text
-  already on screen stays in the conversation with a marker naming who
-  interrupted it, so the next turn starts from what you actually saw. A tool
-  call left without a result — at a turn boundary, or in a session being
-  resumed — now gets a `TOOL_OUTCOME_UNKNOWN` result placed directly after it,
-  telling the model the call may or may not have run, instead of vanishing
-  from the request.
+### Security
 
-- **The agent verifies external systems against their documentation** — the
-  base prompt now treats cloud services, databases, libraries, CLIs, and APIs
-  as documented rather than remembered: when a claim depends on how one
-  behaves, the agent searches for the official page, reads it, and cites the
-  URL instead of asserting from training data. `fetch_url` gained the matching
-  capability, `prompt`: the page text and one exact question go to the session
-  assist model (`[utility_model]` when configured, otherwise the session
-  model), which returns a concise answer grounded only in that page — the body
-  stays out of the context. `web_search` and `fetch_url` descriptions now name
-  this workflow, and the stale claim that `web_search` returns `ref_id`s is
-  gone.
-
-- **`codes` is a shorthand for `codesmith`** — every install channel that ships
-  the CLI now also provides `codes`: `cargo install` and Nix get a launcher
-  binary, the npm wrapper registers a second bin name, and the release install
-  scripts create the alias. It forwards every argument and the exit status, so
-  `codes` opens the REPL and `codes <subcommand>` matches `codesmith
-  <subcommand>`; self-update still writes the real binary, so the two names
-  cannot drift.
-
-- **Every approval question now shares one key legend** — `[key] what it does`,
-  with the answer read on the same row. The tool gate lists `[n] skip` at last
-  (an empty line still skips silently, and a bare `n` still works) and stops
-  repeating the `[o]` explanation its own confirmation line prints; the plan gate
-  asks on a row of its own; a bare `[r]` re-asks with the question's own keys
-  under it, minus `[r]` itself. Sandbox elevation swaps `[y/N]` and the "(mode
-  policy)" jargon for a question plus the same key shape, and a model question
-  numbers its options `[1]` instead of `1)` and says that any other answer
-  cancels the request.
+- Sandbox/execpolicy fail closed on heredocs, redirects, multi-line wildcards,
+  subshells, `sed -i`/`sort -o`/`awk`, `git -C … config`, `deno run`, and
+  `python -c`; approvals are exact-call scoped; fetches fail closed on DNS and
+  stream under the cap; empty trust prefixes, `..` traversal rejected.
 
 ## [0.11.0] - 2026-10-25
 

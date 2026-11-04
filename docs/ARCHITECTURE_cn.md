@@ -4,7 +4,7 @@
 深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
 [DESIGN_INTERNALS_cn.md](DESIGN_INTERNALS_cn.md)。
 
-当前边界说明（v0.11.0）：
+当前边界说明（v0.12.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、
   `config`、`secrets`、`extensions`、`session`（会话数据面：转写分区、日志、
   会话存储）、`sandbox`（执行策略面：命令安全、execpolicy、OS 沙箱、网络

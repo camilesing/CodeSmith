@@ -2236,7 +2236,7 @@ async fn agent_run_recovers_last_tool_result_from_child_transcript() {
     snapshot.result = None;
     {
         let mut store = runtime.context.runtime.handle_store.lock().await;
-        store.insert_json(
+        let _ = store.insert_json(
             "agent:agent_run_case3",
             "full_transcript",
             json!({
@@ -2300,7 +2300,7 @@ async fn agent_run_recovery_prefers_child_assistant_text() {
     snapshot.result = None;
     {
         let mut store = runtime.context.runtime.handle_store.lock().await;
-        store.insert_json(
+        let _ = store.insert_json(
             "agent:agent_run_cancelled",
             "full_transcript",
             json!({
@@ -2375,7 +2375,7 @@ async fn agent_run_marks_unreadable_transcript_instead_of_claiming_no_text() {
     snapshot.result = None;
     {
         let mut store = runtime.context.runtime.handle_store.lock().await;
-        store.insert_text("agent:agent_run_bad", "full_transcript", "not json");
+        let _ = store.insert_text("agent:agent_run_bad", "full_transcript", "not json");
     }
 
     let inline = inline_subagent_report(&snapshot, &runtime).await;
@@ -2430,7 +2430,7 @@ async fn foreground_result_registers_for_agent_eval_recovery() {
     let ctx = ToolContext::new(".");
     {
         let mut store = ctx.runtime.handle_store.lock().await;
-        store.insert_json(
+        let _ = store.insert_json(
             "agent:agent_run_sync1",
             "full_transcript",
             json!({
