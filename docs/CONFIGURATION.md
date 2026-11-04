@@ -255,17 +255,32 @@ selector is
 
 ```toml
 turn_executor = "builtin"   # default; the production HostAgentExecutor loop
+turn_executor = "rhai"      # run a mod's loop script (register_loop)
 ```
 
-Only ids registered in the process are valid — currently `builtin`; the
+Only ids registered in the process are valid — `builtin` and `rhai`; the
 registry exists so an alternate loop can land as a crate-compiled registry
 entry instead of a forked engine or a second sub-agent loop. An unknown id
 fails the main turn loud at startup
 (`turn_executor: no turn executor registered for '…'` with the registered
 ids and the remedy), and at turn assembly if a registration disappears
 mid-session, and a child's turn fails through its normal failed-agent
-contract (nothing runs). Script mods cannot implement a loop (no async);
-wrapping the run from a Rust extension is the composition half,
+contract (nothing runs).
+
+`"rhai"` is the script-driven loop: the turn runs the entry a mod declared
+with `register_loop("main")` (see MODS.md "Writing a loop script"); every
+capability call the script makes executes the host's step services, so
+streaming, approval, sandbox and the event waterfalls are inherited. Its
+settings live in the `[rhai_loop]` table:
+
+```toml
+[rhai_loop]
+mod = "react-min"   # pin the loop-hosting mod id (default: first register_loop mod)
+timeout_secs = 3600 # wall-clock budget for one turn's script execution
+```
+
+Selecting `"rhai"` with no loop mod loaded fails loud at turn assembly.
+Wrapping the run from a Rust extension is the composition half,
 `register_around_turn` (`docs/EXTENSIONS.md`) — wrapped around the
 main turn and every sub-agent turn alike.
 

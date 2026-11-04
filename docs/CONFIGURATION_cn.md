@@ -235,14 +235,28 @@ factory。顶层选择键为
 
 ```toml
 turn_executor = "builtin"   # 默认值；生产的 HostAgentExecutor 循环
+turn_executor = "rhai"      # 运行某个 mod 的 loop 脚本（register_loop）
 ```
 
-只有进程内已注册的 id 才有效——目前是 `builtin`；注册表的存在让替代
+只有进程内已注册的 id 才有效——`builtin` 与 `rhai`；注册表的存在让替代
 循环能以 crate 内编译的注册条目落地，而不是分叉引擎或第二条子代理循环。
 未知 id 在启动时即刻报错（`turn_executor: no turn executor registered
 for '…'`，带已注册 id 与补救说明）；会话中途注册消失则在 turn 装配时报错，
-子代理的 turn 按其既有的失败契约失败（什么都不跑）。脚本 mod 无法
-实现循环（无 async）；从 Rust 扩展侧包裹 run 是组合半边
+子代理的 turn 按其既有的失败契约失败（什么都不跑）。
+
+`"rhai"` 是脚本驱动的循环：turn 运行某个 mod 经 `register_loop("main")`
+声明的入口（见 MODS_cn.md "编写 loop 脚本"）；脚本的每次能力调用执行的
+都是宿主的步骤服务，因此流式、审批、沙箱与事件瀑布全部继承。其设置在
+`[rhai_loop]` 表：
+
+```toml
+[rhai_loop]
+mod = "react-min"   # 固定承载 loop 的 mod id（默认：第一个 register_loop 的 mod）
+timeout_secs = 3600 # 单个 turn 脚本执行的墙钟预算
+```
+
+选中 `"rhai"` 而没有已装载的 loop mod 时，在 turn 装配处响亮失败。
+从 Rust 扩展侧包裹 run 是组合半边
 `register_around_turn`（`docs/EXTENSIONS_cn.md`，主 turn 与每个子代理
 turn 都会被包裹），不是这个键。
 

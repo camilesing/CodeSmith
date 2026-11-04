@@ -100,9 +100,11 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   registries' built-in surface are core by contract, not plugins; one
   turn loop drives every agent (DSH kernel-composition model) — the
   engine resolves a config-selected factory (`turn_executor`, default
-  `builtin`) from the process-shared `TurnExecutorRegistry`
-  (`engine/executor_composition.rs`), with alternates as crate-compiled
-  registry entries, and wraps every turn with the `AroundTurnHandler`
+  `builtin`; `"rhai"` runs a mod's `register_loop` script over the host's
+  step services, `engine/rhai_executor.rs`) from the process-shared
+  `TurnExecutorRegistry` (`engine/executor_composition.rs`), with
+  alternates as crate-compiled registry entries, and wraps every turn with
+  the `AroundTurnHandler`
   chain (`register_around_turn`, DSH `next()`, Rust extensions; a child
   composes it at its agent-type scope, dylib wrappers excluded). Every
   in-process sub-agent turn rides the same factory through

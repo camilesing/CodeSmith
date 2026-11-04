@@ -31,7 +31,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
-| turn 循环（所有 agent） | — | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（默认 `builtin`），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 DSH `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；异步接缝（无脚本形态） |
+| turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 DSH `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
 | 压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建；压缩的*旋钮*是 policy，算法不是） |
 
 经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
@@ -446,6 +446,26 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 
 - **`reflexion`**——Shinn et al.（2023）的 mod 化：失败的 `tool-result` 与 `result-verified` 的 `verified-fail` 判定累积进反思账本（mod 的 KV），下一次尝试开始时以一条注入的 user 消息携带（`before-agent-start` 瀑布），首个干净 turn 将其清空。仅主 turn（`ctx.agent.main` 守卫）。
 - **`voyager-capture`**——Wang et al.（2023）的采集半边：干净的主 turn 动作序列（≥ 3 次成功的动作类调用、零失败）被蒸馏为技能存入 mod 的 KV；每次装载经 `register_skill` 重新注册累积的库，采集到的流程在 `/mods reload` 后回归。
+- **`react-min`**——loop 范例：builtin 的 ReAct 形状写成 ~20 行脚本。激活它并设 `turn_executor = "rhai"`，turn 即运行该脚本而非编译循环——流式、审批、事件纪律全部一致，因为每次 `llm_request()` / `run_tools()` 调用执行的都是宿主的步骤服务。引擎的等价性测试以 mock provider 驱动它。
+
+## 编写 loop 脚本
+
+`register_loop("main")` 声明入口；选中 `turn_executor = "rhai"` 时，
+`fn main() { ... }` 每个turn 在专用线程上运行一次。能力面是 loop 引擎注册的
+一组全局函数：
+
+| 调用 | 返回 / 行为 |
+|---|---|
+| `llm_request()` | `#{text, tool_uses: [#{id, name, input}], stop_reason, usage: #{input_tokens, output_tokens}, interrupted}`——一个 LLM 轮：请求组装（三区、prefix-cache 观测）、`before-provider-headers` / `before-provider-request` 瀑布、带透明重试的流式、转录持久化。排队的 steer 在请求前排入转录（builtin 循环的步首行为）。 |
+| `run_tools(calls)` | `#{halt, plan_approved, errors}`——一个工具批：审批、沙箱、guard、`tool-call` / `tool-result` 瀑布与结果持久化。`halt != ()` 表示 loop guard 触发——应结束 turn。 |
+| `cancelled()` | turn 的取消令牌触发后返回 `true`——长循环里要检查。 |
+| `note(text)` | 把脚本决策记录到会话日志路径（现场呈现与持久记录一致）。 |
+
+错误姿态**响亮失败**（与行为 hook 相反）：脚本错误使 turn 失败。
+config.toml 的 `[rhai_loop]` 固定 mod（`mod = "react-min"`）并限定单个
+turn 的脚本执行时长（`timeout_secs`，默认 3600）。脚本 loop 不继承
+builtin 循环的 compaction 预检、LSP 冲洗、容量门与 `turn-stopping`
+steer 接缝——移植需要这些的循环前，先看 `rhai_executor` 模块的已知限制。
 
 ## mod.toml 字段
 

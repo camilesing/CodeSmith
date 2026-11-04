@@ -32,7 +32,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
-| Turn loop (every agent) | — | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (default `builtin`) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with DSH `next()` (every turn — a sub-agent composes the chain at its agent-type scope); async seam (no script form) |
+| Turn loop (every agent) | ✓ `register_loop` (drive, via the `rhai` executor) | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (`builtin`, or `"rhai"` to run a mod's loop script) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with DSH `next()` (every turn — a sub-agent composes the chain at its agent-type scope); a script loop owns only the loop SHAPE — its capability calls (`llm_request`, `run_tools`) execute the host's step services (see "Writing a loop script") |
 | Compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries; compaction *knobs* are policy, the algorithm is not) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
@@ -501,6 +501,28 @@ The repository ships two behavior-plugin exemplars under [`examples/mods/`](../e
 
 - **`reflexion`** — Shinn et al. (2023) as a mod: failing tool results and `result-verified` `verified-fail` verdicts accumulate into a reflection ledger (the mod's KV), the ledger rides the next attempt as one injected user message (the `before-agent-start` waterfall), and the first clean turn expires it. Main-turn only (`ctx.agent.main` guard).
 - **`voyager-capture`** — the capture half of Wang et al. (2023): a clean main-turn action sequence (≥ 3 successful action-class calls, zero failures) is distilled into a skill and stored in the mod's KV; every load re-registers the accumulated library via `register_skill`, so captured flows come back after `/mods reload`.
+- **`react-min`** — a LOOP exemplar: the builtin ReAct shape as a ~20-line script. Activate it, set `turn_executor = "rhai"`, and the turn runs the script instead of the compiled loop — same streaming, approval and event discipline, because every `llm_request()` / `run_tools()` call executes the host's step services. The engine's equivalence test drives it against a mock provider.
+
+## Writing a loop script
+
+`register_loop("main")` declares the entry; `fn main() { ... }` runs once per
+turn on a dedicated thread when `turn_executor = "rhai"` is selected. The
+capability surface is a set of global functions the loop engine registers:
+
+| Call | Returns / does |
+|---|---|
+| `llm_request()` | `#{text, tool_uses: [#{id, name, input}], stop_reason, usage: #{input_tokens, output_tokens}, interrupted}` — one LLM round: request assembly (three-zone, prefix-cache-observed), the `before-provider-headers` / `before-provider-request` waterfalls, streaming with transparent retry, transcript persistence. Queued steers are drained into the transcript ahead of the request (the builtin loop's top-of-step behavior). |
+| `run_tools(calls)` | `#{halt, plan_approved, errors}` — one tool batch through approval, sandbox, guards, the `tool-call` / `tool-result` waterfalls and result persistence. `halt != ()` means the loop guard tripped — stop the turn. |
+| `cancelled()` | `true` once the turn's cancel token fired — check it in long-running loops. |
+| `note(text)` | Records a script decision on the session log path (live presentation and the persisted record agree). |
+
+Error posture is **fail loud** (the opposite of a behavior hook): a script
+error fails the turn. `[rhai_loop]` in `config.toml` pins the mod
+(`mod = "react-min"`) and bounds one turn's script execution
+(`timeout_secs`, default 3600). A script loop does not inherit the builtin
+loop's compaction preflight, LSP flush, capacity gates or the `turn-stopping`
+steer seam — see the `rhai_executor` module's known limitations before
+porting a loop that needs them.
 
 ## mod.toml Fields
 
