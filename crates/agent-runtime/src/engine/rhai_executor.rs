@@ -484,7 +484,12 @@ impl RhaiTurnExecutor {
 
         let script = self.spawn_script_thread(tx, Arc::clone(&aborted));
 
-        let budget = Duration::from_secs(self.settings.timeout_secs.max(1));
+        // One absolute deadline for the whole serve: a per-iteration
+        // `sleep(budget)` would restart on every capability call, so a
+        // busy runaway loop (each round under the budget) could never
+        // trip it — only an idle gap could.
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(self.settings.timeout_secs.max(1));
         let outcome: anyhow::Result<StopReason> = loop {
             tokio::select! {
                 biased;
@@ -497,7 +502,7 @@ impl RhaiTurnExecutor {
                     aborted.store(true, Ordering::Relaxed);
                     break Ok(StopReason::Interrupted);
                 }
-                _ = tokio::time::sleep(budget) => {
+                _ = tokio::time::sleep_until(deadline) => {
                     aborted.store(true, Ordering::Relaxed);
                     tracing::error!(
                         "rhai loop exceeded its {}s wall-clock budget — aborted",
@@ -1648,11 +1653,24 @@ mod tests {
     /// pop-order mocks would be nondeterministic; content routing is not.
     struct RoutedMockLlm {
         routes: Vec<(&'static str, &'static str)>,
+        delay: Option<Duration>,
     }
 
     impl RoutedMockLlm {
         fn new(routes: Vec<(&'static str, &'static str)>) -> Self {
-            Self { routes }
+            Self {
+                routes,
+                delay: None,
+            }
+        }
+
+        /// `new` with a per-round delay — paces a spinning script so the
+        /// wall-clock budget (not the Rhai operation cap) trips first.
+        fn delayed(routes: Vec<(&'static str, &'static str)>, delay: Duration) -> Self {
+            Self {
+                routes,
+                delay: Some(delay),
+            }
         }
     }
 
@@ -1699,7 +1717,11 @@ mod tests {
                 .unwrap_or_else(|| "no route".to_string());
             let mut events = text_block(0, &reply);
             events.extend(finish("end_turn"));
+            let delay = self.delay;
             Box::pin(async move {
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
                 Ok(
                     Box::pin(futures_util::stream::iter(events.into_iter().map(Ok)))
                         as StreamEventBox,
@@ -1920,5 +1942,147 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 9"))
         }));
+    }
+
+    /// The wall-clock budget is absolute: a script that keeps the calls
+    /// coming (each round well under the budget) still trips it. A
+    /// per-select-iteration `sleep(budget)` would restart on every call,
+    /// so only an idle gap could ever time out — a busy runaway loop
+    /// never would.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wall_clock_budget_trips_despite_constant_activity() {
+        let source = r#"
+            fn main() {
+                loop {
+                    let r = llm_request();
+                    if r.interrupted { return (); }
+                }
+            }
+        "#;
+        let mut executor = scripted_executor(source, vec![("", "ok")], None, 3);
+        executor.settings = RhaiLoopSettings {
+            timeout_secs: 1,
+            ..RhaiLoopSettings::default()
+        };
+        // 10ms rounds: ~100 rounds inside the 1s budget, far under the
+        // Rhai operation cap — only the deadline can end this turn.
+        executor.host = Arc::new(HostAgentExecutor::new(
+            Arc::new(RoutedMockLlm::delayed(
+                vec![("", "ok")],
+                Duration::from_millis(10),
+            )),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+
+        let mut history = VecChatHistory::new();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            executor.run(&mut history, "spin".to_string()),
+        )
+        .await
+        .expect("the budget must end the turn, not spin until the harness timeout");
+        let err = outcome.expect_err("a budget overrun errors the turn");
+        assert!(
+            err.to_string().contains("wall-clock budget"),
+            "error names the budget: {err}"
+        );
+    }
+
+    /// Cancellation liveness: a cancel landing mid-serve (here inside
+    /// `eval_child`, whose child runs a long round) must end the turn
+    /// promptly with `Interrupted` — never hang the join on the script
+    /// thread. Two properties keep that true and this test guards them
+    /// together: the engine's `on_progress` hook terminates a script at
+    /// the aborted flag at the next operation boundary (so a cancelled
+    /// script cannot park on a further capability call), and an
+    /// interrupted LLM round drops the reply (so the blocked script
+    /// errors out through the dropped sender instead of waiting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_mid_call_loop_ends_promptly() {
+        let source = r#"
+            fn main() {
+                if spawn_depth() > 0 {
+                    llm_request();
+                    return ();
+                }
+                let h = spawn_child(#{prompt: "slow work", type: "general"});
+                let r = eval_child(h, 60000);
+                llm_request(#{prompt: "after eval " + r.status});
+            }
+        "#;
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "test-loop-mod",
+            "Test Loop",
+            "0.1.0",
+            format!("register_loop(\"main\");\n{source}"),
+            codesmith_extensions::script::kv::ModKvStore::ephemeral(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("loop mod compiles");
+        let entry = rhai_mod.loop_entry().expect("declares a loop").to_string();
+        // A real runner: the child (which runs the rhai executor too)
+        // requires one at its factory build — without it the child fails
+        // before ever spanning the cancel.
+        let runner = runner_with(source).await;
+        let token = CancellationToken::new();
+        let client: codesmith_agent::llm_client::LlmClientHandle = Arc::new(
+            RoutedMockLlm::delayed(vec![("", "ok")], Duration::from_millis(300)),
+        );
+        let host = Arc::new(HostAgentExecutor::new(
+            client.clone(),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(token.clone()),
+            None,
+        ));
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry,
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(client, Some(runner), 3),
+        };
+
+        let mut history = VecChatHistory::new();
+        let outcome = {
+            let run = executor.run(&mut history, "race".to_string());
+            tokio::pin!(run);
+            // Let the turn run into the child's 300ms round (polling run
+            // here — an unpollled future does no work), then cancel
+            // mid-serve: the child interrupts BECAUSE of the cancel, so
+            // the eval reply and the script's next call land strictly
+            // after the token fired.
+            tokio::select! {
+                _ = &mut run => panic!("the turn ended before the cancel"),
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+            token.cancel();
+            tokio::time::timeout(Duration::from_secs(10), &mut run)
+                .await
+                .expect("the turn must end, not hang on the join")
+        };
+        assert_eq!(
+            outcome.expect("the interrupted turn completes"),
+            StopReason::Interrupted
+        );
     }
 }

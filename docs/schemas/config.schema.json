@@ -24,6 +24,17 @@
         "null"
       ]
     },
+    "rhai_loop": {
+      "description": "`[rhai_loop]` — settings for the script-driven executor\n(`turn_executor = \"rhai\"`).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RhaiLoopToml"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "api_key": {
       "type": [
         "string",
@@ -623,6 +634,28 @@
     }
   },
   "$defs": {
+    "RhaiLoopToml": {
+      "description": "The `[rhai_loop]` config table (script-driven executor settings).",
+      "type": "object",
+      "properties": {
+        "mod": {
+          "description": "Pin the loop-hosting mod by id (default: the first mod that\ndeclared `register_loop`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_secs": {
+          "description": "Wall-clock budget for one turn's script execution, in seconds\n(default 3600).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
     "ToolsConfig": {
       "description": "Model-visible tool catalog controls (`[tools]` table in config.toml).",
       "type": "object",
@@ -2744,6 +2777,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "rhai_loop": {
+          "description": "`[rhai_loop]` — settings for the script-driven executor\n(`turn_executor = \"rhai\"`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RhaiLoopToml"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "api_key": {
