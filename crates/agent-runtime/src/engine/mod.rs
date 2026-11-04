@@ -2700,7 +2700,9 @@ impl Engine {
     /// window-dependent path (preflight, capacity observation, compaction
     /// limits, status via the host's mirror of the same resolver) reads this
     /// answer, so a configured 1M window can no longer be displayed while the
-    /// engine enforces 200K.
+    /// engine enforces 200K. Callers normally pass `self.session.model`;
+    /// `Op::SetCompaction` passes the incoming config's own model, which is
+    /// the one its summary request will name.
     pub(crate) fn effective_context_window(&self, model: &str) -> u32 {
         crate::config_types::effective_context_window(
             self.api_provider,

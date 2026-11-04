@@ -332,7 +332,8 @@ fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
         | "tencent/hy3-preview"
         | "moonshotai/kimi-k2.6"
         | "moonshotai/kimi-k2.6:free" => Some(262_144),
-        "z-ai/glm-5.1" | "z-ai/glm-5.3" | "glm-5.3" | "z-ai/glm-5v-turbo" => Some(202_752),
+        "z-ai/glm-5.1" | "z-ai/glm-5.3" | "z-ai/glm-5.3:free" | "glm-5.3" | "glm-5.3:free"
+        | "z-ai/glm-5v-turbo" => Some(202_752),
         "qwen/qwen3.7-max" | "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "qwen/qwen3.6-plus" => {
             Some(1_000_000)
         }
@@ -638,7 +639,13 @@ mod tests {
 
     #[test]
     fn glm_5_3_matches_glm_5_1_window() {
-        for model in ["glm-5.3", "z-ai/glm-5.3", "z-ai/glm-5.1"] {
+        for model in [
+            "glm-5.3",
+            "glm-5.3:free",
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.3:free",
+            "z-ai/glm-5.1",
+        ] {
             assert_eq!(context_window_for_model(model), Some(202_752), "{model}");
         }
     }

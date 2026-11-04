@@ -69,6 +69,10 @@ pub fn effective_max_output_tokens(model: &str) -> u32 {
 /// 1. `CODESMITH_MAX_OUTPUT_TOKENS` (or legacy `DEEPSEEK_MAX_OUTPUT_TOKENS`),
 /// 2. provider capability matrix,
 /// 3. model table / context-window heuristic.
+///
+/// Host/test compatibility: it cannot see the engine's `context_window`
+/// override. Engine paths must use
+/// [`effective_max_output_tokens_for_window`] with the resolved window.
 pub fn effective_max_output_tokens_for_provider(provider: ApiProvider, model: &str) -> u32 {
     let window = crate::config_types::effective_context_window(provider, model, None);
     effective_max_output_tokens_for_window(provider, model, window)
@@ -484,6 +488,9 @@ fn reserved_output_for_input_budget(window_tokens: u32, fallback_output: u32) ->
     reserved.min(ceiling)
 }
 
+/// Static-table-only input budget. Host/test compatibility: it cannot see the
+/// engine's `context_window` override and returns `None` for unknown models.
+/// Engine paths must use [`context_input_budget_for_window`].
 pub fn context_input_budget(model: &str) -> Option<usize> {
     let window_tokens = context_window_for_model(model)?;
     let reserved_output =
@@ -491,6 +498,9 @@ pub fn context_input_budget(model: &str) -> Option<usize> {
     input_budget_from_window_and_output(window_tokens, reserved_output)
 }
 
+/// Provider-aware input budget without an explicit override. Host/test
+/// compatibility: engine paths must pass their resolved window to
+/// [`context_input_budget_for_window`].
 pub fn context_input_budget_for_provider(provider: ApiProvider, model: &str) -> Option<usize> {
     let window = crate::config_types::effective_context_window(provider, model, None);
     context_input_budget_for_window(window, provider, model)

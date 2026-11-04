@@ -2121,6 +2121,8 @@ impl Config {
     /// knows). The override belongs to the provider, not to one model id, so
     /// it keeps applying after a `/model` switch to another id on the same
     /// provider — it states what the endpoint's backend really accepts.
+    /// The 128K floor makes this total: it always returns `Some`, and the
+    /// `Option` stays for call-site compatibility.
     #[must_use]
     pub fn effective_context_window(&self, model: &str) -> Option<u32> {
         Some(resolve_effective_context_window(
@@ -9736,8 +9738,8 @@ context_window = 500000
         ensure_parent_dir(&config_path)?;
 
         // 1. No override: an Anthropic-compatible endpoint serving GLM-5.3
-        // resolves through provider capability (200K), not the 128K legacy
-        // floor the static table used to fall back to.
+        // resolves through provider capability (200K), which wins over the
+        // static table's 202,752 for the same id.
         fs::write(
             &config_path,
             r#"api_key = "codesmith-test-key"
@@ -9895,6 +9897,30 @@ context_window = 200000
         assert_eq!(
             cap.request_payload_mode,
             RequestPayloadMode::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn provider_capability_openai_family_uses_the_static_table_for_known_models() {
+        // Gateways front many backends: a model the static table (or a `_Nk`
+        // served-name hint) knows reports its real window, not the 128K floor.
+        assert_eq!(
+            provider_capability(ApiProvider::Openai, "z-ai/glm-5.3").context_window,
+            202_752
+        );
+        assert_eq!(
+            provider_capability(ApiProvider::Atlascloud, "deepseek-ai/deepseek-v4-flash")
+                .context_window,
+            crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(
+            provider_capability(ApiProvider::Moonshot, "moonshotai/kimi-k2.6").context_window,
+            262_144
+        );
+        // Unknown names keep the legacy floor.
+        assert_eq!(
+            provider_capability(ApiProvider::Openai, "totally-unknown-model-xyz").context_window,
+            crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS
         );
     }
 

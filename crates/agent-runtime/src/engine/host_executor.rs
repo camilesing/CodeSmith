@@ -106,7 +106,8 @@
 //!    compaction (so the estimate reflects the just-compacted transcript) and
 //!    before the LSP flush, the executor estimates input tokens via
 //!    [`estimate_input_tokens_conservative`] and, if the estimate exceeds the
-//!    provider's input budget ([`context_input_budget_for_provider`]),
+//!    turn's input budget ([`context_input_budget_for_window`], fed the
+//!    engine-resolved effective window),
 //!    attempts emergency recovery via `recover_context_overflow`
 //!    (mirrors the retired turn handler). The recovery cascade runs
 //!    micro-compaction (best-effort, fresh state) → forced full LLM compaction
@@ -387,10 +388,10 @@
 //!     `run_compaction` reinject's provider-budget is absorbed ✅ (slice 31 §E)
 //!     — `ReinjectProbe` carries `api_provider` (paired with `model`) and
 //!     `run_compaction`'s Ok arm passes `ReinjectProbe::provider_input_budget()`
-//!     instead of `None`, budget-trialing candidates against the provider's
-//!     input budget so reinject doesn't push back over after auto-compaction
-//!     (mirrors production's `context_input_budget_for_provider` at
-//!     `mod.rs:1465` / `:1620`).
+//!     instead of `None`, budget-trialing candidates against the turn's
+//!     effective input budget so reinject doesn't push back over after
+//!     auto-compaction (mirrors production's budget at `mod.rs:1465` /
+//!     `:1620`).
 //! - **post-compact cleanup absorbed ✅ (post-`run`, slice 25c §E)** — production's
 //!   `post_compact_cleanup` force-rebuilds the working set and resets per-file
 //!   cycle state (`micro_compact_state` / `circuit_breaker` /
@@ -778,9 +779,9 @@ pub struct ReinjectProbe {
     model: String,
     /// Provider kind used with [`model`](Self::model) to compute the
     /// input-side token budget for the reinject budget trial
-    /// ([`provider_input_budget`]). Mirrors production's
-    /// `context_input_budget_for_provider(self.api_provider, &self.session.model)`
-    /// at `mod.rs:1465` / `:1620`. `ApiProvider` is `Copy`.
+    /// ([`provider_input_budget`]). Kept for the capability-derived output
+    /// reservation; the window itself is the engine-resolved
+    /// [`effective_window`](Self::effective_window). `ApiProvider` is `Copy`.
     api_provider: ApiProvider,
     /// The turn's one effective context window, resolved by the engine
     /// (config override → provider capability → static table → 128K). Every
@@ -832,9 +833,8 @@ impl ReinjectProbe {
     /// The input-side token budget for this provider/model pair (slice 31 §E).
     /// Used by `run_compaction`'s Ok arm to budget-trial reinjected candidates
     /// on the auto-compact path (previously `None` — dedup + push only).
-    /// Mirrors production's `context_input_budget_for_provider(self.api_provider,
-    /// &self.session.model)` at `mod.rs:1465` / `:1620`. Returns `None` for
-    /// unknown models (no budget trial).
+    /// Budgets against the probe's engine-resolved effective window, so the
+    /// trial shares the preflight's denominator.
     pub(crate) fn provider_input_budget(&self) -> Option<usize> {
         context_input_budget_for_window(self.effective_window, self.api_provider, &self.model)
     }
@@ -853,10 +853,11 @@ impl ReinjectProbe {
     }
 }
 
-/// Capacity preflight collaborator (§E). Carries the provider + model needed
-/// to compute the input-side token budget ([`context_input_budget_for_provider`]),
-/// a [`CompactionConfig`] for the forced-compaction recovery path, and the
-/// workspace root for [`compact_messages_safe`].
+/// Capacity preflight collaborator (§E). Carries the provider + model and the
+/// engine-resolved effective window needed to compute the input-side token
+/// budget ([`context_input_budget_for_window`]), a [`CompactionConfig`] for
+/// the forced-compaction recovery path, and the workspace root for
+/// [`compact_messages_safe`].
 ///
 /// The probe itself is stateless — the per-run recovery counter
 /// (`context_recovery_attempts`) lives as a local in `HostAgentExecutor::run_inner`,
@@ -1255,8 +1256,9 @@ pub struct HostAgentExecutor {
     /// `run` calls (matches `Session.micro_compact_state` / `.circuit_breaker`).
     compaction: Option<CompactionProbe>,
     /// Optional capacity probe (§E). `None` ⇒ token-budget preflight is a
-    /// no-op. The probe carries the provider/model (for budget computation
-    /// via [`context_input_budget_for_provider`]), a [`CompactionConfig`]
+    /// no-op. The probe carries the provider/model and effective window (for
+    /// budget computation via [`context_input_budget_for_window`]), a
+    /// [`CompactionConfig`]
     /// (cloned + forced during emergency recovery), and the workspace root
     /// (for [`compact_messages_safe`]). Unlike [`CompactionProbe`] the probe
     /// is stateless — the per-run recovery counter is a local in `run_inner`,
@@ -2422,15 +2424,15 @@ impl HostAgentExecutor {
     /// ends (NLL) before the mutable `history.push`, and reads see prior
     /// pushes (live) — matching production's `session.messages` semantics.
     ///
-    /// `target_input_budget`: the provider's input-side token budget
+    /// `target_input_budget`: the turn's input-side token budget
     /// ([`ReinjectProbe::provider_input_budget`]) for the auto-compact path
     /// (slice 31 §E — was `None` / dedup + push only; now budget-trials so
-    /// reinject doesn't push back over the provider budget after
+    /// reinject doesn't push back over the effective budget after
     /// auto-compaction, mirroring production's
-    /// `context_input_budget_for_provider` at `mod.rs:1465`); `Some(budget)`
+    /// [`context_input_budget_for_window`] at `mod.rs:1465`); `Some(budget)`
     /// for the context-overflow recovery path (at the hard ceiling, mirror
-    /// production's `Some(target_budget)`). `None` when the model is unknown
-    /// (no budget trial). Returns the count pushed.
+    /// production's `Some(target_budget)`). `None` only when the window
+    /// cannot yield a budget. Returns the count pushed.
     async fn reinject_compaction_attachments(
         &self,
         history: &mut dyn ChatHistory,
@@ -2707,13 +2709,13 @@ impl HostAgentExecutor {
                 // it mid-run — the merge only matters for the next turn's
                 // snapshot). Slice 25b §E: `reinject_compaction_attachments`
                 // now fires DURING `run` (right here, after the transcript
-                // replace) — provider budget from
+                // replace) — effective budget from
                 // `ReinjectProbe::provider_input_budget()` (slice 31 §E; was
                 // `None` — dedup + push only; now budget-trials candidates so
-                // reinject doesn't push back over the provider's input budget
+                // reinject doesn't push back over the turn's input budget
                 // after auto-compaction, mirroring production's
-                // `context_input_budget_for_provider` at `mod.rs:1465`).
-                // `None` when the model is unknown (no budget trial).
+                // [`context_input_budget_for_window`] at `mod.rs:1465`).
+                // `None` only when the window cannot yield a budget.
                 // Slice 25c §E: this is the *merge* path, so the cleanup signal
                 // is intentionally NOT set here (full→summary XOR:
                 // `post_compact_cleanup` fires only on the non-merge arms —
