@@ -1959,6 +1959,7 @@ pub(crate) fn headless_engine_config(
 
     Ok(EngineConfig {
         model,
+        context_window_override: config.context_window_override(),
         workspace,
         allow_shell: auto_approve || config.allow_shell(),
         trust_mode,

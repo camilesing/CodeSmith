@@ -9,7 +9,7 @@
 // rewired onto `codesmith_agent::models` directly.
 pub use codesmith_agent::models::{
     ContentBlock, Message, MessageRequest, MessageResponse, SystemBlock, SystemPrompt, Tool, Usage,
-    compaction_threshold_for_model, compaction_threshold_for_window, context_window_for_model,
+    compaction_threshold_for_model, compaction_threshold_for_window,
 };
 // Consumed only through `crate::models::<item>` from cfg(test) modules
 // (llm_client::mock, config tests, runtime_api tests, engine tests).

@@ -186,11 +186,12 @@ context_window = 131072                # 后端真正接受的 token 数
 
 `display_model` 只影响呈现：banner、状态行、`/status`、`/model` 打印该
 字符串，而请求载荷、会话元数据和日志仍保留真实模型 id。`context_window`
-驱动 `🧭` 分母、`/context`、`/tokens`、`doctor --json` 的
-`capability.context_window` 以及自动压缩阈值；未设置时这些都回退到静态
-模型名表（例如任何 `claude-*` id 都会解析为 200,000）。两个键都属于
-provider，因此在该 provider 上 `/model` 切换到别的 id 后依然生效。
-引擎内部的容量计算（`cycle_manager`、容量预检）仍读静态表。
+是唯一的有效窗口：它驱动 `🧭` 分母、`/context`、`/tokens`、
+`doctor --json` 的 `capability.context_window`、自动压缩阈值，以及引擎的
+容量预检与压缩限额。未设置时按 provider 能力（Anthropic 200,000、
+Ollama 8,192 等）→ 静态模型名表（例如任何 `claude-*` id 都会解析为
+200,000）→ 128K 兜底的顺序解析。两个键都属于 provider，因此在该 provider
+上 `/model` 切换到别的 id 后依然生效。
 
 #### 自定义 provider 注册表（`[[providers.custom]]`）
 

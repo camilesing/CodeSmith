@@ -216,8 +216,9 @@ display_model = "GLM-4.6 (BigModel)"   # REPL 为该 provider 打印的名称
 
 `context_window` 会替换 `doctor --json`、REPL 状态行、`/context`、`/tokens`
 以及自动压缩阈值所用的窗口，且对在该 provider 上选中的任何模型 id 生效。
-`display_model` 只影响呈现——请求、会话元数据和日志仍保留真实模型 id。
-已知边界：引擎内部的容量计算（`cycle_manager`、容量预检）仍读本表。
+引擎会一次性解析同一个值，并用它计算容量预检与压缩限额——状态行与实际
+执行的预算不会再出现分歧。`display_model` 只影响呈现——请求、会话元数据
+和日志仍保留真实模型 id。
 
 | 提供商/模型类别 | 上下文窗口 | 最大输出元数据 | 推理支持 | 缓存遥测 | FIM 端点 |
 | --- | --- | --- | --- | --- | --- |

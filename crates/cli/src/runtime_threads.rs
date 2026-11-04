@@ -2030,6 +2030,7 @@ impl RuntimeThreadManager {
         };
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
+            context_window_override: self.config.context_window_override(),
             workspace: thread.workspace.clone(),
             allow_shell: thread.allow_shell,
             trust_mode: thread.trust_mode,

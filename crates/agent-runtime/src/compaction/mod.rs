@@ -56,6 +56,13 @@ pub struct CompactionConfig {
     pub enabled: bool,
     pub token_threshold: usize,
     pub model: String,
+    /// The resolved context window for `model` (override → provider
+    /// capability → static table → 128K), filled by the engine at
+    /// construction and refreshed when the model changes. Compaction's
+    /// large-window decisions (summary input limits, cache-aligned summary)
+    /// read this instead of re-deriving the window from the model name.
+    /// `None` (embedders, tests) falls back to the static table.
+    pub context_window: Option<u32>,
     pub cache_summary: bool,
     /// Hard floor — `should_compact` returns `false` when total session
     /// tokens fall below this number, regardless of `enabled` or
@@ -81,6 +88,7 @@ impl Default for CompactionConfig {
             // which caps windows >=400K at 4/5 of the window.
             token_threshold: 967_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
+            context_window: None,
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
         }

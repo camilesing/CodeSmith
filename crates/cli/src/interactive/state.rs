@@ -621,9 +621,9 @@ impl ReplState {
         }
     }
 
-    /// The session's context-window denominator in tokens: the active
-    /// provider's `context_window` override when configured, else the static
-    /// table for the effective (routed) model. `None` renders as `🧭 —`.
+    /// The session's context-window denominator in tokens: the one resolver
+    /// shared with the engine — provider `context_window` override, then
+    /// provider capability, then the static table, then the 128K floor.
     pub fn context_window(&self) -> Option<u32> {
         self.config
             .effective_context_window(self.effective_model_for_budget())
@@ -673,6 +673,13 @@ impl ReplState {
             enabled: self.auto_compact,
             token_threshold: self.compact_threshold,
             model: self.effective_model_for_budget().to_string(),
+            // Keep the engine's resolved window attached when `/compact`
+            // settings are pushed through `Op::SetCompaction`; otherwise the
+            // engine would fall back to the static table on the next
+            // compaction and disagree with the status line again.
+            context_window: self
+                .config
+                .effective_context_window(self.effective_model_for_budget()),
             ..Default::default()
         }
     }
@@ -784,6 +791,7 @@ pub(crate) fn resolve_skills_dir(
 pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result<EngineConfig> {
     Ok(EngineConfig {
         model: state.model.clone(),
+        context_window_override: config.context_window_override(),
         workspace: state.workspace.clone(),
         allow_shell: state.allow_shell,
         trust_mode: state.trust_mode,

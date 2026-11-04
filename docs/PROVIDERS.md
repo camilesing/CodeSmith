@@ -225,10 +225,11 @@ display_model = "GLM-4.6 (BigModel)"   # what the REPL prints for this provider
 
 `context_window` replaces the window in `doctor --json`, the REPL status line,
 `/context`, `/tokens`, and the auto-compaction trigger, and it applies to any
-model id selected on that provider. `display_model` is presentation only —
-requests, session metadata, and logs keep the real model id. Known limit:
-engine-internal capacity math (`cycle_manager`, the capacity preflight) still
-reads this table.
+model id selected on that provider. The engine resolves that same value once
+and budgets its capacity preflight and compaction limits against it — the
+status line and the enforced budget cannot disagree. `display_model` is
+presentation only — requests, session metadata, and logs keep the real model
+id.
 
 | Provider/model class | Context window | Max output metadata | Thinking support | Cache telemetry | FIM endpoint |
 | --- | --- | --- | --- | --- | --- |

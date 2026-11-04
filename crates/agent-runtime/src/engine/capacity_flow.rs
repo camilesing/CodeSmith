@@ -17,7 +17,6 @@ use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use crate::tool_dispatch::ToolDispatcher;
 use crate::working_set::WorkingSet;
 
-use crate::models::context_window_for_model;
 use crate::telemetry::{RedactedAnalyticsMetadata, VerifiedAnalyticsMetadata};
 
 /// Count tool-call blocks (ToolUse + ToolResult) in the most recent
@@ -625,6 +624,10 @@ pub(crate) async fn replay_and_push_verification_note(
 pub struct CapacityGateProbe {
     controller: Arc<std::sync::Mutex<CapacityController>>,
     model: String,
+    /// The turn's one effective context window, resolved by the engine
+    /// (config override → provider capability → static table → 128K). The
+    /// observed `context_used_ratio` divides by it.
+    effective_window: u32,
     /// Workspace root for the mid-loop `TargetedContextRefresh` transcript
     /// portion (§E slice 3c): `pinned_message_indices(messages, workspace)` +
     /// `should_compact(.., Some(workspace), ..)`. Mirrors
@@ -644,6 +647,7 @@ impl CapacityGateProbe {
     pub fn new(
         controller: Arc<std::sync::Mutex<CapacityController>>,
         model: String,
+        effective_window: u32,
         workspace: PathBuf,
         working_set: Arc<std::sync::Mutex<WorkingSet>>,
         profile_window: usize,
@@ -652,6 +656,7 @@ impl CapacityGateProbe {
         Self {
             controller,
             model,
+            effective_window,
             workspace,
             working_set,
             profile_window,
@@ -701,11 +706,9 @@ impl CapacityGateProbe {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let unique_reference_ids_recent_window =
             recent_unique_reference_count(messages, message_window, tool_call_ids, &working_set);
-        let context_window = usize::try_from(
-            context_window_for_model(&self.model).unwrap_or(LEGACY_MODEL_CONTEXT_WINDOW_TOKENS),
-        )
-        .unwrap_or(usize::try_from(LEGACY_MODEL_CONTEXT_WINDOW_TOKENS).unwrap_or(128_000))
-        .max(1);
+        let context_window = usize::try_from(self.effective_window)
+            .unwrap_or(usize::MAX)
+            .max(1);
         let context_used_ratio =
             (estimate_input_tokens_conservative(messages, system) as f64) / (context_window as f64);
 
@@ -1038,12 +1041,9 @@ impl Engine {
         let tool_calls_recent_window = self.recent_tool_call_count(message_window);
         let unique_reference_ids_recent_window =
             self.recent_unique_reference_count(message_window, turn);
-        let context_window = usize::try_from(
-            context_window_for_model(&self.session.model)
-                .unwrap_or(LEGACY_MODEL_CONTEXT_WINDOW_TOKENS),
-        )
-        .unwrap_or(usize::try_from(LEGACY_MODEL_CONTEXT_WINDOW_TOKENS).unwrap_or(128_000))
-        .max(1);
+        let context_window = usize::try_from(self.effective_context_window(&self.session.model))
+            .unwrap_or(usize::MAX)
+            .max(1);
         let context_used_ratio = (self.estimated_input_tokens() as f64) / (context_window as f64);
 
         CapacityObservationInput {
@@ -1365,12 +1365,13 @@ impl Engine {
                                 result.messages,
                             );
                             self.merge_compaction_summary(result.summary_prompt);
-                            self.reinject_compaction_attachments(
-                                context_input_budget_for_provider(
-                                    self.api_provider,
-                                    &self.session.model,
-                                ),
-                            )
+                            let effective_window =
+                                self.effective_context_window(&self.session.model);
+                            self.reinject_compaction_attachments(context_input_budget_for_window(
+                                effective_window,
+                                self.api_provider,
+                                &self.session.model,
+                            ))
                             .await;
                             refreshed = true;
                         }
@@ -1387,9 +1388,12 @@ impl Engine {
             }
 
             if !refreshed {
-                let target_budget =
-                    context_input_budget_for_provider(self.api_provider, &self.session.model)
-                        .unwrap_or(self.config.compaction.token_threshold.max(1));
+                let target_budget = context_input_budget_for_window(
+                    self.effective_context_window(&self.session.model),
+                    self.api_provider,
+                    &self.session.model,
+                )
+                .unwrap_or(self.config.compaction.token_threshold.max(1));
                 if self.estimated_input_tokens() > target_budget {
                     let trimmed = self.trim_oldest_messages_to_budget(target_budget);
                     refreshed = trimmed > 0;

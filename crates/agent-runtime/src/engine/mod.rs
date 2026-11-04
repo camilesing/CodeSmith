@@ -39,10 +39,7 @@ use crate::hooks::HookContext;
 use crate::llm_client::LlmClientHandle;
 use crate::mcp::McpPool;
 use crate::mode::AppMode;
-use crate::models::{
-    ContentBlock, ImageSource, LEGACY_MODEL_CONTEXT_WINDOW_TOKENS, Message, SystemPrompt, Tool,
-    Usage,
-};
+use crate::models::{ContentBlock, ImageSource, Message, SystemPrompt, Tool, Usage};
 use crate::prompts;
 use crate::purge::{emit_purge_completed, emit_purge_failed, emit_purge_started, run_purge};
 use crate::subagent::SubAgentCompletion;
@@ -856,6 +853,7 @@ impl Engine {
                     self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                     self.session.model = model;
                     self.config.model.clone_from(&self.session.model);
+                    self.refresh_compaction_context_window();
                     let _ = self
                         .tx_event
                         .send(Event::status(format!(
@@ -898,6 +896,7 @@ impl Engine {
                     self.session.model = model;
                     self.session.workspace = workspace.clone();
                     self.config.model.clone_from(&self.session.model);
+                    self.refresh_compaction_context_window();
                     self.config.workspace = workspace.clone();
                     // The workspace moved: the session's effective cwd must
                     // follow it now, not one turn later. Mirrors the
@@ -1489,6 +1488,7 @@ impl Engine {
 
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
+        self.refresh_compaction_context_window();
         self.config.goal_objective = goal_objective.clone();
         if normalized_goal_objective(previous_goal_objective.as_deref())
             != normalized_goal_objective(goal_objective.as_deref())
@@ -1605,9 +1605,10 @@ impl Engine {
         );
         let executor_config = AgentExecutorConfig {
             max_steps: self.config.max_steps,
-            max_tokens: effective_max_output_tokens_for_provider(
+            max_tokens: effective_max_output_tokens_for_window(
                 self.api_provider,
                 &self.session.model,
+                self.effective_context_window(&self.session.model),
             ),
             system: self.session.system_prompt.clone(),
             temperature: None,
@@ -1653,6 +1654,7 @@ impl Engine {
             Arc::clone(&self.session.recent_media),
             self.session.model.clone(),
             self.api_provider,
+            self.effective_context_window(&self.session.model),
         );
         // W2 P1-1: deliverables watchdog — parse the output paths named in
         // the task instruction (first user text query) and let the turn
@@ -1701,6 +1703,7 @@ impl Engine {
                 fact_ledger: Arc::clone(&self.session.fact_ledger),
                 api_provider: self.api_provider,
                 model: self.session.model.clone(),
+                effective_context_window: self.effective_context_window(&self.session.model),
                 capacity_controller: Arc::clone(&self.capacity_controller),
                 working_set: Arc::clone(&self.session.working_set),
                 capacity_profile_window: self.config.capacity.profile_window,
@@ -2292,11 +2295,12 @@ impl Engine {
                     let messages_after = result.messages.len();
                     self.rebuild_transcript(RebuildReason::ManualCompaction, result.messages);
                     self.merge_compaction_summary(result.summary_prompt);
-                    self.reinject_compaction_attachments(context_input_budget_for_provider(
+                    let target_budget = context_input_budget_for_window(
+                        self.effective_context_window(&self.session.model),
                         self.api_provider,
                         &self.session.model,
-                    ))
-                    .await;
+                    );
+                    self.reinject_compaction_attachments(target_budget).await;
                     self.emit_session_updated().await;
                     let removed = messages_before.saturating_sub(messages_after);
                     let message = if result.retries_used > 0 {
@@ -2457,11 +2461,12 @@ impl Engine {
 
         self.rebuild_transcript(RebuildReason::ManualCompaction, result.messages);
         self.merge_compaction_summary(result.summary_prompt);
-        self.reinject_compaction_attachments(context_input_budget_for_provider(
+        let target_budget = context_input_budget_for_window(
+            self.effective_context_window(&self.session.model),
             self.api_provider,
             &self.session.model,
-        ))
-        .await;
+        );
+        self.reinject_compaction_attachments(target_budget).await;
         self.emit_session_updated().await;
         let removed = messages_before.saturating_sub(messages_after);
         let message = format!(
@@ -2632,7 +2637,11 @@ impl Engine {
             &self.session.messages,
             &self.session.model,
             self.session.reasoning_effort.clone(),
-            effective_max_output_tokens_for_provider(self.api_provider, &self.session.model),
+            effective_max_output_tokens_for_window(
+                self.api_provider,
+                &self.session.model,
+                self.effective_context_window(&self.session.model),
+            ),
         )
         .await
         {
@@ -2677,6 +2686,29 @@ impl Engine {
             .await;
     }
 
+    /// The one context window for `model` on this engine's provider.
+    ///
+    /// Resolution order: [`EngineConfig::context_window_override`] → provider
+    /// capability → static model table → the 128K legacy floor. Every
+    /// window-dependent path (preflight, capacity observation, compaction
+    /// limits, status via the host's mirror of the same resolver) reads this
+    /// answer, so a configured 1M window can no longer be displayed while the
+    /// engine enforces 200K.
+    pub(crate) fn effective_context_window(&self, model: &str) -> u32 {
+        crate::config_types::effective_context_window(
+            self.api_provider,
+            model,
+            self.config.context_window_override,
+        )
+    }
+
+    /// Re-resolve compaction's cached window after a model switch. The
+    /// compaction limits and the preflight must keep reading the same answer.
+    fn refresh_compaction_context_window(&mut self) {
+        let window = self.effective_context_window(&self.session.model);
+        self.config.compaction.context_window = Some(window);
+    }
+
     pub fn estimated_input_tokens(&self) -> usize {
         estimate_input_tokens_conservative(
             &self.session.messages,
@@ -2715,9 +2747,11 @@ impl Engine {
         client: &dyn crate::llm_client::LlmClient,
         reason: &str,
     ) -> bool {
-        let Some(target_budget) =
-            context_input_budget_for_provider(self.api_provider, &self.session.model)
-        else {
+        let Some(target_budget) = context_input_budget_for_window(
+            self.effective_context_window(&self.session.model),
+            self.api_provider,
+            &self.session.model,
+        ) else {
             return false;
         };
 
@@ -3099,9 +3133,12 @@ impl Engine {
         // flat response-headroom reservation cannot be used here: any window
         // below it (every 200K Claude, most 128K gateway models) underflows to
         // a zero floor, and `input >= 0` fires a handoff after every turn.
-        let input_budget =
-            context_input_budget_for_provider(self.api_provider, &self.session.model)
-                .map(|budget| budget as u64);
+        let input_budget = context_input_budget_for_window(
+            self.effective_context_window(&self.session.model),
+            self.api_provider,
+            &self.session.model,
+        )
+        .map(|budget| budget as u64);
         if !should_advance_cycle(
             estimated_input_tokens,
             input_budget,
@@ -3771,6 +3808,13 @@ impl Engine {
             runtime_ui,
             extension_runner,
         };
+        // Resolve the one context window once at construction and hand it to
+        // compaction so its large-window limits share the preflight's
+        // denominator. Model switches refresh it below.
+        if engine.config.compaction.context_window.is_none() {
+            let window = engine.effective_context_window(&engine.session.model);
+            engine.config.compaction.context_window = Some(window);
+        }
         if let Some(id) = engine.config.session_id.clone() {
             engine.session.id = id;
         }
@@ -3906,8 +3950,9 @@ mod context;
 pub use context::compact_tool_result_for_context;
 pub use context::{
     COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS, context_input_budget,
-    context_input_budget_for_provider, effective_max_output_tokens,
-    effective_max_output_tokens_for_provider, extract_compaction_summary_prompt,
+    context_input_budget_for_provider, context_input_budget_for_window,
+    effective_max_output_tokens, effective_max_output_tokens_for_provider,
+    effective_max_output_tokens_for_window, extract_compaction_summary_prompt,
     is_context_length_error_message,
 };
 // Items below use a private `use` (not `pub use`): they are referenced only

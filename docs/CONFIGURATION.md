@@ -200,13 +200,14 @@ context_window = 131072                # tokens the backend really accepts
 
 `display_model` is presentation only: the banner, status line, `/status`, and
 `/model` print that string, while the request payload, session metadata, and
-logs keep the real model id. `context_window` drives the `🧭` denominator,
-`/context`, `/tokens`, `doctor --json`'s `capability.context_window`, and the
-auto-compaction trigger; without it those fall back to the static model-name
-table (any `claude-*` id, for instance, resolves to 200,000). Both keys belong
-to the provider, so a `/model` switch to another id on it keeps them. Engine-
-internal capacity math (`cycle_manager`, the capacity preflight) still reads
-the static table.
+logs keep the real model id. `context_window` is the one effective window: it
+drives the `🧭` denominator, `/context`, `/tokens`, `doctor --json`'s
+`capability.context_window`, the auto-compaction trigger, and the engine's
+capacity preflight and compaction limits. Without it the window resolves in
+order from the provider's capability (Anthropic 200,000, Ollama 8,192, …),
+the static model-name table (any `claude-*` id, for instance, resolves to
+200,000), then the 128K floor. Both keys belong to the provider, so a `/model`
+switch to another id on it keeps them.
 
 #### Custom provider registry (`[[providers.custom]]`)
 

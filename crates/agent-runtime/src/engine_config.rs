@@ -68,6 +68,14 @@ use codesmith_sandbox::runtime::SandboxRuntimeConfig;
 pub struct EngineConfig {
     /// Model identifier to use for responses.
     pub model: String,
+    /// Explicit context-window override from the host config (the active
+    /// provider's `context_window` key). `None` resolves through
+    /// [`crate::config_types::effective_context_window`]'s provider
+    /// capability → static table → 128K ladder. The engine resolves the
+    /// window once at construction (and again when the model changes) and
+    /// every budget/limit reads that value, so the status line and the
+    /// engine cannot disagree.
+    pub context_window_override: Option<u32>,
     /// Workspace root for tool execution and file operations.
     pub workspace: PathBuf,
     /// Allow shell tool execution when true.
@@ -378,6 +386,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             model: DEFAULT_TEXT_MODEL.to_string(),
+            context_window_override: None,
             workspace: PathBuf::from("."),
             // Fail-closed library default: shell access must be opted into.
             // Every CLI entry point already sets this explicitly from

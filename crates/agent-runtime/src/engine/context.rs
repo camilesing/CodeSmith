@@ -39,24 +39,28 @@ fn env_max_output_tokens() -> Option<u32> {
         .or_else(|| parse_env_max_output_tokens("DEEPSEEK_MAX_OUTPUT_TOKENS"))
 }
 
-fn heuristic_max_output_tokens(model: &str) -> u32 {
+fn heuristic_max_output_tokens(model: &str, window_tokens: u32) -> u32 {
     if let Some(model_cap) = max_output_tokens_for_model(model) {
         return model_cap.min(API_MAX_OUTPUT_TOKENS);
     }
-    let window = context_window_for_model(model).unwrap_or(128_000);
-    if window >= 500_000 {
+    if window_tokens >= 500_000 {
         API_MAX_OUTPUT_TOKENS
     } else {
-        let capped = window / 2;
+        let capped = window_tokens / 2;
         capped.min(API_MAX_OUTPUT_TOKENS)
     }
 }
 
 /// Compute the effective `max_tokens` to send in the API request for a given
 /// model when the provider is not known. Kept for tests and legacy callers;
-/// turn construction should use [`effective_max_output_tokens_for_provider`].
+/// turn construction should use [`effective_max_output_tokens_for_window`]
+/// with the engine's resolved context window.
 pub fn effective_max_output_tokens(model: &str) -> u32 {
-    env_max_output_tokens().unwrap_or_else(|| heuristic_max_output_tokens(model))
+    env_max_output_tokens().unwrap_or_else(|| {
+        let window = context_window_for_model(model)
+            .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
+        heuristic_max_output_tokens(model, window)
+    })
 }
 
 /// Compute provider-aware `max_tokens` for normal agent turns.
@@ -66,6 +70,18 @@ pub fn effective_max_output_tokens(model: &str) -> u32 {
 /// 2. provider capability matrix,
 /// 3. model table / context-window heuristic.
 pub fn effective_max_output_tokens_for_provider(provider: ApiProvider, model: &str) -> u32 {
+    let window = crate::config_types::effective_context_window(provider, model, None);
+    effective_max_output_tokens_for_window(provider, model, window)
+}
+
+/// Provider-aware `max_tokens` against an already-resolved context window.
+/// The engine passes its effective window so the output heuristic and the
+/// input budget derive from the same denominator.
+pub fn effective_max_output_tokens_for_window(
+    provider: ApiProvider,
+    model: &str,
+    window_tokens: u32,
+) -> u32 {
     if let Some(override_tokens) = env_max_output_tokens() {
         return override_tokens;
     }
@@ -73,7 +89,7 @@ pub fn effective_max_output_tokens_for_provider(provider: ApiProvider, model: &s
     if capability.max_output > 0 {
         return capability.max_output.min(API_MAX_OUTPUT_TOKENS);
     }
-    heuristic_max_output_tokens(model)
+    heuristic_max_output_tokens(model, window_tokens)
 }
 /// Keep this many most recent messages when emergency trimming is required.
 pub const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
@@ -476,12 +492,24 @@ pub fn context_input_budget(model: &str) -> Option<usize> {
 }
 
 pub fn context_input_budget_for_provider(provider: ApiProvider, model: &str) -> Option<usize> {
-    let capability = provider_capability(provider, model);
+    let window = crate::config_types::effective_context_window(provider, model, None);
+    context_input_budget_for_window(window, provider, model)
+}
+
+/// Input-side token budget against an already-resolved context window. The
+/// engine passes its one effective window (config override → provider
+/// capability → static table → 128K) so preflight, emergency recovery and
+/// capacity trimming all trip at the same threshold.
+pub fn context_input_budget_for_window(
+    window_tokens: u32,
+    provider: ApiProvider,
+    model: &str,
+) -> Option<usize> {
     let reserved_output = reserved_output_for_input_budget(
-        capability.context_window,
-        effective_max_output_tokens_for_provider(provider, model),
+        window_tokens,
+        effective_max_output_tokens_for_window(provider, model, window_tokens),
     );
-    input_budget_from_window_and_output(capability.context_window, reserved_output)
+    input_budget_from_window_and_output(window_tokens, reserved_output)
 }
 
 pub fn is_context_length_error_message(message: &str) -> bool {

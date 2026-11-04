@@ -1480,6 +1480,7 @@ mod tests {
             enabled: true,
             token_threshold: 10,
             model: "deepseek-v3.2-128k".to_string(),
+            context_window: None,
             cache_summary: false,
             auto_floor_tokens: 0,
         }

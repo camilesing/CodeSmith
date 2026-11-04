@@ -122,6 +122,11 @@ pub(crate) struct TurnContextSources {
     pub fact_ledger: Arc<StdMutex<FactLedger>>,
     pub api_provider: ApiProvider,
     pub model: String,
+    /// The one effective context window for `api_provider` + `model`,
+    /// resolved by the engine (config override → provider capability →
+    /// static table → 128K). Probes budget against this value, never a
+    /// second model-name lookup.
+    pub effective_context_window: u32,
     pub capacity_controller: Arc<StdMutex<CapacityController>>,
     pub working_set: Arc<StdMutex<WorkingSet>>,
     pub capacity_profile_window: usize,
@@ -509,6 +514,7 @@ impl TurnExecutorFactory for HostAgentExecutorFactory {
                     CapacityProbe::new(
                         ctx.api_provider,
                         ctx.model.clone(),
+                        ctx.effective_context_window,
                         ctx.compaction,
                         ctx.workspace.clone(),
                     )
@@ -517,6 +523,7 @@ impl TurnExecutorFactory for HostAgentExecutorFactory {
                 Some(CapacityGateProbe::new(
                     ctx.capacity_controller,
                     ctx.model,
+                    ctx.effective_context_window,
                     ctx.workspace,
                     ctx.working_set,
                     ctx.capacity_profile_window,

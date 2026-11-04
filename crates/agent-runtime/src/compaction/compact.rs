@@ -66,8 +66,16 @@ pub struct SummaryInputLimits {
 }
 
 pub fn summary_input_limits_for_model(model: &str) -> SummaryInputLimits {
-    let is_large_context =
-        context_window_for_model(model).is_some_and(|window| window >= LARGE_CONTEXT_WINDOW_TOKENS);
+    let window = context_window_for_model(model)
+        .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
+    summary_input_limits_for_window(window)
+}
+
+/// Summary limits for an already-resolved context window. The engine passes
+/// the one effective window (config override → provider capability → static
+/// table → 128K) so this decision cannot disagree with the preflight.
+pub fn summary_input_limits_for_window(window_tokens: u32) -> SummaryInputLimits {
+    let is_large_context = window_tokens >= LARGE_CONTEXT_WINDOW_TOKENS;
     if is_large_context {
         SummaryInputLimits {
             text_snippet_chars: LARGE_CONTEXT_SUMMARY_TEXT_SNIPPET_CHARS,
@@ -89,6 +97,15 @@ pub fn summary_input_limits_for_model(model: &str) -> SummaryInputLimits {
             word_limit: 500,
         }
     }
+}
+
+/// The window a compaction config was resolved against: the engine-filled
+/// effective window, else the static table, else the legacy floor.
+pub fn window_tokens_for_config(config: &CompactionConfig) -> u32 {
+    config
+        .context_window
+        .or_else(|| context_window_for_model(&config.model))
+        .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1136,13 +1153,16 @@ pub async fn compact_messages(
     // structure, retry once — a flat summary is exactly the "compressed
     // right-sized but wrong-shaped" failure the ledger cannot fix. The
     // deterministic sections (ledger, failed attempts) ride regardless.
-    let mut summary_result = create_summary(client, &to_summarize, &config.model).await?;
+    let window = window_tokens_for_config(config);
+    let mut summary_result =
+        create_summary_for_window(client, &to_summarize, &config.model, window).await?;
     if summary_section_count(&summary_result.text) < LAYERED_SUMMARY_HEADERS.len() {
         tracing::warn!(
             target: "compaction",
             "summary missing layered sections; retrying once with a fresh draw"
         );
-        if let Ok(second) = create_summary(client, &to_summarize, &config.model).await
+        if let Ok(second) =
+            create_summary_for_window(client, &to_summarize, &config.model, window).await
             && summary_section_count(&second.text) > summary_section_count(&summary_result.text)
         {
             summary_result = second;
@@ -1207,8 +1227,22 @@ pub async fn create_summary(
     messages: &[Message],
     model: &str,
 ) -> Result<SummaryResult> {
-    let limits = summary_input_limits_for_model(model);
-    let used_cache_aligned = should_use_cache_aligned_summary(model, messages);
+    let window = context_window_for_model(model)
+        .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
+    create_summary_for_window(client, messages, model, window).await
+}
+
+/// Summary generation against an already-resolved context window. The
+/// compaction pipeline passes [`window_tokens_for_config`] so its summary
+/// limits agree with the engine's preflight budget.
+pub async fn create_summary_for_window(
+    client: &dyn LlmClient,
+    messages: &[Message],
+    model: &str,
+    window_tokens: u32,
+) -> Result<SummaryResult> {
+    let limits = summary_input_limits_for_window(window_tokens);
+    let used_cache_aligned = should_use_cache_aligned_summary_for_window(window_tokens, messages);
     if used_cache_aligned {
         let request = build_cache_aligned_summary_request(model, messages, limits);
         match client.create_message(request).await {
@@ -1430,14 +1464,21 @@ pub fn log_summary_cache_telemetry(used_cache_aligned: bool, usage: &crate::mode
 /// `target = "compaction"` after each call so the path choice and
 /// cache-hit rate are observable post-deploy without UI surface.
 pub fn should_use_cache_aligned_summary(model: &str, messages: &[Message]) -> bool {
-    let Some(window) = context_window_for_model(model) else {
-        return false;
-    };
-    if window < LARGE_CONTEXT_WINDOW_TOKENS {
+    let window = context_window_for_model(model)
+        .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
+    should_use_cache_aligned_summary_for_window(window, messages)
+}
+
+/// Cache-aligned-summary decision for an already-resolved context window.
+pub fn should_use_cache_aligned_summary_for_window(
+    window_tokens: u32,
+    messages: &[Message],
+) -> bool {
+    if window_tokens < LARGE_CONTEXT_WINDOW_TOKENS {
         return false;
     }
 
-    let budget = usize::try_from(window).unwrap_or(usize::MAX)
+    let budget = usize::try_from(window_tokens).unwrap_or(usize::MAX)
         * CACHE_ALIGNED_SUMMARY_CONTEXT_BUDGET_PERCENT
         / 100;
     let summary_prompt_tokens = 512usize;

@@ -114,7 +114,9 @@ const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 // and the `DEEPSEEK_ALIAS_*` constants) moved to
 // `codesmith_agent_runtime::config_types`; re-exported here so the
 // historical `crate::config::{...}` paths keep resolving.
-pub use codesmith_agent_runtime::config_types::{ApiProvider, provider_capability};
+pub use codesmith_agent_runtime::config_types::{
+    ApiProvider, effective_context_window as resolve_effective_context_window, provider_capability,
+};
 // Only the test module below consumes these re-exports today; the cfg gate
 // keeps the non-test bin pass from flagging them as unused imports.
 #[cfg(test)]
@@ -2107,22 +2109,25 @@ impl Config {
 
     /// Effective context window (tokens) for the active provider and `model`.
     ///
-    /// Resolution order: [`Self::context_window_override`], then the static
-    /// `context_window_for_model` table. A custom entry that sets none still
-    /// falls through to the static table (its backend may be a model the table
-    /// knows). The override belongs to the provider, not to one model id, so it
-    /// keeps applying after a `/model` switch to another id on the same
+    /// Resolution order: [`Self::context_window_override`], the provider's
+    /// capability window, then the static `context_window_for_model` table,
+    /// then the 128K legacy floor. This is the same
+    /// `config_types::effective_context_window` resolver the engine resolves
+    /// once at construction and feeds to the preflight, capacity observation
+    /// and compaction limits — so the status line, `/context`, the compaction
+    /// threshold and the engine's budget always name the same window. A
+    /// custom entry that sets no override still falls through to the provider
+    /// capability / static table (its backend may be a model the table
+    /// knows). The override belongs to the provider, not to one model id, so
+    /// it keeps applying after a `/model` switch to another id on the same
     /// provider — it states what the endpoint's backend really accepts.
-    ///
-    /// Known limitation: only the CLI-side consumers honour it (status line,
-    /// `/context`, `/tokens`, auto-compaction thresholds). Engine-internal
-    /// capacity math (`cycle_manager`, `engine/context.rs`,
-    /// `engine/capacity_flow.rs`, `compaction/compact.rs`) still resolves the
-    /// window from the static table.
     #[must_use]
     pub fn effective_context_window(&self, model: &str) -> Option<u32> {
-        self.context_window_override()
-            .or_else(|| crate::models::context_window_for_model(model))
+        Some(resolve_effective_context_window(
+            self.api_provider(),
+            model,
+            self.context_window_override(),
+        ))
     }
 
     /// Auto-compaction trigger for `model`, honouring
@@ -9711,6 +9716,102 @@ context_window = 500000
     }
 
     #[test]
+    fn effective_context_window_is_one_answer_across_status_preflight_and_compaction() -> Result<()>
+    {
+        use codesmith_agent_runtime::engine::context_input_budget_for_window;
+
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-one-window-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let config_path = temp_root.join(".codesmith").join("config.toml");
+        ensure_parent_dir(&config_path)?;
+
+        // 1. No override: an Anthropic-compatible endpoint serving GLM-5.3
+        // resolves through provider capability (200K), not the 128K legacy
+        // floor the static table used to fall back to.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model = "glm-5.3"
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert_eq!(config.effective_context_window("glm-5.3"), Some(200_000));
+        assert_eq!(
+            context_input_budget_for_window(200_000, ApiProvider::Anthropic, "glm-5.3"),
+            Some(200_000 - 8_192 - 1_024)
+        );
+        assert_eq!(
+            config.compaction_threshold("glm-5.3"),
+            crate::models::compaction_threshold_for_window(200_000, "glm-5.3")
+        );
+
+        // 2. An override moves the preflight budget in lockstep: a 500K
+        // window reserves the full 262K turn output, giving 236,832 tokens.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://open.bigmodel.cn/api/anthropic"
+model = "glm-5.3"
+context_window = 500000
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        assert_eq!(config.effective_context_window("glm-5.3"), Some(500_000));
+        assert_eq!(
+            context_input_budget_for_window(500_000, ApiProvider::Anthropic, "glm-5.3"),
+            Some(500_000 - 262_144 - 1_024)
+        );
+        assert_eq!(
+            config.compaction_threshold("glm-5.3"),
+            crate::models::compaction_threshold_for_window(500_000, "glm-5.3")
+        );
+
+        // 3. An unknown model on an OpenAI-compatible gateway: only the
+        // override supplies the window, and the status value, the preflight
+        // budget and the compaction threshold all derive from it.
+        fs::write(
+            &config_path,
+            r#"api_key = "codesmith-test-key"
+provider = "openai"
+
+[providers.openai]
+base_url = "https://gateway.example.com/v1"
+model = "totally-unknown-model-xyz"
+context_window = 200000
+"#,
+        )?;
+        let config = Config::load(None, None)?;
+        let model = "totally-unknown-model-xyz";
+        assert_eq!(config.effective_context_window(model), Some(200_000));
+        assert_eq!(
+            context_input_budget_for_window(200_000, ApiProvider::Openai, model),
+            Some(200_000 - 4_096 - 1_024)
+        );
+        assert_eq!(
+            config.compaction_threshold(model),
+            crate::models::compaction_threshold_for_window(200_000, model)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn provider_capability_novita_v4_pro_has_thinking_no_cache() {
         let cap = provider_capability(ApiProvider::Novita, DEFAULT_NOVITA_MODEL);
         assert_eq!(
@@ -9780,7 +9881,10 @@ context_window = 500000
 
     #[test]
     fn provider_capability_atlascloud_custom_model_is_chat_completions_without_thinking() {
-        let cap = provider_capability(ApiProvider::Atlascloud, "deepseek-ai/deepseek-v4-flash");
+        // Unknown gateway model: the OpenAI-family branch falls back to the
+        // 128K legacy floor. A model the static table knows (including a
+        // `_Nk` served-name hint) reports its real window instead.
+        let cap = provider_capability(ApiProvider::Atlascloud, "atlascloud-custom-model");
         assert_eq!(
             cap.context_window,
             crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS

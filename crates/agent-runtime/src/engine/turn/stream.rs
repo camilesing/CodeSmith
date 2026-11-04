@@ -117,8 +117,7 @@ use codesmith_agent::tools::{ToolCapability, ToolError, ToolResult};
 
 use super::approval::{input_requires_approval, requires_approval};
 use crate::engine::context::{
-    MAX_CONTEXT_RECOVERY_ATTEMPTS, context_input_budget_for_provider,
-    is_context_length_error_message,
+    MAX_CONTEXT_RECOVERY_ATTEMPTS, context_input_budget_for_window, is_context_length_error_message,
 };
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::streaming::MAX_TRANSPARENT_STREAM_RETRIES;
@@ -1573,9 +1572,11 @@ impl HostAgentExecutor {
             .await;
             return false;
         }
-        let Some(target_budget) =
-            context_input_budget_for_provider(probe.api_provider, &probe.model)
-        else {
+        let Some(target_budget) = context_input_budget_for_window(
+            probe.effective_window,
+            probe.api_provider,
+            &probe.model,
+        ) else {
             // Unknown model ⇒ no budget ⇒ can't judge recovery. Hard-fail
             // (mirrors the preflight's `None` budget ⇒ `Proceed`, but here the
             // provider already rejected — there's nothing to fall through to).

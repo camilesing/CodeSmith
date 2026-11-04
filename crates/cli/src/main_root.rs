@@ -3622,7 +3622,7 @@ pub(crate) fn provider_capability_report(config: &Config) -> serde_json::Value {
 
     let cap = crate::config::provider_capability(provider, &model);
     let context_window = config
-        .context_window_override()
+        .effective_context_window(&model)
         .unwrap_or(cap.context_window);
 
     json!({

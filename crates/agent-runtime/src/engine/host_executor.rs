@@ -596,9 +596,11 @@ use super::capacity_flow::{
     CapacityGateProbe, enforce_tool_pairs_after_front_trim, replay_and_push_verification_note,
     reset_history_to_latest_user_and_verified, trim_oldest_messages_to_budget_history,
 };
+#[cfg(test)]
+use super::context::context_input_budget_for_provider;
 use super::context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP, compact_tool_result_for_context,
-    context_input_budget_for_provider, estimate_input_tokens_anchored,
+    context_input_budget_for_window, estimate_input_tokens_anchored,
     estimate_input_tokens_conservative,
 };
 use super::deliverables::DeliverablesProbe;
@@ -780,6 +782,10 @@ pub struct ReinjectProbe {
     /// `context_input_budget_for_provider(self.api_provider, &self.session.model)`
     /// at `mod.rs:1465` / `:1620`. `ApiProvider` is `Copy`.
     api_provider: ApiProvider,
+    /// The turn's one effective context window, resolved by the engine
+    /// (config override → provider capability → static table → 128K). Every
+    /// budget on this probe derives from it.
+    effective_window: u32,
 }
 
 impl ReinjectProbe {
@@ -804,6 +810,7 @@ impl ReinjectProbe {
         >,
         model: String,
         api_provider: ApiProvider,
+        effective_window: u32,
     ) -> Self {
         Self {
             plan_state,
@@ -812,6 +819,7 @@ impl ReinjectProbe {
             recent_media,
             model,
             api_provider,
+            effective_window,
         }
     }
 
@@ -828,7 +836,7 @@ impl ReinjectProbe {
     /// &self.session.model)` at `mod.rs:1465` / `:1620`. Returns `None` for
     /// unknown models (no budget trial).
     pub(crate) fn provider_input_budget(&self) -> Option<usize> {
-        context_input_budget_for_provider(self.api_provider, &self.model)
+        context_input_budget_for_window(self.effective_window, self.api_provider, &self.model)
     }
 
     /// Record a successful `read_file` output into the shared
@@ -859,6 +867,10 @@ impl ReinjectProbe {
 pub struct CapacityProbe {
     pub(crate) api_provider: ApiProvider,
     pub(crate) model: String,
+    /// The turn's one effective context window (config override → provider
+    /// capability → static table → 128K), resolved by the engine. Preflight
+    /// and reactive recovery both budget against it.
+    pub(crate) effective_window: u32,
     compaction_config: CompactionConfig,
     workspace: PathBuf,
     /// Session fact ledger for the overflow-recovery drop paths (attached
@@ -874,12 +886,14 @@ impl CapacityProbe {
     pub fn new(
         api_provider: ApiProvider,
         model: String,
+        effective_window: u32,
         compaction_config: CompactionConfig,
         workspace: PathBuf,
     ) -> Self {
         Self {
             api_provider,
             model,
+            effective_window,
             compaction_config,
             workspace,
             fact_ledger: None,
@@ -2964,9 +2978,11 @@ impl HostAgentExecutor {
         let Some(probe) = &self.capacity else {
             return CapacityPreflight::Proceed;
         };
-        let Some(target_budget) =
-            context_input_budget_for_provider(probe.api_provider, &probe.model)
-        else {
+        let Some(target_budget) = context_input_budget_for_window(
+            probe.effective_window,
+            probe.api_provider,
+            &probe.model,
+        ) else {
             // Unknown model ⇒ no budget ⇒ preflight silently disabled
             // (mirrors the retired turn handler — `None` budget skips the gate).
             return CapacityPreflight::Proceed;
@@ -9139,6 +9155,7 @@ mod tests {
             enabled: true,
             token_threshold: 100,
             model: "mock-v0".to_string(),
+            context_window: None,
             cache_summary: false,
             auto_floor_tokens: 0,
         }
@@ -10809,6 +10826,7 @@ mod tests {
             Arc::clone(&sess.recent_media),
             sess.model.clone(),
             api_provider,
+            crate::config_types::effective_context_window(api_provider, &sess.model, None),
         );
         (plan_state, todos, probe)
     }
@@ -11087,6 +11105,7 @@ mod tests {
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             "llama2".to_string(),
             ApiProvider::Ollama,
+            crate::config_types::effective_context_window(ApiProvider::Ollama, "llama2", None),
         );
         let budget = probe.provider_input_budget();
         assert!(budget.is_some(), "known model ⇒ Some budget");
@@ -11108,6 +11127,7 @@ mod tests {
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             model.clone(),
             provider,
+            crate::config_types::effective_context_window(provider, &model, None),
         );
         assert_eq!(
             probe.provider_input_budget(),
@@ -11203,6 +11223,7 @@ mod tests {
             Arc::clone(&sess.recent_media),
             sess.model.clone(),
             api_provider,
+            crate::config_types::effective_context_window(api_provider, &sess.model, None),
         )
     }
 
@@ -11467,6 +11488,7 @@ mod tests {
         CapacityProbe::new(
             api_provider,
             model.to_string(),
+            crate::config_types::effective_context_window(api_provider, model, None),
             CompactionConfig::default(),
             PathBuf::from("/tmp/codesmith-test"),
         )
@@ -11492,6 +11514,7 @@ mod tests {
         CapacityGateProbe::new(
             Arc::new(Mutex::new(crate::capacity::CapacityController::new(config))),
             model.to_string(),
+            crate::config_types::effective_context_window(ApiProvider::Deepseek, model, None),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
             8,
@@ -11510,6 +11533,7 @@ mod tests {
                 crate::capacity::CapacityControllerConfig::default(),
             ))),
             model.to_string(),
+            crate::config_types::effective_context_window(ApiProvider::Deepseek, model, None),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
             8,
@@ -11671,6 +11695,11 @@ mod tests {
             Some(CapacityProbe::new(
                 ApiProvider::Deepseek,
                 "test-128k".to_string(),
+                crate::config_types::effective_context_window(
+                    ApiProvider::Deepseek,
+                    "test-128k",
+                    None,
+                ),
                 compaction_config,
                 PathBuf::from("/tmp/codesmith-test"),
             )),
@@ -12160,6 +12189,7 @@ mod tests {
         let gate = CapacityGateProbe::new(
             Arc::new(Mutex::new(crate::capacity::CapacityController::new(config))),
             "mock-v0".to_string(),
+            crate::config_types::effective_context_window(ApiProvider::Deepseek, "mock-v0", None),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
             8,
@@ -12629,6 +12659,7 @@ mod tests {
         CapacityGateProbe::new(
             Arc::new(Mutex::new(crate::capacity::CapacityController::new(config))),
             model.to_string(),
+            crate::config_types::effective_context_window(ApiProvider::Deepseek, model, None),
             PathBuf::from("/tmp/codesmith-test"),
             working_set,
             8,

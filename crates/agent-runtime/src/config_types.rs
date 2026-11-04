@@ -503,7 +503,13 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         return ProviderCapability {
             provider,
             resolved_model: resolved_model.to_string(),
-            context_window: crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS,
+            // These gateways front many backends, so they declare no window
+            // of their own: the model-name table (including an explicit `_Nk`
+            // served-name hint) is the provider's best knowledge, with the
+            // legacy floor for names it does not know. A hardcoded 128K here
+            // would shadow the table and the vLLM/SGLang served-name hint.
+            context_window: crate::models::context_window_for_model(resolved_model)
+                .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS),
             max_output: 4096,
             thinking_supported: false,
             vision_supported: openai_family_model_supports_vision(resolved_model),
@@ -630,6 +636,35 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         request_payload_mode,
         alias_deprecation,
     }
+}
+
+/// The one context window for `provider` + `model`.
+///
+/// Resolution order: an explicit host override (the `[providers.*]
+/// context_window` key — the endpoint's real backend window), then the
+/// provider's capability window, then the static model table, then
+/// [`crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS`].
+///
+/// Every window-dependent decision — the REPL status line, `/context`,
+/// the compaction threshold, the capacity preflight, capacity observation,
+/// and compaction's large-window limits — must read this function (directly
+/// or through the value an [`EngineConfig`](crate::engine_config::EngineConfig)
+/// resolved at construction). Two paths resolving the window differently is
+/// exactly how a session shows `1.0M` while the engine compacts at 200K.
+#[must_use]
+pub fn effective_context_window(
+    provider: ApiProvider,
+    model: &str,
+    override_window: Option<u32>,
+) -> u32 {
+    override_window
+        .filter(|window| *window > 0)
+        .or_else(|| {
+            let capability = provider_capability(provider, model);
+            (capability.context_window > 0).then_some(capability.context_window)
+        })
+        .or_else(|| crate::models::context_window_for_model(model))
+        .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS)
 }
 
 /// Static model-name heuristic for vision-capable model IDs across
