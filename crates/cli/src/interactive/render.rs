@@ -7,14 +7,17 @@
 //! to stdout as whole lines. Tool calls print one collapsed line on
 //! completion by default (Ctrl+O in-turn, `/expand` after the fact — the
 //! terminal is append-only, so expansion is a replay, never a rewrite).
-//! While the turn runs, a transient region of up to two rows is refreshed
-//! in place via `ESC[2K CR`: the live status line, and — once the user types
-//! — the composer the typed line lands in. The region is never interleaved
-//! with permanent text: every permanent write clears it first, and the
-//! blocking prompts (approval / user input / elevation) clear it too before
-//! they take stdin. The status-line ticker additionally yields while a
-//! permanent row is open, so streamed text is never force-closed (broken
-//! mid-word) just to refresh a frame the next delta would erase anyway.
+//! While the turn runs, a transient region — the live status line and, once
+//! the user types, the composer — is refreshed in place via `ESC[2K CR`.
+//! Both parts are measured in terminal rows (display width, CJK glyphs, and
+//! explicit newlines included), and the erase pass covers exactly the rows
+//! the last draw wrote — otherwise a wrapped composer leaves one frame per
+//! tick in scrollback. The region is never interleaved with permanent text:
+//! every permanent write clears it first, and the blocking prompts (approval
+//! / user input / elevation) clear it too before they take stdin. The
+//! status-line ticker additionally yields while a permanent row is open, so
+//! streamed text is never force-closed (broken mid-word) just to refresh a
+//! frame the next delta would erase anyway.
 //!
 //! Known limitations (recorded beside the behaviour it owns): assistant text
 //! is printed verbatim as the model streams it — there is no markdown
@@ -39,7 +42,7 @@ use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use colored::Colorize;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
 use super::keys::TurnKey;
 use super::state::ReplState;
@@ -176,9 +179,18 @@ struct TurnView {
     after_tool_line: bool,
     /// The mid-turn composer; empty means its row is not drawn.
     composer: Composer,
-    /// Rows the live region occupies right now: 0, 1 (status), or 2 (status
-    /// + composer).
+    /// Terminal rows the live region occupies right now (0 when nothing is
+    /// drawn). Never a constant: the status frame and a long or multi-line
+    /// composer wrap, and the erase pass must cover every row the last draw
+    /// wrote.
     live_rows: usize,
+    /// Row (0-based, within the region) the caret was parked on. `clear_live`
+    /// has to walk back down to the region's bottom row before erasing
+    /// upward when editing moved the caret onto an earlier composer row.
+    caret_row: Option<usize>,
+    /// Terminal width override: `None` reads the terminal on every draw (a
+    /// resize changes where the frame and composer wrap), tests pin it.
+    columns: Option<usize>,
     /// When Ctrl+X Ctrl+K was last pressed, for its confirm window.
     stop_all_at: Option<Instant>,
 }
@@ -193,19 +205,20 @@ impl TurnView {
             after_tool_line: false,
             composer: Composer::default(),
             live_rows: 0,
+            caret_row: None,
+            columns: None,
             stop_all_at: None,
         }
     }
 
-    /// Clear the whole live region (status row and composer row).
+    /// Clear the whole live region (status frame and composer).
     fn clear_live(&mut self) {
-        match self.live_rows {
-            // Clear the composer row first, step up, clear the status row.
-            2 => eprint!("\x1b[2K\r\x1b[1A\x1b[2K\r"),
-            1 => eprint!("\x1b[2K\r"),
-            _ => {}
+        let sequence = clear_sequence(self.live_rows, self.caret_row);
+        if !sequence.is_empty() {
+            eprint!("{sequence}");
         }
         self.live_rows = 0;
+        self.caret_row = None;
         self.live_active = false;
     }
 
@@ -229,21 +242,33 @@ impl TurnView {
             println!();
             self.ends_with_newline = true;
         }
+        let layout = live_layout(
+            frame,
+            &self.composer.buffer,
+            self.composer.cursor,
+            self.columns.unwrap_or_else(terminal_columns),
+        );
         eprint!("\r\x1b[K{frame}");
-        self.live_rows = 1;
         if !self.composer.is_empty() {
             eprint!("\n\r\x1b[K{COMPOSER_PROMPT}{}", self.composer.buffer);
-            // Park the cursor at the caret. Column math is display width,
-            // and assumes the row fits the terminal (see the module note in
-            // keys.rs about what the composer does not do).
-            let column = UnicodeWidthStr::width(COMPOSER_PROMPT)
-                + UnicodeWidthStr::width(&self.composer.buffer[..self.composer.cursor]);
-            if column > 0 {
-                eprint!("\r\x1b[{column}C");
+        }
+        // The write left the cursor at the end of the region; walk back to
+        // the caret's row and column within it (the caret can be on an
+        // earlier composer row after Home/Left, and a wrapped line can end
+        // past the right margin).
+        if let Some((caret_row, caret_column)) = layout.caret {
+            let last_row = layout.rows - 1;
+            if last_row > caret_row {
+                eprint!("\x1b[{}A", last_row - caret_row);
             }
-            self.live_rows = 2;
+            eprint!("\r");
+            if caret_column > 0 {
+                eprint!("\x1b[{caret_column}C");
+            }
         }
         let _ = std::io::stderr().flush();
+        self.live_rows = layout.rows;
+        self.caret_row = layout.caret.map(|(row, _)| row);
         self.live_active = true;
     }
 
@@ -260,6 +285,112 @@ impl TurnView {
         }
         self.draw_live(frame);
     }
+}
+
+/// Terminal width in columns; 80 when it cannot be read (non-TTY).
+fn terminal_columns() -> usize {
+    crossterm::terminal::size()
+        .map(|(columns, _)| usize::from(columns))
+        .unwrap_or(80)
+        .max(1)
+}
+
+/// Display cells `text` occupies, with ANSI escape sequences (the status
+/// frame is styled, the composer is literal user text) counted as zero.
+///
+/// Known limitation: width is summed per character, so a ZWJ emoji cluster
+/// can count as more cells than the terminal draws. The error is always an
+/// over-estimate (extra rows erased, never a frame left behind).
+fn visual_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            // CSI (`ESC [ … final`): skip to the final byte, 0x40..=0x7e.
+            if chars.next() == Some('[') {
+                for byte in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        width += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    width
+}
+
+/// Rows `text` occupies when written from column 0 at `columns` wide:
+/// explicit newlines start a row, and each line wraps by display width.
+fn wrapped_rows(text: &str, columns: usize) -> usize {
+    text.split('\n')
+        .map(|line| visual_width(line).div_ceil(columns).max(1))
+        .sum()
+}
+
+/// Caret column on a line of `width` cells: a line ending exactly on the
+/// margin parks the cursor at the last cell (pending wrap never consumes
+/// another row).
+fn caret_column(width: usize, columns: usize) -> usize {
+    if width == 0 {
+        0
+    } else if width.is_multiple_of(columns) {
+        columns - 1
+    } else {
+        width % columns
+    }
+}
+
+/// Rows and caret position of one live draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveLayout {
+    /// Total rows the status frame and composer occupy.
+    rows: usize,
+    /// Caret `(row, column)`, both 0-based within the region. `None` when
+    /// the composer is empty (the caret stays at the status row's end).
+    caret: Option<(usize, usize)>,
+}
+
+fn live_layout(frame: &str, composer: &str, cursor: usize, columns: usize) -> LiveLayout {
+    let status_rows = wrapped_rows(frame, columns);
+    if composer.is_empty() {
+        return LiveLayout {
+            rows: status_rows,
+            caret: None,
+        };
+    }
+    let block = format!("{COMPOSER_PROMPT}{composer}");
+    let before = &block[..COMPOSER_PROMPT.len() + cursor];
+    let caret_row = status_rows + wrapped_rows(before, columns) - 1;
+    let caret_line = before.rsplit('\n').next().unwrap_or(before);
+    LiveLayout {
+        rows: status_rows + wrapped_rows(&block, columns),
+        caret: Some((caret_row, caret_column(visual_width(caret_line), columns))),
+    }
+}
+
+/// The escape sequence that erases a region of `rows` whose caret sits on
+/// `caret_row`: straighten onto the bottom row first (an edit can park the
+/// caret on an earlier composer row), then erase row by row upward.
+fn clear_sequence(rows: usize, caret_row: Option<usize>) -> String {
+    if rows == 0 {
+        return String::new();
+    }
+    let mut sequence = String::new();
+    if let Some(row) = caret_row {
+        let last_row = rows - 1;
+        if row < last_row {
+            sequence.push_str(&format!("\x1b[{}B", last_row - row));
+        }
+    }
+    for row in 0..rows {
+        sequence.push_str("\x1b[2K\r");
+        if row + 1 < rows {
+            sequence.push_str("\x1b[1A");
+        }
+    }
+    sequence
 }
 
 /// Read one line from stdin without holding the async worker hostage.
@@ -2201,6 +2332,7 @@ async fn handle_elevation(
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use unicode_width::UnicodeWidthStr;
 
     fn test_repl_state() -> ReplState {
         let options = crate::app_state::InteractiveOptions {
@@ -3062,6 +3194,85 @@ mod tests {
             view.live_active,
             "once the row is closed the frame draws as usual"
         );
+    }
+
+    /// The defect this pins: `live_rows` was the constant 2, so a composer
+    /// line wider than the terminal pushed the status frame up one row per
+    /// 250 ms tick — the frames accumulated in scrollback instead of being
+    /// erased. Widths below are exact cells: "❯ " (2) + 45 = 47 on a 20-cell
+    /// terminal.
+    #[test]
+    fn a_wrapped_composer_keeps_every_live_row_erasable() {
+        let layout = live_layout("◉ working", &"x".repeat(45), 45, 20);
+        assert_eq!(layout.rows, 4, "status row + three composer rows");
+        assert_eq!(layout.caret, Some((3, 7)));
+        assert_eq!(
+            clear_sequence(layout.rows, layout.caret.map(|(row, _)| row)),
+            "\x1b[2K\r\x1b[1A\x1b[2K\r\x1b[1A\x1b[2K\r\x1b[1A\x1b[2K\r",
+            "the erase pass covers every row the draw wrote"
+        );
+    }
+
+    /// Ctrl+J and multi-line paste put real newlines in the composer; each
+    /// one owns a terminal row of its own.
+    #[test]
+    fn a_multiline_composer_owns_one_row_per_line() {
+        let composer = "first\nsecond";
+        let layout = live_layout("◉ working", composer, composer.len(), 80);
+        assert_eq!(layout.rows, 3, "status row + two composer rows");
+        assert_eq!(
+            layout.caret,
+            Some((2, 6)),
+            "the caret parks at the end of the last line"
+        );
+    }
+
+    #[test]
+    fn home_in_a_wrapped_composer_erases_down_from_the_caret_first() {
+        let composer = "x".repeat(45);
+        let layout = live_layout("◉ working", &composer, 0, 20);
+        assert_eq!(layout.caret, Some((1, 2)), "caret sits after the prompt");
+        let sequence = clear_sequence(layout.rows, layout.caret.map(|(row, _)| row));
+        assert!(
+            sequence.starts_with("\x1b[2B"),
+            "the two rows below the caret must be reached before erasing up: {sequence:?}"
+        );
+    }
+
+    /// A line ending exactly on the margin parks the cursor on its last
+    /// cell: pending wrap must not be counted as another row.
+    #[test]
+    fn a_line_ending_on_the_margin_parks_at_the_last_cell() {
+        let layout = live_layout("◉ working", &"x".repeat(18), 18, 20);
+        assert_eq!(layout.rows, 2, "status row + one exactly-full line");
+        assert_eq!(layout.caret, Some((1, 19)));
+    }
+
+    #[test]
+    fn a_styled_frame_is_measured_without_its_escapes() {
+        assert_eq!(
+            visual_width("\x1b[2m◉ working\x1b[0m"),
+            visual_width("◉ working"),
+            "SGR sequences take no cells"
+        );
+        assert_eq!(live_layout("\x1b[2m◉ working\x1b[0m", "", 0, 20).rows, 1);
+    }
+
+    /// `draw_live` must take its row count from the measured layout, not a
+    /// constant: a wrapped composer that kept the old 2-row bookkeeping left
+    /// one status frame in scrollback per tick.
+    #[test]
+    fn draw_live_records_the_wrapped_composer_rows() {
+        let mut view = TurnView::new();
+        view.columns = Some(20);
+        view.composer.buffer = "x".repeat(45);
+        view.composer.cursor = view.composer.buffer.len();
+        view.draw_live("◉ working");
+        assert_eq!(
+            view.live_rows, 4,
+            "status row + three wrapped composer rows"
+        );
+        assert_eq!(view.caret_row, Some(3));
     }
 
     #[test]
