@@ -900,6 +900,54 @@ pub trait ToolDefinition: Send + Sync {
     ) -> Result<ToolResult, ExtensionError>;
 }
 
+/// Extension-side tool-**replacement** contract (DSH pattern d — wrap or
+/// substitute an existing tool). Where [`ToolDefinition`] *adds* a new
+/// model-visible tool, a `ToolReplacement` substitutes the **execution** of
+/// an already-registered tool (the [`target`](Self::target)), optionally
+/// overriding its description/schema. The host adapter
+/// (`codesmith-agent-runtime`, `tools/replacement.rs`) keeps every
+/// safety-relevant metadata method (capabilities, approval ladder,
+/// destructiveness, …) on the incumbent tool — a replacement can never
+/// relax an approval gate — and resolves [`ReplacementOutcome::Delegate`]
+/// by executing the incumbent it captured, so consecutive replacements for
+/// one target compose as a chain (never a loop).
+#[async_trait]
+pub trait ToolReplacement: Send + Sync {
+    /// Name of the registered tool whose execution this replacement takes
+    /// over. Resolved against the registry at host assembly time — a
+    /// target missing from the current surface is skipped with a warning
+    /// (surfaces are mode-dependent), not a load error.
+    fn target(&self) -> &str;
+    /// Optional description override; `None` keeps the incumbent's. With an
+    /// override the model-visible catalog changes (the existing
+    /// ToolsChange diff fires).
+    fn description_override(&self) -> Option<&str> {
+        None
+    }
+    /// Optional input-schema override; `None` keeps the incumbent's. MUST
+    /// be object-rooted (the registry's fail-closed chokepoint rejects
+    /// non-object roots); script mods are validated at load.
+    fn input_schema_override(&self) -> Option<Value> {
+        None
+    }
+    async fn execute(
+        &self,
+        input: Value,
+        ctx: &dyn ExtensionContext,
+    ) -> Result<ReplacementOutcome, ExtensionError>;
+}
+
+/// What a [`ToolReplacement`] decides for one call.
+#[derive(Debug, Clone)]
+pub enum ReplacementOutcome {
+    /// Run the captured incumbent. `None` passes the (post-waterfall)
+    /// input through verbatim; `Some(rewritten)` substitutes the input —
+    /// the host validates it against the incumbent before it runs.
+    Delegate(Option<Value>),
+    /// Substitute this result outright — the incumbent never runs.
+    Complete(ToolResult),
+}
+
 /// Extension-side slash-command contract. Registered via
 /// [`ExtensionApi::register_command`]; dispatched by the host's
 /// `extension_commands::try_dispatch` (Task 8) which calls [`CommandDefinition::run`].
@@ -1389,6 +1437,22 @@ pub trait ExtensionApi: Send + Sync {
     fn restrict_tools(&self, _scope: Scope, _names: Vec<String>) -> Result<(), ExtensionError> {
         Err(ExtensionError::Load(
             "tool restriction not supported by this api".into(),
+        ))
+    }
+
+    /// DSH pattern d — replace the **execution** of an already-registered
+    /// tool (see [`ToolReplacement`]). Resolved at registry assembly: the
+    /// incumbent is captured (so [`ReplacementOutcome::Delegate`] reaches
+    /// it) and the replacement takes effect at the next turn's build;
+    /// reload clears it with the generation's other bound registrations.
+    /// Two replacements for one target compose — the later registration
+    /// wraps the earlier one (both stay in the delegate chain).
+    ///
+    /// Default: hosts that do not support it get a loud error (same
+    /// posture as [`register_tool_scoped`](Self::register_tool_scoped)).
+    fn replace_tool(&self, _replacement: Box<dyn ToolReplacement>) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "tool replacement not supported by this api".into(),
         ))
     }
 

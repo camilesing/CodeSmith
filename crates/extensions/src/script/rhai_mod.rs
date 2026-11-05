@@ -93,6 +93,20 @@ pub enum ScriptRegistration {
         schema: serde_json::Value,
         callback: rhai::FnPtr,
     },
+    /// A registered-tool replacement captured by the `replace_tool(spec, cb)`
+    /// native (DSH pattern d — wrap/delegate the incumbent). Replayed at
+    /// `configure` via `ExtensionApi::replace_tool`; the host adapter
+    /// preserves the incumbent's safety metadata (capabilities/approval
+    /// ladder) and resolves `delegate()` against the incumbent it captured.
+    ReplaceTool {
+        /// Registered tool whose execution is taken over.
+        name: String,
+        /// Optional description override (model-visible catalog changes).
+        description: Option<String>,
+        /// Optional object-rooted input-schema override.
+        schema: Option<serde_json::Value>,
+        callback: rhai::FnPtr,
+    },
     Command {
         name: String,
         description: String,
@@ -982,15 +996,88 @@ fn register_natives(
                 Some(d) => dynamic_to_json(d).map_err(script_error)?,
                 None => serde_json::json!({"type": "object"}),
             };
-            cell_tool
-                .lock()
-                .expect("mod registration cell poisoned")
-                .push(ScriptRegistration::Tool {
+            {
+                let mut cell_ref = cell_tool.lock().expect("mod registration cell poisoned");
+                if cell_ref.iter().any(|reg| {
+                    matches!(reg, ScriptRegistration::ReplaceTool { name: n, .. } if *n == name)
+                }) {
+                    return Err(script_error(format!(
+                        "register_tool(): this mod already REPLACES tool {name:?} \
+                         — register_tool and replace_tool cannot target one name"
+                    )));
+                }
+                cell_ref.push(ScriptRegistration::Tool {
                     name,
                     description,
                     schema,
                     callback,
                 });
+            }
+            Ok(())
+        },
+    );
+
+    // replace_tool(spec_map, callback) — substitute the execution of an
+    // already-registered tool (DSH pattern d: wrap/delegate the incumbent).
+    // `name` is mandatory; optional `description` / `schema` overrides are
+    // model-visible only — the incumbent's capabilities/approval ladder
+    // stays (a replacement can never relax an approval gate). Resolved at
+    // host registry assembly: a target missing from the current surface is
+    // a warning there (surfaces are mode-dependent), not a load error.
+    let cell_replace = Arc::clone(cell);
+    engine.register_fn(
+        "replace_tool",
+        move |spec: rhai::Map, callback: rhai::FnPtr| -> Result<(), Box<rhai::EvalAltResult>> {
+            let name = spec
+                .get("name")
+                .and_then(|d| d.clone().try_cast::<String>())
+                .ok_or_else(|| script_error("replace_tool(): spec must include a string `name`"))?;
+            if !valid_tool_name(&name) {
+                return Err(script_error(format!(
+                    "replace_tool(): tool name {name:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+                )));
+            }
+            let description = match spec.get("description") {
+                Some(d) => match d.clone().try_cast::<String>() {
+                    Some(s) => Some(s),
+                    None => {
+                        return Err(script_error(
+                            "replace_tool(): `description` override must be a string",
+                        ));
+                    }
+                },
+                None => None,
+            };
+            let schema = match spec.get("schema") {
+                Some(d) => {
+                    let json = dynamic_to_json(d).map_err(script_error)?;
+                    if json.get("type").and_then(|v| v.as_str()) != Some("object") {
+                        return Err(script_error(
+                            "replace_tool(): `schema` override must be object-rooted \
+                             ({\"type\": \"object\", ...})",
+                        ));
+                    }
+                    Some(json)
+                }
+                None => None,
+            };
+            {
+                let mut cell_ref = cell_replace.lock().expect("mod registration cell poisoned");
+                if cell_ref.iter().any(
+                    |reg| matches!(reg, ScriptRegistration::Tool { name: n, .. } if *n == name),
+                ) {
+                    return Err(script_error(format!(
+                        "replace_tool(): this mod already registers a NEW tool named {name:?} \
+                         — register_tool and replace_tool cannot target one name"
+                    )));
+                }
+                cell_ref.push(ScriptRegistration::ReplaceTool {
+                    name,
+                    description,
+                    schema,
+                    callback,
+                });
+            }
             Ok(())
         },
     );
@@ -1422,6 +1509,13 @@ fn register_natives(
     engine.register_fn("send", |msg: &str| {
         control_value("send", Dynamic::from(msg.to_string()))
     });
+    // `delegate()` — run the replaced tool's incumbent with the (post-
+    // waterfall) input verbatim; `delegate(#{...})` — run it with the
+    // rewritten input. Valid only as a `replace_tool` callback return.
+    engine.register_fn("delegate", || control_value("delegate", Dynamic::UNIT));
+    engine.register_fn("delegate", |fields: rhai::Map| {
+        control_value("delegate", Dynamic::from(fields))
+    });
 }
 
 // === RhaiMod ================================================================
@@ -1627,6 +1721,21 @@ impl Extension for RhaiMod {
                         mod_id: self.metadata.id.to_string(),
                         runtime: Arc::clone(&self.runtime),
                         name: name.clone(),
+                        description: description.clone(),
+                        schema: schema.clone(),
+                        callback: callback.clone(),
+                    }))?;
+                }
+                ScriptRegistration::ReplaceTool {
+                    name,
+                    description,
+                    schema,
+                    callback,
+                } => {
+                    api.replace_tool(Box::new(super::adapters::ScriptToolReplacement {
+                        mod_id: self.metadata.id.to_string(),
+                        runtime: Arc::clone(&self.runtime),
+                        target: name.clone(),
                         description: description.clone(),
                         schema: schema.clone(),
                         callback: callback.clone(),
@@ -1845,6 +1954,7 @@ mod tests {
                 .map(|r| match r {
                     ScriptRegistration::Handler { kind, .. } => format!("h:{:?}", kind),
                     ScriptRegistration::Tool { name, .. } => format!("t:{name}"),
+                    ScriptRegistration::ReplaceTool { name, .. } => format!("r:{name}"),
                     ScriptRegistration::Command { name, .. } => format!("c:{name}"),
                     ScriptRegistration::Provider { id, .. } => format!("p:{id}"),
                     ScriptRegistration::PromptSection { id, .. } => format!("s:{id}"),
@@ -3831,5 +3941,47 @@ mod tests {
         assert_eq!(lats["width"], serde_json::json!(3));
         assert_eq!(lats["depth"], serde_json::json!(2));
         assert_eq!(lats["beam"], serde_json::json!(2));
+    }
+
+    #[test]
+    fn example_replace_tool_loads_and_delegates() {
+        let dir = TempDir::new().unwrap();
+        let source = include_str!("../../../../examples/mods/replace-tool/mod.rhai");
+        let m = RhaiMod::load_source(
+            "replace-tool",
+            "Replace a built-in tool",
+            "0.1.0",
+            source.to_string(),
+            kv_for(&dir, "replace-tool"),
+            hub(),
+        )
+        .expect("load replace-tool example");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        // The replacement bound for `list_dir`…
+        let repl = runner
+            .bound_replacements()
+            .into_iter()
+            .find(|(n, _)| n == "list_dir")
+            .expect("list_dir replacement bound");
+        // …and it delegates the (round-tripped) input to the incumbent.
+        let ctx: Arc<dyn codesmith_agent::extension::ExtensionContext> = Arc::new(PerModCtx);
+        let out = rt
+            .block_on(repl.1.execute(serde_json::json!({"path": "src"}), &*ctx))
+            .expect("replacement executes");
+        match out {
+            codesmith_agent::extension::ReplacementOutcome::Delegate(Some(v)) => {
+                assert_eq!(v, serde_json::json!({"path": "src"}));
+            }
+            other => panic!("expected Delegate(Some), got {other:?}"),
+        }
+        // The side effect rode along (KV count incremented by the callback).
+        assert_eq!(
+            kv_for(&dir, "replace-tool").get("calls"),
+            Some(serde_json::json!(1))
+        );
     }
 }

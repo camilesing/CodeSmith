@@ -241,6 +241,10 @@ pub(crate) struct Pending {
     /// DSH tool restrictions queued by the stub `ExtensionApi`, awaiting
     /// the `bind_core` flush (deny-only; see [`ToolRestriction`]).
     pub tool_restrictions: Vec<ToolRestriction>,
+    /// Tool replacements queued by the stub `ExtensionApi`, awaiting the
+    /// `bind_core` flush — each with its load-path origin (dylib-origin
+    /// replacements stay main-turn-only, same §F5d rule as tools).
+    pub replacements: Vec<(Arc<dyn ToolReplacement>, RegistrationOrigin)>,
 }
 
 /// A message projection queued by the stub `ExtensionApi`.
@@ -323,6 +327,12 @@ pub struct ExtensionRunner {
     /// composes the `next()` chain around the executor's run;
     /// `clear_around_turns` / reload drop them.
     around_turns: Mutex<Vec<(Arc<dyn AroundTurnHandler>, RegistrationOrigin)>>,
+    /// Bound at `bind_core` — the flushed tool replacements (DSH pattern
+    /// d), in registration order with their load-path origins. The host
+    /// applies them at registry assembly, each wrapping the incumbent
+    /// (multiple replacements for one target compose as a chain); reload
+    /// clears them with the other bound registrations.
+    replacements: Mutex<Vec<(Arc<dyn ToolReplacement>, RegistrationOrigin)>>,
     /// §F5b — loaded dylib `Library` handles. Pushed by `load_dylib`. On
     /// reload, [`drain_libraries_to_pending`](Self::drain_libraries_to_pending)
     /// (§F5d T4) MOVES these to `pending_drop` (the `Library` stays alive —
@@ -467,6 +477,7 @@ impl ExtensionRunner {
             handlers: Mutex::new(Vec::new()),
             around_tools: Mutex::new(Vec::new()),
             around_turns: Mutex::new(Vec::new()),
+            replacements: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
             pending_drop: Mutex::new(Vec::new()),
             shared: Mutex::new(SharedProviderRegistry::new()),
@@ -602,6 +613,16 @@ impl ExtensionRunner {
     /// rebuild. Called from `reload_extension_runtime` before re-populate.
     pub fn clear_tools(&self) {
         self.tools.lock().expect("tools lock poisoned").clear();
+    }
+
+    /// Tool replacements — see [`Self::bound_replacements`]. Safe to call
+    /// while an in-flight turn holds clones (per-turn registry rebuild
+    /// semantics, same argument as [`Self::clear_tools`]).
+    pub fn clear_replacements(&self) {
+        self.replacements
+            .lock()
+            .expect("replacements lock poisoned")
+            .clear();
     }
 
     /// DSH tool restriction — append a deny-only name list for `scope`
@@ -903,6 +924,7 @@ impl ExtensionRunner {
         self.clear_around_turns();
         self.clear_tools();
         self.clear_tool_restrictions();
+        self.clear_replacements();
         self.clear_commands();
         self.clear_disabled_commands();
         self.clear_providers();
@@ -1168,6 +1190,24 @@ impl ExtensionRunner {
                     "tool restriction rejected at bind: {e}"
                 );
                 rejections.push(e);
+            }
+        }
+        {
+            let mut replacements = self
+                .replacements
+                .lock()
+                .expect("replacements lock poisoned");
+            for (replacement, origin) in drained.replacements {
+                let target = replacement.target().to_string();
+                if replacements.iter().any(|(r, _)| r.target() == target) {
+                    tracing::warn!(
+                        target: "codesmith_extensions",
+                        "multiple replacements registered for tool '{target}' — they compose \
+                         (the later wraps the earlier; the earlier's delegate reaches the \
+                         incumbent)"
+                    );
+                }
+                replacements.push((replacement, origin));
             }
         }
         for pc in drained.commands {
@@ -1485,6 +1525,37 @@ impl ExtensionRunner {
     /// never appear here, and a `Global` restrict entry prunes its names.
     pub fn bound_tools(&self) -> Vec<(String, Arc<dyn ToolDefinition>)> {
         self.bound_tools_scoped(&Scope::Global)
+    }
+
+    /// Snapshot of the bound tool replacements (target name, def) in
+    /// registration order — the host's `apply_extension_tool_replacements`
+    /// (`codesmith-agent-runtime`) wraps each target's incumbent, later
+    /// registrations wrapping earlier ones. This is the **main-turn**
+    /// view (all origins); sub-agent registries resolve
+    /// [`bound_replacements_for_subagents`](Self::bound_replacements_for_subagents).
+    pub fn bound_replacements(&self) -> Vec<(String, Arc<dyn ToolReplacement>)> {
+        self.replacements
+            .lock()
+            .expect("replacements lock poisoned")
+            .iter()
+            .map(|(r, _)| (r.target().to_string(), Arc::clone(r)))
+            .collect()
+    }
+
+    /// The replacement view a **sub-agent registry** may mount: minus
+    /// dylib-origin entries (same §F5d safety rule as
+    /// [`mountable_tools_for_subagents`]) — a detached background child
+    /// can outlive a reload's two-phase `Library` drop, so dylib
+    /// replacement code must not ride into it.
+    #[must_use]
+    pub fn bound_replacements_for_subagents(&self) -> Vec<(String, Arc<dyn ToolReplacement>)> {
+        self.replacements
+            .lock()
+            .expect("replacements lock poisoned")
+            .iter()
+            .filter(|(_, origin)| !origin.is_dylib())
+            .map(|(r, _)| (r.target().to_string(), Arc::clone(r)))
+            .collect()
     }
 
     /// The extension-tool view for `scope` (DSH `ToolView` derivation):

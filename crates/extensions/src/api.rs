@@ -199,6 +199,14 @@ impl ExtensionApi for StubExtensionApi {
             });
         Ok(())
     }
+    fn replace_tool(&self, replacement: Box<dyn ToolReplacement>) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        pending
+            .replacements
+            .push((Arc::from(replacement), self.origin));
+        Ok(())
+    }
     fn register_around_tool(
         &self,
         handler: Arc<dyn codesmith_agent::extension::AroundToolHandler>,

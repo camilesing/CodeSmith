@@ -27,6 +27,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 |---|---|---|---|---|
 | 事件钩子、工具守卫 | ✓ `on` / `on_event` / `register_guard` | — | ✓ | 按卸载/加载粒度为 mod；钩子错误 fail open |
 | 模型可见工具 | ✓ `register_tool`（纯逻辑——无 fs/net 原生函数） | ✓（可脚本化的默认值） | ✓（完整 IO/异步） | 子代理可挂载 script/compiled-in 工具；dylib 来源的 Rust 工具保持仅主轮（5b 分层） |
+| 既有工具的实现 | ✓ `replace_tool`（替换执行；`delegate()` 触达原实现） | — | ✓ | 除 description/schema 外的元数据沿用被替换者——替换无法放宽审批门槛；主轮与子代理注册表应用同一替换（见下） |
 | 斜杠命令 | ✓ `register_command`（遮蔽内建）/ `disable_command`（退役内建） | — | ✓ | 层序 user > mod > builtin |
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
@@ -236,6 +237,8 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_prompt_section(id, text)` | 向基础系统提示词追加命名分段（见下） |
 | `register_skill(spec)` | 向会话技能目录贡献一个内存技能（见下） |
 | `register_guard(callback)` | 注册 deny-only 的工具调用守卫（见下） |
+| `replace_tool(spec, callback)` | 接管一个已注册工具的执行（见下） |
+| `delegate(input?)` | 替换回调的控制值：运行原实现——`()` 原样透传入参，map 则改写后传入 |
 | `on_event(kind, callback)` | 注册 DSH 对齐的钩子——仅 emit/serial 事件（waterfall 事件导致加载失败；见上） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
@@ -389,6 +392,51 @@ register_guard(|e| {
 把关子代理工具调用（子代理的 turn 按其 agent 类型作用域分发
 `tool-call`，script 来源的处理器一并覆盖）；reload 清除该 generation
 的全部守卫。
+
+### 替换内建工具（DSH 模式 d）
+
+```rhai
+replace_tool(#{
+    name: "grep_files",              // 要接管的已注册工具（必填）
+    // description: "受限 grep",      // 可选的模型可见覆盖
+    // schema: #{ type: "object", ... },  // 可选覆盖——必须是 object 根
+}, |input, ctx| {
+    if input.query.contains("secret") { return err("不许搜敏感词"); }
+    delegate(#{ query: input.query, max_results: 50 })   // 改写后运行原实现
+});
+```
+
+`register_tool` 是*新增*工具；`replace_tool` 替换一个**已注册工具的执行**。
+回调收到 `(input, ctx)`（与 `register_tool` 回调同形——ctx 可省略），逐次
+调用做出决定：
+
+| 回调返回 | 效果 |
+|---|---|
+| `ok(value)` / `err(msg)` / 裸值 | 以该结果替代——原实现不再运行 |
+| `delegate()` | 以（经 waterfall 之后的）原入参运行原实现 |
+| `delegate(#{...})` | 以改写入参运行原实现（先对其做原实现的校验） |
+| 其它控制值（`block` 等） | 返回错误结果，提示模型应使用 `ok`/`err`/`delegate` |
+
+性质与限制：
+
+- **安全元数据不容替换更改。**能力集、审批阶梯、破坏性判定、路径问题、
+  并发约束全部沿用被替换者——替换永远无法放宽审批门槛，只读表面（explore
+  子代理）也依旧按被替换者的能力收窄。仅 `description` 与 `schema` 可覆盖
+  （目录随之变化；被替换的工具始终立即可见，不会 defer 在 tool search 之后）。
+- **组合次序**：内建 → 配置 `[tools]` override → mod 替换，后到的 mod 包住
+  先到的——`delegate()` 触达替换生效时刻的被替换者，因此链可组合且永不
+  成环。两个 mod 替换同一工具会告警（点名双方）并成链；**同一 mod** 内对
+  一个名字同时 `register_tool` + `replace_tool` 会导致加载失败。
+- **目标缺失是告警而非错误**——表面随模式变化（Plan 模式裁掉写工具；
+  explore 子代理只读），替换在那里直接跳过。主轮的 MCP 工具走目录合并非
+  注册表常驻，v1 无法替换。
+- **作用范围**：替换是全局的——每个 turn（主轮与子代理一视同仁）在注册表
+  组装时解析，下一 turn 生效；reload/停用同样于下一 turn 恢复内建。
+  `tool-call` 改写与 `tool-result` 变换 waterfall 照旧围绕被替换工具运行
+  （dispatch 层接缝，不变），组合模式是：`replace_tool` 管执行策略与改写、
+  `on("tool-result", ...)` 管后处理。
+- 替换回调同步执行脚本（受 mod engine 操作数上限约束）；`delegate` 在
+  turn 的正常取消机制下执行。
 
 ### 注册消息投影（会话日志折叠）
 
@@ -549,7 +597,9 @@ enabled = true   # 总开关：发现、manage_mods 工具
 |---|---|
 | `ModManifest` / `discover_mods` / 信任门 | `crates/extensions/src/script/mod_manifest.rs` |
 | `RhaiMod`（Extension 实现、native 注册、事件映射） | `crates/extensions/src/script/rhai_mod.rs` |
-| `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
+| `ScriptHandler` / `ScriptToolDefinition` / `ScriptToolReplacement` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
+| `ToolReplacement` 接缝 + `ReplacementOutcome` | `crates/agent/src/extension.rs` |
+| `ReplacementToolSpec` + 注册表应用（主轮 / 子代理） | `crates/agent-runtime/src/tools/replacement.rs` |
 | `ModKvStore`（每 mod 持久 KV） | `crates/extensions/src/script/kv.rs` |
 | `ModStateStore`（激活/禁用状态） | `crates/cli/src/mod_state.rs` |
 | 共享操作层（manage_mods 工具背后的单一实现） | `crates/cli/src/mod_ops.rs` |

@@ -142,9 +142,11 @@ impl ToolRegistryPluginExt for ToolRegistry {
                 // Auto-discovered scripts must never shadow a registered
                 // (builtin or config) tool: the frontmatter name comes from
                 // the script's author, and a `read_file` look-alike would
-                // hijack a trusted tool's dispatch. Explicit config
-                // overrides (`apply_overrides`) remain the one sanctioned
-                // way to replace a builtin.
+                // hijack a trusted tool's dispatch. The sanctioned ways to
+                // replace a builtin are explicit config overrides
+                // (`apply_overrides`) and a consent-gated mod's
+                // `replace_tool` (applied at registry assembly, see
+                // `agent-runtime::tools::replacement`).
                 tracing::warn!(
                     "Plugin tool '{name}' shadows an existing tool and was NOT registered; \
                      rename the plugin or replace the tool via an explicit config override"

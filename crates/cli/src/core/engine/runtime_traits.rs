@@ -596,6 +596,26 @@ impl HostServices for super::EngineHost {
             );
         }
 
+        // Mod-declared replacements (DSH pattern d) — wrap each target's
+        // incumbent after the extension-tool mount (a replacement may also
+        // wrap an extension tool of the same name). Applied before the
+        // capability removal so a disabled name still prunes a replaced
+        // entry, and after config overrides so a mod replacement composes
+        // outside them (its `delegate` reaches the overridden incumbent).
+        let mut replaced_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        if let Some(ref mut tool_registry) = tool_registry
+            && let Some(runner) = &self.extension_runner
+        {
+            replaced_names =
+                codesmith_agent_runtime::tools::replacement::apply_extension_tool_replacements(
+                    tool_registry,
+                    runner,
+                )
+                .into_iter()
+                .collect();
+        }
+
         // Capability manifest (composition point, slice 2): session-level
         // selection. Remove disabled names from the registry itself (not
         // just the catalog) so a disabled tool is neither visible nor
@@ -635,7 +655,10 @@ impl HostServices for super::EngineHost {
                 &config.tools_always_load,
             );
             for tool in &mut catalog {
-                if plugin_tool_names.contains(&tool.name) {
+                // Replaced tools join the eager set — a schema override
+                // changes the declaration, so it must be visible without a
+                // tool search.
+                if plugin_tool_names.contains(&tool.name) || replaced_names.contains(&tool.name) {
                     tool.defer_loading = Some(false);
                 }
             }
@@ -664,11 +687,14 @@ impl HostServices for super::EngineHost {
         // baseline silently; sub-agent toolsets build on a separate path
         // (`spawn_subagent`) and never reach here, so the baseline cannot
         // flap between main and sub catalogs.
-        let extension_names: std::collections::HashSet<String> = self
+        let mut extension_names: std::collections::HashSet<String> = self
             .extension_runner
             .as_ref()
             .map(|r| r.bound_tools().into_iter().map(|(n, _)| n).collect())
             .unwrap_or_default();
+        // A replaced tool's surviving entry is the mod's wrapper — label it
+        // Extension, same as an extension tool of that name.
+        extension_names.extend(replaced_names.iter().cloned());
         // The origin map's write order mirrors the registration order
         // above (builtin snapshot → plugin writes → extension writes), so
         // the surviving entry per name is the registry winner's origin.

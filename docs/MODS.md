@@ -28,6 +28,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 |---|---|---|---|---|
 | Event hooks, tool guards | ✓ `on` / `on_event` / `register_guard` | — | ✓ | load/unload per mod; hook errors fail open |
 | Model-visible tools | ✓ `register_tool` (pure logic — no fs/net natives) | ✓ (scriptable defaults) | ✓ (full IO/async) | sub-agents mount script/compiled-in tools; dylib-origin Rust tools stay main-turn only (5b tiering) |
+| Existing tool implementations | ✓ `replace_tool` (substitute execution; `delegate()` reaches the original) | — | ✓ | metadata except description/schema stays the incumbent's — a replacement cannot relax an approval gate; main and sub-agent registries apply the same replacements (see below) |
 | Slash commands | ✓ `register_command` (shadows built-ins) / `disable_command` (retires one) | — | ✓ | layering user > mod > builtin |
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
@@ -251,6 +252,8 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `register_prompt_section(id, text)` | Append a named section to the base system prompt (see below) |
 | `register_skill(spec)` | Contribute an in-memory skill to the session catalogue (see below) |
 | `register_guard(callback)` | Register a deny-only tool-call guard (see below) |
+| `replace_tool(spec, callback)` | Take over a registered tool's execution (see below) |
+| `delegate(input?)` | Replacement-callback control: run the original implementation — `()` passes the input verbatim, a map rewrites it |
 | `on_event(kind, callback)` | Register a DSH-aligned hook — emit/serial events only (waterfall kinds fail the load; see above) |
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
@@ -439,6 +442,60 @@ so no approval path can flip it), gate sub-agent tool calls too (a child's
 turn dispatches `tool-call` at its agent-type scope and script-origin
 handlers ride along), and reload clears the generation's guards.
 
+### Replacing a built-in tool (DSH pattern d)
+
+```rhai
+replace_tool(#{
+    name: "grep_files",              // the registered tool to take over (required)
+    // description: "grep, capped",  // optional model-visible override
+    // schema: #{ type: "object", ... },  // optional override — must be object-rooted
+}, |input, ctx| {
+    if input.query.contains("secret") { return err("not over secrets"); }
+    delegate(#{ query: input.query, max_results: 50 })   // rewrite, then run the original
+});
+```
+
+`register_tool` *adds* a new tool; `replace_tool` substitutes the
+**execution** of one that is already registered. The callback receives
+`(input, ctx)` (same shapes as a `register_tool` callback — ctx optional)
+and decides per call:
+
+| Callback returns | Effect |
+|---|---|
+| `ok(value)` / `err(msg)` / a bare value | substitute that result — the original never runs |
+| `delegate()` | run the original with the (post-waterfall) input verbatim |
+| `delegate(#{...})` | run the original with the rewritten input (validated against it first) |
+| any other control (`block`, …) | an error result telling the model to use `ok`/`err`/`delegate` |
+
+Properties and limits:
+
+- **Safety metadata is not yours to change.** Capabilities, the approval
+  ladder, destructiveness, path questions, and concurrency all stay the
+  incumbent's — a replacement can never relax an approval gate, and a
+  read-only surface (an explore child) still narrows by the incumbent's
+  capabilities. Only `description` and `schema` may be overridden (the
+  catalog changes with them; a replaced tool is always eagerly visible,
+  never deferred behind tool search).
+- **Composition order**: builtin → config `[tools]` override → mod
+  replacements, later mods wrapping earlier ones — `delegate()` reaches
+  whatever was the incumbent when the replacement was applied, so a chain
+  composes and never loops. Two mods replacing one tool warn (both names)
+  and chain; a `register_tool` + `replace_tool` on one name **in the same
+  mod** fails the load.
+- **A missing target is a warning, not an error** — surfaces are
+  mode-dependent (Plan mode prunes write tools; an explore child is
+  read-only), so the replacement simply skips there. Main-turn MCP tools
+  are catalog-merged, not registry-resident, and cannot be replaced in v1.
+- **Scoped surface**: replacements are global — every turn (main and
+  sub-agent alike) resolves them at registry assembly, effective next
+  turn; reload/deactivate restores the builtin the same way. The
+  `tool-call` rewrite and `tool-result` transform waterfalls still run
+  around a replaced tool (dispatch-level seams, unchanged), so the
+  compose pattern is: `replace_tool` for execution policy + rewrite,
+  `on("tool-result", ...)` for post-processing.
+- A replacement runs your script synchronously (bounded by the mod engine
+  op cap); `delegate` executes under the turn's normal cancellation.
+
 ### Registering a message projection (session log folds)
 
 ```rhai
@@ -616,7 +673,9 @@ The `watch` hot-reload file watcher was removed in 0.10.0; use
 |---|---|
 | `ModManifest` / `discover_mods` / trust gate | `crates/extensions/src/script/mod_manifest.rs` |
 | `RhaiMod` (Extension impl, native registration, event mapping) | `crates/extensions/src/script/rhai_mod.rs` |
-| `ScriptHandler` / `ScriptToolDefinition` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
+| `ScriptHandler` / `ScriptToolDefinition` / `ScriptToolReplacement` / `ScriptCommandDefinition` | `crates/extensions/src/script/adapters.rs` |
+| `ToolReplacement` seam + `ReplacementOutcome` | `crates/agent/src/extension.rs` |
+| `ReplacementToolSpec` + registry apply (main / sub-agent) | `crates/agent-runtime/src/tools/replacement.rs` |
 | `ModKvStore` (per-mod persistent KV) | `crates/extensions/src/script/kv.rs` |
 | `ModStateStore` (activation/disablement state) | `crates/cli/src/mod_state.rs` |
 | Shared ops layer (single impl behind the manage_mods tool) | `crates/cli/src/mod_ops.rs` |

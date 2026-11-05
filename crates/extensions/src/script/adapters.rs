@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use codesmith_agent::extension::{
     CommandDefinition, CommandOutput, ExtensionCommandContext, ExtensionContext, ExtensionError,
-    Handler, HandlerOutcome, ToolDefinition,
+    Handler, HandlerOutcome, ReplacementOutcome, ToolDefinition, ToolReplacement,
 };
 use codesmith_tools::ToolResult;
 use rhai::Dynamic;
@@ -207,6 +207,86 @@ impl ToolDefinition for ScriptToolDefinition {
             }),
             Err(e) => Err(ExtensionError::Tool {
                 tool: format!("{} (mod '{}')", self.name, self.mod_id),
+                message: e.to_string(),
+            }),
+        }
+    }
+}
+
+// === ScriptToolReplacement ==================================================
+
+/// A `replace_tool(spec, |input, ctx| {...})` registration — substitutes the
+/// **execution** of an already-registered tool (DSH pattern d). The host
+/// adapter (`codesmith-agent-runtime`, `tools/replacement.rs`) captures the
+/// incumbent, keeps its safety metadata (capabilities/approval ladder), and
+/// resolves [`ReplacementOutcome::Delegate`] against the incumbent; this
+/// side only produces the per-call decision. A script error surfaces as the
+/// normal `ExtensionError::Tool` failure (the replacement IS the tool now —
+/// not fail-open, unlike handlers).
+pub struct ScriptToolReplacement {
+    pub(crate) mod_id: String,
+    pub(crate) runtime: std::sync::Arc<ScriptRuntime>,
+    pub(crate) target: String,
+    pub(crate) description: Option<String>,
+    pub(crate) schema: Option<serde_json::Value>,
+    pub(crate) callback: rhai::FnPtr,
+}
+
+#[async_trait]
+impl ToolReplacement for ScriptToolReplacement {
+    fn target(&self) -> &str {
+        &self.target
+    }
+
+    fn description_override(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    fn input_schema_override(&self) -> Option<serde_json::Value> {
+        self.schema.clone()
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        ctx: &dyn ExtensionContext,
+    ) -> Result<ReplacementOutcome, ExtensionError> {
+        let payload = super::rhai_mod::json_to_dynamic(&input);
+        let ctx_map = ctx_to_dynamic(ctx);
+        match call_with_optional_ctx(&self.runtime, &self.callback, payload, ctx_map) {
+            Ok(ret) => Ok(match split_control(&ret) {
+                Some((control, value)) if control == "delegate" => {
+                    // delegate() → run the incumbent verbatim;
+                    // delegate(#{...}) → run it with the rewritten input.
+                    if value.is_unit() {
+                        ReplacementOutcome::Delegate(None)
+                    } else {
+                        match dynamic_to_json(&value) {
+                            Ok(json) => ReplacementOutcome::Delegate(Some(json)),
+                            Err(e) => ReplacementOutcome::Complete(ToolResult::error(format!(
+                                "delegate() argument must be an object map: {e}"
+                            ))),
+                        }
+                    }
+                }
+                Some((control, value)) if control == "ok" => {
+                    ReplacementOutcome::Complete(ToolResult::success(stringify_dynamic(&value)))
+                }
+                Some((control, value)) if control == "err" => {
+                    ReplacementOutcome::Complete(ToolResult::error(stringify_dynamic(&value)))
+                }
+                // Misused control (block/proceed/transform/…) — fail loud to
+                // the model instead of silently substituting success content.
+                Some((control, _)) => ReplacementOutcome::Complete(ToolResult::error(format!(
+                    "replace_tool callback returned control '{control}' \
+                     (use ok/err for a result, delegate to reach the original)"
+                ))),
+                // Bare string / unit / structured value: success content
+                // (same friendly rule as register_tool).
+                _ => ReplacementOutcome::Complete(ToolResult::success(stringify_dynamic(&ret))),
+            }),
+            Err(e) => Err(ExtensionError::Tool {
+                tool: format!("{} (mod '{}')", self.target, self.mod_id),
                 message: e.to_string(),
             }),
         }
@@ -678,6 +758,183 @@ mod tests {
             .unwrap();
         let out2 = block_on(tool2.1.execute(json!({}), &ctx())).unwrap();
         assert_eq!(out2.content, "hello");
+    }
+
+    // === replace_tool (DSH pattern d) =======================================
+
+    #[test]
+    fn replace_tool_maps_ok_err_and_bare_returns() {
+        let dir = TempDir::new().unwrap();
+        let m = load_mod(
+            &dir,
+            "repl-mod",
+            r#"
+            replace_tool(#{name: "t_ok"}, |i| { ok("wrapped:" + i.v) });
+            replace_tool(#{name: "t_err"}, |i| { err("no:" + i.v) });
+            replace_tool(#{name: "t_bare"}, |i| { "plain:" + i.v });
+            "#,
+        );
+        let runner = crate::ExtensionRunner::new();
+        block_on(runner.load(&m)).unwrap();
+        runner.bind_core(Arc::new(ctx()));
+        let repls = runner.bound_replacements();
+        assert_eq!(
+            repls.len(),
+            3,
+            "{:?}",
+            repls.iter().map(|(n, _)| n).collect::<Vec<_>>()
+        );
+
+        let by = |t: &str| {
+            repls
+                .iter()
+                .find(|(n, _)| n == t)
+                .unwrap_or_else(|| panic!("{t} bound"))
+                .1
+                .clone()
+        };
+        let c = &ctx();
+        for (target, expect_success, expect_content) in [
+            ("t_ok", true, "wrapped:x"),
+            ("t_err", false, "no:x"),
+            ("t_bare", true, "plain:x"),
+        ] {
+            let out = block_on(by(target).execute(json!({"v": "x"}), c)).unwrap();
+            match out {
+                codesmith_agent::extension::ReplacementOutcome::Complete(r) => {
+                    assert_eq!(r.success, expect_success, "{target}");
+                    assert_eq!(r.content, expect_content, "{target}");
+                }
+                other => panic!("{target}: expected Complete, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn replace_tool_delegate_passthrough_and_rewrite() {
+        let dir = TempDir::new().unwrap();
+        let m = load_mod(
+            &dir,
+            "deleg-mod",
+            r#"
+            replace_tool(#{name: "d_pass"}, |i| { delegate() });
+            replace_tool(#{name: "d_rewrite"}, |i| { delegate(#{ path: "/safe/" + i.path }) });
+            "#,
+        );
+        let runner = crate::ExtensionRunner::new();
+        block_on(runner.load(&m)).unwrap();
+        runner.bind_core(Arc::new(ctx()));
+        let by = |t: &str| {
+            runner
+                .bound_replacements()
+                .into_iter()
+                .find(|(n, _)| n == t)
+                .unwrap_or_else(|| panic!("{t} bound"))
+                .1
+        };
+        let c = &ctx();
+        let out = block_on(by("d_pass").execute(json!({"path": "a"}), c)).unwrap();
+        assert!(
+            matches!(
+                out,
+                codesmith_agent::extension::ReplacementOutcome::Delegate(None)
+            ),
+            "delegate() passes the input through: {out:?}"
+        );
+        let out = block_on(by("d_rewrite").execute(json!({"path": "a"}), c)).unwrap();
+        match out {
+            codesmith_agent::extension::ReplacementOutcome::Delegate(Some(v)) => {
+                assert_eq!(v, json!({"path": "/safe/a"}));
+            }
+            other => panic!("expected Delegate(Some), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replace_tool_misused_control_fails_loud() {
+        let dir = TempDir::new().unwrap();
+        let m = load_mod(
+            &dir,
+            "misuse",
+            r#"replace_tool(#{name: "t"}, |i| { block("nope") });"#,
+        );
+        let runner = crate::ExtensionRunner::new();
+        block_on(runner.load(&m)).unwrap();
+        runner.bind_core(Arc::new(ctx()));
+        let (_, repl) = runner.bound_replacements().into_iter().next().unwrap();
+        let out = block_on(repl.execute(json!({}), &ctx())).unwrap();
+        match out {
+            codesmith_agent::extension::ReplacementOutcome::Complete(r) => {
+                assert!(!r.success, "misused control must not read as success");
+                assert!(
+                    r.content.contains("ok/err") && r.content.contains("delegate"),
+                    "{}",
+                    r.content
+                );
+            }
+            other => panic!("expected Complete(error), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replace_tool_script_error_surfaces_as_tool_error() {
+        let dir = TempDir::new().unwrap();
+        let m = load_mod(
+            &dir,
+            "broken-repl",
+            r#"replace_tool(#{name: "t"}, |i| { let x = i.no.field; ok(1) });"#,
+        );
+        let runner = crate::ExtensionRunner::new();
+        block_on(runner.load(&m)).unwrap();
+        runner.bind_core(Arc::new(ctx()));
+        let (_, repl) = runner.bound_replacements().into_iter().next().unwrap();
+        let out = block_on(repl.execute(json!({}), &ctx()));
+        match out {
+            Err(codesmith_agent::extension::ExtensionError::Tool { tool, .. }) => {
+                assert!(tool.contains("t (mod 'broken-repl')"), "{tool}");
+            }
+            other => panic!("expected ExtensionError::Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replace_tool_load_rejects_bad_shapes() {
+        let dir = TempDir::new().unwrap();
+        let load = |id: &str, script: &str| {
+            super::super::RhaiMod::load_source(
+                id,
+                id,
+                "0.1.0",
+                script.to_string(),
+                super::super::ModKvStore::new(dir.path().join(format!("{id}.json"))),
+                hub(),
+            )
+        };
+        // Non-object-rooted schema override.
+        let m = load(
+            "bad-schema",
+            r#"replace_tool(#{name: "t", schema: #{type: "string"}}, |i| { ok(1) });"#,
+        );
+        assert!(m.is_err(), "non-object schema must fail the load");
+        // Missing name.
+        let m = load(
+            "no-name",
+            r#"replace_tool(#{description: "x"}, |i| { ok(1) });"#,
+        );
+        assert!(m.is_err(), "missing name must fail the load");
+        // Same-name register_tool + replace_tool in one mod (both orders).
+        let m = load(
+            "conflict-a",
+            r#"register_tool(#{name: "t", description: "x"}, |i| { ok(1) });
+               replace_tool(#{name: "t"}, |i| { delegate() });"#,
+        );
+        assert!(m.is_err(), "register_tool→replace_tool same name must fail");
+        let m = load(
+            "conflict-b",
+            r#"replace_tool(#{name: "t"}, |i| { delegate() });
+               register_tool(#{name: "t", description: "x"}, |i| { ok(1) });"#,
+        );
+        assert!(m.is_err(), "replace_tool→register_tool same name must fail");
     }
 
     // Transform chains: script transform visible to a second (Rust) handler.

@@ -7105,6 +7105,17 @@ impl SubAgentToolRegistry {
                 runner,
                 &codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string()),
             );
+            // Mod replacements (DSH pattern d) — the sub-agent-safe view
+            // (dylib-origin excluded), applied after the ext-tool mount so a
+            // replacement may also wrap an extension tool, and before the
+            // capability removal / read-only narrowing so those filters
+            // govern the wrapped entry through its incumbent metadata.
+            // Parent and child thereby see the same implementation for a
+            // replaced tool.
+            codesmith_agent_runtime::tools::replacement::apply_extension_tool_replacements_for_subagents(
+                &mut registry,
+                runner,
+            );
         }
         // Capability manifest (composition layer, slice 2b): the same
         // session-level selection the main turn applies in

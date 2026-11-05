@@ -38,6 +38,7 @@ construct it, consumers take it by value).
 | `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |
 | `TelemetrySink` | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime`, `cli` |
 | `ToolDefinition` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
+| `ToolReplacement` | `agent` | `agent-runtime`, `extensions` | `agent`, `agent-runtime`, `extensions` |
 | `TurnExecutorFactory` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `TurnHarvest` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `WorkflowEngine` | `agent-runtime` | `cli` | `cli` |

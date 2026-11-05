@@ -57,6 +57,7 @@ SEAMS = [
     "SubAgentSpawner",
     "TelemetrySink",
     "ToolDefinition",
+    "ToolReplacement",
     "TurnExecutorFactory",
     "TurnHarvest",
     "WorkflowEngine",

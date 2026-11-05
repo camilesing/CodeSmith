@@ -36,6 +36,7 @@ pub mod large_output_router;
 pub mod output_policy;
 pub mod parse_gate;
 pub mod registry;
+pub mod replacement;
 pub mod schema_sanitize;
 pub mod shell_output;
 pub mod shell_types;
