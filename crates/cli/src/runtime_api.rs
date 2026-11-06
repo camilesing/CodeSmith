@@ -4276,7 +4276,11 @@ mod tests {
         assert!(models[0]["id"].is_string());
         assert!(models[0]["provider"].is_string());
         assert!(
-            models.as_array().unwrap().iter().any(|m| m["default"] == serde_json::json!(true)),
+            models
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["default"] == serde_json::json!(true)),
             "exactly-one default is not asserted, but at least the effective default must be flagged"
         );
 
