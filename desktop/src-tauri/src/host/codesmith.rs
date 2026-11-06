@@ -124,7 +124,7 @@ impl CodesmithProcess {
         if !resp.status().is_success() {
             bail!("GET {path}: {}", resp.status());
         }
-        Ok(resp.json().await.with_context(|| format!("GET {path} body"))?)
+        resp.json().await.with_context(|| format!("GET {path} body"))
     }
 
     pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
@@ -137,7 +137,7 @@ impl CodesmithProcess {
         if !resp.status().is_success() {
             bail!("POST {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
         }
-        Ok(resp.json().await.with_context(|| format!("POST {path} body"))?)
+        resp.json().await.with_context(|| format!("POST {path} body"))
     }
 
     pub async fn post_empty(&self, path: &str) -> Result<()> {
@@ -151,6 +151,19 @@ impl CodesmithProcess {
             bail!("POST {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
         }
         Ok(())
+    }
+
+    pub async fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
+        let resp = self
+            .auth(self.client.patch(format!("{}{path}", self.base_url)))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("PATCH {path}"))?;
+        if !resp.status().is_success() {
+            bail!("PATCH {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
+        }
+        resp.json().await.with_context(|| format!("PATCH {path} body"))
     }
 
     /// A long-lived SSE body as raw text chunks; the caller parses `data:`

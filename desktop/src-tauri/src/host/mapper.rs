@@ -81,11 +81,9 @@ fn content_text(detail: Option<&str>) -> String {
 
 /// One live assistant attempt (one agent item being streamed).
 struct Attempt {
-    turn: u64,
-    step: u64,
     /// Dense per-attempt chunk counter; the client rebaselines on any gap.
     chunk_index: u64,
-    /// The block type already announced with `block-start`, if any.
+    /// Whether `block-start` was already announced for block 0.
     block_open: bool,
 }
 
@@ -108,16 +106,6 @@ impl SessionMapper {
             seq: WireSeq::resume_after(last_seq),
             ..Self::default()
         }
-    }
-
-    /// The last allocated wire seq (for snapshot cursors).
-    pub fn last_seq(&self) -> u64 {
-        self.seq.last()
-    }
-
-    /// The current assistant-stream revision (for the follow baseline).
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     fn started_after_seq(&self) -> i64 {
@@ -147,7 +135,7 @@ impl SessionMapper {
         });
         self.attempts.insert(
             item_id.to_string(),
-            Attempt { turn, step, chunk_index: 0, block_open: false },
+            Attempt { chunk_index: 0, block_open: false },
         );
         Some(Frame::Stream(frame))
     }
@@ -371,20 +359,9 @@ impl SessionMapper {
                             true,
                         )));
                     }
-                    "user_message" => {
-                        frames.push(Frame::Event(self.seq.event(
-                            "user/message",
-                            json!({
-                                "message": {
-                                    "id": item_id,
-                                    "role": "user",
-                                    "content": [{ "type": "text", "text": content_text(detail) }],
-                                    "source": { "kind": "user" },
-                                }
-                            }),
-                            true,
-                        )));
-                    }
+                    // user_message settles at item.started (the durable
+                    // item already carries its text); re-emitting here would
+                    // duplicate the message.
                     "context_compaction" | "error" | "status" => {
                         frames.push(Frame::Event(self.seq.event(
                             "system/message",
@@ -450,9 +427,10 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
     let turn_end_reason = |turn: &Value| -> Option<&'static str> {
         match turn.get("status").and_then(Value::as_str) {
             Some("completed") => Some("completed"),
-            Some("interrupted") => Some("interrupted"),
+            // Canceled and interrupted both read as an interrupted turn.
+            Some("interrupted") | Some("canceled") => Some("interrupted"),
             Some("error") | Some("failed") => Some("error"),
-            _ => None, // running / pending: no end yet
+            _ => None, // in_progress / queued: no end yet
         }
     };
 

@@ -7,12 +7,11 @@
 //!   it never pretends success);
 //! - `session/updateQueue` (edit/remove of queued input) has no CodeSmith
 //!   equivalent and is answered as unavailable;
-//! - streams emit their baseline and then stay open without further frames
-//!   (M2 wires the live event mapper into `$events` and `session/follow`);
 //! - one parked server task per open stream is retained until process exit
 //!   (bounded by the session count; acceptable for the desktop shell).
 
 pub mod codesmith;
+pub mod events;
 pub mod mapper;
 pub mod sessions;
 
@@ -21,7 +20,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -37,12 +36,14 @@ pub struct HostState {
     pub backend: CodesmithProcess,
     pub cwd: PathBuf,
     pub client_id: String,
-    /// Open `$events` sinks: stream id -> frame sender (M3 approval waterfall
-    /// pushes here).
+    /// Open `$events` sinks: stream id -> frame sender (the approval and
+    /// user-question waterfalls push here).
     pub event_sinks: Mutex<HashMap<String, mpsc::Sender<Value>>>,
     /// Open follow streams that accept live increments (workspace/follow):
     /// stream id -> (endpoint, frame sender).
     pub live_sinks: Mutex<HashMap<String, (String, mpsc::Sender<Value>)>>,
+    /// Waterfalls awaiting their `$events/result`, by event id.
+    pub pending_inputs: Mutex<HashMap<String, events::PendingInput>>,
 }
 
 impl HostState {
@@ -51,6 +52,41 @@ impl HostState {
         let sinks = self.live_sinks.lock().await;
         for (_, tx) in sinks.values().filter(|(ep, _)| ep == endpoint) {
             let _ = tx.send(frame.clone()).await;
+        }
+    }
+
+    /// Push one frame to every open `$events` sink. `true` when at least one
+    /// sink took it (a waterfall with no sink would hang the turn).
+    pub async fn push_event_frame(&self, frame: Value) -> bool {
+        let sinks = self.event_sinks.lock().await;
+        let mut delivered = false;
+        for tx in sinks.values() {
+            if tx.send(frame.clone()).await.is_ok() {
+                delivered = true;
+            }
+        }
+        delivered
+    }
+
+    /// End a pending waterfall (runtime decided or turn ended): drop the
+    /// registry entry and cancel it on every `$events` sink.
+    pub async fn cancel_pending(&self, event_id: &str) {
+        self.pending_inputs.lock().await.remove(event_id);
+        self.push_event_frame(events::cancel_frame(event_id)).await;
+    }
+
+    /// End every pending waterfall of one session (its turn ended).
+    pub async fn cancel_pending_for_session(&self, session_id: &str) {
+        let ids: Vec<String> = self
+            .pending_inputs
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, pending)| pending.session_id == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.cancel_pending(&id).await;
         }
     }
 }
@@ -66,7 +102,7 @@ pub fn rpc_ok(value: Value) -> Value {
     json!({ "ok": true, "value": value })
 }
 
-fn workspace_view(cwd: &PathBuf) -> Value {
+fn workspace_view(cwd: &std::path::Path) -> Value {
     let now = chrono::Utc::now().to_rfc3339();
     let title = cwd
         .file_name()
@@ -115,6 +151,16 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("session/cancel: {err:#}")),
         },
+        "session/selectModel" => {
+            match sessions::select_model(host, payload.get("args").unwrap_or(&Value::Null)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error("gateway/internal", format!("session/selectModel: {err:#}")),
+            }
+        }
+        "$events/result" => match events_result(host, payload.get("args").unwrap_or(&Value::Null)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/arguments-invalid", format!("$events/result: {err:#}")),
+        },
         "session/updateQueue" => rpc_error(
             "gateway/method-unavailable",
             "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
@@ -162,13 +208,10 @@ pub async fn stream_baseline(host: &HostState, endpoint: &str, stream_id: String
             "links": { "usageUrl": "", "topUpUrl": "" }
         })]),
         "$events" => {
-            let (tx, _rx) = mpsc::channel::<Value>(64);
-            host.event_sinks.lock().await.insert(stream_id, tx);
-            Ok(vec![json!({
-                "type": "ready",
-                "clientId": host.client_id,
-                "host": { "home": host.cwd.to_string_lossy() },
-            })])
+            let _ = stream_id;
+            // Owned by stream_handler's dedicated branch (ready frame, then
+            // the waterfall pump); reachable only through it.
+            Ok(Vec::new())
         }
         other => Err(anyhow!(
             "codesmith desktop: stream {other} is not implemented yet"
@@ -273,6 +316,63 @@ async fn model_catalog(host: &HostState) -> Value {
     }
 }
 
+/// `$events/result` — deliver one client waterfall outcome to the runtime.
+async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
+    let client_id = args
+        .get("clientId")
+        .and_then(Value::as_str)
+        .context("$events/result without clientId")?;
+    if client_id != host.client_id {
+        bail!("$events/result clientId {client_id} does not match this host");
+    }
+    let event_id = args
+        .get("eventId")
+        .and_then(Value::as_str)
+        .context("$events/result without eventId")?
+        .to_string();
+    let outcome = args.get("outcome").cloned().unwrap_or(Value::Null);
+    let pending = host
+        .pending_inputs
+        .lock()
+        .await
+        .remove(&event_id)
+        .with_context(|| format!("no pending waterfall for event {event_id}"))?;
+    match pending.kind {
+        events::InputKind::Approval => {
+            let decision = events::approval_decision(&outcome);
+            let _: Value = host
+                .backend
+                .post(
+                    &format!("/v1/approvals/{}", pending.input_id),
+                    &json!({ "decision": decision, "remember": false }),
+                )
+                .await
+                .context("deliver approval decision")?;
+            Ok(json!({ "delivered": true, "decision": decision }))
+        }
+        events::InputKind::Questions => {
+            let Some(answers) = events::question_answers(&outcome) else {
+                // No HTTP cancel route exists for user input (known
+                // limitation): report undelivered; the runtime's own deadline
+                // closes the question.
+                return Ok(json!({ "delivered": false }));
+            };
+            let _: Value = host
+                .backend
+                .post(
+                    &format!(
+                        "/v1/user-input/{}/{}",
+                        pending.session_id, pending.input_id
+                    ),
+                    &json!({ "answers": answers }),
+                )
+                .await
+                .context("deliver user-input answers")?;
+            Ok(json!({ "delivered": true }))
+        }
+    }
+}
+
 async fn unary_handler(
     State(host): State<SharedHost>,
     Path(endpoint): Path<String>,
@@ -309,6 +409,32 @@ async fn stream_handler(
                     )))
                     .await;
             }
+            return;
+        }
+        if endpoint_stream == "$events" {
+            // Ready frame, then the waterfall pump: the sink stays registered
+            // until the client disconnects (send fails) and is then dropped so
+            // a later waterfall is not pushed into a dead body.
+            let ready = json!({
+                "type": "ready",
+                "clientId": host_for_stream.client_id,
+                "host": { "home": host_for_stream.cwd.to_string_lossy() },
+            });
+            if tx.send(Ok(format!("{ready}\n"))).await.is_err() {
+                return;
+            }
+            let (event_tx, mut event_rx) = mpsc::channel::<Value>(64);
+            host_for_stream
+                .event_sinks
+                .lock()
+                .await
+                .insert(stream_id.clone(), event_tx);
+            while let Some(frame) = event_rx.recv().await {
+                if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
+                    break;
+                }
+            }
+            host_for_stream.event_sinks.lock().await.remove(&stream_id);
             return;
         }
         match stream_baseline(&host_for_stream, &endpoint_stream, stream_id).await {
