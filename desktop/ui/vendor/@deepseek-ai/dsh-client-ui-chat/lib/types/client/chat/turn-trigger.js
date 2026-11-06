@@ -1,0 +1,73 @@
+function record(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {};
+}
+function field(source, key) {
+    return typeof source[key] === 'string' ? source[key] : '';
+}
+/** Missing or malformed historical reasons stay generic; unfamiliar reasons never imply success. */
+function subagentTitle(reason) {
+    if (typeof reason !== 'string' || reason === '')
+        return 'message.trigger.subagent';
+    switch (reason) {
+        case 'completed': return 'message.trigger.subagent.completed';
+        case 'aborted': return 'message.trigger.subagent.aborted';
+        case 'error': return 'message.trigger.subagent.error';
+        case 'max-tokens': return 'message.trigger.subagent.maxTokens';
+        case 'refusal': return 'message.trigger.subagent.refusal';
+        // Backends may extend the recorded reason vocabulary.
+        default: return 'message.trigger.subagent.unknown';
+    }
+}
+/**
+ * Describe a waking message using its recorded source.
+ * @param node - durable context, including the original notification body.
+ * @returns localized title key and source-family icon.
+ */
+export function turnTriggerDetails(node) {
+    const source = record(node.source);
+    const kind = field(source, 'kind');
+    let title = 'message.trigger.request';
+    let icon = 'request';
+    switch (kind) {
+        case 'goal': {
+            title = 'message.trigger.goal';
+            icon = 'goal';
+            break;
+        }
+        case 'agent-message':
+            title = 'message.trigger.agent';
+            icon = 'agent';
+            break;
+        case 'team-message':
+            title = 'message.trigger.team';
+            icon = 'team';
+            break;
+        case 'subagent-settled':
+            title = subagentTitle(source.stopReason);
+            icon = 'subagent';
+            break;
+        case 'webhook': {
+            const github = field(source, 'provider') === 'github';
+            title = github ? 'message.trigger.github' : 'message.trigger.webhook';
+            icon = github ? 'github' : 'webhook';
+            break;
+        }
+        case 'schedule':
+            title = 'message.trigger.schedule';
+            icon = 'schedule';
+            break;
+        case 'tool-jobs':
+            title = 'message.trigger.job';
+            icon = 'job';
+            break;
+        case 'cordis-host-runner':
+            title = 'message.trigger.plugin';
+            icon = 'plugin';
+            break;
+        default:
+            // Custom sources remain visible without attributing unrecorded identity or success.
+            break;
+    }
+    return { title, icon };
+}
+//# sourceMappingURL=turn-trigger.js.map

@@ -27,14 +27,14 @@ from pathlib import Path
 # Required client entries (packages/client/web/src/boot-client.ts
 # `requiredClientEntryNames`) plus the boot kernel app entry.
 REQUIRED_ENTRIES = [
-    "dsh-client-web",  # boot kernel: static-modules seed + AppWebEntry
-    "dsh-client-modules",
-    "dsh-api-session-controller",
-    "dsh-client-ui-renderer",
-    "dsh-client-ui-layout",
-    "dsh-client-ui-session",
-    "dsh-client-ui-chat",
-    "dsh-client-ui-sidebar",
+    "@deepseek-ai/dsh-client-web",  # boot kernel: static-modules seed + AppWebEntry
+    "@deepseek-ai/dsh-client-modules",
+    "@deepseek-ai/dsh-api-session-controller",
+    "@deepseek-ai/dsh-client-ui-renderer",
+    "@deepseek-ai/dsh-client-ui-layout",
+    "@deepseek-ai/dsh-client-ui-session",
+    "@deepseek-ai/dsh-client-ui-chat",
+    "@deepseek-ai/dsh-client-ui-sidebar",
 ]
 
 # Scan roots for @deepseek-ai packages inside the DSH checkout.
@@ -92,13 +92,16 @@ def closure_of(packages: dict[str, Path], entries: list[str]) -> tuple[list[str]
 
 
 def copy_tree_contents(src: Path, dst: Path, copied: dict[str, str]) -> None:
+    skip_parts = {"node_modules", "tests", "dist", ".tsbuildinfo"}
     for item in src.iterdir():
-        if item.name in {"node_modules", "tests", "dist", ".tsbuildinfo"}:
+        if item.name in skip_parts:
             continue
         target = dst / item.name
         if item.is_dir():
             for f in sorted(item.rglob("*")):
                 if not f.is_file():
+                    continue
+                if f.suffix == ".map" or f.name.endswith(".tsbuildinfo"):
                     continue
                 rel = f.relative_to(src)
                 out = dst / rel
@@ -158,7 +161,13 @@ def main() -> int:
         for copy_name in COPY_NAMES:
             if copy_name == "package.json" or not (src / copy_name).exists():
                 continue
-            copy_tree_contents(src / copy_name, dst / copy_name, files)
+            if (src / copy_name).is_dir():
+                copy_tree_contents(src / copy_name, dst / copy_name, files)
+            else:
+                data = (src / copy_name).read_bytes()
+                dst.mkdir(parents=True, exist_ok=True)
+                (dst / copy_name).write_bytes(data)
+                files[copy_name] = hashlib.sha256(data).hexdigest()
         data = (src / "package.json").read_bytes()
         (dst / "package.json").write_bytes(data)
         files["package.json"] = hashlib.sha256(data).hexdigest()
