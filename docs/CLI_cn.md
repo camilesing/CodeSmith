@@ -197,6 +197,21 @@ CodeSmith 用 `/provider` 与 `codesmith login` 配置 provider）、
 （Claude Code 已删除；计划模式在这里同样是 `/plan`）。
 
 
+## 桌面 UI（preset `all`）
+
+当解析出的 preset 为 `all`（`--preset all`，或 config.toml 里的
+`preset = "all"`）且命令本要进入交互 REPL 时，CLI 改为拉起 CodeSmith
+桌面应用后退出——应用自管后端（自行 spawn `codesmith serve --http`，
+默认使用拉起它的同一个 `codesmith` 二进制）。其他 preset 保持终端
+REPL。找不到应用时启动 fail-loud，错误信息带构建指引（在 `desktop/`
+下 `cargo tauri build`，详见 [DESKTOP_cn.md](DESKTOP_cn.md)）。
+
+`[desktop]` 配置节可调：`enabled = false` 即使 preset 为 `all` 也保持
+终端 REPL；`app_path` 指向要拉起的应用（也可用 `CODESMITH_DESKTOP_APP`
+环境变量按次覆盖）；`codesmith_path` 覆盖应用拉起的 `codesmith` 二进制。
+应用查找顺序：`app_path`、`$CODESMITH_HOME/desktop/codesmith-desktop`、
+平台安装位置。
+
 ## 模型选择
 
 顶层 `--model <id>` 旗标为该次运行覆盖模型——它与 `CODESMITH_MODEL`
