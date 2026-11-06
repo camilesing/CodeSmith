@@ -5,7 +5,7 @@
  */
 import { AppWebEntry } from '@deepseek-ai/dsh-client-web'
 import { buildBootGraph } from './boot-graph.generated'
-import { fakeRpc } from './transport'
+import { initTransport, rpc } from './transport'
 
 const g = globalThis as {
   __DSH_BOOT__?: unknown
@@ -41,16 +41,18 @@ const loadBundle = (url: string): Promise<void> =>
 // Carrier-only transport swap: `rpc` replaces HTTP entirely; `ownsHost`
 // marks the loopback so the connection reports isLoopback (tauri://localhost
 // on Windows would not qualify by hostname alone).
-g.__DSH_TRANSPORT__ = { ownsHost: true, rpc: fakeRpc, loadBundle }
+g.__DSH_TRANSPORT__ = { ownsHost: true, rpc, loadBundle }
 // Access baseline: without it every permission check answers false.
 g.__DSH_REMOTE_ACCESS__ = { type: 'baseline', owner: true }
 
 const container = document.querySelector<HTMLElement>('#root')
 if (container === null) throw new Error('codesmith desktop: #root mount point missing')
-new AppWebEntry(container).run(reason => {
-  console.error('codesmith desktop: boot failed', reason)
-  const report = document.createElement('pre')
-  report.style.cssText = 'position:fixed;inset:auto 12px 12px 12px;z-index:9999;margin:0;padding:12px;background:#2b1d1d;color:#ff9c9c;font:12px/1.5 monospace;white-space:pre-wrap;border-radius:8px'
-  report.textContent = `codesmith desktop: boot failed\n${reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason)}`
-  document.body.append(report)
+initTransport().finally(() => {
+  new AppWebEntry(container).run(reason => {
+    console.error('codesmith desktop: boot failed', reason)
+    const report = document.createElement('pre')
+    report.style.cssText = 'position:fixed;inset:auto 12px 12px 12px;z-index:9999;margin:0;padding:12px;background:#2b1d1d;color:#ff9c9c;font:12px/1.5 monospace;white-space:pre-wrap;border-radius:8px'
+    report.textContent = `codesmith desktop: boot failed\n${reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason)}`
+    document.body.append(report)
+  })
 })

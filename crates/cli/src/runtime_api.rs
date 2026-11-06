@@ -29,6 +29,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use codesmith_agent_runtime::dependencies::ExternalTool;
 
+use codesmith_agent::ModelRegistry;
+
 use crate::automation_manager::{
     AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
     CreateAutomationRequest, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
@@ -598,6 +600,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/usage", get(get_usage))
+        .route("/v1/models", get(list_models))
         // Authenticated like the rest of /v1/*: it echoes the bind host,
         // port, and auth mode, which is exactly the recon an unauthenticated
         // caller must not get for free.
@@ -1312,6 +1315,43 @@ async fn submit_user_input(
         input_id,
         delivered,
     }))
+}
+
+/// One registry model projected for GUI consumers.
+#[derive(Debug, Serialize)]
+struct ModelEntry {
+    id: String,
+    provider: String,
+    aliases: Vec<String>,
+    supports_tools: bool,
+    supports_reasoning: bool,
+    default: bool,
+}
+
+/// `GET /v1/models` — the model registry with the effective default flagged,
+/// so a GUI can render its model catalog (read-only; selection stays per
+/// thread/turn).
+async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntry>> {
+    let registry = ModelRegistry::default();
+    let default_model = state
+        .config
+        .default_text_model
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+    Json(
+        registry
+            .list()
+            .into_iter()
+            .map(|m| ModelEntry {
+                default: m.id == default_model,
+                id: m.id,
+                provider: m.provider.as_str().to_string(),
+                aliases: m.aliases,
+                supports_tools: m.supports_tools,
+                supports_reasoning: m.supports_reasoning,
+            })
+            .collect(),
+    )
 }
 
 async fn runtime_info(State(state): State<RuntimeApiState>) -> Json<RuntimeInfoResponse> {
@@ -4211,6 +4251,34 @@ mod tests {
             .send()
             .await?;
         assert_eq!(inverted.status(), StatusCode::BAD_REQUEST);
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn models_endpoint_lists_registry() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+        let models: serde_json::Value = client
+            .get(format!("http://{addr}/v1/models"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(
+            models.as_array().is_some_and(|a| !a.is_empty()),
+            "registry must list at least one model"
+        );
+        assert!(models[0]["id"].is_string());
+        assert!(models[0]["provider"].is_string());
+        assert!(
+            models.as_array().unwrap().iter().any(|m| m["default"] == serde_json::json!(true)),
+            "exactly-one default is not asserted, but at least the effective default must be flagged"
+        );
 
         handle.abort();
         Ok(())
