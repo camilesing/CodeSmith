@@ -1,0 +1,37 @@
+{
+  "name": "@codesmith/cordis-plugin-loader",
+  "description": "Plugin loader for cordis",
+  "version": "1.0.7-alpha.2",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts",
+    "lib/types/**/*.d.ts.map",
+    "src"
+  ],
+  "author": "Shigma <shigma10826@gmail.com>",
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "node-addon-require-builtin": "^0.1.9"
+  },
+  "peerDependenciesMeta": {
+    "node-addon-require-builtin": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@codesmith/cosmokit": "workspace:~",
+    "@codesmith/schemastery": "workspace:~"
+  }
+}

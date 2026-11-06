@@ -1,15 +1,16 @@
 /**
- * The DSH connection carrier for CodeSmith Desktop.
+ * The connection carrier for CodeSmith Desktop.
  *
- * Primary mode: the dsh_host bridge — a loopback HTTP server inside the
- * Tauri process (127.0.0.1:1421) that implements the DSH RPC surface on
- * top of `codesmith serve --http`. Unary calls POST `/api/<endpoint>`;
- * streams are NDJSON bodies on `/api/stream/<endpoint>` (fetch streaming,
- * no WebSocket).
+ * Primary mode: the client host bridge — a loopback HTTP server inside the
+ * Tauri process (127.0.0.1:1421) that implements the vendored client's RPC
+ * surface on top of `codesmith serve --http`. Unary calls POST
+ * `/api/<endpoint>`; streams are NDJSON bodies on `/api/stream/<endpoint>`
+ * (fetch streaming, no WebSocket).
  *
  * Fallback mode (browser preview without the desktop shell running): the
- * in-memory stub table from DSH's own test fixtures, with a visible
- * offline-demo badge so the state is never mistaken for the real thing.
+ * in-memory stub table from the upstream client's own test fixtures, with a
+ * visible offline-demo badge so the state is never mistaken for the real
+ * thing.
  */
 
 export type RpcResult =
@@ -63,7 +64,9 @@ const UNARY: Record<string, () => RpcResult> = {
 
 const STREAM_BASELINES: Record<string, unknown[]> = {
   'session/control': [{ type: 'baseline', value: { projections: {} } }],
-  'account/watch': [{ status: 'signed-out', attempt: null, links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } }],
+  // CodeSmith has no hosted account: the client still opens this stream, so
+  // it gets the signed-out shape with no links to follow.
+  'account/watch': [{ status: 'signed-out', attempt: null, links: { usageUrl: '', topUpUrl: '' } }],
   'workspace/follow': [{ type: 'baseline', value: { items: [], archivedSessionIds: [], pinnedSessionIds: [] } }],
   'remoteAccess/follow': [{ type: 'baseline', owner: true }],
 }
@@ -150,12 +153,12 @@ const bridgeRpc = (bridge: string): ClientConnectionRpc => ({
 
 function offlineBadge(): void {
   const badge = document.createElement('div')
-  badge.textContent = '离线演示模式 — 未连接 dsh bridge (127.0.0.1:1421)'
+  badge.textContent = '离线演示模式 — 未连接桌面桥 (127.0.0.1:1421)'
   badge.style.cssText = 'position:fixed;bottom:8px;left:8px;z-index:99999;padding:4px 10px;background:#5a4a17;color:#ffd98a;font:11px/1.4 system-ui;border-radius:6px;pointer-events:none'
   document.body.append(badge)
 }
 
-/** The carrier installed into the DSH connection plugin. */
+/** The carrier installed into the vendored connection plugin. */
 export const rpc: ClientConnectionRpc = new Proxy({} as ClientConnectionRpc, {
   get(target, prop: keyof ClientConnectionRpc) {
     const delegate = (target as { __delegate?: ClientConnectionRpc }).__delegate

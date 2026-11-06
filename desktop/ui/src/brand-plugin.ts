@@ -1,15 +1,16 @@
 /**
- * CodeSmith brand plugin: a first-party row in the DSH client's plugin graph.
+ * CodeSmith brand plugin: a first-party row in the vendored client's plugin
+ * graph.
  *
- * The DSH whale marks (hero headline fish, sidebar header fish) render as
- * FALLBACKS of their factory slots — registering those slots (with a
+ * The upstream whale marks (hero headline fish, sidebar header fish) render
+ * as FALLBACKS of their factory slots — registering those slots (with a
  * null-rendering component) suppresses the fallbacks through the official
  * seam, so no vendored code is touched to remove the icons. Registration rides
  * `slots.inject`, which waits for the slot's declaration by ui-conversation
- * (the same pattern every DSH extension plugin uses). The headline text lives
- * in ui-conversation's locale dictionaries, which cannot be re-registered
- * (the locale service throws on a duplicate namespace+locale); that one
- * string is handled by the vendor patch pipeline instead.
+ * (the same pattern every upstream extension plugin uses). The headline text
+ * lives in ui-conversation's locale dictionaries, which cannot be
+ * re-registered (the locale service throws on a duplicate namespace+locale);
+ * that one string is handled by the vendor patch pipeline instead.
  */
 
 interface SlotsService {
@@ -19,7 +20,7 @@ interface SlotsService {
 
 export const inject = ['slots']
 
-/** The DSH whale marks suppressed through their factory-slot fallbacks. */
+/** The upstream whale marks suppressed through their factory-slot fallbacks. */
 const BRAND_MARK_SLOTS = [
   'conversation.hero.brand.mark', // hero headline fish (EmptyHero)
   'sidebar.brand.mark', // sidebar header fish, collapsed rail + expanded row

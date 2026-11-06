@@ -1,26 +1,26 @@
 /**
- * CodeSmith Desktop entry: install the transport globals the vendored DSH
- * client expects, then run the stock AppWebEntry boot (module loader from
- * the bootstrap script in index.html, boot graph, activation audit, mount).
+ * CodeSmith Desktop entry: install the transport globals the vendored client
+ * expects, then run the stock AppWebEntry boot (module loader from the
+ * bootstrap script in index.html, boot graph, activation audit, mount).
  */
-import { AppWebEntry } from '@deepseek-ai/dsh-client-web'
+import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
 import { initTransport, rpc } from './transport'
 
 const g = globalThis as {
-  __DSH_BOOT__?: unknown
-  __DSH_TRANSPORT__?: unknown
-  __DSH_REMOTE_ACCESS__?: unknown
+  __CODESMITH_BOOT__?: unknown
+  __CODESMITH_TRANSPORT__?: unknown
+  __CODESMITH_REMOTE_ACCESS__?: unknown
 }
 
 // First-party plugin rows ride the module queue: the graph lists them, the
 // factory is our statically imported namespace (never fetched over a URL).
 ;(g as { __ModuleLoader__?: { load: (r: { id: string; factory: () => unknown }) => void } })
-  .__ModuleLoader__?.load?.({ id: '@codesmith/brand', factory: () => brandModule })
+  .__ModuleLoader__?.load?.({ id: '@codesmith/desktop-brand', factory: () => brandModule })
 
 // The boot graph the loader reads in AppWebEntry.run().
-g.__DSH_BOOT__ = buildBootGraph()
+g.__CODESMITH_BOOT__ = buildBootGraph()
 
 // The `??<id>/client.js&rev=` URL form cannot be served by a static server
 // (the first `?` starts the query string), so bundles are staged under plain
@@ -47,9 +47,9 @@ const loadBundle = (url: string): Promise<void> =>
 // Carrier-only transport swap: `rpc` replaces HTTP entirely; `ownsHost`
 // marks the loopback so the connection reports isLoopback (tauri://localhost
 // on Windows would not qualify by hostname alone).
-g.__DSH_TRANSPORT__ = { ownsHost: true, rpc, loadBundle }
+g.__CODESMITH_TRANSPORT__ = { ownsHost: true, rpc, loadBundle }
 // Access baseline: without it every permission check answers false.
-g.__DSH_REMOTE_ACCESS__ = { type: 'baseline', owner: true }
+g.__CODESMITH_REMOTE_ACCESS__ = { type: 'baseline', owner: true }
 
 const container = document.querySelector<HTMLElement>('#root')
 if (container === null) throw new Error('codesmith desktop: #root mount point missing')

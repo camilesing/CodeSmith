@@ -1,6 +1,6 @@
-//! CodeSmith runtime envelopes → DSH session wire events.
+//! CodeSmith runtime envelopes → client session wire events.
 //!
-//! One DSH wire event: `{type, seq, time, data, surfaceOp?}` — `surfaceOp`
+//! One wire event: `{type, seq, time, data, surfaceOp?}` — `surfaceOp`
 //! is required on `user/message`, `assistant/message`, `system/message`,
 //! `developer/message` and `tool/result` (assertSessionWireEvent rejects
 //! any other key on the envelope).

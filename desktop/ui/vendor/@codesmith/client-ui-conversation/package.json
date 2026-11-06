@@ -1,0 +1,86 @@
+{
+  "name": "@codesmith/client-ui-conversation",
+  "description": "Target-neutral Conversation assembly, shell, composer, queue, and view navigation",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-session-controller",
+        "@codesmith/client-file-upload",
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-layout",
+        "@codesmith/client-ui-renderer",
+        "@codesmith/client-ui-session",
+        "@codesmith/client-ui-settings",
+        "@codesmith/client-ui-workspace",
+        "@codesmith/client-ui-context-menu"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@codesmith/schemastery": "workspace:~"
+  },
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/api-workspace-controller": "workspace:*",
+    "@codesmith/brand": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-file-upload": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-layout": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/client-ui-settings": "workspace:*",
+    "@codesmith/client-ui-workspace": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/util-values": "workspace:*",
+    "@codesmith/util-crypto": "workspace:*",
+    "@codesmith/util-workspace-path": "workspace:*",
+    "react": "^18.2.0",
+    "@lexical/headless": "^0.49.0",
+    "react-dom": "^18.2.0",
+    "zod": "4.4.3",
+    "lexical": "^0.49.0",
+    "clsx": "^2.0.0",
+    "@lexical/utils": "^0.49.0",
+    "@lexical/text": "^0.49.0",
+    "@lexical/plain-text": "^0.49.0",
+    "@lexical/history": "^0.49.0",
+    "@codesmith/client-shortcuts": "workspace:*",
+    "@codesmith/client-ui-context-menu": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ]
+}
