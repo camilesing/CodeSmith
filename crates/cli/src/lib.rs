@@ -20,6 +20,7 @@ mod compaction;
 mod config;
 mod core;
 mod cycle_manager;
+mod desktop;
 mod doctor_llm;
 mod eval;
 mod extension_state;

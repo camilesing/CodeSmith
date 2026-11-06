@@ -5548,6 +5548,14 @@ pub(crate) async fn run_interactive(
         )),
         None => {}
     }
+    // Preset `all` replaces the terminal REPL with the desktop UI (the app
+    // owns its backend; the CLI exits after spawning it). Anything else —
+    // including an explicit opt-out or a missing app (fail-loud) — continues
+    // into the REPL below.
+    if let Some(applied) = applied_preset.as_ref() {
+        crate::desktop::maybe_launch_desktop(&applied.name, config)?;
+    }
+
     // Re-apply the `telemetry` flag from the merged (user + project) config so
     // the durable `enabled` state honours the project overlay (Plan 06 / 6.2).
     // The sink is Arc-shared with the engine clone handed to `run_repl` below,

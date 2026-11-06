@@ -303,6 +303,19 @@ fn default_snapshot_max_workspace_gb() -> u64 {
         / (1024 * 1024 * 1024)
 }
 
+/// On-disk `[desktop]` table: desktop-UI launch controls for the `all`
+/// preset. Absent fields default through [`crate::desktop::resolve_desktop_launch`].
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct DesktopConfig {
+    /// Explicitly opt out of the desktop UI (`enabled = false`).
+    pub enabled: Option<bool>,
+    /// Explicit path to the desktop app bundle/binary.
+    pub app_path: Option<String>,
+    /// Explicit path to the `codesmith` binary the desktop app spawns
+    /// (defaults to this binary's own path).
+    pub codesmith_path: Option<String>,
+}
+
 /// Workspace side-git snapshot configuration (#137).
 #[derive(Debug, Clone, Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct SnapshotsConfig {
@@ -930,6 +943,12 @@ pub struct Config {
     /// retention when the table is absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsConfig>,
+
+    /// `[desktop]` — desktop-UI launch controls. When the resolved preset is
+    /// `all` and the REPL would start, the CLI launches the desktop app
+    /// instead (see `crate::desktop`).
+    #[serde(default)]
+    pub desktop: Option<DesktopConfig>,
 
     /// File-editing behavior (P0-1 parse gate). Defaults to enabled when
     /// the table is absent.
@@ -4465,6 +4484,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         doctor: override_cfg.doctor.or(base.doctor),
         skills: override_cfg.skills.or(base.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
+        desktop: override_cfg.desktop.or(base.desktop),
         search: override_cfg.search.or(base.search),
         index: override_cfg.index.or(base.index),
         memory: override_cfg.memory.or(base.memory),
