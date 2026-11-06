@@ -21,6 +21,10 @@ export default defineConfig({
     "process.env.CORDIS_SHARED": "undefined",
   },
   server: {
+    // Bind IPv4 explicitly: macOS resolves `localhost` to ::1 first and vite
+    // then listens on IPv6 only, which the Tauri WKWebView (resolving
+    // localhost → 127.0.0.1) cannot reach — the app window stays blank.
+    host: "127.0.0.1",
     port: 1420,
     strictPort: true,
   },

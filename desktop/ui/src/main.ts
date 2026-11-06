@@ -14,6 +14,21 @@ const g = globalThis as {
   __CODESMITH_REMOTE_ACCESS__?: unknown
 }
 
+// Dev affordance for the pixel baseline: `?theme=dark|light` pins the color
+// scheme before the vendored theme plugin boots (its dark palette rides
+// `prefers-color-scheme` media queries, which a page cannot switch at will).
+// Anything else (including no query) leaves the real media state alone.
+{
+  const requested = new URLSearchParams(globalThis.location?.search).get('theme') ?? 'dark'
+  if (requested === 'dark' || requested === 'light') {
+    const nativeMatchMedia = globalThis.matchMedia.bind(globalThis)
+    globalThis.matchMedia = (query: string): MediaQueryList =>
+      nativeMatchMedia(
+        query.replace(/\(prefers-color-scheme:\s*(?:dark|light)\)/g, `(prefers-color-scheme: ${requested})`),
+      )
+  }
+}
+
 // First-party plugin rows ride the module queue: the graph lists them, the
 // factory is our statically imported namespace (never fetched over a URL).
 ;(g as { __ModuleLoader__?: { load: (r: { id: string; factory: () => unknown }) => void } })
