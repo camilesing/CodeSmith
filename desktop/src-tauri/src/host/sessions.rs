@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::HostState;
-use super::mapper::{WireSeq, map_envelope, replay_events};
+use super::mapper::{Frame, SessionMapper, replay_events};
 
 fn address_session_id(request: &Value) -> Result<String> {
     let address = request
@@ -43,7 +43,9 @@ pub async fn follow(
         "records": events.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
         "hasMore": false,
         "projections": { "asOfSeq": last_seq, "values": {} },
-        "assistantStream": { "revision": 0, "activeAttempt": null },
+        // Revision 0 = no assistant-stream frames yet; the live tail's frames
+        // start at 1 (strict +1 per frame, enforced by the client).
+        "assistantStream": { "revision": 0 },
     });
     tx.send(serde_json::to_string(&snapshot)?).await.ok();
 
@@ -53,9 +55,12 @@ pub async fn follow(
         .backend
         .get_sse_lines(&format!("/v1/threads/{session_id}/events?since_seq={since}"))
         .await?;
-    let mut wire = WireSeq::resume_after(last_seq);
+    let mut mapper = SessionMapper::resume_after(last_seq);
     use futures_util::StreamExt;
     let mut buffer = String::new();
+    let send = |frame: &Frame, tx: &tokio::sync::mpsc::Sender<String>| -> Result<String> {
+        serde_json::to_string(&frame.to_wire()).context("serialize follow frame")
+    };
     while let Some(chunk) = lines.next().await {
         let chunk = chunk?;
         buffer.push_str(&chunk);
@@ -66,13 +71,21 @@ pub async fn follow(
                 let Ok(envelope) = serde_json::from_str::<Value>(data.trim()) else {
                     continue;
                 };
-                for event in map_envelope(&mut wire, &envelope) {
-                    let frame = json!({ "type": "event", "event": event });
-                    if tx.send(serde_json::to_string(&frame)?).await.is_err() {
+                for frame in mapper.map_envelope(&envelope) {
+                    let wire = send(&frame, tx)?;
+                    if tx.send(wire).await.is_err() {
                         return Ok(());
                     }
                 }
             }
+        }
+    }
+    // The SSE tail ended (backend dropped the stream): close any attempt
+    // still streaming so the client does not wait for a settlement.
+    for frame in mapper.abandon_open_attempts() {
+        let wire = send(&frame, tx)?;
+        if tx.send(wire).await.is_err() {
+            break;
         }
     }
     Ok(())
