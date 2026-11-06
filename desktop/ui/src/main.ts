@@ -4,6 +4,7 @@
  * the bootstrap script in index.html, boot graph, activation audit, mount).
  */
 import { AppWebEntry } from '@deepseek-ai/dsh-client-web'
+import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
 import { initTransport, rpc } from './transport'
 
@@ -12,6 +13,11 @@ const g = globalThis as {
   __DSH_TRANSPORT__?: unknown
   __DSH_REMOTE_ACCESS__?: unknown
 }
+
+// First-party plugin rows ride the module queue: the graph lists them, the
+// factory is our statically imported namespace (never fetched over a URL).
+;(g as { __ModuleLoader__?: { load: (r: { id: string; factory: () => unknown }) => void } })
+  .__ModuleLoader__?.load?.({ id: '@codesmith/brand', factory: () => brandModule })
 
 // The boot graph the loader reads in AppWebEntry.run().
 g.__DSH_BOOT__ = buildBootGraph()
