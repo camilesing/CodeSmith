@@ -900,6 +900,7 @@
     "index.js": "feb2becd2e788253a5c77a7ff640a31a3e447a05dd4e30a893c41f04c53b720e",
     "index.ts": "72a585707d87518a6b635546a0eb9847cc154500770a5dda10442c89da00dd29",
     "ja.json": "b3b510e7ce32b70144347fe47d9ce9d73c3c761137c1319c14d1fbfbe7536c9b",
+    "lib/client.js": "946a630f9025c4a222838c3e3c7cc6c6033baa67730ee50fd6f276f9e41cf49f",
     "locale-settings.ts": "bb563ce8a6cf56d8e8676cd3604f413c66d5e5b517a87641638647fa9ccff1c5",
     "locales/de.ts": "2377206f09dba115ce73aca3c5ccb16252e7d01deebbac1b451f5f2cb4a9af2a",
     "locales/en.ts": "e9022e7a957cececf3459a689b8c4d1aeaabf2b2b3105e81d5d9903dc484e44c",
@@ -914,6 +915,8 @@
     "package.json": "27b0c2eaec6fe93fe4e9def734324cddf86918e52d65867864759fb822acf3fe",
     "pt.json": "4076ba584060a26a2ac83dbd2caebae1285e683a4adfa467eb11c3243dccbe55",
     "ru.json": "608612d44498a58b277cdd94ae60ad74b3654850edf4c5b18bcfca7379e6821e",
+    "src/locales/en.ts": "e44e84ff4095eb6c6c14f5ca37c81a4694e8228d290a951f4ad4aedbe88d0e71",
+    "src/locales/zh.ts": "7a4a123302d71a3cb7805ff35f4180051ce5847cd6ea0152dcf380ed2a59911b",
     "tsconfig.client.tsbuildinfo": "e0834c591eb5680e941a0d27bba551a04c44fb52d6eee3c4d977c58e276074f4",
     "tsconfig.host.tsbuildinfo": "f76c83fe8caecd9c98768a796e97755c07fe7b755d6f6d0afa3946723b380099",
     "types/client/LanguageRow.d.ts": "fd1a2300a7f6f5c79dd659f0d8a7e0b0587df1851fe0888d2530af8764f92ef8",
@@ -950,7 +953,12 @@
     "types/locales/zh.js": "f57dbac9eab2d92a3bf75a15df8a3f9678ec25c8a285a71d53fddeda78a6ab2a",
     "zh.json": "be82e59dcf840b150f2d2b53d655f6679a8b808c7b3c658a15e6233dbd724d1b"
    },
-   "patched_files": [],
+   "patched_files": [
+    "lib/client.js",
+    "lib/client.js",
+    "src/locales/en.ts",
+    "src/locales/zh.ts"
+   ],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -1726,11 +1734,11 @@
     "index.js": "046ea85e5fa3b6bb2950b6a0ce55cd06ae516f37e8b6a84497c2ca74a3364c31",
     "index.ts": "c24943b43a77f236523d61538814dcfa96870f928850b68807697fab4a45e67d",
     "ja.json": "769483c094eae2f27103a83676d4412786ee52b7f3e2569936aca47b639ac664",
-    "lib/client.js": "258f3ad199b5b54577839390c05302b78931011c67ac0bb50646bd79fde7ea6a",
+    "lib/client.js": "ba3c13dfab4784c0dbea5857fa673dfc515ff66441472522efa4138a4f2d63d8",
     "package.json": "d7a608068711cde1510577f02739a66f44db3d4c96f0ffa403600ddb0087e667",
     "pt.json": "931ff0ce9f4ad4ce342a423cd4f4eae209986e15d5e5cb762227556f3ce9ec20",
     "ru.json": "bdab55e2fd35cad6aacbae3c0b83a65bf49b7824551e2af69b6135e709a5836d",
-    "src/client/locales.ts": "5aceb2d9cb069f966d791f32c84c2e77045cee6944b2f7256e1b4d0948a476a5",
+    "src/client/locales.ts": "af910c52e06731531d23285ff0809895cd32e5f35b4624b9423e63d739982650",
     "submission-settings.ts": "d3975f454930090642bf9a64c641587138ae6e09d3db1121ce63ab4c8e8b8a29",
     "tsconfig.client.tsbuildinfo": "40e66cff1e68aca3cca1e118eb469e7740c9738d3efefc97a7efc3607d5bbeaa",
     "tsconfig.host.tsbuildinfo": "0e3c44aea6af4ac825621ab908d4147d10f64a54e69fb7225b34e74020763f3c",
@@ -1906,6 +1914,10 @@
    },
    "patched_files": [
     "lib/client.js",
+    "lib/client.js",
+    "lib/client.js",
+    "src/client/locales.ts",
+    "src/client/locales.ts",
     "src/client/locales.ts"
    ],
    "plugin": true,
@@ -3210,11 +3222,13 @@
     "index.js": "193dfe6d927da34d03049602d4296328bb158626c5ef41aa092a0a53f0d84cd8",
     "index.js.map": "c1fd202551d4563620b38d1752025c0ce27fa3b07c2e02ad104a27ab16c07d4d",
     "index.ts": "96af028198576d59bfe4694222869c1b274400d470e9a9263fa4b22b47c657ad",
+    "lib/index.js": "1092cb9452a4b8691b7addeff5e56a9911891b1bac374ea16293869d4640895c",
     "loader-status.ts": "030f657975cefa65ad44a735170c2894a9d1a8f545a867e84af22eb8cf442a8c",
     "mount.ts": "45b6e01d0872c3b2b568415425d1e0794e58aee891fa6c6bf5d4e5ac36be8801",
     "package.json": "7804700715b9d368703306234fba10fe12e0b11c6ef4e768ebcd9c05c7de9ff4",
     "platform.ts": "5d76ea268c94a98d5938623a1928211862861700db177ec088dc66110871a079",
     "seed.ts": "a0210555bcda36e644de6311736fa76dd0377c5d6de6b7be71f8b135e3302ba6",
+    "src/boot-page.ts": "f4268a1ea8a24fd588125879dbfe1f72c8ff4d96a85d107274dfef572416fa4c",
     "tsconfig.tsbuildinfo": "831da845c3ef62a3acd4a1387ac4a472119eecd4924d9b55bfd2d6e68de63770",
     "types/apply-injections.d.ts": "abf7939535758d5ff0bae18d6ee61aec7ebc4deeca8ac95d948a8c511e408df0",
     "types/apply-injections.js": "1418e839adcc978a4aee34dd50d757aaf5b822a6e60dace3be32c9dd63e91ca2",
@@ -3241,7 +3255,10 @@
     "window-drag/recall.ts": "392014d25beab1e9283ca63de2eda43650f86244f69b06b637b744c4fb2293d7",
     "window-drag/regions.ts": "a7b692266e357b5876e5a5561b16843f85f35de8dd78c5a2061ef14df1f1880b"
    },
-   "patched_files": [],
+   "patched_files": [
+    "lib/index.js",
+    "src/boot-page.ts"
+   ],
    "plugin": false,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-host-webserver"

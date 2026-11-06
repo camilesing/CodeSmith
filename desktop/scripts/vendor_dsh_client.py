@@ -65,6 +65,42 @@ VENDOR_PATCHES: list[dict[str, str]] = [
         "find": "探索未至之境",
         "replace": "开启新的探索",
     },
+    {
+        "package": "@deepseek-ai/dsh-client-ui-conversation",
+        "files": ["src/client/locales.ts", "lib/client.js"],
+        "find": "可能是其他正在运行的 DSH 导致的（如其他 dsh web、桌面端），请退出其他正在运行的 DSH 后重试",
+        "replace": "可能是其他正在运行的 CodeSmith 导致的（如其他桌面端），请退出后重试",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-ui-conversation",
+        "files": ["src/client/locales.ts", "lib/client.js"],
+        "find": "possibly by another running DSH instance (such as dsh web or the desktop app). Quit other running DSH instances and try again",
+        "replace": "possibly by another running CodeSmith instance (such as the desktop app). Quit other running CodeSmith instances and try again",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-locale",
+        "files": ["src/locales/zh.ts", "lib/client.js"],
+        "find": "DSH 本地构建",
+        "replace": "CodeS",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-locale",
+        "files": ["src/locales/en.ts", "lib/client.js"],
+        "find": "DSH Local Build",
+        "replace": "CodeS",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-web",
+        "files": ["src/boot-page.ts"],
+        "find": "css.wordmark, 'HARNESS'",
+        "replace": "css.wordmark, 'CodeS'",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-web",
+        "files": ["lib/index.js"],
+        "find": 'css.wordmark, "HARNESS"',
+        "replace": 'css.wordmark, "CodeS"',
+    },
 ]
 
 
