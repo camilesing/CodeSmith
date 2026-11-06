@@ -36,6 +36,7 @@ pub fn run() {
                             client_id: uuid::Uuid::new_v4().to_string(),
                             event_sinks: Default::default(),
                             live_sinks: Default::default(),
+                            pending_inputs: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");
