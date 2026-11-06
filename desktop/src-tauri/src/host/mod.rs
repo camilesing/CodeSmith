@@ -1,9 +1,9 @@
-//! dsh_host: the DSH client's RPC surface, served over a loopback HTTP
+//! host: the vendored client's RPC surface, served over a loopback HTTP
 //! bridge and translated onto `codesmith serve --http`.
 //!
 //! Known limitations (spec docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md):
 //! - the RPC surface is a subset; unimplemented endpoints answer
-//!   `gateway/method-unavailable` (the DSH client renders an error state,
+//!   `gateway/method-unavailable` (the client renders an error state,
 //!   it never pretends success);
 //! - `session/updateQueue` (edit/remove of queued input) has no CodeSmith
 //!   equivalent and is answered as unavailable;
@@ -57,7 +57,7 @@ impl HostState {
 
 pub type SharedHost = Arc<HostState>;
 
-/// The DSH error envelope the client turns into an error state.
+/// The RPC error envelope the client turns into an error state.
 pub fn rpc_error(code: &str, message: impl Into<String>) -> Value {
     json!({ "ok": false, "error": { "code": code, "message": message.into(), "details": {} } })
 }
@@ -96,7 +96,7 @@ async fn workspace_view_live(host: &HostState) -> Value {
     view
 }
 
-/// Dispatch a unary DSH endpoint. `payload` is the raw `{args: …}` body.
+/// Dispatch a unary client endpoint. `payload` is the raw `{args: …}` body.
 pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Value {
     let _ = payload.get("args");
     match endpoint {
@@ -154,13 +154,12 @@ pub async fn stream_baseline(host: &HostState, endpoint: &str, stream_id: String
             })])
         }
         "remoteAccess/follow" => Ok(vec![json!({ "type": "baseline", "owner": true })]),
+        // CodeSmith has no hosted account: the client still opens this
+        // stream, so it gets the signed-out shape with no links to follow.
         "account/watch" => Ok(vec![json!({
             "status": "signed-out",
             "attempt": null,
-            "links": {
-                "usageUrl": "https://platform.deepseek.com/usage",
-                "topUpUrl": "https://platform.deepseek.com/top_up",
-            }
+            "links": { "usageUrl": "", "topUpUrl": "" }
         })]),
         "$events" => {
             let (tx, _rx) = mpsc::channel::<Value>(64);
@@ -194,10 +193,10 @@ async fn session_list(host: &HostState) -> Value {
         Ok(threads) => rpc_ok(json!({
             "items": threads
                 .into_iter()
-                // DSH optional fields must be ABSENT, not null — a null
+                // Client optional fields must be ABSENT, not null — a null
                 // reaches the client as a typed value it then dereferences.
                 .map(|t| {
-                    // DSH timestamps are epoch milliseconds; the wire `time`
+                    // Client timestamps are epoch milliseconds; the wire `time`
                     // and list `updatedAt` must both be integer numbers.
                     let updated_ms = chrono::DateTime::parse_from_rfc3339(&t.updated_at)
                         .map(|dt| dt.timestamp_millis())
@@ -398,7 +397,7 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         .layer(cors)
         .with_state(host);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    eprintln!("codesmith desktop: dsh bridge on http://{addr}");
+    eprintln!("codesmith desktop: client bridge on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

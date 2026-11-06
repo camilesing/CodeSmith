@@ -1,0 +1,62 @@
+/** Cold-safe Session list and search projection. */
+import type { Context } from '@codesmith/cordis';
+import type { Session, SessionEvent } from '@codesmith/session';
+import type { SessionListMetadata, SessionSearchValue, SessionSummary } from './types.ts';
+/**
+ * Advance the Session-list metadata projection by one committed event.
+ * @param state - metadata before the event.
+ * @param event - next committed Session event.
+ * @returns the original or advanced metadata value.
+ */
+export declare function applySessionListMetadata(state: SessionListMetadata, event: SessionEvent): SessionListMetadata;
+/**
+ * Return the longest prefix containing at most `maximum` Unicode code points.
+ * @param value - source text.
+ * @param maximum - maximum number of Unicode code points.
+ * @returns the source text or its longest allowed prefix.
+ */
+export declare function truncateUnicodeCodePoints(value: string, maximum: number): string;
+/** Owns list projection registration, bounded cold summaries, and authorized search. */
+export declare class ApiSessionList {
+    private readonly ctx;
+    private readonly workSliceMs;
+    private listMetadata;
+    /**
+     * @param ctx - Host context carrying Session, query, persistence, and projection services.
+     * @param workSliceMs - Resolved positive integral list-work budget in milliseconds.
+     */
+    constructor(ctx: Context, workSliceMs: number);
+    /**
+     * Acquire projection readers before exposing dependent operations.
+     * @returns when all required registrations are ready.
+     */
+    initialize(): Promise<void>;
+    /**
+     * Build one current attached-Session summary.
+     * Blankness and recency come from the `sessionListMetadata` handle; projection
+     * hints carry every summary key computed through `snapshot`. The first call
+     * for a Session computes these projections over its whole in-memory log, and
+     * later calls advance them incrementally. The handle read and the hint with
+     * the same key come from one cell; the handle read does not depend on any
+     * other unit's view.
+     * @param session - attached Session to summarize.
+     * @returns current list metadata and available projections.
+     */
+    summaryFor(session: Session): SessionSummary;
+    /**
+     * Read every visible attached and persisted Session without activating an Agent.
+     * @param signal - optional cancellation for persistence reads and summary generation.
+     * @returns visible Session summaries ordered by activity.
+     */
+    list(signal?: AbortSignal): Promise<SessionSummary[]>;
+    private summarizeCold;
+    /**
+     * Search current visible message content without activating any matching Session.
+     * @param query - literal message-content query.
+     * @param signal - cancellation for list and search reads.
+     * @returns authorized bounded Session search results.
+     */
+    search(query: string, signal: AbortSignal): Promise<SessionSearchValue>;
+    private projectionsFor;
+}
+//# sourceMappingURL=list.d.ts.map

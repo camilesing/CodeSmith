@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@deepseek-ai/dsh-client-web':
+      '@codesmith/client-web':
         specifier: workspace:*
-        version: link:vendor/@deepseek-ai/dsh-client-web
+        version: link:vendor/@codesmith/client-web
     devDependencies:
       typescript:
         specifier: ^5.6.0
@@ -19,89 +19,42 @@ importers:
         specifier: ^6.0.0
         version: 6.4.5(@types/node@26.6.6)
 
-  vendor/@deepseek-ai/cordis:
+  vendor/@codesmith/api-gateway:
     dependencies:
-      '@deepseek-ai/cordis-plugin-include':
-        specifier: workspace:~
-        version: link:../cordis-plugin-include
-      '@deepseek-ai/cordis-plugin-loader':
-        specifier: workspace:~
-        version: link:../cordis-plugin-loader
-      '@deepseek-ai/cosmokit':
-        specifier: workspace:~
-        version: link:../cosmokit
-      '@standard-schema/spec':
-        specifier: ^1.1.0
-        version: 1.1.0
-
-  vendor/@deepseek-ai/cordis-plugin-include:
-    dependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:~
-        version: link:../cordis
-      '@deepseek-ai/cordis-plugin-loader':
-        specifier: workspace:~
-        version: link:../cordis-plugin-loader
-      '@deepseek-ai/cosmokit':
-        specifier: workspace:~
-        version: link:../cosmokit
-      js-yaml:
-        specifier: ^4.1.0
-        version: 4.3.2
-
-  vendor/@deepseek-ai/cordis-plugin-loader:
-    dependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:~
-        version: link:../cordis
-      '@deepseek-ai/cosmokit':
-        specifier: workspace:~
-        version: link:../cosmokit
-      '@deepseek-ai/schemastery':
+      '@codesmith/deque':
+        specifier: workspace:*
+        version: link:../deque
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
-      node-addon-require-builtin:
-        specifier: ^0.1.9
-        version: 0.1.9
-
-  vendor/@deepseek-ai/cosmokit: {}
-
-  vendor/@deepseek-ai/dsh-api-gateway:
-    dependencies:
-      '@deepseek-ai/dsh-deque':
+      '@codesmith/timeout':
         specifier: workspace:*
-        version: link:../dsh-deque
-      '@deepseek-ai/dsh-timeout':
+        version: link:../timeout
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-timeout
-      '@deepseek-ai/dsh-typert-protocol':
-        specifier: workspace:*
-        version: link:../dsh-typert-protocol
-      '@deepseek-ai/schemastery':
-        specifier: workspace:~
-        version: link:../schemastery
+        version: link:../typert-protocol
       ws:
         specifier: ^8.21.3
         version: 8.22.1
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remote-access':
+        specifier: workspace:*
+        version: link:../api-remote-access
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remote-access':
+      '@codesmith/typert-registry':
         specifier: workspace:*
-        version: link:../dsh-api-remote-access
-      '@deepseek-ai/dsh-brand':
+        version: link:../typert-registry
+      '@codesmith/util-crypto':
         specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-typert-registry':
-        specifier: workspace:*
-        version: link:../dsh-typert-registry
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
+        version: link:../util-crypto
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.2
@@ -109,82 +62,82 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  vendor/@deepseek-ai/dsh-api-remote-access:
+  vendor/@codesmith/api-remote-access:
     dependencies:
-      '@deepseek-ai/dsh-typert-protocol':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-gateway':
+        specifier: workspace:*
+        version: link:../api-gateway
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-gateway':
+      '@codesmith/typert-registry':
         specifier: workspace:*
-        version: link:../dsh-api-gateway
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-typert-registry':
-        specifier: workspace:*
-        version: link:../dsh-typert-registry
+        version: link:../typert-registry
 
-  vendor/@deepseek-ai/dsh-api-remotes:
+  vendor/@codesmith/api-remotes:
     dependencies:
-      '@deepseek-ai/dsh-deque':
+      '@codesmith/deque':
         specifier: workspace:*
-        version: link:../dsh-deque
-      '@deepseek-ai/dsh-util-values':
+        version: link:../deque
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-util-values
+        version: link:../util-values
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-gateway':
+        specifier: workspace:*
+        version: link:../api-gateway
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/api-workspace-controller':
+        specifier: workspace:*
+        version: link:../api-workspace-controller
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-file-upload':
+        specifier: workspace:*
+        version: link:../client-file-upload
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-gateway':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-api-gateway
-      '@deepseek-ai/dsh-api-session-controller':
-        specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-api-workspace-controller':
-        specifier: workspace:*
-        version: link:../dsh-api-workspace-controller
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-file-upload':
-        specifier: workspace:*
-        version: link:../dsh-client-file-upload
-      '@deepseek-ai/dsh-typert-protocol':
-        specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
       zod:
         specifier: 4.4.3
         version: 4.4.3
 
-  vendor/@deepseek-ai/dsh-api-session-controller:
+  vendor/@codesmith/api-session-controller:
     dependencies:
-      '@deepseek-ai/dsh-brand':
+      '@codesmith/brand':
         specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-deque':
+        version: link:../brand
+      '@codesmith/deque':
         specifier: workspace:*
-        version: link:../dsh-deque
-      '@deepseek-ai/dsh-timeout':
-        specifier: workspace:*
-        version: link:../dsh-timeout
-      '@deepseek-ai/schemastery':
+        version: link:../deque
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
+      '@codesmith/timeout':
+        specifier: workspace:*
+        version: link:../timeout
       mime-types:
         specifier: ^3.0.2
         version: 3.0.2
@@ -192,228 +145,228 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-gateway':
+        specifier: workspace:*
+        version: link:../api-gateway
+      '@codesmith/api-remote-access':
+        specifier: workspace:*
+        version: link:../api-remote-access
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-file-upload':
+        specifier: workspace:*
+        version: link:../client-file-upload
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-gateway':
+      '@codesmith/native-command':
         specifier: workspace:*
-        version: link:../dsh-api-gateway
-      '@deepseek-ai/dsh-api-remote-access':
+        version: link:../native-command
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-api-remote-access
-      '@deepseek-ai/dsh-client-connection':
+        version: link:../typert-protocol
+      '@codesmith/typert-registry':
         specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-file-upload':
+        version: link:../typert-registry
+      '@codesmith/util-crypto':
         specifier: workspace:*
-        version: link:../dsh-client-file-upload
-      '@deepseek-ai/dsh-client-store':
+        version: link:../util-crypto
+      '@codesmith/util-time':
         specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-native-command':
+        version: link:../util-time
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-native-command
-      '@deepseek-ai/dsh-typert-protocol':
+        version: link:../util-values
+      '@codesmith/util-workspace-path':
         specifier: workspace:*
-        version: link:../dsh-typert-protocol
-      '@deepseek-ai/dsh-typert-registry':
-        specifier: workspace:*
-        version: link:../dsh-typert-registry
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
-      '@deepseek-ai/dsh-util-time':
-        specifier: workspace:*
-        version: link:../dsh-util-time
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
-      '@deepseek-ai/dsh-util-workspace-path':
-        specifier: workspace:*
-        version: link:../dsh-util-workspace-path
+        version: link:../util-workspace-path
       '@types/mime-types':
         specifier: ^3.0.1
         version: 3.0.1
 
-  vendor/@deepseek-ai/dsh-api-workspace-controller:
+  vendor/@codesmith/api-workspace-controller:
     dependencies:
-      '@deepseek-ai/dsh-deque':
+      '@codesmith/deque':
         specifier: workspace:*
-        version: link:../dsh-deque
-      '@deepseek-ai/dsh-native-command':
+        version: link:../deque
+      '@codesmith/native-command':
         specifier: workspace:*
-        version: link:../dsh-native-command
-      '@deepseek-ai/schemastery':
+        version: link:../native-command
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-gateway':
+        specifier: workspace:*
+        version: link:../api-gateway
+      '@codesmith/api-remote-access':
+        specifier: workspace:*
+        version: link:../api-remote-access
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-gateway':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-api-gateway
-      '@deepseek-ai/dsh-api-remote-access':
-        specifier: workspace:*
-        version: link:../dsh-api-remote-access
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-typert-protocol':
-        specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
 
-  vendor/@deepseek-ai/dsh-brand:
+  vendor/@codesmith/brand:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
 
-  vendor/@deepseek-ai/dsh-client-connection:
+  vendor/@codesmith/client-connection:
     dependencies:
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-brand':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-typert-protocol':
-        specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
 
-  vendor/@deepseek-ai/dsh-client-file-upload:
+  vendor/@codesmith/client-file-upload:
     dependencies:
-      '@deepseek-ai/dsh-brand':
+      '@codesmith/brand':
         specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-typert-protocol':
+        version: link:../brand
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remotes':
+      '@codesmith/util-crypto':
         specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
+        version: link:../util-crypto
 
-  vendor/@deepseek-ai/dsh-client-locale:
+  vendor/@codesmith/client-locale:
     dependencies:
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-settings':
+        specifier: workspace:*
+        version: link:../client-ui-settings
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remotes':
-        specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-settings':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-settings
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
       react:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-modules:
+  vendor/@codesmith/client-modules:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/cordis-plugin-loader':
+      '@codesmith/cordis-plugin-loader':
         specifier: workspace:~
         version: link:../cordis-plugin-loader
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
 
-  vendor/@deepseek-ai/dsh-client-resources:
+  vendor/@codesmith/client-resources:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-client-store':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-typert-protocol':
-        specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
 
-  vendor/@deepseek-ai/dsh-client-shortcuts:
+  vendor/@codesmith/client-shortcuts:
     dependencies:
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
+      '@codesmith/util-crypto':
+        specifier: workspace:*
+        version: link:../util-crypto
+      '@codesmith/util-values':
+        specifier: workspace:*
+        version: link:../util-values
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
 
-  vendor/@deepseek-ai/dsh-client-store:
+  vendor/@codesmith/client-store:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
       immer:
@@ -423,78 +376,78 @@ importers:
         specifier: ~4.5.7
         version: 4.5.7(immer@10.2.0)(react@18.3.1)
 
-  vendor/@deepseek-ai/dsh-client-ui-chat:
+  vendor/@codesmith/client-ui-chat:
     dependencies:
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/api-workspace-controller':
+        specifier: workspace:*
+        version: link:../api-workspace-controller
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-context-menu':
+        specifier: workspace:*
+        version: link:../client-ui-context-menu
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-file-drag':
+        specifier: workspace:*
+        version: link:../client-ui-file-drag
+      '@codesmith/client-ui-input-trigger':
+        specifier: workspace:*
+        version: link:../client-ui-input-trigger
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-settings':
+        specifier: workspace:*
+        version: link:../client-ui-settings
+      '@codesmith/client-ui-sidebar-right':
+        specifier: workspace:*
+        version: link:../client-ui-sidebar-right
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-workspace':
+        specifier: workspace:*
+        version: link:../client-ui-workspace
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remotes':
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-api-session-controller':
+        version: link:../util-values
+      '@codesmith/util-workspace-path':
         specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-api-workspace-controller':
-        specifier: workspace:*
-        version: link:../dsh-api-workspace-controller
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-context-menu':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-context-menu
-      '@deepseek-ai/dsh-client-ui-conversation':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-conversation
-      '@deepseek-ai/dsh-client-ui-file-drag':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-file-drag
-      '@deepseek-ai/dsh-client-ui-input-trigger':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-input-trigger
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-settings':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-settings
-      '@deepseek-ai/dsh-client-ui-sidebar-right':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-sidebar-right
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-client-ui-workspace':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-workspace
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
-      '@deepseek-ai/dsh-util-workspace-path':
-        specifier: workspace:*
-        version: link:../dsh-util-workspace-path
+        version: link:../util-workspace-path
       '@tanstack/react-virtual':
         specifier: 3.14.10
         version: 3.14.10(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -505,39 +458,39 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
 
-  vendor/@deepseek-ai/dsh-client-ui-context-menu:
+  vendor/@codesmith/client-ui-context-menu:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-dockkit':
+        specifier: workspace:*
+        version: link:../client-ui-dockkit
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-dockkit':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-dockkit
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
       react:
@@ -547,72 +500,72 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
 
-  vendor/@deepseek-ai/dsh-client-ui-conversation:
+  vendor/@codesmith/client-ui-conversation:
     dependencies:
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/api-workspace-controller':
+        specifier: workspace:*
+        version: link:../api-workspace-controller
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-file-upload':
+        specifier: workspace:*
+        version: link:../client-file-upload
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-context-menu':
+        specifier: workspace:*
+        version: link:../client-ui-context-menu
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-settings':
+        specifier: workspace:*
+        version: link:../client-ui-settings
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-workspace':
+        specifier: workspace:*
+        version: link:../client-ui-workspace
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remotes':
+      '@codesmith/util-crypto':
         specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-api-session-controller':
+        version: link:../util-crypto
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-api-workspace-controller':
+        version: link:../util-values
+      '@codesmith/util-workspace-path':
         specifier: workspace:*
-        version: link:../dsh-api-workspace-controller
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-file-upload':
-        specifier: workspace:*
-        version: link:../dsh-client-file-upload
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-context-menu':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-context-menu
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-settings':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-settings
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-client-ui-workspace':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-workspace
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
-      '@deepseek-ai/dsh-util-workspace-path':
-        specifier: workspace:*
-        version: link:../dsh-util-workspace-path
+        version: link:../util-workspace-path
       '@lexical/headless':
         specifier: ^0.49.0
         version: 0.49.0(typescript@6.0.3)
@@ -644,17 +597,17 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  vendor/@deepseek-ai/dsh-client-ui-dockkit:
+  vendor/@codesmith/client-ui-dockkit:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
       '@testing-library/react':
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -668,71 +621,71 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
 
-  vendor/@deepseek-ai/dsh-client-ui-file-drag:
+  vendor/@codesmith/client-ui-file-drag:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-client-locale':
+      '@codesmith/util-crypto':
         specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-store':
+        version: link:../util-crypto
+      '@codesmith/util-file-drag':
         specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
-      '@deepseek-ai/dsh-util-file-drag':
-        specifier: workspace:*
-        version: link:../dsh-util-file-drag
+        version: link:../util-file-drag
       react:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-input-trigger:
+  vendor/@codesmith/client-ui-input-trigger:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-session-controller':
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-conversation':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-conversation
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
+        version: link:../util-values
       clsx:
         specifier: ^2.0.0
         version: 2.1.1
@@ -740,56 +693,56 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-layout:
+  vendor/@codesmith/client-ui-layout:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-theme':
+        specifier: workspace:*
+        version: link:../client-ui-theme
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-client-ui-theme':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-theme
       react:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-primitives:
+  vendor/@codesmith/client-ui-primitives:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-client-store':
+      '@codesmith/util-code-language':
         specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-util-code-language':
+        version: link:../util-code-language
+      '@codesmith/util-file-drag':
         specifier: workspace:*
-        version: link:../dsh-util-code-language
-      '@deepseek-ai/dsh-util-file-drag':
+        version: link:../util-file-drag
+      '@codesmith/util-workspace-path':
         specifier: workspace:*
-        version: link:../dsh-util-file-drag
-      '@deepseek-ai/dsh-util-workspace-path':
-        specifier: workspace:*
-        version: link:../dsh-util-workspace-path
+        version: link:../util-workspace-path
       '@shikijs/langs':
         specifier: ^4.4.3
         version: 4.6.0
@@ -860,14 +813,14 @@ importers:
         specifier: 16.31.0
         version: 16.31.0
 
-  vendor/@deepseek-ai/dsh-client-ui-renderer:
+  vendor/@codesmith/client-ui-renderer:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
       '@types/use-sync-external-store':
         specifier: ^1.5.0
         version: 1.7.0
@@ -881,96 +834,96 @@ importers:
         specifier: 1.6.0
         version: 1.6.0(react@18.3.1)
 
-  vendor/@deepseek-ai/dsh-client-ui-session:
+  vendor/@codesmith/client-ui-session:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remote-access':
+        specifier: workspace:*
+        version: link:../api-remote-access
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remote-access':
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-api-remote-access
-      '@deepseek-ai/dsh-api-remotes':
-        specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-api-session-controller':
-        specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
+        version: link:../util-values
       react:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-settings:
+  vendor/@codesmith/client-ui-settings:
     dependencies:
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remotes':
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
+        version: link:../util-values
       react:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-sidebar:
+  vendor/@codesmith/client-ui-sidebar:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-workspace-controller':
+        specifier: workspace:*
+        version: link:../api-workspace-controller
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-workspace':
+        specifier: workspace:*
+        version: link:../client-ui-workspace
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-workspace-controller':
-        specifier: workspace:*
-        version: link:../dsh-api-workspace-controller
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-client-ui-workspace':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-workspace
       clsx:
         specifier: ^2.0.0
         version: 2.1.1
@@ -978,56 +931,56 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-sidebar-right:
+  vendor/@codesmith/client-ui-sidebar-right:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-resources':
+        specifier: workspace:*
+        version: link:../client-resources
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-context-menu':
+        specifier: workspace:*
+        version: link:../client-ui-context-menu
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-dockkit':
+        specifier: workspace:*
+        version: link:../client-ui-dockkit
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-session-controller':
+      '@codesmith/util-crypto':
         specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-resources':
-        specifier: workspace:*
-        version: link:../dsh-client-resources
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-context-menu':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-context-menu
-      '@deepseek-ai/dsh-client-ui-conversation':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-conversation
-      '@deepseek-ai/dsh-client-ui-dockkit':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-dockkit
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-util-crypto':
-        specifier: workspace:*
-        version: link:../dsh-util-crypto
+        version: link:../util-crypto
       '@testing-library/react':
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -1050,54 +1003,54 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  vendor/@deepseek-ai/dsh-client-ui-slots:
+  vendor/@codesmith/client-ui-slots:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
       react:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-theme:
+  vendor/@codesmith/client-ui-theme:
     dependencies:
-      '@deepseek-ai/schemastery':
+      '@codesmith/schemastery':
         specifier: workspace:~
         version: link:../schemastery
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-settings':
+        specifier: workspace:*
+        version: link:../client-ui-settings
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remotes':
-        specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-settings':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-settings
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
       clsx:
         specifier: ^2.0.0
         version: 2.1.1
@@ -1105,68 +1058,68 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-ui-workspace:
+  vendor/@codesmith/client-ui-workspace:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/api-remote-access':
+        specifier: workspace:*
+        version: link:../api-remote-access
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/api-workspace-controller':
+        specifier: workspace:*
+        version: link:../api-workspace-controller
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-context-menu':
+        specifier: workspace:*
+        version: link:../client-ui-context-menu
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-sidebar':
+        specifier: workspace:*
+        version: link:../client-ui-sidebar
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-api-remote-access':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-api-remote-access
-      '@deepseek-ai/dsh-api-remotes':
+        version: link:../typert-protocol
+      '@codesmith/util-values':
         specifier: workspace:*
-        version: link:../dsh-api-remotes
-      '@deepseek-ai/dsh-api-session-controller':
+        version: link:../util-values
+      '@codesmith/util-workspace-path':
         specifier: workspace:*
-        version: link:../dsh-api-session-controller
-      '@deepseek-ai/dsh-api-workspace-controller':
-        specifier: workspace:*
-        version: link:../dsh-api-workspace-controller
-      '@deepseek-ai/dsh-client-connection':
-        specifier: workspace:*
-        version: link:../dsh-client-connection
-      '@deepseek-ai/dsh-client-locale':
-        specifier: workspace:*
-        version: link:../dsh-client-locale
-      '@deepseek-ai/dsh-client-shortcuts':
-        specifier: workspace:*
-        version: link:../dsh-client-shortcuts
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-context-menu':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-context-menu
-      '@deepseek-ai/dsh-client-ui-conversation':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-conversation
-      '@deepseek-ai/dsh-client-ui-layout':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-layout
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-session':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-session
-      '@deepseek-ai/dsh-client-ui-sidebar':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-sidebar
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
-      '@deepseek-ai/dsh-typert-protocol':
-        specifier: workspace:*
-        version: link:../dsh-typert-protocol
-      '@deepseek-ai/dsh-util-values':
-        specifier: workspace:*
-        version: link:../dsh-util-values
-      '@deepseek-ai/dsh-util-workspace-path':
-        specifier: workspace:*
-        version: link:../dsh-util-workspace-path
+        version: link:../util-workspace-path
       clsx:
         specifier: ^2.0.0
         version: 2.1.1
@@ -1174,32 +1127,32 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1
 
-  vendor/@deepseek-ai/dsh-client-web:
+  vendor/@codesmith/client-web:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/client-modules':
+        specifier: workspace:*
+        version: link:../client-modules
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-dockkit':
+        specifier: workspace:*
+        version: link:../client-ui-dockkit
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/cordis-plugin-loader':
+      '@codesmith/cordis-plugin-loader':
         specifier: workspace:~
         version: link:../cordis-plugin-loader
-      '@deepseek-ai/dsh-client-modules':
-        specifier: workspace:*
-        version: link:../dsh-client-modules
-      '@deepseek-ai/dsh-client-store':
-        specifier: workspace:*
-        version: link:../dsh-client-store
-      '@deepseek-ai/dsh-client-ui-dockkit':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-dockkit
-      '@deepseek-ai/dsh-client-ui-primitives':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-primitives
-      '@deepseek-ai/dsh-client-ui-renderer':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-renderer
-      '@deepseek-ai/dsh-client-ui-slots':
-        specifier: workspace:*
-        version: link:../dsh-client-ui-slots
       '@tanstack/react-virtual':
         specifier: 3.14.10
         version: 3.14.10(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -1216,76 +1169,132 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  vendor/@deepseek-ai/dsh-deque:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:~
-        version: link:../cordis
-
-  vendor/@deepseek-ai/dsh-native-command:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:~
-        version: link:../cordis
-
-  vendor/@deepseek-ai/dsh-timeout:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:~
-        version: link:../cordis
-
-  vendor/@deepseek-ai/dsh-typert-protocol:
+  vendor/@codesmith/cordis:
     dependencies:
-      '@deepseek-ai/dsh-brand':
+      '@codesmith/cordis-plugin-include':
+        specifier: workspace:~
+        version: link:../cordis-plugin-include
+      '@codesmith/cordis-plugin-loader':
+        specifier: workspace:~
+        version: link:../cordis-plugin-loader
+      '@codesmith/cosmokit':
+        specifier: workspace:~
+        version: link:../cosmokit
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
+
+  vendor/@codesmith/cordis-plugin-include:
+    dependencies:
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/cordis-plugin-loader':
+        specifier: workspace:~
+        version: link:../cordis-plugin-loader
+      '@codesmith/cosmokit':
+        specifier: workspace:~
+        version: link:../cosmokit
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.2
+
+  vendor/@codesmith/cordis-plugin-loader:
+    dependencies:
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/cosmokit':
+        specifier: workspace:~
+        version: link:../cosmokit
+      '@codesmith/schemastery':
+        specifier: workspace:~
+        version: link:../schemastery
+      node-addon-require-builtin:
+        specifier: ^0.1.9
+        version: 0.1.9
+
+  vendor/@codesmith/cosmokit: {}
+
+  vendor/@codesmith/deque:
+    devDependencies:
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+
+  vendor/@codesmith/native-command:
+    devDependencies:
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+
+  vendor/@codesmith/schemastery:
+    dependencies:
+      '@codesmith/cosmokit':
+        specifier: workspace:~
+        version: link:../cosmokit
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
+
+  vendor/@codesmith/timeout:
+    devDependencies:
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+
+  vendor/@codesmith/typert-protocol:
+    dependencies:
+      '@codesmith/brand':
         specifier: workspace:*
-        version: link:../dsh-brand
+        version: link:../brand
       zod:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
 
-  vendor/@deepseek-ai/dsh-typert-registry:
+  vendor/@codesmith/typert-registry:
     dependencies:
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-typert-protocol':
+      '@codesmith/typert-protocol':
         specifier: workspace:*
-        version: link:../dsh-typert-protocol
+        version: link:../typert-protocol
 
-  vendor/@deepseek-ai/dsh-util-code-language:
+  vendor/@codesmith/util-code-language:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
 
-  vendor/@deepseek-ai/dsh-util-crypto:
+  vendor/@codesmith/util-crypto:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
 
-  vendor/@deepseek-ai/dsh-util-file-drag:
+  vendor/@codesmith/util-file-drag:
     dependencies:
       mime:
         specifier: ^4.1.1
         version: 4.1.2
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-      '@deepseek-ai/dsh-brand':
-        specifier: workspace:*
-        version: link:../dsh-brand
 
-  vendor/@deepseek-ai/dsh-util-time:
+  vendor/@codesmith/util-time:
     dependencies:
       '@js-temporal/polyfill':
         specifier: 0.5.1
@@ -1294,30 +1303,21 @@ importers:
         specifier: 2.8.1
         version: 2.8.1
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
 
-  vendor/@deepseek-ai/dsh-util-values:
+  vendor/@codesmith/util-values:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
 
-  vendor/@deepseek-ai/dsh-util-workspace-path:
+  vendor/@codesmith/util-workspace-path:
     devDependencies:
-      '@deepseek-ai/cordis':
+      '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
-
-  vendor/@deepseek-ai/schemastery:
-    dependencies:
-      '@deepseek-ai/cosmokit':
-        specifier: workspace:~
-        version: link:../cosmokit
-      '@standard-schema/spec':
-        specifier: ^1.1.0
-        version: 1.1.0
 
 packages:
 

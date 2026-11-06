@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * Generate the DSH boot artifacts for the vendored client:
+ * Generate the boot artifacts for the vendored client:
  *
- * 1. ui/src/boot-graph.generated.ts — the `__DSH_BOOT__` graph (entries from
- *    VENDOR.json plugin rows; inject lists from each package.json's
- *    `dsh.client.inject`, filtered to rows we vendor).
+ * 1. ui/src/boot-graph.generated.ts — the `__CODESMITH_BOOT__` graph (entries
+ *    from VENDOR.json plugin rows; inject lists from each package.json's
+ *    `codesmith.client.inject`, filtered to rows we vendor).
  * 2. ui/public/plugins/ — static classic-script staging:
- *    - `??<id>/<entry>&rev=<rev>` per plugin row (the URL form the module
- *      system's chunkUrl parser requires),
+ *    - `<id>/<entry>` per plugin row (the graph addresses it with the
+ *      `??<id>/<entry>&rev=<rev>` URL form the module system's chunkUrl
+ *      parser requires; main.ts's loadBundle maps it back onto this path),
  *    - `<id>/client.*.js` sibling chunks,
- *    - `application.js&rev=<rev>` — the concatenated application batch, the
- *      same shape the DSH host serves for a batch URL.
+ *    - `application.js` — the concatenated application batch, the same shape
+ *      the upstream host serves for a batch URL.
  *
- * Run after vendor_dsh_client.py. Deterministic for a given vendor tree.
+ * Run after vendor_client.py. Deterministic for a given vendor tree.
  */
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
 import { resolve, join } from 'node:path'
@@ -22,11 +23,11 @@ const here = resolve(fileURLToPath(import.meta.url), '..')
 const uiDir = join(here, '..', 'ui')
 const vendorDir = join(uiDir, 'vendor')
 const pluginsDir = join(uiDir, 'public', 'plugins')
-const MODULES_ID = '@deepseek-ai/dsh-client-modules'
+const MODULES_ID = '@codesmith/client-modules'
 
 /** Built-in first-party rows prequeued from our own bundle (never fetched). */
 const BUILTIN_ROWS = [
-  { id: '@codesmith/brand', entry: 'client.js', inject: [], immediately: false },
+  { id: '@codesmith/desktop-brand', entry: 'client.js', inject: [], immediately: false },
 ]
 
 const manifest = JSON.parse(readFileSync(join(vendorDir, 'VENDOR.json'), 'utf8'))
@@ -35,15 +36,20 @@ const rows = []
 for (const [name, record] of Object.entries(manifest.packages)) {
   if (!record.plugin) continue
   const pkg = JSON.parse(readFileSync(join(vendorDir, name, 'package.json'), 'utf8'))
-  const inject = (pkg.dsh?.client?.inject ?? []).filter(dep => manifest.packages[dep]?.plugin)
+  const client = pkg.codesmith?.client
+  if (client === undefined) throw new Error(`boot graph: ${name} is a plugin row without a codesmith.client manifest`)
+  const inject = (client.inject ?? []).filter(dep => manifest.packages[dep]?.plugin)
   rows.push({
     id: name,
     entry: record.entry,
     inject,
-    immediately: pkg.dsh?.client?.immediately === true,
+    immediately: client.immediately === true,
   })
 }
-for (const builtin of BUILTIN_ROWS) rows.push(builtin)
+for (const builtin of BUILTIN_ROWS) {
+  if (manifest.packages[builtin.id] !== undefined) throw new Error(`boot graph: built-in row ${builtin.id} collides with a vendored package`)
+  rows.push(builtin)
+}
 const ids = new Set(rows.map(row => row.id))
 for (const row of rows) {
   for (const dep of row.inject) {

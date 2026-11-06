@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "vendor": "python3 ../scripts/vendor_dsh_client.py && node ../scripts/gen_boot_graph.mjs",
+    "vendor": "python3 ../scripts/vendor_client.py && node ../scripts/gen_boot_graph.mjs",
     "dev": "vite",
     "build": "vite build"
   },
@@ -13,6 +13,6 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-client-web": "workspace:*"
+    "@codesmith/client-web": "workspace:*"
   }
 }

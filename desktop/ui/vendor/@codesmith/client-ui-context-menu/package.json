@@ -1,0 +1,60 @@
+{
+  "name": "@codesmith/client-ui-context-menu",
+  "description": "Typed, plugin-extensible context menus with captured targets and shared Web presentation",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-layout",
+        "@codesmith/client-shortcuts"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/schemastery": "workspace:~",
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-layout": "workspace:*",
+    "@codesmith/brand": "workspace:*",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@codesmith/client-ui-dockkit": "workspace:*",
+    "@codesmith/client-shortcuts": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ]
+}

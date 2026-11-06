@@ -1,0 +1,68 @@
+{
+  "name": "@codesmith/client-ui-theme",
+  "description": "Theme plugin: Host bootstrap for the pre-plugin palette; ThemeRuntime for light/dark/system state and icon replacements; --dsw-* token styles and Appearance settings row",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./brand-font.css": "./lib/styles/brand-font.css",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/client-connection",
+        "@codesmith/client-locale",
+        "@codesmith/client-shortcuts",
+        "@codesmith/client-ui-renderer",
+        "@codesmith/client-ui-settings",
+        "@codesmith/api-remotes"
+      ],
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/client-connection": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-shortcuts": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-settings": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "react": "^18.2.0",
+    "clsx": "^2.0.0"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/styles",
+    "lib/types/**/*.d.ts"
+  ],
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "dependencies": {
+    "@codesmith/schemastery": "workspace:~"
+  }
+}

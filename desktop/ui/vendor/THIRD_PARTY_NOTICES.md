@@ -1,6 +1,35 @@
 # Third-party notices
 
-The packages under this directory are vendored from the DeepSeek Harness
-(`/Users/camile/Work/TypeScript/deepseek-harness`, commit `8bd073392eef6f54e921a093b95076248eb08cbb`), MIT licensed, Copyright
-Hangzhou DeepSeek Artificial Intelligence Co., Ltd. Original license
-texts are retained in each package's LICENSE / package.json.
+The packages under this directory are vendored from DeepSeek Harness
+(source checkout `/Users/camile/Work/TypeScript/deepseek-harness`, commit `8bd073392eef6f54e921a093b95076248eb08cbb`), MIT licensed.
+They were copied from the upstream build output and mechanically
+rebranded by `desktop/scripts/vendor_client.py` (package scope,
+globals, CSS/DOM prefixes and product copy; the rewrite table is
+recorded in VENDOR.json). Packages that ship their own LICENSE file
+keep it verbatim.
+
+## DeepSeek Harness license
+
+```
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

@@ -1,0 +1,103 @@
+/* The framework-free boot page cannot depend on theme delivery succeeding. */
+
+.boot {
+  --cds-boot-label-primary: #0f1115;
+  --cds-boot-label-secondary: #61666b;
+  --cds-boot-label-tertiary: #81858c;
+  --cds-boot-border: rgb(0 0 0 / 10%);
+  --cds-boot-brand: #0f1115;
+
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: var(--dsw-alias-bg-base, var(--cds-boot-bg, Canvas));
+}
+
+:global(body[data-ds-dark-theme]) .boot {
+  --cds-boot-label-primary: #f9fafb;
+  --cds-boot-label-secondary: #cfd3d6;
+  --cds-boot-label-tertiary: #adb2b8;
+  --cds-boot-border: rgb(255 255 255 / 12%);
+  --cds-boot-brand: #f9fafb;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.wordmark {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--dsw-alias-label-primary, var(--cds-boot-label-primary));
+}
+
+.hint {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary, var(--cds-boot-label-tertiary));
+}
+
+.spinner {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  corner-shape: round;
+  border: 2px solid var(--dsw-alias-border-l2, var(--cds-boot-border));
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: conic-gradient(
+    var(--dsw-alias-brand-primary, var(--cds-boot-brand)) var(--cds-boot-arc, 72deg),
+    transparent 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.failed {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.failedTitle {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, var(--cds-boot-label-primary));
+}
+
+.failedItem {
+  font-family: var(
+    --ds-font-family-code,
+    'SF Mono',
+    'JetBrains Mono',
+    'Fira Code',
+    Consolas,
+    'Liberation Mono',
+    Menlo,
+    Courier,
+    'PingFang SC',
+    'Microsoft YaHei'
+  );
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary, var(--cds-boot-label-secondary));
+  white-space: pre-wrap;
+}

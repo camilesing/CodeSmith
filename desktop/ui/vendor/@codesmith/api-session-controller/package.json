@@ -1,0 +1,112 @@
+{
+  "name": "@codesmith/api-session-controller",
+  "description": "Session Remote commands, cold reads, and live control transport",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types/types.js"
+    },
+    "./remote-events": {
+      "types": "./lib/types/remote-events.d.ts",
+      "default": "./lib/types/remote-events.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "external": [
+        "@codesmith/api-gateway/client"
+      ],
+      "inject": [
+        "@codesmith/api-gateway",
+        "@codesmith/client-file-upload"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts",
+    "lib/typert.host.js",
+    "lib/typert.host.d.ts",
+    "lib/typert.remote-client.js",
+    "lib/typert.remote-client.d.ts"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@codesmith/brand": "workspace:*",
+    "@codesmith/deque": "workspace:*",
+    "@codesmith/timeout": "workspace:*",
+    "@codesmith/schemastery": "workspace:~",
+    "mime-types": "^3.0.2",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-gateway": "workspace:*",
+    "@codesmith/client-connection": "workspace:*",
+    "@codesmith/client-file-upload": "workspace:*",
+    "@codesmith/native-command": "workspace:*",
+    "@codesmith/typert-protocol": "workspace:*",
+    "@codesmith/typert-registry": "workspace:*",
+    "@codesmith/util-time": "workspace:*",
+    "@codesmith/util-values": "workspace:*",
+    "@codesmith/util-workspace-path": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@codesmith/session-persistence": {
+      "optional": true
+    },
+    "@codesmith/session-projection-cache": {
+      "optional": true
+    },
+    "@codesmith/settings": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@codesmith/api-remote-access": "workspace:*",
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-gateway": "workspace:*",
+    "@codesmith/client-connection": "workspace:*",
+    "@codesmith/client-file-upload": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/native-command": "workspace:*",
+    "@codesmith/typert-protocol": "workspace:*",
+    "@codesmith/typert-registry": "workspace:*",
+    "@codesmith/util-crypto": "workspace:*",
+    "@codesmith/util-time": "workspace:*",
+    "@codesmith/util-values": "workspace:*",
+    "@codesmith/util-workspace-path": "workspace:*",
+    "@types/mime-types": "^3.0.1"
+  }
+}

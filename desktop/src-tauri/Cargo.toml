@@ -1,7 +1,7 @@
 [package]
 name = "codesmith-desktop"
 version = "0.1.0"
-description = "CodeSmith Desktop — Tauri shell over the vendored DSH client UI"
+description = "CodeSmith Desktop — Tauri shell over the vendored client UI"
 edition = "2021"
 
 # Standalone cargo project: the root workspace lists members explicitly and
