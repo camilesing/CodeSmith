@@ -124,4 +124,8 @@ Copied from the design spec §10, plus what the implementation added:
   length would not be caught by the script — `check_brand.py` catches the
   branding, review the offsets when bumping the upstream commit.
 - Pixel parity with the upstream client is a manual, screenshot-based check
-  (`desktop/screenshots/`), not automated.
+  (`desktop/screenshots/baseline/`), not automated. Our four baseline shots
+  (empty/fixture × light/dark, 1200×800) are captured; the upstream comparison
+  run is pending — the 2026-11-07 attempt was blocked by the Electron binary
+  download, the unbuilt upstream host CLI, and this machine's redacted window
+  capture (evidence in `desktop/screenshots/baseline/README.md`).

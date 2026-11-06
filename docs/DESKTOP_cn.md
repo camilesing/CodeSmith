@@ -110,5 +110,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 - 去品牌改写是文本级的（审计说明见 `vendor_client.py` 模块注释）：未来
   上游若出现依赖品牌字符串长度的偏移量，脚本不会发现——
   `check_brand.py` 管品牌命中，升级上游 commit 时需人工复核偏移。
-- 与上游客户端的像素一致性是人工截图比对（`desktop/screenshots/`），
-  未自动化。
+- 与上游客户端的像素一致性是人工截图比对
+  （`desktop/screenshots/baseline/`），未自动化。我方四张基线（空态/
+  fixture × 明暗，1200×800）已捕获；上游对照待人工——2026-11-07 的尝试
+  被 Electron 二进制下载失败、上游 host CLI 未构建、本机窗口捕获被系统
+  涂黑三重阻断（证据见 `desktop/screenshots/baseline/README.md`）。
