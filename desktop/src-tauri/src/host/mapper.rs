@@ -234,13 +234,13 @@ impl SessionMapper {
                         let detail = item.get("detail").and_then(Value::as_str);
                         frames.push(Frame::Event(self.seq.event(
                             "user/message",
+                            // Flat UserMessage contract: the client's message
+                            // node reads data.id and data.source.kind directly.
                             json!({
-                                "message": {
-                                    "id": item_id,
-                                    "role": "user",
-                                    "content": [{ "type": "text", "text": content_text(detail) }],
-                                    "source": { "kind": "user" },
-                                }
+                                "id": item_id,
+                                "role": "user",
+                                "content": [{ "type": "text", "text": content_text(detail) }],
+                                "source": { "kind": "user" },
                             }),
                             true,
                         )));
@@ -318,7 +318,12 @@ impl SessionMapper {
                                     "id": item_id,
                                     "role": "assistant",
                                     "content": [{ "type": block_type, "text": text }],
-                                }
+                                    // ModelMessageSource + empty stream records: the
+                                    // usage fold reads source.provider/model and
+                                    // stream.length on every settlement.
+                                    "source": { "kind": "model", "provider": "codesmith", "model": "" },
+                                },
+                                "stream": []
                             }),
                             true,
                         );
@@ -350,7 +355,11 @@ impl SessionMapper {
                             json!({
                                 "turn": self.turn_no,
                                 "step": self.step,
-                                "message": {
+                                // ToolResultMessage contract: source.callId is what the client's tool
+// node matches the result to its call by.
+"message": {
+                                    "role": "tool",
+                                    "source": { "kind": "tool", "callId": item_id },
                                     "toolCallId": item_id,
                                     "isError": status == "failed",
                                     "content": [{ "type": "text", "text": content_text(detail) }],
@@ -454,13 +463,12 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
             match kind {
                 "user_message" => events.push(seq.event(
                     "user/message",
+                    // Flat UserMessage contract (see the live arm above).
                     json!({
-                        "message": {
-                            "id": item_id,
-                            "role": "user",
-                            "content": [{ "type": "text", "text": content_text(detail_text) }],
-                            "source": { "kind": "user" },
-                        }
+                        "id": item_id,
+                        "role": "user",
+                        "content": [{ "type": "text", "text": content_text(detail_text) }],
+                        "source": { "kind": "user" },
                     }),
                     true,
                 )),
@@ -484,7 +492,11 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                                 "id": item_id,
                                 "role": "assistant",
                                 "content": [{ "type": block_type, "text": content_text(detail_text) }],
-                            }
+                                // ModelMessageSource + empty stream records
+                                // (see the live arm).
+                                "source": { "kind": "model", "provider": "codesmith", "model": "" },
+                            },
+                            "stream": []
                         }),
                         true,
                     ));
@@ -513,7 +525,10 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                             json!({
                                 "turn": turn_no,
                                 "step": step,
+                                // ToolResultMessage contract (see the live arm).
                                 "message": {
+                                    "role": "tool",
+                                    "source": { "kind": "tool", "callId": item_id },
                                     "toolCallId": item_id,
                                     "isError": status == "failed",
                                     "content": [{ "type": "text", "text": content_text(detail_text) }],
@@ -597,6 +612,11 @@ mod tests {
         // Numeric turn ordinals, steps increment per agent item, tool items
         // ride the latest step.
         assert_eq!(events[0]["data"]["turn"], 1);
+        // user/message rides the flat UserMessage contract — the client's
+        // message node dereferences data.id and data.source.kind directly.
+        assert_eq!(events[1]["data"]["id"], "item_user_message");
+        assert_eq!(events[1]["data"]["source"]["kind"], "user");
+        assert_eq!(events[1]["data"]["content"][0]["text"], "hello");
         assert_eq!(events[2]["data"]["step"], 1);
         assert_eq!(events[3]["data"]["step"], 1);
         assert_eq!(events[3]["data"]["turn"], 1);
