@@ -13,6 +13,8 @@
 //!   (bounded by the session count; acceptable for the desktop shell).
 
 pub mod codesmith;
+pub mod mapper;
+pub mod sessions;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,8 +37,22 @@ pub struct HostState {
     pub backend: CodesmithProcess,
     pub cwd: PathBuf,
     pub client_id: String,
-    /// Open `$events` sinks: stream id -> frame sender (M2 mapper pushes here).
+    /// Open `$events` sinks: stream id -> frame sender (M3 approval waterfall
+    /// pushes here).
     pub event_sinks: Mutex<HashMap<String, mpsc::Sender<Value>>>,
+    /// Open follow streams that accept live increments (workspace/follow):
+    /// stream id -> (endpoint, frame sender).
+    pub live_sinks: Mutex<HashMap<String, (String, mpsc::Sender<Value>)>>,
+}
+
+impl HostState {
+    /// Push one increment frame to every open stream of `endpoint`.
+    pub async fn push_live(&self, endpoint: &str, frame: Value) {
+        let sinks = self.live_sinks.lock().await;
+        for (_, tx) in sinks.values().filter(|(ep, _)| ep == endpoint) {
+            let _ = tx.send(frame.clone()).await;
+        }
+    }
 }
 
 pub type SharedHost = Arc<HostState>;
@@ -66,6 +82,20 @@ fn workspace_view(cwd: &PathBuf) -> Value {
     })
 }
 
+/// The single implicit workspace with the live session list folded in — the
+/// client associates a selected session with a workspace through this list.
+async fn workspace_view_live(host: &HostState) -> Value {
+    let mut view = workspace_view(&host.cwd);
+    if let Ok(threads) = host
+        .backend
+        .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200")
+        .await
+    {
+        view["sessionIds"] = json!(threads.into_iter().map(|t| t.id).collect::<Vec<_>>());
+    }
+    view
+}
+
 /// Dispatch a unary DSH endpoint. `payload` is the raw `{args: …}` body.
 pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Value {
     let _ = payload.get("args");
@@ -73,7 +103,23 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
         "session/list" => session_list(host).await,
         "session/create" => session_create(host).await,
         "session/modelCatalog" => model_catalog(host).await,
-        "workspace/initializeDefault" => rpc_ok(workspace_view(&host.cwd)),
+        "session/page" => match sessions::page(host, payload.get("args").unwrap_or(&Value::Null)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/page: {err:#}")),
+        },
+        "session/prompt" => match sessions::prompt(host, payload.get("args").unwrap_or(&Value::Null)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/prompt: {err:#}")),
+        },
+        "session/cancel" => match sessions::cancel(host, payload.get("args").unwrap_or(&Value::Null)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/cancel: {err:#}")),
+        },
+        "session/updateQueue" => rpc_error(
+            "gateway/method-unavailable",
+            "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
+        ),
+        "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
         "settings/describe" => rpc_ok(json!({ "writable": true, "hasDocument": false, "namespaces": [] })),
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
@@ -96,14 +142,17 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
 pub async fn stream_baseline(host: &HostState, endpoint: &str, stream_id: String) -> Result<Vec<Value>> {
     match endpoint {
         "session/control" => Ok(vec![json!({ "type": "baseline", "value": { "projections": {} } })]),
-        "workspace/follow" => Ok(vec![json!({
-            "type": "baseline",
-            "value": {
-                "items": [workspace_view(&host.cwd)],
-                "archivedSessionIds": [],
-                "pinnedSessionIds": [],
-            }
-        })]),
+        "workspace/follow" => {
+            let view = workspace_view_live(host).await;
+            Ok(vec![json!({
+                "type": "baseline",
+                "value": {
+                    "items": [view],
+                    "archivedSessionIds": [],
+                    "pinnedSessionIds": [],
+                }
+            })])
+        }
         "remoteAccess/follow" => Ok(vec![json!({ "type": "baseline", "owner": true })]),
         "account/watch" => Ok(vec![json!({
             "status": "signed-out",
@@ -148,9 +197,14 @@ async fn session_list(host: &HostState) -> Value {
                 // DSH optional fields must be ABSENT, not null — a null
                 // reaches the client as a typed value it then dereferences.
                 .map(|t| {
+                    // DSH timestamps are epoch milliseconds; the wire `time`
+                    // and list `updatedAt` must both be integer numbers.
+                    let updated_ms = chrono::DateTime::parse_from_rfc3339(&t.updated_at)
+                        .map(|dt| dt.timestamp_millis())
+                        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
                     let mut row = json!({
                         "sessionId": t.id,
-                        "updatedAt": t.updated_at,
+                        "updatedAt": updated_ms,
                         "running": false,
                         "blank": t.latest_turn_id.is_none(),
                         "agentAvailable": true,
@@ -170,7 +224,17 @@ async fn session_list(host: &HostState) -> Value {
 async fn session_create(host: &HostState) -> Value {
     match host.backend.post::<Value>("/v1/threads", &json!({})).await {
         Ok(thread) => {
-            let session_id = thread.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            let session_id = thread.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            // The new session must land in the workspace the sidebar groups
+            // by: push an upsert increment to every open workspace follow.
+            let mut view = workspace_view_live(host).await;
+            if let Some(ids) = view.get_mut("sessionIds").and_then(Value::as_array_mut) {
+                if !ids.iter().any(|id| id.as_str() == Some(session_id.as_str())) {
+                    ids.push(json!(session_id));
+                }
+            }
+            host.push_live("workspace/follow", json!({ "type": "upsert", "workspace": view }))
+                .await;
             // `agentPreset` stays absent (not null): the client treats null as
             // a present preset value and dereferences it.
             rpc_ok(json!({ "sessionId": session_id }))
@@ -222,12 +286,32 @@ async fn unary_handler(
 
 /// NDJSON streaming: baseline frames flush immediately, then the body stays
 /// open (follow semantics) until the client disconnects or the app exits.
-async fn stream_handler(State(host): State<SharedHost>, Path(endpoint): Path<String>) -> Response {
+/// `session/follow` owns its own lifecycle (snapshot, then live tail).
+async fn stream_handler(
+    State(host): State<SharedHost>,
+    Path(endpoint): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let stream_id = uuid::Uuid::new_v4().to_string();
+    let stream_id_handle = stream_id.clone();
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(16);
     let host_for_stream = host.clone();
     let endpoint_stream = endpoint.clone();
     tokio::spawn(async move {
+        if endpoint_stream == "session/follow" {
+            let args = payload.get("args").cloned().unwrap_or(Value::Null);
+            let line_tx = tokio_sync_line_adapter(tx.clone());
+            if let Err(err) = sessions::follow(&host_for_stream, &args, &line_tx).await {
+                let _ = tx
+                    .send(Ok(format!(
+                        "{}\n",
+                        json!({ "type": "error", "error": { "code": "gateway/internal", "message": format!("session/follow: {err:#}") } })
+                    )))
+                    .await;
+            }
+            return;
+        }
         match stream_baseline(&host_for_stream, &endpoint_stream, stream_id).await {
             Ok(frames) => {
                 for frame in frames {
@@ -246,9 +330,19 @@ async fn stream_handler(State(host): State<SharedHost>, Path(endpoint): Path<Str
                 return;
             }
         }
-        // Hold the stream open; M2 forwards mapper frames through the
-        // registered sinks before this pending future.
-        std::future::pending::<()>().await;
+        // Hold the stream open, pumping live increments to the body: the
+        // sink receiver ends when the stream is dropped from the registry.
+        let (live_tx, mut live_rx) = mpsc::channel::<Value>(16);
+        host_for_stream
+            .live_sinks
+            .lock()
+            .await
+            .insert(stream_id_handle.clone(), (endpoint_stream.clone(), live_tx));
+        while let Some(frame) = live_rx.recv().await {
+            if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
+                break;
+            }
+        }
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -261,6 +355,21 @@ async fn stream_handler(State(host): State<SharedHost>, Path(endpoint): Path<Str
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// follow() speaks Value frames; the bridge body speaks NDJSON lines.
+fn tokio_sync_line_adapter(
+    tx: mpsc::Sender<Result<String, std::io::Error>>,
+) -> mpsc::Sender<String> {
+    let (line_tx, mut line_rx) = mpsc::channel::<String>(16);
+    tokio::spawn(async move {
+        while let Some(line) = line_rx.recv().await {
+            if tx.send(Ok(format!("{line}\n"))).await.is_err() {
+                return;
+            }
+        }
+    });
+    line_tx
 }
 
 /// Serve the bridge on `port`; CORS allows the vite dev origin and the
