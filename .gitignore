@@ -143,3 +143,4 @@ desktop/ui/dist/
 desktop/screenshots/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+desktop/ui/public/plugins/
