@@ -244,6 +244,23 @@ are its background work), `/auto-mode-setup` (same allowlist work as
 plan mode is `/plan` here too).
 
 
+## Desktop UI (preset `all`)
+
+When the resolved preset is `all` (`--preset all`, or `preset = "all"` in
+config.toml) and the command would enter the interactive REPL, the CLI starts
+the CodeSmith desktop app instead and exits — the app owns its backend (it
+spawns `codesmith serve --http` itself, by default the same `codesmith` binary
+that launched it). Any other preset keeps the terminal REPL. If no app is
+found, startup fails loud with the build instructions (`cargo tauri build` in
+`desktop/`, see [DESKTOP.md](DESKTOP.md)).
+
+The `[desktop]` config table tunes this: `enabled = false` keeps the terminal
+REPL even at preset `all`; `app_path` points at the app bundle/binary to
+launch (also overridable per run with the `CODESMITH_DESKTOP_APP` env var);
+`codesmith_path` overrides which `codesmith` binary the app spawns. The app
+is looked up in `app_path`, `$CODESMITH_HOME/desktop/codesmith-desktop`, and
+the platform install location.
+
 ## Model selection
 
 The top-level `--model <id>` flag overrides the model for that run — it
