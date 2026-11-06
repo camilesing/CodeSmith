@@ -137,3 +137,9 @@ docs/*_PLAN.md
 .direnv
 scripts/run_deep_swe.py
 .omc/
+# CodeSmith Desktop
+desktop/ui/node_modules/
+desktop/ui/dist/
+desktop/screenshots/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
