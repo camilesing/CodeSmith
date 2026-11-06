@@ -61,8 +61,10 @@ impl CodesmithProcess {
                 .arg("--auth-token")
                 .arg(&token)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                // Inherit: the backend's own logs (engine errors, bind info)
+                // belong in the desktop app's stderr, not a black hole.
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
                 .kill_on_drop(true)
                 .spawn()
                 .with_context(|| format!("spawn {} serve --http", binary.display()))?;
@@ -136,6 +138,44 @@ impl CodesmithProcess {
             bail!("POST {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
         }
         Ok(resp.json().await.with_context(|| format!("POST {path} body"))?)
+    }
+
+    pub async fn post_empty(&self, path: &str) -> Result<()> {
+        let resp = self
+            .auth(self.client.post(format!("{}{path}", self.base_url)))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        if !resp.status().is_success() {
+            bail!("POST {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    /// A long-lived SSE body as raw text chunks; the caller parses `data:`
+    /// lines (keep-alive comments carry no data and are skipped naturally).
+    pub async fn get_sse_lines(
+        &self,
+        path: &str,
+    ) -> Result<futures_util::stream::BoxStream<'static, Result<String>>> {
+        use futures_util::StreamExt;
+        let resp = self
+            .auth(self.client.get(format!("{}{path}", self.base_url)))
+            .send()
+            .await
+            .with_context(|| format!("GET {path} (sse)"))?;
+        if !resp.status().is_success() {
+            bail!("GET {path}: {}", resp.status());
+        }
+        Ok(resp
+            .bytes_stream()
+            .map(|chunk| {
+                chunk
+                    .map_err(|err| anyhow::anyhow!("sse body: {err}"))
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .boxed())
     }
 }
 
