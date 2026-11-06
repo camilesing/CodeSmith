@@ -26,6 +26,16 @@ from pathlib import Path
 
 # Required client entries (packages/client/web/src/boot-client.ts
 # `requiredClientEntryNames`) plus the boot kernel app entry.
+# Seed libraries the boot kernel's static module table imports through the
+# shell bundle (packages/client/web/src/seed.ts getStaticModules) — declared
+# upstream as devDependencies, so the closure needs them as explicit roots.
+SEED_LIBRARY_ENTRIES = [
+    "@deepseek-ai/dsh-client-store",
+    "@deepseek-ai/dsh-client-ui-slots",
+    "@deepseek-ai/dsh-client-ui-primitives",
+    "@deepseek-ai/dsh-client-ui-dockkit",
+]
+
 REQUIRED_ENTRIES = [
     "@deepseek-ai/dsh-client-web",  # boot kernel: static-modules seed + AppWebEntry
     "@deepseek-ai/dsh-client-modules",
@@ -38,7 +48,7 @@ REQUIRED_ENTRIES = [
 ]
 
 # Scan roots for @deepseek-ai packages inside the DSH checkout.
-SCAN_ROOTS = ("packages/client", "packages/api", "packages/typert")
+SCAN_ROOTS = ("packages/client", "packages/api", "packages/typert", "packages/util", "vendor")
 
 # Per-package payload directories/files copied verbatim (tests excluded).
 COPY_NAMES = ("package.json", "lib", "src", "assets", "locale", "LICENSE", "LICENSE.md",
@@ -82,7 +92,15 @@ def closure_of(packages: dict[str, Path], entries: list[str]) -> tuple[list[str]
         order.append(name)
         pkg = json.loads((packages[name] / "package.json").read_text(encoding="utf-8"))
         deps: set[str] = set()
-        for key in ("dependencies", "peerDependencies", "optionalDependencies"):
+        # Library rows (no `dsh.client` plugin face) are consumed through the
+        # shell bundle's own imports, so their build-time devDependencies are
+        # runtime edges here and must be followed; plugin rows never are (the
+        # classic bundles carry or resolve them through the module table).
+        follow_dev = "client" not in (pkg.get("dsh") or {})
+        keys = ("dependencies", "peerDependencies", "optionalDependencies")
+        if follow_dev:
+            keys = (*keys, "devDependencies")
+        for key in keys:
             deps.update(d for d in pkg.get(key, {}) if d.startswith("@deepseek-ai/"))
         inject = pkg.get("dsh", {}).get("client", {}).get("inject", [])
         deps.update(inject)
@@ -137,7 +155,7 @@ def main() -> int:
     if missing_entries:
         print(f"vendor: entries missing from checkout: {missing_entries}", file=sys.stderr)
         return 1
-    order, edges = closure_of(packages, REQUIRED_ENTRIES)
+    order, edges = closure_of(packages, [*SEED_LIBRARY_ENTRIES, *REQUIRED_ENTRIES])
 
     unbuilt = [n for n in order if not (packages[n] / "lib").is_dir()]
     if unbuilt:
@@ -153,6 +171,7 @@ def main() -> int:
         except json.JSONDecodeError:
             old_manifest = None
 
+    vendored = set(order)
     records: dict[str, dict] = {}
     for name in order:
         src = packages[name]
@@ -168,13 +187,29 @@ def main() -> int:
                 dst.mkdir(parents=True, exist_ok=True)
                 (dst / copy_name).write_bytes(data)
                 files[copy_name] = hashlib.sha256(data).hexdigest()
-        data = (src / "package.json").read_bytes()
+        # Prune @deepseek-ai deps that are not vendored: they are build-time /
+        # type-only edges upstream (the runtime classic bundles carry what they
+        # need); leaving them in would make this subtree uninstallable.
+        pkg = json.loads((src / "package.json").read_text(encoding="utf-8"))
+        pruned: list[str] = []
+        for key in ("dependencies", "peerDependencies", "optionalDependencies", "devDependencies"):
+            deps = pkg.get(key)
+            if not deps:
+                continue
+            for dep in [d for d in deps if d.startswith("@deepseek-ai/") and d not in vendored]:
+                del deps[dep]
+                pruned.append(f"{key}:{dep}")
+        data = json.dumps(pkg, indent=2, ensure_ascii=False).encode() + b"\n"
         (dst / "package.json").write_bytes(data)
         files["package.json"] = hashlib.sha256(data).hexdigest()
+        entry = "client.browser.js" if (src / "lib" / "client.browser.js").exists() else "client.js"
         records[name] = {
             "dir": str(src.relative_to(dsh)),
+            "entry": entry,
+            "plugin": "client" in (pkg.get("dsh") or {}),
             "files": files,
             "deps": edges[name],
+            "pruned_deps": sorted(pruned),
         }
 
     manifest = {

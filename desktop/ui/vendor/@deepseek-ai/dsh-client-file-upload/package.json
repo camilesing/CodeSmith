@@ -73,12 +73,8 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:~",
-    "@deepseek-ai/dsh-agent": "workspace:*",
     "@deepseek-ai/dsh-client-connection": "workspace:*",
-    "@deepseek-ai/dsh-commands": "workspace:*",
     "@deepseek-ai/dsh-util-crypto": "workspace:*",
-    "@deepseek-ai/dsh-api-remotes": "workspace:*",
-    "@deepseek-ai/dsh-session": "workspace:*",
-    "@deepseek-ai/dsh-attachment": "workspace:*"
+    "@deepseek-ai/dsh-api-remotes": "workspace:*"
   }
 }

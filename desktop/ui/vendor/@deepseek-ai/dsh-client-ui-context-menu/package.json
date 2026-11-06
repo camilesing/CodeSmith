@@ -56,8 +56,6 @@
     "@deepseek-ai/dsh-brand": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "@deepseek-ai/dsh-client-test-runtime": "workspace:*",
-    "@deepseek-ai/dsh-session": "workspace:*",
     "@deepseek-ai/dsh-client-ui-dockkit": "workspace:*",
     "@deepseek-ai/dsh-client-shortcuts": "workspace:*"
   },
