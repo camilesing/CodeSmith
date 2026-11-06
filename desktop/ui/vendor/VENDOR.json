@@ -42,6 +42,7 @@
     "types/utils.js": "863261c3fb5de9e49cec6d625eb75bb9dd4659ffaa712c117037c29ee48b8027",
     "utils.ts": "c68bab85514ebd8cb08227367ea306b0109a214cd10965c497474eeadaaca756"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -69,6 +70,7 @@
     "types/patch.d.ts": "6ecca9d7f3603a0174489ab241c2bd33adaa46146e4c578b9cbbee8e176d783c",
     "types/patch.js": "8a75b8a2da65da2e95f78488a134825856730057b5502c278664321e2975c6d9"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -114,6 +116,7 @@
     "types/resolve.d.ts": "7f35a1510e24cd083b13c3769fcdb8f9fe752ff46402baefabe347c4666d73d6",
     "types/resolve.js": "110fa4a79acd497b73a0fa0600777b903093fefadcc8dfc79f6f1520707eb7ce"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -149,6 +152,7 @@
     "types/volatile.js": "b506607d868b73c9f34fd1747b64e315334993f59bfd5a5bac3404ea50b16417",
     "volatile.ts": "937433215595f89da249ec7cabb89e331ff4135a40c6686a95666d2095315e55"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -220,6 +224,7 @@
     "types/types.js": "08e0cee093e668f6b7c727a2b2416807d0c51a672c8f8d0d58c0a547cfaea47c",
     "zh.json": "da4c349ac5a6a198e04bea766b80d692f28a6c9ae302aacef4cdfeab9ab52094"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-cmdline",
@@ -280,6 +285,7 @@
     "types/types.js": "ee5c3b78c745b8250979fcd942fdbc5b34f6284657999da80a599e1aadc651c1",
     "zh.json": "3c773950e47917ba4f1ef58c8c14f8c826099168278841247d2f32c8f308163c"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-host-webserver"
@@ -325,6 +331,7 @@
     "types/types.js": "7cf83ec39be43ae8312f590fc0b4aedb1833ea4c6fe6fcb3202320d792b41412",
     "zh.json": "89d18073b9173ae82919bc36ec9b81f0312ddadd35a803ce4f8266a19a7bd9e6"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-agent",
@@ -545,6 +552,7 @@
     "web/controller.ts": "b290b7e2965cf7fad0adc9ecafe561235942811ece1b0c17d6ecf99b5fa23738",
     "zh.json": "c075106d908cef46ada710dd96e7bad93f18e82b83faae7b784a275a914808f4"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-agent",
@@ -671,6 +679,7 @@
     "types/types.js": "26d5d5311f5f0e6fda62ab1f400643cd1fe3b795e633f4e50070423d4712bf8e",
     "zh.json": "e2d68d7d5d911ab820b03fd7d4ff422e134914b87cb55a7f1c3a3f76cbe8b140"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -701,6 +710,7 @@
     "types/index.d.ts": "55dbaa2e2b48b966d62bf10872e15d0deed4a6d72216a9bae05fd17d9791eb94",
     "types/index.js": "161cfc6d094c1c527ca329039748cf5a3ab9c951cf04c1672963ab082c1c1b7a"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -787,6 +797,7 @@
     "types/rpc.js": "739f449c1cc7255d289c69fc14f30c36da1a3dde53153b14c8327f0c75f30bfb",
     "zh.json": "3738e489124919fb718ed19a7bc0d158fd10920d848e62a3f55fe7f5a845adfe"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "dependencies:@deepseek-ai/dsh-credentials",
@@ -851,6 +862,7 @@
     "types/types.js": "e2f87ba1475580e8f4f3523d1df3ed6238f373dd9e638bf64a87c0a9f552febe",
     "zh.json": "92f55257542472d2c19791bbbe819b2358a52a52d90882bc84809d34b0277f18"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-agent",
@@ -938,6 +950,7 @@
     "types/locales/zh.js": "f57dbac9eab2d92a3bf75a15df8a3f9678ec25c8a285a71d53fddeda78a6ab2a",
     "zh.json": "be82e59dcf840b150f2d2b53d655f6679a8b808c7b3c658a15e6233dbd724d1b"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -995,6 +1008,7 @@
     "types/index.js": "bec368f3d9ff267752c53f64600ffeba7ff1fbf5d95c989a65b1954adb480052",
     "zh.json": "19e5f7ee70a3c30b69534df209fac6704b037133149875f3c5df20327b7656b3"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-host-webserver",
@@ -1037,6 +1051,7 @@
     "types/index.js": "9ccfe6188ad629300e8b3366b5e1b02710e0a8070e2c10d1f9da5136370c4b5e",
     "zh.json": "383c5fe706748605130cf175ed4f9eb3028a02c82de4a5ba0eab91696bf8bfcf"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime"
@@ -1110,6 +1125,7 @@
     "types/protocol.js": "74ab952becf96e72ec0d0d1784d4d9774179e565164e1a84b127fd165a848a8b",
     "zh.json": "2d4076ded159a9708d2cd0fa2e2ddc5508f7a3d8569c2a6658ead10b971f9620"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -1136,6 +1152,7 @@
     "types/index.d.ts": "1f6d6c9f846534e173e257da964004c7b41aa97c82b66feac017041a57a99284",
     "types/index.js": "46e0ac611ec9f329e2331623a3e68f7579c6592ebd7e86a033dbb213bb688ffe"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -1505,6 +1522,7 @@
     "types/index.js": "df15550c70ca9eab176e1ad0da821325a00d3d907784f51fea270051810a0239",
     "zh.json": "6f70e7d2cc8229cedf6d3142082a319f0d2b74d6618ca841fba6c2eb3b30f8e5"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-agent",
@@ -1580,6 +1598,7 @@
     "types/index.js": "597c1df4227fc00ad4647c1641e6b03abe49f6e1d439442f25b4697ec4dd6165",
     "zh.json": "693c3926ce473cf2a1b0392f484ced4972b893bda063f24f4591ecf387a52fd0"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -1707,9 +1726,11 @@
     "index.js": "046ea85e5fa3b6bb2950b6a0ce55cd06ae516f37e8b6a84497c2ca74a3364c31",
     "index.ts": "c24943b43a77f236523d61538814dcfa96870f928850b68807697fab4a45e67d",
     "ja.json": "769483c094eae2f27103a83676d4412786ee52b7f3e2569936aca47b639ac664",
+    "lib/client.js": "258f3ad199b5b54577839390c05302b78931011c67ac0bb50646bd79fde7ea6a",
     "package.json": "d7a608068711cde1510577f02739a66f44db3d4c96f0ffa403600ddb0087e667",
     "pt.json": "931ff0ce9f4ad4ce342a423cd4f4eae209986e15d5e5cb762227556f3ce9ec20",
     "ru.json": "bdab55e2fd35cad6aacbae3c0b83a65bf49b7824551e2af69b6135e709a5836d",
+    "src/client/locales.ts": "5aceb2d9cb069f966d791f32c84c2e77045cee6944b2f7256e1b4d0948a476a5",
     "submission-settings.ts": "d3975f454930090642bf9a64c641587138ae6e09d3db1121ce63ab4c8e8b8a29",
     "tsconfig.client.tsbuildinfo": "40e66cff1e68aca3cca1e118eb469e7740c9738d3efefc97a7efc3607d5bbeaa",
     "tsconfig.host.tsbuildinfo": "0e3c44aea6af4ac825621ab908d4147d10f64a54e69fb7225b34e74020763f3c",
@@ -1883,6 +1904,10 @@
     "types/submission-settings.js": "c1c3144c26edf08e160c66ba043294af3ab386885e2b7d8593fdf0c25a7bc158",
     "zh.json": "997c61a4abcf811a1cbbdd249a7ed1a2adc74265bde7587eaf7c6c4fa64de75d"
    },
+   "patched_files": [
+    "lib/client.js",
+    "src/client/locales.ts"
+   ],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-agent",
@@ -1990,6 +2015,7 @@
     "types/index.d.ts": "4c16145f11380d3a325ed9952348cce473cbbe3541b539ac7b223c51ed187c7c",
     "types/index.js": "5ddc5e3e1cae59d9d2251b6a02a1c888c8487fb1a9a71fde303634a4a4002508"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -2032,6 +2058,7 @@
     "types/index.js": "5acb0f52101a99f4b38ef4e29dd9037ba5a5f717d348c72434ec4e3abe4bd8db",
     "zh.json": "9c213b4cab2979e9cb398834300de822ddd74610649d7bfce6a6be9fc0eb2589"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime"
@@ -2102,6 +2129,7 @@
     "types/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
     "zh.json": "71cfacaa8143486c5e6684f3ddf5fe0503801b3f5a02f51d8e57cdb470011ec8"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -2166,6 +2194,7 @@
     "types/index.js": "94432ccb445898708fcb3a8eb8a51bceb261b191750215d88489a24a0c85fc8d",
     "zh.json": "47deba1a4d2ca3db4f4742615c0f1f734831b2755cb69d378afdfd9bb1ad9c5d"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": []
   },
@@ -2548,6 +2577,7 @@
     "user-text.module.css": "4a7c80989bc7af1b9d4d1116f7718d57768aaea2945c5caa0428791695b014f7",
     "user-text.tsx": "78c83b87b5aa573060d8d12c24db1772e967e5958709f1ee8537467c44cb0bec"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -2599,6 +2629,7 @@
     "types/index.js": "666dab83c04197d9ff87c90b0a75d15d98d6cf9e087382965f398068df369c7b",
     "zh.json": "2a9fd66170e21bba4bf6402c20ef68d09d68903857a91d8ce8959d469a4c9217"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime"
@@ -2640,6 +2671,7 @@
     "types/index.js": "93720b4da73c091d7c2dd8ad2fdbf529a4bef50286f806475dbce93b81b0ef2b",
     "zh.json": "1eedf25abddd123fa7c602e2c7293d2f06244e737349d593beb678499689ec3a"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -2701,6 +2733,7 @@
     "types/index.js": "8f4f6bdc9d00a6e28c4f9719ecacdbc0c4d8cfbbd0cf26f7d87b0cf1dcb25bb7",
     "zh.json": "9054b9b7fc664af402bf7b83d6c2086778c07dd306c8fb9efa99676dc5b4fe56"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -2767,6 +2800,7 @@
     "types/index.js": "e9dd336079c5501281ed5ad331ab3ce31d8a3453dc59cce56f2e461212cd1dd3",
     "zh.json": "83830de09aa02a4a35d12380a5bc90cf60b0925ea44c62ca75d3a69b8e13e19a"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-product-analytics",
@@ -2894,6 +2928,7 @@
     "types/index.js": "b950090ec0f55c550fcb8c392ee0295fe705b3885f50952a52dcde0ccbeae419",
     "zh.json": "7de97a14b9a1c0c3197ce212bd60b5437b0bf71c32ea2bef32753dc61b7506c7"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -2924,6 +2959,7 @@
     "types/store.d.ts": "c6c5d27d574a09cfe901e77adf7f1687bd26cc93252494c25ecb9dd6f96e6a9a",
     "types/store.js": "d7743245773b56e4c20a00fd678d8cadec5ac7bc07d397ea516be1aafd22f352"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3012,6 +3048,7 @@
     "types/theme-settings.js": "611bc3cc95dab3b12aa63f3ebf0cb439fe792b5f9dce8bae528a7df17d4ed8ae",
     "zh.json": "3ddafe57b8132f59c1ff91b07c422996ff0dcad7002ea474bb8665edf5cbb7d4"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",
@@ -3131,6 +3168,7 @@
     "types/index.js": "8f99031771f3a18362460abb41eedfc4a92d1b22cbdac523adf32319c58714d4",
     "zh.json": "86c465613dfe60697612ab8a999e0106b3f04892aa45ddf0c987f2b5f58b928b"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-agent",
@@ -3203,6 +3241,7 @@
     "window-drag/recall.ts": "392014d25beab1e9283ca63de2eda43650f86244f69b06b637b744c4fb2293d7",
     "window-drag/regions.ts": "a7b692266e357b5876e5a5561b16843f85f35de8dd78c5a2061ef14df1f1880b"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-host-webserver"
@@ -3224,6 +3263,7 @@
     "types/index.d.ts": "94eeee24b6a93b4c4bb9355529a61ca77a6831c93731bbb6247373ae6d12fb75",
     "types/index.js": "06526a54a34c2db7cde3a5f01e4c86d8f5459ab7ace60dfd971237aeb6e5458f"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3264,6 +3304,7 @@
     "types/types.d.ts": "4d4aa78b2a69783756081c0d8eded8eb7b3297acd98d788b46886dfe49bb389f",
     "types/types.js": "2e3ef4ec010427d64d33a588075d74868298071ff0d533b599e5453f96f728c4"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3283,6 +3324,7 @@
     "types/index.d.ts": "1ab219e6565f0409c3de305bac6e287c02af2577d01f7b2440b8e82ba55c61bc",
     "types/index.js": "50c7d4a34d39aa5bfa1d2b781b5daca394f5262952e7eeb2d0149ddcb39dd202"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3324,6 +3366,7 @@
     "types/types.d.ts": "2b6ced0127d3c009be75be3cd5ad9b349f068327ce57a54cfc9b781b805ad4f6",
     "types/types.js": "d0f7cecc5f19e822f3900d0ae4da629c7a1e8ca1a387d0b4136ec6231c1cbc4c"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3364,6 +3407,7 @@
     "types/types.js": "b8c4bd46aa852c08d4ba9793bd008038587880f45cb7b92b0f2e1b9a593bc092",
     "zh.json": "062a44f3d521eafc83528d2db1132c57584b51f20c392e18765255ee56e67b6c"
    },
+   "patched_files": [],
    "plugin": true,
    "pruned_deps": []
   },
@@ -3383,6 +3427,7 @@
     "types/index.d.ts": "58a939ab6cc0812ccfe02fb1db2a950e2b4e2a737329415e3ff42766cdb8b1c9",
     "types/index.js": "2b85b93ab2c6636e10215bcfcd4da56df4d5e1f161d6c88fade64cf9ba34a5dc"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3402,6 +3447,7 @@
     "types/index.d.ts": "1a4e1ab1d9d6b1af76a3677cd308b10f5550b6b2709e3bbc6cb91ad0c3a477cf",
     "types/index.js": "605bef9a65a809127db3d259f2deb1ee515617df927298517e2d9125cb1de1bf"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3422,6 +3468,7 @@
     "types/index.d.ts": "1436144a8e447450d809629c32018a7c952e57e9ffe1baaaef95b1a66c09412a",
     "types/index.js": "fef1c8026b0919a228e8bd6ccffdeb6da64550e5475ad8240c8c10900aba3427"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3456,6 +3503,7 @@
     "types/rrule.d.ts": "3fd2591c273956df3c0ca657bd44cd516f2eea564cda34e32234276c69fbd848",
     "types/rrule.js": "e0ecfd2b5be91b878d392e78e6ef3ad60925830cfe0df2d938a47684c5cf2a2e"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3478,6 +3526,7 @@
     "types/partial-json.d.ts": "d078e55e06f901888dfcca04a77c5169a60abc1b3f5794c387b885c72ad9f6ef",
     "types/partial-json.js": "6069dceebe54c3bdcf07bd03d4ed821f7b206e5bf30669fe3fbf5e240e9a9536"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3500,6 +3549,7 @@
     "types/index.d.ts": "562f87b17b91811d40f5a8e5319389c83c06728a98fae842042990beb53213c2",
     "types/index.js": "6236463edf5a2d7debeed2c2218d1472eff96c4bc76faac26092777a7a6c18ae"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   },
@@ -3520,6 +3570,7 @@
     "types/index.d.ts": "fca846c1420a192b7ae749da96afa0c9b5c57b2e7dff418153674f90200f4e27",
     "types/index.js": "25da9017aebf590133ab02c35c30c69990752aaf946f9f240c0ab2e4edc8ac4d"
    },
+   "patched_files": [],
    "plugin": false,
    "pruned_deps": []
   }

@@ -24,6 +24,11 @@ const vendorDir = join(uiDir, 'vendor')
 const pluginsDir = join(uiDir, 'public', 'plugins')
 const MODULES_ID = '@deepseek-ai/dsh-client-modules'
 
+/** Built-in first-party rows prequeued from our own bundle (never fetched). */
+const BUILTIN_ROWS = [
+  { id: '@codesmith/brand', entry: 'client.js', inject: [], immediately: false },
+]
+
 const manifest = JSON.parse(readFileSync(join(vendorDir, 'VENDOR.json'), 'utf8'))
 const rev = manifest.source_commit
 const rows = []
@@ -38,6 +43,7 @@ for (const [name, record] of Object.entries(manifest.packages)) {
     immediately: pkg.dsh?.client?.immediately === true,
   })
 }
+for (const builtin of BUILTIN_ROWS) rows.push(builtin)
 const ids = new Set(rows.map(row => row.id))
 for (const row of rows) {
   for (const dep of row.inject) {
@@ -79,6 +85,7 @@ writeFileSync(join(uiDir, 'src', 'boot-graph.generated.ts'), graphTs)
 rmSync(pluginsDir, { recursive: true, force: true })
 mkdirSync(pluginsDir, { recursive: true })
 for (const row of rows) {
+  if (BUILTIN_ROWS.some(b => b.id === row.id)) continue
   const lib = join(vendorDir, row.id, 'lib')
   const dir = join(pluginsDir, row.id)
   mkdirSync(dir, { recursive: true })
@@ -94,7 +101,9 @@ for (const row of rows) {
 // the graph's batch URL (`plugins/application.js&rev=…`) is rewritten by the
 // loadBundle hook like every other `&rev=` URL.
 const application = rows.filter(row => row.id !== MODULES_ID)
-const batch = application.map(row => readFileSync(join(vendorDir, row.id, 'lib', row.entry), 'utf8')).join('\n;\n')
+const batch = application
+  .filter(row => !BUILTIN_ROWS.some(b => b.id === row.id))
+  .map(row => readFileSync(join(vendorDir, row.id, 'lib', row.entry), 'utf8')).join('\n;\n')
 writeFileSync(join(pluginsDir, 'application.js'), batch)
 
 const modulesEntry = rows.find(row => row.id === MODULES_ID)?.entry

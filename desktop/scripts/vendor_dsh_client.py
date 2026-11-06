@@ -54,6 +54,19 @@ SCAN_ROOTS = ("packages/client", "packages/api", "packages/typert", "packages/ut
 COPY_NAMES = ("package.json", "lib", "src", "assets", "locale", "LICENSE", "LICENSE.md",
               "README.md", "README.zh.md")
 
+# Brand patches applied to vendored bytes after copying (both the source and
+# the built bundle): CodeSmith product copy replaces DSH's hero headline.
+# Each entry is applied to every listed file; a missing occurrence fails loud
+# so a upstream rename cannot silently revert the patch.
+VENDOR_PATCHES: list[dict[str, str]] = [
+    {
+        "package": "@deepseek-ai/dsh-client-ui-conversation",
+        "files": ["src/client/locales.ts", "lib/client.js"],
+        "find": "探索未至之境",
+        "replace": "开启新的探索",
+    },
+]
+
 
 def scan_packages(dsh: Path) -> dict[str, Path]:
     """Map @deepseek-ai package name -> checkout directory."""
@@ -203,6 +216,22 @@ def main() -> int:
         (dst / "package.json").write_bytes(data)
         files["package.json"] = hashlib.sha256(data).hexdigest()
         entry = "client.browser.js" if (src / "lib" / "client.browser.js").exists() else "client.js"
+        patched: list[str] = []
+        for patch in VENDOR_PATCHES:
+            if patch["package"] != name:
+                continue
+            for rel in patch["files"]:
+                target = dst / rel
+                if not target.exists():
+                    continue
+                data = target.read_text(encoding="utf-8")
+                if patch["find"] not in data:
+                    raise SystemExit(
+                        f"vendor patch: {patch['find']!r} not found in {target} — "
+                        "upstream changed; update VENDOR_PATCHES")
+                target.write_text(data.replace(patch["find"], patch["replace"]), encoding="utf-8")
+                files[rel] = hashlib.sha256(target.read_bytes()).hexdigest()
+                patched.append(rel)
         records[name] = {
             "dir": str(src.relative_to(dsh)),
             "entry": entry,
@@ -210,6 +239,7 @@ def main() -> int:
             "files": files,
             "deps": edges[name],
             "pruned_deps": sorted(pruned),
+            "patched_files": sorted(patched),
         }
 
     manifest = {
