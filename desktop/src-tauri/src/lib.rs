@@ -3,7 +3,7 @@
 //! Owns the backend child process (`codesmith serve --http`) and the client
 //! RPC bridge on 127.0.0.1:1421 that the vendored client UI talks to.
 //!
-//! Known limitations (spec docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md):
+//! Known limitations (see docs/DESKTOP.md):
 //! the bundled UI is a vendored, mechanically rebranded copy of the upstream
 //! client; it is synced by desktop/scripts/vendor_client.py, not tracked
 //! live.
