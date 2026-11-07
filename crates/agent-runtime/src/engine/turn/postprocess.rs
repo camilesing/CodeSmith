@@ -56,6 +56,7 @@ use codesmith_agent::models::{ContentBlock, Message};
 
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::lsp_hooks::edit_file_paths;
+use crate::engine::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use crate::lsp_diagnostics::render_blocks as render_lsp_blocks;
 use crate::subagent::{CompletionKind, SubAgentCompletion};
 
@@ -110,12 +111,12 @@ pub(crate) fn should_emit_thinking_only_status(
 pub(crate) fn completion_runtime_message(kind: CompletionKind, payload: &str) -> Message {
     let (event_kind, guidance) = match kind {
         CompletionKind::Subagent => (
-            "subagent_completion",
+            RuntimeEventKind::SubagentCompletion,
             "Use the sub-agent completion data below to continue coordinating the \
 current task.",
         ),
         CompletionKind::ShellJob => (
-            "shell_job_completion",
+            RuntimeEventKind::ShellJobCompletion,
             "A background shell job finished. Use its exit status and output \
 below to continue the task; call `task_shell_output` with the job id if you \
 need more than the tail included here.",
@@ -124,14 +125,14 @@ need more than the tail included here.",
     Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: format!(
-                "{} kind=\"{event_kind}\" visibility=\"internal\">\n\
-This is an internal runtime event, not user input. {guidance} Do not tell the user they \
+            text: runtime_event_frame(
+                event_kind,
+                &format!(
+                    " {guidance} Do not tell the user they \
 pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
 XML unless the user explicitly asks to debug sub-agent internals.\n\n\
-{payload}\n\
-</codesmith:runtime_event>",
-                crate::engine::RUNTIME_EVENT_PREFIX
+{payload}"
+                ),
             ),
             cache_control: None,
         }],

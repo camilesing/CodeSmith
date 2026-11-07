@@ -4022,6 +4022,7 @@ mod lsp_hooks;
 mod plan_reminder;
 mod result_verifier;
 pub mod rhai_executor;
+mod runtime_event;
 mod shell_bridge;
 mod streaming;
 mod team_inbox;

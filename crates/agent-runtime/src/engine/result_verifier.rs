@@ -57,6 +57,7 @@ use codesmith_tools::{ApprovalRequirement, ToolResult};
 use tokio_util::sync::CancellationToken;
 
 use super::context::summarize_text;
+use super::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use crate::events::{ResultFailureType, ResultVerdict};
 
 /// Claim phrases asserting a passing test suite. Matched as contiguous
@@ -708,16 +709,16 @@ pub(crate) fn verdict_runtime_message(rendered: &str) -> Message {
     Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: format!(
-                "{} kind=\"result_verification\" visibility=\"internal\">\n\
-This is an internal runtime event, not user input. The engine re-ran a verification command \
+            text: runtime_event_frame(
+                RuntimeEventKind::ResultVerification,
+                &format!(
+                    " The engine re-ran a verification command \
 from the previous turn and checked it against a claim made there. Treat the exit code \
 reported below as ground truth and reconcile your earlier claim with it; if the verdict \
 contradicts what you said, say so and fix it. Do not quote the raw XML unless the user \
 asks to debug engine internals.\n\n\
-{rendered}\n\
-</codesmith:runtime_event>",
-                super::RUNTIME_EVENT_PREFIX
+{rendered}"
+                ),
             ),
             cache_control: None,
         }],
