@@ -59,7 +59,7 @@ fn address_session_id(request: &Value) -> Result<String> {
 pub async fn follow(
     host: &HostState,
     request: &Value,
-    tx: &tokio::sync::mpsc::Sender<String>,
+    tx: &tokio::sync::mpsc::Sender<Value>,
 ) -> Result<()> {
     let session_id = address_session_id(request)?;
     // Drawn before the read, so these values are at least as fresh as the seq.
@@ -91,7 +91,9 @@ pub async fn follow(
         // start at 1 (strict +1 per frame, enforced by the client).
         "assistantStream": { "revision": 0 },
     });
-    tx.send(serde_json::to_string(&snapshot)?).await.ok();
+    if tx.send(snapshot).await.is_err() {
+        return Ok(());
+    }
 
     // Live tail: subscribe from the backend's own latest seq.
     let since = detail
@@ -108,9 +110,6 @@ pub async fn follow(
     let mut mapper = SessionMapper::resume_at(last_seq, turn_baseline, step_baseline);
     use futures_util::StreamExt;
     let mut buffer = String::new();
-    let send = |frame: &Frame| -> Result<String> {
-        serde_json::to_string(&frame.to_wire()).context("serialize follow frame")
-    };
     while let Some(chunk) = lines.next().await {
         let chunk = chunk?;
         buffer.push_str(&chunk);
@@ -160,8 +159,7 @@ pub async fn follow(
                     }
                 }
                 for frame in frames {
-                    let wire = send(&frame)?;
-                    if tx.send(wire).await.is_err() {
+                    if tx.send(frame.to_wire()).await.is_err() {
                         return Ok(());
                     }
                 }
@@ -171,8 +169,7 @@ pub async fn follow(
     // The SSE tail ended (backend dropped the stream): close any attempt
     // still streaming so the client does not wait for a settlement.
     for frame in mapper.abandon_open_attempts() {
-        let wire = send(&frame)?;
-        if tx.send(wire).await.is_err() {
+        if tx.send(frame.to_wire()).await.is_err() {
             break;
         }
     }
@@ -437,43 +434,49 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
     if mode == "steer" {
         match active_turn_id(host, &session_id).await? {
             Some(turn_id) => {
-                let _: Value = host
-                    .backend
-                    .post(
-                        &format!("/v1/threads/{session_id}/turns/{turn_id}/steer"),
-                        &json!({ "prompt": text }),
-                    )
-                    .await?;
-                if let Some(rpc) = rpc_id {
-                    host.pending_rpc_ids
-                        .lock()
-                        .await
-                        .entry(session_id)
-                        .or_default()
-                        .push(rpc);
-                }
+                let path = format!("/v1/threads/{session_id}/turns/{turn_id}/steer");
+                post_prompt(host, &session_id, rpc_id, &path, &text).await?;
             }
             None => bail!("steer with no running turn"),
         }
         return Ok(json!({ "accepted": true }));
     }
-    let _: Value = host
-        .backend
-        .post(
-            &format!("/v1/threads/{session_id}/turns"),
-            &json!({ "prompt": text }),
-        )
-        .await?;
+    let path = format!("/v1/threads/{session_id}/turns");
+    post_prompt(host, &session_id, rpc_id, &path, &text).await?;
     ensure_waterfall_watcher(host, &session_id).await;
-    if let Some(rpc) = rpc_id {
+    Ok(json!({ "accepted": true }))
+}
+
+/// Hand one prompt to the runtime with its rpcId queued FIRST: the runtime
+/// emits the `user/message` echo as the turn starts, so a live follow loop
+/// can see it before this POST returns — a late push left that echo
+/// unstamped and stamped the next prompt's echo with this id instead. A
+/// rejected POST withdraws the id.
+async fn post_prompt(
+    host: &HostState,
+    session_id: &str,
+    rpc_id: Option<String>,
+    path: &str,
+    text: &str,
+) -> Result<()> {
+    if let Some(rpc) = &rpc_id {
         host.pending_rpc_ids
             .lock()
             .await
-            .entry(session_id)
+            .entry(session_id.to_string())
             .or_default()
-            .push(rpc);
+            .push(rpc.clone());
     }
-    Ok(json!({ "accepted": true }))
+    let posted = host
+        .backend
+        .post::<Value>(path, &json!({ "prompt": text }))
+        .await;
+    if let (Err(_), Some(rpc)) = (&posted, &rpc_id) {
+        if let Some(queue) = host.pending_rpc_ids.lock().await.get_mut(session_id) {
+            queue.retain(|queued| queued != rpc);
+        }
+    }
+    posted.map(|_| ())
 }
 
 /// `session/cancel` — interrupt the running turn.

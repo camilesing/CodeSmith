@@ -11,6 +11,7 @@
 pub mod codesmith;
 pub mod events;
 pub mod mapper;
+pub mod mux;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
@@ -23,7 +24,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -33,15 +34,24 @@ use tokio::sync::Mutex;
 
 use codesmith::CodesmithProcess;
 
+/// Page origins the bridge serves: the vite dev page and the Tauri webview
+/// (CORS for the unary routes, the upgrade check for the stream mux).
+pub const PAGE_ORIGINS: [&str; 4] = [
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "tauri://localhost",
+    "https://tauri.localhost",
+];
+
 pub struct HostState {
     pub backend: CodesmithProcess,
     pub cwd: PathBuf,
-    /// Open `$events` sinks: stream id -> frame sender (the approval and
+    /// Open `$events` sinks: sink id -> frame sender (the approval and
     /// user-question waterfalls push here; a still-pending waterfall is
     /// re-delivered to every stream that opens after it fired).
     pub event_sinks: Mutex<HashMap<String, mpsc::Sender<Value>>>,
-    /// Open follow streams that accept live increments (workspace/follow):
-    /// stream id -> (endpoint, frame sender).
+    /// Open follow streams that accept live increments (workspace/follow,
+    /// session/control): sink id -> (endpoint, frame sender).
     pub live_sinks: Mutex<HashMap<String, (String, mpsc::Sender<Value>)>>,
     /// Waterfalls awaiting their `$events/result`, by event id.
     pub pending_inputs: Mutex<HashMap<String, events::PendingInput>>,
@@ -83,9 +93,12 @@ impl HostState {
             .join(".codesmith")
     }
 
-    /// Push one increment frame to every open stream of `endpoint`.
+    /// Push one increment frame to every open stream of `endpoint`. Sinks of
+    /// aborted streams (a cancelled mux stream never reaches its own removal)
+    /// are pruned here and in `push_event_frame`.
     pub async fn push_live(&self, endpoint: &str, frame: Value) {
-        let sinks = self.live_sinks.lock().await;
+        let mut sinks = self.live_sinks.lock().await;
+        sinks.retain(|_, (_, tx)| !tx.is_closed());
         for (_, tx) in sinks.values().filter(|(ep, _)| ep == endpoint) {
             let _ = tx.send(frame.clone()).await;
         }
@@ -94,7 +107,8 @@ impl HostState {
     /// Push one frame to every open `$events` sink. `true` when at least one
     /// sink took it (a waterfall with no sink would hang the turn).
     pub async fn push_event_frame(&self, frame: Value) -> bool {
-        let sinks = self.event_sinks.lock().await;
+        let mut sinks = self.event_sinks.lock().await;
+        sinks.retain(|_, tx| !tx.is_closed());
         let mut delivered = false;
         for tx in sinks.values() {
             if tx.send(frame.clone()).await.is_ok() {
@@ -136,6 +150,11 @@ pub fn rpc_error(code: &str, message: impl Into<String>) -> Value {
 
 pub fn rpc_ok(value: Value) -> Value {
     json!({ "ok": true, "value": value })
+}
+
+/// A stream's terminal failure, as the client's mux `error` frame carries it.
+pub fn stream_failure(code: &str, message: impl Into<String>) -> Value {
+    json!({ "code": code, "message": message.into(), "details": {} })
 }
 
 fn workspace_view(cwd: &std::path::Path) -> Value {
@@ -327,26 +346,112 @@ fn args_of(payload: &Value) -> &Value {
     payload.get("args").unwrap_or(&Value::Null)
 }
 
-/// Baseline frames of a stream endpoint; `Err` maps to an error frame.
-pub async fn stream_baseline(
-    host: &HostState,
+/// Serve one logical client stream into `tx` (the mux frames each value as an
+/// `item`). `Ok` ends the stream (`end`), `Err` fails it with the
+/// client-visible failure. A consumer that goes away (cancel, socket close)
+/// aborts the task mid-await, so every registration made here must survive
+/// being dropped unremoved — the sink registries prune closed senders.
+pub async fn open_stream(
+    host: &SharedHost,
     endpoint: &str,
-    stream_id: String,
-) -> Result<Vec<Value>> {
+    payload: &Value,
+    tx: mpsc::Sender<Value>,
+) -> Result<(), Value> {
     match endpoint {
-        "session/control" => sessions::control_baseline(host).await,
-        "toolResults/watch" => {
-            // CodeSmith does not stream tool output deltas (known limitation):
-            // one "no live value" frame, then the stream parks until the
-            // watcher unsubscribes — ending it would read as a stream failure.
-            let _ = stream_id;
-            Ok(vec![json!({ "available": false })])
+        "session/follow" => sessions::follow(host, args_of(payload), &tx)
+            .await
+            .map_err(|err| stream_failure("gateway/internal", format!("session/follow: {err:#}"))),
+        "$events" => {
+            events_stream(host, &tx).await;
+            Ok(())
         }
         // The runtime's user-input requests carry no tool call id, so the
         // client never opens a foreground claim; an explicit attachWait (a
         // continued question) has no answerable wait here and ends with no
         // frames, exactly like a Host whose wait already ended.
-        "userQuestions/attachWait" => Ok(Vec::new()),
+        "userQuestions/attachWait" => Ok(()),
+        _ => {
+            let frames = stream_baseline(host, endpoint)
+                .await
+                .map_err(|err| stream_failure("gateway/method-unavailable", err.to_string()))?;
+            for frame in frames {
+                if tx.send(frame).await.is_err() {
+                    return Ok(());
+                }
+            }
+            // Follow semantics: park, pumping live increments, until the
+            // consumer goes away — ending would read as a stream failure.
+            let (live_tx, mut live_rx) = mpsc::channel::<Value>(16);
+            let sink_id = uuid::Uuid::new_v4().to_string();
+            host.live_sinks
+                .lock()
+                .await
+                .insert(sink_id.clone(), (endpoint.to_string(), live_tx));
+            loop {
+                let frame = tokio::select! {
+                    frame = live_rx.recv() => match frame {
+                        Some(frame) => frame,
+                        None => break,
+                    },
+                    _ = tx.closed() => break,
+                };
+                if tx.send(frame).await.is_err() {
+                    break;
+                }
+            }
+            host.live_sinks.lock().await.remove(&sink_id);
+            Ok(())
+        }
+    }
+}
+
+/// `$events`: the ready frame (this stream's own clientId — the client echoes
+/// it back on `$events/result`; upstream issues one per connected client),
+/// then the still-pending waterfalls (a stream that connects after one fired
+/// must still see it), then the live pump.
+async fn events_stream(host: &HostState, tx: &mpsc::Sender<Value>) {
+    let ready = json!({
+        "type": "ready",
+        "clientId": uuid::Uuid::new_v4().to_string(),
+        "host": { "home": host.cwd.to_string_lossy() },
+    });
+    if tx.send(ready).await.is_err() {
+        return;
+    }
+    let (event_tx, mut event_rx) = mpsc::channel::<Value>(64);
+    let sink_id = uuid::Uuid::new_v4().to_string();
+    host.event_sinks
+        .lock()
+        .await
+        .insert(sink_id.clone(), event_tx.clone());
+    for pending in host.pending_inputs.lock().await.values() {
+        if event_tx.send(pending.frame.clone()).await.is_err() {
+            break;
+        }
+    }
+    loop {
+        let frame = tokio::select! {
+            frame = event_rx.recv() => match frame {
+                Some(frame) => frame,
+                None => break,
+            },
+            _ = tx.closed() => break,
+        };
+        if tx.send(frame).await.is_err() {
+            break;
+        }
+    }
+    host.event_sinks.lock().await.remove(&sink_id);
+}
+
+/// Baseline frames of a parked stream endpoint; `Err` fails the stream.
+async fn stream_baseline(host: &HostState, endpoint: &str) -> Result<Vec<Value>> {
+    match endpoint {
+        "session/control" => sessions::control_baseline(host).await,
+        // CodeSmith does not stream tool output deltas (known limitation):
+        // one "no live value" frame, then the stream parks until the watcher
+        // unsubscribes.
+        "toolResults/watch" => Ok(vec![json!({ "available": false })]),
         "workspace/follow" => {
             let (view, archived) = workspace_view_with_archived(host).await;
             Ok(vec![json!({
@@ -366,12 +471,6 @@ pub async fn stream_baseline(
             "attempt": null,
             "links": { "usageUrl": "", "topUpUrl": "" }
         })]),
-        "$events" => {
-            let _ = stream_id;
-            // Owned by stream_handler's dedicated branch (ready frame, then
-            // the waterfall pump); reachable only through it.
-            Ok(Vec::new())
-        }
         other => bail!("codesmith desktop: stream {other} is not implemented yet"),
     }
 }
@@ -510,7 +609,9 @@ async fn model_catalog(host: &HostState) -> Value {
 /// (`{delivered:false}`), and so is a delivery the runtime answers 404 (it
 /// already decided or timed out): the upstream gateway drops superseded
 /// results the same way, and erroring here would kill the client's whole
-/// `$events` generation over a harmless late answer.
+/// `$events` generation over a harmless late answer. A delivered decision is
+/// followed by the waterfall's cancel frame — the upstream host cancels an
+/// event once decided, and that frame is what retires the answering card.
 async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
     args.get("clientId")
         .and_then(Value::as_str)
@@ -535,13 +636,20 @@ async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
                 )
                 .await
                 .context("deliver approval decision")?;
+            // The upstream host cancels an event once decided; without this
+            // frame the answering client's card never learns the request
+            // ended (the runtime's own `approval.decided` echo and the
+            // turn-end sweep only cancel what is still pending).
+            host.cancel_pending(&event_id).await;
             Ok(json!({ "delivered": delivered, "decision": decision }))
         }
         events::InputKind::Questions => {
             let Some(answers) = events::question_answers(&outcome) else {
-                // No HTTP cancel route exists for user input (known
-                // limitation): report undelivered; the runtime's own deadline
-                // closes the question.
+                // Nobody answered (an unclaimed `next`): keep the request
+                // pending for another answerer. No HTTP cancel route exists
+                // for user input (known limitation): report undelivered; the
+                // runtime's own deadline closes the question.
+                host.pending_inputs.lock().await.insert(event_id, pending);
                 return Ok(json!({ "delivered": false }));
             };
             let delivered = host
@@ -552,6 +660,7 @@ async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
                 )
                 .await
                 .context("deliver user-input answers")?;
+            host.cancel_pending(&event_id).await;
             Ok(json!({ "delivered": delivered }))
         }
     }
@@ -567,167 +676,14 @@ async fn unary_handler(
     Json(result).into_response()
 }
 
-/// NDJSON streaming: baseline frames flush immediately, then the body stays
-/// open (follow semantics) until the client disconnects or the app exits.
-/// `session/follow` owns its own lifecycle (snapshot, then live tail).
-async fn stream_handler(
-    State(host): State<SharedHost>,
-    Path(endpoint): Path<String>,
-    body: Option<Json<Value>>,
-) -> Response {
-    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    let stream_id = uuid::Uuid::new_v4().to_string();
-    let stream_id_handle = stream_id.clone();
-    let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(16);
-    let host_for_stream = host.clone();
-    let endpoint_stream = endpoint.clone();
-    tokio::spawn(async move {
-        if endpoint_stream == "session/follow" {
-            let args = payload.get("args").cloned().unwrap_or(Value::Null);
-            let line_tx = tokio_sync_line_adapter(tx.clone());
-            if let Err(err) = sessions::follow(&host_for_stream, &args, &line_tx).await {
-                let _ = tx
-                    .send(Ok(format!(
-                        "{}\n",
-                        json!({ "type": "error", "error": { "code": "gateway/internal", "message": format!("session/follow: {err:#}") } })
-                    )))
-                    .await;
-            }
-            return;
-        }
-        if endpoint_stream == "$events" {
-            // Ready frame (this stream's own clientId — the client echoes it
-            // back on `$events/result`; upstream issues one per connected
-            // client), then the still-pending waterfalls (a stream that
-            // connects after one fired must still see it), then the live
-            // pump. The pump also selects on the body channel closing: an
-            // idle pump never sends again, so without that probe a reloaded
-            // page's stream would park forever holding one of the client's
-            // six per-host connections (reload enough times and the client
-            // wedges its whole connection pool).
-            let ready = json!({
-                "type": "ready",
-                "clientId": uuid::Uuid::new_v4().to_string(),
-                "host": { "home": host_for_stream.cwd.to_string_lossy() },
-            });
-            if tx.send(Ok(format!("{ready}\n"))).await.is_err() {
-                return;
-            }
-            let (event_tx, mut event_rx) = mpsc::channel::<Value>(64);
-            host_for_stream
-                .event_sinks
-                .lock()
-                .await
-                .insert(stream_id.clone(), event_tx.clone());
-            for pending in host_for_stream.pending_inputs.lock().await.values() {
-                if event_tx.send(pending.frame.clone()).await.is_err() {
-                    break;
-                }
-            }
-            loop {
-                let frame = tokio::select! {
-                    frame = event_rx.recv() => match frame {
-                        Some(frame) => frame,
-                        None => break,
-                    },
-                    _ = tx.closed() => break,
-                };
-                if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
-                    break;
-                }
-            }
-            host_for_stream.event_sinks.lock().await.remove(&stream_id);
-            return;
-        }
-        match stream_baseline(&host_for_stream, &endpoint_stream, stream_id).await {
-            Ok(frames) => {
-                for frame in frames {
-                    if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
-                        return;
-                    }
-                }
-            }
-            Err(err) => {
-                let _ = tx
-                    .send(Ok(format!(
-                        "{}\n",
-                        json!({ "type": "error", "error": { "code": "gateway/method-unavailable", "message": err.to_string() } })
-                    )))
-                    .await;
-                return;
-            }
-        }
-        // Hold the stream open, pumping live increments to the body: the
-        // sink receiver ends when the stream is dropped from the registry,
-        // and the body-closing probe (see the `$events` branch above) ends
-        // this parked pump when the page goes away without another increment.
-        let (live_tx, mut live_rx) = mpsc::channel::<Value>(16);
-        host_for_stream
-            .live_sinks
-            .lock()
-            .await
-            .insert(stream_id_handle.clone(), (endpoint_stream.clone(), live_tx));
-        loop {
-            let frame = tokio::select! {
-                frame = live_rx.recv() => match frame {
-                    Some(frame) => frame,
-                    None => break,
-                },
-                _ = tx.closed() => break,
-            };
-            if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
-                break;
-            }
-        }
-    });
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/x-ndjson")
-        .body(axum::body::Body::from_stream(
-            tokio_stream::wrappers::ReceiverStream::new(rx),
-        ))
-        .unwrap()
-}
-
 async fn health() -> &'static str {
     "ok"
 }
 
-/// follow() speaks Value frames; the bridge body speaks NDJSON lines. The
-/// forwarder also selects on the body channel closing so a reloaded page ends
-/// its `session/follow` tail (follow() observes the dropped line channel and
-/// returns) instead of parking on the runtime SSE forever.
-fn tokio_sync_line_adapter(
-    tx: mpsc::Sender<Result<String, std::io::Error>>,
-) -> mpsc::Sender<String> {
-    let (line_tx, mut line_rx) = mpsc::channel::<String>(16);
-    tokio::spawn(async move {
-        loop {
-            let line = tokio::select! {
-                line = line_rx.recv() => match line {
-                    Some(line) => line,
-                    None => return,
-                },
-                _ = tx.closed() => return,
-            };
-            if tx.send(Ok(format!("{line}\n"))).await.is_err() {
-                return;
-            }
-        }
-    });
-    line_tx
-}
-
-/// Serve the bridge on `port`; CORS allows the vite dev origin and the
-/// Tauri webview origins.
+/// Serve the bridge on `port`: unary calls on `/api/<endpoint>` (CORS admits
+/// the page origins), every stream on the `/api/remote.mux` WebSocket.
 pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
-    let allow = [
-        "http://localhost:1420",
-        "http://127.0.0.1:1420",
-        "tauri://localhost",
-        "https://tauri.localhost",
-    ];
-    let origins: Vec<HeaderValue> = allow
+    let origins: Vec<HeaderValue> = PAGE_ORIGINS
         .iter()
         .map(|origin| origin.parse::<HeaderValue>().unwrap())
         .collect();
@@ -739,7 +695,7 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         .allow_origin(origins);
     let app = Router::new()
         .route("/health", get(health))
-        .route("/api/stream/{*endpoint}", post(stream_handler))
+        .route("/api/remote.mux", get(mux::upgrade))
         .route("/api/{*endpoint}", post(unary_handler))
         .layer(cors)
         .with_state(host);

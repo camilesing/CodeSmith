@@ -4,8 +4,10 @@
  * Primary mode: the client host bridge — a loopback HTTP server inside the
  * Tauri process (127.0.0.1:1421) that implements the vendored client's RPC
  * surface on top of `codesmith serve --http`. Unary calls POST
- * `/api/<endpoint>`; streams are NDJSON bodies on `/api/stream/<endpoint>`
- * (fetch streaming, no WebSocket).
+ * `/api/<endpoint>`; streams ride the vendored client's own WebSocket mux
+ * (one socket for every logical stream, `ws://…/api/remote.mux`): this
+ * carrier supplies no `open`, so the gateway starts its mux client against
+ * `streamBaseUrl`.
  *
  * Fallback mode (browser preview without the desktop shell running): the
  * in-memory stub table from the upstream client's own test fixtures, with a
@@ -128,24 +130,6 @@ async function bridgeReady(): Promise<boolean> {
   }
 }
 
-/**
- * Every open NDJSON stream registers its controller here. Chromium's network
- * service keeps a streaming fetch's connection ESTABLISHED when the page goes
- * away without cancelling the body, and the per-host pool holds six slots — a
- * reload that strands its streams wedges every later fetch (the next boot
- * stalls inside its connection generation). Aborting on pagehide is the only
- * moment the still-running page can free those slots.
- */
-const liveStreamControllers = new Set<AbortController>()
-{
-  const release = (): void => {
-    for (const controller of liveStreamControllers) controller.abort()
-    liveStreamControllers.clear()
-  }
-  globalThis.addEventListener?.('pagehide', release)
-  globalThis.addEventListener?.('beforeunload', release)
-}
-
 const bridgeRpc = (bridge: string): ClientConnectionRpc => ({
   async call(_channel, endpoint, payload, signal) {
     const resp = await fetch(`${bridge}/api/${endpoint}`, {
@@ -159,50 +143,6 @@ const bridgeRpc = (bridge: string): ClientConnectionRpc => ({
     }
     return (await resp.json()) as RpcResult
   },
-  async *open(_channel, endpoint, payload, signal, _uplink) {
-    const controller = new AbortController()
-    liveStreamControllers.add(controller)
-    const teardown = (): void => { liveStreamControllers.delete(controller) }
-    const forwardAbort = (): void => { controller.abort(signal.reason) }
-    if (signal.aborted) forwardAbort()
-    else signal.addEventListener('abort', forwardAbort, { once: true })
-    try {
-      const resp = await fetch(`${bridge}/api/stream/${endpoint}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload ?? {}),
-        signal: controller.signal,
-      })
-      if (!resp.ok || resp.body === null) {
-        throw new Error(`codesmith desktop: stream ${endpoint} refused (HTTP ${resp.status})`)
-      }
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) return
-          buffer += decoder.decode(value, { stream: true })
-          for (;;) {
-            const newline = buffer.indexOf('\n')
-            if (newline < 0) break
-            const line = buffer.slice(0, newline).trim()
-            buffer = buffer.slice(newline + 1)
-            if (line !== '') yield JSON.parse(line)
-          }
-        }
-      } finally {
-        // Always cancel, including on abort: an unread streaming body keeps
-        // the connection open in the browser's per-host pool (six slots),
-        // wedging every later fetch of this origin group.
-        reader.cancel().catch(() => undefined)
-      }
-    } finally {
-      teardown()
-      controller.abort()
-    }
-  },
 })
 
 function offlineBadge(): void {
@@ -212,25 +152,16 @@ function offlineBadge(): void {
   document.body.append(badge)
 }
 
-/** The carrier installed into the vendored connection plugin. */
-export const rpc: ClientConnectionRpc = new Proxy({} as ClientConnectionRpc, {
-  get(target, prop: keyof ClientConnectionRpc) {
-    const delegate = (target as { __delegate?: ClientConnectionRpc }).__delegate
-    const impl = delegate?.[prop]
-    if (typeof impl !== 'function') {
-      throw new Error(`codesmith desktop: rpc carrier not ready (${String(prop)})`)
-    }
-    return impl.bind(delegate)
-  },
-})
+/** The physical-carrier members of the vendored ClientTransportHooks. */
+export interface Carrier {
+  rpc: ClientConnectionRpc
+  /** WebSocket mux base; absent when `rpc.open` carries the streams. */
+  streamBaseUrl?: string
+}
 
 /** Probe the bridge before the client boots; fall back to the stubs. */
-export async function initTransport(): Promise<void> {
-  const holder = rpc as unknown as { __delegate?: ClientConnectionRpc }
-  if (await bridgeReady()) {
-    holder.__delegate = bridgeRpc(BRIDGE)
-  } else {
-    offlineBadge()
-    holder.__delegate = fakeRpc
-  }
+export async function initTransport(): Promise<Carrier> {
+  if (await bridgeReady()) return { rpc: bridgeRpc(BRIDGE), streamBaseUrl: `${BRIDGE}/` }
+  offlineBadge()
+  return { rpc: fakeRpc }
 }
