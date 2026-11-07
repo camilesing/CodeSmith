@@ -6,8 +6,6 @@ CodeSmith 桌面端是一个 Tauri 2 应用：UI 整体 vendor 自一个上游�
 `--preset all` 在本应进入终端 REPL 的位置拉起的就是它
 （见 [CLI_cn.md](CLI_cn.md) →「桌面 UI（preset `all`）」）。
 
-设计 spec：`docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md`。
-
 ## 架构
 
 ```
@@ -97,7 +95,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 
 ## 已知限制
 
-抄自设计 spec §10，加上实现新增：
+当前实现的已知限制：
 
 - vendored 副本与上游的同步是手工的（`vendor_client.py` 记录来源
   commit）；没有实时跟踪。

@@ -6,8 +6,6 @@ the upstream license and provenance), mechanically rebranded and bridged onto
 `codesmith serve --http`. It is what `--preset all` opens in place of the
 terminal REPL (see [CLI.md](CLI.md) → "Desktop UI (preset `all`)").
 
-Design spec: `docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md`.
-
 ## Architecture
 
 ```
@@ -106,7 +104,7 @@ platform install location; a missing app fails loud with build guidance;
 
 ## Known limitations
 
-Copied from the design spec §10, plus what the implementation added:
+Known limitations of the current implementation:
 
 - Vendored copies sync with upstream manually (`vendor_client.py` records the
   source commit); no live tracking.
