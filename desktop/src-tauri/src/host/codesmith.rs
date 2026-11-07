@@ -152,6 +152,41 @@ impl CodesmithProcess {
             .with_context(|| format!("POST {path} body"))
     }
 
+    /// POST whose failure the caller renders as words rather than an error
+    /// state (a command result notice): the inner `Err` carries the
+    /// runtime's own message from its `{"error":{"message"}}` body, so a
+    /// 409 reads as the runtime's conflict sentence instead of
+    /// `POST …: 409 {…}`. Transport-level trouble stays an outer `Err`.
+    pub async fn post_with_error_message<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<std::result::Result<T, String>> {
+        let resp = self
+            .auth(self.client.post(format!("{}{path}", self.base_url)))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|body| {
+                    body.pointer("/error/message")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Ok(Err(message));
+        }
+        resp.json()
+            .await
+            .with_context(|| format!("POST {path} body"))
+            .map(Ok)
+    }
+
     /// POST a waterfall settlement (approval decision / question answers).
     /// HTTP 404 reads as `Ok(false)`: the runtime answers 404 when nothing is
     /// pending, and a late client answer after the runtime's own timeout or

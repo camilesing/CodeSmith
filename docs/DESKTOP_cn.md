@@ -16,7 +16,7 @@ Tauri App (desktop/)
 │        WebSocket mux（每客户端一条 socket）
 │        POST /api/<endpoint> · ws /api/remote.mux ─► 环回桥 127.0.0.1:1421
 └─ Rust src-tauri：客户端 RPC 桥（唯一由我方拥有的协议代码）
-    ├─ 客户端 RPC 面：session/* settings/* workspace/* $events follow…
+    ├─ 客户端 RPC 面：session/* settings/* workspace/* commands/* …
     ├─ 流 mux：每条逻辑流 open/item/end/cancel ↔ item/end/error；
     │   升级握手只放行页面源
     ├─ 事件映射器：runtime SSE envelope → 客户端线事件
@@ -110,8 +110,12 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
   前列（最近置顶在前），手动排序保持相对顺序，从未拖动过的会话按运行时
-  近期顺序跟在其后。斜杠命令目录诚实为空——REPL 的斜杠命令是 REPL
-  本地的——因此 "/" 开头的行会照常作为普通 prompt 提交。
+  近期顺序跟在其后。斜杠命令目录只收 `/compact`，经 commands/execute
+  桥到运行时的手动压缩：调用必须无参数、无附件（与上游准入一致）；
+  执行结果只代表运行时接受了压缩——压缩本身作为异步 turn 运行，由
+  转写节点（映射后的 `context_compaction` 系统消息）携带结果；会话忙时
+  把运行时的冲突文案作为命令错误通知呈现。REPL 的其余斜杠命令是
+  REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
 - 上游独有概念（账户/余额、插件市场、后台任务列表、附件上传、右侧栏
   终端/文件/浏览器/预览、子代理视图、目标条、计划预览）不仿真——对应
   插件不进 boot roster 或返回空态。

@@ -16,7 +16,7 @@ Tauri App (desktop/)
 │        the vendored WebSocket mux (one socket per client)
 │        POST /api/<endpoint> · ws /api/remote.mux ─► loopback bridge 127.0.0.1:1421
 └─ Rust src-tauri: the client RPC bridge (the only protocol code we own)
-    ├─ client RPC surface: session/* settings/* workspace/* $events follow…
+    ├─ client RPC surface: session/* settings/* workspace/* commands/* …
     ├─ stream mux: open/item/end/cancel ↔ item/end/error per logical
     │   stream; the upgrade admits only the page origins
     ├─ event mapper: runtime SSE envelopes → client wire events
@@ -122,9 +122,16 @@ Known limitations of the current implementation:
   runtime: pinned sessions lead their section (most recently pinned
   first), manually ordered ones keep their relative order, and
   never-dragged sessions follow in runtime recency order. The
-  slash-command catalog is honestly empty — the REPL's slash commands are
-  REPL-local — so a "/"-prefixed line falls through and submits as an
-  ordinary prompt.
+  slash-command catalog carries exactly `/compact`, bridged onto the
+  runtime's manual compaction over `commands/execute`: an invocation must
+  be argument- and attachment-free (upstream's own admission), the execute
+  result only claims the runtime accepted the compaction — the compaction
+  itself runs as an async turn and its transcript node (the mapped
+  `context_compaction` system message) carries the outcome — and a busy
+  thread surfaces the runtime's conflict text as the command's error
+  notice. The REPL's other slash commands are REPL-local and stay out of
+  the catalog, so their "/"-prefixed lines fall through and submit as
+  ordinary prompts.
 - Upstream-only concepts (accounts/balance, plugin market, jobs list,
   attachment upload, sidebar terminal/files/browser/preview, subagent views,
   goal bar, plan preview) are not simulated — their plugins stay out of the

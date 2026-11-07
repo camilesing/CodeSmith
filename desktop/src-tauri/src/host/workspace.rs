@@ -85,7 +85,12 @@ impl SidebarState {
     /// The splice runs over the merged order, so a drop onto a never-dragged
     /// session lands exactly there and the merged list becomes the manual
     /// order — after any drag the visible order is the saved order.
-    fn insert_before(&mut self, live: &[String], session_id: &str, before: Option<&str>) -> Result<()> {
+    fn insert_before(
+        &mut self,
+        live: &[String],
+        session_id: &str,
+        before: Option<&str>,
+    ) -> Result<()> {
         if !live.iter().any(|id| id == session_id) {
             bail!("session {session_id} is not in the workspace");
         }
@@ -358,19 +363,18 @@ mod tests {
     #[test]
     fn ordered_session_ids_keeps_manual_order_then_recency() {
         let order = ["x".to_string(), "a".to_string()];
-        let live = ["b".to_string(), "a".to_string(), "x".to_string(), "c".to_string()];
+        let live = [
+            "b".to_string(),
+            "a".to_string(),
+            "x".to_string(),
+            "c".to_string(),
+        ];
         // Manual survivors in saved order; never-dragged sessions follow in
         // runtime order; a dead manual id (x here is live, try one that is
         // not) drops out.
-        assert_eq!(
-            ordered_session_ids(&order, &live),
-            vec!["x", "a", "b", "c"]
-        );
+        assert_eq!(ordered_session_ids(&order, &live), vec!["x", "a", "b", "c"]);
         let dead = ["gone".to_string(), "a".to_string()];
-        assert_eq!(
-            ordered_session_ids(&dead, &live),
-            vec!["a", "b", "x", "c"]
-        );
+        assert_eq!(ordered_session_ids(&dead, &live), vec!["a", "b", "x", "c"]);
     }
 
     #[test]
@@ -412,7 +416,10 @@ mod tests {
         let path = state_path(&home);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(load(&home).is_err(), "corrupt sidebar state must not read as defaults");
+        assert!(
+            load(&home).is_err(),
+            "corrupt sidebar state must not read as defaults"
+        );
         // The view helpers degrade to the runtime order instead of failing
         // an unrelated flow.
         let live = ["a".to_string()];

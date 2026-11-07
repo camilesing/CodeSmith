@@ -9,6 +9,7 @@
 //!   equivalent and is answered as unavailable.
 
 pub mod codesmith;
+pub mod commands;
 pub mod events;
 pub mod mapper;
 pub mod mux;
@@ -353,11 +354,18 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
         ),
         "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
-        // The desktop has no host command table (the REPL's slash commands
-        // are REPL-local), so the catalog is honestly empty: the "/"
-        // trigger finds nothing and a "/"-prefixed line falls through to an
-        // ordinary prompt, exactly what the runtime does with it.
-        "commands/list" => rpc_ok(json!([])),
+        // The '/' catalog is the runtime's manual compaction (host::commands).
+        // The REPL's other slash commands are REPL-local and stay out of the
+        // catalog, so their "/"-prefixed lines fall through to ordinary
+        // prompts, exactly what the runtime does with them.
+        "commands/list" => rpc_ok(commands::catalog()),
+        "commands/execute" => match commands::execute(host, args_of(payload)).await {
+            Ok(commands::Outcome::Executed(value)) => rpc_ok(value),
+            // An admission miss is ok-with-no-value: the client reads the
+            // absent value as its "unknown or malformed command" outcome.
+            Ok(commands::Outcome::Miss) => json!({ "ok": true }),
+            Err(err) => rpc_error(err.code, err.message),
+        },
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
