@@ -925,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_request_id_reads_the_clients_requestId_first() {
+    fn prompt_request_id_reads_the_clients_request_id_first() {
         // The client's beginSubmission receipt rides as `requestId`; the echo
         // side of the same identity is `source.rpcId`. Missing both means the
         // client's optimistic copy must live until it re-reads the journal.

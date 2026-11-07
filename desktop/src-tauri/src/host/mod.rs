@@ -15,6 +15,7 @@ pub mod mux;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
+pub mod workspace;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -42,6 +43,10 @@ pub const PAGE_ORIGINS: [&str; 4] = [
     "tauri://localhost",
     "https://tauri.localhost",
 ];
+
+/// The single implicit workspace the bridge presents (the sidebar's pins
+/// and manual order are desktop-local state, see `host::workspace`).
+const DEFAULT_WORKSPACE_ID: &str = "codesmith-default";
 
 pub struct HostState {
     pub backend: CodesmithProcess,
@@ -164,7 +169,7 @@ fn workspace_view(cwd: &std::path::Path) -> Value {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "CodeSmith".into());
     json!({
-        "workspaceId": "codesmith-default",
+        "workspaceId": DEFAULT_WORKSPACE_ID,
         "path": cwd.to_string_lossy(),
         "title": title,
         "sessionIds": [],
@@ -175,6 +180,9 @@ fn workspace_view(cwd: &std::path::Path) -> Value {
 
 /// The single implicit workspace with the live session list folded in — the
 /// client associates a selected session with a workspace through this list.
+/// The list order is the sidebar's manual order (desktop-local, see
+/// `host::workspace`); never-dragged sessions follow in runtime recency
+/// order.
 pub(super) async fn workspace_view_live(host: &HostState) -> Value {
     let mut view = workspace_view(&host.cwd);
     if let Ok(threads) = host
@@ -182,22 +190,32 @@ pub(super) async fn workspace_view_live(host: &HostState) -> Value {
         .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200")
         .await
     {
-        view["sessionIds"] = json!(threads.into_iter().map(|t| t.id).collect::<Vec<_>>());
+        let live: Vec<String> = threads.into_iter().map(|t| t.id).collect();
+        view["sessionIds"] = json!(workspace::ordered_live(&host.settings_home(), &live));
     }
     view
 }
 
-/// The workspace view plus the archived session ids (the sidebar's archived
-/// filter and the archive/unarchive hover action read this set).
-async fn workspace_view_with_archived(host: &HostState) -> (Value, Vec<String>) {
+/// The workspace view plus the live and archived session id lists (the
+/// sidebar's archived filter reads the archived set, the pin baseline the
+/// live one — the merged `sessionIds` carries exactly the live set).
+async fn workspace_view_with_archived(host: &HostState) -> (Value, Vec<String>, Vec<String>) {
     let view = workspace_view_live(host).await;
+    let live: Vec<String> = view["sessionIds"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     let archived = host
         .backend
         .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200&archived_only=true")
         .await
         .map(|threads| threads.into_iter().map(|t| t.id).collect())
         .unwrap_or_default();
-    (view, archived)
+    (view, live, archived)
 }
 
 /// Dispatch a unary client endpoint. `payload` is the raw `{args: …}` body.
@@ -264,11 +282,23 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error("gateway/internal", format!("{endpoint}: {err:#}")),
             }
         }
-        // Pinning is a Host-workspace concept with no CodeSmith equivalent.
-        "workspace/pinSession" | "workspace/unpinSession" => rpc_error(
-            "gateway/method-unavailable",
-            "codesmith desktop: session pinning has no CodeSmith equivalent",
-        ),
+        // Pinning and the sidebar's manual order are desktop-local state
+        // (see `host::workspace`); the mutations echo `workspace/follow`
+        // increments the same way the Host registry does.
+        "workspace/pinSession" | "workspace/unpinSession" => {
+            match workspace::pin_or_unpin(host, endpoint.ends_with("pinSession"), args_of(payload))
+                .await
+            {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(err.code, err.message),
+            }
+        }
+        "workspace/insertSessionBefore" => {
+            match workspace::insert_session_before(host, args_of(payload)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(err.code, err.message),
+            }
+        }
         "skills/list" => match sessions::skills(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("skills/list: {err:#}")),
@@ -323,6 +353,11 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
         ),
         "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
+        // The desktop has no host command table (the REPL's slash commands
+        // are REPL-local), so the catalog is honestly empty: the "/"
+        // trigger finds nothing and a "/"-prefixed line falls through to an
+        // ordinary prompt, exactly what the runtime does with it.
+        "commands/list" => rpc_ok(json!([])),
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
@@ -453,13 +488,13 @@ async fn stream_baseline(host: &HostState, endpoint: &str) -> Result<Vec<Value>>
         // unsubscribes.
         "toolResults/watch" => Ok(vec![json!({ "available": false })]),
         "workspace/follow" => {
-            let (view, archived) = workspace_view_with_archived(host).await;
+            let (view, live, archived) = workspace_view_with_archived(host).await;
             Ok(vec![json!({
                 "type": "baseline",
                 "value": {
                     "items": [view],
                     "archivedSessionIds": archived,
-                    "pinnedSessionIds": [],
+                    "pinnedSessionIds": workspace::pinned_live(&host.settings_home(), &live),
                 }
             })])
         }

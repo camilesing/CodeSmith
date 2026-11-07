@@ -113,9 +113,18 @@ Known limitations of the current implementation:
   source commit); no live tracking.
 - The RPC surface is a subset; unimplemented endpoints answer
   `gateway/method-unavailable` instead of pretending success
-  (`session/updateQueue`, session pinning, …). Session rename/fork/search,
-  archive/unarchive, the skills catalog, the desktop settings document,
-  schedules over `/v1/automations`, and the control projections ARE bridged.
+  (`session/updateQueue`, …). Session rename/fork/search,
+  archive/unarchive, session pinning and the sidebar's manual order, the
+  skills catalog, the desktop settings document, schedules over
+  `/v1/automations`, and the control projections ARE bridged.
+- Sidebar pins and the manual session order are desktop-shell state,
+  persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
+  runtime: pinned sessions lead their section (most recently pinned
+  first), manually ordered ones keep their relative order, and
+  never-dragged sessions follow in runtime recency order. The
+  slash-command catalog is honestly empty — the REPL's slash commands are
+  REPL-local — so a "/"-prefixed line falls through and submits as an
+  ordinary prompt.
 - Upstream-only concepts (accounts/balance, plugin market, jobs list,
   attachment upload, sidebar terminal/files/browser/preview, subagent views,
   goal bar, plan preview) are not simulated — their plugins stay out of the
