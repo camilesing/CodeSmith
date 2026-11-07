@@ -6,9 +6,7 @@
 //!   `gateway/method-unavailable` (the client renders an error state,
 //!   it never pretends success);
 //! - `session/updateQueue` (edit/remove of queued input) has no CodeSmith
-//!   equivalent and is answered as unavailable;
-//! - one parked server task per open stream is retained until process exit
-//!   (bounded by the session count; acceptable for the desktop shell).
+//!   equivalent and is answered as unavailable.
 
 pub mod codesmith;
 pub mod events;
@@ -38,9 +36,9 @@ use codesmith::CodesmithProcess;
 pub struct HostState {
     pub backend: CodesmithProcess,
     pub cwd: PathBuf,
-    pub client_id: String,
     /// Open `$events` sinks: stream id -> frame sender (the approval and
-    /// user-question waterfalls push here).
+    /// user-question waterfalls push here; a still-pending waterfall is
+    /// re-delivered to every stream that opens after it fired).
     pub event_sinks: Mutex<HashMap<String, mpsc::Sender<Value>>>,
     /// Open follow streams that accept live increments (workspace/follow):
     /// stream id -> (endpoint, frame sender).
@@ -58,6 +56,9 @@ pub struct HostState {
     /// sit under several catalog providers; recomputed projections keep the
     /// user's provider while the thread still runs that model id.
     pub model_choices: Mutex<HashMap<String, (String, String)>>,
+    /// One background waterfall watcher per prompted session (see
+    /// `sessions::ensure_waterfall_watcher`): session id -> task handle.
+    pub waterfall_watchers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl HostState {
@@ -181,7 +182,9 @@ async fn workspace_view_with_archived(host: &HostState) -> (Value, Vec<String>) 
 }
 
 /// Dispatch a unary client endpoint. `payload` is the raw `{args: …}` body.
-pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Value {
+pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Value {
+    let host_arc = host;
+    let host: &HostState = host;
     let _ = payload.get("args");
     match endpoint {
         "session/list" => session_list(host).await,
@@ -194,7 +197,7 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
             }
         }
         "session/prompt" => {
-            match sessions::prompt(host, payload.get("args").unwrap_or(&Value::Null)).await {
+            match sessions::prompt(host_arc, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),
                 Err(err) => rpc_error("gateway/internal", format!("session/prompt: {err:#}")),
             }
@@ -503,38 +506,36 @@ async fn model_catalog(host: &HostState) -> Value {
 }
 
 /// `$events/result` — deliver one client waterfall outcome to the runtime.
+/// A result for an already-settled or unknown event is an idempotent no-op
+/// (`{delivered:false}`), and so is a delivery the runtime answers 404 (it
+/// already decided or timed out): the upstream gateway drops superseded
+/// results the same way, and erroring here would kill the client's whole
+/// `$events` generation over a harmless late answer.
 async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
-    let client_id = args
-        .get("clientId")
+    args.get("clientId")
         .and_then(Value::as_str)
         .context("$events/result without clientId")?;
-    if client_id != host.client_id {
-        bail!("$events/result clientId {client_id} does not match this host");
-    }
     let event_id = args
         .get("eventId")
         .and_then(Value::as_str)
         .context("$events/result without eventId")?
         .to_string();
     let outcome = args.get("outcome").cloned().unwrap_or(Value::Null);
-    let pending = host
-        .pending_inputs
-        .lock()
-        .await
-        .remove(&event_id)
-        .with_context(|| format!("no pending waterfall for event {event_id}"))?;
+    let Some(pending) = host.pending_inputs.lock().await.remove(&event_id) else {
+        return Ok(json!({ "delivered": false }));
+    };
     match pending.kind {
         events::InputKind::Approval => {
             let decision = events::approval_decision(&outcome);
-            let _: Value = host
+            let delivered = host
                 .backend
-                .post(
+                .post_settle(
                     &format!("/v1/approvals/{}", pending.input_id),
                     &json!({ "decision": decision, "remember": false }),
                 )
                 .await
                 .context("deliver approval decision")?;
-            Ok(json!({ "delivered": true, "decision": decision }))
+            Ok(json!({ "delivered": delivered, "decision": decision }))
         }
         events::InputKind::Questions => {
             let Some(answers) = events::question_answers(&outcome) else {
@@ -543,15 +544,15 @@ async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
                 // closes the question.
                 return Ok(json!({ "delivered": false }));
             };
-            let _: Value = host
+            let delivered = host
                 .backend
-                .post(
+                .post_settle(
                     &format!("/v1/user-input/{}/{}", pending.session_id, pending.input_id),
                     &json!({ "answers": answers }),
                 )
                 .await
                 .context("deliver user-input answers")?;
-            Ok(json!({ "delivered": true }))
+            Ok(json!({ "delivered": delivered }))
         }
     }
 }
@@ -595,12 +596,18 @@ async fn stream_handler(
             return;
         }
         if endpoint_stream == "$events" {
-            // Ready frame, then the waterfall pump: the sink stays registered
-            // until the client disconnects (send fails) and is then dropped so
-            // a later waterfall is not pushed into a dead body.
+            // Ready frame (this stream's own clientId — the client echoes it
+            // back on `$events/result`; upstream issues one per connected
+            // client), then the still-pending waterfalls (a stream that
+            // connects after one fired must still see it), then the live
+            // pump. The pump also selects on the body channel closing: an
+            // idle pump never sends again, so without that probe a reloaded
+            // page's stream would park forever holding one of the client's
+            // six per-host connections (reload enough times and the client
+            // wedges its whole connection pool).
             let ready = json!({
                 "type": "ready",
-                "clientId": host_for_stream.client_id,
+                "clientId": uuid::Uuid::new_v4().to_string(),
                 "host": { "home": host_for_stream.cwd.to_string_lossy() },
             });
             if tx.send(Ok(format!("{ready}\n"))).await.is_err() {
@@ -611,8 +618,20 @@ async fn stream_handler(
                 .event_sinks
                 .lock()
                 .await
-                .insert(stream_id.clone(), event_tx);
-            while let Some(frame) = event_rx.recv().await {
+                .insert(stream_id.clone(), event_tx.clone());
+            for pending in host_for_stream.pending_inputs.lock().await.values() {
+                if event_tx.send(pending.frame.clone()).await.is_err() {
+                    break;
+                }
+            }
+            loop {
+                let frame = tokio::select! {
+                    frame = event_rx.recv() => match frame {
+                        Some(frame) => frame,
+                        None => break,
+                    },
+                    _ = tx.closed() => break,
+                };
                 if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
                     break;
                 }
@@ -639,14 +658,23 @@ async fn stream_handler(
             }
         }
         // Hold the stream open, pumping live increments to the body: the
-        // sink receiver ends when the stream is dropped from the registry.
+        // sink receiver ends when the stream is dropped from the registry,
+        // and the body-closing probe (see the `$events` branch above) ends
+        // this parked pump when the page goes away without another increment.
         let (live_tx, mut live_rx) = mpsc::channel::<Value>(16);
         host_for_stream
             .live_sinks
             .lock()
             .await
             .insert(stream_id_handle.clone(), (endpoint_stream.clone(), live_tx));
-        while let Some(frame) = live_rx.recv().await {
+        loop {
+            let frame = tokio::select! {
+                frame = live_rx.recv() => match frame {
+                    Some(frame) => frame,
+                    None => break,
+                },
+                _ = tx.closed() => break,
+            };
             if tx.send(Ok(format!("{frame}\n"))).await.is_err() {
                 break;
             }
@@ -665,13 +693,23 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// follow() speaks Value frames; the bridge body speaks NDJSON lines.
+/// follow() speaks Value frames; the bridge body speaks NDJSON lines. The
+/// forwarder also selects on the body channel closing so a reloaded page ends
+/// its `session/follow` tail (follow() observes the dropped line channel and
+/// returns) instead of parking on the runtime SSE forever.
 fn tokio_sync_line_adapter(
     tx: mpsc::Sender<Result<String, std::io::Error>>,
 ) -> mpsc::Sender<String> {
     let (line_tx, mut line_rx) = mpsc::channel::<String>(16);
     tokio::spawn(async move {
-        while let Some(line) = line_rx.recv().await {
+        loop {
+            let line = tokio::select! {
+                line = line_rx.recv() => match line {
+                    Some(line) => line,
+                    None => return,
+                },
+                _ = tx.closed() => return,
+            };
             if tx.send(Ok(format!("{line}\n"))).await.is_err() {
                 return;
             }

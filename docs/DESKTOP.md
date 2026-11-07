@@ -134,6 +134,28 @@ Copied from the design spec §10, plus what the implementation added:
 - User questions have no HTTP cancel route, so an unanswered question
   waterfall waits for the runtime's own deadline; question requests carry no
   tool call id, so the composer card renders without the countdown claim.
+- The `$events` waterfall follows the upstream gateway contract: each stream
+  gets its own `clientId`, still-pending requests are re-delivered to a newly
+  connected stream, and a late or duplicate `$events/result` is an idempotent
+  no-op (`delivered:false`, runtime 404 included). Detection does not depend
+  on a client following the session: every queued turn arms a per-session
+  background watcher on the thread event stream that surfaces approvals and
+  questions on its own. A prompt that predates the watcher (foreign HTTP
+  clients, pre-restart turns) still needs a follow stream to be surfaced.
+- Desktop sessions inherit the config's top-level `allow_shell` (default
+  `false`, GHSA-72w5-pf8h-xfp4): with it off the model has no shell tool and
+  approval cards come from write tools (`write_file`/`edit_file`). The bridge
+  never flips the security default; users opt in via config.
+- The fetch+NDJSON carrier holds one connection per open stream. Chromium
+  caps a host at six connections and its network service keeps an unread
+  streaming response's connection open past page teardown — reloads of a
+  Chromium client can wedge its whole pool (the macOS WKWebView webview is
+  unaffected; Windows WebView2 would not be). Mitigations in the transport:
+  stream bodies are always cancelled and every stream aborts on `pagehide`;
+  the server-side pumps end when the body drops. The durable fix is the
+  upstream WebSocket carrier. The composer's optimistic copy retires on the
+  echoed `source.rpcId` (the client sends `requestId`); a missed echo renders
+  the user message twice.
 - The composer's model seat resolves from the session's `modelSelection`
   projection plus the shared catalog: an empty session opens its journal at
   cursor −1 (0-based seqs), projections ride a process-wide seq clock (the

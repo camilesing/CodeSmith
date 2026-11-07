@@ -120,6 +120,23 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   工具调用丢失参数（持久化条目只带结果元数据）。
 - 用户问题没有 HTTP 取消路由，未作答的问题 waterfall 等运行时自身的
   截止时间；问题请求不带工具调用 id，输入框的问题卡不渲染倒计时。
+- `$events` waterfall 遵循上游 gateway 契约：每条流有自己的
+  `clientId`，仍待决的请求会重放给新连接的流，迟到/重复的
+  `$events/result` 是幂等 no-op（`delivered:false`，含运行时 404）。
+  检测不依赖客户端正在 follow 该会话：每次排队的 turn 都为会话挂一个
+  后台 watcher（线程事件流），自行把审批/问题浮出来。早于 watcher 的
+  prompt（外部 HTTP 客户端、重启前的 turn）仍需要 follow 流才会浮现。
+- 桌面会话继承配置顶层 `allow_shell`（默认 `false`，
+  GHSA-72w5-pf8h-xfp4）：关闭时模型没有 shell 工具，审批卡来自写工具
+  （`write_file`/`edit_file`）。桥面绝不擅自翻转该安全默认值，由用户在
+  配置里显式开启。
+- fetch+NDJSON 载体每条流占一个连接。Chromium 对单 host 限 6 条连接，
+  且其网络服务在页面销毁后仍保持未读完的流式响应连接——Chromium 客户端
+  反复刷新会卡死整个连接池（macOS WKWebView 不受影响；Windows
+  WebView2 会）。缓解：transport 总是取消流 body、`pagehide` 时中止全部
+  流；服务端 pump 在 body 断开时退出。根治是改用上游的 WebSocket 载体。
+  输入框的乐观副本靠回显的 `source.rpcId`（客户端发的是 `requestId`）
+  退役；回显缺失时用户消息会渲染两份。
 - 输入框的模型座位由会话的 `modelSelection` 投影加共享目录解析：空会话
   的日志以游标 −1 打开（seq 从 0 编号），投影挂进程级 seq 时钟（运行时
   不为切模型记日志事件），控制帧的 `changes` 是 `{key, val}` 数组。座位

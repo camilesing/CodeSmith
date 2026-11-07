@@ -152,6 +152,30 @@ impl CodesmithProcess {
             .with_context(|| format!("POST {path} body"))
     }
 
+    /// POST a waterfall settlement (approval decision / question answers).
+    /// HTTP 404 reads as `Ok(false)`: the runtime answers 404 when nothing is
+    /// pending, and a late client answer after the runtime's own timeout or
+    /// decision must stay an idempotent no-op, not an error.
+    pub async fn post_settle(&self, path: &str, body: &serde_json::Value) -> Result<bool> {
+        let resp = self
+            .auth(self.client.post(format!("{}{path}", self.base_url)))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            bail!(
+                "POST {path}: {} {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
+        }
+        Ok(true)
+    }
+
     pub async fn post_empty(&self, path: &str) -> Result<()> {
         let resp = self
             .auth(self.client.post(format!("{}{path}", self.base_url)))

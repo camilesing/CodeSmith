@@ -128,6 +128,24 @@ async function bridgeReady(): Promise<boolean> {
   }
 }
 
+/**
+ * Every open NDJSON stream registers its controller here. Chromium's network
+ * service keeps a streaming fetch's connection ESTABLISHED when the page goes
+ * away without cancelling the body, and the per-host pool holds six slots — a
+ * reload that strands its streams wedges every later fetch (the next boot
+ * stalls inside its connection generation). Aborting on pagehide is the only
+ * moment the still-running page can free those slots.
+ */
+const liveStreamControllers = new Set<AbortController>()
+{
+  const release = (): void => {
+    for (const controller of liveStreamControllers) controller.abort()
+    liveStreamControllers.clear()
+  }
+  globalThis.addEventListener?.('pagehide', release)
+  globalThis.addEventListener?.('beforeunload', release)
+}
+
 const bridgeRpc = (bridge: string): ClientConnectionRpc => ({
   async call(_channel, endpoint, payload, signal) {
     const resp = await fetch(`${bridge}/api/${endpoint}`, {
@@ -142,33 +160,47 @@ const bridgeRpc = (bridge: string): ClientConnectionRpc => ({
     return (await resp.json()) as RpcResult
   },
   async *open(_channel, endpoint, payload, signal, _uplink) {
-    const resp = await fetch(`${bridge}/api/stream/${endpoint}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload ?? {}),
-      signal,
-    })
-    if (!resp.ok || resp.body === null) {
-      throw new Error(`codesmith desktop: stream ${endpoint} refused (HTTP ${resp.status})`)
-    }
-    const reader = resp.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
+    const controller = new AbortController()
+    liveStreamControllers.add(controller)
+    const teardown = (): void => { liveStreamControllers.delete(controller) }
+    const forwardAbort = (): void => { controller.abort(signal.reason) }
+    if (signal.aborted) forwardAbort()
+    else signal.addEventListener('abort', forwardAbort, { once: true })
     try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) return
-        buffer += decoder.decode(value, { stream: true })
+      const resp = await fetch(`${bridge}/api/stream/${endpoint}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload ?? {}),
+        signal: controller.signal,
+      })
+      if (!resp.ok || resp.body === null) {
+        throw new Error(`codesmith desktop: stream ${endpoint} refused (HTTP ${resp.status})`)
+      }
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      try {
         for (;;) {
-          const newline = buffer.indexOf('\n')
-          if (newline < 0) break
-          const line = buffer.slice(0, newline).trim()
-          buffer = buffer.slice(newline + 1)
-          if (line !== '') yield JSON.parse(line)
+          const { done, value } = await reader.read()
+          if (done) return
+          buffer += decoder.decode(value, { stream: true })
+          for (;;) {
+            const newline = buffer.indexOf('\n')
+            if (newline < 0) break
+            const line = buffer.slice(0, newline).trim()
+            buffer = buffer.slice(newline + 1)
+            if (line !== '') yield JSON.parse(line)
+          }
         }
+      } finally {
+        // Always cancel, including on abort: an unread streaming body keeps
+        // the connection open in the browser's per-host pool (six slots),
+        // wedging every later fetch of this origin group.
+        reader.cancel().catch(() => undefined)
       }
     } finally {
-      if (!signal.aborted) reader.cancel().catch(() => undefined)
+      teardown()
+      controller.abort()
     }
   },
 })

@@ -41,13 +41,13 @@ pub fn run() {
                         let host = Arc::new(HostState {
                             backend,
                             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                            client_id: uuid::Uuid::new_v4().to_string(),
                             event_sinks: Default::default(),
                             live_sinks: Default::default(),
                             pending_inputs: Default::default(),
                             pending_rpc_ids: Default::default(),
                             projection_clock: Default::default(),
                             model_choices: Default::default(),
+                            waterfall_watchers: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");
