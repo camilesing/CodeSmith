@@ -14,10 +14,13 @@ Design spec: `docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md`.
 Tauri App (desktop/)
 ├─ WebView (vendored client UI, 58-package closure)
 │   ├─ our boot: the __CODESMITH_BOOT__ plugin graph + first-party brand row
-│   └─ our connection carrier: fetch+NDJSON transport (no WebSocket)
-│        rpc.call / rpc.open ─► loopback bridge http://127.0.0.1:1421
+│   └─ our connection carrier: unary rpc.call over HTTP; every stream rides
+│        the vendored WebSocket mux (one socket per client)
+│        POST /api/<endpoint> · ws /api/remote.mux ─► loopback bridge 127.0.0.1:1421
 └─ Rust src-tauri: the client RPC bridge (the only protocol code we own)
     ├─ client RPC surface: session/* settings/* workspace/* $events follow…
+    ├─ stream mux: open/item/end/cancel ↔ item/end/error per logical
+    │   stream; the upgrade admits only the page origins
     ├─ event mapper: runtime SSE envelopes → client wire events
     │   (per-session monotone seq, strict assistant-stream revision +1,
     │    surfaceOp synthesis, numeric turn/step ordinals)
@@ -92,8 +95,8 @@ Env knobs: `CODESMITH_DESKTOP_CODESMITH` (backend binary),
 visible 离线演示模式 badge.
 
 Tests: `cargo test --manifest-path desktop/src-tauri/Cargo.toml` — the mapper
-(seq/revision invariants, frame shapes), the waterfall mappings, and the
-journal page contract.
+(seq/revision invariants, frame shapes), the waterfall mappings, the journal
+page contract, and the stream mux's frame contract and origin gate.
 
 ## CLI integration
 
@@ -137,7 +140,9 @@ Copied from the design spec §10, plus what the implementation added:
 - The `$events` waterfall follows the upstream gateway contract: each stream
   gets its own `clientId`, still-pending requests are re-delivered to a newly
   connected stream, and a late or duplicate `$events/result` is an idempotent
-  no-op (`delivered:false`, runtime 404 included). Detection does not depend
+  no-op (`delivered:false`, runtime 404 included). A delivered decision is
+  followed by the request's cancel frame — that frame is what retires the
+  answering card on every connected client. Detection does not depend
   on a client following the session: every queued turn arms a per-session
   background watcher on the thread event stream that surfaces approvals and
   questions on its own. A prompt that predates the watcher (foreign HTTP
@@ -146,16 +151,22 @@ Copied from the design spec §10, plus what the implementation added:
   `false`, GHSA-72w5-pf8h-xfp4): with it off the model has no shell tool and
   approval cards come from write tools (`write_file`/`edit_file`). The bridge
   never flips the security default; users opt in via config.
-- The fetch+NDJSON carrier holds one connection per open stream. Chromium
-  caps a host at six connections and its network service keeps an unread
-  streaming response's connection open past page teardown — reloads of a
-  Chromium client can wedge its whole pool (the macOS WKWebView webview is
-  unaffected; Windows WebView2 would not be). Mitigations in the transport:
-  stream bodies are always cancelled and every stream aborts on `pagehide`;
-  the server-side pumps end when the body drops. The durable fix is the
-  upstream WebSocket carrier. The composer's optimistic copy retires on the
-  echoed `source.rpcId` (the client sends `requestId`); a missed echo renders
-  the user message twice.
+- Streams ride one WebSocket per client at `/api/remote.mux` (the vendored
+  mux client's protocol; unary calls stay HTTP POSTs, as upstream's do), so a
+  client holds one bridge connection however many streams it opens — the
+  former fetch+NDJSON carrier pinned a connection per stream, filled
+  Chromium's six-per-host pool, and stalled reloads. WebSockets bypass CORS,
+  so the upgrade admits only the page origins (an originless local client is
+  admitted, like the HTTP routes). The mux reads no uplink (no bridged
+  endpoint takes client items; upstream's only one, the sidebar terminal, is
+  not simulated) and sends no ping heartbeat (loopback: a vanished page
+  closes its socket, which aborts every stream it carried).
+- The composer's optimistic copy retires on the echoed `source.rpcId` (the
+  client sends `requestId`). The runtime emits that echo as the turn starts,
+  so the bridge queues the id before the runtime accepts the prompt. Each id
+  stamps one echo — the first follow loop to see it — so with two clients
+  following one session, the sending client can miss the stamp and render
+  its message twice.
 - The composer's model seat resolves from the session's `modelSelection`
   projection plus the shared catalog: an empty session opens its journal at
   cursor −1 (0-based seqs), projections ride a process-wide seq clock (the

@@ -14,10 +14,13 @@ CodeSmith 桌面端是一个 Tauri 2 应用：UI 整体 vendor 自一个上游�
 Tauri App (desktop/)
 ├─ WebView（vendored 客户端 UI，58 包闭包）
 │   ├─ 我方 boot：__CODESMITH_BOOT__ 插件图 + 第一方品牌行
-│   └─ 我方 connection 载体：fetch+NDJSON 传输（无 WebSocket）
-│        rpc.call / rpc.open ─► 环回桥 http://127.0.0.1:1421
+│   └─ 我方 connection 载体：一元 rpc.call 走 HTTP；所有流走 vendored
+│        WebSocket mux（每客户端一条 socket）
+│        POST /api/<endpoint> · ws /api/remote.mux ─► 环回桥 127.0.0.1:1421
 └─ Rust src-tauri：客户端 RPC 桥（唯一由我方拥有的协议代码）
     ├─ 客户端 RPC 面：session/* settings/* workspace/* $events follow…
+    ├─ 流 mux：每条逻辑流 open/item/end/cancel ↔ item/end/error；
+    │   升级握手只放行页面源
     ├─ 事件映射器：runtime SSE envelope → 客户端线事件
     │   （每会话单调 seq、assistant-stream revision 严格 +1、
     │    surfaceOp 合成、数值化 turn/step 序号）
@@ -85,7 +88,8 @@ cargo tauri build --manifest-path desktop/src-tauri/Cargo.toml
 内存 stub 传输，并显示可见的「离线演示模式」角标。
 
 测试：`cargo test --manifest-path desktop/src-tauri/Cargo.toml`——映射器
-（seq/revision 不变量、帧形状）、waterfall 映射、journal page 契约。
+（seq/revision 不变量、帧形状）、waterfall 映射、journal page 契约、流 mux
+的帧契约与 Origin 闸门。
 
 ## CLI 集成
 
@@ -122,21 +126,28 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   截止时间；问题请求不带工具调用 id，输入框的问题卡不渲染倒计时。
 - `$events` waterfall 遵循上游 gateway 契约：每条流有自己的
   `clientId`，仍待决的请求会重放给新连接的流，迟到/重复的
-  `$events/result` 是幂等 no-op（`delivered:false`，含运行时 404）。
-  检测不依赖客户端正在 follow 该会话：每次排队的 turn 都为会话挂一个
+  `$events/result` 是幂等 no-op（`delivered:false`，含运行时 404）。决定
+  送达后紧跟该请求的 cancel 帧——各个客户端上答题卡的退役靠的就是这一
+  帧。检测不依赖客户端正在 follow 该会话：每次排队的 turn 都为会话挂一个
   后台 watcher（线程事件流），自行把审批/问题浮出来。早于 watcher 的
   prompt（外部 HTTP 客户端、重启前的 turn）仍需要 follow 流才会浮现。
 - 桌面会话继承配置顶层 `allow_shell`（默认 `false`，
   GHSA-72w5-pf8h-xfp4）：关闭时模型没有 shell 工具，审批卡来自写工具
   （`write_file`/`edit_file`）。桥面绝不擅自翻转该安全默认值，由用户在
   配置里显式开启。
-- fetch+NDJSON 载体每条流占一个连接。Chromium 对单 host 限 6 条连接，
-  且其网络服务在页面销毁后仍保持未读完的流式响应连接——Chromium 客户端
-  反复刷新会卡死整个连接池（macOS WKWebView 不受影响；Windows
-  WebView2 会）。缓解：transport 总是取消流 body、`pagehide` 时中止全部
-  流；服务端 pump 在 body 断开时退出。根治是改用上游的 WebSocket 载体。
-  输入框的乐观副本靠回显的 `source.rpcId`（客户端发的是 `requestId`）
-  退役；回显缺失时用户消息会渲染两份。
+- 流统一走每客户端一条 WebSocket（`/api/remote.mux`，即 vendored mux
+  客户端的协议；一元调用仍是 HTTP POST，与上游一致），因此无论开多少条
+  流，一个客户端只占一条桥连接——原 fetch+NDJSON 载体每条流占一个连接，
+  会占满 Chromium 单 host 6 连接的池并拖慢刷新。WebSocket 不受 CORS
+  约束，故升级握手只放行页面源（无 Origin 的本地客户端与 HTTP 路由一样
+  放行）。mux 不读上行（没有桥接端点接收客户端 item；上游唯一的上行端点
+  ——侧栏终端——不仿真），也不发 ping 心跳（环回：页面消失即关闭其
+  socket，进而中止其承载的全部流）。
+- 输入框的乐观副本靠回显的 `source.rpcId`（客户端发的是 `requestId`）
+  退役。运行时在 turn 开始时就发出该回显，故桥在运行时接受 prompt 之前
+  就把 id 入队。每个 id 只给一条回显盖戳（最先看到它的 follow 循环）：
+  两个客户端同时 follow 同一会话时，发送方可能拿不到戳记，其消息渲染
+  两份。
 - 输入框的模型座位由会话的 `modelSelection` 投影加共享目录解析：空会话
   的日志以游标 −1 打开（seq 从 0 编号），投影挂进程级 seq 时钟（运行时
   不为切模型记日志事件），控制帧的 `changes` 是 `{key, val}` 数组。座位

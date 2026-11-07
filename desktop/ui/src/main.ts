@@ -6,7 +6,7 @@
 import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
-import { initTransport, rpc } from './transport'
+import { initTransport } from './transport'
 
 const g = globalThis as {
   __CODESMITH_BOOT__?: unknown
@@ -59,16 +59,18 @@ const loadBundle = (url: string): Promise<void> =>
     document.head.append(el)
   })
 
-// Carrier-only transport swap: `rpc` replaces HTTP entirely; `ownsHost`
-// marks the loopback so the connection reports isLoopback (tauri://localhost
-// on Windows would not qualify by hostname alone).
-g.__CODESMITH_TRANSPORT__ = { ownsHost: true, rpc, loadBundle }
 // Access baseline: without it every permission check answers false.
 g.__CODESMITH_REMOTE_ACCESS__ = { type: 'baseline', owner: true }
 
 const container = document.querySelector<HTMLElement>('#root')
 if (container === null) throw new Error('codesmith desktop: #root mount point missing')
-initTransport().finally(() => {
+initTransport().then(carrier => {
+  // Carrier-only transport swap: `rpc` replaces the HTTP unary caller and,
+  // without `open`, leaves streams to the vendored WebSocket mux at
+  // `streamBaseUrl`; `ownsHost` marks the loopback so the connection reports
+  // isLoopback (tauri://localhost on Windows would not qualify by hostname
+  // alone).
+  g.__CODESMITH_TRANSPORT__ = { ownsHost: true, loadBundle, ...carrier }
   new AppWebEntry(container).run(reason => {
     console.error('codesmith desktop: boot failed', reason)
     const report = document.createElement('pre')
