@@ -1,2 +1,11 @@
 packages:
   - vendor/@codesmith/*
+allowBuilds:
+  esbuild: true
+overrides:
+  # mdast-util-gfm-autolink-literal@2.1.0 was published 2026-11-06, inside the
+  # supply-chain minimumReleaseAge window; pin the prior release until it ages
+  # past the policy cutoff.
+  mdast-util-gfm-autolink-literal: 2.0.1
+onlyBuiltDependencies:
+  - esbuild

@@ -1,0 +1,18 @@
+import { type ToolFileInjected } from '../file-menu.ts';
+import type { Context } from '@codesmith/cordis';
+import type { PropsLocale } from '@codesmith/client-ui-slots';
+import type { ToolCallViewProps } from '../../contract/slots.ts';
+type FileMutationRowProps = ToolCallViewProps & ToolFileInjected & PropsLocale<'conversation'>;
+/**
+ * Shows the path and decoded input size through preparation, execution, and
+ * settlement, with the applied diff available once the call settles.
+ */
+export declare function FileMutationRow({ toolName, block, cwd, home, openFile, useContextMenu, sessionId, resolveFilePath, inspect, useDisclosure, t, }: FileMutationRowProps): import("react").JSX.Element;
+/** Registers file-mutation conversation rows. */
+export declare const fileMutationToolview: {
+    name: string;
+    inject: string[];
+    apply(ctx: Context): void;
+};
+export {};
+//# sourceMappingURL=file-mutation-row.d.ts.map

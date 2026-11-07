@@ -12,7 +12,7 @@ against an unchanged checkout writes nothing (idempotent).
 
 Usage:
   python3 desktop/scripts/vendor_client.py \
-      [--upstream /Users/camile/Work/TypeScript/deepseek-harness]
+      [--upstream /Users/xinyiqi/Dev/TypeScript/deepseek-harness]
 
 The checkout must already be built (`pnpm run build:lib:client`) — this
 script never builds upstream code, it only copies artifacts.
@@ -65,6 +65,27 @@ REQUIRED_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-session",
     "@deepseek-ai/dsh-client-ui-chat",
     "@deepseek-ai/dsh-client-ui-sidebar",
+]
+
+# CodeSmith-chosen additions: upstream UI whose interaction CodeSmith's
+# runtime API can drive (approvals, user questions, tool rows, model
+# selection, skills, secret masking, workflow runs, the settings shell, the
+# shortcuts reference, the trajectory view and the schedule page over
+# /v1/automations). Upstream pages with no CodeSmith equivalent (plugins,
+# account, jobs, attachment, goal, plan preview, sidebar terminal/files/
+# browser/preview) stay unvendored so they never appear.
+EXTRA_UI_ENTRIES = [
+    "@deepseek-ai/dsh-client-ui-approval",
+    "@deepseek-ai/dsh-client-ui-user-questions",
+    "@deepseek-ai/dsh-client-ui-tool",
+    "@deepseek-ai/dsh-client-ui-model-selection",
+    "@deepseek-ai/dsh-client-ui-skill",
+    "@deepseek-ai/dsh-client-ui-secret-mask",
+    "@deepseek-ai/dsh-client-ui-workflow-run",
+    "@deepseek-ai/dsh-client-ui-settings-general",
+    "@deepseek-ai/dsh-client-ui-shortcuts",
+    "@deepseek-ai/dsh-client-ui-trajectory",
+    "@deepseek-ai/dsh-client-ui-schedule",
 ]
 
 # Scan roots for scoped packages inside the upstream checkout.
@@ -374,7 +395,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--upstream", "--dsh", dest="upstream", default=os.environ.get(
-        "CODESMITH_DESKTOP_UPSTREAM", "/Users/camile/Work/TypeScript/deepseek-harness"),
+        "CODESMITH_DESKTOP_UPSTREAM", "/Users/xinyiqi/Dev/TypeScript/deepseek-harness"),
         help="upstream client checkout (env CODESMITH_DESKTOP_UPSTREAM)")
     parser.add_argument("--out", default=str(Path(__file__).resolve().parent.parent
                                              / "ui" / "vendor"))
@@ -389,11 +410,11 @@ def main() -> int:
                             capture_output=True, text=True, check=True).stdout.strip()
 
     packages = scan_packages(checkout)
-    missing_entries = [e for e in REQUIRED_ENTRIES if e not in packages]
+    missing_entries = [e for e in [*REQUIRED_ENTRIES, *EXTRA_UI_ENTRIES] if e not in packages]
     if missing_entries:
         print(f"vendor: entries missing from checkout: {missing_entries}", file=sys.stderr)
         return 1
-    order, edges = closure_of(packages, [*SEED_LIBRARY_ENTRIES, *REQUIRED_ENTRIES])
+    order, edges = closure_of(packages, [*SEED_LIBRARY_ENTRIES, *REQUIRED_ENTRIES, *EXTRA_UI_ENTRIES])
 
     unbuilt = [n for n in order if not (packages[n] / "lib").is_dir()]
     if unbuilt:

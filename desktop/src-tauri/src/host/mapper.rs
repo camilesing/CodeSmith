@@ -23,10 +23,32 @@
 //! `tool/call` recovers it from the item summary prefix on replay; an item
 //! whose `item.started` was missed (follow opened mid-item) is adopted with a
 //! synthesized `step/start` + stream start, so its block may miss early deltas.
+//! Tool names are normalized to the vendored client's card vocabulary
+//! (`tool_view_name`): the runtime record keeps CodeSmith's own names, this is
+//! presentation-layer translation only.
 
 use std::collections::HashMap;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+
+/// CodeSmith tool name → the vendored client's toolview slot key. Unknown
+/// names pass through and land on the generic tool card. The row models parse
+/// argument shapes the two vocabularies share (`command`, `todos`, `pattern`,
+/// `path`); anything richer degrades to the row's plain summary.
+pub fn tool_view_name(name: &str) -> String {
+    match name {
+        "exec_shell" | "exec_shell_wait" | "exec_shell_interact" => "bash".into(),
+        "read_file" => "read".into(),
+        "edit_file" => "edit".into(),
+        "grep_files" => "grep".into(),
+        "file_search" | "symbol_search" => "glob".into(),
+        "fetch_url" | "web_run" => "web_fetch".into(),
+        "web_search" => "web_search".into(),
+        "todo" => "todo_write".into(),
+        "user_input" => "ask_user_question".into(),
+        other => other.into(),
+    }
+}
 
 /// One follow-stream frame: a durable wire event or an assistant-stream frame.
 #[derive(Debug, Clone)]
@@ -101,9 +123,16 @@ pub struct SessionMapper {
 }
 
 impl SessionMapper {
-    pub fn resume_after(last_seq: u64) -> Self {
+    /// Resume a live tail after a replayed journal. `turn_no` is the replayed
+    /// turn count (a live `turn.started` for the next turn increments past it;
+    /// a mid-turn tail without a fresh `turn.started` stays on the current
+    /// turn), `step` the replayed step watermark of that turn, so live steps
+    /// never collide with replayed ones.
+    pub fn resume_at(last_seq: u64, turn_no: u64, step: u64) -> Self {
         Self {
             seq: WireSeq::resume_after(last_seq),
+            turn_no,
+            step,
             ..Self::default()
         }
     }
@@ -135,7 +164,10 @@ impl SessionMapper {
         });
         self.attempts.insert(
             item_id.to_string(),
-            Attempt { chunk_index: 0, block_open: false },
+            Attempt {
+                chunk_index: 0,
+                block_open: false,
+            },
         );
         Some(Frame::Stream(frame))
     }
@@ -160,7 +192,10 @@ impl SessionMapper {
     /// Map one live SSE envelope into follow frames.
     pub fn map_envelope(&mut self, envelope: &Value) -> Vec<Frame> {
         let mut frames = Vec::new();
-        let event_name = envelope.get("event").and_then(Value::as_str).unwrap_or_default();
+        let event_name = envelope
+            .get("event")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let payload = envelope.get("payload").cloned().unwrap_or(Value::Null);
         let item_id = envelope
             .get("item_id")
@@ -171,9 +206,11 @@ impl SessionMapper {
             "turn.started" => {
                 self.turn_no += 1;
                 self.step = 0;
-                frames.push(Frame::Event(
-                    self.seq.event("turn/start", json!({ "turn": self.turn_no }), false),
-                ));
+                frames.push(Frame::Event(self.seq.event(
+                    "turn/start",
+                    json!({ "turn": self.turn_no }),
+                    false,
+                )));
             }
             "turn.completed" | "turn.failed" => {
                 let status = payload
@@ -208,11 +245,13 @@ impl SessionMapper {
                     }
                     "tool_call" | "command_execution" | "file_change" => {
                         let tool = payload.get("tool").cloned().unwrap_or(Value::Null);
-                        let name = tool
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| tool_name_from_summary(&item));
+                        let name = tool_view_name(
+                            &tool
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| tool_name_from_summary(&item)),
+                        );
                         let arguments = tool
                             .get("input")
                             .cloned()
@@ -249,7 +288,10 @@ impl SessionMapper {
                 }
             }
             "item.delta" => {
-                let kind = payload.get("kind").and_then(Value::as_str).unwrap_or_default();
+                let kind = payload
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let (block_type, chunk_type) = match kind {
                     "agent_message" => ("text", "text-delta"),
                     "agent_reasoning" => ("reasoning", "reasoning-delta"),
@@ -257,7 +299,10 @@ impl SessionMapper {
                     // settles from its durable result.
                     _ => return frames,
                 };
-                let text = payload.get("delta").and_then(Value::as_str).unwrap_or_default();
+                let text = payload
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 if !self.attempts.contains_key(&item_id) {
                     // Mid-item adoption: no step/start or stream start was
                     // seen. Synthesize both so the fold stays consistent.
@@ -293,10 +338,17 @@ impl SessionMapper {
                 let item = payload.get("item").cloned().unwrap_or(Value::Null);
                 let kind = item.get("kind").and_then(Value::as_str).unwrap_or_default();
                 let detail = item.get("detail").and_then(Value::as_str);
-                let status = item.get("status").and_then(Value::as_str).unwrap_or_default();
+                let status = item
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 match kind {
                     "agent_message" | "agent_reasoning" => {
-                        let block_type = if kind == "agent_message" { "text" } else { "reasoning" };
+                        let block_type = if kind == "agent_message" {
+                            "text"
+                        } else {
+                            "reasoning"
+                        };
                         let text = content_text(detail);
                         if self.attempts.get(&item_id).is_some_and(|a| a.block_open) {
                             if let Some(frame) = self.chunk(
@@ -383,6 +435,24 @@ impl SessionMapper {
                     _ => {}
                 }
             }
+            "item.interrupted" => {
+                // The runtime interrupts an in-flight item (user Esc): close
+                // any streaming attempt as abandoned so the client retires its
+                // transient row instead of waiting for a settlement that never
+                // comes. Tool nodes keep their last state; the turn's own
+                // interrupted end follows.
+                if let Some(attempt) = self.attempts.remove(&item_id) {
+                    self.revision += 1;
+                    let _ = attempt;
+                    frames.push(Frame::Stream(json!({
+                        "type": "end",
+                        "attemptId": item_id,
+                        "revision": self.revision,
+                        "index": 0,
+                        "outcome": { "kind": "abandoned" },
+                    })));
+                }
+            }
             // thread.* / turn.steered / turn.interrupt_requested: the
             // transcript settles from the durable events above.
             _ => {}
@@ -413,14 +483,32 @@ impl SessionMapper {
 /// Durable tool items keep only summary/detail; the summary is
 /// "<name>: <output>" after completion and "<name> started" while running.
 fn tool_name_from_summary(item: &Value) -> String {
-    item.get("summary")
+    let raw = item
+        .get("summary")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or("tool")
+        .unwrap_or_default();
+    let head = raw.split(':').next().unwrap_or("tool");
+    // A running item's summary is "<name> started"; drop the suffix so the
+    // replayed call keeps its real tool name.
+    head.strip_suffix(" started")
+        .unwrap_or(head)
         .trim()
         .to_string()
+}
+
+/// Replayed tool arguments. The runtime persists tool INPUT only on the live
+/// `item.started` payload — durable items keep result metadata — so replayed
+/// cards render from summary/detail and the arguments stay empty unless a
+/// future runtime revision records them under `metadata.arguments`.
+fn replay_tool_arguments(item: &Value) -> String {
+    for key in ["arguments", "input"] {
+        if let Some(args) = item.pointer(&format!("/metadata/{key}")).cloned() {
+            if args.is_object() {
+                return args.to_string();
+            }
+        }
+    }
+    "{}".into()
 }
 
 /// Replay a `ThreadDetail` (GET /v1/threads/{id}) into wire events.
@@ -430,8 +518,16 @@ fn tool_name_from_summary(item: &Value) -> String {
 pub fn replay_events(detail: &Value) -> Vec<Value> {
     let mut seq = WireSeq::default();
     let mut events = Vec::new();
-    let turns = detail.get("turns").and_then(Value::as_array).cloned().unwrap_or_default();
-    let items = detail.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let turns = detail
+        .get("turns")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let items = detail
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let turn_end_reason = |turn: &Value| -> Option<&'static str> {
         match turn.get("status").and_then(Value::as_str) {
@@ -446,20 +542,30 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
     for (turn_index, turn) in turns.iter().enumerate() {
         let turn_no = (turn_index + 1) as u64;
         events.push(seq.event("turn/start", json!({ "turn": turn_no }), false));
-        let turn_id = turn.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let turn_id = turn
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let mut turn_items: Vec<&Value> = items
             .iter()
             .filter(|item| item.get("turn_id").and_then(Value::as_str) == Some(turn_id.as_str()))
             .collect();
         turn_items.sort_by_key(|item| {
-            item.get("started_at").and_then(Value::as_str).unwrap_or_default().to_string()
+            item.get("started_at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
         });
         let mut step: u64 = 0;
         for item in turn_items {
             let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
             let detail_text = item.get("detail").and_then(Value::as_str);
             let kind = item.get("kind").and_then(Value::as_str).unwrap_or_default();
-            let status = item.get("status").and_then(Value::as_str).unwrap_or_default();
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             match kind {
                 "user_message" => events.push(seq.event(
                     "user/message",
@@ -507,7 +613,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                     ));
                 }
                 "tool_call" | "command_execution" | "file_change" => {
-                    let name = tool_name_from_summary(item);
+                    let name = tool_view_name(&tool_name_from_summary(item));
                     events.push(seq.event(
                         "tool/call",
                         json!({
@@ -515,7 +621,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                             "step": step,
                             "callId": item_id,
                             "name": name,
-                            "arguments": "{}",
+                            "arguments": replay_tool_arguments(item),
                         }),
                         false,
                     ));
@@ -600,13 +706,21 @@ mod tests {
         assert_eq!(
             types,
             vec![
-                "turn/start", "user/message",
-                "step/start", "assistant/message", "step/end",
-                "step/start", "assistant/message", "step/end",
-                "tool/call", "tool/result",
+                "turn/start",
+                "user/message",
+                "step/start",
+                "assistant/message",
+                "step/end",
+                "step/start",
+                "assistant/message",
+                "step/end",
+                "tool/call",
+                "tool/result",
                 // in-progress agent message skipped
                 "turn/end",
-                "turn/start", "user/message", "turn/end",
+                "turn/start",
+                "user/message",
+                "turn/end",
             ]
         );
         // Numeric turn ordinals, steps increment per agent item, tool items
@@ -626,7 +740,9 @@ mod tests {
         // surfaceOp presence on the append-required kinds.
         for kind in ["user/message", "assistant/message", "tool/result"] {
             assert!(
-                events.iter().any(|e| e["type"] == kind && e["surfaceOp"] == "append"),
+                events
+                    .iter()
+                    .any(|e| e["type"] == kind && e["surfaceOp"] == "append"),
                 "{kind} must carry surfaceOp append"
             );
         }
@@ -732,7 +848,11 @@ mod tests {
             json!({ "type": "reasoning", "text": "thinking" })
         );
         for (i, expected) in [(3, 0u64), (4, 1), (5, 2), (6, 3)] {
-            assert_eq!(chunk(i)["index"], expected, "dense chunk index at frame {i}");
+            assert_eq!(
+                chunk(i)["index"],
+                expected,
+                "dense chunk index at frame {i}"
+            );
         }
 
         // The committed end names the message event that preceded it.
@@ -746,7 +866,10 @@ mod tests {
         assert_eq!(message["data"]["step"], 1);
         let end = chunk(8);
         assert_eq!(end["outcome"]["kind"], "committed");
-        assert_eq!(end["outcome"]["seq"], message["seq"], "end names the preceding settlement seq");
+        assert_eq!(
+            end["outcome"]["seq"], message["seq"],
+            "end names the preceding settlement seq"
+        );
         assert_eq!(end["index"], 4, "end counts the chunk frames it represents");
 
         // The text attempt used its own step.
@@ -768,7 +891,7 @@ mod tests {
             "event": "item.started", "item_id": "item_t", "timestamp": "2026-11-06T10:00:01Z",
             "payload": {
                 "item": { "id": "item_t", "kind": "tool_call", "status": "in_progress", "detail": "", "summary": "" },
-                "tool": { "id": "call_1", "name": "bash", "input": { "command": "ls" } }
+                "tool": { "id": "call_1", "name": "exec_shell", "input": { "command": "ls" } }
             }
         }));
         let call = match &frames[0] {
@@ -776,6 +899,7 @@ mod tests {
             _ => panic!("expected event frame"),
         };
         assert_eq!(call["type"], "tool/call");
+        // CodeSmith tool names are normalized to the client card vocabulary.
         assert_eq!(call["data"]["name"], "bash");
         assert_eq!(call["data"]["arguments"], json!("{\"command\":\"ls\"}"));
         assert_eq!(call["data"]["turn"], 1);
@@ -792,6 +916,108 @@ mod tests {
         assert_eq!(result["surfaceOp"], "append");
         assert_eq!(result["data"]["message"]["toolCallId"], "item_t");
         assert_eq!(result["data"]["message"]["content"][0]["text"], "file1");
+    }
+
+    #[test]
+    fn interrupted_items_abandon_their_open_attempts() {
+        let mut mapper = SessionMapper::default();
+        let _ = mapper.map_envelope(&json!({
+            "event": "turn.started", "turn_id": "turn_1", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        let _ = mapper.map_envelope(&json!({
+            "event": "item.started", "item_id": "item_m", "timestamp": "2026-11-06T10:00:01Z",
+            "payload": { "item": { "id": "item_m", "kind": "agent_message", "status": "in_progress", "detail": "" } }
+        }));
+        let _ = mapper.map_envelope(&json!({
+            "event": "item.delta", "item_id": "item_m", "timestamp": "2026-11-06T10:00:02Z",
+            "payload": { "delta": "partial", "kind": "agent_message" }
+        }));
+        let frames = mapper.map_envelope(&json!({
+            "event": "item.interrupted", "item_id": "item_m", "timestamp": "2026-11-06T10:00:03Z", "payload": {}
+        }));
+        let end = match frames.first().expect("interrupt frame") {
+            Frame::Stream(frame) => frame.clone(),
+            other => panic!("expected stream frame, got {other:?}"),
+        };
+        assert_eq!(end["type"], "end");
+        assert_eq!(end["outcome"]["kind"], "abandoned");
+        // start (1), block-start (2), delta (3), interrupt end (4) stay dense.
+        assert_eq!(end["revision"], 4);
+    }
+
+    #[test]
+    fn resume_counters_keep_live_turns_and_steps_off_replayed_ones() {
+        // A fresh turn.started after two replayed turns becomes turn 3 and
+        // restarts the step count inside its own turn.
+        let mut mapper = SessionMapper::resume_at(9, 2, 3);
+        let frames = mapper.map_envelope(&json!({
+            "event": "turn.started", "turn_id": "turn_3", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        let start = match &frames[0] {
+            Frame::Event(event) => event.clone(),
+            _ => panic!("expected event frame"),
+        };
+        assert_eq!(start["data"]["turn"], 3);
+        assert!(
+            start["seq"].as_u64().unwrap() > 9,
+            "seq continues the replay"
+        );
+
+        // A tail that opens mid-turn (no fresh turn.started) adopts the item
+        // onto the CURRENT replayed turn with the next free step number, so
+        // live steps never collide with replayed ones.
+        let mut mid = SessionMapper::resume_at(9, 2, 3);
+        let frames = mid.map_envelope(&json!({
+            "event": "item.delta", "item_id": "item_m", "timestamp": "2026-11-06T10:00:01Z",
+            "payload": { "delta": "hi", "kind": "agent_message" }
+        }));
+        let step_start = frames
+            .iter()
+            .map(|f| match f {
+                Frame::Event(event) => event.clone(),
+                Frame::Stream(_) => json!(null),
+            })
+            .find(|e| e["type"] == "step/start")
+            .expect("adopted step/start");
+        assert_eq!(
+            step_start["data"]["turn"], 2,
+            "no fresh turn.started keeps the current turn"
+        );
+        assert_eq!(
+            step_start["data"]["step"], 4,
+            "step watermark continues past the replay"
+        );
+    }
+
+    #[test]
+    fn replay_recovers_tool_names_and_metadata_arguments() {
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "in_progress" }],
+            "items": [
+                { "id": "item_a", "turn_id": "turn_1", "kind": "command_execution",
+                  "status": "in_progress", "detail": "", "summary": "exec_shell started",
+                  "started_at": "2026-11-06T10:00:00Z" },
+                { "id": "item_b", "turn_id": "turn_1", "kind": "file_change",
+                  "status": "completed", "detail": "patched", "summary": "edit_file: patched",
+                  "metadata": { "arguments": { "path": "a.rs" } },
+                  "started_at": "2026-11-06T10:00:01Z" },
+            ],
+        });
+        let events = replay_events(&detail);
+        let call_a = events
+            .iter()
+            .find(|e| e["data"]["callId"] == "item_a")
+            .unwrap();
+        assert_eq!(
+            call_a["data"]["name"], "bash",
+            "running summary '<name> started' loses the suffix"
+        );
+        let call_b = events
+            .iter()
+            .find(|e| e["data"]["callId"] == "item_b")
+            .unwrap();
+        assert_eq!(call_b["data"]["name"], "edit");
+        assert_eq!(call_b["data"]["arguments"], json!("{\"path\":\"a.rs\"}"));
     }
 
     #[test]
@@ -818,6 +1044,9 @@ mod tests {
         assert_eq!(end["outcome"]["kind"], "abandoned");
         // start (1), block-start (2), delta (3), abandon end (4).
         assert_eq!(end["revision"], 4, "abandon keeps revisions contiguous");
-        assert!(mapper.abandon_open_attempts().is_empty(), "second abandon is a no-op");
+        assert!(
+            mapper.abandon_open_attempts().is_empty(),
+            "second abandon is a no-op"
+        );
     }
 }

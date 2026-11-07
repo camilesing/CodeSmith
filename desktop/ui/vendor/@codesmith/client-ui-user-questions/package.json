@@ -1,0 +1,68 @@
+{
+  "name": "@codesmith/client-ui-user-questions",
+  "description": "Web ask_user_question composer takeover and plan-review presentation UI",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-remotes",
+        "@codesmith/api-session-controller",
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-conversation",
+        "@codesmith/client-ui-renderer",
+        "@codesmith/client-ui-session",
+        "@codesmith/client-ui-chat"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/brand": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/typert-protocol": "workspace:*",
+    "react": "^18.2.0",
+    "@codesmith/client-ui-conversation": "workspace:*",
+    "@codesmith/client-connection": "workspace:*",
+    "clsx": "^2.0.0",
+    "@codesmith/client-ui-chat": "workspace:*",
+    "@codesmith/client-ui-tool": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ]
+}

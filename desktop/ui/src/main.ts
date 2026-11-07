@@ -17,9 +17,9 @@ const g = globalThis as {
 // Dev affordance for the pixel baseline: `?theme=dark|light` pins the color
 // scheme before the vendored theme plugin boots (its dark palette rides
 // `prefers-color-scheme` media queries, which a page cannot switch at will).
-// Anything else (including no query) leaves the real media state alone.
+// No query leaves the real media state alone — the app follows the system.
 {
-  const requested = new URLSearchParams(globalThis.location?.search).get('theme') ?? 'dark'
+  const requested = new URLSearchParams(globalThis.location?.search).get('theme')
   if (requested === 'dark' || requested === 'light') {
     const nativeMatchMedia = globalThis.matchMedia.bind(globalThis)
     globalThis.matchMedia = (query: string): MediaQueryList =>

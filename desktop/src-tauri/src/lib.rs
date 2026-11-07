@@ -13,7 +13,9 @@ mod host;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use host::{HostState, serve_bridge};
+use tauri::Manager;
+
+use host::{serve_bridge, HostState};
 
 /// Bridge port; overridable for parallel dev instances.
 const BRIDGE_PORT: u16 = 1421;
@@ -21,12 +23,18 @@ const BRIDGE_PORT: u16 = 1421;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .setup(|_app| {
+        .setup(|app| {
             let codesmith_path = std::env::var_os("CODESMITH_DESKTOP_CODESMITH").map(PathBuf::from);
             let port = std::env::var("CODESMITH_DESKTOP_BRIDGE_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(BRIDGE_PORT);
+            // The UI reads this global to reach the bridge, so an env-pinned
+            // port reaches the webview instead of being silently ignored.
+            let inject = format!("window.__CODESMITH_BRIDGE_PORT__ = {port};");
+            if let Some(webview) = app.get_webview_window("main") {
+                let _ = webview.eval(&inject);
+            }
             tauri::async_runtime::spawn(async move {
                 match host::codesmith::CodesmithProcess::spawn(codesmith_path.as_ref()).await {
                     Ok(backend) => {
@@ -37,6 +45,7 @@ pub fn run() {
                             event_sinks: Default::default(),
                             live_sinks: Default::default(),
                             pending_inputs: Default::default(),
+                            pending_rpc_ids: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

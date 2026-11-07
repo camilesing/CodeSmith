@@ -57,6 +57,7 @@
     "@codesmith/client-connection": "workspace:*",
     "@codesmith/client-locale": "workspace:*",
     "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-approval": "workspace:*",
     "@codesmith/client-ui-conversation": "workspace:*",
     "@codesmith/client-ui-input-trigger": "workspace:*",
     "@codesmith/client-ui-layout": "workspace:*",

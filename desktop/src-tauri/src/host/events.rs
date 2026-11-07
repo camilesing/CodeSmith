@@ -18,7 +18,7 @@
 //! absent (the runtime event carries no tool call id) and `reason` carries
 //! the description.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// A pending waterfall awaiting its `$events/result`.
 #[derive(Debug, Clone)]
@@ -38,7 +38,10 @@ pub enum InputKind {
 
 /// `approval.required` payload → (eventId, waterfall frame).
 pub fn approval_waterfall(session_id: &str, payload: &Value) -> Option<(String, Value)> {
-    let id = payload.get("id").or_else(|| payload.get("approval_id")).and_then(Value::as_str)?;
+    let id = payload
+        .get("id")
+        .or_else(|| payload.get("approval_id"))
+        .and_then(Value::as_str)?;
     let tool_name = payload
         .get("tool_name")
         .and_then(Value::as_str)
@@ -46,7 +49,10 @@ pub fn approval_waterfall(session_id: &str, payload: &Value) -> Option<(String, 
     let mut request = json!({ "toolName": tool_name });
     // Optional fields must be ABSENT, not null — a null reaches the client as
     // a present typed value.
-    for (field, key) in [("description", "reason"), ("intent_summary", "displayReason")] {
+    for (field, key) in [
+        ("description", "reason"),
+        ("intent_summary", "displayReason"),
+    ] {
         if let Some(text) = payload.get(field).and_then(Value::as_str) {
             if !text.is_empty() {
                 request[key] = json!(text);
@@ -135,7 +141,9 @@ pub fn question_answers(outcome: &Value) -> Option<Vec<Value>> {
     if outcome.get("kind").and_then(Value::as_str) != Some("result") {
         return None;
     }
-    let answers = outcome.pointer("/value/answers").and_then(Value::as_array)?;
+    let answers = outcome
+        .pointer("/value/answers")
+        .and_then(Value::as_array)?;
     Some(
         answers
             .iter()
@@ -143,12 +151,7 @@ pub fn question_answers(outcome: &Value) -> Option<Vec<Value>> {
                 let selected = answer
                     .get("selected")
                     .and_then(Value::as_array)
-                    .map(|labels| {
-                        labels
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                    })
+                    .map(|labels| labels.iter().filter_map(Value::as_str).collect::<Vec<_>>())
                     .unwrap_or_default();
                 let label = selected.first().copied().unwrap_or_default();
                 let custom = answer.get("custom").and_then(Value::as_str);
@@ -187,8 +190,14 @@ mod tests {
 
     #[test]
     fn approval_decision_maps_every_outcome_kind() {
-        assert_eq!(approval_decision(&json!({"kind":"result","value":"allowed-once"})), "allow");
-        assert_eq!(approval_decision(&json!({"kind":"result","value":"rejected"})), "deny");
+        assert_eq!(
+            approval_decision(&json!({"kind":"result","value":"allowed-once"})),
+            "allow"
+        );
+        assert_eq!(
+            approval_decision(&json!({"kind":"result","value":"rejected"})),
+            "deny"
+        );
         assert_eq!(approval_decision(&json!({"kind":"next"})), "deny");
         assert_eq!(
             approval_decision(&json!({"kind":"rejected","error":{"name":"Error","message":"x"}})),
