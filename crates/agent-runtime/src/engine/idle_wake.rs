@@ -49,8 +49,8 @@
 //!   enters the transcript and the session journal, per "model-visible
 //!   means logged"); it is NOT prefix-cache-frozen content.
 
-use super::RUNTIME_EVENT_PREFIX;
 use super::inbox::followup_wake_pending;
+use super::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use crate::engine::{Engine, TurnEnd};
 use crate::events::TurnOutcomeStatus;
 use crate::ops::Op;
@@ -159,15 +159,16 @@ impl Engine {
 /// drain is about to deliver.
 pub(crate) fn idle_wake_message(parked: usize) -> String {
     let plural = if parked == 1 { "" } else { "s" };
-    format!(
-        "{RUNTIME_EVENT_PREFIX} kind=\"idle_wake\" visibility=\"internal\">\n\
-This is an internal runtime event, not user input. While the session was idle, {parked} \
+    runtime_event_frame(
+        RuntimeEventKind::IdleWake,
+        &format!(
+            " While the session was idle, {parked} \
 background sub-agent completion{plural} landed; they follow this message as \
 subagent_completion runtime events. Use them to continue coordinating the task — \
 read results via `agent_eval` where needed, decide follow-up work, and report progress \
-to the user. Do not explain the sentinel protocol and do not quote the raw XML unless \
-the user explicitly asks to debug sub-agent internals.\n\
-</codesmith:runtime_event>",
+to the user. Do not explain the sentinel protocol and do not quote the raw \
+XML unless the user explicitly asks to debug sub-agent internals."
+        ),
     )
 }
 

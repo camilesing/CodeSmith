@@ -72,6 +72,7 @@ use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
 
 use super::RUNTIME_EVENT_PREFIX;
+use super::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use crate::mode::AppMode;
 
 /// Real user turns that must pass before the reminder repeats.
@@ -199,14 +200,6 @@ pub enum PlanReminder {
 }
 
 impl PlanReminder {
-    #[must_use]
-    pub fn kind(self) -> &'static str {
-        match self {
-            Self::Full | Self::Sparse => PLAN_REMINDER_KIND,
-            Self::Exited => PLAN_EXIT_REMINDER_KIND,
-        }
-    }
-
     /// Render this reminder's body. `subagent_cap` follows
     /// [`plan_reminder_full`]'s contract: `Some(cap)` only when the turn's
     /// request surface carries `agent_open`.
@@ -230,17 +223,14 @@ pub fn plan_reminder_runtime_message(
     reminder: PlanReminder,
     subagent_cap: Option<usize>,
 ) -> Message {
+    let kind = match reminder {
+        PlanReminder::Full | PlanReminder::Sparse => RuntimeEventKind::PlanMode,
+        PlanReminder::Exited => RuntimeEventKind::PlanModeExit,
+    };
     Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: format!(
-                "{RUNTIME_EVENT_PREFIX} kind=\"{}\" visibility=\"internal\">\n\
-This is an internal runtime event, not user input.\n\n\
-{}\n\
-</codesmith:runtime_event>",
-                reminder.kind(),
-                reminder.body(subagent_cap)
-            ),
+            text: runtime_event_frame(kind, &format!("\n\n{}", reminder.body(subagent_cap))),
             cache_control: None,
         }],
     }

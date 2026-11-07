@@ -3,6 +3,9 @@
 本文档为开发者和贡献者提供 codesmith 架构的概览。
 深度设计叙述（provider 接缝、框架核心执行器、guardrail 吸收、扩展系统）见
 [DESIGN_INTERNALS_cn.md](DESIGN_INTERNALS_cn.md)。
+DSH 事件流概念图谱（Source / Thread / Eval / Policy / Ticket / Mandate /
+Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它的代码）
+见 [DSH_CONCEPTS_cn.md](DSH_CONCEPTS_cn.md)。
 
 当前边界说明（v0.12.0）：
 - **框架层 / 实现层拆分。** 工作区分为框架群 —— `protocol`、`tools`、`agent`、

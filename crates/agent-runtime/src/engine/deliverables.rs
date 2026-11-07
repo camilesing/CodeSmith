@@ -18,6 +18,7 @@
 //! * Pushes are user-role runtime events on the append-only transcript
 //!   (never the system prompt), so the prefix cache is unaffected.
 
+use super::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
 use regex::Regex;
@@ -134,15 +135,15 @@ pub fn deliverables_runtime_message(missing: &[String], total: usize) -> Message
     Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: format!(
-                "{} kind=\"deliverables_check\" visibility=\"internal\">\n\
-This is an internal runtime event, not user input. The engine checked the deliverable paths \
+            text: runtime_event_frame(
+                RuntimeEventKind::DeliverablesCheck,
+                &format!(
+                    " The engine checked the deliverable paths \
 named in the task instruction against disk. The following are still missing:\n\
 {list}\n\
 Create them before finishing — a missing deliverable fails the task regardless of other \
-work. ({present}/{total} present.)\n\
-</codesmith:runtime_event>",
-                super::RUNTIME_EVENT_PREFIX
+work. ({present}/{total} present.)"
+                ),
             ),
             cache_control: None,
         }],
