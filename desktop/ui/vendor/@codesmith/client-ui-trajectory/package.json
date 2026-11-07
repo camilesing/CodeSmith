@@ -1,0 +1,85 @@
+{
+  "name": "@codesmith/client-ui-trajectory",
+  "description": "Trajectory event ledger and timing overview with live tool-result inspection",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts"
+    }
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-session-controller",
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-conversation",
+        "@codesmith/client-ui-renderer",
+        "@codesmith/client-ui-session"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-conversation": "workspace:*",
+    "@codesmith/util-values": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/cordis": "workspace:~",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-chat": "workspace:*",
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@tanstack/react-virtual": "3.14.10",
+    "diff": "^9.0.0",
+    "@codesmith/api-gateway": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts",
+    "lib/typert.host.js",
+    "lib/typert.host.d.ts",
+    "lib/typert.remote-client.js",
+    "lib/typert.remote-client.d.ts"
+  ],
+  "dependencies": {
+    "@codesmith/typert-protocol": "workspace:*",
+    "zod": "4.4.3",
+    "@codesmith/schemastery": "workspace:~"
+  }
+}

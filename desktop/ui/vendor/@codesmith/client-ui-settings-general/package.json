@@ -1,0 +1,76 @@
+{
+  "name": "@codesmith/client-ui-settings-general",
+  "description": "Settings ownerless-copy and product onboarding plugin: the General section, shell trigger/header chrome content, settings dictionaries, and the versioned welcome notice",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/client-ui-settings",
+        "@codesmith/client-locale",
+        "@codesmith/client-connection",
+        "@codesmith/api-remotes",
+        "@codesmith/client-ui-sidebar",
+        "@codesmith/client-shortcuts",
+        "@codesmith/client-modules",
+        "@codesmith/client-ui-layout"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@codesmith/schemastery": "workspace:~"
+  },
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-remote-access": "workspace:*",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/client-connection": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-modules": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-layout": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/client-ui-settings": "workspace:*",
+    "@codesmith/client-ui-sidebar": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "clsx": "^2.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@codesmith/client-shortcuts": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ]
+}

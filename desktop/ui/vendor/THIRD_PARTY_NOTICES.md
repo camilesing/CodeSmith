@@ -1,7 +1,7 @@
 # Third-party notices
 
 The packages under this directory are vendored from DeepSeek Harness
-(source checkout `/Users/camile/Work/TypeScript/deepseek-harness`, commit `8bd073392eef6f54e921a093b95076248eb08cbb`), MIT licensed.
+(source checkout `/private/tmp/dsh-vendor-8bd07339`, commit `8bd073392eef6f54e921a093b95076248eb08cbb`), MIT licensed.
 They were copied from the upstream build output and mechanically
 rebranded by `desktop/scripts/vendor_client.py` (package scope,
 globals, CSS/DOM prefixes and product copy; the rewrite table is

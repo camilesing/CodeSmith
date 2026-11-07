@@ -1328,7 +1328,7 @@ window.__ModuleLoader__.load({
 		const pt = { "language.title": "Idioma" };
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/locale/src/client/LanguageRow.module.css.mjs
-		const css = ".-VITsW_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.-VITsW_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .-VITsW_rowText{padding-right:16px}}.-VITsW_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.-VITsW_selector{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}@media (hover:hover){.-VITsW_selector:hover{background:var(--dsw-alias-interactive-bg-hover)}}.-VITsW_chevron{flex:none}";
+		const css = ".DIwW8a_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.DIwW8a_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .DIwW8a_rowText{padding-right:16px}}.DIwW8a_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.DIwW8a_selector{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}@media (hover:hover){.DIwW8a_selector:hover{background:var(--dsw-alias-interactive-bg-hover)}}.DIwW8a_chevron{flex:none}";
 		const tagId = "@codesmith/client-locale/LanguageRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -1338,11 +1338,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var LanguageRow_module_css_default = {
-			"chevron": "-VITsW_chevron",
-			"row": "-VITsW_row",
-			"rowText": "-VITsW_rowText",
-			"selector": "-VITsW_selector",
-			"title": "-VITsW_title"
+			"chevron": "DIwW8a_chevron",
+			"row": "DIwW8a_row",
+			"rowText": "DIwW8a_rowText",
+			"selector": "DIwW8a_selector",
+			"title": "DIwW8a_title"
 		};
 		//#endregion
 		//#region lib/types/client/LanguageRow.js

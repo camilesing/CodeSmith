@@ -14,5 +14,10 @@
   },
   "dependencies": {
     "@codesmith/client-web": "workspace:*"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

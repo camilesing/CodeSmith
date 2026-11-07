@@ -12,7 +12,7 @@ Design spec: `docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md`.
 
 ```
 Tauri App (desktop/)
-├─ WebView (vendored client UI, 46-package closure)
+├─ WebView (vendored client UI, 58-package closure)
 │   ├─ our boot: the __CODESMITH_BOOT__ plugin graph + first-party brand row
 │   └─ our connection carrier: fetch+NDJSON transport (no WebSocket)
 │        rpc.call / rpc.open ─► loopback bridge http://127.0.0.1:1421
@@ -112,13 +112,32 @@ Copied from the design spec §10, plus what the implementation added:
   source commit); no live tracking.
 - The RPC surface is a subset; unimplemented endpoints answer
   `gateway/method-unavailable` instead of pretending success
-  (`session/updateQueue`, fork/rename/search, …).
-- Upstream-only concepts (accounts/balance, plugin market, schedules,
-  deliverables, attachment upload) are not simulated — their plugins are
-  kept out of the boot roster or answer empty states.
+  (`session/updateQueue`, session pinning, …). Session rename/fork/search,
+  archive/unarchive, the skills catalog, the desktop settings document,
+  schedules over `/v1/automations`, and the control projections ARE bridged.
+- Upstream-only concepts (accounts/balance, plugin market, jobs list,
+  attachment upload, sidebar terminal/files/browser/preview, subagent views,
+  goal bar, plan preview) are not simulated — their plugins stay out of the
+  boot roster or answer empty states.
+- Schedules: automations accept exactly two RRULE shapes (`FREQ=HOURLY` with
+  INTERVAL/BYDAY, `FREQ=WEEKLY` with BYDAY/BYHOUR/BYMINUTE, evaluated in the
+  machine's local zone). The task page's daily/weekly/whole-hour/cron shapes
+  compile into them; one-shot timings, sub-hour intervals, foreign time
+  zones, and other cron shapes fail loud at create/edit instead of silently
+  rescheduling. "Ask the model" task creation opens a session, but the model
+  has no schedule-registration tool — use the manual form.
 - Tool-call output deltas are not streamed; tool nodes settle from their
-  durable results. User questions have no HTTP cancel route, so an unanswered
-  question waterfall waits for the runtime's own deadline.
+  durable results. Tool names are normalized to the vendored cards'
+  vocabulary at the wire (`exec_shell` → bash card, `read_file` → read card,
+  …); the runtime record keeps CodeSmith's real names, and replayed tool
+  calls lose their arguments (durable items carry result metadata only).
+- User questions have no HTTP cancel route, so an unanswered question
+  waterfall waits for the runtime's own deadline; question requests carry no
+  tool call id, so the composer card renders without the countdown claim.
+- The composer's model seat can stay on its loading label on the blank/home
+  session even though the catalog loads — the directory waits on a
+  client-side condition not yet fully diagnosed; `/model` selection still
+  works through the popup once a session has a turn.
 - The rebrand rewrite is textual (see the audit note in `vendor_client.py`'s
   doc comment): a future upstream offset that depends on a brand string's
   length would not be caught by the script — `check_brand.py` catches the

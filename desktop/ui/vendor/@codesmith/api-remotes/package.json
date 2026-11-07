@@ -58,6 +58,7 @@
     "@codesmith/client-file-upload": "workspace:*",
     "@codesmith/typert-protocol": "workspace:*",
     "@codesmith/cordis": "workspace:~",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@codesmith/client-ui-trajectory": "workspace:*"
   }
 }

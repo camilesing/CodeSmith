@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
@@ -124,10 +124,16 @@ impl CodesmithProcess {
         if !resp.status().is_success() {
             bail!("GET {path}: {}", resp.status());
         }
-        resp.json().await.with_context(|| format!("GET {path} body"))
+        resp.json()
+            .await
+            .with_context(|| format!("GET {path} body"))
     }
 
-    pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
+    pub async fn post<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T> {
         let resp = self
             .auth(self.client.post(format!("{}{path}", self.base_url)))
             .json(body)
@@ -135,9 +141,15 @@ impl CodesmithProcess {
             .await
             .with_context(|| format!("POST {path}"))?;
         if !resp.status().is_success() {
-            bail!("POST {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
+            bail!(
+                "POST {path}: {} {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
         }
-        resp.json().await.with_context(|| format!("POST {path} body"))
+        resp.json()
+            .await
+            .with_context(|| format!("POST {path} body"))
     }
 
     pub async fn post_empty(&self, path: &str) -> Result<()> {
@@ -148,12 +160,20 @@ impl CodesmithProcess {
             .await
             .with_context(|| format!("POST {path}"))?;
         if !resp.status().is_success() {
-            bail!("POST {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
+            bail!(
+                "POST {path}: {} {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
         }
         Ok(())
     }
 
-    pub async fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T> {
+    pub async fn patch<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T> {
         let resp = self
             .auth(self.client.patch(format!("{}{path}", self.base_url)))
             .json(body)
@@ -161,9 +181,33 @@ impl CodesmithProcess {
             .await
             .with_context(|| format!("PATCH {path}"))?;
         if !resp.status().is_success() {
-            bail!("PATCH {path}: {} {}", resp.status(), resp.text().await.unwrap_or_default());
+            bail!(
+                "PATCH {path}: {} {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
         }
-        resp.json().await.with_context(|| format!("PATCH {path} body"))
+        resp.json()
+            .await
+            .with_context(|| format!("PATCH {path} body"))
+    }
+
+    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let resp = self
+            .auth(self.client.delete(format!("{}{path}", self.base_url)))
+            .send()
+            .await
+            .with_context(|| format!("DELETE {path}"))?;
+        if !resp.status().is_success() {
+            bail!(
+                "DELETE {path}: {} {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
+        }
+        resp.json()
+            .await
+            .with_context(|| format!("DELETE {path} body"))
     }
 
     /// A long-lived SSE body as raw text chunks; the caller parses `data:`

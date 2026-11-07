@@ -12,7 +12,7 @@ CodeSmith 桌面端是一个 Tauri 2 应用：UI 整体 vendor 自一个上游�
 
 ```
 Tauri App (desktop/)
-├─ WebView（vendored 客户端 UI，46 包闭包）
+├─ WebView（vendored 客户端 UI，58 包闭包）
 │   ├─ 我方 boot：__CODESMITH_BOOT__ 插件图 + 第一方品牌行
 │   └─ 我方 connection 载体：fetch+NDJSON 传输（无 WebSocket）
 │        rpc.call / rpc.open ─► 环回桥 http://127.0.0.1:1421
@@ -102,11 +102,27 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 - vendored 副本与上游的同步是手工的（`vendor_client.py` 记录来源
   commit）；没有实时跟踪。
 - RPC 面是子集；未实现端点按 `gateway/method-unavailable` 返回错误态，
-  不假装成功（`session/updateQueue`、fork/rename/search 等）。
-- 上游独有概念（账户/余额、插件市场、日程、deliverables、附件上传）
-  不仿真——对应插件不进 boot roster 或返回空态。
-- 工具调用的输出增量不流式；工具节点由持久化结果落定。用户问题没有
-  HTTP 取消路由，未作答的问题 waterfall 等运行时自身的截止时间。
+  不假装成功（`session/updateQueue`、会话置顶等）。会话重命名/复刻/
+  搜索、归档/取消归档、技能目录、桌面设置文档、基于 `/v1/automations`
+  的任务页、控制流投影均已接通。
+- 上游独有概念（账户/余额、插件市场、后台任务列表、附件上传、右侧栏
+  终端/文件/浏览器/预览、子代理视图、目标条、计划预览）不仿真——对应
+  插件不进 boot roster 或返回空态。
+- 任务页：automations 只接受两种 RRULE 形态（`FREQ=HOURLY` 带
+  INTERVAL/BYDAY，`FREQ=WEEKLY` 带 BYDAY/BYHOUR/BYMINUTE，按机器本地
+  时区求值）。任务页的每日/每周/整小时间隔/cron 形态会编译过去；一次性
+  定时、不足一小时的间隔、异时区、其余 cron 形态在创建/编辑时响亮失败，
+  而不是静默改期。"让模型创建"只打开会话——模型没有注册日程的工具，
+  请用手动表单。
+- 工具调用的输出增量不流式；工具节点由持久化结果落定。工具名在桥的
+  事件映射处规范化为 vendored 卡片词汇（`exec_shell` → bash 卡、
+  `read_file` → read 卡……）；运行时记录保留 CodeSmith 真名，且回放的
+  工具调用丢失参数（持久化条目只带结果元数据）。
+- 用户问题没有 HTTP 取消路由，未作答的问题 waterfall 等运行时自身的
+  截止时间；问题请求不带工具调用 id，输入框的问题卡不渲染倒计时。
+- 输入框的模型座位在空白/首页会话上可能停留在"正在加载模型…"——目录
+  已加载，但客户端侧还有一个未完全定位的等待条件；`/model` 弹层在会话
+  有过一轮对话后仍可用。
 - 去品牌改写是文本级的（审计说明见 `vendor_client.py` 模块注释）：未来
   上游若出现依赖品牌字符串长度的偏移量，脚本不会发现——
   `check_brand.py` 管品牌命中，升级上游 commit 时需人工复核偏移。

@@ -13,20 +13,22 @@
 pub mod codesmith;
 pub mod events;
 pub mod mapper;
+pub mod schedule;
 pub mod sessions;
+pub mod settings;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{bail, Context, Result};
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
@@ -44,9 +46,22 @@ pub struct HostState {
     pub live_sinks: Mutex<HashMap<String, (String, mpsc::Sender<Value>)>>,
     /// Waterfalls awaiting their `$events/result`, by event id.
     pub pending_inputs: Mutex<HashMap<String, events::PendingInput>>,
+    /// Prompt rpcIds awaiting their `user/message` echo, per session (FIFO —
+    /// the client clears its optimistic copy when the echoed message carries
+    /// `source.rpcId`).
+    pub pending_rpc_ids: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl HostState {
+    /// The desktop shell's settings home (`<codesmith home>/desktop`), where
+    /// the UI preference document lives.
+    pub fn settings_home(&self) -> PathBuf {
+        std::env::var("CODESMITH_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| self.cwd.clone()))
+            .join(".codesmith")
+    }
+
     /// Push one increment frame to every open stream of `endpoint`.
     pub async fn push_live(&self, endpoint: &str, frame: Value) {
         let sinks = self.live_sinks.lock().await;
@@ -120,7 +135,7 @@ fn workspace_view(cwd: &std::path::Path) -> Value {
 
 /// The single implicit workspace with the live session list folded in — the
 /// client associates a selected session with a workspace through this list.
-async fn workspace_view_live(host: &HostState) -> Value {
+pub(super) async fn workspace_view_live(host: &HostState) -> Value {
     let mut view = workspace_view(&host.cwd);
     if let Ok(threads) = host
         .backend
@@ -132,6 +147,19 @@ async fn workspace_view_live(host: &HostState) -> Value {
     view
 }
 
+/// The workspace view plus the archived session ids (the sidebar's archived
+/// filter and the archive/unarchive hover action read this set).
+async fn workspace_view_with_archived(host: &HostState) -> (Value, Vec<String>) {
+    let view = workspace_view_live(host).await;
+    let archived = host
+        .backend
+        .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200&archived_only=true")
+        .await
+        .map(|threads| threads.into_iter().map(|t| t.id).collect())
+        .unwrap_or_default();
+    (view, archived)
+}
+
 /// Dispatch a unary client endpoint. `payload` is the raw `{args: …}` body.
 pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Value {
     let _ = payload.get("args");
@@ -139,34 +167,122 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
         "session/list" => session_list(host).await,
         "session/create" => session_create(host).await,
         "session/modelCatalog" => model_catalog(host).await,
-        "session/page" => match sessions::page(host, payload.get("args").unwrap_or(&Value::Null)).await {
-            Ok(value) => rpc_ok(value),
-            Err(err) => rpc_error("gateway/internal", format!("session/page: {err:#}")),
-        },
-        "session/prompt" => match sessions::prompt(host, payload.get("args").unwrap_or(&Value::Null)).await {
-            Ok(value) => rpc_ok(value),
-            Err(err) => rpc_error("gateway/internal", format!("session/prompt: {err:#}")),
-        },
-        "session/cancel" => match sessions::cancel(host, payload.get("args").unwrap_or(&Value::Null)).await {
-            Ok(value) => rpc_ok(value),
-            Err(err) => rpc_error("gateway/internal", format!("session/cancel: {err:#}")),
-        },
+        "session/page" => {
+            match sessions::page(host, payload.get("args").unwrap_or(&Value::Null)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error("gateway/internal", format!("session/page: {err:#}")),
+            }
+        }
+        "session/prompt" => {
+            match sessions::prompt(host, payload.get("args").unwrap_or(&Value::Null)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error("gateway/internal", format!("session/prompt: {err:#}")),
+            }
+        }
+        "session/cancel" => {
+            match sessions::cancel(host, payload.get("args").unwrap_or(&Value::Null)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error("gateway/internal", format!("session/cancel: {err:#}")),
+            }
+        }
         "session/selectModel" => {
             match sessions::select_model(host, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),
                 Err(err) => rpc_error("gateway/internal", format!("session/selectModel: {err:#}")),
             }
         }
-        "$events/result" => match events_result(host, payload.get("args").unwrap_or(&Value::Null)).await {
+        "$events/result" => {
+            match events_result(host, payload.get("args").unwrap_or(&Value::Null)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(
+                    "gateway/arguments-invalid",
+                    format!("$events/result: {err:#}"),
+                ),
+            }
+        }
+        "session/rename" => match sessions::rename(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
-            Err(err) => rpc_error("gateway/arguments-invalid", format!("$events/result: {err:#}")),
+            Err(err) => rpc_error("gateway/internal", format!("session/rename: {err:#}")),
         },
+        "session/fork" => match sessions::fork(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/fork: {err:#}")),
+        },
+        "session/search" => match sessions::search(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/search: {err:#}")),
+        },
+        "workspace/archiveSession" | "workspace/unarchiveSession" => {
+            match sessions::set_archived(
+                host,
+                args_of(payload),
+                endpoint.ends_with("archiveSession"),
+            )
+            .await
+            {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error("gateway/internal", format!("{endpoint}: {err:#}")),
+            }
+        }
+        // Pinning is a Host-workspace concept with no CodeSmith equivalent.
+        "workspace/pinSession" | "workspace/unpinSession" => rpc_error(
+            "gateway/method-unavailable",
+            "codesmith desktop: session pinning has no CodeSmith equivalent",
+        ),
+        "skills/list" => match sessions::skills(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("skills/list: {err:#}")),
+        },
+        "settings/describe" => rpc_ok(settings::describe(&host.settings_home())),
+        "settings/mutate" | "settings/update" => {
+            match settings::mutate(host, &host.settings_home(), endpoint, args_of(payload)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error("gateway/arguments-invalid", format!("{endpoint}: {err:#}")),
+            }
+        }
+        "settings/openSettingsDocument" => rpc_ok(json!({ "opened": false })),
+        "userQuestions/answer" => rpc_ok(json!(false)),
+        "schedule/catalog" => match schedule::catalog(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("schedule/catalog: {err:#}")),
+        },
+        "schedule/create" => match schedule::create(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(
+                "gateway/arguments-invalid",
+                format!("schedule/create: {err:#}"),
+            ),
+        },
+        "schedule/edit" => match schedule::edit(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(
+                "gateway/arguments-invalid",
+                format!("schedule/edit: {err:#}"),
+            ),
+        },
+        "schedule/run" => match schedule::run(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("schedule/run: {err:#}")),
+        },
+        "schedule/history" => match schedule::history(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("schedule/history: {err:#}")),
+        },
+        "schedule/deleteInactive" => {
+            match schedule::delete_inactive(host, args_of(payload)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(
+                    "gateway/internal",
+                    format!("schedule/deleteInactive: {err:#}"),
+                ),
+            }
+        }
+        "schedule/deliveryLimits" => rpc_ok(json!({ "days": 30, "records": 100 })),
         "session/updateQueue" => rpc_error(
             "gateway/method-unavailable",
             "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
         ),
         "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
-        "settings/describe" => rpc_ok(json!({ "writable": true, "hasDocument": false, "namespaces": [] })),
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
@@ -184,17 +300,39 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
     }
 }
 
+/// The `args` member of a client request: object remotes send `{args: {…}}`,
+/// positional remotes `{args: […]}`.
+fn args_of(payload: &Value) -> &Value {
+    payload.get("args").unwrap_or(&Value::Null)
+}
+
 /// Baseline frames of a stream endpoint; `Err` maps to an error frame.
-pub async fn stream_baseline(host: &HostState, endpoint: &str, stream_id: String) -> Result<Vec<Value>> {
+pub async fn stream_baseline(
+    host: &HostState,
+    endpoint: &str,
+    stream_id: String,
+) -> Result<Vec<Value>> {
     match endpoint {
-        "session/control" => Ok(vec![json!({ "type": "baseline", "value": { "projections": {} } })]),
+        "session/control" => sessions::control_baseline(host).await,
+        "toolResults/watch" => {
+            // CodeSmith does not stream tool output deltas (known limitation):
+            // one "no live value" frame, then the stream parks until the
+            // watcher unsubscribes — ending it would read as a stream failure.
+            let _ = stream_id;
+            Ok(vec![json!({ "available": false })])
+        }
+        // The runtime's user-input requests carry no tool call id, so the
+        // client never opens a foreground claim; an explicit attachWait (a
+        // continued question) has no answerable wait here and ends with no
+        // frames, exactly like a Host whose wait already ended.
+        "userQuestions/attachWait" => Ok(Vec::new()),
         "workspace/follow" => {
-            let view = workspace_view_live(host).await;
+            let (view, archived) = workspace_view_with_archived(host).await;
             Ok(vec![json!({
                 "type": "baseline",
                 "value": {
                     "items": [view],
-                    "archivedSessionIds": [],
+                    "archivedSessionIds": archived,
                     "pinnedSessionIds": [],
                 }
             })])
@@ -213,9 +351,7 @@ pub async fn stream_baseline(host: &HostState, endpoint: &str, stream_id: String
             // the waterfall pump); reachable only through it.
             Ok(Vec::new())
         }
-        other => Err(anyhow!(
-            "codesmith desktop: stream {other} is not implemented yet"
-        )),
+        other => bail!("codesmith desktop: stream {other} is not implemented yet"),
     }
 }
 
@@ -224,6 +360,8 @@ struct ThreadSummary {
     id: String,
     #[serde(default)]
     latest_turn_id: Option<String>,
+    #[serde(default)]
+    latest_turn_status: Option<String>,
     updated_at: String,
 }
 
@@ -244,10 +382,14 @@ async fn session_list(host: &HostState) -> Value {
                     let updated_ms = chrono::DateTime::parse_from_rfc3339(&t.updated_at)
                         .map(|dt| dt.timestamp_millis())
                         .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
+                    let running = matches!(
+                        t.latest_turn_status.as_deref(),
+                        Some("in_progress") | Some("queued")
+                    );
                     let mut row = json!({
                         "sessionId": t.id,
                         "updatedAt": updated_ms,
-                        "running": false,
+                        "running": running,
                         "blank": t.latest_turn_id.is_none(),
                         "agentAvailable": true,
                     });
@@ -266,17 +408,27 @@ async fn session_list(host: &HostState) -> Value {
 async fn session_create(host: &HostState) -> Value {
     match host.backend.post::<Value>("/v1/threads", &json!({})).await {
         Ok(thread) => {
-            let session_id = thread.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let session_id = thread
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
             // The new session must land in the workspace the sidebar groups
             // by: push an upsert increment to every open workspace follow.
             let mut view = workspace_view_live(host).await;
             if let Some(ids) = view.get_mut("sessionIds").and_then(Value::as_array_mut) {
-                if !ids.iter().any(|id| id.as_str() == Some(session_id.as_str())) {
+                if !ids
+                    .iter()
+                    .any(|id| id.as_str() == Some(session_id.as_str()))
+                {
                     ids.push(json!(session_id));
                 }
             }
-            host.push_live("workspace/follow", json!({ "type": "upsert", "workspace": view }))
-                .await;
+            host.push_live(
+                "workspace/follow",
+                json!({ "type": "upsert", "workspace": view }),
+            )
+            .await;
             // `agentPreset` stays absent (not null): the client treats null as
             // a present preset value and dereferences it.
             rpc_ok(json!({ "sessionId": session_id }))
@@ -298,17 +450,33 @@ async fn model_catalog(host: &HostState) -> Value {
             let default = default_model
                 .map(|m| json!({ "provider": m.provider, "model": m.id }))
                 .unwrap_or(Value::Null);
+            // One group per runtime provider: the client matches a session's
+            // modelSelection projection against group ids, so the group id
+            // must be the provider the runtime itself reports.
+            let mut provider_ids: Vec<&str> = Vec::new();
+            for model in &models {
+                if !provider_ids.contains(&model.provider.as_str()) {
+                    provider_ids.push(model.provider.as_str());
+                }
+            }
+            let groups: Vec<Value> = provider_ids
+                .iter()
+                .map(|provider| {
+                    json!({
+                        "id": provider,
+                        "name": provider,
+                        "models": models
+                            .iter()
+                            .filter(|m| m.provider == *provider)
+                            .map(|m| json!({ "id": m.id, "name": m.id }))
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
             rpc_ok(json!({
                 "default": default,
-                "routableProviders": [],
-                "groups": [{
-                    "id": "codesmith",
-                    "name": "CodeSmith",
-                    "models": models
-                        .iter()
-                        .map(|m| json!({ "id": m.id, "name": m.id }))
-                        .collect::<Vec<_>>(),
-                }],
+                "routableProviders": provider_ids,
+                "groups": groups,
                 "failures": [],
             }))
         }
@@ -360,10 +528,7 @@ async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
             let _: Value = host
                 .backend
                 .post(
-                    &format!(
-                        "/v1/user-input/{}/{}",
-                        pending.session_id, pending.input_id
-                    ),
+                    &format!("/v1/user-input/{}/{}", pending.session_id, pending.input_id),
                     &json!({ "answers": answers }),
                 )
                 .await

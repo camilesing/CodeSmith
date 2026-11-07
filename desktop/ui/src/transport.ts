@@ -92,7 +92,14 @@ const fakeRpc: ClientConnectionRpc = {
   },
 }
 
-const BRIDGE = `http://127.0.0.1:${globalThis.location?.port === '1421' ? 1422 : 1421}`
+const BRIDGE = bridgeUrl()
+
+/** The bridge address: the port the shell injected, else the default. */
+function bridgeUrl(): string {
+  const injected = (globalThis as { __CODESMITH_BRIDGE_PORT__?: unknown }).__CODESMITH_BRIDGE_PORT__
+  const port = typeof injected === 'number' && injected > 0 ? injected : 1421
+  return `http://127.0.0.1:${port}`
+}
 
 async function bridgeHealthy(): Promise<boolean> {
   try {
@@ -103,6 +110,21 @@ async function bridgeHealthy(): Promise<boolean> {
     return resp.ok
   } catch {
     return false
+  }
+}
+
+/**
+ * Probe the bridge until it answers or the budget runs out. The shell starts
+ * the backend child before the bridge binds, so a single one-shot probe can
+ * lose the race on a slow first boot; retrying for a few seconds keeps the
+ * real carrier instead of falling into the offline stubs.
+ */
+async function bridgeReady(): Promise<boolean> {
+  const deadline = Date.now() + 5_000
+  while (true) {
+    if (await bridgeHealthy()) return true
+    if (Date.now() >= deadline) return false
+    await new Promise(resolve => setTimeout(resolve, 250))
   }
 }
 
@@ -170,10 +192,10 @@ export const rpc: ClientConnectionRpc = new Proxy({} as ClientConnectionRpc, {
   },
 })
 
-/** Probe the bridge once before the client boots; fall back to the stubs. */
+/** Probe the bridge before the client boots; fall back to the stubs. */
 export async function initTransport(): Promise<void> {
   const holder = rpc as unknown as { __delegate?: ClientConnectionRpc }
-  if (await bridgeHealthy()) {
+  if (await bridgeReady()) {
     holder.__delegate = bridgeRpc(BRIDGE)
   } else {
     offlineBadge()

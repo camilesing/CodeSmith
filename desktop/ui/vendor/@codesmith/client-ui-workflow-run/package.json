@@ -1,0 +1,63 @@
+{
+  "name": "@codesmith/client-ui-workflow-run",
+  "description": "Durable workflow-run Conversation Node and nested member disclosure for codesmith web",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-session-controller",
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-chat",
+        "@codesmith/client-ui-conversation",
+        "@codesmith/client-ui-renderer",
+        "@codesmith/client-ui-session",
+        "@codesmith/client-ui-workspace"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-chat": "workspace:*",
+    "@codesmith/client-ui-conversation": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/client-ui-workspace": "workspace:*",
+    "@codesmith/cordis": "workspace:~",
+    "react": "^18.2.0"
+  }
+}

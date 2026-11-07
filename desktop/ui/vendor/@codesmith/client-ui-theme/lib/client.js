@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-theme/src/client/AppearanceRow.module.css.mjs
-		const css$3 = ".zWkD9a_group{border-bottom:.5px solid var(--dsw-alias-border-l2);flex-direction:column;gap:8px;padding:16px 0;display:flex}.zWkD9a_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.zWkD9a_cubeRow{flex-wrap:wrap;align-items:stretch;gap:8px;display:flex}.zWkD9a_themeCube{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-xl);font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;flex-direction:column;flex:180px;justify-content:center;align-items:center;gap:4px;padding:20px 32px;font-size:14px;line-height:22px;display:flex}@media (hover:hover){.zWkD9a_themeCube:hover:not(.zWkD9a_selected){background:var(--dsw-alias-interactive-bg-hover)}}.zWkD9a_selected{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400)}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .zWkD9a_themeCube{flex:1 1 0;padding:12px 6px}}";
+		const css$3 = ".UZoi_G_group{border-bottom:.5px solid var(--dsw-alias-border-l2);flex-direction:column;gap:8px;padding:16px 0;display:flex}.UZoi_G_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.UZoi_G_cubeRow{flex-wrap:wrap;align-items:stretch;gap:8px;display:flex}.UZoi_G_themeCube{box-sizing:border-box;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-xl);font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;flex-direction:column;flex:180px;justify-content:center;align-items:center;gap:4px;padding:20px 32px;font-size:14px;line-height:22px;display:flex}@media (hover:hover){.UZoi_G_themeCube:hover:not(.UZoi_G_selected){background:var(--dsw-alias-interactive-bg-hover)}}.UZoi_G_selected{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400)}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .UZoi_G_themeCube{flex:1 1 0;padding:12px 6px}}";
 		const tagId$3 = "@codesmith/client-ui-theme/AppearanceRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
 			const tag = document.createElement("style");
@@ -34,11 +34,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AppearanceRow_module_css_default = {
-			"cubeRow": "zWkD9a_cubeRow",
-			"group": "zWkD9a_group",
-			"selected": "zWkD9a_selected",
-			"themeCube": "zWkD9a_themeCube",
-			"title": "zWkD9a_title"
+			"cubeRow": "UZoi_G_cubeRow",
+			"group": "UZoi_G_group",
+			"selected": "UZoi_G_selected",
+			"themeCube": "UZoi_G_themeCube",
+			"title": "UZoi_G_title"
 		};
 		//#endregion
 		//#region lib/types/client/AppearanceRow.js
@@ -1130,7 +1130,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-theme/src/client/FontSizeRow.module.css.mjs
-		const css$2 = ".z1rG9a_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.z1rG9a_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .z1rG9a_row:not(.z1rG9a_stacked) .z1rG9a_rowText{padding-right:16px}.z1rG9a_stacked{flex-direction:column;align-items:stretch}.z1rG9a_stacked .z1rG9a_rowText{flex:none;padding-right:0}}.z1rG9a_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.z1rG9a_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.z1rG9a_control{align-items:center;gap:8px;display:inline-flex}.z1rG9a_stepper{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);justify-content:center;align-items:center;min-width:72px;height:36px;display:inline-flex;position:relative}.z1rG9a_value{text-align:center;font-variant-numeric:tabular-nums;min-width:18px;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}.z1rG9a_unit{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}.z1rG9a_arrows{opacity:0;flex-direction:column;gap:2px;display:flex;position:absolute;right:8px}@media (hover:hover){.z1rG9a_stepper:hover .z1rG9a_arrows{opacity:1}}.z1rG9a_stepper:focus-within .z1rG9a_arrows{opacity:1}@media (hover:none){.z1rG9a_arrows{opacity:1}}.z1rG9a_arrow{border-radius:var(--dsw-radius-xs);background:color-mix(in srgb, var(--dsw-alias-bg-layer-1) 75%, transparent);width:17px;height:12px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;justify-content:center;align-items:center;padding:0;display:inline-flex}@media (hover:hover){.z1rG9a_arrow:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1)}}.z1rG9a_arrow:disabled{color:var(--dsw-alias-label-caption);cursor:default}.z1rG9a_expander{border-radius:var(--dsw-radius-xs);width:24px;height:24px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;justify-content:center;align-items:center;padding:0;display:inline-flex}@media (hover:hover){.z1rG9a_expander:hover{background:var(--dsw-alias-interactive-bg-hover)}}.z1rG9a_expander svg{transition:transform var(--ds-transition-duration-fast) var(--ds-ease-in-out)}.z1rG9a_expander[aria-expanded=true] svg{transform:rotate(180deg)}";
+		const css$2 = ".MCiGkq_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.MCiGkq_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .MCiGkq_row:not(.MCiGkq_stacked) .MCiGkq_rowText{padding-right:16px}.MCiGkq_stacked{flex-direction:column;align-items:stretch}.MCiGkq_stacked .MCiGkq_rowText{flex:none;padding-right:0}}.MCiGkq_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.MCiGkq_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.MCiGkq_control{align-items:center;gap:8px;display:inline-flex}.MCiGkq_stepper{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);justify-content:center;align-items:center;min-width:72px;height:36px;display:inline-flex;position:relative}.MCiGkq_value{text-align:center;font-variant-numeric:tabular-nums;min-width:18px;color:var(--dsw-alias-label-primary);font-size:14px;line-height:22px}.MCiGkq_unit{color:var(--dsw-alias-label-secondary);font-size:14px;line-height:22px}.MCiGkq_arrows{opacity:0;flex-direction:column;gap:2px;display:flex;position:absolute;right:8px}@media (hover:hover){.MCiGkq_stepper:hover .MCiGkq_arrows{opacity:1}}.MCiGkq_stepper:focus-within .MCiGkq_arrows{opacity:1}@media (hover:none){.MCiGkq_arrows{opacity:1}}.MCiGkq_arrow{border-radius:var(--dsw-radius-xs);background:color-mix(in srgb, var(--dsw-alias-bg-layer-1) 75%, transparent);width:17px;height:12px;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;justify-content:center;align-items:center;padding:0;display:inline-flex}@media (hover:hover){.MCiGkq_arrow:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1)}}.MCiGkq_arrow:disabled{color:var(--dsw-alias-label-caption);cursor:default}.MCiGkq_expander{border-radius:var(--dsw-radius-xs);width:24px;height:24px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;justify-content:center;align-items:center;padding:0;display:inline-flex}@media (hover:hover){.MCiGkq_expander:hover{background:var(--dsw-alias-interactive-bg-hover)}}.MCiGkq_expander svg{transition:transform var(--ds-transition-duration-fast) var(--ds-ease-in-out)}.MCiGkq_expander[aria-expanded=true] svg{transform:rotate(180deg)}";
 		const tagId$2 = "@codesmith/client-ui-theme/FontSizeRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$2) + "]") === null) {
 			const tag = document.createElement("style");
@@ -1140,22 +1140,22 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var FontSizeRow_module_css_default = {
-			"arrow": "z1rG9a_arrow",
-			"arrows": "z1rG9a_arrows",
-			"control": "z1rG9a_control",
-			"desc": "z1rG9a_desc",
-			"expander": "z1rG9a_expander",
-			"row": "z1rG9a_row",
-			"rowText": "z1rG9a_rowText",
-			"stacked": "z1rG9a_stacked",
-			"stepper": "z1rG9a_stepper",
-			"title": "z1rG9a_title",
-			"unit": "z1rG9a_unit",
-			"value": "z1rG9a_value"
+			"arrow": "MCiGkq_arrow",
+			"arrows": "MCiGkq_arrows",
+			"control": "MCiGkq_control",
+			"desc": "MCiGkq_desc",
+			"expander": "MCiGkq_expander",
+			"row": "MCiGkq_row",
+			"rowText": "MCiGkq_rowText",
+			"stacked": "MCiGkq_stacked",
+			"stepper": "MCiGkq_stepper",
+			"title": "MCiGkq_title",
+			"unit": "MCiGkq_unit",
+			"value": "MCiGkq_value"
 		};
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-theme/src/client/FontFamilyRow.module.css.mjs
-		const css$1 = ".YJgMLa_field{flex:0 240px;min-width:0}@media (width<=767px){.YJgMLa_field{flex-basis:auto}}@media (pointer:coarse){.YJgMLa_field input{font-size:16px}}";
+		const css$1 = ".iqP0Ha_field{flex:0 240px;min-width:0}@media (width<=767px){.iqP0Ha_field{flex-basis:auto}}@media (pointer:coarse){.iqP0Ha_field input{font-size:16px}}";
 		const tagId$1 = "@codesmith/client-ui-theme/FontFamilyRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -1164,7 +1164,7 @@ window.__ModuleLoader__.load({
 			tag.textContent = css$1;
 			document.head.appendChild(tag);
 		}
-		var FontFamilyRow_module_css_default = { "field": "YJgMLa_field" };
+		var FontFamilyRow_module_css_default = { "field": "iqP0Ha_field" };
 		//#endregion
 		//#region lib/types/client/FontFamilyRow.js
 		/**
@@ -1295,7 +1295,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-theme/src/client/FontSettingsGroup.module.css.mjs
-		const css = ".FuMZOG_group:last-child>:last-child,.FuMZOG_group:last-child>:last-child>:last-child{border-bottom:0}";
+		const css = ".Pa84VW_group:last-child>:last-child,.Pa84VW_group:last-child>:last-child>:last-child{border-bottom:0}";
 		const tagId = "@codesmith/client-ui-theme/FontSettingsGroup.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -1304,7 +1304,7 @@ window.__ModuleLoader__.load({
 			tag.textContent = css;
 			document.head.appendChild(tag);
 		}
-		var FontSettingsGroup_module_css_default = { "group": "FuMZOG_group" };
+		var FontSettingsGroup_module_css_default = { "group": "Pa84VW_group" };
 		//#endregion
 		//#region lib/types/client/FontSettingsGroup.js
 		/**
