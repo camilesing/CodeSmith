@@ -46,6 +46,8 @@ pub fn run() {
                             live_sinks: Default::default(),
                             pending_inputs: Default::default(),
                             pending_rpc_ids: Default::default(),
+                            projection_clock: Default::default(),
+                            model_choices: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

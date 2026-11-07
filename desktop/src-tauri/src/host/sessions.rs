@@ -61,12 +61,15 @@ pub async fn follow(
     tx: &tokio::sync::mpsc::Sender<String>,
 ) -> Result<()> {
     let session_id = address_session_id(request)?;
+    // Drawn before the read, so these values are at least as fresh as the seq.
+    let projection_seq = host.next_projection_seq();
     let detail: Value = host
         .backend
         .get(&format!("/v1/threads/{session_id}"))
         .await?;
     let events = replay_events(&detail);
-    let last_seq = events.last().and_then(|e| e["seq"].as_u64()).unwrap_or(0);
+    // 0-based journal: an empty one opens at cursor -1 (mapper::WireSeq).
+    let last_seq = events.last().and_then(|e| e["seq"].as_i64()).unwrap_or(-1);
     let title = detail
         .pointer("/thread/title")
         .and_then(Value::as_str)
@@ -74,14 +77,15 @@ pub async fn follow(
     // The seat's model chip reads the session's modelSelection projection; a
     // thread without an explicit model resolves to the catalog default so a
     // fresh session never waits on a projection nobody will push.
-    let values = projection_values_with_model(host, &detail).await;
+    let models = runtime_models(host).await;
+    let values = projection_values(host, &session_id, &detail, &models).await;
     let snapshot = json!({
         "type": "snapshot",
         "header": { "sessionId": session_id, "title": title },
         "cursor": last_seq,
         "records": events.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
         "hasMore": false,
-        "projections": { "asOfSeq": last_seq, "values": values },
+        "projections": { "asOfSeq": projection_seq, "values": values },
         // Revision 0 = no assistant-stream frames yet; the live tail's frames
         // start at 1 (strict +1 per frame, enforced by the client).
         "assistantStream": { "revision": 0 },
@@ -168,7 +172,7 @@ pub async fn follow(
                         // Refresh the control projections (context pressure,
                         // model selection) for this session now that its turn
                         // settled with fresh usage.
-                        push_control_projection(&host, &session_id).await;
+                        push_control_projection(host, &session_id).await;
                     }
                     _ => {}
                 }
@@ -224,25 +228,25 @@ pub async fn follow(
 pub async fn page(host: &HostState, request: &Value) -> Result<Value> {
     let session_id = address_session_id(request)?;
     let through_seq = request.get("throughSeq").and_then(Value::as_i64);
-    let before_seq = request.get("beforeSeq").and_then(Value::as_u64);
+    let before_seq = request.get("beforeSeq").and_then(Value::as_i64);
     let detail: Value = host
         .backend
         .get(&format!("/v1/threads/{session_id}"))
         .await?;
     let events = replay_events(&detail);
-    let last = events.last().and_then(|e| e["seq"].as_u64()).unwrap_or(0);
-    let cut = through_seq.map(|t| t.max(0) as u64).unwrap_or(last);
+    let last = events.last().and_then(|e| e["seq"].as_i64()).unwrap_or(-1);
+    let cut = through_seq.unwrap_or(last);
     let selected: Vec<Value> = events
         .into_iter()
         .filter(|e| {
-            let seq = e["seq"].as_u64().unwrap_or(0);
+            let seq = e["seq"].as_i64().unwrap_or(0);
             seq <= cut && before_seq.is_none_or(|before| seq < before)
         })
         .collect();
     let has_more = selected
         .first()
-        .and_then(|e| e["seq"].as_u64())
-        .is_some_and(|first| first > 1);
+        .and_then(|e| e["seq"].as_i64())
+        .is_some_and(|first| first > 0);
     Ok(json!({
         "records": selected.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
         "hasMore": has_more,
@@ -376,20 +380,26 @@ pub async fn cancel(host: &HostState, request: &Value) -> Result<Value> {
     Ok(json!({ "accepted": true }))
 }
 
-/// `session/selectModel` — record the session's model for later turns.
+/// `session/selectModel` — record the session's model for later turns, then
+/// publish the switch: the seat renders the modelSelection projection, not
+/// this reply, so without a frame it would fall back to the old model.
 /// Known limitation: the runtime thread takes one model id (no provider
-/// axis), so the catalog's provider field is echoed back but not forwarded.
+/// axis), so the catalog's provider is kept only in this process's
+/// `model_choices` (display), never forwarded to the runtime.
 pub async fn select_model(host: &HostState, request: &Value) -> Result<Value> {
-    let session_id = request
+    let inner = request.get("request").unwrap_or(request);
+    let session_id = inner
         .get("sessionId")
-        .or_else(|| request.get("session_id"))
+        .or_else(|| inner.get("session_id"))
         .and_then(Value::as_str)
-        .context("selectModel without sessionId")?;
-    let model = request
+        .context("selectModel without sessionId")?
+        .to_string();
+    let model = inner
         .get("model")
         .and_then(Value::as_str)
-        .context("selectModel without model")?;
-    let provider = request
+        .context("selectModel without model")?
+        .to_string();
+    let provider = inner
         .get("provider")
         .and_then(Value::as_str)
         .unwrap_or("codesmith")
@@ -402,6 +412,11 @@ pub async fn select_model(host: &HostState, request: &Value) -> Result<Value> {
         )
         .await
         .context("patch thread model")?;
+    host.model_choices
+        .lock()
+        .await
+        .insert(session_id.clone(), (provider.clone(), model.clone()));
+    push_control_projection(host, &session_id).await;
     Ok(json!({ "selected": { "provider": provider, "model": model } }))
 }
 
@@ -415,8 +430,10 @@ fn session_id_of(request: &Value, what: &str) -> Result<String> {
 }
 
 /// `session/rename` — PATCH the thread title. The client applies the title
-/// projection at the returned seq, so the echo is the thread's latest seq.
+/// projection at the returned seq, drawn after the write so no snapshot read
+/// before it can outrank the new title.
 pub async fn rename(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let session_id = session_id_of(request, "session/rename")?;
     let title = request
         .get("title")
@@ -430,21 +447,13 @@ pub async fn rename(host: &HostState, request: &Value) -> Result<Value> {
         )
         .await
         .context("patch thread title")?;
-    let detail: Value = host
-        .backend
-        .get(&format!("/v1/threads/{session_id}"))
-        .await
-        .context("re-read renamed thread")?;
-    let seq = detail
-        .get("latest_seq")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    Ok(json!({ "title": title, "seq": seq }))
+    Ok(json!({ "title": title, "seq": host.next_projection_seq() }))
 }
 
 /// `session/fork` — POST the fork route; the child thread record names the
 /// new session.
 pub async fn fork(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let session_id = session_id_of(request, "session/fork")?;
     let child: Value = host
         .backend
@@ -470,6 +479,7 @@ pub async fn fork(host: &HostState, request: &Value) -> Result<Value> {
 /// `session/search` — the runtime summary search matches thread content; the
 /// preview snippet rides as the hit's snippet.
 pub async fn search(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let query = request
         .get("query")
         .and_then(Value::as_str)
@@ -510,6 +520,7 @@ fn urlencode(s: &str) -> String {
 /// archived flag and answer with the complete archived set (the client keeps
 /// one set, not deltas).
 pub async fn set_archived(host: &HostState, request: &Value, archived: bool) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let session_id = session_id_of(request, "workspace/archiveSession")?;
     let _: Value = host
         .backend
@@ -580,36 +591,81 @@ pub async fn skills(_host: &HostState, _request: &Value) -> Result<Value> {
     Ok(json!({ "skills": skills }))
 }
 
-/// The catalog's default selection, when the runtime advertises models.
-async fn catalog_default_model(host: &HostState) -> Option<(String, String)> {
-    catalog_selection(host, None).await
+/// One runtime model registry row (`GET /v1/models`).
+#[derive(serde::Deserialize)]
+struct RuntimeModel {
+    id: String,
+    provider: String,
+    #[serde(default)]
+    default: bool,
 }
 
-/// The (provider, model) pair for a model id — the runtime's own provider
-/// naming, so projection values match the catalog groups verbatim. A `None`
-/// model id resolves to the catalog default.
-async fn catalog_selection(host: &HostState, model_id: Option<&str>) -> Option<(String, String)> {
-    #[derive(serde::Deserialize)]
-    struct ModelEntry {
-        id: String,
-        provider: String,
-        default: bool,
+/// The runtime model registry, read once per projection batch. A failed read
+/// leaves modelSelection absent; the seat's own catalog load reports the same
+/// failure with a retry.
+async fn runtime_models(host: &HostState) -> Vec<RuntimeModel> {
+    match host.backend.get("/v1/models").await {
+        Ok(models) => models,
+        Err(err) => {
+            eprintln!("codesmith desktop: model registry read failed: {err:#}");
+            Vec::new()
+        }
     }
-    let models: Vec<ModelEntry> = host.backend.get("/v1/models").await.ok()?;
-    let chosen = match model_id {
-        Some(id) => models.iter().find(|model| model.id == id),
-        None => models.iter().find(|model| model.default),
-    }
-    .or_else(|| models.first())?;
-    Some((chosen.provider.clone(), chosen.id.clone()))
 }
 
-/// One session's projection values the bridge can compute from the runtime:
-/// context pressure (the latest turn's provider-reported prompt size) and the
-/// model selection. Everything else stays absent per the projection contract.
-fn projection_values(detail: &Value) -> Value {
-    // The latest completed turn's usage is the newest provider sample.
-    let pressure = detail
+/// The (provider, model) the seat shows for a thread's model id — runtime
+/// provider naming, so the value matches the catalog groups verbatim. The
+/// user's own pick wins while the thread still runs that id (one id can sit
+/// under several providers); otherwise the first provider listing it. A model
+/// the catalog lacks keeps its own id, so the seat reads it as not routable
+/// rather than as some other model; a thread without a model takes the
+/// catalog default.
+fn model_selection(
+    thread_model: Option<&str>,
+    choice: Option<&(String, String)>,
+    models: &[RuntimeModel],
+) -> Option<(String, String)> {
+    let default = models.iter().find(|m| m.default).or_else(|| models.first());
+    let Some(id) = thread_model else {
+        return default.map(|m| (m.provider.clone(), m.id.clone()));
+    };
+    if let Some((provider, model)) = choice.filter(|(_, model)| model == id) {
+        return Some((provider.clone(), model.clone()));
+    }
+    let provider = models
+        .iter()
+        .find(|m| m.id == id)
+        .or(default)
+        .map_or_else(|| "codesmith".to_string(), |m| m.provider.clone());
+    Some((provider, id.to_string()))
+}
+
+/// The title the runtime's own thread list derives: the user-set title, else
+/// the latest turn's input summary; null while the thread has neither.
+fn session_title(detail: &Value) -> Value {
+    let text = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    text(detail.pointer("/thread/title"))
+        .or_else(|| {
+            text(
+                detail
+                    .get("turns")
+                    .and_then(Value::as_array)
+                    .and_then(|turns| turns.last())
+                    .and_then(|turn| turn.get("input_summary")),
+            )
+        })
+        .map_or(Value::Null, Value::String)
+}
+
+/// The latest completed turn's provider-reported prompt size.
+fn context_pressure(detail: &Value) -> Option<u64> {
+    detail
         .get("turns")
         .and_then(Value::as_array)
         .and_then(|turns| {
@@ -623,97 +679,78 @@ fn projection_values(detail: &Value) -> Value {
             tokens("input_tokens")
                 + tokens("prompt_cache_hit_tokens")
                 + tokens("prompt_cache_miss_tokens")
-        });
-    let model = detail.pointer("/thread/model").and_then(Value::as_str);
-    let mut values = json!({});
-    let obj = values.as_object_mut().unwrap();
-    if let Some(tokens) = pressure {
-        obj.insert(
+        })
+}
+
+/// One session's projection values the bridge can compute from the runtime:
+/// title, context pressure and model selection. Every other key stays absent
+/// (capability absent, per the projection contract). Each write is a whole
+/// baseline for these keys, so they are always all computed together.
+async fn projection_values(
+    host: &HostState,
+    session_id: &str,
+    detail: &Value,
+    models: &[RuntimeModel],
+) -> Value {
+    let mut values = serde_json::Map::new();
+    values.insert("title".into(), session_title(detail));
+    if let Some(tokens) = context_pressure(detail) {
+        values.insert(
             "contextPressure".into(),
             json!({ "pressureTokens": tokens, "projectedTokens": tokens }),
         );
     }
-    values
-}
-
-/// `projection_values` with the model selection resolved against the catalog:
-/// the thread record carries only the model id, and the provider comes from
-/// the runtime's own model list so the value matches the catalog groups
-/// verbatim (the directory rejects a selection whose provider has no group).
-async fn projection_values_with_model(host: &HostState, detail: &Value) -> Value {
-    let mut values = projection_values(detail);
-    if values.get("modelSelection").is_some() {
-        return values;
+    let thread_model = detail
+        .pointer("/thread/model")
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty());
+    let choice = host.model_choices.lock().await.get(session_id).cloned();
+    if let Some((provider, model)) = model_selection(thread_model, choice.as_ref(), models) {
+        // ModelSelectionProjection: `next` feeds the next model step;
+        // `lastUsed` is unknown from the thread record alone.
+        values.insert(
+            "modelSelection".into(),
+            json!({ "lastUsed": null, "next": { "provider": provider, "model": model } }),
+        );
     }
-    let model = detail.pointer("/thread/model").and_then(Value::as_str);
-    if let Some((provider, model)) = catalog_selection(host, model).await {
-        if let Some(obj) = values.as_object_mut() {
-            // ModelSelectionProjection: `next` feeds the next model step;
-            // `lastUsed` is unknown from the thread record alone.
-            obj.insert(
-                "modelSelection".into(),
-                json!({ "lastUsed": null, "next": { "provider": provider, "model": model } }),
-            );
-        }
-    }
-    values
+    Value::Object(values)
 }
 
 /// `session/control` baseline: projections for the most recently used
-/// sessions (bounded — one thread read each; deeper history stays absent
-/// until its session settles a turn, which pushes a live projection frame).
+/// sessions (bounded — one thread read each). Older sessions get theirs from
+/// their follow snapshot, and every session from the frame its next settled
+/// turn or model switch pushes.
 pub async fn control_baseline(host: &HostState) -> Result<Vec<Value>> {
     #[derive(serde::Deserialize)]
     struct Summary {
         id: String,
-        #[serde(default)]
-        model: Option<String>,
     }
-    let summaries: Vec<Summary> = host
-        .backend
-        .get("/v1/threads/summary?limit=20")
-        .await
-        .unwrap_or_default();
-    // Every listed session gets a modelSelection (thread model, else the
-    // catalog default) so a fresh session's model seat never waits on a
-    // projection nobody would push; context pressure still needs the detail.
-    let fallback = catalog_default_model(host).await;
+    let seq = host.next_projection_seq();
+    let summaries: Vec<Summary> = match host.backend.get("/v1/threads/summary?limit=20").await {
+        Ok(summaries) => summaries,
+        Err(err) => {
+            eprintln!("codesmith desktop: control baseline without sessions: {err:#}");
+            Vec::new()
+        }
+    };
+    let models = runtime_models(host).await;
     let mut projections = serde_json::Map::new();
     for summary in summaries {
-        let mut values = json!({});
-        let selection = match summary.model.as_deref().filter(|m| !m.is_empty()) {
-            Some(model) => catalog_selection(host, Some(model))
-                .await
-                .or(fallback.clone()),
-            None => fallback.clone(),
-        };
-        if let Some((provider, model)) = selection {
-            values["modelSelection"] =
-                json!({ "lastUsed": null, "next": { "provider": provider, "model": model } });
-        }
-        if let Ok(detail) = host
+        match host
             .backend
             .get::<Value>(&format!("/v1/threads/{}", summary.id))
             .await
         {
-            let seq = detail
-                .get("latest_seq")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if let (Some(target), Some(source)) = (
-                values.as_object_mut(),
-                projection_values(&detail).as_object(),
-            ) {
-                for (key, item) in source {
-                    target.insert(key.clone(), item.clone());
-                }
+            Ok(detail) => {
+                let values = projection_values(host, &summary.id, &detail, &models).await;
+                projections.insert(summary.id, json!({ "asOfSeq": seq, "values": values }));
             }
-            projections.insert(
-                summary.id.clone(),
-                json!({ "asOfSeq": seq, "values": values }),
-            );
-        } else if values.as_object().is_some_and(|o| !o.is_empty()) {
-            projections.insert(summary.id, json!({ "asOfSeq": 0, "values": values }));
+            Err(err) => {
+                eprintln!(
+                    "codesmith desktop: control baseline skipped {}: {err:#}",
+                    summary.id
+                )
+            }
         }
     }
     Ok(vec![
@@ -722,25 +759,118 @@ pub async fn control_baseline(host: &HostState) -> Result<Vec<Value>> {
 }
 
 /// Push one session's refreshed projections to every open `session/control`
-/// stream (the follow loop calls this when a turn settles).
+/// stream (a settled turn or a model switch changed them).
 pub async fn push_control_projection(host: &HostState, session_id: &str) {
-    let Ok(detail) = host
+    let seq = host.next_projection_seq();
+    let detail = match host
         .backend
         .get::<Value>(&format!("/v1/threads/{session_id}"))
         .await
-    else {
-        return;
+    {
+        Ok(detail) => detail,
+        Err(err) => {
+            eprintln!("codesmith desktop: projection refresh for {session_id} failed: {err:#}");
+            return;
+        }
     };
-    let seq = detail
-        .get("latest_seq")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let changes = projection_values_with_model(host, &detail).await;
-    if changes.as_object().is_some_and(|o| !o.is_empty()) {
-        host.push_live(
-            "session/control",
-            json!({ "type": "projection", "sessionId": session_id, "seq": seq, "changes": changes }),
-        )
-        .await;
+    let models = runtime_models(host).await;
+    let values = projection_values(host, session_id, &detail, &models).await;
+    host.push_live(
+        "session/control",
+        projection_update(session_id, seq, &values),
+    )
+    .await;
+}
+
+/// A `session/control` projection frame (SessionProjectionUpdate): one
+/// `{key, val}` entry per carried key. The client iterates `changes`; an
+/// object there throws inside its control stream and ends it for good.
+fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
+    let changes: Vec<Value> = values
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, val)| json!({ "key": key, "val": val }))
+        .collect();
+    json!({ "type": "projection", "sessionId": session_id, "seq": seq, "changes": changes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(id: &str, provider: &str, default: bool) -> RuntimeModel {
+        RuntimeModel {
+            id: id.into(),
+            provider: provider.into(),
+            default,
+        }
+    }
+
+    #[test]
+    fn projection_frames_list_changes_as_key_val_entries() {
+        let frame = projection_update(
+            "thr_1",
+            7,
+            &json!({ "title": "t", "contextPressure": { "pressureTokens": 3 } }),
+        );
+        assert_eq!(frame["type"], "projection");
+        assert_eq!(frame["seq"], 7);
+        let changes = frame["changes"].as_array().expect("changes is an array");
+        assert_eq!(changes.len(), 2);
+        assert!(changes.contains(&json!({ "key": "title", "val": "t" })));
+    }
+
+    #[test]
+    fn model_selection_keeps_the_users_provider_and_never_invents_a_model() {
+        let models = [
+            model("model-pro", "alpha", true),
+            model("model-pro", "beta", false),
+            model("model-x", "beta", false),
+        ];
+        let pick = ("beta".to_string(), "model-pro".to_string());
+        let pair = |p: &str, m: &str| Some((p.to_string(), m.to_string()));
+        // The user's pick wins while the thread still runs that id...
+        assert_eq!(
+            model_selection(Some("model-pro"), Some(&pick), &models),
+            pair("beta", "model-pro")
+        );
+        // ...and yields once the thread moved to another model.
+        assert_eq!(
+            model_selection(Some("model-x"), Some(&pick), &models),
+            pair("beta", "model-x")
+        );
+        // Without a pick, a shared id resolves to its first provider.
+        assert_eq!(
+            model_selection(Some("model-pro"), None, &models),
+            pair("alpha", "model-pro")
+        );
+        // An id the catalog lacks keeps its own id (not routable, not another model).
+        assert_eq!(
+            model_selection(Some("custom-x"), None, &models),
+            pair("alpha", "custom-x")
+        );
+        // No thread model: the catalog default.
+        assert_eq!(
+            model_selection(None, None, &models),
+            pair("alpha", "model-pro")
+        );
+    }
+
+    #[test]
+    fn session_title_prefers_the_user_title_then_the_latest_prompt() {
+        assert_eq!(
+            session_title(&json!({ "thread": {}, "turns": [] })),
+            Value::Null
+        );
+        let turns = json!([{ "input_summary": "first" }, { "input_summary": "latest" }]);
+        assert_eq!(
+            session_title(&json!({ "thread": {}, "turns": turns })),
+            json!("latest")
+        );
+        assert_eq!(
+            session_title(&json!({ "thread": { "title": " Mine " }, "turns": turns })),
+            json!("Mine")
+        );
     }
 }

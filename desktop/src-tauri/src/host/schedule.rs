@@ -391,7 +391,9 @@ fn catalog_entry(automation: &Value, home: &str) -> Value {
     entry
 }
 
-/// `schedule/catalog` — one page of automations as catalog entries.
+/// `schedule/catalog` — the whole catalog as one bare array (the client's
+/// `list()` reads the result straight into its records). `active` filters the
+/// runtime's own automations list.
 pub async fn catalog(host: &HostState, request: &Value) -> Result<Value> {
     let active = request.get("active").and_then(Value::as_bool);
     let query = match active {
@@ -408,11 +410,12 @@ pub async fn catalog(host: &HostState, request: &Value) -> Result<Value> {
         .iter()
         .map(|automation| catalog_entry(automation, &home))
         .collect();
-    Ok(json!({ "entries": entries, "more": false }))
+    Ok(Value::Array(entries))
 }
 
 /// `schedule/create` — compile the typed timing and POST the automation.
 pub async fn create(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let title = request
         .get("title")
         .and_then(Value::as_str)
@@ -444,6 +447,7 @@ pub async fn create(host: &HostState, request: &Value) -> Result<Value> {
 
 /// `schedule/edit` — PATCH the mutable fields; a timing edit recompiles.
 pub async fn edit(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let id = request
         .get("id")
         .and_then(Value::as_str)
@@ -484,6 +488,7 @@ pub async fn edit(host: &HostState, request: &Value) -> Result<Value> {
 
 /// `schedule/run` — trigger one occurrence now.
 pub async fn run(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let id = request
         .get("id")
         .and_then(Value::as_str)
@@ -498,6 +503,7 @@ pub async fn run(host: &HostState, request: &Value) -> Result<Value> {
 
 /// `schedule/history` — the automation's run records as delivery receipts.
 pub async fn history(host: &HostState, request: &Value) -> Result<Value> {
+    let request = request.get("request").unwrap_or(request);
     let id = request
         .get("id")
         .and_then(Value::as_str)

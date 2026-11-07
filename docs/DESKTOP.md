@@ -134,10 +134,13 @@ Copied from the design spec §10, plus what the implementation added:
 - User questions have no HTTP cancel route, so an unanswered question
   waterfall waits for the runtime's own deadline; question requests carry no
   tool call id, so the composer card renders without the countdown claim.
-- The composer's model seat can stay on its loading label on the blank/home
-  session even though the catalog loads — the directory waits on a
-  client-side condition not yet fully diagnosed; `/model` selection still
-  works through the popup once a session has a turn.
+- The composer's model seat resolves from the session's `modelSelection`
+  projection plus the shared catalog: an empty session opens its journal at
+  cursor −1 (0-based seqs), projections ride a process-wide seq clock (the
+  runtime journals no event for a model switch), and control frames list
+  `changes` as `{key, val}` entries. Switching models in the seat persists the
+  thread model and pushes a live projection frame; a model id the catalog
+  lacks keeps its own id and reads as not routable.
 - The rebrand rewrite is textual (see the audit note in `vendor_client.py`'s
   doc comment): a future upstream offset that depends on a brand string's
   length would not be caught by the script — `check_brand.py` catches the

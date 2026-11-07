@@ -67,26 +67,36 @@ impl Frame {
     }
 }
 
-/// Allocates the monotone per-session wire seq.
+/// Allocates the monotone per-session wire seq. Seqs are 0-based, the
+/// upstream journal convention: an empty journal's cursor is -1 and its first
+/// event takes seq 0. The client's journal stream requires an opening page to
+/// end exactly at its cursor and every live event to follow the previous one
+/// by 1, so a 1-based journal would fail to open while still empty.
 #[derive(Default)]
 pub struct WireSeq {
+    /// The seq the next event takes.
     next: u64,
 }
 
 impl WireSeq {
-    pub fn resume_after(last: u64) -> Self {
-        Self { next: last }
+    /// Continue after journal cursor `last` (-1 = empty journal).
+    pub fn resume_after(last: i64) -> Self {
+        Self {
+            next: (last + 1).max(0) as u64,
+        }
     }
 
-    pub fn last(&self) -> u64 {
-        self.next
+    /// The journal cursor: the last allocated seq, -1 before any event.
+    pub fn last(&self) -> i64 {
+        self.next as i64 - 1
     }
 
     pub fn event(&mut self, kind: &str, data: Value, surface_append: bool) -> Value {
+        let seq = self.next;
         self.next += 1;
         let mut event = json!({
             "type": kind,
-            "seq": self.next,
+            "seq": seq,
             "time": chrono::Utc::now().timestamp_millis(),
             "data": data,
         });
@@ -128,7 +138,7 @@ impl SessionMapper {
     /// a mid-turn tail without a fresh `turn.started` stays on the current
     /// turn), `step` the replayed step watermark of that turn, so live steps
     /// never collide with replayed ones.
-    pub fn resume_at(last_seq: u64, turn_no: u64, step: u64) -> Self {
+    pub fn resume_at(last_seq: i64, turn_no: u64, step: u64) -> Self {
         Self {
             seq: WireSeq::resume_after(last_seq),
             turn_no,
@@ -138,11 +148,7 @@ impl SessionMapper {
     }
 
     fn started_after_seq(&self) -> i64 {
-        if self.seq.last() == 0 {
-            -1
-        } else {
-            self.seq.last() as i64
-        }
+        self.seq.last()
     }
 
     /// Emit the `start` frame and register the attempt for `item_id`.
@@ -1018,6 +1024,43 @@ mod tests {
             .unwrap();
         assert_eq!(call_b["data"]["name"], "edit");
         assert_eq!(call_b["data"]["arguments"], json!("{\"path\":\"a.rs\"}"));
+    }
+
+    #[test]
+    fn journal_seqs_are_zero_based_so_an_empty_journal_opens_at_minus_one() {
+        // The client opens an empty journal only at cursor -1 and accepts a
+        // live event only at cursor + 1, so the first event must be seq 0.
+        assert!(replay_events(&json!({ "turns": [], "items": [] })).is_empty());
+        let mut fresh = SessionMapper::resume_at(-1, 0, 0);
+        let frames = fresh.map_envelope(&json!({
+            "event": "turn.started", "turn_id": "turn_1", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        match &frames[0] {
+            Frame::Event(event) => assert_eq!(event["seq"], 0),
+            other => panic!("expected event frame, got {other:?}"),
+        }
+        let replayed = replay_events(&json!({
+            "turns": [{ "id": "turn_1", "status": "completed" }],
+            "items": [item("user_message", "completed", "hello")],
+        }));
+        let seqs: Vec<u64> = replayed
+            .iter()
+            .map(|e| e["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![0, 1, 2],
+            "dense from 0: turn/start, user/message, turn/end"
+        );
+        // A tail resumed after that replay continues at cursor + 1.
+        let mut tail = SessionMapper::resume_at(2, 1, 0);
+        let frames = tail.map_envelope(&json!({
+            "event": "turn.started", "turn_id": "turn_2", "timestamp": "2026-11-06T10:00:01Z", "payload": {}
+        }));
+        match &frames[0] {
+            Frame::Event(event) => assert_eq!(event["seq"], 3),
+            other => panic!("expected event frame, got {other:?}"),
+        }
     }
 
     #[test]
