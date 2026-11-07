@@ -1,7 +1,7 @@
 //! host: the vendored client's RPC surface, served over a loopback HTTP
 //! bridge and translated onto `codesmith serve --http`.
 //!
-//! Known limitations (spec docs/superpowers/specs/2026-11-06-codesmith-desktop-design.md):
+//! Known limitations (see docs/DESKTOP.md):
 //! - the RPC surface is a subset; unimplemented endpoints answer
 //!   `gateway/method-unavailable` (the client renders an error state,
 //!   it never pretends success);
