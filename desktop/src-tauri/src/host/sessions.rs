@@ -4,9 +4,10 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use super::mapper::{replay_events, Frame, SessionMapper};
-use super::HostState;
+use super::{HostState, SharedHost};
 
 /// Baseline (turn, step) counters a live tail resumes from, derived from the
 /// replayed journal: the replayed turn count, and the replayed step watermark
@@ -123,58 +124,15 @@ pub async fn follow(
                 // Approvals and questions ride the $events waterfall, not the
                 // follow stream; the runtime's own decision events and turn
                 // ends cancel whatever is still pending.
-                match envelope
-                    .get("event")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                {
-                    "approval.required" => {
-                        if let Some((event_id, frame)) =
-                            super::events::approval_waterfall(&session_id, &envelope["payload"])
-                        {
-                            host.push_event_frame(frame).await;
-                            host.pending_inputs.lock().await.insert(
-                                event_id.clone(),
-                                super::events::PendingInput {
-                                    session_id: session_id.clone(),
-                                    input_id: event_id.clone(),
-                                    kind: super::events::InputKind::Approval,
-                                },
-                            );
-                        }
-                    }
-                    "user_input.required" => {
-                        if let Some((input_id, frame)) =
-                            super::events::questions_waterfall(&session_id, &envelope["payload"])
-                        {
-                            host.pending_inputs.lock().await.insert(
-                                input_id.clone(),
-                                super::events::PendingInput {
-                                    session_id: session_id.clone(),
-                                    input_id: input_id.clone(),
-                                    kind: super::events::InputKind::Questions,
-                                },
-                            );
-                            host.push_event_frame(frame).await;
-                        }
-                    }
-                    "approval.decided" | "approval.timeout" => {
-                        if let Some(id) = envelope["payload"]
-                            .get("id")
-                            .or_else(|| envelope["payload"].get("approval_id"))
-                            .and_then(Value::as_str)
-                        {
-                            host.cancel_pending(id).await;
-                        }
-                    }
-                    "turn.completed" | "turn.failed" => {
-                        host.cancel_pending_for_session(&session_id).await;
-                        // Refresh the control projections (context pressure,
-                        // model selection) for this session now that its turn
-                        // settled with fresh usage.
-                        push_control_projection(host, &session_id).await;
-                    }
-                    _ => {}
+                handle_waterfall_envelope(host, &session_id, &envelope).await;
+                if matches!(
+                    envelope.get("event").and_then(Value::as_str),
+                    Some("turn.completed") | Some("turn.failed")
+                ) {
+                    // Refresh the control projections (context pressure,
+                    // model selection) for this session now that its turn
+                    // settled with fresh usage.
+                    push_control_projection(host, &session_id).await;
                 }
                 let mut frames = mapper.map_envelope(&envelope);
                 // A user message that settles a submitted prompt carries the
@@ -219,6 +177,151 @@ pub async fn follow(
         }
     }
     Ok(())
+}
+
+/// Route one runtime envelope's waterfall lifecycle (shared by the follow
+/// loops and the background watcher): register and push a new approval or
+/// question, cancel one the runtime settled, and drop whatever a finished
+/// turn leaves behind.
+pub(super) async fn handle_waterfall_envelope(
+    host: &HostState,
+    session_id: &str,
+    envelope: &Value,
+) {
+    let payload = &envelope["payload"];
+    match envelope
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "approval.required" => {
+            if let Some((event_id, frame)) = super::events::approval_waterfall(session_id, payload)
+            {
+                host.pending_inputs.lock().await.insert(
+                    event_id.clone(),
+                    super::events::PendingInput {
+                        session_id: session_id.to_string(),
+                        input_id: event_id.clone(),
+                        kind: super::events::InputKind::Approval,
+                        frame: frame.clone(),
+                    },
+                );
+                host.push_event_frame(frame).await;
+            }
+        }
+        "user_input.required" => {
+            if let Some((input_id, frame)) = super::events::questions_waterfall(session_id, payload)
+            {
+                host.pending_inputs.lock().await.insert(
+                    input_id.clone(),
+                    super::events::PendingInput {
+                        session_id: session_id.to_string(),
+                        input_id: input_id.clone(),
+                        kind: super::events::InputKind::Questions,
+                        frame: frame.clone(),
+                    },
+                );
+                host.push_event_frame(frame).await;
+            }
+        }
+        "approval.decided" | "approval.timeout" => {
+            if let Some(id) = payload
+                .get("id")
+                .or_else(|| payload.get("approval_id"))
+                .and_then(Value::as_str)
+            {
+                host.cancel_pending(id).await;
+            }
+        }
+        "turn.completed" | "turn.failed" => {
+            host.cancel_pending_for_session(session_id).await;
+        }
+        _ => {}
+    }
+}
+
+/// Arm the session's background waterfall watcher. The runtime surfaces
+/// `approval.required` / `user_input.required` only on the thread's event
+/// stream; a follow stream that is absent when one fires (page reload mid
+/// turn, a session no client follows) would leave the request invisible to
+/// every `$events` client, and the runtime's own timeout decides. One
+/// watcher per prompted session subscribes to the same tail and routes the
+/// waterfall lifecycle on its own.
+///
+/// Known limitation: the check-then-spawn window can arm two watchers for
+/// one session; pendings are keyed by runtime event id and cancels are
+/// idempotent, so a duplicate is harmless. The watcher ends with the
+/// runtime's SSE tail and re-arms on the next prompt.
+pub(super) async fn ensure_waterfall_watcher(host: &SharedHost, session_id: &str) {
+    if host
+        .waterfall_watchers
+        .lock()
+        .await
+        .contains_key(session_id)
+    {
+        return;
+    }
+    let watched = session_id.to_string();
+    let task_host = Arc::clone(host);
+    let task = tokio::spawn(async move {
+        watch_session_waterfalls(&task_host, &watched).await;
+        task_host.waterfall_watchers.lock().await.remove(&watched);
+    });
+    host.waterfall_watchers
+        .lock()
+        .await
+        .insert(session_id.to_string(), task);
+}
+
+async fn watch_session_waterfalls(host: &HostState, session_id: &str) {
+    let detail = match host
+        .backend
+        .get::<Value>(&format!("/v1/threads/{session_id}"))
+        .await
+    {
+        Ok(detail) => detail,
+        Err(err) => {
+            eprintln!("codesmith desktop: waterfall watcher for {session_id}: {err:#}");
+            return;
+        }
+    };
+    let since = detail
+        .get("latest_seq")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut lines = match host
+        .backend
+        .get_sse_lines(&format!(
+            "/v1/threads/{session_id}/events?since_seq={since}"
+        ))
+        .await
+    {
+        Ok(lines) => lines,
+        Err(err) => {
+            eprintln!("codesmith desktop: waterfall watcher for {session_id}: {err:#}");
+            return;
+        }
+    };
+    use futures_util::StreamExt;
+    let mut buffer = String::new();
+    while let Some(chunk) = lines.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(_) => return,
+        };
+        buffer.push_str(&chunk);
+        while let Some(newline) = buffer.find('\n') {
+            let line: String = buffer.drain(..=newline).collect();
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let Ok(envelope) = serde_json::from_str::<Value>(data.trim()) else {
+                continue;
+            };
+            handle_waterfall_envelope(host, session_id, &envelope).await;
+        }
+    }
 }
 
 /// `session/page` — one history window from the replayed journal.
@@ -297,10 +400,23 @@ async fn active_turn_id(host: &HostState, session_id: &str) -> Result<Option<Str
         }))
 }
 
+/// The prompt's client identity: the client sends `requestId` (its
+/// `beginSubmission` receipt) and retires the optimistic composer copy only
+/// when the settling `user/message` echo carries it back as `source.rpcId`.
+/// `rpcId` is accepted for symmetry with the echo-side field name.
+fn prompt_request_id(inner: &Value) -> Option<String> {
+    ["requestId", "rpcId"]
+        .iter()
+        .find_map(|key| inner.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
 /// `session/prompt` — queue starts a turn; steer rides the active turn.
-/// The request's `rpcId` is remembered so the follow loop can stamp the
-/// settling `user/message` echo (the client's optimistic-copy dedupe key).
-pub async fn prompt(host: &HostState, request: &Value) -> Result<Value> {
+/// The request's `requestId` is remembered so the follow loop can stamp the
+/// settling `user/message` echo (the client's optimistic-copy dedupe key),
+/// and every queued turn arms the session's waterfall watcher (approvals and
+/// questions must surface even when no client follows the session).
+pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
     let inner = request.get("request").unwrap_or(request);
     let session_id = inner
         .get("sessionId")
@@ -309,10 +425,7 @@ pub async fn prompt(host: &HostState, request: &Value) -> Result<Value> {
         .context("prompt without sessionId")?
         .to_string();
     let mode = inner.get("mode").and_then(Value::as_str).unwrap_or("queue");
-    let rpc_id = inner
-        .get("rpcId")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let rpc_id = prompt_request_id(inner);
     let content: Vec<PromptPart> = serde_json::from_value(
         inner
             .get("content")
@@ -351,6 +464,7 @@ pub async fn prompt(host: &HostState, request: &Value) -> Result<Value> {
             &json!({ "prompt": text }),
         )
         .await?;
+    ensure_waterfall_watcher(host, &session_id).await;
     if let Some(rpc) = rpc_id {
         host.pending_rpc_ids
             .lock()
@@ -805,6 +919,22 @@ mod tests {
             provider: provider.into(),
             default,
         }
+    }
+
+    #[test]
+    fn prompt_request_id_reads_the_clients_requestId_first() {
+        // The client's beginSubmission receipt rides as `requestId`; the echo
+        // side of the same identity is `source.rpcId`. Missing both means the
+        // client's optimistic copy must live until it re-reads the journal.
+        assert_eq!(
+            prompt_request_id(&json!({ "requestId": "req_1", "rpcId": "rpc_x" })),
+            Some("req_1".to_string())
+        );
+        assert_eq!(
+            prompt_request_id(&json!({ "rpcId": "rpc_x" })),
+            Some("rpc_x".to_string())
+        );
+        assert_eq!(prompt_request_id(&json!({ "sessionId": "s" })), None);
     }
 
     #[test]

@@ -5,7 +5,12 @@
 //! waterfall (frames `{type:'waterfall', event, eventId, agentId, request}`
 //! pushed to every open `$events` sink; the reply arrives as the unary
 //! `$events/result` call `{clientId, eventId, outcome}` — see the vendored
-//! api-gateway `stream-protocol.ts` for the wire shapes).
+//! api-gateway `stream-protocol.ts` for the wire shapes). Each `$events`
+//! stream owns its `clientId` (its ready frame names it), still-pending
+//! waterfalls are re-delivered to a newly opened stream (upstream re-delivers
+//! to every connecting client), and a result for an already-settled or
+//! unknown event is an idempotent no-op — the upstream gateway treats
+//! superseded results the same way.
 //!
 //! Outcome mapping: `'allowed-once'` → POST allow; `'rejected'`/`'cancelled'`
 //! → POST deny; an unclaimed waterfall (`next`, no listener answered) is
@@ -20,7 +25,9 @@
 
 use serde_json::{json, Value};
 
-/// A pending waterfall awaiting its `$events/result`.
+/// A pending waterfall awaiting its `$events/result`. The frame is kept so a
+/// newly opened `$events` stream can be handed the still-pending requests
+/// (upstream delivers pending waterfalls to every connecting client).
 #[derive(Debug, Clone)]
 pub struct PendingInput {
     pub session_id: String,
@@ -28,6 +35,8 @@ pub struct PendingInput {
     /// `/v1/user-input/{session}/{input_id}`.
     pub input_id: String,
     pub kind: InputKind,
+    /// The waterfall frame as pushed to the `$events` sinks.
+    pub frame: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
