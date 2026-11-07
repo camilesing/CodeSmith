@@ -20,6 +20,7 @@ pub mod settings;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -50,9 +51,28 @@ pub struct HostState {
     /// the client clears its optimistic copy when the echoed message carries
     /// `source.rpcId`).
     pub pending_rpc_ids: Mutex<HashMap<String, Vec<String>>>,
+    /// The seq every projection write carries (see `next_projection_seq`).
+    pub projection_clock: AtomicU64,
+    /// The provider half of each session's last `session/selectModel` in this
+    /// process. The runtime thread records only a model id, and one id can
+    /// sit under several catalog providers; recomputed projections keep the
+    /// user's provider while the thread still runs that model id.
+    pub model_choices: Mutex<HashMap<String, (String, String)>>,
 }
 
 impl HostState {
+    /// Draw the seq for one projection write — control baseline, follow
+    /// snapshot, live frame, or rename echo. The client keeps a projection
+    /// only when its seq beats the row it holds, and the runtime journals no
+    /// event for a model switch, so projections cannot ride the journal
+    /// cursor; one process-wide counter orders every write instead. Draw it
+    /// BEFORE reading runtime state, so a later read never carries an older
+    /// seq. A bridge restart is a new Host generation, which clears the
+    /// client's rows, so the counter restarts with the process.
+    pub fn next_projection_seq(&self) -> u64 {
+        self.projection_clock.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
     /// The desktop shell's settings home (`<codesmith home>/desktop`), where
     /// the UI preference document lives.
     pub fn settings_home(&self) -> PathBuf {
@@ -185,12 +205,10 @@ pub async fn dispatch(host: &HostState, endpoint: &str, payload: &Value) -> Valu
                 Err(err) => rpc_error("gateway/internal", format!("session/cancel: {err:#}")),
             }
         }
-        "session/selectModel" => {
-            match sessions::select_model(host, payload.get("args").unwrap_or(&Value::Null)).await {
-                Ok(value) => rpc_ok(value),
-                Err(err) => rpc_error("gateway/internal", format!("session/selectModel: {err:#}")),
-            }
-        }
+        "session/selectModel" => match sessions::select_model(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/selectModel: {err:#}")),
+        },
         "$events/result" => {
             match events_result(host, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),

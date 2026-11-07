@@ -191,13 +191,13 @@ pub async fn mutate(
     Ok(view)
 }
 
-/// The pure write core behind `settings/mutate` / `settings/update`.
+/// The pure write core behind `settings/mutate` / `settings/update`. The
+/// client packs `args` as an object keyed by the manifest's parameter names
+/// (`{ns, ops, expectedRevision}` / `{ns, patch, expectedRevision}` — see the
+/// gateway's `prepareInvocation`), never as a positional array.
 fn fold(home: &std::path::Path, endpoint: &str, args: &Value) -> Result<Value> {
-    let list = args
-        .as_array()
-        .context("settings write without positional args")?;
-    let ns = list
-        .first()
+    let ns = args
+        .get("ns")
         .and_then(Value::as_str)
         .context("settings write without namespace")?
         .to_string();
@@ -205,7 +205,7 @@ fn fold(home: &std::path::Path, endpoint: &str, args: &Value) -> Result<Value> {
         .into_iter()
         .find(|spec| spec.ns == ns)
         .with_context(|| format!("settings namespace {ns} is not owned by the desktop shell"))?;
-    let expected = list.get(2).and_then(Value::as_u64);
+    let expected = args.get("expectedRevision").and_then(Value::as_u64);
 
     let mut document = load_document(home);
     if let Some(expected) = expected {
@@ -223,7 +223,7 @@ fn fold(home: &std::path::Path, endpoint: &str, args: &Value) -> Result<Value> {
         .as_object_mut()
         .with_context(|| format!("settings section {ns} is not an object"))?;
     if endpoint == "settings/update" {
-        let patch = list.get(1).cloned().unwrap_or_else(|| json!({}));
+        let patch = args.get("patch").cloned().unwrap_or_else(|| json!({}));
         let patch_obj = patch
             .as_object()
             .context("settings update patch is not an object")?;
@@ -231,8 +231,8 @@ fn fold(home: &std::path::Path, endpoint: &str, args: &Value) -> Result<Value> {
             section_obj.insert(key.clone(), value.clone());
         }
     } else {
-        let ops = list
-            .get(1)
+        let ops = args
+            .get("ops")
             .and_then(Value::as_array)
             .context("settings mutate without ops")?;
         for op in ops {
@@ -304,17 +304,21 @@ mod tests {
     }
 
     #[test]
-    fn mutate_folds_ops_bumps_revision_and_persists() {
+    fn mutate_folds_object_args_bumps_revision_and_persists() {
         let home = temp_home("mutate");
+        // The wire shape is the client's object-keyed args (prepareInvocation),
+        // exactly what the browser sends.
         let view = fold(
             &home,
             "settings/mutate",
-            &json!([
-                "ui-theme",
-                [ { "op": "set", "path": ["preference"], "value": "dark" },
-                  { "op": "set", "path": ["fontSize"], "value": 16 } ],
-                0,
-            ]),
+            &json!({
+                "ns": "ui-theme",
+                "ops": [
+                    { "op": "set", "path": ["preference"], "value": "dark" },
+                    { "op": "set", "path": ["fontSize"], "value": 16 },
+                ],
+                "expectedRevision": 0,
+            }),
         )
         .expect("mutate");
         assert_eq!(view["value"]["preference"], "dark");
@@ -325,12 +329,20 @@ mod tests {
         let stale = fold(
             &home,
             "settings/mutate",
-            &json!(["ui-theme", [ { "op": "set", "path": ["preference"], "value": "light" } ], 0 ]),
+            &json!({ "ns": "ui-theme", "ops": [ { "op": "set", "path": ["preference"], "value": "light" } ], "expectedRevision": 0 }),
         );
         assert!(stale.is_err(), "stale revision must be refused");
+        // settings/update merges a patch object.
+        let updated = fold(
+            &home,
+            "settings/update",
+            &json!({ "ns": "ui-theme", "patch": { "fontSize": 18 } }),
+        )
+        .expect("update");
+        assert_eq!(updated["value"]["fontSize"], 18);
         // The document survives a reload.
         let reloaded = describe(&home);
-        assert_eq!(reloaded["namespaces"][0]["value"]["fontSize"], 16);
+        assert_eq!(reloaded["namespaces"][0]["value"]["fontSize"], 18);
         let _ = std::fs::remove_dir_all(&home);
     }
 }
