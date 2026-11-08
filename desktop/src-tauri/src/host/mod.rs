@@ -564,9 +564,8 @@ async fn session_list(host: &HostState) -> Value {
                 .map(|t| {
                     // Client timestamps are epoch milliseconds; the wire `time`
                     // and list `updatedAt` must both be integer numbers.
-                    let updated_ms = chrono::DateTime::parse_from_rfc3339(&t.updated_at)
-                        .map(|dt| dt.timestamp_millis())
-                        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
+                    let updated_ms = mapper::epoch_ms(&t.updated_at)
+                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
                     let running = matches!(
                         t.latest_turn_status.as_deref(),
                         Some("in_progress") | Some("queued")

@@ -18,11 +18,20 @@
 //! settlement while the attempt is open and only publishes it when the end
 //! frame names its seq (an end frame with nothing staged forces a rebaseline).
 //!
+//! Frame `time` is the runtime's own instant, never the mapping clock: live,
+//! every frame an envelope yields carries its `timestamp`; on replay,
+//! start-side events take the record's `started_at` and settle-side events
+//! its `ended_at` — the instants the live envelopes carried — so a reload
+//! keeps the clocks and turn durations the client derives from them.
+//!
 //! Known limitations: tool-call output deltas are not streamed (the tool node
 //! settles from `tool/result`); durable tool items lose their tool name, so
 //! `tool/call` recovers it from the item summary prefix on replay; an item
 //! whose `item.started` was missed (follow opened mid-item) is adopted with a
-//! synthesized `step/start` + stream start, so its block may miss early deltas.
+//! synthesized `step/start` + stream start, so its block may miss early deltas
+//! and its step clock starts at the first delta seen. An envelope or record
+//! without a timestamp falls back to the bridge clock (a foreign record
+//! missing `ended_at` replays its turn as instant).
 //! Tool names are normalized to the vendored client's card vocabulary
 //! (`tool_view_name`): the runtime record keeps CodeSmith's own names, this is
 //! presentation-layer translation only.
@@ -91,13 +100,14 @@ impl WireSeq {
         self.next as i64 - 1
     }
 
-    pub fn event(&mut self, kind: &str, data: Value, surface_append: bool) -> Value {
+    /// Allocate the next seq for an event that happened at `time` (epoch ms).
+    pub fn event(&mut self, kind: &str, data: Value, surface_append: bool, time: i64) -> Value {
         let seq = self.next;
         self.next += 1;
         let mut event = json!({
             "type": kind,
             "seq": seq,
-            "time": chrono::Utc::now().timestamp_millis(),
+            "time": time,
             "data": data,
         });
         if surface_append {
@@ -105,6 +115,21 @@ impl WireSeq {
         }
         event
     }
+}
+
+/// Epoch milliseconds (the client's time unit) of an RFC 3339 runtime
+/// timestamp.
+pub fn epoch_ms(rfc3339: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .ok()
+        .map(|time| time.timestamp_millis())
+}
+
+/// The first of `keys` on a runtime envelope or record that holds a
+/// timestamp, in epoch milliseconds.
+fn record_time(record: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter()
+        .find_map(|key| record.get(*key).and_then(Value::as_str).and_then(epoch_ms))
 }
 
 fn content_text(detail: Option<&str>) -> String {
@@ -270,7 +295,7 @@ impl SessionMapper {
     }
 
     /// Emit one chunk frame for a registered attempt.
-    fn chunk(&mut self, item_id: &str, chunk: Value) -> Option<Frame> {
+    fn chunk(&mut self, item_id: &str, chunk: Value, time: i64) -> Option<Frame> {
         let revision = &mut self.revision;
         let attempt = self.attempts.get_mut(item_id)?;
         *revision += 1;
@@ -279,7 +304,7 @@ impl SessionMapper {
             "attemptId": item_id,
             "revision": *revision,
             "index": attempt.chunk_index,
-            "time": chrono::Utc::now().timestamp_millis(),
+            "time": time,
             "chunk": chunk,
         });
         attempt.chunk_index += 1;
@@ -299,6 +324,10 @@ impl SessionMapper {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        // `timestamp` is the canonical event time, `created_at` its alias
+        // (docs/RUNTIME_API.md: clients must not require both).
+        let time = record_time(envelope, &["timestamp", "created_at"])
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
         match event_name {
             "turn.started" => {
                 self.turn_no += 1;
@@ -307,6 +336,7 @@ impl SessionMapper {
                     "turn/start",
                     json!({ "turn": self.turn_no }),
                     false,
+                    time,
                 )));
             }
             "turn.completed" | "turn.failed" => {
@@ -323,6 +353,7 @@ impl SessionMapper {
                     "turn/end",
                     json!({ "turn": self.turn_no, "reason": { "kind": reason } }),
                     false,
+                    time,
                 )));
             }
             "item.started" => {
@@ -335,6 +366,7 @@ impl SessionMapper {
                             "step/start",
                             json!({ "turn": self.turn_no, "step": self.step }),
                             false,
+                            time,
                         )));
                         if let Some(frame) = self.start_attempt(&item_id) {
                             frames.push(frame);
@@ -364,6 +396,7 @@ impl SessionMapper {
                                 "arguments": arguments,
                             }),
                             false,
+                            time,
                         )));
                     }
                     "user_message" => {
@@ -380,6 +413,7 @@ impl SessionMapper {
                                 "source": user_message_source(&item),
                             }),
                             true,
+                            time,
                         )));
                     }
                     _ => {}
@@ -409,6 +443,7 @@ impl SessionMapper {
                         "step/start",
                         json!({ "turn": self.turn_no, "step": self.step }),
                         false,
+                        time,
                     )));
                     if let Some(frame) = self.start_attempt(&item_id) {
                         frames.push(frame);
@@ -420,6 +455,7 @@ impl SessionMapper {
                         if let Some(frame) = self.chunk(
                             &item_id,
                             json!({ "type": "block-start", "index": 0, "blockType": block_type }),
+                            time,
                         ) {
                             frames.push(frame);
                         }
@@ -428,6 +464,7 @@ impl SessionMapper {
                 if let Some(frame) = self.chunk(
                     &item_id,
                     json!({ "type": chunk_type, "index": 0, "text": text }),
+                    time,
                 ) {
                     frames.push(frame);
                 }
@@ -452,6 +489,7 @@ impl SessionMapper {
                             if let Some(frame) = self.chunk(
                                 &item_id,
                                 json!({ "type": "block-end", "index": 0, "block": { "type": block_type, "text": text } }),
+                                time,
                             ) {
                                 frames.push(frame);
                             }
@@ -476,6 +514,7 @@ impl SessionMapper {
                                 "stream": []
                             }),
                             true,
+                            time,
                         );
                         let message_seq = message["seq"].as_u64().unwrap_or(0);
                         frames.push(Frame::Event(message));
@@ -497,6 +536,7 @@ impl SessionMapper {
                             "step/end",
                             json!({ "turn": self.turn_no, "step": self.step }),
                             false,
+                            time,
                         )));
                     }
                     "tool_call" | "command_execution" | "file_change" => {
@@ -516,6 +556,7 @@ impl SessionMapper {
                                 }
                             }),
                             true,
+                            time,
                         )));
                     }
                     // user_message settles at item.started (the durable
@@ -528,6 +569,7 @@ impl SessionMapper {
                                 "message": { "id": item_id, "content": [{ "type": "text", "text": content_text(detail) }] }
                             }),
                             true,
+                            time,
                         )));
                     }
                     _ => {}
@@ -612,10 +654,13 @@ fn replay_tool_arguments(item: &Value) -> String {
 /// Replay a `ThreadDetail` (GET /v1/threads/{id}) into wire events.
 /// Returns the events in order; turns still running get no `turn/end`.
 /// In-progress agent items are skipped (an unsettled assistant message has no
-/// durable content; the live stream owns it while it runs).
+/// durable content; the live stream owns it while it runs). Each event takes
+/// the record instant its live counterpart's envelope carried: start-side
+/// events `started_at`, settle-side events `ended_at`.
 pub fn replay_events(detail: &Value) -> Vec<Value> {
     let mut seq = WireSeq::default();
     let mut events = Vec::new();
+    let now = chrono::Utc::now().timestamp_millis();
     let turns = detail
         .get("turns")
         .and_then(Value::as_array)
@@ -639,7 +684,9 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
 
     for (turn_index, turn) in turns.iter().enumerate() {
         let turn_no = (turn_index + 1) as u64;
-        events.push(seq.event("turn/start", json!({ "turn": turn_no }), false));
+        // A queued turn has no `started_at` yet; `created_at` is always set.
+        let turn_start = record_time(turn, &["started_at", "created_at"]).unwrap_or(now);
+        events.push(seq.event("turn/start", json!({ "turn": turn_no }), false, turn_start));
         let turn_id = turn
             .get("id")
             .and_then(Value::as_str)
@@ -664,6 +711,8 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let started = record_time(item, &["started_at"]).unwrap_or(turn_start);
+            let ended = record_time(item, &["ended_at"]).unwrap_or(started);
             match kind {
                 "user_message" => events.push(seq.event(
                     "user/message",
@@ -675,6 +724,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                         "source": user_message_source(item),
                     }),
                     true,
+                    started,
                 )),
                 "agent_message" | "agent_reasoning" => {
                     if status == "in_progress" {
@@ -686,6 +736,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                         "step/start",
                         json!({ "turn": turn_no, "step": step }),
                         false,
+                        started,
                     ));
                     events.push(seq.event(
                         "assistant/message",
@@ -703,11 +754,13 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                             "stream": []
                         }),
                         true,
+                        ended,
                     ));
                     events.push(seq.event(
                         "step/end",
                         json!({ "turn": turn_no, "step": step }),
                         false,
+                        ended,
                     ));
                 }
                 "tool_call" | "command_execution" | "file_change" => {
@@ -722,6 +775,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                             "arguments": replay_tool_arguments(item),
                         }),
                         false,
+                        started,
                     ));
                     if status != "in_progress" {
                         events.push(seq.event(
@@ -739,6 +793,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                                 }
                             }),
                             true,
+                            ended,
                         ));
                     }
                 }
@@ -748,6 +803,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                         "message": { "id": item_id, "content": [{ "type": "text", "text": content_text(detail_text) }] }
                     }),
                     true,
+                    ended,
                 )),
                 _ => {}
             }
@@ -757,6 +813,8 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                 "turn/end",
                 json!({ "turn": turn_no, "reason": { "kind": reason } }),
                 false,
+                // The runtime stamps `ended_at` on every terminal turn.
+                record_time(turn, &["ended_at"]).unwrap_or(turn_start),
             ));
         }
     }
@@ -1326,5 +1384,98 @@ mod tests {
             mapper.abandon_open_attempts().is_empty(),
             "second abandon is a no-op"
         );
+    }
+
+    #[test]
+    fn event_times_are_the_runtime_instants_live_and_on_replay() {
+        // The client renders message clocks from event `time` and a turn's
+        // "took Ns" from turn/end − turn/start, so a reload's replay must
+        // show the instants the live stream did — never the reload's clock.
+        let ms = |at: &str| epoch_ms(at).expect("fixture timestamp parses");
+        let expected: Vec<(String, i64)> = [
+            ("turn/start", "2026-11-06T10:00:00Z"),
+            ("user/message", "2026-11-06T10:00:00.100Z"),
+            ("step/start", "2026-11-06T10:00:01Z"),
+            ("assistant/message", "2026-11-06T10:00:04Z"),
+            ("step/end", "2026-11-06T10:00:04Z"),
+            ("tool/call", "2026-11-06T10:00:05Z"),
+            ("tool/result", "2026-11-06T10:00:06Z"),
+            ("turn/end", "2026-11-06T10:00:09Z"),
+        ]
+        .into_iter()
+        .map(|(kind, at)| (kind.to_string(), ms(at)))
+        .collect();
+        let times = |events: Vec<Value>| -> Vec<(String, i64)> {
+            events
+                .iter()
+                .map(|e| {
+                    (
+                        e["type"].as_str().unwrap().to_string(),
+                        e["time"].as_i64().unwrap(),
+                    )
+                })
+                .collect()
+        };
+
+        let user = json!({ "id": "item_u", "turn_id": "turn_1", "kind": "user_message",
+            "status": "completed", "detail": "hi", "summary": "hi",
+            "started_at": "2026-11-06T10:00:00.100Z", "ended_at": "2026-11-06T10:00:00.100Z" });
+        let replayed = replay_events(&json!({
+            "turns": [{ "id": "turn_1", "status": "completed",
+                "created_at": "2026-11-06T10:00:00Z", "started_at": "2026-11-06T10:00:00Z",
+                "ended_at": "2026-11-06T10:00:09Z" }],
+            "items": [
+                user,
+                { "id": "item_r", "turn_id": "turn_1", "kind": "agent_reasoning",
+                  "status": "completed", "detail": "hmm", "summary": "hmm",
+                  "started_at": "2026-11-06T10:00:01Z", "ended_at": "2026-11-06T10:00:04Z" },
+                { "id": "item_t", "turn_id": "turn_1", "kind": "tool_call",
+                  "status": "completed", "detail": "ok", "summary": "exec_shell: ok",
+                  "started_at": "2026-11-06T10:00:05Z", "ended_at": "2026-11-06T10:00:06Z" },
+            ],
+        }));
+        assert_eq!(times(replayed), expected, "replay stamps record instants");
+
+        let mut mapper = SessionMapper::default();
+        let mut frames = Vec::new();
+        for envelope in [
+            json!({ "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {} }),
+            json!({ "event": "item.started", "item_id": "item_u", "timestamp": "2026-11-06T10:00:00.100Z",
+                    "payload": { "item": user } }),
+            json!({ "event": "item.started", "item_id": "item_r", "timestamp": "2026-11-06T10:00:01Z",
+                    "payload": { "item": { "id": "item_r", "kind": "agent_reasoning", "status": "in_progress" } } }),
+            json!({ "event": "item.delta", "item_id": "item_r", "timestamp": "2026-11-06T10:00:02Z",
+                    "payload": { "delta": "hmm", "kind": "agent_reasoning" } }),
+            json!({ "event": "item.completed", "item_id": "item_r", "timestamp": "2026-11-06T10:00:04Z",
+                    "payload": { "item": { "id": "item_r", "kind": "agent_reasoning", "status": "completed", "detail": "hmm" } } }),
+            json!({ "event": "item.started", "item_id": "item_t", "timestamp": "2026-11-06T10:00:05Z",
+                    "payload": { "item": { "id": "item_t", "kind": "tool_call", "status": "in_progress" },
+                                 "tool": { "name": "exec_shell", "input": {} } } }),
+            // Only the `created_at` alias: clients must not require both.
+            json!({ "event": "item.completed", "item_id": "item_t", "created_at": "2026-11-06T10:00:06Z",
+                    "payload": { "item": { "id": "item_t", "kind": "tool_call", "status": "completed", "detail": "ok" } } }),
+            json!({ "event": "turn.completed", "timestamp": "2026-11-06T10:00:09Z",
+                    "payload": { "turn": { "status": "completed" } } }),
+        ] {
+            frames.extend(mapper.map_envelope(&envelope));
+        }
+        let live: Vec<Value> = frames
+            .iter()
+            .filter_map(|f| match f {
+                Frame::Event(event) => Some(event.clone()),
+                Frame::Stream(_) => None,
+            })
+            .collect();
+        assert_eq!(times(live), expected, "live stamps envelope instants");
+        // Stream chunks share their envelope's instant (the client times the
+        // first token against step/start).
+        let delta = frames
+            .iter()
+            .find_map(|f| match f {
+                Frame::Stream(frame) if frame["chunk"]["type"] == "reasoning-delta" => Some(frame),
+                _ => None,
+            })
+            .expect("the delta streams");
+        assert_eq!(delta["time"], ms("2026-11-06T10:00:02Z"));
     }
 }
