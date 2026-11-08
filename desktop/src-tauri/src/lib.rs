@@ -32,8 +32,32 @@ pub fn run() {
             // The UI reads this global to reach the bridge, so an env-pinned
             // port reaches the webview instead of being silently ignored.
             let inject = format!("window.__CODESMITH_BRIDGE_PORT__ = {port};");
+            // The staging the drag-drop handler fills and the bridge's
+            // /api/host/dropBytes route serves (see `host::host_drop`); an
+            // Arc from here because the window handler outlives the spawn
+            // that builds HostState.
+            let drop_bytes: host::host_drop::DropStaging = Default::default();
             if let Some(webview) = app.get_webview_window("main") {
                 let _ = webview.eval(&inject);
+                // With the native drag-drop enabled (the default), the DOM
+                // never sees a file drop — wry claims it. The window event
+                // carries the absolute paths; the page bridge turns them into
+                // the composer's own path-citing intake.
+                let drop_webview = webview.clone();
+                let drop_staging = std::sync::Arc::clone(&drop_bytes);
+                webview.on_window_event(move |event| {
+                    if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
+                        paths, ..
+                    }) = event
+                    {
+                        let paths = paths.clone();
+                        let webview = drop_webview.clone();
+                        let staging = std::sync::Arc::clone(&drop_staging);
+                        tauri::async_runtime::spawn(async move {
+                            host::host_drop::deliver(&webview, &staging, paths).await;
+                        });
+                    }
+                });
             }
             tauri::async_runtime::spawn(async move {
                 match host::codesmith::CodesmithProcess::spawn(codesmith_path.as_ref()).await {
@@ -48,6 +72,7 @@ pub fn run() {
                             model_choices: Default::default(),
                             waterfall_watchers: Default::default(),
                             uploads: Default::default(),
+                            drop_bytes,
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

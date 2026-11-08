@@ -136,10 +136,19 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   摄取管道折进消息（内联文本，或模型可按需 `read_file` 的持久存储路径
   引用行）。已结算消息保留缩略图/文件条（runtime 把每个附件记录在 user
   item 上；`session/attachment` 从持久存储取回字节，重启后历史仍可渲染）。
-  限额与缺口：单文件 10MB、每条消息 8 个、音频/视频拒绝（在上传时以
-  业务错误呈现）；回执是内存态——桌面重启丢弃已暂存未发送的上传，需
-  重新附上；steer 不能带附件（runtime 的 steer 路由纯文本，桥会响亮
-  拒绝）；无上传进度条；无 EXIF 方向修正或图片归一化（字节原样传输）。
+  从访达/桌面拖进输入框走 host-path 桥：原生 drag-drop 开启时 DOM 收不到
+  文件 drop（wry 自己认领 `performDragOperation`），窗口的 DragDrop 事件
+  把每个路径描述给页面（`__codesmithHostDrop`），页面把它重放进输入框
+  自己的 paste 摄取管道并让 `__CODESMITH_HOST_PATHS__` 应答——非图片文件
+  与目录变成 `@path` 引用条，限额内的图片（魔数嗅探 png/jpeg/gif/webp）
+  取一次性暂存字节（`api/host/dropBytes`）走常规上传管线。限额与缺口：
+  单文件 10MB、每条消息 8 个、音频/视频拒绝（在上传时以业务错误呈现）；
+  回执是内存态——桌面重启丢弃已暂存未发送的上传，需重新附上；steer
+  不能带附件（runtime 的 steer 路由纯文本，桥会响亮拒绝）；无上传进度
+  条；无 EXIF 方向修正或图片归一化（字节原样传输）；超出限额、或字节
+  未能送达的拖入图片退化为路径引用而非上传；拖放需要打开且空闲的
+  输入框，且没有拖拽悬停高亮；回形针选择器与真实粘贴仍无路径、照旧
+  上传。
 - 任务页：automations 只接受两种 RRULE 形态（`FREQ=HOURLY` 带
   INTERVAL/BYDAY，`FREQ=WEEKLY` 带 BYDAY/BYHOUR/BYMINUTE，按机器本地
   时区求值）。任务页的每日/每周/整小时间隔/cron 形态会编译过去；一次性

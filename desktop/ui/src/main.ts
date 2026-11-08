@@ -6,6 +6,7 @@
 import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
+import { installHostDropBridge } from './host-drop'
 import { bridgeUrl, initTransport } from './transport'
 
 const g = globalThis as {
@@ -26,6 +27,10 @@ const g = globalThis as {
   hook.__CODESMITH_FILE_UPLOAD__ = {
     fetch: (input, init) => fetch(new URL(String(input), `${bridge}/`), init),
   }
+  // The drag-drop bridge (host-path citations and staged image bytes) is
+  // captured the same way: before boot, because the composer's slot injector
+  // reads `__CODESMITH_HOST_PATHS__` once at mount time.
+  installHostDropBridge(bridge)
 }
 
 // Dev affordance for the pixel baseline: `?theme=dark|light` pins the color

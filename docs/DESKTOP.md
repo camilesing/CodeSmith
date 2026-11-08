@@ -158,12 +158,24 @@ Known limitations of the current implementation:
   model reads on demand). Settled messages keep their thumbnails/chips (the
   runtime records each attachment on the user item; `session/attachment`
   serves the bytes back from the durable store, so history renders across
-  restarts). Limits and gaps: 10MB per file, 8 per message, audio/video
+  restarts). Finder/desktop drops into the composer ride the host-path
+  bridge: with the native drag-drop enabled the DOM never sees a file drop
+  (wry claims `performDragOperation`), so the window's DragDrop event
+  describes each path to the page (`__codesmithHostDrop`), which replays it
+  into the composer's own paste intake with `__CODESMITH_HOST_PATHS__`
+  answering — non-image files and directories become `@path` reference
+  chips, and an in-cap image (magic-sniffed png/jpeg/gif/webp) fetches its
+  one-shot staged bytes (`api/host/dropBytes`) into the ordinary upload
+  pipeline. Limits and gaps: 10MB per file, 8 per message, audio/video
   refused (at attach time, with a business error); receipts are in-memory —
   a desktop restart drops staged-not-yet-sent uploads, which must be
   attached again; a steer cannot carry attachments (the runtime's steer
   route is text-only and the bridge refuses loudly); no upload progress
-  bar; no EXIF orientation or image normalization (bytes travel untouched).
+  bar; no EXIF orientation or image normalization (bytes travel untouched);
+  a dropped image past the caps, or whose bytes cannot travel, cites by
+  path instead of uploading; a drop needs an open, idle composer and shows
+  no drag-hover highlight; the paperclip picker and a real paste stay
+  path-less and upload as before.
 - Schedules: automations accept exactly two RRULE shapes (`FREQ=HOURLY` with
   INTERVAL/BYDAY, `FREQ=WEEKLY` with BYDAY/BYHOUR/BYMINUTE, evaluated in the
   machine's local zone). The task page's daily/weekly/whole-hour/cron shapes

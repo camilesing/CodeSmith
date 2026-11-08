@@ -16,6 +16,7 @@ pub mod mux;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
+pub mod host_drop;
 pub mod uploads;
 pub mod workspace;
 
@@ -76,6 +77,11 @@ pub struct HostState {
     /// `host::uploads`): receipt id -> staged bytes. In-memory and
     /// session-bound, like upstream's per-Session staging.
     pub uploads: uploads::Staging,
+    /// One-shot staged bytes of the latest host-path drop (see
+    /// `host::host_drop`): id -> image bytes the page fetches once. An `Arc`
+    /// because the window's drag-drop handler fills it before this state
+    /// exists.
+    pub drop_bytes: host_drop::DropStaging,
 }
 
 impl HostState {
@@ -758,6 +764,20 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// One staged drop's bytes, served exactly once (`host::host_drop`). A spent
+/// or unknown id is 404 — the page then degrades that member to a path
+/// citation.
+async fn drop_bytes_handler(State(host): State<SharedHost>, Path(id): Path<String>) -> Response {
+    match host_drop::take_bytes(&host.drop_bytes, &id) {
+        Some(bytes) => (
+            [(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))],
+            bytes,
+        )
+            .into_response(),
+        None => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// Serve the bridge on `port`: unary calls on `/api/<endpoint>` (CORS admits
 /// the page origins), every stream on the `/api/remote.mux` WebSocket.
 pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
@@ -778,6 +798,7 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         // it must not fall through to the wildcard's `Option<Json<_>>`
         // extractor (which would reject `application/octet-stream`).
         .route("/api/session/uploadFileBinary", post(upload_binary_handler))
+        .route("/api/host/dropBytes/{id}", get(drop_bytes_handler))
         .route("/api/{*endpoint}", post(unary_handler))
         .layer(cors)
         // The runtime's per-file attachment cap is 10MB; the same bytes as
