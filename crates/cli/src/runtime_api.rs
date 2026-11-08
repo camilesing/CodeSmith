@@ -16,7 +16,7 @@ use axum::middleware::{self, Next};
 use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use codesmith_protocol::runtime::{RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeEventEnvelope};
@@ -37,10 +37,10 @@ use crate::automation_manager::{
 };
 use crate::config::{Config, DEFAULT_TEXT_MODEL};
 use crate::runtime_threads::{
-    CompactThreadRequest, CreateThreadRequest, ExternalApprovalDecision, RuntimeThreadManager,
-    RuntimeThreadManagerConfig, SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest,
-    ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest,
-    UsageGroupBy,
+    CompactThreadRequest, CreateThreadRequest, EditQueuedRequest, EnqueueRequest, EnqueueResponse,
+    ExternalApprovalDecision, QueuedItemRecord, RuntimeThreadManager, RuntimeThreadManagerConfig,
+    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadListFilter,
+    ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest, UsageGroupBy,
 };
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
@@ -563,6 +563,15 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/turns", post(start_thread_turn))
+        .route("/v1/threads/{id}/queue", post(enqueue_thread_item))
+        .route(
+            "/v1/threads/{id}/queue/{item_id}",
+            patch(edit_thread_queue_item).delete(remove_thread_queue_item),
+        )
+        .route(
+            "/v1/threads/{id}/queue/{item_id}/steer",
+            post(steer_thread_queue_item),
+        )
         .route(
             "/v1/threads/{id}/turns/{turn_id}/steer",
             post(steer_thread_turn),
@@ -1607,6 +1616,63 @@ async fn steer_thread_turn(
     let turn = state
         .runtime_threads
         .steer_turn(&id, &turn_id, req)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(turn))
+}
+
+/// `POST /v1/threads/{id}/queue` — park one prompt on the thread's queue,
+/// or start it right away when the thread is idle with nothing waiting.
+async fn enqueue_thread_item(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<EnqueueRequest>,
+) -> Result<(StatusCode, Json<EnqueueResponse>), ApiError> {
+    let response = state
+        .runtime_threads
+        .enqueue(&id, req)
+        .await
+        .map_err(map_thread_err)?;
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+/// `PATCH /v1/threads/{id}/queue/{item_id}` — text-only edit (attachments
+/// are dropped, upstream parity).
+async fn edit_thread_queue_item(
+    State(state): State<RuntimeApiState>,
+    Path((id, item_id)): Path<(String, String)>,
+    Json(req): Json<EditQueuedRequest>,
+) -> Result<Json<QueuedItemRecord>, ApiError> {
+    let item = state
+        .runtime_threads
+        .edit_queued(&id, &item_id, req)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(item))
+}
+
+/// `DELETE /v1/threads/{id}/queue/{item_id}` — drop one queued prompt.
+async fn remove_thread_queue_item(
+    State(state): State<RuntimeApiState>,
+    Path((id, item_id)): Path<(String, String)>,
+) -> Result<Json<QueuedItemRecord>, ApiError> {
+    let item = state
+        .runtime_threads
+        .remove_queued(&id, &item_id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(item))
+}
+
+/// `POST /v1/threads/{id}/queue/{item_id}/steer` — pull one queued prompt
+/// out and steer the running turn with it.
+async fn steer_thread_queue_item(
+    State(state): State<RuntimeApiState>,
+    Path((id, item_id)): Path<(String, String)>,
+) -> Result<Json<TurnRecord>, ApiError> {
+    let turn = state
+        .runtime_threads
+        .steer_queued(&id, &item_id)
         .await
         .map_err(map_thread_err)?;
     Ok(Json(turn))

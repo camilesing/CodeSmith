@@ -28,7 +28,7 @@ Tauri App (desktop/)
 ```
 
 - 前端除 boot 装配与传输适配外不写新 UI 代码；像素来自 vendored 产物。
-- 上行：客户端路由 → runtime_api REST（`POST /v1/threads/{id}/turns`、
+- 上行：客户端路由 → runtime_api REST（`POST /v1/threads/{id}/queue`、
   `…/steer`、`…/interrupt`、`PATCH /v1/threads/{id}`、`GET /v1/models` …）。
 - 下行：后端 SSE 流折叠为客户端线事件与 assistant-stream 帧。
 - 未实现的端点按 `gateway/method-unavailable` 语义返回错误态
@@ -104,9 +104,18 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 - vendored 副本与上游的同步是手工的（`vendor_client.py` 记录来源
   commit）；没有实时跟踪。
 - RPC 面是子集；未实现端点按 `gateway/method-unavailable` 返回错误态，
-  不假装成功（`session/updateQueue` 等）。会话重命名/复刻/搜索、归档/
-  取消归档、会话置顶与侧栏手动排序、技能目录、桌面设置文档、基于
-  `/v1/automations` 的任务页、控制流投影均已接通。
+  不假装成功。会话重命名/复刻/搜索、归档/取消归档、会话置顶与侧栏手动
+  排序、提示队列、技能目录、桌面设置文档、基于 `/v1/automations` 的
+  任务页、控制流投影均已接通。
+- turn 运行中发出的 prompt 停到运行时线程的队列上
+  （`POST /v1/threads/{id}/queue`）：队列坞从 `inbox` 投影渲染它（运行时的
+  `queue.updated` 事件，实时推送），排队的 prompt 在运行中的 turn 一结束就按
+  FIFO 开始、每个 turn 一条（interrupt 不清队列）。`session/updateQueue` 桥接
+  队列坞的三个动作：edit（纯文本——条目的附件被丢弃，队列坞对带附件的行禁用
+  Edit）、remove、steer（把条目拉进运行中的 turn）。缺口：steer 带附件的行会
+  被响亮拒绝（steer 仅文本）；`serve` 重启后队列仍在，但要等下一次 prompt 或
+  turn 结束才开始（resume-idle）；排队的 turn 使用线程默认值，不带逐 prompt
+  覆盖项。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
   前列（最近置顶在前），手动排序保持相对顺序，从未拖动过的会话按运行时
@@ -147,9 +156,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `clientId`，仍待决的请求会重放给新连接的流，迟到/重复的
   `$events/result` 是幂等 no-op（`delivered:false`，含运行时 404）。决定
   送达后紧跟该请求的 cancel 帧——各个客户端上答题卡的退役靠的就是这一
-  帧。检测不依赖客户端正在 follow 该会话：每次排队的 turn 都为会话挂一个
-  后台 watcher（线程事件流），自行把审批/问题浮出来。早于 watcher 的
-  prompt（外部 HTTP 客户端、重启前的 turn）仍需要 follow 流才会浮现。
+  帧。检测不依赖客户端正在 follow 该会话：每次 prompt 都为会话挂一个
+  后台 watcher（线程事件流），自行把审批/问题浮出来；队列启动的 turn 会
+  重新挂上它。早于 watcher 的 prompt（外部 HTTP 客户端、重启前的 turn）
+  仍需要 follow 流才会浮现。
 - 桌面会话继承配置顶层 `allow_shell`（默认 `false`，
   GHSA-72w5-pf8h-xfp4）：关闭时模型没有 shell 工具，审批卡来自写工具
   （`write_file`/`edit_file`）。桥面绝不擅自翻转该安全默认值，由用户在
@@ -163,10 +173,9 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   ——侧栏终端——不仿真），也不发 ping 心跳（环回：页面消失即关闭其
   socket，进而中止其承载的全部流）。
 - 输入框的乐观副本靠回显的 `source.rpcId`（客户端发的是 `requestId`）
-  退役。运行时在 turn 开始时就发出该回显，故桥在运行时接受 prompt 之前
-  就把 id 入队。每个 id 只给一条回显盖戳（最先看到它的 follow 循环）：
-  两个客户端同时 follow 同一会话时，发送方可能拿不到戳记，其消息渲染
-  两份。
+  退役。运行时把该 id 记在排队条目和落定的 user item 上
+  （`metadata.rpc_id`），因此按身份匹配：队列 steer 或 remove 不会把它错挪到
+  别的消息上，每个 follow 该会话的客户端看到的都是同一个戳记。
 - 输入框的模型座位由会话的 `modelSelection` 投影加共享目录解析：空会话
   的日志以游标 −1 打开（seq 从 0 编号），投影挂进程级 seq 时钟（运行时
   不为切模型记日志事件），控制帧的 `changes` 是 `{key, val}` 数组。座位

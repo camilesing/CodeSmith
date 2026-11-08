@@ -1,12 +1,14 @@
 //! `session/follow`, `session/page`, `session/prompt`, `session/cancel`,
-//! `session/rename|fork|search`, archive toggles, the skills catalog and the
-//! control projections — translated onto `codesmith serve --http`.
+//! `session/updateQueue`, `session/rename|fork|search`, archive toggles, the
+//! skills catalog and the control projections — translated onto
+//! `codesmith serve --http`.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::mapper::{replay_events, Frame, SessionMapper};
+use super::mapper::{replay_events, SessionMapper};
+use super::workspace::OpError;
 use super::{HostState, SharedHost};
 
 /// Baseline (turn, step) counters a live tail resumes from, derived from the
@@ -57,7 +59,7 @@ fn address_session_id(request: &Value) -> Result<String> {
 /// Snapshot + live frames for `session/follow`. Yields the snapshot first;
 /// live envelopes arrive as `{type:'event'}` frames on the returned channel.
 pub async fn follow(
-    host: &HostState,
+    host: &SharedHost,
     request: &Value,
     tx: &tokio::sync::mpsc::Sender<Value>,
 ) -> Result<()> {
@@ -124,41 +126,26 @@ pub async fn follow(
                 // follow stream; the runtime's own decision events and turn
                 // ends cancel whatever is still pending.
                 handle_waterfall_envelope(host, &session_id, &envelope).await;
-                if matches!(
-                    envelope.get("event").and_then(Value::as_str),
-                    Some("turn.completed") | Some("turn.failed")
-                ) {
+                match envelope.get("event").and_then(Value::as_str) {
                     // Refresh the control projections (context pressure,
-                    // model selection) for this session now that its turn
-                    // settled with fresh usage.
-                    push_control_projection(host, &session_id).await;
-                }
-                let mut frames = mapper.map_envelope(&envelope);
-                // A user message that settles a submitted prompt carries the
-                // prompt's rpcId, so the client retires its optimistic copy
-                // instead of rendering the message twice.
-                let is_user_echo = envelope.get("event").and_then(Value::as_str)
-                    == Some("item.started")
-                    && envelope
-                        .pointer("/payload/item/kind")
-                        .and_then(Value::as_str)
-                        == Some("user_message");
-                if is_user_echo {
-                    let next_rpc = host
-                        .pending_rpc_ids
-                        .lock()
-                        .await
-                        .get_mut(&session_id)
-                        .and_then(|queue| (!queue.is_empty()).then(|| queue.remove(0)));
-                    if let Some(rpc) = next_rpc {
-                        if let Some(Frame::Event(event)) = frames.first_mut() {
-                            if event["type"] == "user/message" {
-                                event["data"]["source"]["rpcId"] = json!(rpc);
-                            }
-                        }
+                    // model selection, the queue) for this session now that
+                    // its turn settled with fresh usage.
+                    Some("turn.completed") | Some("turn.failed") => {
+                        push_control_projection(host, &session_id).await;
                     }
+                    // A queue drain starts turns no prompt of this bridge
+                    // armed the watcher for; re-arm (a no-op while armed).
+                    Some("turn.started") => ensure_waterfall_watcher(host, &session_id).await,
+                    Some("queue.updated") => {
+                        push_inbox_projection(host, &session_id, &envelope["payload"]["items"])
+                            .await;
+                    }
+                    _ => {}
                 }
-                for frame in frames {
+                // A settled user message carries its own `source.rpcId` (the
+                // mapper reads the item's metadata), so the client retires
+                // its optimistic copy by identity.
+                for frame in mapper.map_envelope(&envelope) {
                     if tx.send(frame.to_wire()).await.is_err() {
                         return Ok(());
                     }
@@ -455,11 +442,14 @@ fn prompt_request_id(inner: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `session/prompt` — queue starts a turn; steer rides the active turn.
-/// The request's `requestId` is remembered so the follow loop can stamp the
-/// settling `user/message` echo (the client's optimistic-copy dedupe key),
-/// and every queued turn arms the session's waterfall watcher (approvals and
-/// questions must surface even when no client follows the session).
+/// `session/prompt` — queue parks the prompt behind a running turn or starts
+/// it right away (the runtime's queue route decides, so there is no busy
+/// check here to race); steer rides the active turn. The request's
+/// `requestId` travels to the runtime as `rpc_id` and comes back on the
+/// queued row and the settled user message (`source.rpcId`, the client's
+/// optimistic-copy dedupe key), and every prompt arms the session's
+/// waterfall watcher (approvals and questions must surface even when no
+/// client follows the session).
 pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
     let inner = request.get("request").unwrap_or(request);
     let session_id = inner
@@ -494,16 +484,28 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
         match active_turn_id(host, &session_id).await? {
             Some(turn_id) => {
                 let path = format!("/v1/threads/{session_id}/turns/{turn_id}/steer");
-                post_prompt(host, &session_id, rpc_id, &path, &text, &attachments).await?;
+                let _: Value = host
+                    .backend
+                    .post(&path, &json!({ "prompt": text, "rpc_id": rpc_id }))
+                    .await?;
             }
             None => bail!("steer with no running turn"),
         }
         return Ok(json!({ "accepted": true }));
     }
-    let path = format!("/v1/threads/{session_id}/turns");
-    post_prompt(host, &session_id, rpc_id, &path, &text, &attachments).await?;
-    // The runtime accepted the turn, so the staged receipts are bound to it
-    // now — retire them (a refused POST above leaves them retryable).
+    // Attachments ride only when present — a plain prompt keeps the body
+    // the runtime has always taken.
+    let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
+    if !attachments.is_empty() {
+        body["attachments"] = json!(attachments);
+    }
+    let _: Value = host
+        .backend
+        .post(&format!("/v1/threads/{session_id}/queue"), &body)
+        .await?;
+    // The runtime accepted the prompt (parked or started) and holds its
+    // bytes now — retire the staged receipts (a refused POST above leaves
+    // them retryable).
     let receipt_ids: Vec<String> = content
         .iter()
         .filter(|p| p.kind == "file")
@@ -514,41 +516,120 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
     Ok(json!({ "accepted": true }))
 }
 
-/// Hand one prompt to the runtime with its rpcId queued FIRST: the runtime
-/// emits the `user/message` echo as the turn starts, so a live follow loop
-/// can see it before this POST returns — a late push left that echo
-/// unstamped and stamped the next prompt's echo with this id instead. A
-/// rejected POST withdraws the id.
-async fn post_prompt(
-    host: &HostState,
-    session_id: &str,
-    rpc_id: Option<String>,
-    path: &str,
-    text: &str,
-    attachments: &[Value],
-) -> Result<()> {
-    if let Some(rpc) = &rpc_id {
-        host.pending_rpc_ids
-            .lock()
-            .await
-            .entry(session_id.to_string())
-            .or_default()
-            .push(rpc.clone());
-    }
-    // Attachments ride only when present — a plain prompt keeps the body the
-    // runtime has always taken.
-    let body = if attachments.is_empty() {
-        json!({ "prompt": text })
-    } else {
-        json!({ "prompt": text, "attachments": attachments })
+/// The client error a failed queue mutation surfaces as. A runtime 404 is
+/// upstream's `session/queue-item-not-found` and a steer's 409 (no running
+/// turn) its `session/steer-unavailable` — the queue dock converges on
+/// both silently, as the item already left the queue or the turn ended.
+/// A 400 is the caller's mistake (a blank edit, an attachment-carrying
+/// steer) and stays loud.
+fn queue_failure(kind: &str, status: u16, message: String) -> OpError {
+    let code = match (status, kind) {
+        (404, _) => "session/queue-item-not-found",
+        (409, "steer") => "session/steer-unavailable",
+        (400, _) => "gateway/bad-request",
+        _ => "gateway/internal",
     };
-    let posted = host.backend.post::<Value>(path, &body).await;
-    if let (Err(_), Some(rpc)) = (&posted, &rpc_id) {
-        if let Some(queue) = host.pending_rpc_ids.lock().await.get_mut(session_id) {
-            queue.retain(|queued| queued != rpc);
+    OpError {
+        code,
+        message: format!("session/updateQueue {kind}: {message}"),
+    }
+}
+
+/// An `edit` action's replacement text. Upstream queue edits are text-only
+/// (`QUEUE_EDIT_NON_TEXT`; its dock disables Edit on rows that carry
+/// attachments) and must not be blank.
+fn queue_edit_text(action: &Value) -> Result<String, OpError> {
+    let blocks = action
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut parts = Vec::new();
+    for block in &blocks {
+        match (
+            block.get("type").and_then(Value::as_str),
+            block.get("text").and_then(Value::as_str),
+        ) {
+            (Some("text"), Some(text)) => parts.push(text),
+            _ => {
+                return Err(OpError {
+                    code: "session/attachment-invalid",
+                    message: "QUEUE_EDIT_NON_TEXT: queue edits accept text content only".into(),
+                })
+            }
         }
     }
-    posted.map(|_| ())
+    let text = parts.join("\n");
+    if text.trim().is_empty() {
+        return Err(OpError {
+            code: "gateway/bad-request",
+            message: "queue edits need non-empty text".into(),
+        });
+    }
+    Ok(text)
+}
+
+/// The runtime queue route one `QueueAction` maps onto: `edit` is a text
+/// replacement (PATCH), `remove` a DELETE, `steer` the item's steer action.
+fn queue_route(
+    session_id: &str,
+    item_id: &str,
+    action: &Value,
+) -> Result<(reqwest::Method, String, Option<Value>), OpError> {
+    let item_path = format!("/v1/threads/{session_id}/queue/{item_id}");
+    match action.get("kind").and_then(Value::as_str) {
+        Some("edit") => Ok((
+            reqwest::Method::PATCH,
+            item_path,
+            Some(json!({ "prompt": queue_edit_text(action)? })),
+        )),
+        Some("remove") => Ok((reqwest::Method::DELETE, item_path, None)),
+        Some("steer") => Ok((reqwest::Method::POST, format!("{item_path}/steer"), None)),
+        other => Err(OpError {
+            code: "gateway/arguments-invalid",
+            message: format!("session/updateQueue: unknown action kind {other:?}"),
+        }),
+    }
+}
+
+/// `session/updateQueue` — one queue mutation (upstream `QueueAction`):
+/// `edit`, `remove`, or `steer`, each a runtime queue route. The changed
+/// queue reaches the dock through the runtime's `queue.updated` event (the
+/// follow loop pushes it as the `inbox` projection), so this answers only
+/// the receipt.
+pub async fn update_queue(host: &HostState, request: &Value) -> Result<Value, OpError> {
+    let inner = request.get("request").unwrap_or(request);
+    let field = |key: &str| {
+        inner
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| OpError {
+                code: "gateway/arguments-invalid",
+                message: format!("session/updateQueue without {key}"),
+            })
+    };
+    let session_id = field("sessionId")?;
+    let item_id = field("itemId")?;
+    let action = inner.get("action").cloned().unwrap_or(Value::Null);
+    let kind = action
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let (method, path, body) = queue_route(&session_id, &item_id, &action)?;
+    match host
+        .backend
+        .request_with_status(method, &path, body.as_ref())
+        .await
+    {
+        Ok(Ok(_)) => Ok(json!({ "accepted": true })),
+        Ok(Err((status, message))) => Err(queue_failure(&kind, status.as_u16(), message)),
+        Err(err) => Err(OpError {
+            code: "gateway/internal",
+            message: format!("session/updateQueue: {err:#}"),
+        }),
+    }
 }
 
 /// `session/cancel` — interrupt the running turn.
@@ -872,9 +953,10 @@ fn context_pressure(detail: &Value) -> Option<u64> {
 }
 
 /// One session's projection values the bridge can compute from the runtime:
-/// title, context pressure and model selection. Every other key stays absent
-/// (capability absent, per the projection contract). Each write is a whole
-/// baseline for these keys, so they are always all computed together.
+/// title, context pressure, model selection and the queue (`inbox`). Every
+/// other key stays absent (capability absent, per the projection contract).
+/// Each write is a whole baseline for these keys, so they are always all
+/// computed together.
 async fn projection_values(
     host: &HostState,
     session_id: &str,
@@ -883,6 +965,12 @@ async fn projection_values(
 ) -> Value {
     let mut values = serde_json::Map::new();
     values.insert("title".into(), session_title(detail));
+    let queue = detail
+        .get("queue")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    values.insert("inbox".into(), super::mapper::inbox_projection(&queue));
     if let Some(tokens) = context_pressure(detail) {
         values.insert(
             "contextPressure".into(),
@@ -971,6 +1059,20 @@ pub async fn push_control_projection(host: &HostState, session_id: &str) {
     .await;
 }
 
+/// Push one session's queue rows (the `inbox` projection) to every open
+/// `session/control` stream — the runtime's `queue.updated` carries the
+/// whole queue, so the frame is a full value, never a delta.
+async fn push_inbox_projection(host: &HostState, session_id: &str, items: &Value) {
+    let queue = items.as_array().cloned().unwrap_or_default();
+    let seq = host.next_projection_seq();
+    let values = json!({ "inbox": super::mapper::inbox_projection(&queue) });
+    host.push_live(
+        "session/control",
+        projection_update(session_id, seq, &values),
+    )
+    .await;
+}
+
 /// A `session/control` projection frame (SessionProjectionUpdate): one
 /// `{key, val}` entry per carried key. The client iterates `changes`; an
 /// object there throws inside its control stream and ends it for good.
@@ -987,6 +1089,92 @@ fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_failures_map_onto_the_clients_converging_codes() {
+        // The dock converges silently on these two (the item already left
+        // the queue / the turn ended); a caller mistake stays loud.
+        assert_eq!(
+            queue_failure("remove", 404, "gone".into()).code,
+            "session/queue-item-not-found"
+        );
+        assert_eq!(
+            queue_failure("steer", 404, "gone".into()).code,
+            "session/queue-item-not-found"
+        );
+        assert_eq!(
+            queue_failure("steer", 409, "No active turn".into()).code,
+            "session/steer-unavailable"
+        );
+        assert_eq!(
+            queue_failure("steer", 400, "carries attachments".into()).code,
+            "gateway/bad-request",
+            "an attachment-carrying steer is refused loudly"
+        );
+        assert_eq!(
+            queue_failure("edit", 409, "odd".into()).code,
+            "gateway/internal",
+            "only a steer has a legitimate conflict"
+        );
+    }
+
+    #[test]
+    fn queue_edits_are_text_only_and_non_blank() {
+        let joined = queue_edit_text(&json!({ "kind": "edit", "content": [
+            { "type": "text", "text": "first" }, { "type": "text", "text": "second" },
+        ]}))
+        .ok()
+        .unwrap();
+        assert_eq!(joined, "first\nsecond");
+
+        let non_text = queue_edit_text(&json!({ "kind": "edit", "content": [
+            { "type": "text", "text": "words" },
+            { "type": "image", "attachment": { "attachmentId": "sha256:aa" } },
+        ]}))
+        .err()
+        .unwrap();
+        assert_eq!(non_text.code, "session/attachment-invalid");
+        assert!(non_text.message.contains("QUEUE_EDIT_NON_TEXT"));
+
+        let blank = queue_edit_text(&json!({ "kind": "edit", "content": [
+            { "type": "text", "text": "   " },
+        ]}))
+        .err()
+        .unwrap();
+        assert_eq!(blank.code, "gateway/bad-request");
+    }
+
+    #[test]
+    fn queue_actions_route_onto_the_runtime_queue() {
+        let (method, path, body) = queue_route(
+            "thr_1",
+            "qitem_a",
+            &json!({ "kind": "edit", "content": [{ "type": "text", "text": "new" }] }),
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(path, "/v1/threads/thr_1/queue/qitem_a");
+        assert_eq!(body, Some(json!({ "prompt": "new" })));
+
+        let (method, path, body) = queue_route("thr_1", "qitem_a", &json!({ "kind": "remove" }))
+            .ok()
+            .unwrap();
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert_eq!(path, "/v1/threads/thr_1/queue/qitem_a");
+        assert_eq!(body, None);
+
+        let (method, path, _) = queue_route("thr_1", "qitem_a", &json!({ "kind": "steer" }))
+            .ok()
+            .unwrap();
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(path, "/v1/threads/thr_1/queue/qitem_a/steer");
+
+        let unknown = queue_route("thr_1", "qitem_a", &json!({ "kind": "reorder" }))
+            .err()
+            .unwrap();
+        assert_eq!(unknown.code, "gateway/arguments-invalid");
+    }
 
     fn model(id: &str, provider: &str, default: bool) -> RuntimeModel {
         RuntimeModel {

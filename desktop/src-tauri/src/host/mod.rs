@@ -5,8 +5,6 @@
 //! - the RPC surface is a subset; unimplemented endpoints answer
 //!   `gateway/method-unavailable` (the client renders an error state,
 //!   it never pretends success);
-//! - `session/updateQueue` (edit/remove of queued input) has no CodeSmith
-//!   equivalent and is answered as unavailable;
 //! - attachment staging is in-memory (see `host::uploads`): receipts die
 //!   with the bridge process.
 
@@ -64,10 +62,6 @@ pub struct HostState {
     pub live_sinks: Mutex<HashMap<String, (String, mpsc::Sender<Value>)>>,
     /// Waterfalls awaiting their `$events/result`, by event id.
     pub pending_inputs: Mutex<HashMap<String, events::PendingInput>>,
-    /// Prompt rpcIds awaiting their `user/message` echo, per session (FIFO —
-    /// the client clears its optimistic copy when the echoed message carries
-    /// `source.rpcId`).
-    pub pending_rpc_ids: Mutex<HashMap<String, Vec<String>>>,
     /// The seq every projection write carries (see `next_projection_seq`).
     pub projection_clock: AtomicU64,
     /// The provider half of each session's last `session/selectModel` in this
@@ -356,10 +350,10 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             }
         }
         "schedule/deliveryLimits" => rpc_ok(json!({ "days": 30, "records": 100 })),
-        "session/updateQueue" => rpc_error(
-            "gateway/method-unavailable",
-            "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
-        ),
+        "session/updateQueue" => match sessions::update_queue(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(err.code, err.message),
+        },
         "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
         // Attachment staging (host::uploads): receipts resolve when the
         // prompt that names them reaches the runtime.

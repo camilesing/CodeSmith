@@ -157,6 +157,51 @@ fn user_message_content(item: &Value, detail_text: Option<&str>) -> Value {
     Value::Array(parts)
 }
 
+/// A user message's `source`: the client's correlation id rides the item's
+/// additive metadata (`metadata.rpc_id`, recorded by the runtime's queue and
+/// steer routes), so the client retires its optimistic copy by identity —
+/// never by arrival order, which a queue reorders (steer) and thins
+/// (remove).
+pub fn user_message_source(item: &Value) -> Value {
+    match item.pointer("/metadata/rpc_id").and_then(Value::as_str) {
+        Some(rpc_id) => json!({ "kind": "user", "rpcId": rpc_id }),
+        None => json!({ "kind": "user" }),
+    }
+}
+
+/// One queued item as the client's inbox row: the flat `UserMessage` the
+/// queue dock renders (`id`, text + attachment content parts, and the
+/// `source.rpcId` that retires the composer's optimistic copy). The item
+/// carries its text and attachment descriptors the way a settled user item
+/// does, so the content parts come from the same builder.
+pub fn queue_row(item: &Value) -> Value {
+    let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+    let text = item.get("text").and_then(Value::as_str);
+    let as_item = json!({
+        "metadata": {
+            "attachments": item.pointer("/attachments_metadata/attachments").cloned().unwrap_or(json!([])),
+            "rpc_id": item.get("rpc_id").cloned().unwrap_or(Value::Null),
+        }
+    });
+    json!({
+        "id": id,
+        "role": "user",
+        "content": user_message_content(&as_item, text),
+        "source": user_message_source(&as_item),
+    })
+}
+
+/// The `inbox` projection value for a thread's queue (upstream's
+/// `InboxWireState`): queued items are `next-turn` rows; CodeSmith has no
+/// separately pending steering (a steer reaches the engine at once), so
+/// `next-step` is always empty.
+pub fn inbox_projection(queue: &[Value]) -> Value {
+    json!({
+        "next-turn": queue.iter().map(queue_row).collect::<Vec<_>>(),
+        "next-step": [],
+    })
+}
+
 /// One live assistant attempt (one agent item being streamed).
 struct Attempt {
     /// Dense per-attempt chunk counter; the client rebaselines on any gap.
@@ -332,7 +377,7 @@ impl SessionMapper {
                                 "id": item_id,
                                 "role": "user",
                                 "content": user_message_content(&item, detail),
-                                "source": { "kind": "user" },
+                                "source": user_message_source(&item),
                             }),
                             true,
                         )));
@@ -627,7 +672,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                         "id": item_id,
                         "role": "user",
                         "content": user_message_content(item, detail_text),
-                        "source": { "kind": "user" },
+                        "source": user_message_source(item),
                     }),
                     true,
                 )),
@@ -1018,6 +1063,102 @@ mod tests {
         assert_eq!(result["data"]["message"]["content"][0]["text"], "file1");
     }
 
+    #[test]
+    fn user_messages_carry_their_rpc_id_by_identity() {
+        // The runtime records the client's correlation id on the user item;
+        // the settled message must carry it whatever order messages arrive
+        // in (a queue steer jumps ahead of queued items, a remove thins
+        // them), live and on replay alike.
+        let user_item = json!({
+            "id": "item_u", "turn_id": "turn_1", "kind": "user_message",
+            "status": "completed", "detail": "steered", "summary": "steered",
+            "started_at": "2026-11-06T10:00:00Z",
+            "metadata": { "rpc_id": "rpc_7" },
+        });
+        let mut mapper = SessionMapper::default();
+        let _ = mapper.map_envelope(&json!({
+            "event": "turn.started", "turn_id": "turn_1", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        let frames = mapper.map_envelope(&json!({
+            "event": "item.started", "item_id": "item_u", "timestamp": "2026-11-06T10:00:01Z",
+            "payload": { "item": user_item }
+        }));
+        let live = match &frames[0] {
+            Frame::Event(event) => event.clone(),
+            _ => panic!("expected event frame"),
+        };
+        assert_eq!(live["type"], "user/message");
+        assert_eq!(
+            live["data"]["source"],
+            json!({ "kind": "user", "rpcId": "rpc_7" })
+        );
+
+        let replayed = replay_events(&json!({
+            "turns": [{ "id": "turn_1", "status": "completed" }],
+            "items": [user_item],
+        }));
+        let replayed = replayed
+            .iter()
+            .find(|event| event["type"] == "user/message")
+            .expect("the user message replays");
+        assert_eq!(replayed["data"]["source"]["rpcId"], "rpc_7");
+
+        // No recorded id (a foreign HTTP client's turn): a plain user source.
+        assert_eq!(
+            user_message_source(&json!({ "metadata": null })),
+            json!({ "kind": "user" })
+        );
+    }
+
+    #[test]
+    fn queued_items_become_inbox_rows() {
+        // Upstream's QueueDock renders `next-turn` rows (flat UserMessages)
+        // and retires the composer's optimistic copy against `source.rpcId`.
+        let queue = vec![
+            json!({
+                "id": "qitem_a", "text": "look", "rpc_id": "rpc_a",
+                "input_summary": "look", "created_at": "2026-11-06T10:00:00Z",
+                "image_paths": ["/store/aa.png"],
+                "attachments_metadata": { "attachments": [
+                    { "kind": "image", "attachmentId": "sha256:aa", "mediaType": "image/png",
+                      "name": "shot.png", "bytes": 8, "width": 3, "height": 2 },
+                ]},
+            }),
+            json!({
+                "id": "qitem_b", "text": "plain", "input_summary": "plain",
+                "created_at": "2026-11-06T10:00:01Z",
+            }),
+        ];
+        let inbox = inbox_projection(&queue);
+        assert_eq!(
+            inbox["next-step"],
+            json!([]),
+            "no separately pending steering"
+        );
+        let rows = inbox["next-turn"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "one row per queued item, FIFO");
+        assert_eq!(rows[0]["id"], "qitem_a");
+        assert_eq!(rows[0]["role"], "user");
+        assert_eq!(
+            rows[0]["source"],
+            json!({ "kind": "user", "rpcId": "rpc_a" })
+        );
+        assert_eq!(
+            rows[0]["content"][0],
+            json!({ "type": "text", "text": "look" })
+        );
+        assert_eq!(rows[0]["content"][1]["type"], "image");
+        assert_eq!(
+            rows[0]["content"][1]["attachment"]["attachmentId"],
+            "sha256:aa"
+        );
+        assert_eq!(
+            rows[1]["source"],
+            json!({ "kind": "user" }),
+            "no rpc id, plain source"
+        );
+        assert_eq!(rows[1]["content"].as_array().unwrap().len(), 1, "text only");
+    }
     #[test]
     fn interrupted_items_abandon_their_open_attempts() {
         let mut mapper = SessionMapper::default();

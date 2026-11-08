@@ -29,7 +29,7 @@ Tauri App (desktop/)
 
 - The frontend writes no new UI code beyond the boot assembly and the
   transport adapter; pixels come from the vendored bundles.
-- Upward: client routes → runtime_api REST (`POST /v1/threads/{id}/turns`,
+- Upward: client routes → runtime_api REST (`POST /v1/threads/{id}/queue`,
   `…/steer`, `…/interrupt`, `PATCH /v1/threads/{id}`, `GET /v1/models` …).
 - Downward: the backend's SSE stream folds into client wire events and
   assistant-stream frames.
@@ -112,11 +112,22 @@ Known limitations of the current implementation:
 - Vendored copies sync with upstream manually (`vendor_client.py` records the
   source commit); no live tracking.
 - The RPC surface is a subset; unimplemented endpoints answer
-  `gateway/method-unavailable` instead of pretending success
-  (`session/updateQueue`, …). Session rename/fork/search,
-  archive/unarchive, session pinning and the sidebar's manual order, the
-  skills catalog, the desktop settings document, schedules over
-  `/v1/automations`, and the control projections ARE bridged.
+  `gateway/method-unavailable` instead of pretending success. Session
+  rename/fork/search, archive/unarchive, session pinning and the sidebar's
+  manual order, the prompt queue, the skills catalog, the desktop settings
+  document, schedules over `/v1/automations`, and the control projections
+  ARE bridged.
+- A prompt sent while a turn runs parks on the runtime thread's queue
+  (`POST /v1/threads/{id}/queue`): the queue dock renders it from the
+  `inbox` projection (the runtime's `queue.updated` event, pushed live), and
+  queued prompts start FIFO, one per turn, as soon as the running turn ends
+  (an interrupt keeps the queue). `session/updateQueue` bridges the dock's
+  three actions: edit (text-only — the item's attachments are dropped, and
+  the dock disables Edit on attachment rows), remove, and steer (pull the
+  item into the running turn). Gaps: steering an attachment-carrying row is
+  refused loudly (a steer is text-only); after a `serve` restart the queue
+  is still there but waits for the next prompt or turn end (resume-idle);
+  a queued turn takes the thread's defaults, not per-prompt overrides.
 - Sidebar pins and the manual session order are desktop-shell state,
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned
@@ -174,10 +185,11 @@ Known limitations of the current implementation:
   no-op (`delivered:false`, runtime 404 included). A delivered decision is
   followed by the request's cancel frame — that frame is what retires the
   answering card on every connected client. Detection does not depend
-  on a client following the session: every queued turn arms a per-session
+  on a client following the session: every prompt arms a per-session
   background watcher on the thread event stream that surfaces approvals and
-  questions on its own. A prompt that predates the watcher (foreign HTTP
-  clients, pre-restart turns) still needs a follow stream to be surfaced.
+  questions on its own, and a turn the queue starts re-arms it. A prompt
+  that predates the watcher (foreign HTTP clients, pre-restart turns) still
+  needs a follow stream to be surfaced.
 - Desktop sessions inherit the config's top-level `allow_shell` (default
   `false`, GHSA-72w5-pf8h-xfp4): with it off the model has no shell tool and
   approval cards come from write tools (`write_file`/`edit_file`). The bridge
@@ -193,11 +205,10 @@ Known limitations of the current implementation:
   not simulated) and sends no ping heartbeat (loopback: a vanished page
   closes its socket, which aborts every stream it carried).
 - The composer's optimistic copy retires on the echoed `source.rpcId` (the
-  client sends `requestId`). The runtime emits that echo as the turn starts,
-  so the bridge queues the id before the runtime accepts the prompt. Each id
-  stamps one echo — the first follow loop to see it — so with two clients
-  following one session, the sending client can miss the stamp and render
-  its message twice.
+  client sends `requestId`). The runtime records the id on the queued item
+  and on the settled user item (`metadata.rpc_id`), so the match is by
+  identity: a queue steer or remove cannot shift it onto another message,
+  and every client that follows the session sees the same stamp.
 - The composer's model seat resolves from the session's `modelSelection`
   projection plus the shared catalog: an empty session opens its journal at
   cursor −1 (0-based seqs), projections ride a process-wide seq clock (the

@@ -248,9 +248,39 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
   消息 8 个附件、音频/视频拒绝——任一附件被拒则整个请求失败（绝不半发送）。
   携带附件时 prompt 可为空（纯图片 turn 保留 `[image]` 占位文本）。请求体
   上限 16MB（10MB 文件上限之上的 base64 膨胀）。
-- `POST /v1/threads/{id}/turns/{turn_id}/steer` —— 仅文本；steer 不接受附件。
+- `POST /v1/threads/{id}/turns/{turn_id}/steer` —— 请求体
+  `{ "prompt": "…", "rpc_id": "…" }`；仅文本，steer 不接受附件。`rpc_id`（可选、
+  不透明）作为 `metadata.rpc_id` 记录在 steer 的 user item 上，客户端据此把落定
+  的消息对应回自己的提交。
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact`（手动压缩）
+
+线程已有活动 turn 时，`POST /turns` 返回 **409**。想发送又不和这次检查竞态，就用
+队列。
+
+**队列**（排在运行中 turn 之后的 prompt）
+- `POST /v1/threads/{id}/queue` —— 请求体
+  `{ "prompt": "…", "attachments": [...], "rpc_id": "…" }`（`attachments` 同
+  `/turns`，入队时摄取——全有或全无；`rpc_id` 可选、不透明）。线程空闲且队列为空
+  时，prompt 立即开始：`201 { "status": "started", "turn": TurnRecord }`；否则挂
+  到队尾：`201 { "status": "queued", "item": QueuedItemRecord }`。只要运行中的
+  turn 结束（任何结局；interrupt 不清队列），队列条目就按 FIFO 排空，**每个新
+  turn 一条**。排空起的 turn 使用线程默认值（队列条目不带逐 turn 覆盖项），其
+  user item 以 `metadata.rpc_id` 携带条目的 `rpc_id`。
+- `PATCH /v1/threads/{id}/queue/{item_id}` —— 请求体 `{ "prompt": "…" }`；纯文本
+  替换：条目的附件被丢弃，空白文本被拒（400）。
+- `DELETE /v1/threads/{id}/queue/{item_id}` —— 移除一条。
+- `POST /v1/threads/{id}/queue/{item_id}/steer` —— 把条目从队列取出，steer 进运
+  行中的 turn。没有活动 turn 返回 409，条目带附件返回 400（steer 仅文本），未知或
+  已排空的条目返回 404。引擎拒收 steer 时，条目回到队首。
+
+每次队列变更都发出 `queue.updated`，携带整个队列
+（`{ "items": [QueuedItemRecord…] }`）。`GET /v1/threads/{id}` 在顶层以 `queue`
+携带队列。
+
+已知限制：`POST /turns` 会绕过已排队的条目（有序的路径是队列路由）。与 turn
+结束竞态的队列 steer 可能被引擎的过期 steer 丢弃；直接 steer 路由和 REPL 的
+flush 也有同样的窗口。
 
 **审批**
 - `POST /v1/approvals/{approval_id}`，请求体为
@@ -337,12 +367,15 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 
 - **ThreadRecord** —— `id`、`created_at`、`updated_at`、`model`、`workspace`、
   `mode`、`task_id`、`coherence_state`、`system_prompt`、`latest_turn_id`、
-  `latest_response_bookmark`、`archived`
+  `latest_response_bookmark`、`archived`、`queue`
 - **TurnRecord** —— `id`、`thread_id`、`status`（`queued|in_progress|completed|
   failed|interrupted|canceled`）、时间戳、时长、用量、错误摘要
 - **TurnItemRecord** —— `id`、`turn_id`、`kind`（`user_message|agent_message|
   tool_call|file_change|command_execution|context_compaction|status|error`）、
   生命周期 `status`、`metadata`
+- **QueuedItemRecord** —— `id`（`qitem_…`）、`text`、`appendix`（排空时并入消息
+  的文件引用）、`image_paths`、`attachments_metadata`、`rpc_id`、`input_summary`、
+  `created_at`
 
 事件为只追加，带有全局单调 `seq` 用于重放/恢复。
 
@@ -351,6 +384,8 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 - 如果进程在某个 turn 或条目处于 `queued` 或 `in_progress` 时重启，
   恢复的记录会被标记为 `interrupted`，并带有 `"Interrupted by
   process restart"` 错误。
+- 线程队列随线程记录持久化，重启后仍在，但不会自行开始（resume-idle）：由下一次
+  入队或下一次 turn 结束来排空。加载线程或读取其详情永远不会启动队列条目。
 - 任务执行在同一持久化线程/turn 存储之上执行自己的恢复。
 
 ### 审批模型
@@ -400,7 +435,10 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 `turn.completed`、`item.started`、`item.delta`、`item.completed`、
 `item.failed`、`item.interrupted`、`approval.required`、`approval.decided`、
 `approval.timeout`、`sandbox.denied`、`coherence.state`、
-`background.agent_completed`、`background.status`。
+`background.agent_completed`、`background.status`、`queue.updated`。
+
+steer 的 user item 先发 `item.started` 再发 `item.completed`，与 turn 开场消息的
+生命周期一致，在线客户端一落地就能显示被 steer 的文本。
 
 ### 空闲唤醒 turn（第十轮）
 
@@ -457,6 +495,9 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 | 列出线程 | `GET /v1/threads` |
 | 附着到事件 | `GET /v1/threads/{id}/events?since_seq=0` |
 | 发送消息 | `POST /v1/threads/{id}/turns` |
+| 排队消息 | `POST /v1/threads/{id}/queue` |
+| 编辑 / 移除排队条目 | `PATCH` / `DELETE /v1/threads/{id}/queue/{item_id}` |
+| 转向排队条目 | `POST /v1/threads/{id}/queue/{item_id}/steer` |
 | 转向 | `POST /v1/threads/{id}/turns/{turn_id}/steer` |
 | 中断 | `POST /v1/threads/{id}/turns/{turn_id}/interrupt` |
 | 压缩 | `POST /v1/threads/{id}/compact` |

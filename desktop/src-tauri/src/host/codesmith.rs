@@ -269,6 +269,47 @@ impl CodesmithProcess {
             .with_context(|| format!("DELETE {path} body"))
     }
 
+    /// One request whose HTTP failure the caller classifies by status (the
+    /// queue mutations map 404/409 onto client error codes). Transport
+    /// trouble stays an outer `Err`; an HTTP failure is
+    /// `Ok(Err((status, message)))` carrying the runtime's own
+    /// `{"error":{"message"}}` text when it sent one.
+    pub async fn request_with_status(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<std::result::Result<serde_json::Value, (reqwest::StatusCode, String)>> {
+        let mut builder = self
+            .client
+            .request(method.clone(), format!("{}{path}", self.base_url));
+        if let Some(body) = body {
+            builder = builder.json(body);
+        }
+        let resp = self
+            .auth(builder)
+            .send()
+            .await
+            .with_context(|| format!("{method} {path}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|body| {
+                    body.pointer("/error/message")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Ok(Err((status, message)));
+        }
+        resp.json()
+            .await
+            .with_context(|| format!("{method} {path} body"))
+            .map(Ok)
+    }
+
     /// A long-lived SSE body as raw text chunks; the caller parses `data:`
     /// lines (keep-alive comments carry no data and are skipped naturally).
     pub async fn get_sse_lines(

@@ -149,6 +149,73 @@ pub struct ThreadRecord {
     pub title: Option<String>,
     #[serde(default)]
     pub coherence_state: CoherenceState,
+    /// Prompts parked while another turn owns the thread — the runtime's
+    /// host-side inject queue (engine inbox vocabulary; upstream's
+    /// `next-turn` inbox list). FIFO; the head starts as the next turn when
+    /// the thread goes idle. Additive: `default` keeps pre-queue records
+    /// loadable and older readers ignore the field.
+    #[serde(default)]
+    pub queue: Vec<QueuedItemRecord>,
+}
+
+/// One prompt parked on a thread's queue. The queue is the host-side
+/// counterpart of `start_turn`: the caller's attachments are admitted
+/// through the same intake at enqueue time (all-or-nothing), and the stored
+/// content composes into the engine message when the item's turn starts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedItemRecord {
+    #[serde(default = "default_runtime_schema_version")]
+    pub schema_version: u32,
+    /// `qitem_<8 hex>`, the id queue mutations address.
+    pub id: String,
+    /// The caller's prompt text (trimmed); empty for an image-only item.
+    pub text: String,
+    /// The attachment intake's content appendix (durable file references
+    /// folded into the engine message at drain). `None` once the item has
+    /// no attachments, including after a text-only edit (upstream parity:
+    /// an edit drops attachments).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appendix: Option<String>,
+    /// Content-addressed image store paths handed to the engine at drain.
+    #[serde(default)]
+    pub image_paths: Vec<PathBuf>,
+    /// Additive attachment descriptors for clients rendering the queued
+    /// row — the same shape a settled user item records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments_metadata: Option<Value>,
+    /// The client's own correlation id (the prompt's requestId). Rides the
+    /// queue so clients can retire their optimistic submission against the
+    /// queued row before it ever becomes a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc_id: Option<String>,
+    pub input_summary: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl QueuedItemRecord {
+    /// The engine message this item sends when its turn starts: the
+    /// caller's text, the file-reference appendix, or `[image]` —
+    /// `start_turn`'s composition for a prompt that never had to wait.
+    fn turn_content(&self) -> String {
+        let mut content = self.text.clone();
+        if let Some(appendix) = self.appendix.as_ref().filter(|a| !a.is_empty()) {
+            if !content.is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str(appendix);
+        }
+        if content.is_empty() {
+            content = "[image]".to_string();
+        }
+        content
+    }
+
+    /// Whether the item is text-only — the only shape the steer path
+    /// accepts (the steer channel takes text; attachments would be a
+    /// silent drop).
+    fn carries_attachments(&self) -> bool {
+        !self.image_paths.is_empty() || self.appendix.is_some()
+    }
 }
 
 /// The `turn.completed` event payload: the serialized turn with the tool
@@ -709,8 +776,151 @@ fn decode_attachments(
         .collect()
 }
 
+/// A prompt's admitted content, ready to become a turn: the composed engine
+/// message, the image store paths, and the client-facing attachment
+/// descriptors a settled user item records.
+struct AdmittedPrompt {
+    content: String,
+    appendix: Option<String>,
+    image_paths: Vec<PathBuf>,
+    attachments_metadata: Option<Value>,
+}
+
+/// Admit inline-encoded attachments through the same intake the REPL uses:
+/// wire images hand the engine store paths, inline text folds into the
+/// message, other binaries append a durable path reference the model can
+/// read on demand. All-or-nothing — one refused attachment fails the
+/// request before any turn is claimed. The session's context-reference
+/// records stay REPL-local here; the evidence rides the message text
+/// (appendix lines) and the engine's own media-attachment record for
+/// images.
+async fn admit_prompt(prompt: String, attachments: &[TurnAttachment]) -> Result<AdmittedPrompt> {
+    let intake = if attachments.is_empty() {
+        None
+    } else {
+        let encoded = decode_attachments(attachments)?;
+        let intake = crate::media::ingest_encoded_attachments(encoded)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Some(intake)
+    };
+    let mut content = prompt;
+    if let Some(intake) = &intake
+        && !intake.content_appendix.is_empty()
+    {
+        content.push_str("\n\n");
+        content.push_str(&intake.content_appendix);
+    }
+    // An image-only prompt keeps a non-empty text: an empty text block
+    // beside the image blocks is a shape no provider round-trips.
+    if content.is_empty() {
+        content = "[image]".to_string();
+    }
+    Ok(AdmittedPrompt {
+        content,
+        appendix: intake
+            .as_ref()
+            .map(|intake| intake.content_appendix.clone())
+            .filter(|appendix| !appendix.is_empty()),
+        image_paths: intake
+            .as_ref()
+            .map(|intake| intake.image_paths.clone())
+            .unwrap_or_default(),
+        attachments_metadata: intake
+            .as_ref()
+            .map(|intake| json!({ "attachments": intake.records })),
+    })
+}
+
+/// Everything a launched turn needs, already content-composed.
+/// `start_turn` builds this from a request; the queue drain builds it from
+/// a parked item (overrides `None`: a queued turn starts with the thread's
+/// defaults).
+struct TurnLaunch {
+    content: String,
+    image_paths: Vec<PathBuf>,
+    attachments_metadata: Option<Value>,
+    /// The client correlation id recorded on the turn's user item.
+    rpc_id: Option<String>,
+    input_summary: Option<String>,
+    model: Option<String>,
+    mode: Option<String>,
+    allow_shell: Option<bool>,
+    trust_mode: Option<bool>,
+    auto_approve: Option<bool>,
+}
+
+impl QueuedItemRecord {
+    /// The `TurnLaunch` this item's turn starts with.
+    fn turn_launch(&self) -> TurnLaunch {
+        TurnLaunch {
+            content: self.turn_content(),
+            image_paths: self.image_paths.clone(),
+            attachments_metadata: self.attachments_metadata.clone(),
+            rpc_id: self.rpc_id.clone(),
+            input_summary: Some(self.input_summary.clone()),
+            model: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteerTurnRequest {
+    pub prompt: String,
+    /// Opaque client correlation id, recorded on the steer's user item.
+    #[serde(default)]
+    pub rpc_id: Option<String>,
+}
+
+/// A user item's additive, client-facing metadata: the attachment
+/// descriptors plus the client's correlation id, so a client matches the
+/// settled message to its own submission by identity — never by arrival
+/// order, which a queue reorders (steer) and thins (remove). Not
+/// model-visible.
+fn user_item_metadata(attachments: Option<Value>, rpc_id: Option<&str>) -> Option<Value> {
+    let mut metadata = attachments.unwrap_or_else(|| json!({}));
+    if let (Some(rpc_id), Some(object)) = (rpc_id, metadata.as_object_mut()) {
+        object.insert("rpc_id".to_string(), json!(rpc_id));
+    }
+    metadata
+        .as_object()
+        .is_some_and(|object| !object.is_empty())
+        .then_some(metadata)
+}
+
+/// One prompt for the thread queue: the same shape `StartTurnRequest` takes
+/// minus the per-turn overrides (queued items are content-only; their turn
+/// starts with the thread's defaults — upstream inbox parity).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnqueueRequest {
+    pub prompt: String,
+    #[serde(default)]
+    pub input_summary: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<TurnAttachment>,
+    /// Opaque client correlation id, stored on the queued item.
+    #[serde(default)]
+    pub rpc_id: Option<String>,
+}
+
+/// `POST /threads/{id}/queue`'s answer: parked, or started right away when
+/// the thread was idle — one endpoint for "send", no check-then-post race
+/// for the caller.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum EnqueueResponse {
+    Queued { item: QueuedItemRecord },
+    Started { turn: TurnRecord },
+}
+
+/// Text-only replacement for one queued item (upstream parity: an edit
+/// drops attachments; whitespace-only text is refused).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditQueuedRequest {
     pub prompt: String,
 }
 
@@ -725,6 +935,9 @@ pub struct ThreadDetail {
     pub thread: ThreadRecord,
     pub turns: Vec<TurnRecord>,
     pub items: Vec<TurnItemRecord>,
+    /// The thread's pending queue (same items as `thread.queue`; carried at
+    /// the top level so clients read one shape, like `turns` and `items`).
+    pub queue: Vec<QueuedItemRecord>,
     pub latest_seq: u64,
 }
 
@@ -800,6 +1013,11 @@ struct ActiveThreadState {
     /// takes the slot for its own duration and hands any pending client
     /// claim back afterwards (the client's op queues behind it).
     active_turn: Option<ActiveTurnState>,
+    /// The thread's prompt queue. Authoritative while the engine is loaded
+    /// (seeded from the thread record at load, overwritten back onto it on
+    /// every mutation — both homes change under one `active` lock, so they
+    /// cannot disagree); the record is what survives eviction and restart.
+    queue: Vec<QueuedItemRecord>,
 }
 
 #[derive(Default)]
@@ -1065,6 +1283,7 @@ impl RuntimeThreadManager {
             task_id: req.task_id,
             title: None,
             coherence_state: CoherenceState::default(),
+            queue: Vec::new(),
         };
         self.store.save_thread(&thread)?;
         self.emit_event(
@@ -1302,10 +1521,12 @@ impl RuntimeThreadManager {
             items.extend(self.store.list_items_for_turn(&turn.id)?);
         }
         let latest_seq = self.store.current_seq().await;
+        let queue = thread.queue.clone();
         Ok(ThreadDetail {
             thread,
             turns,
             items,
+            queue,
             latest_seq,
         })
     }
@@ -1635,49 +1856,54 @@ impl RuntimeThreadManager {
             bail!("prompt is required");
         }
 
-        // Admit inline-encoded attachments through the same intake the REPL
-        // uses: wire images hand the engine store paths, inline text folds
-        // into the message, other binaries append a durable path reference
-        // the model can read on demand. All-or-nothing — one refused
-        // attachment fails the request before the turn is claimed. The
-        // session's context-reference records stay REPL-local here; the
-        // evidence rides the message text (appendix lines) and the engine's
-        // own media-attachment record for images.
-        let intake = if req.attachments.is_empty() {
-            None
-        } else {
-            let encoded = decode_attachments(&req.attachments)?;
-            let intake = crate::media::ingest_encoded_attachments(encoded)
-                .await
-                .map_err(anyhow::Error::msg)?;
-            Some(intake)
-        };
-        let mut content = prompt;
-        if let Some(intake) = &intake
-            && !intake.content_appendix.is_empty()
-        {
-            content.push_str("\n\n");
-            content.push_str(&intake.content_appendix);
-        }
-        // An image-only prompt keeps a non-empty text: an empty text block
-        // beside the image blocks is a shape no provider round-trips.
-        if content.is_empty() {
-            content = "[image]".to_string();
-        }
-        let image_paths = intake
-            .as_ref()
-            .map(|intake| intake.image_paths.clone())
-            .unwrap_or_default();
-
-        let mut thread = self.get_thread(thread_id).await?;
+        let admitted = admit_prompt(prompt, &req.attachments).await?;
+        let thread = self.get_thread(thread_id).await?;
         let engine = self.ensure_engine_loaded(&thread).await?;
+        let launch = TurnLaunch {
+            content: admitted.content,
+            image_paths: admitted.image_paths,
+            attachments_metadata: admitted.attachments_metadata,
+            rpc_id: None,
+            input_summary: req.input_summary,
+            model: req.model,
+            mode: req.mode,
+            allow_shell: req.allow_shell,
+            trust_mode: req.trust_mode,
+            auto_approve: req.auto_approve,
+        };
+        self.launch_turn(thread, engine, launch).await
+    }
+
+    /// Claim the thread and send one turn to its engine — the shared tail of
+    /// `start_turn` and the queue drain. The caller has already composed the
+    /// message (prompt text, attachment appendix, `[image]` fallback).
+    async fn launch_turn(
+        &self,
+        mut thread: ThreadRecord,
+        engine: EngineHandle,
+        launch: TurnLaunch,
+    ) -> Result<TurnRecord> {
+        let TurnLaunch {
+            content,
+            image_paths,
+            attachments_metadata,
+            rpc_id,
+            input_summary,
+            model: req_model,
+            mode: req_mode,
+            allow_shell: req_allow_shell,
+            trust_mode: req_trust_mode,
+            auto_approve: req_auto_approve,
+        } = launch;
+        let thread_id = thread.id.clone();
+        let thread_id = thread_id.as_str();
 
         // Resolve the request before claiming the turn slot: auto-routing
         // may call a model, and the claim-to-op window below should stay
         // small (an idle-wake turn the engine synthesizes inside it simply
         // runs first; the single event reader attributes both).
-        let mode = parse_mode(req.mode.as_deref().unwrap_or(&thread.mode));
-        let requested_model = req.model.unwrap_or_else(|| thread.model.clone());
+        let mode = parse_mode(req_mode.as_deref().unwrap_or(&thread.mode));
+        let requested_model = req_model.unwrap_or_else(|| thread.model.clone());
         let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
         let (model, reasoning_effort) = if auto_model {
             let selection = crate::interactive::commands::auto_route::resolve_auto_route(
@@ -1697,9 +1923,9 @@ impl RuntimeThreadManager {
         } else {
             (requested_model, None)
         };
-        let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
-        let trust_mode = req.trust_mode.unwrap_or(thread.trust_mode);
-        let auto_approve = req.auto_approve.unwrap_or(thread.auto_approve);
+        let allow_shell = req_allow_shell.unwrap_or(thread.allow_shell);
+        let trust_mode = req_trust_mode.unwrap_or(thread.trust_mode);
+        let auto_approve = req_auto_approve.unwrap_or(thread.auto_approve);
         let settings = crate::settings::Settings::load().unwrap_or_default();
         let show_thinking = settings.show_thinking;
         let is_simple = settings.is_simple;
@@ -1711,9 +1937,7 @@ impl RuntimeThreadManager {
             id: turn_id.clone(),
             thread_id: thread_id.to_string(),
             status: RuntimeTurnStatus::InProgress,
-            input_summary: req
-                .input_summary
-                .unwrap_or_else(|| summarize_text(&content, SUMMARY_LIMIT)),
+            input_summary: input_summary.unwrap_or_else(|| summarize_text(&content, SUMMARY_LIMIT)),
             created_at: now,
             started_at: Some(now),
             ended_at: None,
@@ -1736,11 +1960,9 @@ impl RuntimeThreadManager {
             summary: summarize_text(&content, SUMMARY_LIMIT),
             detail: Some(content.clone()),
             // Additive attachment descriptors (kind, content address,
-            // display fields) for clients rendering the settled message;
-            // older readers ignore them.
-            metadata: intake
-                .as_ref()
-                .map(|intake| json!({ "attachments": intake.records })),
+            // display fields) and the client's correlation id for clients
+            // rendering the settled message; older readers ignore them.
+            metadata: user_item_metadata(attachments_metadata, rpc_id.as_deref()),
             artifact_refs: Vec::new(),
             started_at: Some(now),
             ended_at: Some(now),
@@ -1923,6 +2145,22 @@ impl RuntimeThreadManager {
             .await
             .map_err(|e| anyhow!("Failed to steer turn: {e}"))?;
 
+        self.record_steer(thread_id, turn_id, &prompt, req.rpc_id.as_deref())
+            .await
+    }
+
+    /// Record one delivered steer on the turn: the count, the user item, and
+    /// its events (the shared tail of the steer route and the queue's steer
+    /// action). The user item announces itself with `item.started` like a
+    /// turn's opening message does, so clients settle the steered text
+    /// live, not only on replay.
+    async fn record_steer(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        prompt: &str,
+        rpc_id: Option<&str>,
+    ) -> Result<TurnRecord> {
         let now = Utc::now();
         let mut turn = self.store.load_turn(turn_id)?;
         turn.steer_count = turn.steer_count.saturating_add(1);
@@ -1934,9 +2172,9 @@ impl RuntimeThreadManager {
             turn_id: turn_id.to_string(),
             kind: TurnItemKind::UserMessage,
             status: TurnItemLifecycleStatus::Completed,
-            summary: summarize_text(&prompt, SUMMARY_LIMIT),
-            detail: Some(prompt.clone()),
-            metadata: None,
+            summary: summarize_text(prompt, SUMMARY_LIMIT),
+            detail: Some(prompt.to_string()),
+            metadata: user_item_metadata(None, rpc_id),
             artifact_refs: Vec::new(),
             started_at: Some(now),
             ended_at: Some(now),
@@ -1961,12 +2199,278 @@ impl RuntimeThreadManager {
             thread_id,
             Some(turn_id),
             Some(&item.id),
+            "item.started",
+            json!({ "item": item }),
+        )
+        .await?;
+        self.emit_event(
+            thread_id,
+            Some(turn_id),
+            Some(&item.id),
             "item.completed",
             json!({ "item": item }),
         )
         .await?;
 
         Ok(turn)
+    }
+
+    /// Whether something owns the thread's next turn: an active turn claim,
+    /// or an engine turn the claim has not caught up with yet — the
+    /// `turn_in_flight` flag clears just before the final `TurnComplete`,
+    /// so together they are the honest busy test.
+    fn thread_busy(state: &ActiveThreadState) -> bool {
+        state.active_turn.is_some() || state.engine.turn_in_flight()
+    }
+
+    /// Apply one mutation to a loaded thread's queue. The closure sees the
+    /// whole per-thread state, so a busy check and the mutation it gates
+    /// are one atomic step; returning `Ok(None)` means "nothing changed"
+    /// (no persist, no event). The in-memory mirror is authoritative while
+    /// the engine is loaded; the thread record is overwritten from it
+    /// inside the same `active` lock, so the two homes cannot disagree (the
+    /// record load/save takes no store lock — the module's lock-ordering
+    /// invariant concerns `store::state`, which only `append_event` takes),
+    /// and `queue.updated` is emitted after the lock is released.
+    async fn mutate_queue<T>(
+        &self,
+        thread_id: &str,
+        mutate: impl FnOnce(&mut ActiveThreadState) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
+        let (value, queue) = {
+            let mut active = self.active.lock().await;
+            let Some(state) = active.engines.get_mut(thread_id) else {
+                bail!("Thread engine not loaded");
+            };
+            let Some(value) = mutate(state)? else {
+                return Ok(None);
+            };
+            let mut thread = self.store.load_thread(thread_id)?;
+            thread.queue = state.queue.clone();
+            thread.updated_at = Utc::now();
+            self.store.save_thread(&thread)?;
+            let queue = state.queue.clone();
+            touch_lru(&mut active.lru, thread_id);
+            (value, queue)
+        };
+        self.emit_event(
+            thread_id,
+            None,
+            None,
+            "queue.updated",
+            json!({ "items": queue }),
+        )
+        .await?;
+        Ok(Some(value))
+    }
+
+    /// `POST /threads/{id}/queue`: park one prompt, or start it right away
+    /// when the thread is idle with nothing waiting — one endpoint for
+    /// "send", no check-then-post race for the caller.
+    ///
+    /// Owns: FIFO order (one item per new turn, drained when the running
+    /// turn ends with any outcome — a cancel keeps the queue, upstream
+    /// parity), all-or-nothing attachment admission at enqueue time, the
+    /// `rpc_id` passthrough, and a `queue.updated` event per mutation.
+    ///
+    /// Does not do (known limitations): `POST /turns` bypasses queued items
+    /// (the queue route is the ordered path); after a process restart the
+    /// persisted queue stays idle until the next enqueue or turn end
+    /// (resume-idle, upstream inbox parity); queued items carry no per-turn
+    /// overrides (their turn takes the thread's defaults); a queue steer
+    /// raced by turn completion may be dropped by the engine's stale-steer
+    /// discard — the window the REPL's flush and the steer route accept.
+    pub async fn enqueue(&self, thread_id: &str, req: EnqueueRequest) -> Result<EnqueueResponse> {
+        let text = req.prompt.trim().to_string();
+        if text.is_empty() && req.attachments.is_empty() {
+            bail!("prompt is required");
+        }
+        let admitted = admit_prompt(text.clone(), &req.attachments).await?;
+        let thread = self.get_thread(thread_id).await?;
+        let engine = self.ensure_engine_loaded(&thread).await?;
+        let item = QueuedItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: format!("qitem_{}", &Uuid::new_v4().to_string()[..8]),
+            text,
+            appendix: admitted.appendix,
+            image_paths: admitted.image_paths,
+            attachments_metadata: admitted.attachments_metadata,
+            rpc_id: req.rpc_id,
+            input_summary: req
+                .input_summary
+                .unwrap_or_else(|| summarize_text(&admitted.content, SUMMARY_LIMIT)),
+            created_at: Utc::now(),
+        };
+
+        // Park unless the thread is idle with nothing waiting. A restored
+        // queue (resume-idle) is "something waiting": the new item goes to
+        // the tail and the drain starts the oldest first.
+        let parked = self
+            .mutate_queue(thread_id, |state| {
+                if !Self::thread_busy(state) && state.queue.is_empty() {
+                    return Ok(None);
+                }
+                state.queue.push(item.clone());
+                Ok(Some(()))
+            })
+            .await?;
+        if parked.is_none() {
+            match self.launch_turn(thread, engine, item.turn_launch()).await {
+                Ok(turn) => return Ok(EnqueueResponse::Started { turn }),
+                // A turn started between the check and the claim: park
+                // behind it instead — the item runs when that turn ends.
+                Err(err) if err.to_string().contains("already has an active turn") => {
+                    self.mutate_queue(thread_id, |state| {
+                        state.queue.push(item.clone());
+                        Ok(Some(()))
+                    })
+                    .await?;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        // The turn this item waited on may have ended between the check and
+        // the park, its own drain finding nothing; drain once more — a
+        // no-op while the thread stays busy.
+        self.drain_queue(thread_id).await;
+        Ok(EnqueueResponse::Queued { item })
+    }
+
+    /// Start the queue's head as a turn if the thread is idle. Runs when a
+    /// turn ends and after an enqueue — never at engine load, so a restored
+    /// queue waits for the next activity (resume-idle). One item per call:
+    /// the launched turn's own end drains the next. Only ever runs on a
+    /// loaded engine (its monitor, or an enqueue that just loaded it), so it
+    /// takes the engine from the active map — never `ensure_engine_loaded`,
+    /// which would make the monitor's future recursive through the spawn.
+    async fn drain_queue(&self, thread_id: &str) {
+        let (head, engine) = match self
+            .mutate_queue(thread_id, |state| {
+                if Self::thread_busy(state) || state.queue.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some((state.queue.remove(0), state.engine.clone())))
+            })
+            .await
+        {
+            Ok(Some(popped)) => popped,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::error!("Queue drain on {thread_id} failed: {err:#}");
+                return;
+            }
+        };
+        let launched = async {
+            let thread = self.get_thread(thread_id).await?;
+            self.launch_turn(thread, engine, head.turn_launch()).await
+        }
+        .await;
+        if let Err(err) = launched {
+            // Lost the claim to a turn that started in between, or the
+            // launch failed: the item goes back to the head — duplicate
+            // over loss (a launch that failed after claiming also left a
+            // failed turn on record). The next turn end drains it again.
+            tracing::warn!("Queue drain on {thread_id} re-parked {}: {err:#}", head.id);
+            let reparked = self
+                .mutate_queue(thread_id, |state| {
+                    state.queue.insert(0, head.clone());
+                    Ok(Some(()))
+                })
+                .await;
+            if let Err(err) = reparked {
+                tracing::error!(
+                    "Queue drain on {thread_id} could not re-park {}: {err:#}",
+                    head.id
+                );
+            }
+        }
+    }
+
+    /// `PATCH /threads/{id}/queue/{item_id}`: replace one queued item's
+    /// text. Text-only, like upstream's queue edit — the item's attachments
+    /// are dropped and its summary follows the new text.
+    pub async fn edit_queued(
+        &self,
+        thread_id: &str,
+        item_id: &str,
+        req: EditQueuedRequest,
+    ) -> Result<QueuedItemRecord> {
+        let text = req.prompt.trim().to_string();
+        if text.is_empty() {
+            bail!("edited prompt is required");
+        }
+        let thread = self.get_thread(thread_id).await?;
+        self.ensure_engine_loaded(&thread).await?;
+        self.mutate_queue(thread_id, |state| {
+            let Some(item) = state.queue.iter_mut().find(|item| item.id == item_id) else {
+                bail!("Queue item {item_id} not found on thread {thread_id}");
+            };
+            item.input_summary = summarize_text(&text, SUMMARY_LIMIT);
+            item.text = text;
+            item.appendix = None;
+            item.image_paths = Vec::new();
+            item.attachments_metadata = None;
+            Ok(Some(item.clone()))
+        })
+        .await?
+        .context("queue edit returned no item")
+    }
+
+    /// `DELETE /threads/{id}/queue/{item_id}`: drop one queued item.
+    pub async fn remove_queued(&self, thread_id: &str, item_id: &str) -> Result<QueuedItemRecord> {
+        let thread = self.get_thread(thread_id).await?;
+        self.ensure_engine_loaded(&thread).await?;
+        self.mutate_queue(thread_id, |state| {
+            let Some(index) = state.queue.iter().position(|item| item.id == item_id) else {
+                bail!("Queue item {item_id} not found on thread {thread_id}");
+            };
+            Ok(Some(state.queue.remove(index)))
+        })
+        .await?
+        .context("queue remove returned no item")
+    }
+
+    /// `POST /threads/{id}/queue/{item_id}/steer`: pull one queued item out
+    /// and steer the running turn with it (upstream's queue steer). The pop
+    /// is durable before the steer is sent; a steer the engine refuses puts
+    /// the item back at the head. Text-only items only — the steer channel
+    /// takes text, so an attachment-carrying item refuses loudly instead of
+    /// silently dropping its files.
+    pub async fn steer_queued(&self, thread_id: &str, item_id: &str) -> Result<TurnRecord> {
+        let thread = self.get_thread(thread_id).await?;
+        self.ensure_engine_loaded(&thread).await?;
+        let (item, turn_id, engine) = self
+            .mutate_queue(thread_id, |state| {
+                let Some(turn_id) = state.active_turn.as_ref().map(|turn| turn.turn_id.clone())
+                else {
+                    bail!("No active turn on thread {thread_id}");
+                };
+                let Some(index) = state.queue.iter().position(|item| item.id == item_id) else {
+                    bail!("Queue item {item_id} not found on thread {thread_id}");
+                };
+                if state.queue[index].carries_attachments() {
+                    bail!("Queue item {item_id} carries attachments; a steer takes text only");
+                }
+                Ok(Some((
+                    state.queue.remove(index),
+                    turn_id,
+                    state.engine.clone(),
+                )))
+            })
+            .await?
+            .context("queue steer returned no item")?;
+        if let Err(err) = engine.steer(item.text.clone()).await {
+            // The steer never reached the engine: nothing is lost, the item
+            // goes back to the head (the REPL's flush rule).
+            self.mutate_queue(thread_id, |state| {
+                state.queue.insert(0, item.clone());
+                Ok(Some(()))
+            })
+            .await?;
+            bail!("Failed to steer turn: {err}");
+        }
+        self.record_steer(thread_id, &turn_id, &item.text, item.rpc_id.as_deref())
+            .await
     }
 
     pub async fn compact_thread(
@@ -2288,6 +2792,9 @@ impl RuntimeThreadManager {
             ActiveThreadState {
                 engine: engine.clone(),
                 active_turn: None,
+                // Seed the mirror from the record; a restored queue stays
+                // idle until the next enqueue or turn end (resume-idle).
+                queue: thread.queue.clone(),
             },
         );
         touch_lru(&mut active.lru, &thread.id);
@@ -2412,6 +2919,10 @@ impl RuntimeThreadManager {
                 state.active_turn = Some(claim);
             }
         }
+        // No parked claim left holding the slot: queued prompts may start
+        // now (a parked claim makes `drain_queue` a no-op — its own op runs
+        // first).
+        self.drain_queue(thread.id.as_str()).await;
         Ok(turn_id)
     }
 
@@ -2484,6 +2995,9 @@ impl RuntimeThreadManager {
                     {
                         tracing::error!("Failed to monitor turn: {err}");
                     }
+                    // The claim is released (any outcome); queued prompts
+                    // may start now, one per turn.
+                    self.drain_queue(thread.id.as_str()).await;
                 }
                 // A decision the engine is blocked on, with no runtime turn to
                 // route it to: answer fail-closed rather than leave the engine
@@ -3629,6 +4143,7 @@ impl RuntimeThreadManager {
                 ActiveThreadState {
                     engine: engine.clone(),
                     active_turn: None,
+                    queue: thread.queue.clone(),
                 },
             );
             touch_lru(&mut active.lru, thread_id);
@@ -3911,6 +4426,7 @@ mod tests {
             task_id: None,
             title: None,
             coherence_state: CoherenceState::default(),
+            queue: Vec::new(),
         }
     }
 
@@ -3961,11 +4477,17 @@ mod tests {
     ) -> crate::core::engine::MockEngineHandle {
         let harness = mock_engine_handle();
         let mut active = manager.active.lock().await;
+        let queue = manager
+            .get_thread(thread_id)
+            .await
+            .map(|thread| thread.queue.clone())
+            .unwrap_or_default();
         active.engines.insert(
             thread_id.to_string(),
             ActiveThreadState {
                 engine: harness.handle.clone(),
                 active_turn: None,
+                queue,
             },
         );
         touch_lru(&mut active.lru, thread_id);
@@ -4158,6 +4680,7 @@ mod tests {
                     auto_approve: true,
                     trust_mode: false,
                 }),
+                queue: Vec::new(),
             },
         );
         active.engines.insert(
@@ -4170,6 +4693,7 @@ mod tests {
                     auto_approve: true,
                     trust_mode: false,
                 }),
+                queue: Vec::new(),
             },
         );
         active.lru.push_back("thr_a".to_string());
@@ -4550,7 +5074,7 @@ mod tests {
     }
 
     async fn attachment_thread(manager: &RuntimeThreadManager) -> Result<ThreadRecord> {
-        Ok(manager
+        manager
             .create_thread(CreateThreadRequest {
                 model: None,
                 workspace: None,
@@ -4562,7 +5086,7 @@ mod tests {
                 system_prompt: None,
                 task_id: None,
             })
-            .await?)
+            .await
     }
 
     #[tokio::test]
@@ -4690,6 +5214,435 @@ mod tests {
             "the metadata still echoes the attachment"
         );
         Ok(())
+    }
+
+    fn plain_enqueue(prompt: &str, rpc_id: Option<&str>) -> EnqueueRequest {
+        EnqueueRequest {
+            prompt: prompt.to_string(),
+            input_summary: None,
+            attachments: Vec::new(),
+            rpc_id: rpc_id.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_parks_when_the_thread_is_busy() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+
+        manager
+            .start_turn(&thread.id, plain_start_turn("first"))
+            .await?;
+
+        let parked = manager
+            .enqueue(&thread.id, plain_enqueue("second", Some("rpc_2")))
+            .await?;
+        let EnqueueResponse::Queued { item } = &parked else {
+            panic!("a busy thread must park, got {parked:?}");
+        };
+        assert_eq!(item.text, "second");
+        assert_eq!(item.rpc_id.as_deref(), Some("rpc_2"));
+
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        assert_eq!(detail.queue.len(), 1, "the item is on the thread record");
+        assert_eq!(detail.queue[0].id, item.id);
+        assert!(
+            manager
+                .events_since(&thread.id, None)?
+                .iter()
+                .any(|event| event.event == "queue.updated"),
+            "the park is announced"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn enqueue_starts_the_turn_when_idle() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+
+        let started = manager
+            .enqueue(&thread.id, plain_enqueue("right away", None))
+            .await?;
+        assert!(
+            matches!(started, EnqueueResponse::Started { .. }),
+            "an idle thread starts instead of parking: {started:?}"
+        );
+        match rx_op.recv().await {
+            Some(Op::SendMessage { content, .. }) => assert_eq!(content, "right away"),
+            other => panic!("expected SendMessage op, got {other:?}"),
+        }
+        assert!(
+            manager
+                .get_thread_detail(&thread.id)
+                .await?
+                .queue
+                .is_empty(),
+            "nothing parked"
+        );
+        Ok(())
+    }
+
+    /// Answers every `SendMessage` the mock engine receives with a completed
+    /// turn, so each drain-started turn settles and drains the next.
+    async fn answer_every_send(
+        mut rx_op: tokio::sync::mpsc::Receiver<Op>,
+        tx_event: tokio::sync::mpsc::Sender<EngineEvent>,
+    ) {
+        while let Some(op) = rx_op.recv().await {
+            if !matches!(op, Op::SendMessage { .. }) {
+                continue;
+            }
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "engine_turn".to_string(),
+                    synthesized: false,
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnComplete {
+                    usage: Usage::default(),
+                    status: TurnOutcomeStatus::Completed,
+                    error: None,
+                    tool_catalog: None,
+                    base_url: None,
+                    reported_model: None,
+                    failed_attempts: Vec::new(),
+                })
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_drains_fifo_one_item_per_turn() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        tokio::spawn(answer_every_send(harness.rx_op, harness.tx_event.clone()));
+
+        let first = manager
+            .start_turn(&thread.id, plain_start_turn("first"))
+            .await?;
+        let item_a = match manager
+            .enqueue(&thread.id, plain_enqueue("queued A", Some("rpc_a")))
+            .await?
+        {
+            EnqueueResponse::Queued { item } => item,
+            other => panic!("busy thread parks, got {other:?}"),
+        };
+        manager
+            .enqueue(&thread.id, plain_enqueue("queued B", None))
+            .await?;
+
+        // Without the drain this hangs: the first turn completes and the
+        // queued items never start (the regression this test pins).
+        let _completed =
+            wait_for_terminal_turn(&manager, &first.id, Duration::from_secs(5)).await?;
+        wait_for_thread_event(&manager, &thread.id, Duration::from_secs(5), |event| {
+            event.event == "turn.started"
+                && event
+                    .payload
+                    .pointer("/turn/input_summary")
+                    .and_then(Value::as_str)
+                    == Some("queued A")
+        })
+        .await?;
+        wait_for_thread_event(&manager, &thread.id, Duration::from_secs(5), |event| {
+            event.event == "turn.started"
+                && event
+                    .payload
+                    .pointer("/turn/input_summary")
+                    .and_then(Value::as_str)
+                    == Some("queued B")
+        })
+        .await?;
+
+        // FIFO, and the pop is announced before the item's turn starts.
+        let events = manager.events_since(&thread.id, None)?;
+        let a_started = events
+            .iter()
+            .find(|event| {
+                event.event == "turn.started"
+                    && event
+                        .payload
+                        .pointer("/turn/input_summary")
+                        .and_then(Value::as_str)
+                        == Some("queued A")
+            })
+            .expect("queued A turn started");
+        assert!(
+            events.iter().any(|event| {
+                event.event == "queue.updated"
+                    && event.seq < a_started.seq
+                    && event
+                        .payload
+                        .pointer("/items")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| {
+                            !items
+                                .iter()
+                                .any(|queued| queued.get("id") == Some(&json!(item_a.id)))
+                        })
+            }),
+            "queue.updated announces the pop before queued A's turn starts"
+        );
+        // The drained turn's user item carries the item's correlation id, so
+        // a client matches it by identity rather than arrival order.
+        assert!(
+            events.iter().any(|event| {
+                event.event == "item.started"
+                    && event.turn_id == a_started.turn_id
+                    && event
+                        .payload
+                        .pointer("/item/metadata/rpc_id")
+                        .and_then(Value::as_str)
+                        == Some("rpc_a")
+            }),
+            "queued A's user item carries rpc_a"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn edit_queued_replaces_text_and_drops_attachments() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+        manager
+            .start_turn(&thread.id, plain_start_turn("busy"))
+            .await?;
+
+        let item = match manager
+            .enqueue(
+                &thread.id,
+                EnqueueRequest {
+                    prompt: "with a picture".to_string(),
+                    input_summary: None,
+                    attachments: vec![png_attachment("shot.png")],
+                    rpc_id: None,
+                },
+            )
+            .await?
+        {
+            EnqueueResponse::Queued { item } => item,
+            other => panic!("busy thread parks, got {other:?}"),
+        };
+        assert!(
+            !item.image_paths.is_empty() && item.attachments_metadata.is_some(),
+            "the parked item carries its attachments"
+        );
+
+        let edited = manager
+            .edit_queued(
+                &thread.id,
+                &item.id,
+                EditQueuedRequest {
+                    prompt: "edited words".to_string(),
+                },
+            )
+            .await?;
+        assert_eq!(edited.text, "edited words");
+        assert!(
+            edited.image_paths.is_empty()
+                && edited.appendix.is_none()
+                && edited.attachments_metadata.is_none(),
+            "an edit is text-only: attachments are dropped"
+        );
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        assert_eq!(detail.queue[0].text, "edited words");
+
+        let blank = manager
+            .edit_queued(
+                &thread.id,
+                &item.id,
+                EditQueuedRequest {
+                    prompt: "   ".to_string(),
+                },
+            )
+            .await;
+        assert!(blank.is_err(), "whitespace-only edits are refused");
+
+        let missing = manager
+            .edit_queued(
+                &thread.id,
+                "qitem_missing",
+                EditQueuedRequest {
+                    prompt: "no such item".to_string(),
+                },
+            )
+            .await;
+        let message = format!("{}", missing.expect_err("unknown id must fail"));
+        assert!(message.contains("not found"), "{message}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remove_queued_drops_the_item() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+        manager
+            .start_turn(&thread.id, plain_start_turn("busy"))
+            .await?;
+        let item = match manager
+            .enqueue(&thread.id, plain_enqueue("to remove", None))
+            .await?
+        {
+            EnqueueResponse::Queued { item } => item,
+            other => panic!("busy thread parks, got {other:?}"),
+        };
+
+        let removed = manager.remove_queued(&thread.id, &item.id).await?;
+        assert_eq!(removed.id, item.id);
+        assert!(
+            manager
+                .get_thread_detail(&thread.id)
+                .await?
+                .queue
+                .is_empty(),
+            "the record no longer carries the item"
+        );
+        assert!(
+            manager.remove_queued(&thread.id, &item.id).await.is_err(),
+            "removing twice fails"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn steer_queued_injects_the_running_turn() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_steer = harness.rx_steer;
+
+        // An idle thread refuses the steer outright.
+        let refused = manager
+            .steer_queued(&thread.id, "qitem_any")
+            .await
+            .expect_err("steer with no active turn must fail");
+        assert!(format!("{refused}").contains("No active turn"), "{refused}");
+
+        manager
+            .start_turn(&thread.id, plain_start_turn("running"))
+            .await?;
+        let item = match manager
+            .enqueue(&thread.id, plain_enqueue("steer me", None))
+            .await?
+        {
+            EnqueueResponse::Queued { item } => item,
+            other => panic!("busy thread parks, got {other:?}"),
+        };
+
+        let steered = manager.steer_queued(&thread.id, &item.id).await?;
+        assert_eq!(steered.steer_count, 1, "the turn records the steer");
+        match rx_steer.recv().await {
+            Some(prompt) => assert_eq!(prompt, "steer me"),
+            other => panic!("expected a steer on the engine channel, got {other:?}"),
+        }
+        assert!(
+            manager
+                .get_thread_detail(&thread.id)
+                .await?
+                .queue
+                .is_empty(),
+            "the steered item is gone from the queue"
+        );
+        assert!(
+            manager
+                .events_since(&thread.id, None)?
+                .iter()
+                .any(|event| event.event == "turn.steered"),
+            "the steer is announced"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn steer_queued_refuses_attachment_items_loudly() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+        manager
+            .start_turn(&thread.id, plain_start_turn("busy"))
+            .await?;
+        let item = match manager
+            .enqueue(
+                &thread.id,
+                EnqueueRequest {
+                    prompt: "with a picture".to_string(),
+                    input_summary: None,
+                    attachments: vec![png_attachment("shot.png")],
+                    rpc_id: None,
+                },
+            )
+            .await?
+        {
+            EnqueueResponse::Queued { item } => item,
+            other => panic!("busy thread parks, got {other:?}"),
+        };
+
+        let refused = manager
+            .steer_queued(&thread.id, &item.id)
+            .await
+            .expect_err("attachment-carrying items must refuse the steer");
+        assert!(format!("{refused}").contains("text only"), "{refused}");
+        assert_eq!(
+            manager.get_thread_detail(&thread.id).await?.queue.len(),
+            1,
+            "the refused item stays parked with its attachments"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queue_survives_restart_without_autodraining() -> Result<()> {
+        let runtime_dir = test_runtime_dir();
+        let manager = test_manager(runtime_dir.clone())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+        manager
+            .start_turn(&thread.id, plain_start_turn("interrupted by restart"))
+            .await?;
+        manager
+            .enqueue(&thread.id, plain_enqueue("survives", None))
+            .await?;
+
+        drop(manager);
+        let reopened = test_manager(runtime_dir)?;
+        let detail = reopened.get_thread_detail(&thread.id).await?;
+        assert_eq!(detail.queue.len(), 1, "the queue rides the thread record");
+        assert_eq!(detail.queue[0].text, "survives");
+
+        // Engine load alone must not start the queued item (resume-idle).
+        let _fresh = install_mock_engine(&reopened, &thread.id).await;
+        sleep(Duration::from_millis(100)).await;
+        let detail = reopened.get_thread_detail(&thread.id).await?;
+        assert_eq!(detail.queue.len(), 1, "no drain without activity");
+        assert_eq!(
+            detail.turns.len(),
+            1,
+            "no extra turn record appeared out of nowhere"
+        );
+        Ok(())
+    }
+
+    fn plain_start_turn(prompt: &str) -> StartTurnRequest {
+        StartTurnRequest {
+            prompt: prompt.to_string(),
+            input_summary: None,
+            model: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            attachments: Vec::new(),
+        }
     }
 
     #[tokio::test]
@@ -6037,6 +6990,7 @@ mod tests {
                 &turn.id,
                 SteerTurnRequest {
                     prompt: steer_text.clone(),
+                    rpc_id: Some("rpc_steer".to_string()),
                 },
             )
             .await?;
@@ -6060,6 +7014,17 @@ mod tests {
                     .and_then(|item| item.get("detail"))
                     .and_then(Value::as_str)
                     == Some("add bullet list")
+        }));
+        // The steer's user item announces itself (clients settle it live)
+        // and carries the client's correlation id.
+        assert!(events.iter().any(|ev| {
+            ev.event == "item.started"
+                && ev.payload.pointer("/item/kind").and_then(Value::as_str) == Some("user_message")
+                && ev
+                    .payload
+                    .pointer("/item/metadata/rpc_id")
+                    .and_then(Value::as_str)
+                    == Some("rpc_steer")
         }));
         Ok(())
     }
@@ -6290,6 +7255,7 @@ mod tests {
             task_id: None,
             title: None,
             coherence_state: CoherenceState::default(),
+            queue: Vec::new(),
         };
         manager.store.save_thread(&thread)?;
 

@@ -25,16 +25,18 @@
 //! Receipts are session-bound and in-memory (upstream stages them in a
 //! per-Session WeakMap the same way): a bridge restart drops staged,
 //! not-yet-sent uploads, and they must be attached again. A prompt reads its
-//! receipts and retires them only once the runtime accepted the turn, so a
-//! refused send (busy thread, refused attachment) can simply be retried.
+//! receipts and retires them only once the runtime accepted the prompt —
+//! parked on the thread's queue or started — so a refused send (a refused
+//! attachment) can simply be retried.
 //!
 //! Known limitations:
 //! - no upload progress (the vendored hook transport drops `onProgress`;
 //!   upstream's own hook path does too);
 //! - image dimensions come from header parsing only — no EXIF orientation,
 //!   no normalization scaling; bytes travel to the runtime untouched;
-//! - receipts retire only through an accepted prompt — the queue edit/remove
-//!   that would also retire them (`session/updateQueue`) is unbridged;
+//! - a queued prompt's bytes already live in the runtime's store when its
+//!   receipts retire, so a later queue edit/remove has nothing staged left
+//!   to retire (upstream retires on remove because it stages until then);
 //! - the staging caps mirror the runtime store's (10MB per file, 8 per
 //!   message) so refusals surface at attach time, not at send time; a body
 //!   past the bridge's 16MB request limit is refused by the transport (413)

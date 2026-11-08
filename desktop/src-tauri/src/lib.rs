@@ -44,7 +44,6 @@ pub fn run() {
                             event_sinks: Default::default(),
                             live_sinks: Default::default(),
                             pending_inputs: Default::default(),
-                            pending_rpc_ids: Default::default(),
                             projection_clock: Default::default(),
                             model_choices: Default::default(),
                             waterfall_watchers: Default::default(),

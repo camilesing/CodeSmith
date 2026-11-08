@@ -250,10 +250,46 @@ accept an empty string to clear a previously-set value:
   empty when attachments are present (an image-only turn keeps a
   `[image]` placeholder text). The request body limit is 16MB (base64
   overhead over the 10MB file cap).
-- `POST /v1/threads/{id}/turns/{turn_id}/steer` — text only; attachments are
-  not accepted on a steer.
+- `POST /v1/threads/{id}/turns/{turn_id}/steer` — body
+  `{ "prompt": "…", "rpc_id": "…" }`; text only, attachments are not accepted
+  on a steer. `rpc_id` (optional, opaque) is recorded on the steer's user
+  item as `metadata.rpc_id` so a client can match the settled message to its
+  own submission.
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact` (manual compaction)
+
+`POST /turns` answers **409** while the thread has an active turn. To send
+without racing that check, use the queue.
+
+**Queue** (prompts parked behind a running turn)
+- `POST /v1/threads/{id}/queue` — body
+  `{ "prompt": "…", "attachments": [...], "rpc_id": "…" }` (`attachments` as on
+  `/turns`, admitted at enqueue time — all-or-nothing; `rpc_id` optional and
+  opaque). If the thread is idle with nothing queued, the prompt starts right
+  away: `201 { "status": "started", "turn": TurnRecord }`. Otherwise it is
+  parked at the tail: `201 { "status": "queued", "item": QueuedItemRecord }`.
+  Queued items drain FIFO, **one item per new turn**, as soon as the running
+  turn ends with any outcome (an interrupt keeps the queue). A drained turn
+  takes the thread's defaults (queued items carry no per-turn overrides), and
+  its user item carries the item's `rpc_id` as `metadata.rpc_id`.
+- `PATCH /v1/threads/{id}/queue/{item_id}` — body `{ "prompt": "…" }`;
+  text-only replacement: the item's attachments are dropped, and blank text
+  is refused (400).
+- `DELETE /v1/threads/{id}/queue/{item_id}` — drop one item.
+- `POST /v1/threads/{id}/queue/{item_id}/steer` — pull the item out of the
+  queue and steer the running turn with it. Returns 409 when there is no
+  active turn, 400 when the item carries attachments (a steer is text only),
+  and 404 for an unknown or already-drained item. If the engine refuses the
+  steer, the item goes back to the head of the queue.
+
+Every queue mutation emits `queue.updated` with the whole queue
+(`{ "items": [QueuedItemRecord…] }`). `GET /v1/threads/{id}` carries the
+queue at the top level as `queue`.
+
+Known limitations: `POST /turns` bypasses queued items (the queue route is
+the ordered path). A queue steer that races the turn's completion can be
+dropped by the engine's stale-steer discard; the direct steer route and the
+REPL's flush have the same window.
 
 **Approvals**
 - `POST /v1/approvals/{approval_id}` with body
@@ -340,12 +376,15 @@ The runtime uses a durable Thread/Turn/Item lifecycle.
 
 - **ThreadRecord** — `id`, `created_at`, `updated_at`, `model`, `workspace`,
   `mode`, `task_id`, `coherence_state`, `system_prompt`, `latest_turn_id`,
-  `latest_response_bookmark`, `archived`
+  `latest_response_bookmark`, `archived`, `queue`
 - **TurnRecord** — `id`, `thread_id`, `status` (`queued|in_progress|completed|
   failed|interrupted|canceled`), timestamps, duration, usage, error summary
 - **TurnItemRecord** — `id`, `turn_id`, `kind` (`user_message|agent_message|
   tool_call|file_change|command_execution|context_compaction|status|error`),
   lifecycle `status`, `metadata`
+- **QueuedItemRecord** — `id` (`qitem_…`), `text`, `appendix` (file
+  references folded into the message at drain), `image_paths`,
+  `attachments_metadata`, `rpc_id`, `input_summary`, `created_at`
 
 Events are append-only with a global monotonic `seq` for replay/resume.
 
@@ -354,6 +393,10 @@ Events are append-only with a global monotonic `seq` for replay/resume.
 - If the process restarts while a turn or item is `queued` or `in_progress`,
   the recovered record is marked `interrupted` with an `"Interrupted by
   process restart"` error.
+- The thread queue persists on the thread record and is still there after a
+  restart, but it does not start on its own (resume-idle): the next enqueue
+  or the next turn end drains it. Loading the thread, or reading its
+  detail, never starts a queued item.
 - Task execution performs its own recovery on top of the same persisted
   thread/turn store.
 
@@ -404,7 +447,11 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
 `item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
 `approval.timeout`, `sandbox.denied`, `coherence.state`,
-`background.agent_completed`, `background.status`.
+`background.agent_completed`, `background.status`, `queue.updated`.
+
+A steer's user item emits `item.started` and then `item.completed`, the same
+lifecycle as a turn's opening message, so a live client can show the steered
+text as soon as it lands.
 
 ### Idle-wake turns (round 10)
 
@@ -477,6 +524,9 @@ model is preserved.
 | List threads | `GET /v1/threads` |
 | Attach to events | `GET /v1/threads/{id}/events?since_seq=0` |
 | Send message | `POST /v1/threads/{id}/turns` |
+| Queue message | `POST /v1/threads/{id}/queue` |
+| Edit / remove queued | `PATCH` / `DELETE /v1/threads/{id}/queue/{item_id}` |
+| Steer queued | `POST /v1/threads/{id}/queue/{item_id}/steer` |
 | Steer | `POST /v1/threads/{id}/turns/{turn_id}/steer` |
 | Interrupt | `POST /v1/threads/{id}/turns/{turn_id}/interrupt` |
 | Compact | `POST /v1/threads/{id}/compact` |
