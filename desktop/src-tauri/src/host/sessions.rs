@@ -56,6 +56,28 @@ fn address_session_id(request: &Value) -> Result<String> {
     id.with_context(|| "session address without sessionId".to_string())
 }
 
+/// The turn-lifecycle events that flip a client session's `running` flag.
+/// `turn.completed` covers every terminal status (a normal stop, an
+/// interrupt, a cancel) — the runtime emits no separate end event for those.
+fn session_running_flip(event: &str) -> Option<bool> {
+    match event {
+        "turn.started" => Some(true),
+        "turn.completed" | "turn.failed" => Some(false),
+        _ => None,
+    }
+}
+
+/// One `api-session/status` emit frame for the gateway's `$events` stream
+/// (stream-protocol `{type:'emit', event, args}`; the client's session
+/// controller listens with `(sessionId, running)`).
+fn session_status_frame(session_id: &str, running: bool) -> Value {
+    json!({
+        "type": "emit",
+        "event": "api-session/status",
+        "args": [session_id, running],
+    })
+}
+
 /// Snapshot + live frames for `session/follow`. Yields the snapshot first;
 /// live envelopes arrive as `{type:'event'}` frames on the returned channel.
 pub async fn follow(
@@ -126,6 +148,19 @@ pub async fn follow(
                 // follow stream; the runtime's own decision events and turn
                 // ends cancel whatever is still pending.
                 handle_waterfall_envelope(host, &session_id, &envelope).await;
+                // `api-session/status`: the client session's `running` flag —
+                // which decides a submission's placement (queued dock row vs
+                // transcript copy) and the composer's busy look — flips only
+                // on this Host event; the journal frames the follow stream
+                // carries hold turn state, not session state.
+                if let Some(running) = envelope
+                    .get("event")
+                    .and_then(Value::as_str)
+                    .and_then(session_running_flip)
+                {
+                    host.push_event_frame(session_status_frame(&session_id, running))
+                        .await;
+                }
                 match envelope.get("event").and_then(Value::as_str) {
                     // Refresh the control projections (context pressure,
                     // model selection, the queue) for this session now that
@@ -1089,6 +1124,25 @@ fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_lifecycle_flips_the_client_session_running_flag() {
+        assert_eq!(session_running_flip("turn.started"), Some(true));
+        assert_eq!(session_running_flip("turn.completed"), Some(false));
+        assert_eq!(session_running_flip("turn.failed"), Some(false));
+        assert_eq!(session_running_flip("item.delta"), None);
+        assert_eq!(session_running_flip("queue.updated"), None);
+        // The contract the client session controller listens on: args are
+        // `(sessionId, running)` — the order is protocol, not taste.
+        assert_eq!(
+            session_status_frame("thr_1", true),
+            json!({"type": "emit", "event": "api-session/status", "args": ["thr_1", true]})
+        );
+        assert_eq!(
+            session_status_frame("thr_1", false),
+            json!({"type": "emit", "event": "api-session/status", "args": ["thr_1", false]})
+        );
+    }
 
     #[test]
     fn queue_failures_map_onto_the_clients_converging_codes() {
