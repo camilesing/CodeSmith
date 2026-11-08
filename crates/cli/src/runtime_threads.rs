@@ -651,6 +651,62 @@ pub struct StartTurnRequest {
     pub allow_shell: Option<bool>,
     pub trust_mode: Option<bool>,
     pub auto_approve: Option<bool>,
+    /// Inline-encoded attachments for this message (see [`TurnAttachment`]).
+    /// Admitted through the same store the REPL uses before the turn is
+    /// claimed; one refused attachment fails the whole request.
+    #[serde(default)]
+    pub attachments: Vec<TurnAttachment>,
+}
+
+/// One attachment riding a turn request: canonical base64 bytes plus the
+/// caller's declared metadata. The extension the `name` or `media_type`
+/// implies decides how the attachment reaches the model (wire image, inline
+/// text, or a durable path reference); declared image bytes are verified
+/// against their magic during admission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnAttachment {
+    /// Canonical base64 encoding of the file bytes.
+    pub data: String,
+    /// Display name (leaf only) — the transcript's label for the file.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Declared media type (`image/png`, …).
+    #[serde(default)]
+    pub media_type: Option<String>,
+    /// Encoded pixel width/height when the caller knows them; echoed on the
+    /// user item's metadata so clients can render the settled message.
+    #[serde(default)]
+    pub width: Option<u64>,
+    #[serde(default)]
+    pub height: Option<u64>,
+}
+
+/// Decode a request's attachments into the media intake's input shape. Base64
+/// failures name the attachment and fail the request — never a silent drop.
+fn decode_attachments(
+    attachments: &[TurnAttachment],
+) -> Result<Vec<crate::media::EncodedAttachment>> {
+    use base64::Engine as _;
+    attachments
+        .iter()
+        .map(|attachment| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(attachment.data.as_bytes())
+                .with_context(|| {
+                    format!(
+                        "attachment {} is not canonical base64",
+                        attachment.name.as_deref().unwrap_or("(unnamed)")
+                    )
+                })?;
+            Ok(crate::media::EncodedAttachment {
+                name: attachment.name.clone(),
+                media_type: attachment.media_type.clone(),
+                width: attachment.width,
+                height: attachment.height,
+                bytes,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1575,9 +1631,43 @@ impl RuntimeThreadManager {
 
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
         let prompt = req.prompt.trim().to_string();
-        if prompt.is_empty() {
+        if prompt.is_empty() && req.attachments.is_empty() {
             bail!("prompt is required");
         }
+
+        // Admit inline-encoded attachments through the same intake the REPL
+        // uses: wire images hand the engine store paths, inline text folds
+        // into the message, other binaries append a durable path reference
+        // the model can read on demand. All-or-nothing — one refused
+        // attachment fails the request before the turn is claimed. The
+        // session's context-reference records stay REPL-local here; the
+        // evidence rides the message text (appendix lines) and the engine's
+        // own media-attachment record for images.
+        let intake = if req.attachments.is_empty() {
+            None
+        } else {
+            let encoded = decode_attachments(&req.attachments)?;
+            let intake = crate::media::ingest_encoded_attachments(encoded)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            Some(intake)
+        };
+        let mut content = prompt;
+        if let Some(intake) = &intake
+            && !intake.content_appendix.is_empty()
+        {
+            content.push_str("\n\n");
+            content.push_str(&intake.content_appendix);
+        }
+        // An image-only prompt keeps a non-empty text: an empty text block
+        // beside the image blocks is a shape no provider round-trips.
+        if content.is_empty() {
+            content = "[image]".to_string();
+        }
+        let image_paths = intake
+            .as_ref()
+            .map(|intake| intake.image_paths.clone())
+            .unwrap_or_default();
 
         let mut thread = self.get_thread(thread_id).await?;
         let engine = self.ensure_engine_loaded(&thread).await?;
@@ -1592,7 +1682,7 @@ impl RuntimeThreadManager {
         let (model, reasoning_effort) = if auto_model {
             let selection = crate::interactive::commands::auto_route::resolve_auto_route(
                 &self.config,
-                &prompt,
+                &content,
                 "",
                 "auto",
                 "auto",
@@ -1623,7 +1713,7 @@ impl RuntimeThreadManager {
             status: RuntimeTurnStatus::InProgress,
             input_summary: req
                 .input_summary
-                .unwrap_or_else(|| summarize_text(&prompt, SUMMARY_LIMIT)),
+                .unwrap_or_else(|| summarize_text(&content, SUMMARY_LIMIT)),
             created_at: now,
             started_at: Some(now),
             ended_at: None,
@@ -1643,9 +1733,14 @@ impl RuntimeThreadManager {
             turn_id: turn_id.clone(),
             kind: TurnItemKind::UserMessage,
             status: TurnItemLifecycleStatus::Completed,
-            summary: summarize_text(&prompt, SUMMARY_LIMIT),
-            detail: Some(prompt.clone()),
-            metadata: None,
+            summary: summarize_text(&content, SUMMARY_LIMIT),
+            detail: Some(content.clone()),
+            // Additive attachment descriptors (kind, content address,
+            // display fields) for clients rendering the settled message;
+            // older readers ignore them.
+            metadata: intake
+                .as_ref()
+                .map(|intake| json!({ "attachments": intake.records })),
             artifact_refs: Vec::new(),
             started_at: Some(now),
             ended_at: Some(now),
@@ -1711,8 +1806,8 @@ impl RuntimeThreadManager {
 
             engine
                 .send(Op::SendMessage {
-                    content: prompt.clone(),
-                    image_paths: Vec::new(),
+                    content: content.clone(),
+                    image_paths,
                     mode,
                     model: model.clone(),
                     goal_objective: None,
@@ -4260,6 +4355,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4345,6 +4441,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(true),
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4388,6 +4485,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(false),
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4398,6 +4496,301 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Test-only CODESMITH_HOME scoping: the attachment intake stores into
+    /// the home it names, so the attachment tests below run against a
+    /// scratch home instead of the user's. One global lock — env mutation is
+    /// process-wide; the same idiom config's tests use.
+    struct ScratchHome {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl ScratchHome {
+        fn mount() -> Self {
+            let lock = HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = std::env::temp_dir().join(format!("codesmith-home-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let previous = std::env::var_os("CODESMITH_HOME");
+            // Safety: test-only environment mutation guarded by HOME_LOCK.
+            unsafe { std::env::set_var("CODESMITH_HOME", &dir) };
+            ScratchHome {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for ScratchHome {
+        fn drop(&mut self) {
+            // Safety: test-only environment mutation guarded by HOME_LOCK.
+            unsafe { std::env::remove_var("CODESMITH_HOME") };
+            if let Some(previous) = self.previous.take() {
+                unsafe { std::env::set_var("CODESMITH_HOME", previous) };
+            }
+        }
+    }
+
+    fn png_attachment(name: &str) -> TurnAttachment {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&[0; 16]);
+        use base64::Engine as _;
+        TurnAttachment {
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            name: Some(name.to_string()),
+            media_type: Some("image/png".to_string()),
+            width: Some(3),
+            height: Some(2),
+        }
+    }
+
+    async fn attachment_thread(manager: &RuntimeThreadManager) -> Result<ThreadRecord> {
+        Ok(manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?)
+    }
+
+    #[tokio::test]
+    async fn start_turn_hands_wire_images_to_the_engine() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "what is this".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: vec![png_attachment("shot.png")],
+                },
+            )
+            .await?;
+
+        match rx_op.recv().await {
+            Some(Op::SendMessage {
+                content,
+                image_paths,
+                ..
+            }) => {
+                assert_eq!(content, "what is this", "images add no message text");
+                assert_eq!(image_paths.len(), 1, "the engine gets the store path");
+                assert!(
+                    image_paths[0].to_string_lossy().contains("attachments"),
+                    "the image lives in the content-addressed store: {:?}",
+                    image_paths
+                );
+            }
+            other => panic!("expected SendMessage op, got {other:?}"),
+        }
+
+        // The settled user item records what the transcript must echo.
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        let user_item = detail
+            .items
+            .iter()
+            .find(|item| item.id == turn.item_ids[0])
+            .unwrap();
+        assert_eq!(user_item.detail.as_deref(), Some("what is this"));
+        let record = &user_item.metadata.as_ref().unwrap()["attachments"][0];
+        assert_eq!(record["kind"], json!("image"));
+        assert_eq!(record["name"], json!("shot.png"));
+        assert_eq!(record["mediaType"], json!("image/png"));
+        assert_eq!(record["width"], json!(3));
+        assert!(
+            record["attachmentId"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("sha256:"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_turn_folds_file_attachments_into_the_message_text() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+
+        use base64::Engine as _;
+        let file = TurnAttachment {
+            data: base64::engine::general_purpose::STANDARD.encode(b"# notes\nbody"),
+            name: Some("notes.md".to_string()),
+            media_type: None,
+            width: None,
+            height: None,
+        };
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "read this".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: vec![file],
+                },
+            )
+            .await?;
+
+        match rx_op.recv().await {
+            Some(Op::SendMessage {
+                content,
+                image_paths,
+                ..
+            }) => {
+                assert!(
+                    content.starts_with("read this\n\n[Attached file: notes.md"),
+                    "the durable record carries the appendix verbatim: {content}"
+                );
+                assert!(content.contains("# notes"), "{content}");
+                assert!(
+                    image_paths.is_empty(),
+                    "a text file rides the message, not the wire"
+                );
+            }
+            other => panic!("expected SendMessage op, got {other:?}"),
+        }
+
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        let user_item = detail
+            .items
+            .iter()
+            .find(|item| item.id == turn.item_ids[0])
+            .unwrap();
+        assert_eq!(
+            record_kind(user_item),
+            Some("file"),
+            "the metadata still echoes the attachment"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_image_only_prompt_keeps_a_non_empty_text() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+
+        manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "  ".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: vec![png_attachment("only.png")],
+                },
+            )
+            .await?;
+
+        match rx_op.recv().await {
+            Some(Op::SendMessage {
+                content,
+                image_paths,
+                ..
+            }) => {
+                assert_eq!(
+                    content, "[image]",
+                    "an empty text never reaches the provider"
+                );
+                assert_eq!(image_paths.len(), 1);
+            }
+            other => panic!("expected SendMessage op, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_turn_refuses_attachment_garbage_loudly() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+
+        // A promptless, attachment-less request still refuses.
+        let err = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "  ".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("an empty prompt with no attachments must refuse");
+        assert_eq!(err.to_string(), "prompt is required");
+
+        // Non-base64 data names the attachment.
+        let err = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "hi".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: vec![TurnAttachment {
+                        data: "!!!".to_string(),
+                        name: Some("broken.png".to_string()),
+                        media_type: Some("image/png".to_string()),
+                        width: None,
+                        height: None,
+                    }],
+                },
+            )
+            .await
+            .expect_err("non-base64 attachment data must refuse");
+        assert!(err.to_string().contains("broken.png"), "{err}");
+        assert!(err.to_string().contains("base64"), "{err}");
+        Ok(())
+    }
+
+    fn record_kind(item: &TurnItemRecord) -> Option<&str> {
+        item.metadata
+            .as_ref()?
+            .pointer("/attachments/0/kind")
+            .and_then(Value::as_str)
     }
 
     /// Round 10 TODO-69b / round 12 TODO-78 — an idle-wake synthesized turn
@@ -4615,6 +5008,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4826,6 +5220,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4843,6 +5238,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4931,6 +5327,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -4998,6 +5395,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(true),
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5099,6 +5497,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5196,6 +5595,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5278,6 +5678,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: Some(true),
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5392,6 +5793,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5477,6 +5879,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: Some(true),
                     auto_approve: Some(true),
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5622,6 +6025,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;
@@ -5777,6 +6181,7 @@ mod tests {
                     allow_shell: None,
                     trust_mode: None,
                     auto_approve: None,
+                    attachments: Vec::new(),
                 },
             )
             .await?;

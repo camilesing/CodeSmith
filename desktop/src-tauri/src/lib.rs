@@ -48,6 +48,7 @@ pub fn run() {
                             projection_clock: Default::default(),
                             model_choices: Default::default(),
                             waterfall_watchers: Default::default(),
+                            uploads: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

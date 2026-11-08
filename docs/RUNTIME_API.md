@@ -221,8 +221,37 @@ accept an empty string to clear a previously-set value:
 ```
 
 **Turns** (within a thread)
-- `POST /v1/threads/{id}/turns`
-- `POST /v1/threads/{id}/turns/{turn_id}/steer`
+- `POST /v1/threads/{id}/turns` — body `{ "prompt": "…", "attachments": [...] }`.
+  `attachments` is optional (absent = the text-only request this route always
+  took); each member carries one file inline:
+
+  ```json
+  {
+    "data": "<canonical base64 of the file bytes>",
+    "name": "shot.png",
+    "media_type": "image/png",
+    "width": 3,
+    "height": 2
+  }
+  ```
+
+  `name` (display leaf name — separator-carrying names are refused to a
+  fallback `attachment.<ext>`) and `media_type` decide how the attachment
+  reaches the model, through the same intake the REPL uses
+  (`~/.codesmith/attachments/`, content-addressed): `png/jpg/jpeg/gif/webp`
+  images travel on the wire as native image blocks (declared image bytes are
+  verified against their magic first; `width`/`height`, when the caller
+  knows them, are echoed on the user item's `metadata.attachments` for
+  client rendering), inline text types are folded into the message text, and
+  every other binary appends a durable path + size + media-type reference
+  line the model can read with `read_file` on demand. Limits: 10MB per
+  file, 8 attachments per message, audio/video refused — one refused
+  attachment fails the whole request (nothing is half-sent). A prompt may be
+  empty when attachments are present (an image-only turn keeps a
+  `[image]` placeholder text). The request body limit is 16MB (base64
+  overhead over the 10MB file cap).
+- `POST /v1/threads/{id}/turns/{turn_id}/steer` — text only; attachments are
+  not accepted on a steer.
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact` (manual compaction)
 

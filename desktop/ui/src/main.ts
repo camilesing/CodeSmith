@@ -6,12 +6,26 @@
 import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
-import { initTransport } from './transport'
+import { bridgeUrl, initTransport } from './transport'
 
 const g = globalThis as {
   __CODESMITH_BOOT__?: unknown
   __CODESMITH_TRANSPORT__?: unknown
   __CODESMITH_REMOTE_ACCESS__?: unknown
+  __CODESMITH_FILE_UPLOAD__?: unknown
+}
+
+// Attachment uploads post raw bytes to `api/session/uploadFileBinary` on the
+// page origin by default (a background Worker); this page's host lives on
+// the bridge origin, so install the vendored file-upload hook that carries
+// every upload fetch there instead. It must exist before the client boots —
+// the FileUploadRuntime service picks its transport once, at construction.
+{
+  const bridge = bridgeUrl()
+  const hook = g as { __CODESMITH_FILE_UPLOAD__?: { fetch: (input: string | URL, init: RequestInit) => Promise<Response> } }
+  hook.__CODESMITH_FILE_UPLOAD__ = {
+    fetch: (input, init) => fetch(new URL(String(input), `${bridge}/`), init),
+  }
 }
 
 // Dev affordance for the pixel baseline: `?theme=dark|light` pins the color

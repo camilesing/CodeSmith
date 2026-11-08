@@ -111,6 +111,52 @@ fn content_text(detail: Option<&str>) -> String {
     detail.unwrap_or_default().to_string()
 }
 
+/// A user message's content parts: the text part, then one part per
+/// attachment the item's additive metadata records (the runtime's turn API
+/// writes them; see `StartTurnRequest.attachments`). Upstream's
+/// `UserMessage.content` is the shared ContentBlock union, so image parts
+/// render their thumbnail (bytes fetched over `session/attachment`) and file
+/// parts their chip. `width`/`height` default to 0 when the sender supplied
+/// none (a foreign HTTP client): the client's reference schema requires the
+/// numbers, and a 0-sized thumbnail reads as unknown, not as a lie.
+fn user_message_content(item: &Value, detail_text: Option<&str>) -> Value {
+    let mut parts = vec![json!({ "type": "text", "text": content_text(detail_text) })];
+    let attachments = item
+        .pointer("/metadata/attachments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for attachment in attachments {
+        // Copy the recorded fields that are present (the client's reference
+        // schemas make name optional, the rest required).
+        let mut reference = serde_json::Map::new();
+        let fields: &[&str] = match attachment.get("kind").and_then(Value::as_str) {
+            Some("image") => &["attachmentId", "mediaType", "bytes", "name"],
+            Some("file") => &["attachmentId", "name", "bytes"],
+            _ => continue,
+        };
+        for field in fields {
+            if let Some(value) = attachment.get(*field).filter(|value| !value.is_null()) {
+                reference.insert((*field).to_string(), value.clone());
+            }
+        }
+        if attachment.get("kind") == Some(&json!("image")) {
+            reference.insert(
+                "width".into(),
+                attachment.get("width").cloned().unwrap_or(json!(0)),
+            );
+            reference.insert(
+                "height".into(),
+                attachment.get("height").cloned().unwrap_or(json!(0)),
+            );
+            parts.push(json!({ "type": "image", "attachment": reference }));
+        } else {
+            parts.push(json!({ "type": "file", "attachment": reference }));
+        }
+    }
+    Value::Array(parts)
+}
+
 /// One live assistant attempt (one agent item being streamed).
 struct Attempt {
     /// Dense per-attempt chunk counter; the client rebaselines on any gap.
@@ -280,11 +326,12 @@ impl SessionMapper {
                         frames.push(Frame::Event(self.seq.event(
                             "user/message",
                             // Flat UserMessage contract: the client's message
-                            // node reads data.id and data.source.kind directly.
+                            // node reads data.id and data.source.kind directly,
+                            // its content parts carry the attachments.
                             json!({
                                 "id": item_id,
                                 "role": "user",
-                                "content": [{ "type": "text", "text": content_text(detail) }],
+                                "content": user_message_content(&item, detail),
                                 "source": { "kind": "user" },
                             }),
                             true,
@@ -579,7 +626,7 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                     json!({
                         "id": item_id,
                         "role": "user",
-                        "content": [{ "type": "text", "text": content_text(detail_text) }],
+                        "content": user_message_content(item, detail_text),
                         "source": { "kind": "user" },
                     }),
                     true,
@@ -687,6 +734,53 @@ mod tests {
             } else { detail.to_string() },
             "started_at": "2026-11-06T10:00:00Z",
         })
+    }
+
+    #[test]
+    fn replay_carries_user_message_attachments_as_content_parts() {
+        // The runtime's turn API records what each attachment was on the
+        // user item's additive metadata; the settled message must render it
+        // (image thumbnails, file chips) like upstream's UserMessage blocks.
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "completed" }],
+            "items": [{
+                "id": "item_user_message", "turn_id": "turn_1", "kind": "user_message",
+                "status": "completed", "detail": "look at these", "summary": "s",
+                "started_at": "2026-11-06T10:00:00Z",
+                "metadata": { "attachments": [
+                    { "kind": "image", "attachmentId": "sha256:aa", "mediaType": "image/png",
+                      "name": "shot.png", "bytes": 8, "width": 3, "height": 2 },
+                    { "kind": "file", "attachmentId": "sha256:bb", "name": "notes.md", "bytes": 12 },
+                    // An image whose sender supplied no dimensions still gets
+                    // the numbers the client's reference schema requires.
+                    { "kind": "image", "attachmentId": "sha256:cc", "mediaType": "image/gif",
+                      "bytes": 4 },
+                ]},
+            }],
+        });
+        let events = replay_events(&detail);
+        let user_message = events
+            .iter()
+            .find(|event| event["type"] == "user/message")
+            .expect("the user message replays");
+        let parts = user_message["data"]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 4, "text part plus one per attachment");
+        assert_eq!(parts[0], json!({ "type": "text", "text": "look at these" }));
+        assert_eq!(
+            parts[1],
+            json!({ "type": "image", "attachment": {
+                "attachmentId": "sha256:aa", "mediaType": "image/png",
+                "name": "shot.png", "bytes": 8, "width": 3, "height": 2,
+            }})
+        );
+        assert_eq!(
+            parts[2],
+            json!({ "type": "file", "attachment": {
+                "attachmentId": "sha256:bb", "name": "notes.md", "bytes": 12,
+            }})
+        );
+        assert_eq!(parts[3]["attachment"]["width"], json!(0));
+        assert_eq!(parts[3]["attachment"]["height"], json!(0));
     }
 
     #[test]

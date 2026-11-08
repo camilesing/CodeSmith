@@ -6,7 +6,9 @@
 //!   `gateway/method-unavailable` (the client renders an error state,
 //!   it never pretends success);
 //! - `session/updateQueue` (edit/remove of queued input) has no CodeSmith
-//!   equivalent and is answered as unavailable.
+//!   equivalent and is answered as unavailable;
+//! - attachment staging is in-memory (see `host::uploads`): receipts die
+//!   with the bridge process.
 
 pub mod codesmith;
 pub mod commands;
@@ -16,6 +18,7 @@ pub mod mux;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
+pub mod uploads;
 pub mod workspace;
 
 use std::collections::HashMap;
@@ -75,6 +78,10 @@ pub struct HostState {
     /// One background waterfall watcher per prompted session (see
     /// `sessions::ensure_waterfall_watcher`): session id -> task handle.
     pub waterfall_watchers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Staged uploads awaiting the prompt that consumes them (see
+    /// `host::uploads`): receipt id -> staged bytes. In-memory and
+    /// session-bound, like upstream's per-Session staging.
+    pub uploads: uploads::Staging,
 }
 
 impl HostState {
@@ -354,6 +361,27 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             "codesmith desktop: queued-input edit/remove has no CodeSmith equivalent",
         ),
         "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
+        // Attachment staging (host::uploads): receipts resolve when the
+        // prompt that names them reaches the runtime.
+        "fileUploads/upload" => match uploads::upload_rpc(&host.uploads, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(err.code, err.message),
+        },
+        "session/attachment" => {
+            let store_root = match uploads::attachment_store_root() {
+                Some(root) => root,
+                None => {
+                    return rpc_error(
+                        "gateway/internal",
+                        "session/attachment: the attachment store root is unavailable",
+                    )
+                }
+            };
+            match uploads::attachment(&store_root, args_of(payload)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(err.code, err.message),
+            }
+        }
         // The '/' catalog is the runtime's manual compaction (host::commands).
         // The REPL's other slash commands are REPL-local and stay out of the
         // catalog, so their "/"-prefixed lines fall through to ordinary
@@ -719,6 +747,20 @@ async fn unary_handler(
     Json(result).into_response()
 }
 
+/// The vendored client's raw-bytes upload route — every image and every
+/// Blob-bodied file posts here with `sessionId`/`name`/`mediaType` in the
+/// query. Answers HTTP 200 always (the client reads business failures from
+/// the `{ok, …}` envelope); a body over the limit is a transport failure
+/// either way, so axum's 413 is fine here.
+async fn upload_binary_handler(
+    State(host): State<SharedHost>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    let query = query.unwrap_or_default();
+    Json(uploads::upload_binary(&host.uploads, &query, &body).await).into_response()
+}
+
 async fn health() -> &'static str {
     "ok"
 }
@@ -739,8 +781,16 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/remote.mux", get(mux::upgrade))
+        // The upload route takes raw bytes, not the unary JSON envelope —
+        // it must not fall through to the wildcard's `Option<Json<_>>`
+        // extractor (which would reject `application/octet-stream`).
+        .route("/api/session/uploadFileBinary", post(upload_binary_handler))
         .route("/api/{*endpoint}", post(unary_handler))
         .layer(cors)
+        // The runtime's per-file attachment cap is 10MB; the same bytes as
+        // canonical base64 (the unary `fileUploads/upload` path) are ~13.7MB
+        // of JSON — both past axum's 2MB default.
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .with_state(host);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     eprintln!("codesmith desktop: client bridge on http://{addr}");

@@ -97,7 +97,7 @@ const fakeRpc: ClientConnectionRpc = {
 const BRIDGE = bridgeUrl()
 
 /** The bridge address: the port the shell injected, else the default. */
-function bridgeUrl(): string {
+export function bridgeUrl(): string {
   const injected = (globalThis as { __CODESMITH_BRIDGE_PORT__?: unknown }).__CODESMITH_BRIDGE_PORT__
   const port = typeof injected === 'number' && injected > 0 ? injected : 1421
   return `http://127.0.0.1:${port}`

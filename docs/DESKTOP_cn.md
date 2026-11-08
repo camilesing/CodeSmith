@@ -116,9 +116,21 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   转写节点（映射后的 `context_compaction` 系统消息）携带结果；会话忙时
   把运行时的冲突文案作为命令错误通知呈现。REPL 的其余斜杠命令是
   REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
-- 上游独有概念（账户/余额、插件市场、后台任务列表、附件上传、右侧栏
+- 上游独有概念（账户/余额、插件市场、后台任务列表、右侧栏
   终端/文件/浏览器/预览、子代理视图、目标条、计划预览）不仿真——对应
   插件不进 boot roster 或返回空态。
+- 附件上传已端到端桥接。输入框的上传先暂存在桥里（`fileUploads/upload`
+  与原始字节路由 `api/session/uploadFileBinary`，由页面安装的
+  `__CODESMITH_FILE_UPLOAD__` 钩子改道到桥的 origin），`session/prompt`
+  把暂存回执解析为 runtime turn API 的内联 `attachments[]`。图片以原生
+  image 块到达模型（魔数校验、尺寸从头解析）；其余文件经 REPL 同一套
+  摄取管道折进消息（内联文本，或模型可按需 `read_file` 的持久存储路径
+  引用行）。已结算消息保留缩略图/文件条（runtime 把每个附件记录在 user
+  item 上；`session/attachment` 从持久存储取回字节，重启后历史仍可渲染）。
+  限额与缺口：单文件 10MB、每条消息 8 个、音频/视频拒绝（在上传时以
+  业务错误呈现）；回执是内存态——桌面重启丢弃已暂存未发送的上传，需
+  重新附上；steer 不能带附件（runtime 的 steer 路由纯文本，桥会响亮
+  拒绝）；无上传进度条；无 EXIF 方向修正或图片归一化（字节原样传输）。
 - 任务页：automations 只接受两种 RRULE 形态（`FREQ=HOURLY` 带
   INTERVAL/BYDAY，`FREQ=WEEKLY` 带 BYDAY/BYHOUR/BYMINUTE，按机器本地
   时区求值）。任务页的每日/每周/整小时间隔/cron 形态会编译过去；一次性

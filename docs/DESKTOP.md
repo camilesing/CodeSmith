@@ -133,9 +133,26 @@ Known limitations of the current implementation:
   the catalog, so their "/"-prefixed lines fall through and submit as
   ordinary prompts.
 - Upstream-only concepts (accounts/balance, plugin market, jobs list,
-  attachment upload, sidebar terminal/files/browser/preview, subagent views,
-  goal bar, plan preview) are not simulated — their plugins stay out of the
-  boot roster or answer empty states.
+  sidebar terminal/files/browser/preview, subagent views, goal bar, plan
+  preview) are not simulated — their plugins stay out of the boot roster or
+  answer empty states.
+- Attachment upload IS bridged, end to end. The composer's uploads stage in
+  the bridge (`fileUploads/upload`, and the raw-bytes
+  `api/session/uploadFileBinary` route, carried to the bridge origin by the
+  page's `__CODESMITH_FILE_UPLOAD__` hook), and `session/prompt` resolves
+  the staged receipts into the runtime turn API's inline `attachments[]`.
+  Images reach the model as native image blocks (magic-verified, dimensions
+  parsed from the header); other files fold into the message through the
+  REPL's own intake (inline text, or a durable store-path reference the
+  model reads on demand). Settled messages keep their thumbnails/chips (the
+  runtime records each attachment on the user item; `session/attachment`
+  serves the bytes back from the durable store, so history renders across
+  restarts). Limits and gaps: 10MB per file, 8 per message, audio/video
+  refused (at attach time, with a business error); receipts are in-memory —
+  a desktop restart drops staged-not-yet-sent uploads, which must be
+  attached again; a steer cannot carry attachments (the runtime's steer
+  route is text-only and the bridge refuses loudly); no upload progress
+  bar; no EXIF orientation or image normalization (bytes travel untouched).
 - Schedules: automations accept exactly two RRULE shapes (`FREQ=HOURLY` with
   INTERVAL/BYDAY, `FREQ=WEEKLY` with BYDAY/BYHOUR/BYMINUTE, evaluated in the
   machine's local zone). The task page's daily/weekly/whole-hour/cron shapes

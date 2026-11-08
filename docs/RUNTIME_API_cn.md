@@ -224,8 +224,31 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 ```
 
 **Turn**（线程内）
-- `POST /v1/threads/{id}/turns`
-- `POST /v1/threads/{id}/turns/{turn_id}/steer`
+- `POST /v1/threads/{id}/turns` —— 请求体
+  `{ "prompt": "…", "attachments": [...] }`。`attachments` 可省略（省略即本路由
+  一直接受的纯文本请求）；每个成员内联携带一个文件：
+
+  ```json
+  {
+    "data": "<文件字节的规范 base64>",
+    "name": "shot.png",
+    "media_type": "image/png",
+    "width": 3,
+    "height": 2
+  }
+  ```
+
+  `name`（显示用的叶名——带路径分隔符的名字会被拒绝并回退为
+  `attachment.<ext>`）与 `media_type` 决定附件如何到达模型，经由与 REPL 相同的
+  摄取管道（`~/.codesmith/attachments/`，内容寻址）：`png/jpg/jpeg/gif/webp`
+  图片以原生 image 块上 wire（声明的图片字节先做魔数校验；调用方已知时的
+  `width`/`height` 会回显到 user item 的 `metadata.attachments`，供客户端渲染），
+  内联文本类型折叠进消息正文，其余二进制追加一行持久的“路径 + 大小 +
+  媒体类型”引用行，模型可按需用 `read_file` 读取。限额：单文件 10MB、每条
+  消息 8 个附件、音频/视频拒绝——任一附件被拒则整个请求失败（绝不半发送）。
+  携带附件时 prompt 可为空（纯图片 turn 保留 `[image]` 占位文本）。请求体
+  上限 16MB（10MB 文件上限之上的 base64 膨胀）。
+- `POST /v1/threads/{id}/turns/{turn_id}/steer` —— 仅文本；steer 不接受附件。
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact`（手动压缩）
 

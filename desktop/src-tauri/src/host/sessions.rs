@@ -2,7 +2,7 @@
 //! `session/rename|fork|search`, archive toggles, the skills catalog and the
 //! control projections — translated onto `codesmith serve --http`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -359,18 +359,65 @@ struct PromptPart {
     kind: String,
     #[serde(default)]
     text: String,
+    #[serde(default, rename = "mediaType")]
+    media_type: Option<String>,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "receiptId")]
+    receipt_id: Option<String>,
 }
 
-fn prompt_text(content: &[PromptPart]) -> Result<String> {
-    let text: Vec<&str> = content
+/// The prompt's attachments as runtime turn attachments: `file` parts name
+/// staged receipts (`host::uploads`), `image` parts carry inline base64
+/// (an image draft that was never staged). Any other part kind is a wire
+/// contract break and fails loudly.
+async fn prompt_attachments(
+    host: &HostState,
+    session_id: &str,
+    content: &[PromptPart],
+) -> Result<Vec<Value>> {
+    for part in content {
+        if !matches!(part.kind.as_str(), "text" | "file" | "image") {
+            bail!("unknown prompt part type {}", part.kind);
+        }
+    }
+    let receipt_ids: Vec<String> = content
+        .iter()
+        .filter(|p| p.kind == "file")
+        .map(|p| {
+            p.receipt_id
+                .clone()
+                .context("file prompt part without receiptId")
+        })
+        .collect::<Result<_>>()?;
+    let mut attachments =
+        super::uploads::resolve_prompt_attachments(&host.uploads, session_id, &receipt_ids)
+            .await
+            .map_err(|err| anyhow!("{}", err.message))?;
+    for part in content.iter().filter(|p| p.kind == "image") {
+        attachments.push(
+            super::uploads::inline_image_attachment(
+                part.media_type.as_deref(),
+                part.data.as_deref(),
+                part.name.as_deref(),
+            )
+            .map_err(|err| anyhow!("{}", err.message))?,
+        );
+    }
+    Ok(attachments)
+}
+
+/// The prompt's text parts joined; empty when the prompt carries none (an
+/// attachment-only message — the runtime keeps the turn non-empty).
+fn prompt_text(content: &[PromptPart]) -> String {
+    content
         .iter()
         .filter(|p| p.kind == "text")
         .map(|p| p.text.as_str())
-        .collect();
-    if text.is_empty() {
-        bail!("prompt without a text part");
-    }
-    Ok(text.join("\n"))
+        .collect::<Vec<&str>>()
+        .join("\n")
 }
 
 async fn active_turn_id(host: &HostState, session_id: &str) -> Result<Option<String>> {
@@ -429,20 +476,40 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
             .cloned()
             .unwrap_or(Value::Array(Vec::new())),
     )?;
-    let text = prompt_text(&content)?;
+    let attachments = prompt_attachments(host, &session_id, &content).await?;
+    let text = prompt_text(&content);
+    if text.is_empty() && attachments.is_empty() {
+        bail!("prompt without a text part");
+    }
 
     if mode == "steer" {
+        // The runtime's steer route takes text only (known limitation): an
+        // attachment-carrying steer refuses loudly instead of silently
+        // dropping the files.
+        if !attachments.is_empty() {
+            bail!(
+                "attachments cannot ride a steer yet — the runtime's steer route takes text only"
+            );
+        }
         match active_turn_id(host, &session_id).await? {
             Some(turn_id) => {
                 let path = format!("/v1/threads/{session_id}/turns/{turn_id}/steer");
-                post_prompt(host, &session_id, rpc_id, &path, &text).await?;
+                post_prompt(host, &session_id, rpc_id, &path, &text, &attachments).await?;
             }
             None => bail!("steer with no running turn"),
         }
         return Ok(json!({ "accepted": true }));
     }
     let path = format!("/v1/threads/{session_id}/turns");
-    post_prompt(host, &session_id, rpc_id, &path, &text).await?;
+    post_prompt(host, &session_id, rpc_id, &path, &text, &attachments).await?;
+    // The runtime accepted the turn, so the staged receipts are bound to it
+    // now — retire them (a refused POST above leaves them retryable).
+    let receipt_ids: Vec<String> = content
+        .iter()
+        .filter(|p| p.kind == "file")
+        .filter_map(|p| p.receipt_id.clone())
+        .collect();
+    super::uploads::retire_receipts(&host.uploads, &receipt_ids).await;
     ensure_waterfall_watcher(host, &session_id).await;
     Ok(json!({ "accepted": true }))
 }
@@ -458,6 +525,7 @@ async fn post_prompt(
     rpc_id: Option<String>,
     path: &str,
     text: &str,
+    attachments: &[Value],
 ) -> Result<()> {
     if let Some(rpc) = &rpc_id {
         host.pending_rpc_ids
@@ -467,10 +535,14 @@ async fn post_prompt(
             .or_default()
             .push(rpc.clone());
     }
-    let posted = host
-        .backend
-        .post::<Value>(path, &json!({ "prompt": text }))
-        .await;
+    // Attachments ride only when present — a plain prompt keeps the body the
+    // runtime has always taken.
+    let body = if attachments.is_empty() {
+        json!({ "prompt": text })
+    } else {
+        json!({ "prompt": text, "attachments": attachments })
+    };
+    let posted = host.backend.post::<Value>(path, &body).await;
     if let (Err(_), Some(rpc)) = (&posted, &rpc_id) {
         if let Some(queue) = host.pending_rpc_ids.lock().await.get_mut(session_id) {
             queue.retain(|queued| queued != rpc);

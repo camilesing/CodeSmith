@@ -1,5 +1,6 @@
-//! Media attachment intake for the REPL (TODO-50) and the stable storage
-//! location for pasted images.
+//! Media attachment intake for the REPL (TODO-50), the inline-encoded
+//! attachment path of the HTTP turn API, and the stable storage location for
+//! pasted images.
 //!
 //! Intake is the CLI-side consumer of the content-addressed store
 //! (`codesmith_agent_runtime::attachments`): every file a message carries —
@@ -14,7 +15,9 @@
 //! session's context-reference record for each attachment, admitted
 //! (`included: true`, with hash/size/type) or refused (`included: false`,
 //! with the reason) — so the record says exactly what reached the model and
-//! what was turned away.
+//! what was turned away. The HTTP turn API rides the same store through
+//! [`ingest_encoded_attachments`] (base64 bytes, all-or-nothing, no
+//! context-reference records — the evidence rides the message text).
 //!
 //! Known limitations: `/attach` runs only the metadata-level
 //! [`AttachmentStore::precheck`] inline (the REPL loop is on the runtime; the
@@ -24,6 +27,8 @@
 //! what the message carries is the stored bytes.
 
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
 
 use codesmith_agent_runtime::attachments::{
     AttachmentKind, AttachmentStore, StoredAttachment, classify_attachment,
@@ -258,6 +263,220 @@ fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// One attachment delivered as inline bytes (the HTTP turn API): decoded
+/// base64 plus the caller's declared metadata. `name` is a display name —
+/// its extension, or the declared media type's, decides how the store
+/// classifies the bytes.
+#[derive(Debug, Clone)]
+pub struct EncodedAttachment {
+    pub name: Option<String>,
+    pub media_type: Option<String>,
+    pub width: Option<u64>,
+    pub height: Option<u64>,
+    pub bytes: Vec<u8>,
+}
+
+/// Per-attachment record for the turn item's additive metadata: what the
+/// transcript echoes so a client can render the settled message's
+/// attachments (kind, content address, display fields). `camelCase` wire —
+/// the client's attachment reference vocabulary (`attachmentId`,
+/// `mediaType`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodedAttachmentRecord {
+    /// `"image"` (wire image) or `"file"` (inlined text or path reference).
+    pub kind: &'static str,
+    /// `sha256:<hex>` — the store's content address, the same id the file
+    /// is stored under.
+    pub attachment_id: String,
+    pub name: Option<String>,
+    pub media_type: String,
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+}
+
+/// Outcome of admitting inline-encoded attachments: the same dispatch as the
+/// REPL intake (wire images to the engine, everything else folded into the
+/// message content), plus the per-attachment records for the item metadata.
+#[derive(Debug, Default)]
+pub struct EncodedIntake {
+    /// Store paths of wire-representable images (`Op::SendMessage.image_paths`).
+    pub image_paths: Vec<PathBuf>,
+    /// Text appended to the outgoing message content (inline text fences,
+    /// durable path reference lines).
+    pub content_appendix: String,
+    pub records: Vec<EncodedAttachmentRecord>,
+}
+
+/// Admit inline-encoded (HTTP turn API) attachments through the user store
+/// (`~/.codesmith/attachments`). See [`ingest_encoded_into`] for the
+/// semantics.
+pub async fn ingest_encoded_attachments(
+    encoded: Vec<EncodedAttachment>,
+) -> Result<EncodedIntake, String> {
+    let store = match AttachmentStore::default_location() {
+        Ok(store) => store,
+        Err(err) => {
+            return Err(format!(
+                "attachment store unavailable: {err}; no attachments were sent"
+            ));
+        }
+    };
+    ingest_encoded_into(&store, encoded).await
+}
+
+/// [`ingest_encoded_attachments`] against an explicit store (tests,
+/// embedders). Unlike the REPL intake this is all-or-nothing — one refused
+/// attachment fails the whole request with every refusal named, so an HTTP
+/// caller never sends half its attachments — and writes no session
+/// context-reference records (the evidence rides the message text itself:
+/// appendix lines for files, the engine's media-attachment record for
+/// images).
+///
+/// Blocking I/O (temp files, hashing, the store copy) — runs under
+/// `spawn_blocking`, like [`ingest_for_message`].
+pub async fn ingest_encoded_into(
+    store: &AttachmentStore,
+    encoded: Vec<EncodedAttachment>,
+) -> Result<EncodedIntake, String> {
+    if encoded.is_empty() {
+        return Ok(EncodedIntake::default());
+    }
+
+    // Resolve names and extensions, and verify declared image bytes against
+    // their magic before anything lands on disk — a wire-image extension
+    // with non-image bytes would hand the provider garbage.
+    let mut prepared = Vec::with_capacity(encoded.len());
+    for attachment in &encoded {
+        let ext = encoded_ext(attachment.name.as_deref(), attachment.media_type.as_deref());
+        let label = encoded_label(attachment.name.as_deref(), &ext);
+        if !image_magic_matches(&ext, &attachment.bytes) {
+            return Err(format!(
+                "attachment refused: {label} is not {ext} image data (magic mismatch); no attachments were sent"
+            ));
+        }
+        prepared.push((attachment.clone(), ext, label));
+    }
+
+    // A private temp dir per message: the temp file keeps the display name,
+    // so the appendix's label is the name the caller sent, and a leaf-only
+    // name can never escape the dir.
+    let dir = std::env::temp_dir().join(format!(
+        "codesmith-encoded-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    // `spawn_blocking` needs 'static; the store is a cloned root path.
+    let store = store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            return Err(format!(
+                "attachment intake failed: {err}; no attachments were sent"
+            ));
+        }
+        let mut intake = EncodedIntake::default();
+        let mut rejections: Vec<String> = Vec::new();
+        for (position, (attachment, _ext, label)) in prepared.iter().enumerate() {
+            let tmp = dir.join(label);
+            if let Err(err) = std::fs::write(&tmp, &attachment.bytes) {
+                rejections.push(format!("attachment refused: {err} ({label})"));
+                continue;
+            }
+            let admitted = AttachmentStore::check_message_count(position + 1)
+                .and_then(|()| store.ingest(&tmp));
+            match admitted {
+                Ok(stored) => {
+                    dispatch_into(
+                        &tmp,
+                        &stored,
+                        &mut intake.image_paths,
+                        &mut intake.content_appendix,
+                    );
+                    let wire_image = matches!(stored.kind, AttachmentKind::WireImage);
+                    intake.records.push(EncodedAttachmentRecord {
+                        kind: if wire_image { "image" } else { "file" },
+                        attachment_id: format!("sha256:{}", stored.sha256),
+                        // The transcript's label — the same name the
+                        // appendix line uses, so the record and the message
+                        // text agree.
+                        name: Some(label.clone()),
+                        media_type: stored.media_type.clone(),
+                        bytes: stored.bytes,
+                        width: attachment.width.filter(|_| wire_image),
+                        height: attachment.height.filter(|_| wire_image),
+                    });
+                }
+                Err(err) => {
+                    rejections.push(format!("attachment refused: {err} ({label})"));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        if !rejections.is_empty() {
+            Err(rejections.join("; "))
+        } else {
+            Ok(intake)
+        }
+    })
+    .await;
+    match result {
+        Ok(outcome) => outcome,
+        Err(join_err) => Err(format!(
+            "intake worker failed: {join_err}; no attachments were sent"
+        )),
+    }
+}
+
+/// The extension an encoded attachment classifies under: a declared wire
+/// image media type wins (canonical extension), then the display name's
+/// extension, then a generic binary fallback.
+fn encoded_ext(name: Option<&str>, media_type: Option<&str>) -> String {
+    if let Some(mime) = media_type {
+        match mime {
+            "image/png" => return "png".to_string(),
+            "image/jpeg" => return "jpg".to_string(),
+            "image/gif" => return "gif".to_string(),
+            "image/webp" => return "webp".to_string(),
+            _ => {}
+        }
+    }
+    name.and_then(|n| Path::new(n).extension().and_then(|e| e.to_str()))
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_else(|| "bin".to_string())
+}
+
+/// The temp-file leaf name for an encoded attachment: the caller's display
+/// name when it is a usable leaf (`.`/`..` and separator-carrying names are
+/// refused, not silently mangled), else `attachment.<ext>`.
+fn encoded_label(name: Option<&str>, ext: &str) -> String {
+    match name {
+        Some(name)
+            if !name.is_empty()
+                && name != "."
+                && name != ".."
+                && !name.contains(['/', '\\', '\0']) =>
+        {
+            name.to_string()
+        }
+        _ => format!("attachment.{ext}"),
+    }
+}
+
+/// Whether `bytes` start with the magic of the image format `ext` names.
+/// Non-image extensions admit anything — classification, not image-ness,
+/// already decided they never reach the wire as images.
+fn image_magic_matches(ext: &str, bytes: &[u8]) -> bool {
+    match ext {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" | "jpeg" => bytes.starts_with(b"\xFF\xD8\xFF"),
+        "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "webp" => bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        _ => true,
+    }
 }
 
 fn admitted_reference(
@@ -549,5 +768,160 @@ mod tests {
             "unsupported attachment type .mp3 — audio/video have no consumer in this build",
         );
         assert_eq!(audio.reference.badge, "file");
+    }
+
+    /// The smallest bytes each wire-image magic check accepts.
+    fn png_magic() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&[0; 16]);
+        bytes
+    }
+
+    fn encoded(name: Option<&str>, media_type: Option<&str>, bytes: &[u8]) -> EncodedAttachment {
+        EncodedAttachment {
+            name: name.map(str::to_string),
+            media_type: media_type.map(str::to_string),
+            width: Some(3),
+            height: Some(2),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn encoded_images_take_the_wire_and_carry_their_records() {
+        let store_dir = tempdir().unwrap();
+        let store = AttachmentStore::new(store_dir.path().to_path_buf());
+        let intake = ingest_encoded_into(
+            &store,
+            vec![encoded(Some("shot.png"), Some("image/png"), &png_magic())],
+        )
+        .await
+        .expect("a magic-matching PNG admits");
+
+        assert_eq!(
+            intake.image_paths.len(),
+            1,
+            "a wire image hands the engine its store path"
+        );
+        assert!(intake.image_paths[0].starts_with(store_dir.path()));
+        assert!(
+            intake.content_appendix.is_empty(),
+            "images add no message text"
+        );
+        assert_eq!(intake.records.len(), 1);
+        let record = &intake.records[0];
+        assert_eq!(record.kind, "image");
+        assert_eq!(record.name.as_deref(), Some("shot.png"));
+        assert_eq!(record.media_type, "image/png");
+        assert_eq!(record.bytes, png_magic().len() as u64);
+        assert_eq!((record.width, record.height), (Some(3), Some(2)));
+        assert_eq!(
+            record.attachment_id,
+            format!("sha256:{}", hex_of(&png_magic()))
+        );
+    }
+
+    #[tokio::test]
+    async fn encoded_files_fold_into_the_message_and_record_their_kind() {
+        let store_dir = tempdir().unwrap();
+        let store = AttachmentStore::new(store_dir.path().to_path_buf());
+        let intake = ingest_encoded_into(
+            &store,
+            vec![
+                encoded(Some("notes.md"), None, b"# hello\nworld"),
+                encoded(None, None, b"\x00\x01binary"),
+            ],
+        )
+        .await
+        .expect("text and binary files admit");
+
+        assert!(intake.image_paths.is_empty());
+        assert!(
+            intake.content_appendix.contains("[Attached file: notes.md"),
+            "the appendix labels the file by its display name: {}",
+            intake.content_appendix
+        );
+        assert!(intake.content_appendix.contains("# hello"));
+        assert!(
+            intake.content_appendix.contains("stored at"),
+            "a non-inline binary references its durable path: {}",
+            intake.content_appendix
+        );
+        assert_eq!(intake.records.len(), 2);
+        assert!(intake.records.iter().all(|record| record.kind == "file"));
+        assert_eq!(intake.records[0].name.as_deref(), Some("notes.md"));
+        assert_eq!(
+            intake.records[1].name.as_deref(),
+            Some("attachment.bin"),
+            "a nameless binary gets the fallback leaf, not a temp path"
+        );
+        assert!(intake.records[0].width.is_none() && intake.records[0].height.is_none());
+    }
+
+    #[tokio::test]
+    async fn encoded_intake_is_all_or_nothing() {
+        let store_dir = tempdir().unwrap();
+        let store = AttachmentStore::new(store_dir.path().to_path_buf());
+        // The .mp3 is refused by the store's classification (audio has no
+        // consumer); the whole request fails naming it, even though the PNG
+        // alongside it would admit.
+        let err = ingest_encoded_into(
+            &store,
+            vec![
+                encoded(Some("shot.png"), Some("image/png"), &png_magic()),
+                encoded(Some("voice.mp3"), None, b"id3"),
+            ],
+        )
+        .await
+        .expect_err("one refused attachment fails the request");
+        assert!(err.contains("voice.mp3"), "{err}");
+        assert!(err.contains(".mp3"), "{err}");
+        // All-or-nothing governs what is SENT, not the store: an item that
+        // admitted before a later refusal stays content-addressed in the
+        // store (idempotent, reusable) — but the caller gets nothing usable.
+    }
+
+    #[tokio::test]
+    async fn encoded_intake_refuses_image_magic_mismatches_before_touching_disk() {
+        let store_dir = tempdir().unwrap();
+        let store = AttachmentStore::new(store_dir.path().to_path_buf());
+        let err = ingest_encoded_into(
+            &store,
+            vec![encoded(
+                Some("fake.png"),
+                Some("image/png"),
+                b"not a png at all",
+            )],
+        )
+        .await
+        .expect_err("declared image bytes that are not the image must refuse");
+        assert!(err.contains("fake.png"), "{err}");
+        assert!(err.contains("no attachments were sent"), "{err}");
+        assert!(
+            store_dir
+                .path()
+                .read_dir()
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(false),
+            "a magic mismatch never reaches the store"
+        );
+    }
+
+    #[test]
+    fn encoded_extensions_prefer_the_declared_media_type() {
+        assert_eq!(encoded_ext(Some("photo.bin"), Some("image/png")), "png");
+        assert_eq!(encoded_ext(Some("report.pdf"), None), "pdf");
+        assert_eq!(encoded_ext(Some("no-ext"), None), "bin");
+        assert_eq!(encoded_ext(None, Some("text/plain")), "bin");
+        // A separator-carrying name is refused to the fallback label, so a
+        // temp file can never escape its directory.
+        assert_eq!(encoded_label(Some("../escape"), "png"), "attachment.png");
+        assert_eq!(encoded_label(None, "pdf"), "attachment.pdf");
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(bytes);
+        digest.iter().map(|b| format!("{b:02x}")).collect()
     }
 }

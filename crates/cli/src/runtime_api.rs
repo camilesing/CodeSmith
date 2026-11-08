@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::Html;
@@ -616,6 +616,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/mobile/", get(mobile_page))
         .merge(api_routes)
         .layer(cors_layer(&state.cors_origins))
+        // Turn attachments ride the request body as canonical base64: a
+        // 10MB file (the store's per-file cap) is ~13.7MB of JSON, far
+        // past axum's 2MB default.
+        .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -1797,6 +1801,7 @@ async fn stream_turn(
                 allow_shell: Some(allow_shell),
                 trust_mode: Some(trust_mode),
                 auto_approve: Some(auto_approve),
+                attachments: Vec::new(),
             },
         )
         .await
