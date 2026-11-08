@@ -181,6 +181,16 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   不为切模型记日志事件），控制帧的 `changes` 是 `{key, val}` 数组。座位
   里切模型会持久化线程模型并推送实时投影帧；目录里没有的模型 id 保留
   原 id，座位读作不可路由。
+- 桌面离线 E2E 走环回 provider：协议时序用脚本化 mock，真实生成用本地
+  真模型——把 Qwen2.5-1.5B-Instruct 从本机 HF 缓存导入 ollama 0.23.2
+  （`ollama create` 指向 safetensors 目录，配一份手写的渲染 `.Tools` 的
+  模板；已拉取的 `qwen2` 原模板没有 tools 块，端点每回合答 400）。真
+  模型普通回合已端到端点验（prompt → 流式 → 落定 → 重放，重放时刻与
+  持久记录逐帧一致），两条长期约束仍在：codesmith 首回合约 5 万 token
+  的请求超出本机所有本地模型声明的 32k 上下文（ollama 从头截断，模型
+  凭幸存的尾部仍能作答）；导入模型的 `<tool_call>` 块只作纯文本返回
+  （没有结构化 `tool_calls`），且导入器拒绝 `Qwen3ForCausalLM`——真
+  模型工具回合（真实工具调用之上的活审批卡）因此仍未点验。
 - 去品牌改写是文本级的（审计说明见 `vendor_client.py` 模块注释）：未来
   上游若出现依赖品牌字符串长度的偏移量，脚本不会发现——
   `check_brand.py` 管品牌命中，升级上游 commit 时需人工复核偏移。

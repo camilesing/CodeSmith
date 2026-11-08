@@ -216,6 +216,20 @@ Known limitations of the current implementation:
   `changes` as `{key, val}` entries. Switching models in the seat persists the
   thread model and pushes a live projection frame; a model id the catalog
   lacks keeps its own id and reads as not routable.
+- Offline desktop E2E rides loopback providers: the scripted mock for
+  protocol timing, and a real model for generation — Qwen2.5-1.5B-Instruct
+  imported into ollama 0.23.2 from the local HF cache (`ollama create` over
+  the safetensors dir plus a hand-written template that renders `.Tools`; the
+  stock pulled `qwen2` template has no tools block, so its endpoint answers
+  400 on every turn). Real-model chat turns verify end to end (prompt →
+  stream → settle → replay, every replayed instant matching the durable
+  record) under two standing constraints: codesmith's ~50k-token first turn
+  overflows the 32k context every on-disk local model declares (ollama
+  truncates head-first; the model still answers from the surviving tail), and
+  ollama returns an imported model's `<tool_call>` blocks as plain content —
+  no structured `tool_calls` — while rejecting `Qwen3ForCausalLM` at import,
+  so a real-model tool round (a live approval card over a real tool call)
+  stays unverified.
 - The rebrand rewrite is textual (see the audit note in `vendor_client.py`'s
   doc comment): a future upstream offset that depends on a brand string's
   length would not be caught by the script — `check_brand.py` catches the
