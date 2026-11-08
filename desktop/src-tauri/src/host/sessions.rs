@@ -198,10 +198,33 @@ pub async fn follow(
     Ok(())
 }
 
+/// Register one incoming waterfall in the pending map; `Some(frame)` only on
+/// the FIRST registration of its event id. The follow loop and the background
+/// watcher both read the runtime's event tail, so the same
+/// `approval.required` / `user_input.required` envelope arrives twice — a
+/// second push would double-dispatch the client's waterfall chain and leave a
+/// ghost approval card that outlives its decision (the deciding click
+/// settles one dispatch; the other stays answerable).
+fn fresh_waterfall(
+    pendings: &mut std::collections::HashMap<String, super::events::PendingInput>,
+    event_id: String,
+    pending: super::events::PendingInput,
+) -> Option<Value> {
+    use std::collections::hash_map::Entry;
+    match pendings.entry(event_id) {
+        Entry::Vacant(slot) => {
+            let frame = pending.frame.clone();
+            slot.insert(pending);
+            Some(frame)
+        }
+        Entry::Occupied(_) => None,
+    }
+}
+
 /// Route one runtime envelope's waterfall lifecycle (shared by the follow
 /// loops and the background watcher): register and push a new approval or
-/// question, cancel one the runtime settled, and drop whatever a finished
-/// turn leaves behind.
+/// question (first delivery only, see [`fresh_waterfall`]), cancel one the
+/// runtime settled, and drop whatever a finished turn leaves behind.
 pub(super) async fn handle_waterfall_envelope(
     host: &HostState,
     session_id: &str,
@@ -216,31 +239,33 @@ pub(super) async fn handle_waterfall_envelope(
         "approval.required" => {
             if let Some((event_id, frame)) = super::events::approval_waterfall(session_id, payload)
             {
-                host.pending_inputs.lock().await.insert(
-                    event_id.clone(),
-                    super::events::PendingInput {
-                        session_id: session_id.to_string(),
-                        input_id: event_id.clone(),
-                        kind: super::events::InputKind::Approval,
-                        frame: frame.clone(),
-                    },
-                );
-                host.push_event_frame(frame).await;
+                let pending = super::events::PendingInput {
+                    session_id: session_id.to_string(),
+                    input_id: event_id.clone(),
+                    kind: super::events::InputKind::Approval,
+                    frame: frame.clone(),
+                };
+                if let Some(frame) =
+                    fresh_waterfall(&mut *host.pending_inputs.lock().await, event_id, pending)
+                {
+                    host.push_event_frame(frame).await;
+                }
             }
         }
         "user_input.required" => {
             if let Some((input_id, frame)) = super::events::questions_waterfall(session_id, payload)
             {
-                host.pending_inputs.lock().await.insert(
-                    input_id.clone(),
-                    super::events::PendingInput {
-                        session_id: session_id.to_string(),
-                        input_id: input_id.clone(),
-                        kind: super::events::InputKind::Questions,
-                        frame: frame.clone(),
-                    },
-                );
-                host.push_event_frame(frame).await;
+                let pending = super::events::PendingInput {
+                    session_id: session_id.to_string(),
+                    input_id: input_id.clone(),
+                    kind: super::events::InputKind::Questions,
+                    frame: frame.clone(),
+                };
+                if let Some(frame) =
+                    fresh_waterfall(&mut *host.pending_inputs.lock().await, input_id, pending)
+                {
+                    host.push_event_frame(frame).await;
+                }
             }
         }
         "approval.decided" | "approval.timeout" => {
@@ -268,9 +293,10 @@ pub(super) async fn handle_waterfall_envelope(
 /// waterfall lifecycle on its own.
 ///
 /// Known limitation: the check-then-spawn window can arm two watchers for
-/// one session; pendings are keyed by runtime event id and cancels are
-/// idempotent, so a duplicate is harmless. The watcher ends with the
-/// runtime's SSE tail and re-arms on the next prompt.
+/// one session; pendings are keyed by runtime event id, cancels are
+/// idempotent, and a waterfall pushes on first registration only (see
+/// [`fresh_waterfall`]), so a duplicate reader is harmless. The watcher ends
+/// with the runtime's SSE tail and re-arms on the next prompt.
 pub(super) async fn ensure_waterfall_watcher(host: &SharedHost, session_id: &str) {
     if host
         .waterfall_watchers
@@ -1120,6 +1146,34 @@ fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_waterfall_registration_pushes_only_the_first() {
+        // The follow loop and the background watcher both deliver the same
+        // approval.required; the second registration must not push again or
+        // the client's waterfall chain double-dispatches (a ghost approval
+        // card that outlives its decision).
+        let frame = json!({
+            "type": "waterfall", "event": "approval/request",
+            "eventId": "appr_1", "agentId": "sess_1",
+            "request": { "toolName": "write_file" },
+        });
+        let make = || super::super::events::PendingInput {
+            session_id: "sess_1".into(),
+            input_id: "appr_1".into(),
+            kind: super::super::events::InputKind::Approval,
+            frame: frame.clone(),
+        };
+        let mut pendings = std::collections::HashMap::new();
+        let first = fresh_waterfall(&mut pendings, "appr_1".into(), make());
+        let second = fresh_waterfall(&mut pendings, "appr_1".into(), make());
+        assert!(first.is_some(), "the first registration pushes");
+        assert!(
+            second.is_none(),
+            "a re-delivery of the same event must not push"
+        );
+        assert_eq!(pendings.len(), 1);
+    }
 
     #[test]
     fn turn_lifecycle_flips_the_client_session_running_flag() {
