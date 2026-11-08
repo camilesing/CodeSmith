@@ -69,7 +69,9 @@ LICENSE 原样拷贝；MIT 声明与署名保留在 `ui/vendor/THIRD_PARTY_NOTIC
 （`cargo build -p codesmith-cli`）。
 
 ```sh
-# 1. vendor + boot 图（ui/vendor 已是最新时可跳过）
+# 1. vendor + boot 图。两侧任一漂移都要重跑：ui/public/plugins（暂存的
+#    bundle）是 gitignore 的，vendor 树可能已最新而暂存是旧的——缺的
+#    bundle 启动时 404，对应插件静默不激活（审批卡就在其中）。
 python3 desktop/scripts/vendor_client.py && node desktop/scripts/gen_boot_graph.mjs
 # 2. 前端
 cd desktop/ui && pnpm install && pnpm dev        # vite :1420
@@ -164,7 +166,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `clientId`，仍待决的请求会重放给新连接的流，迟到/重复的
   `$events/result` 是幂等 no-op（`delivered:false`，含运行时 404）。决定
   送达后紧跟该请求的 cancel 帧——各个客户端上答题卡的退役靠的就是这一
-  帧。检测不依赖客户端正在 follow 该会话：每次 prompt 都为会话挂一个
+  帧。瀑布只在首次注册时推送：follow 流与后台 watcher 读的是同一条运行时
+  事件尾，二次推送会让客户端的瀑布链双重派发（审批卡活过自己的决定，
+  要再点一次才消失）。检测不依赖客户端正在 follow 该会话：每次 prompt
+  都为会话挂一个
   后台 watcher（线程事件流），自行把审批/问题浮出来；队列启动的 turn 会
   重新挂上它。早于 watcher 的 prompt（外部 HTTP 客户端、重启前的 turn）
   仍需要 follow 流才会浮现。
@@ -198,7 +203,13 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   的请求超出本机所有本地模型声明的 32k 上下文（ollama 从头截断，模型
   凭幸存的尾部仍能作答）；导入模型的 `<tool_call>` 块只作纯文本返回
   （没有结构化 `tool_calls`），且导入器拒绝 `Qwen3ForCausalLM`——真
-  模型工具回合（真实工具调用之上的活审批卡）因此仍未点验。
+  模型工具回合（真实工具调用之上的活审批卡）因此仍未点验。脚本化 mock
+  在 wire 层补上了这个缺口：“写文件” prompt 让它流式返回结构化的
+  `write_file` 工具调用，审批回合在两层都点验过——桥协议（`$events`
+  瀑布到达、`$events/result` 的 allow/deny 送抵 `/v1/approvals/{id}`、
+  journal 记下两笔决定、放行的调用写盘而拒绝的那次保持字节不变）和
+  活体 UI（审批卡由瀑布渲染、允许一次执行写入、拒绝把否决回喂给模型，
+  任一决定后卡片与侧栏待审批徽标都退役）。
 - 去品牌改写是文本级的（审计说明见 `vendor_client.py` 模块注释）：未来
   上游若出现依赖品牌字符串长度的偏移量，脚本不会发现——
   `check_brand.py` 管品牌命中，升级上游 commit 时需人工复核偏移。

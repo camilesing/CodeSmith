@@ -75,7 +75,10 @@ Requirements: Rust (repo toolchain), Node + pnpm, and a built `codesmith`
 binary (`cargo build -p codesmith-cli`).
 
 ```sh
-# 1. vendor + boot graph (skip if ui/vendor is current)
+# 1. vendor + boot graph. Re-run whenever either side drifts: ui/public/plugins
+#    (the staged bundles) is gitignored, so a vendor tree can be current while
+#    the staging is stale — a missing bundle 404s at boot and its plugins
+#    silently never activate (the approval card among them).
 python3 desktop/scripts/vendor_client.py && node desktop/scripts/gen_boot_graph.mjs
 # 2. frontend
 cd desktop/ui && pnpm install && pnpm dev        # vite on :1420
@@ -195,7 +198,11 @@ Known limitations of the current implementation:
   connected stream, and a late or duplicate `$events/result` is an idempotent
   no-op (`delivered:false`, runtime 404 included). A delivered decision is
   followed by the request's cancel frame — that frame is what retires the
-  answering card on every connected client. Detection does not depend
+  answering card on every connected client. A waterfall pushes on its first
+  registration only: the follow stream and the background watcher both read
+  the runtime's event tail, and a second push would double-dispatch the
+  client's waterfall chain (an approval card that survives its own decision
+  until a second click). Detection does not depend
   on a client following the session: every prompt arms a per-session
   background watcher on the thread event stream that surfaces approvals and
   questions on its own, and a turn the queue starts re-arms it. A prompt
@@ -240,7 +247,15 @@ Known limitations of the current implementation:
   ollama returns an imported model's `<tool_call>` blocks as plain content —
   no structured `tool_calls` — while rejecting `Qwen3ForCausalLM` at import,
   so a real-model tool round (a live approval card over a real tool call)
-  stays unverified.
+  stays unverified. The scripted mock closes that gap at the wire level: a
+  "写文件" prompt makes it stream a structured `write_file` tool call, and the
+  approval round is verified at both layers — the bridge protocol (the
+  `$events` waterfall arrives, `$events/result` allow/deny reaches
+  `/v1/approvals/{id}`, the journal carries both decisions, the allowed call
+  writes the file and the denied one leaves it byte-identical) and the live
+  UI (the approval card renders from the waterfall, 允许一次 executes the
+  write and 拒绝 feeds the denial back, the card and the sidebar's pending
+  badge retiring after either decision).
 - The rebrand rewrite is textual (see the audit note in `vendor_client.py`'s
   doc comment): a future upstream offset that depends on a brand string's
   length would not be caught by the script — `check_brand.py` catches the
