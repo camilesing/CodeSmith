@@ -11,12 +11,12 @@
 pub mod codesmith;
 pub mod commands;
 pub mod events;
+pub mod host_drop;
 pub mod mapper;
 pub mod mux;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
-pub mod host_drop;
 pub mod uploads;
 pub mod workspace;
 
@@ -770,7 +770,10 @@ async fn health() -> &'static str {
 async fn drop_bytes_handler(State(host): State<SharedHost>, Path(id): Path<String>) -> Response {
     match host_drop::take_bytes(&host.drop_bytes, &id) {
         Some(bytes) => (
-            [(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))],
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
+            )],
             bytes,
         )
             .into_response(),

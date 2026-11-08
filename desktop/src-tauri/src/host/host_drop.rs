@@ -82,13 +82,16 @@ fn describe(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
     if metadata.is_dir() {
-        return Some(json!({ "path": path.display().to_string(), "name": name, "isDirectory": true }));
+        return Some(
+            json!({ "path": path.display().to_string(), "name": name, "isDirectory": true }),
+        );
     }
     // Sniff the media type from the header so an image is only an image when
     // its bytes say so — a renamed `.png` cites by path instead of failing
     // the composer's upload.
     let media_type = sniff_media_type(path);
-    let mut entry = json!({ "path": path.display().to_string(), "name": name, "isDirectory": false });
+    let mut entry =
+        json!({ "path": path.display().to_string(), "name": name, "isDirectory": false });
     if let Some(media_type) = media_type
         .filter(|_| metadata.len() as usize <= MAX_UPLOAD_BYTES)
         .filter(|_| *staged_total + metadata.len() as usize <= MAX_DROP_STAGED_BYTES)
@@ -150,21 +153,16 @@ pub fn eval_script(payload: &Value) -> String {
 /// Deliver one dropped batch: describe it off the async runtime, then hand
 /// it to the page. An eval failure (the window closed mid-delivery) is
 /// reported, not swallowed.
-pub async fn deliver(
-    webview: &tauri::WebviewWindow,
-    staging: &DropStaging,
-    paths: Vec<PathBuf>,
-) {
+pub async fn deliver(webview: &tauri::WebviewWindow, staging: &DropStaging, paths: Vec<PathBuf>) {
     let staging = Arc::clone(staging);
-    let payload = match tauri::async_runtime::spawn_blocking(move || build_payload(&paths, &staging))
-        .await
-    {
-        Ok(payload) => payload,
-        Err(err) => {
-            eprintln!("codesmith desktop: drop description failed: {err}");
-            return;
-        }
-    };
+    let payload =
+        match tauri::async_runtime::spawn_blocking(move || build_payload(&paths, &staging)).await {
+            Ok(payload) => payload,
+            Err(err) => {
+                eprintln!("codesmith desktop: drop description failed: {err}");
+                return;
+            }
+        };
     if let Err(err) = webview.eval(eval_script(&payload)) {
         eprintln!("codesmith desktop: drop delivery failed: {err}");
     }
@@ -275,7 +273,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("id".into(), b"png-bytes".to_vec());
-        assert_eq!(take_bytes(&staging, "id").as_deref(), Some(b"png-bytes".as_ref()));
+        assert_eq!(
+            take_bytes(&staging, "id").as_deref(),
+            Some(b"png-bytes".as_ref())
+        );
         assert!(
             take_bytes(&staging, "id").is_none(),
             "a replayed fetch answers nothing: the id is spent"
