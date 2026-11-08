@@ -47,6 +47,7 @@ use unicode_width::UnicodeWidthChar;
 use super::keys::TurnKey;
 use super::state::ReplState;
 use crate::app_state::AppMode;
+use crate::core::engine::SteerInput;
 use crate::core::events::{Event, TurnOutcomeStatus};
 use crate::hooks::HookEvent;
 use codesmith_agent_runtime::error_taxonomy::ErrorEnvelope;
@@ -1501,7 +1502,7 @@ async fn flush_queue_into_turn(
     let sent: Vec<String> = state.queued_messages.drain(..).collect();
     view.clear_live();
     for text in &sent {
-        if let Err(err) = engine.steer(text.clone()).await {
+        if let Err(err) = engine.steer(SteerInput::from(text.clone())).await {
             println!(
                 "{}",
                 format!("✗ could not deliver a queued message: {err}").red()
@@ -2046,7 +2047,7 @@ async fn handle_approval(
             // drained at the next step boundary as a user message — both
             // recorded, in that order.
             let _ = engine.deny_tool_call(id).await;
-            match engine.steer(feedback.clone()).await {
+            match engine.steer(SteerInput::from(feedback.clone())).await {
                 Ok(()) => println!("{}", "→ feedback sent to the running turn".dimmed()),
                 Err(err) => {
                     // Nothing is lost: the text goes back on the queue the
@@ -2077,7 +2078,10 @@ async fn handle_approval(
             // the plan was refused and where to go next, so it revises
             // instead of reading a bare permission error.
             if plan_gate {
-                match engine.steer(PLAN_REJECTED_NOTE.to_string()).await {
+                match engine
+                    .steer(SteerInput::from(PLAN_REJECTED_NOTE.to_string()))
+                    .await
+                {
                     Ok(()) => println!("{}", "→ plan rejected — the turn was told".dimmed()),
                     Err(err) => {
                         println!(

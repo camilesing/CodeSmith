@@ -1648,8 +1648,8 @@ fn test_assign_updates_running_agent_and_sends_message() {
     let dispatched = input_rx
         .try_recv()
         .expect("running agent should receive assignment update");
-    assert!(dispatched.contains("Assignment updated"));
-    assert!(dispatched.contains("objective"));
+    assert!(dispatched.text.contains("Assignment updated"));
+    assert!(dispatched.text.contains("objective"));
 }
 
 #[test]

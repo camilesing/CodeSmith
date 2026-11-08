@@ -8,16 +8,21 @@
 //! surrounding phase (the map below says where each lives).
 //!
 //! **steer** ([`HostAgentExecutor::drain_steers`]) — lets a user inject
-//! additional text input into an in-flight turn. At the top of each step
+//! additional input (text, plus admitted image paths) into an in-flight
+//! turn. At the top of each step
 //! (before the LLM request), queued steers are drained via `try_recv` and each
 //! becomes a `user` message in the transcript so the model re-reads them on
 //! this step's request — mirroring `handle_deepseek_turn`'s top-of-loop drain.
 //! The receiver is
-//! `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>` —
+//! `Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SteerInput>>>>` —
 //! interior-mutable because `AgentExecutor::run` is `&self` while `try_recv`
 //! takes `&mut self` (same pattern as the LSP flush's `pending` accumulator);
 //! tokio mutex (not std) so the guard may also cross the blocking
 //! `recv().await` in the sub-agent blocking hold's `biased select!` steer arm.
+//! Known limitation: image paths riding a steer are appended to the pushed
+//! message but are NOT recorded in the session's recent-media list, so the
+//! post-compaction attachment re-inject does not re-send them (a turn's
+//! opening message records them via `Session::record_media_attachments`).
 //! The three secondary drain sites are all absorbed ✅: the **mid-stream
 //! buffer** ([`HostAgentExecutor::reduce_stream`] `try_recv`s into a per-step
 //! `pending_steers` vec after each stream event, flushed post-stream /
@@ -66,8 +71,16 @@
 use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message};
 
+use crate::engine::SteerInput;
 use crate::engine::host_executor::HostAgentExecutor;
 use crate::engine::summarize_text;
+
+/// The status-line preview of a steer: its text, or the intake's
+/// `[image]` placeholder when the steer carries images but no text.
+pub(crate) fn steer_preview(steer: &SteerInput) -> &str {
+    let text = steer.text.trim();
+    if text.is_empty() { "[image]" } else { text }
+}
 
 impl HostAgentExecutor {
     /// Whether the turn has been cancelled. `None` cancel token ⇒ never
@@ -86,41 +99,55 @@ impl HostAgentExecutor {
     /// ([`flush_pending_steers`](Self::flush_pending_steers)) — single source for
     /// the observe + enrich + push logic so the three push sites cannot drift.
     /// Validation lives here too (module invariant): a whitespace-only steer
-    /// is dropped (`false`), so no intake site can forget the trim/skip-empty
-    /// guard and inject an empty `user` message. The extension `Input` seam
+    /// with no image paths is dropped (`false`), so no intake site can
+    /// forget the trim/skip-empty guard and inject an empty `user` message
+    /// (an image-only steer keeps the intake's `[image]` placeholder — an
+    /// empty text block beside image blocks is a shape no provider
+    /// round-trips). The extension `Input` seam
     /// runs first (round-9 TODO-62), so a handler rewrites mid-turn input
     /// exactly as it rewrites the submitted turn text; a rewrite to
-    /// whitespace drops the steer. The only `await` is that emit — the lock
-    /// on the shared working set is taken after it and never held across
-    /// one.
+    /// whitespace drops a text-only steer. Image paths ride beside the text
+    /// untouched and are appended as native image blocks in the same wire
+    /// order as a turn's opening message. The only `await` is that emit —
+    /// the lock on the shared working set is taken after it and never held
+    /// across one.
     pub(crate) async fn push_steer_message(
         &self,
-        steer: String,
+        steer: SteerInput,
         history: &mut dyn ChatHistory,
     ) -> bool {
-        let steer = crate::engine::input_through_extensions(
+        let SteerInput { text, image_paths } = steer;
+        let text = crate::engine::input_through_extensions(
             self.extension.as_ref(),
             self.dispatch_scope.clone(),
-            steer,
+            text,
         )
         .await;
-        let steer = steer.trim().to_string();
-        if steer.is_empty() {
+        let text = text.trim().to_string();
+        if text.is_empty() && image_paths.is_empty() {
             return false;
         }
-        let message = match &self.turn_meta {
+        let text = if text.is_empty() {
+            "[image]".to_string()
+        } else {
+            text
+        };
+        let mut message = match &self.turn_meta {
             Some(probe) => {
-                probe.observe_user_message(&steer);
-                probe.enrich_user_text_message(steer)
+                probe.observe_user_message(&text);
+                probe.enrich_user_text_message(text)
             }
             None => Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
-                    text: steer,
+                    text,
                     cache_control: None,
                 }],
             },
         };
+        // Same wire order as a turn's opening message: [turn_meta, text,
+        // image…].
+        crate::engine::append_image_blocks(&mut message, &image_paths);
         history.push(message);
         true
     }
@@ -135,7 +162,7 @@ impl HostAgentExecutor {
     /// `:2632-2637` (post-tool — caller falls through to the next step).
     pub(crate) async fn flush_pending_steers(
         &self,
-        pending: &mut Vec<String>,
+        pending: &mut Vec<SteerInput>,
         history: &mut dyn ChatHistory,
     ) -> usize {
         let mut pushed = 0usize;
@@ -185,7 +212,7 @@ impl HostAgentExecutor {
             // message (mirrors production's `steer.clone()` + summarize).
             let status = format!(
                 "Steer input accepted: {}",
-                summarize_text(steer.trim(), 120)
+                summarize_text(steer_preview(&steer), 120)
             );
             // Trim/skip-empty lives in `push_steer_message` — the shared
             // push point enforces it for every intake site.

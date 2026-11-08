@@ -38,9 +38,10 @@ use codesmith_agent_runtime::host_services::{BgRegistryApi, HostServices, SubAge
 // `runtime_traits`, `ui`, …). These items MUST stay `pub` in AR's engine
 // module (see C7-2).
 pub use codesmith_agent_runtime::engine::{
-    ApprovalDecision, ApprovalRouter, CancelReason, Engine, EngineConfig, TOOL_SEARCH_NAME,
-    UserInputDecision, apply_tool_selection, build_model_tool_catalog, goal_objective_for_prompt,
-    progressive_disclosure_active, system_prompt_hash, tool_search_control_tool,
+    ApprovalDecision, ApprovalRouter, CancelReason, Engine, EngineConfig, SteerInput,
+    TOOL_SEARCH_NAME, UserInputDecision, apply_tool_selection, build_model_tool_catalog,
+    goal_objective_for_prompt, progressive_disclosure_active, system_prompt_hash,
+    tool_search_control_tool,
 };
 
 // Test-only surface — referenced exclusively from `#[cfg(test)]` modules
@@ -135,7 +136,7 @@ pub struct EngineHandle {
     /// Send user input responses to the engine
     pub tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.
-    pub tx_steer: mpsc::Sender<String>,
+    pub tx_steer: mpsc::Sender<SteerInput>,
     /// Round 10 TODO-69 — parent-completion sender with its idle-wake poke.
     /// Surfaced so hosts and tests can inject a completion the way
     /// `emit_parent_completion` does; the paired receiver lives in the
@@ -2069,7 +2070,7 @@ pub(crate) struct MockEngineHandle {
     pub handle: EngineHandle,
     pub rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
-    pub rx_steer: mpsc::Receiver<String>,
+    pub rx_steer: mpsc::Receiver<SteerInput>,
     pub tx_event: mpsc::Sender<Event>,
     pub cancel_token: CancellationToken,
 }

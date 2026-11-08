@@ -73,6 +73,7 @@ use codesmith_agent::memory::ChatHistory;
 use codesmith_agent::models::{ContentBlock, Message, SystemPrompt, Tool as ModelTool, Usage};
 use codesmith_agent::tools::ToolSet;
 
+use super::SteerInput;
 use super::child_turn::{ChildToolSurface, ChildTurnOutcome, ChildTurnSpec, run_child_turn};
 use super::executor_composition::{
     BuiltTurn, TurnDeps, TurnExecutorFactory, TurnHarvest, build_host_executor,
@@ -795,7 +796,7 @@ impl RhaiTurnExecutor {
         };
         // Follow-up input is not offered in v1: a closed channel means
         // "no agent_send_input" to the child's loop.
-        let (_input_tx, input_rx) = mpsc::channel::<String>(1);
+        let (_input_tx, input_rx) = mpsc::channel::<SteerInput>(1);
         let spec = ChildTurnSpec {
             agent_id: format!("script-child-{}", uuid::Uuid::new_v4()),
             agent_type,
@@ -960,7 +961,7 @@ impl RhaiTurnExecutor {
         callback.on_llm_start(&request).await;
 
         let mut early_tasks: HashMap<String, EarlyToolTask> = HashMap::new();
-        let mut pending_steers: Vec<String> = Vec::new();
+        let mut pending_steers: Vec<SteerInput> = Vec::new();
         // RecoveredContextOverflow restarts the round with the compacted
         // transcript, exactly as run_inner restarts the step.
         let (content, stop_reason, usage) = loop {

@@ -608,11 +608,12 @@ use super::deliverables::DeliverablesProbe;
 use super::executor_composition::TurnHarvest;
 use super::loop_guard::LoopGuard;
 use super::summarize_text;
+use super::turn::seams::steer_preview;
 use super::turn::{
     EarlyToolTask, StreamRoundOutcome, approval_intent_summary, completion_runtime_message,
     should_emit_thinking_only_status, should_hold_turn_for_subagents,
 };
-use super::{CapacityDecision, GuardrailAction, ReplayOutcome, TargetedRefreshOutcome};
+use super::{CapacityDecision, GuardrailAction, ReplayOutcome, SteerInput, TargetedRefreshOutcome};
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
 use crate::compaction::micro_compact::{
     MicroCompactState, micro_compact_messages, should_trigger_micro_compact,
@@ -1218,7 +1219,7 @@ pub struct HostAgentExecutor {
     /// accumulate — the receiver merely persists across `run` invocations on
     /// the same executor so a steer queued between turns is picked up on the
     /// next turn's first pre-request drain.
-    pub(crate) steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
+    pub(crate) steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SteerInput>>>>,
     /// Optional approval-decision receiver (§E). `None` ⇒ approval gating is a
     /// no-op (all tools run ungated — for embeds/tests that never prompt).
     ///
@@ -1586,7 +1587,7 @@ impl HostAgentExecutor {
         config: AgentExecutorConfig,
         event_tx: Option<mpsc::Sender<Event>>,
         lsp: Option<LspProbe>,
-        steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>>,
+        steer: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<SteerInput>>>>,
         approval: Option<Arc<super::approval::ApprovalRouter>>,
         compaction: Option<CompactionProbe>,
         capacity: Option<CapacityProbe>,
@@ -3949,7 +3950,7 @@ impl HostAgentExecutor {
             // `RecoveredContextOverflow`) the stream either never opened or died
             // before any content ⇒ no `try_recv` ran in `reduce_stream` ⇒ the
             // vec is empty, so dropping it leaks nothing.
-            let mut pending_steers: Vec<String> = Vec::new();
+            let mut pending_steers: Vec<SteerInput> = Vec::new();
             // Error-escalation tracking (slice 34 §E): per-step tool-error
             // count + categories (mirrors the retired turn handler). Categorized
             // from `ToolError` via `ErrorEnvelope::from`.
@@ -4240,23 +4241,33 @@ impl HostAgentExecutor {
                                         match &self.steer {
                                             Some(rx) => rx.lock().await.recv().await,
                                             None => {
-                                                std::future::pending::<Option<String>>().await
+                                                std::future::pending::<
+                                                    Option<SteerInput>,
+                                                >()
+                                                .await
                                             }
                                         }
                                     } => {
-                                        // Steer arm: inject the steered text as
-                                        // a user message and resume the turn on
+                                        // Steer arm: inject the steered text
+                                        // (plus any image paths) as a user
+                                        // message and resume the turn on
                                         // a fresh step (mirrors the retired
                                         // turn handler). Closes the "steer
                                         // post-stream resume" gap — steers that
                                         // arrive during the hold are surfaced
                                         // immediately rather than waiting for
                                         // the next step's pre-request drain.
-                                        let trimmed = steer.trim().to_string();
-                                        if !trimmed.is_empty() {
+                                        let mut steer = steer;
+                                        steer.text = steer.text.trim().to_string();
+                                        if !steer.text.is_empty()
+                                            || !steer.image_paths.is_empty()
+                                        {
                                             let status = format!(
                                                 "Steer input accepted: {}",
-                                                summarize_text(&trimmed, 120)
+                                                summarize_text(
+                                                    steer_preview(&steer),
+                                                    120
+                                                )
                                             );
                                             // Same observe + enrich as the
                                             // pre-request drain — a steer arriving
@@ -4264,7 +4275,7 @@ impl HostAgentExecutor {
                                             // against the working set and wrapped in
                                             // `<turn_meta>` when the probe is present
                                             // (production); plain text otherwise.
-                                            if self.push_steer_message(trimmed, history).await {
+                                            if self.push_steer_message(steer, history).await {
                                                 self.emit_status(status).await;
                                             }
                                         }
@@ -5100,7 +5111,7 @@ mod tests {
         /// streaming. Taken (fired once) so only the first stream call triggers
         /// it. Uses `try_send` (sync, non-blocking) so no `.await` is needed in
         /// the async block.
-        steer_on_stream: Mutex<Option<(mpsc::Sender<String>, String)>>,
+        steer_on_stream: Mutex<Option<(mpsc::Sender<SteerInput>, String)>>,
     }
 
     impl MockLlm {
@@ -5194,7 +5205,7 @@ mod tests {
         /// Fired once (taken). Lets mid-stream-steer tests prove the steer is
         /// buffered by `reduce_stream`'s `try_recv` and flushed post-stream /
         /// post-tool — not caught by the pre-request drain.
-        fn with_steer_on_stream(self, tx: mpsc::Sender<String>, text: String) -> Self {
+        fn with_steer_on_stream(self, tx: mpsc::Sender<SteerInput>, text: String) -> Self {
             *self.steer_on_stream.lock().unwrap() = Some((tx, text));
             self
         }
@@ -5251,7 +5262,7 @@ mod tests {
                     token.cancel();
                 }
                 if let Some((tx, text)) = steer_pair {
-                    let _ = tx.try_send(text);
+                    let _ = tx.try_send(SteerInput::from(text));
                 }
                 // Exhausted-round default: a PROVEN empty completion. P0-3
                 // made a proof-less stream end an interrupted connection
@@ -7862,10 +7873,10 @@ mod tests {
     /// cross the blocking `recv().await` in the sub-agent blocking hold's
     /// `biased select!` steer arm.
     fn steer_channel() -> (
-        mpsc::Sender<String>,
-        Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
+        mpsc::Sender<SteerInput>,
+        Arc<tokio::sync::Mutex<mpsc::Receiver<SteerInput>>>,
     ) {
-        let (tx, rx) = mpsc::channel::<String>(64);
+        let (tx, rx) = mpsc::channel::<SteerInput>(64);
         (tx, Arc::new(tokio::sync::Mutex::new(rx)))
     }
 
@@ -7962,6 +7973,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn steer_with_images_lands_text_then_image_blocks() {
+        let tools = Arc::new(ToolSet::new());
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+
+        let (tx_steer, rx_steer) = steer_channel();
+        // One text+image steer, one image-only steer (the intake's
+        // `[image]` placeholder case).
+        let image = PathBuf::from("/tmp/cs-verify/attachments/fake.png");
+        tx_steer
+            .send(SteerInput {
+                text: "look at this".to_string(),
+                image_paths: vec![image.clone()],
+            })
+            .await
+            .unwrap();
+        tx_steer
+            .send(SteerInput {
+                text: String::new(),
+                image_paths: vec![image.clone()],
+            })
+            .await
+            .unwrap();
+
+        let mut ok = text_block(0, "acknowledged");
+        ok.extend(finish("end_turn"));
+        let mock = Arc::new(MockLlm::new(vec![ok]));
+
+        let executor = HostAgentExecutor::new(
+            mock,
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            Some(rx_steer),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let reason = executor
+            .run(&mut history, "start".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        // [user(seed), user(text+image steer), user(image-only steer),
+        // assistant]
+        assert_eq!(history.len(), 4);
+        match &sess.messages[1].content[..] {
+            [
+                ContentBlock::Text { text, .. },
+                ContentBlock::Image { source, .. },
+            ] => {
+                assert_eq!(text, "look at this");
+                assert!(
+                    matches!(source,
+                        codesmith_agent::models::ImageSource::File { path, .. } if *path == image),
+                    "the image rides as a file-sourced block: {source:?}"
+                );
+            }
+            other => panic!("expected [text, image] steer, got {other:?}"),
+        }
+        match &sess.messages[2].content[..] {
+            [ContentBlock::Text { text, .. }, ContentBlock::Image { .. }] => {
+                assert_eq!(text, "[image]", "an image-only steer keeps a text block");
+            }
+            other => panic!("expected [placeholder, image] steer, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn steer_drain_injects_queued_input_before_request() {
         let tools = Arc::new(ToolSet::new());
         let mut sess = fresh_session();
@@ -7970,8 +8058,8 @@ mod tests {
 
         let (tx_steer, rx_steer) = steer_channel();
         // Pre-queue two steers before run starts.
-        tx_steer.send("remember this".to_string()).await.unwrap();
-        tx_steer.send("and also this".to_string()).await.unwrap();
+        tx_steer.send("remember this".into()).await.unwrap();
+        tx_steer.send("and also this".into()).await.unwrap();
 
         let mut ok = text_block(0, "acknowledged");
         ok.extend(finish("end_turn"));
@@ -8073,9 +8161,9 @@ mod tests {
 
         let (tx_steer, rx_steer) = steer_channel();
         // Empty / whitespace-only strings must all be skipped (trimmed to "").
-        tx_steer.send(String::new()).await.unwrap();
-        tx_steer.send("   ".to_string()).await.unwrap();
-        tx_steer.send("\t\n".to_string()).await.unwrap();
+        tx_steer.send(String::new().into()).await.unwrap();
+        tx_steer.send("   ".into()).await.unwrap();
+        tx_steer.send("\t\n".into()).await.unwrap();
 
         let mut ok = text_block(0, "nothing steered");
         ok.extend(finish("end_turn"));
@@ -8114,8 +8202,8 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
         let (tx_steer, rx_steer) = steer_channel();
-        tx_steer.send("first steer".to_string()).await.unwrap();
-        tx_steer.send("second steer".to_string()).await.unwrap();
+        tx_steer.send("first steer".into()).await.unwrap();
+        tx_steer.send("second steer".into()).await.unwrap();
 
         let mut ok = text_block(0, "ok");
         ok.extend(finish("end_turn"));
@@ -8201,10 +8289,7 @@ mod tests {
         assert_eq!(history_a.len(), 2);
 
         // Queue a steer between runs.
-        tx_steer
-            .send("steered between runs".to_string())
-            .await
-            .unwrap();
+        tx_steer.send("steered between runs".into()).await.unwrap();
 
         // Run 2: SAME executor, FRESH session — the steer is picked up on the
         // first pre-request drain. A per-run local receiver couldn't do this.
@@ -16307,7 +16392,7 @@ mod tests {
         let tx_clone = tx_steer.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let _ = tx_clone.send("please use Python".to_string()).await;
+            let _ = tx_clone.send("please use Python".into()).await;
         });
 
         let executor = HostAgentExecutor::new(
@@ -16809,8 +16894,8 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
         let (tx_steer, rx_steer) = steer_channel();
-        tx_steer.send("stale steer 1".to_string()).await.unwrap();
-        tx_steer.send("stale steer 2".to_string()).await.unwrap();
+        tx_steer.send("stale steer 1".into()).await.unwrap();
+        tx_steer.send("stale steer 2".into()).await.unwrap();
 
         let mut call = text_block(0, "acknowledged");
         call.extend(finish("end_turn"));
@@ -17195,7 +17280,7 @@ mod tests {
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
 
         let (tx_steer, rx_steer) = steer_channel();
-        tx_steer.send("remember this".to_string()).await.unwrap();
+        tx_steer.send("remember this".into()).await.unwrap();
 
         let mut ok = text_block(0, "acknowledged");
         ok.extend(finish("end_turn"));
@@ -19127,10 +19212,7 @@ mod tests {
         let mut history = SessionChatHistory::new(&mut sess);
         let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
         let (tx_steer, rx_steer) = steer_channel();
-        tx_steer
-            .send("please steer left".to_string())
-            .await
-            .unwrap();
+        tx_steer.send("please steer left".into()).await.unwrap();
         let mut ok = text_block(0, "acknowledged");
         ok.extend(finish("end_turn"));
         let mock = Arc::new(MockLlm::new(vec![ok]));

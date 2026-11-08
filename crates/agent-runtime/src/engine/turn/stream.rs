@@ -116,6 +116,7 @@ use codesmith_agent::models::{
 use codesmith_agent::tools::{ToolCapability, ToolError, ToolResult};
 
 use super::approval::{input_requires_approval, requires_approval};
+use crate::engine::SteerInput;
 use crate::engine::context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_input_budget_for_window, is_context_length_error_message,
 };
@@ -489,7 +490,7 @@ impl HostAgentExecutor {
         mut stream: StreamEventBox,
         idle_timeout: Option<std::time::Duration>,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
-        pending_steers: &mut Vec<String>,
+        pending_steers: &mut Vec<SteerInput>,
     ) -> StreamReduceOutcome {
         let mut blocks: BTreeMap<u32, BlockBuild> = BTreeMap::new();
         let mut stop_reason: Option<String> = None;
@@ -646,14 +647,16 @@ impl HostAgentExecutor {
                             Err(_) => break,
                         }
                     };
-                    let steer = steer.trim().to_string();
-                    if steer.is_empty() {
+                    let mut steer = steer;
+                    steer.text = steer.text.trim().to_string();
+                    if steer.text.is_empty() && steer.image_paths.is_empty() {
                         continue;
                     }
-                    pending_steers.push(steer.clone());
+                    let preview = super::seams::steer_preview(&steer).to_string();
+                    pending_steers.push(steer);
                     self.emit_status(format!(
                         "Steer input queued: {}",
-                        summarize_text(&steer, 120)
+                        summarize_text(&preview, 120)
                     ))
                     .await;
                 }
@@ -1075,7 +1078,7 @@ impl HostAgentExecutor {
         history: &mut dyn ChatHistory,
         system: Option<&SystemPrompt>,
         early_tasks: &mut HashMap<String, EarlyToolTask>,
-        pending_steers: &mut Vec<String>,
+        pending_steers: &mut Vec<SteerInput>,
         step: u32,
     ) -> Result<StreamRoundOutcome> {
         // Clone the token once per round so the cancel future owns a local

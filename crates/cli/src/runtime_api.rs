@@ -3520,11 +3520,11 @@ mod tests {
             let _ = tx_event
                 .send(EngineEvent::MessageStarted { index: 0 })
                 .await;
-            if let Some(steer_text) = rx_steer.recv().await {
+            if let Some(steer) = rx_steer.recv().await {
                 let _ = tx_event
                     .send(EngineEvent::MessageDelta {
                         index: 0,
-                        content: format!("steer:{steer_text}"),
+                        content: format!("steer:{}", steer.text),
                     })
                     .await;
             }
@@ -3560,11 +3560,24 @@ mod tests {
             .context("missing turn id")?
             .to_string();
 
+        // The steer carries one attachment: admitted through the same
+        // intake as a turn's opening message, so the endpoint accepts
+        // `attachments` on the wire.
+        use base64::Engine as _;
+        let png_data = base64::engine::general_purpose::STANDARD
+            .encode([b"\x89PNG\r\n\x1a\n".as_slice(), &[0; 16]].concat());
         let steer_resp: serde_json::Value = client
             .post(format!(
                 "http://{addr}/v1/threads/{thread_id}/turns/{turn_id}/steer"
             ))
-            .json(&json!({ "prompt": "please steer" }))
+            .json(&json!({
+                "prompt": "please steer",
+                "attachments": [{
+                    "data": png_data,
+                    "name": "shot.png",
+                    "media_type": "image/png",
+                }],
+            }))
             .send()
             .await?
             .error_for_status()?
@@ -3596,6 +3609,14 @@ mod tests {
 
         let events = runtime_threads.events_since(&thread_id, None)?;
         assert!(events.iter().any(|ev| ev.event == "turn.steered"));
+        // The steer's user item carries the attachment descriptors, so a
+        // client renders the settled message like any attachment-carrying
+        // user item.
+        assert!(events.iter().any(|ev| {
+            ev.event == "item.completed"
+                && ev.payload.pointer("/item/kind").and_then(Value::as_str) == Some("user_message")
+                && ev.payload.pointer("/item/metadata/attachments").is_some()
+        }));
         assert!(
             events
                 .iter()

@@ -177,6 +177,37 @@ pub(crate) fn interrupted_response_message(text: &str, reason: Option<CancelReas
     }
 }
 
+/// One mid-turn steer payload: the user text plus the store paths of any
+/// admitted images. Text-only callers build it from a `String` /
+/// `&str`; the runtime API's steer route admits attachments through the
+/// same intake a turn's opening message uses and hands the image store
+/// paths here, so a steer reaches the model in the same wire shape
+/// (`[turn_meta, text, image…]`). Known limitation: image paths riding a
+/// steer are appended to the transcript message but are NOT recorded in
+/// the session's recent-media list — the post-compaction attachment
+/// re-inject does not re-send them (a turn's opening message records them
+/// via `Session::record_media_attachments`; see `engine/turn/seams.rs`).
+#[derive(Debug, Clone)]
+pub struct SteerInput {
+    pub text: String,
+    pub image_paths: Vec<std::path::PathBuf>,
+}
+
+impl From<String> for SteerInput {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            image_paths: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for SteerInput {
+    fn from(text: &str) -> Self {
+        Self::from(text.to_string())
+    }
+}
+
 /// The core engine that processes operations and emits events
 pub struct Engine {
     pub config: EngineConfig,
@@ -201,7 +232,7 @@ pub struct Engine {
     pub(crate) rx_user_input: Arc<AsyncMutex<mpsc::Receiver<UserInputDecision>>>,
     /// Wrapped in `Arc<tokio::sync::Mutex<…>>` (slice 20 §E); cloned per turn
     /// into the executor's `steer` field for the stale-drain + mid-stream drain.
-    pub(crate) rx_steer: Arc<AsyncMutex<mpsc::Receiver<String>>>,
+    pub(crate) rx_steer: Arc<AsyncMutex<mpsc::Receiver<SteerInput>>>,
     pub(crate) tx_event: mpsc::Sender<Event>,
     /// Wakeup channel for the parent turn loop when a direct child sub-agent
     /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
@@ -3775,7 +3806,7 @@ impl Engine {
         // same channel (their path-access questions bubble to the same UI).
         rx_approval: Arc<approval::ApprovalRouter>,
         rx_user_input: mpsc::Receiver<UserInputDecision>,
-        rx_steer: mpsc::Receiver<String>,
+        rx_steer: mpsc::Receiver<SteerInput>,
         tx_event: mpsc::Sender<Event>,
         tx_subagent_completion: crate::subagent::SubAgentCompletionSender,
         rx_subagent_completion: mpsc::UnboundedReceiver<SubAgentCompletion>,

@@ -251,10 +251,12 @@ accept an empty string to clear a previously-set value:
   `[image]` placeholder text). The request body limit is 16MB (base64
   overhead over the 10MB file cap).
 - `POST /v1/threads/{id}/turns/{turn_id}/steer` — body
-  `{ "prompt": "…", "rpc_id": "…" }`; text only, attachments are not accepted
-  on a steer. `rpc_id` (optional, opaque) is recorded on the steer's user
-  item as `metadata.rpc_id` so a client can match the settled message to its
-  own submission.
+  `{ "prompt": "…", "attachments": [...], "rpc_id": "…" }` (`attachments` as
+  on `/turns`, admitted through the same intake — images ride the steer as
+  native image blocks, text/binary fold into the message; a prompt may be
+  empty when attachments are present). `rpc_id` (optional, opaque) is
+  recorded on the steer's user item as `metadata.rpc_id` so a client can
+  match the settled message to its own submission.
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact` (manual compaction)
 
@@ -277,10 +279,10 @@ without racing that check, use the queue.
   is refused (400).
 - `DELETE /v1/threads/{id}/queue/{item_id}` — drop one item.
 - `POST /v1/threads/{id}/queue/{item_id}/steer` — pull the item out of the
-  queue and steer the running turn with it. Returns 409 when there is no
-  active turn, 400 when the item carries attachments (a steer is text only),
-  and 404 for an unknown or already-drained item. If the engine refuses the
-  steer, the item goes back to the head of the queue.
+  queue and steer the running turn with it, attachments included (the item's
+  composed content plus its image store paths). Returns 409 when there is no
+  active turn, and 404 for an unknown or already-drained item. If the engine
+  refuses the steer, the item goes back to the head of the queue.
 
 Every queue mutation emits `queue.updated` with the whole queue
 (`{ "items": [QueuedItemRecord…] }`). `GET /v1/threads/{id}` carries the

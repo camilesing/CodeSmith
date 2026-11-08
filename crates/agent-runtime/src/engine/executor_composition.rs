@@ -75,7 +75,7 @@ use crate::engine::host_executor::{
     CapacityProbe, CompactionProbe, HostAgentExecutor, LspProbe, ReinjectProbe, TurnMetaProbe,
 };
 use crate::engine::result_verifier::VerdictBlock;
-use crate::engine::{CapacityDecision, ReplayOutcome, TargetedRefreshOutcome};
+use crate::engine::{CapacityDecision, ReplayOutcome, SteerInput, TargetedRefreshOutcome};
 use crate::events::Event;
 use crate::host_services::SubAgentApi;
 use crate::mode::AppMode;
@@ -168,7 +168,7 @@ pub(crate) struct TurnDeps {
     pub tx_event: Option<mpsc::Sender<Event>>,
     /// Mid-turn user input: the engine's steer channel for the main turn, a
     /// child's own `agent_send_input` channel for a sub-agent turn.
-    pub rx_steer: Arc<AsyncMutex<mpsc::Receiver<String>>>,
+    pub rx_steer: Arc<AsyncMutex<mpsc::Receiver<SteerInput>>>,
     pub rx_approval: Option<Arc<ApprovalRouter>>,
     pub rx_user_input: Option<Arc<AsyncMutex<mpsc::Receiver<UserInputDecision>>>>,
     pub rx_subagent_completion:

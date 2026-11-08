@@ -49,6 +49,7 @@ use codesmith_agent::models::{ContentBlock, Message, MessageRequest, SystemPromp
 use codesmith_agent::tools::{ToolError, ToolResult, ToolSet};
 use codesmith_extensions::ExtensionRunner;
 
+use super::SteerInput;
 use super::executor_composition::{TurnDeps, TurnShape, resolve_turn_executor};
 use crate::events::Event;
 use crate::host_services::SubAgentApi;
@@ -85,8 +86,9 @@ pub struct ChildTurnSpec {
     pub messages: Vec<Message>,
     pub tools: ChildToolSurface,
     /// Follow-up input (`agent_send_input`), delivered as user messages at
-    /// the next step boundary — the loop's steer seam.
-    pub input: mpsc::Receiver<String>,
+    /// the next step boundary — the loop's steer seam (text-only for a
+    /// child; image paths stay empty).
+    pub input: mpsc::Receiver<SteerInput>,
     pub cancel: CancellationToken,
     pub events: ChildEventSink,
     /// Idle watchdog window for the child's streams (`None` = disabled).
@@ -727,7 +729,7 @@ mod tests {
         );
         let (input_tx, input_rx) = mpsc::channel(4);
         input_tx
-            .send("follow-up note".to_string())
+            .send("follow-up note".into())
             .await
             .expect("queue the follow-up");
         spec.input = input_rx;
@@ -1038,7 +1040,7 @@ mod tests {
         };
         let (input_tx, input_rx) = mpsc::channel(4);
         input_tx
-            .send("also check the docs".to_string())
+            .send("also check the docs".into())
             .await
             .expect("queue the follow-up");
         child.input = input_rx;

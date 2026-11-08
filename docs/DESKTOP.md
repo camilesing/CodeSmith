@@ -124,8 +124,8 @@ Known limitations of the current implementation:
   (an interrupt keeps the queue). `session/updateQueue` bridges the dock's
   three actions: edit (text-only — the item's attachments are dropped, and
   the dock disables Edit on attachment rows), remove, and steer (pull the
-  item into the running turn). Gaps: steering an attachment-carrying row is
-  refused loudly (a steer is text-only); after a `serve` restart the queue
+  item into the running turn, attachments included). Gaps: after a `serve`
+  restart the queue
   is still there but waits for the next prompt or turn end (resume-idle);
   a queued turn takes the thread's defaults, not per-prompt overrides.
 - Sidebar pins and the manual session order are desktop-shell state,
@@ -169,8 +169,7 @@ Known limitations of the current implementation:
   pipeline. Limits and gaps: 10MB per file, 8 per message, audio/video
   refused (at attach time, with a business error); receipts are in-memory —
   a desktop restart drops staged-not-yet-sent uploads, which must be
-  attached again; a steer cannot carry attachments (the runtime's steer
-  route is text-only and the bridge refuses loudly); no upload progress
+  attached again; no upload progress
   bar; no EXIF orientation or image normalization (bytes travel untouched);
   a dropped image past the caps, or whose bytes cannot travel, cites by
   path instead of uploading; a drop needs an open, idle composer and shows

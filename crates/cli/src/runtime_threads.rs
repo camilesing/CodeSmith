@@ -38,7 +38,7 @@ use crate::automation_manager::wrap_automation_manager;
 use crate::compaction::CompactionConfig;
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
 use crate::core::coherence::CoherenceState;
-use crate::core::engine::{CancelReason, EngineConfig, EngineHandle, spawn_engine};
+use crate::core::engine::{CancelReason, EngineConfig, EngineHandle, SteerInput, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::models::{ContentBlock, Message, SystemPrompt, Usage};
 use crate::task_manager::wrap_task_manager;
@@ -208,13 +208,6 @@ impl QueuedItemRecord {
             content = "[image]".to_string();
         }
         content
-    }
-
-    /// Whether the item is text-only — the only shape the steer path
-    /// accepts (the steer channel takes text; attachments would be a
-    /// silent drop).
-    fn carries_attachments(&self) -> bool {
-        !self.image_paths.is_empty() || self.appendix.is_some()
     }
 }
 
@@ -871,6 +864,12 @@ impl QueuedItemRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteerTurnRequest {
     pub prompt: String,
+    /// Inline-encoded attachments for this steer (see [`TurnAttachment`]):
+    /// admitted through the same intake a turn's opening message uses, so
+    /// a steer reaches the model in the same shape. A prompt may be empty
+    /// when attachments are present.
+    #[serde(default)]
+    pub attachments: Vec<TurnAttachment>,
     /// Opaque client correlation id, recorded on the steer's user item.
     #[serde(default)]
     pub rpc_id: Option<String>,
@@ -2118,9 +2117,14 @@ impl RuntimeThreadManager {
         req: SteerTurnRequest,
     ) -> Result<TurnRecord> {
         let prompt = req.prompt.trim().to_string();
-        if prompt.is_empty() {
+        if prompt.is_empty() && req.attachments.is_empty() {
             bail!("prompt is required");
         }
+
+        // Admit before claiming anything: attachments go through the same
+        // intake a turn's opening message uses (all-or-nothing), so a steer
+        // reaches the model in the same wire shape.
+        let admitted = admit_prompt(prompt, &req.attachments).await?;
 
         let engine = {
             let mut active = self.active.lock().await;
@@ -2141,24 +2145,36 @@ impl RuntimeThreadManager {
         };
 
         engine
-            .steer(prompt.clone())
+            .steer(SteerInput {
+                text: admitted.content.clone(),
+                image_paths: admitted.image_paths.clone(),
+            })
             .await
             .map_err(|e| anyhow!("Failed to steer turn: {e}"))?;
 
-        self.record_steer(thread_id, turn_id, &prompt, req.rpc_id.as_deref())
-            .await
+        self.record_steer(
+            thread_id,
+            turn_id,
+            &admitted.content,
+            admitted.attachments_metadata.clone(),
+            req.rpc_id.as_deref(),
+        )
+        .await
     }
 
     /// Record one delivered steer on the turn: the count, the user item, and
     /// its events (the shared tail of the steer route and the queue's steer
     /// action). The user item announces itself with `item.started` like a
     /// turn's opening message does, so clients settle the steered text
-    /// live, not only on replay.
+    /// live, not only on replay. `content` is the composed message (prompt
+    /// text plus any attachment appendix); `attachments_metadata` carries
+    /// the attachment descriptors for clients rendering the settled message.
     async fn record_steer(
         &self,
         thread_id: &str,
         turn_id: &str,
-        prompt: &str,
+        content: &str,
+        attachments_metadata: Option<Value>,
         rpc_id: Option<&str>,
     ) -> Result<TurnRecord> {
         let now = Utc::now();
@@ -2172,9 +2188,9 @@ impl RuntimeThreadManager {
             turn_id: turn_id.to_string(),
             kind: TurnItemKind::UserMessage,
             status: TurnItemLifecycleStatus::Completed,
-            summary: summarize_text(prompt, SUMMARY_LIMIT),
-            detail: Some(prompt.to_string()),
-            metadata: user_item_metadata(None, rpc_id),
+            summary: summarize_text(content, SUMMARY_LIMIT),
+            detail: Some(content.to_string()),
+            metadata: user_item_metadata(attachments_metadata, rpc_id),
             artifact_refs: Vec::new(),
             started_at: Some(now),
             ended_at: Some(now),
@@ -2191,7 +2207,7 @@ impl RuntimeThreadManager {
             json!({
                 "thread_id": thread_id,
                 "turn_id": turn_id,
-                "input": prompt,
+                "input": content,
             }),
         )
         .await?;
@@ -2448,9 +2464,6 @@ impl RuntimeThreadManager {
                 let Some(index) = state.queue.iter().position(|item| item.id == item_id) else {
                     bail!("Queue item {item_id} not found on thread {thread_id}");
                 };
-                if state.queue[index].carries_attachments() {
-                    bail!("Queue item {item_id} carries attachments; a steer takes text only");
-                }
                 Ok(Some((
                     state.queue.remove(index),
                     turn_id,
@@ -2459,7 +2472,17 @@ impl RuntimeThreadManager {
             })
             .await?
             .context("queue steer returned no item")?;
-        if let Err(err) = engine.steer(item.text.clone()).await {
+        // The steered message is the item's composed turn content — the same
+        // text a drained turn would open with, attachments included (image
+        // store paths on the steer payload, appendix folded into the text).
+        let content = item.turn_content();
+        if let Err(err) = engine
+            .steer(SteerInput {
+                text: content.clone(),
+                image_paths: item.image_paths.clone(),
+            })
+            .await
+        {
             // The steer never reached the engine: nothing is lost, the item
             // goes back to the head (the REPL's flush rule).
             self.mutate_queue(thread_id, |state| {
@@ -2469,8 +2492,14 @@ impl RuntimeThreadManager {
             .await?;
             bail!("Failed to steer turn: {err}");
         }
-        self.record_steer(thread_id, &turn_id, &item.text, item.rpc_id.as_deref())
-            .await
+        self.record_steer(
+            thread_id,
+            &turn_id,
+            &content,
+            item.attachments_metadata.clone(),
+            item.rpc_id.as_deref(),
+        )
+        .await
     }
 
     pub async fn compact_thread(
@@ -5541,7 +5570,7 @@ mod tests {
         let steered = manager.steer_queued(&thread.id, &item.id).await?;
         assert_eq!(steered.steer_count, 1, "the turn records the steer");
         match rx_steer.recv().await {
-            Some(prompt) => assert_eq!(prompt, "steer me"),
+            Some(payload) => assert_eq!(payload.text, "steer me"),
             other => panic!("expected a steer on the engine channel, got {other:?}"),
         }
         assert!(
@@ -5563,11 +5592,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn steer_queued_refuses_attachment_items_loudly() -> Result<()> {
+    async fn steer_queued_delivers_attachment_items_with_their_images() -> Result<()> {
         let _home = ScratchHome::mount();
         let manager = test_manager(test_runtime_dir())?;
         let thread = attachment_thread(&manager).await?;
-        let _harness = install_mock_engine(&manager, &thread.id).await;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_steer = harness.rx_steer;
         manager
             .start_turn(&thread.id, plain_start_turn("busy"))
             .await?;
@@ -5587,16 +5617,36 @@ mod tests {
             other => panic!("busy thread parks, got {other:?}"),
         };
 
-        let refused = manager
-            .steer_queued(&thread.id, &item.id)
-            .await
-            .expect_err("attachment-carrying items must refuse the steer");
-        assert!(format!("{refused}").contains("text only"), "{refused}");
-        assert_eq!(
-            manager.get_thread_detail(&thread.id).await?.queue.len(),
-            1,
-            "the refused item stays parked with its attachments"
-        );
+        let steered = manager.steer_queued(&thread.id, &item.id).await?;
+        assert_eq!(steered.steer_count, 1, "the turn records the steer");
+        match rx_steer.recv().await {
+            Some(payload) => {
+                assert_eq!(payload.text, "with a picture", "{payload:?}");
+                assert_eq!(payload.image_paths.len(), 1, "the image rides the steer");
+                assert!(
+                    payload.image_paths[0]
+                        .to_string_lossy()
+                        .contains("attachments"),
+                    "the engine gets the store path: {payload:?}"
+                );
+            }
+            other => panic!("expected a steer on the engine channel, got {other:?}"),
+        }
+        // The steered item is recorded with its attachment descriptors, so a
+        // client renders the settled message like any attachment-carrying
+        // user item.
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        assert!(detail.queue.is_empty(), "the steered item is gone");
+        let steer_item = detail
+            .items
+            .iter()
+            .find(|item| {
+                item.metadata
+                    .as_ref()
+                    .is_some_and(|m| m.get("attachments").is_some())
+            })
+            .unwrap_or_else(|| panic!("no item carries attachments metadata: {:?}", detail.items));
+        assert_eq!(steer_item.turn_id, steered.id);
         Ok(())
     }
 
@@ -6925,7 +6975,7 @@ mod tests {
         let mut rx_op = harness.rx_op;
         let mut rx_steer = harness.rx_steer;
         let tx_event = harness.tx_event;
-        let (steer_seen_tx, steer_seen_rx) = oneshot::channel::<String>();
+        let (steer_seen_tx, steer_seen_rx) = oneshot::channel::<SteerInput>();
         tokio::spawn(async move {
             if matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
                 let _ = tx_event
@@ -6990,6 +7040,7 @@ mod tests {
                 &turn.id,
                 SteerTurnRequest {
                     prompt: steer_text.clone(),
+                    attachments: Vec::new(),
                     rpc_id: Some("rpc_steer".to_string()),
                 },
             )
@@ -6998,7 +7049,8 @@ mod tests {
         let observed_steer = steer_seen_rx
             .await
             .context("driver did not receive steer")?;
-        assert_eq!(observed_steer, steer_text);
+        assert_eq!(observed_steer.text, steer_text);
+        assert!(observed_steer.image_paths.is_empty(), "{observed_steer:?}");
 
         let final_turn = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
         assert_eq!(final_turn.status, RuntimeTurnStatus::Completed);
@@ -7026,6 +7078,86 @@ mod tests {
                     .and_then(Value::as_str)
                     == Some("rpc_steer")
         }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn steer_turn_with_attachments_delivers_images_and_records_metadata() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_steer = harness.rx_steer;
+        let turn = manager
+            .start_turn(&thread.id, plain_start_turn("running"))
+            .await?;
+
+        let steered = manager
+            .steer_turn(
+                &thread.id,
+                &turn.id,
+                SteerTurnRequest {
+                    prompt: "look at this".to_string(),
+                    attachments: vec![png_attachment("shot.png")],
+                    rpc_id: None,
+                },
+            )
+            .await?;
+        assert_eq!(steered.steer_count, 1);
+        match rx_steer.recv().await {
+            Some(payload) => {
+                assert_eq!(payload.text, "look at this", "{payload:?}");
+                assert_eq!(payload.image_paths.len(), 1, "the image rides the steer");
+                assert!(
+                    payload.image_paths[0]
+                        .to_string_lossy()
+                        .contains("attachments"),
+                    "the engine gets the store path: {payload:?}"
+                );
+            }
+            other => panic!("expected a steer on the engine channel, got {other:?}"),
+        }
+
+        // An image-only steer is accepted: the intake substitutes the
+        // `[image]` placeholder text, mirroring a turn's opening message.
+        manager
+            .steer_turn(
+                &thread.id,
+                &turn.id,
+                SteerTurnRequest {
+                    prompt: String::new(),
+                    attachments: vec![png_attachment("only.png")],
+                    rpc_id: None,
+                },
+            )
+            .await?;
+        match rx_steer.recv().await {
+            Some(payload) => {
+                assert_eq!(payload.text, "[image]", "{payload:?}");
+                assert_eq!(payload.image_paths.len(), 1);
+            }
+            other => panic!("expected the second steer, got {other:?}"),
+        }
+
+        // Both steer user items carry their attachment descriptors, so a
+        // client renders the settled messages like any attachment-carrying
+        // user item.
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        let steered_items = detail
+            .items
+            .iter()
+            .filter(|item| item.turn_id == turn.id && item.detail.as_deref() != Some("running"))
+            .collect::<Vec<_>>();
+        assert_eq!(steered_items.len(), 2, "{:?}", detail.items);
+        for item in &steered_items {
+            assert!(
+                item.metadata
+                    .as_ref()
+                    .and_then(|m| m.get("attachments"))
+                    .is_some(),
+                "steer item misses attachment descriptors: {item:?}"
+            );
+        }
         Ok(())
     }
 

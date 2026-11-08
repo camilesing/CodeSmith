@@ -508,39 +508,35 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
     }
 
     if mode == "steer" {
-        // The runtime's steer route takes text only (known limitation): an
-        // attachment-carrying steer refuses loudly instead of silently
-        // dropping the files.
-        if !attachments.is_empty() {
-            bail!(
-                "attachments cannot ride a steer yet — the runtime's steer route takes text only"
-            );
-        }
+        // A steer rides the active turn through the runtime's steer route —
+        // attachments included (admitted there through the same intake a
+        // turn's opening message uses), upstream `agent.steer` parity.
         match active_turn_id(host, &session_id).await? {
             Some(turn_id) => {
                 let path = format!("/v1/threads/{session_id}/turns/{turn_id}/steer");
-                let _: Value = host
-                    .backend
-                    .post(&path, &json!({ "prompt": text, "rpc_id": rpc_id }))
-                    .await?;
+                let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
+                if !attachments.is_empty() {
+                    body["attachments"] = json!(attachments);
+                }
+                let _: Value = host.backend.post(&path, &body).await?;
             }
             None => bail!("steer with no running turn"),
         }
-        return Ok(json!({ "accepted": true }));
+    } else {
+        // Attachments ride only when present — a plain prompt keeps the body
+        // the runtime has always taken.
+        let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
+        if !attachments.is_empty() {
+            body["attachments"] = json!(attachments);
+        }
+        let _: Value = host
+            .backend
+            .post(&format!("/v1/threads/{session_id}/queue"), &body)
+            .await?;
     }
-    // Attachments ride only when present — a plain prompt keeps the body
-    // the runtime has always taken.
-    let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
-    if !attachments.is_empty() {
-        body["attachments"] = json!(attachments);
-    }
-    let _: Value = host
-        .backend
-        .post(&format!("/v1/threads/{session_id}/queue"), &body)
-        .await?;
-    // The runtime accepted the prompt (parked or started) and holds its
-    // bytes now — retire the staged receipts (a refused POST above leaves
-    // them retryable).
+    // The runtime accepted the prompt (parked, started, or steered) and
+    // holds its bytes now — retire the staged receipts (a refused POST
+    // above leaves them retryable).
     let receipt_ids: Vec<String> = content
         .iter()
         .filter(|p| p.kind == "file")

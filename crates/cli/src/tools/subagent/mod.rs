@@ -49,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::config::MAX_SUBAGENTS;
-use crate::core::engine::ApprovalDecision;
+use crate::core::engine::{ApprovalDecision, SteerInput};
 use crate::core::events::Event;
 use crate::hooks::{HookContext, HookEvent, emit_detached};
 use crate::llm_client::LlmClientHandle;
@@ -1063,7 +1063,7 @@ pub struct SubAgent {
     pub agent_memory: Option<AgentMemoryMetadata>,
     /// `agent_send_input` / `agent_assign` messages for the running child,
     /// read at its next step boundary (the turn loop's steer seam).
-    input_tx: Option<mpsc::Sender<String>>,
+    input_tx: Option<mpsc::Sender<SteerInput>>,
     task_handle: Option<JoinHandle<()>>,
 }
 
@@ -1079,7 +1079,7 @@ impl SubAgent {
         model: String,
         nickname: Option<String>,
         allowed_tools: Option<Vec<String>>,
-        input_tx: mpsc::Sender<String>,
+        input_tx: mpsc::Sender<SteerInput>,
         session_boot_id: String,
     ) -> Self {
         let session_name = id.clone();
@@ -1745,7 +1745,7 @@ impl SubAgentManager {
             .as_ref()
             .ok_or_else(|| anyhow!("Agent {agent_id} cannot accept input"))?;
 
-        tx.try_send(text)
+        tx.try_send(SteerInput::from(text))
             .map_err(|err| child_input_error(agent_id, &err))?;
 
         Ok(())
@@ -1841,7 +1841,7 @@ impl SubAgentManager {
         if let Some(payload) = payload {
             let tx = input_tx
                 .ok_or_else(|| anyhow!("Agent {agent_id} cannot accept assignment input"))?;
-            tx.try_send(payload)
+            tx.try_send(SteerInput::from(payload))
                 .map_err(|err| child_input_error(agent_id, &err))?;
         }
 
@@ -2097,7 +2097,7 @@ fn default_state_path(workspace: &Path) -> PathBuf {
 
 /// A child's input queue refused a message: the child already ended (its
 /// receiver is gone) or has `CHILD_INPUT_CAPACITY` unread inputs queued.
-fn child_input_error(agent_id: &str, err: &mpsc::error::TrySendError<String>) -> anyhow::Error {
+fn child_input_error<T>(agent_id: &str, err: &mpsc::error::TrySendError<T>) -> anyhow::Error {
     match err {
         mpsc::error::TrySendError::Full(_) => anyhow!(
             "Agent {agent_id} has {CHILD_INPUT_CAPACITY} unread inputs queued; wait for it to \
@@ -5273,7 +5273,7 @@ struct SubAgentTask {
     agent_memory: Option<ResolvedAgentMemory>,
     started_at: Instant,
     max_steps: u32,
-    input_rx: mpsc::Receiver<String>,
+    input_rx: mpsc::Receiver<SteerInput>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -5591,7 +5591,7 @@ async fn run_subagent(
     agent_memory: Option<ResolvedAgentMemory>,
     started_at: Instant,
     max_steps: u32,
-    input_rx: mpsc::Receiver<String>,
+    input_rx: mpsc::Receiver<SteerInput>,
 ) -> Result<SubAgentResult> {
     let system_prompt =
         build_subagent_system_prompt(&agent_type, &assignment, agent_memory.as_ref());

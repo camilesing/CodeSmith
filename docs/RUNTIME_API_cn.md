@@ -249,7 +249,9 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
   携带附件时 prompt 可为空（纯图片 turn 保留 `[image]` 占位文本）。请求体
   上限 16MB（10MB 文件上限之上的 base64 膨胀）。
 - `POST /v1/threads/{id}/turns/{turn_id}/steer` —— 请求体
-  `{ "prompt": "…", "rpc_id": "…" }`；仅文本，steer 不接受附件。`rpc_id`（可选、
+  `{ "prompt": "…", "attachments": [...], "rpc_id": "…" }`（`attachments` 同
+  `/turns`，走同一摄取——图片以原生 image block 随 steer 上 wire，文本/二进制
+  折叠进消息；携带附件时 prompt 可为空）。`rpc_id`（可选、
   不透明）作为 `metadata.rpc_id` 记录在 steer 的 user item 上，客户端据此把落定
   的消息对应回自己的提交。
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
@@ -271,7 +273,8 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
   替换：条目的附件被丢弃，空白文本被拒（400）。
 - `DELETE /v1/threads/{id}/queue/{item_id}` —— 移除一条。
 - `POST /v1/threads/{id}/queue/{item_id}/steer` —— 把条目从队列取出，steer 进运
-  行中的 turn。没有活动 turn 返回 409，条目带附件返回 400（steer 仅文本），未知或
+  行中的 turn，附件随行（条目的组合内容加上其图片 store 路径）。没有活动 turn
+  返回 409，未知或
   已排空的条目返回 404。引擎拒收 steer 时，条目回到队首。
 
 每次队列变更都发出 `queue.updated`，携带整个队列

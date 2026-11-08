@@ -112,8 +112,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `queue.updated` 事件，实时推送），排队的 prompt 在运行中的 turn 一结束就按
   FIFO 开始、每个 turn 一条（interrupt 不清队列）。`session/updateQueue` 桥接
   队列坞的三个动作：edit（纯文本——条目的附件被丢弃，队列坞对带附件的行禁用
-  Edit）、remove、steer（把条目拉进运行中的 turn）。缺口：steer 带附件的行会
-  被响亮拒绝（steer 仅文本）；`serve` 重启后队列仍在，但要等下一次 prompt 或
+  Edit）、remove、steer（把条目拉进运行中的 turn，附件随行）。缺口：
+  `serve` 重启后队列仍在，但要等下一次 prompt 或
   turn 结束才开始（resume-idle）；排队的 turn 使用线程默认值，不带逐 prompt
   覆盖项。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
@@ -143,8 +143,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   与目录变成 `@path` 引用条，限额内的图片（魔数嗅探 png/jpeg/gif/webp）
   取一次性暂存字节（`api/host/dropBytes`）走常规上传管线。限额与缺口：
   单文件 10MB、每条消息 8 个、音频/视频拒绝（在上传时以业务错误呈现）；
-  回执是内存态——桌面重启丢弃已暂存未发送的上传，需重新附上；steer
-  不能带附件（runtime 的 steer 路由纯文本，桥会响亮拒绝）；无上传进度
+  回执是内存态——桌面重启丢弃已暂存未发送的上传，需重新附上；无上传进度
   条；无 EXIF 方向修正或图片归一化（字节原样传输）；超出限额、或字节
   未能送达的拖入图片退化为路径引用而非上传；拖放需要打开且空闲的
   输入框，且没有拖拽悬停高亮；回形针选择器与真实粘贴仍无路径、照旧

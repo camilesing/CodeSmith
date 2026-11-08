@@ -11,7 +11,7 @@
 use anyhow::Context as _;
 use anyhow::Result;
 
-use super::{ApprovalDecision, CancelReason, EngineHandle, Op, UserInputDecision};
+use super::{ApprovalDecision, CancelReason, EngineHandle, Op, SteerInput, UserInputDecision};
 use codesmith_agent_runtime::user_input::UserInputResponse;
 
 impl EngineHandle {
@@ -153,8 +153,10 @@ impl EngineHandle {
         Ok(())
     }
 
-    /// Steer an in-flight turn with additional user input.
-    pub async fn steer(&self, content: impl Into<String>) -> Result<()> {
+    /// Steer an in-flight turn with additional user input — text, or text
+    /// plus admitted image store paths ([`SteerInput`]); `String` / `&str`
+    /// convert for text-only callers.
+    pub async fn steer(&self, content: impl Into<SteerInput>) -> Result<()> {
         self.tx_steer
             .send(content.into())
             .await
