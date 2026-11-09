@@ -150,6 +150,14 @@ pub fn eval_script(payload: &Value) -> String {
     format!("window.__codesmithHostDrop&&window.__codesmithHostDrop({literal})")
 }
 
+/// The eval script announcing a drag gesture's hover state. The DOM never
+/// sees native drag events under wry, so the page synthesizes the
+/// `dragenter`/`dragleave` the vendored overlay listens for from this call
+/// (see `desktop/ui/src/host-drop.ts`).
+pub fn hover_script(active: bool) -> String {
+    format!("window.__codesmithHostDragHover&&window.__codesmithHostDragHover({active})")
+}
+
 /// Deliver one dropped batch: describe it off the async runtime, then hand
 /// it to the page. An eval failure (the window closed mid-delivery) is
 /// reported, not swallowed.

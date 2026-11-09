@@ -161,7 +161,7 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-secret-mask/src/client/SecretText.module.css.mjs
-		const css = ".-zUVca_secret{box-sizing:border-box;max-width:100%;font-family:var(--ds-font-family-code);align-items:center;margin:0 2px;font-size:.875em;display:inline-flex}.-zUVca_value{overflow-wrap:anywhere;min-width:0}.-zUVca_mask{-webkit-text-fill-color:transparent;background-color:currentColor;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 20'%3E%3Cpath d='M6 5.6v8.8M2.19 7.8l7.62 4.4M2.19 12.2l7.62-4.4' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E\") 0/1ch 100% repeat-x;mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 20'%3E%3Cpath d='M6 5.6v8.8M2.19 7.8l7.62 4.4M2.19 12.2l7.62-4.4' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E\") 0/1ch 100% repeat-x}.-zUVca_mask,.-zUVca_toggle{position:relative;top:-.125em}.-zUVca_toggle{color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;flex:none;align-items:center;padding:0;display:inline-flex}@media (hover:hover){.-zUVca_toggle:hover{color:var(--dsw-alias-label-primary)}}.-zUVca_toggle:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px;border-radius:var(--dsw-radius-xs)}.-zUVca_icon{width:1em;height:1em}";
+		const css = ".eZ5J4q_secret{box-sizing:border-box;max-width:100%;font-family:var(--ds-font-family-code);align-items:center;margin:0 2px;font-size:.875em;display:inline-flex}.eZ5J4q_value{overflow-wrap:anywhere;min-width:0}.eZ5J4q_mask{-webkit-text-fill-color:transparent;background-color:currentColor;-webkit-mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 20'%3E%3Cpath d='M6 5.6v8.8M2.19 7.8l7.62 4.4M2.19 12.2l7.62-4.4' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E\") 0/1ch 100% repeat-x;mask:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 20'%3E%3Cpath d='M6 5.6v8.8M2.19 7.8l7.62 4.4M2.19 12.2l7.62-4.4' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E\") 0/1ch 100% repeat-x}.eZ5J4q_mask,.eZ5J4q_toggle{position:relative;top:-.125em}.eZ5J4q_toggle{color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;flex:none;align-items:center;padding:0;display:inline-flex}@media (hover:hover){.eZ5J4q_toggle:hover{color:var(--dsw-alias-label-primary)}}.eZ5J4q_toggle:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px;border-radius:var(--dsw-radius-xs)}.eZ5J4q_icon{width:1em;height:1em}";
 		const tagId = "@codesmith/client-ui-secret-mask/SecretText.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -171,11 +171,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var SecretText_module_css_default = {
-			"icon": "-zUVca_icon",
-			"mask": "-zUVca_mask",
-			"secret": "-zUVca_secret",
-			"toggle": "-zUVca_toggle",
-			"value": "-zUVca_value"
+			"icon": "eZ5J4q_icon",
+			"mask": "eZ5J4q_mask",
+			"secret": "eZ5J4q_secret",
+			"toggle": "eZ5J4q_toggle",
+			"value": "eZ5J4q_value"
 		};
 		//#endregion
 		//#region lib/types/client/SecretText.js

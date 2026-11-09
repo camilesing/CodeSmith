@@ -111,8 +111,36 @@ async function deliverDrop(payload: HostDropPayload, bridge: string): Promise<vo
 }
 
 /**
- * Install `__CODESMITH_HOST_PATHS__` and `__codesmithHostDrop` before the
- * client boots. `bridgeBase` is the loopback the staged bytes fetch from.
+ * Publish the drag gesture's hover state as the document `dragenter`/
+ * `dragleave` the vendored attachment view listens for (its overlay's own
+ * signal — the DOM never sees native drag events under wry). The data
+ * transfer duck-types a files-only drag; a Drop itself still arrives through
+ * `__codesmithHostDrop`'s paste intake, so the drop path also clears the
+ * hover (wry emits no Leave after a Drop).
+ */
+function dragEvent(type: 'dragenter' | 'dragleave' | 'dragend'): DragEvent {
+  const event = new Event(type, { cancelable: true, bubbles: true }) as DragEvent
+  Object.defineProperty(event, 'dataTransfer', {
+    value: { types: ['Files'], items: [], files: [] },
+  })
+  return event
+}
+
+/** The shell-installed hover announcer (see `host_drop::hover_script`). */
+type HostDragHoverHandler = (active: boolean) => void
+
+function installHoverBridge(): void {
+  const globals = globalThis as { __codesmithHostDragHover?: HostDragHoverHandler }
+  globals.__codesmithHostDragHover = active => {
+    document.dispatchEvent(dragEvent(active ? 'dragenter' : 'dragleave'))
+    if (!active) document.dispatchEvent(dragEvent('dragend'))
+  }
+}
+
+/**
+ * Install `__CODESMITH_HOST_PATHS__`, `__codesmithHostDrop` and
+ * `__codesmithHostDragHover` before the client boots. `bridgeBase` is the
+ * loopback the staged bytes fetch from.
  */
 export function installHostDropBridge(bridgeBase: string): void {
   const globals = globalThis as {
@@ -122,5 +150,8 @@ export function installHostDropBridge(bridgeBase: string): void {
   globals.__CODESMITH_HOST_PATHS__ = { pathFor: file => pathByFile.get(file) ?? '' }
   globals.__codesmithHostDrop = payload => {
     void deliverDrop(payload, bridgeBase)
+    // wry emits no Leave after a Drop: clear the hover the Enter announced.
+    ;(globalThis as { __codesmithHostDragHover?: HostDragHoverHandler }).__codesmithHostDragHover?.(false)
   }
+  installHoverBridge()
 }

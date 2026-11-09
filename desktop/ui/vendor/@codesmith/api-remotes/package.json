@@ -52,6 +52,7 @@
   },
   "devDependencies": {
     "@codesmith/api-gateway": "workspace:*",
+    "@codesmith/api-job-controller": "workspace:*",
     "@codesmith/api-session-controller": "workspace:*",
     "@codesmith/api-workspace-controller": "workspace:*",
     "@codesmith/client-connection": "workspace:*",

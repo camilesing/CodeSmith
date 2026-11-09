@@ -9,7 +9,7 @@
 //! client's `result.value.result` read), while an admitted execution is
 //! `{commandId, result:{kind…}}`.
 //!
-//! Admission mirrors the upstream registry's order (`dsh-commands`
+//! Admission mirrors the upstream registry's order (the commands registry's
 //! `execute`): parse the line, resolve the name, refuse attachments
 //! (no entry declares `input.attachments`), refuse or demand arguments —
 //! each refusal settles as a command error result, exactly the sentences
@@ -43,10 +43,10 @@ use serde_json::{json, Value};
 use super::workspace::OpError;
 use super::HostState;
 
-/// The vendored builtin definition id for `/compact` — the rebrand of
-/// upstream `@deepseek-ai/dsh-command-compact`. The client's builtin table
-/// matches it, giving the menu row its localized face and resolving the
-/// zh alias 压缩 to this command.
+/// The vendored builtin definition id for `/compact` — the rebrand of the
+/// upstream command-compact plugin (provenance in `ui/vendor/VENDOR.json`).
+/// The client's builtin table matches it, giving the menu row its localized
+/// face and resolving the zh alias 压缩 to this command.
 const COMPACT_DEFINITION_ID: &str = "@codesmith/command-compact";
 
 /// The runtime's per-thread mode spellings (`AppMode::from_setting`;

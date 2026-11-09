@@ -46,16 +46,27 @@ pub fn run() {
                 let drop_webview = webview.clone();
                 let drop_staging = std::sync::Arc::clone(&drop_bytes);
                 webview.on_window_event(move |event| {
-                    if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
-                        paths, ..
-                    }) = event
-                    {
-                        let paths = paths.clone();
-                        let webview = drop_webview.clone();
-                        let staging = std::sync::Arc::clone(&drop_staging);
-                        tauri::async_runtime::spawn(async move {
-                            host::host_drop::deliver(&webview, &staging, paths).await;
-                        });
+                    if let tauri::WindowEvent::DragDrop(event) = event {
+                        match event {
+                            // The hover state drives the page's synthetic
+                            // dragenter/dragleave (the vendored drop overlay's
+                            // own signal — the DOM never sees native drags).
+                            tauri::DragDropEvent::Enter { .. } => {
+                                let _ = drop_webview.eval(&host::host_drop::hover_script(true));
+                            }
+                            tauri::DragDropEvent::Leave => {
+                                let _ = drop_webview.eval(&host::host_drop::hover_script(false));
+                            }
+                            tauri::DragDropEvent::Drop { paths, .. } => {
+                                let paths = paths.clone();
+                                let webview = drop_webview.clone();
+                                let staging = std::sync::Arc::clone(&drop_staging);
+                                tauri::async_runtime::spawn(async move {
+                                    host::host_drop::deliver(&webview, &staging, paths).await;
+                                });
+                            }
+                            _ => {}
+                        }
                     }
                 });
             }

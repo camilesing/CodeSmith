@@ -12,6 +12,7 @@ pub mod codesmith;
 pub mod commands;
 pub mod events;
 pub mod host_drop;
+pub mod jobs;
 pub mod mapper;
 pub mod mux;
 pub mod schedule;
@@ -356,6 +357,8 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             }
         }
         "schedule/deliveryLimits" => rpc_ok(json!({ "days": 30, "records": 100 })),
+        // The jobs popover's kill (host::jobs): the runtime's task cancel.
+        "job/kill" => jobs::kill(host, args_of(payload)).await,
         "session/updateQueue" => match sessions::update_queue(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error(err.code, err.message),
@@ -445,6 +448,11 @@ pub async fn open_stream(
             .map_err(|err| {
                 stream_failure("gateway/internal", format!("toolResults/watch: {err:#}"))
             }),
+        // The jobs popover's roster and follow streams (host::jobs).
+        "job/list" => jobs::list(host, args_of(payload), &tx)
+            .await
+            .map_err(|err| stream_failure("gateway/internal", format!("job/list: {err:#}"))),
+        "job/follow" => jobs::follow(host, args_of(payload), &tx).await,
         // The runtime's user-input requests carry no tool call id, so the
         // client never opens a foreground claim; an explicit attachWait (a
         // continued question) has no answerable wait here and ends with no
