@@ -10,7 +10,7 @@ CodeSmith 桌面端是一个 Tauri 2 应用：UI 整体 vendor 自一个上游�
 
 ```
 Tauri App (desktop/)
-├─ WebView（vendored 客户端 UI，58 包闭包）
+├─ WebView（vendored 客户端 UI，66 包闭包）
 │   ├─ 我方 boot：__CODESMITH_BOOT__ 插件图 + 第一方品牌行
 │   └─ 我方 connection 载体：一元 rpc.call 走 HTTP；所有流走 vendored
 │        WebSocket mux（每客户端一条 socket）
@@ -158,21 +158,39 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   箱策略。`/model` 走 vendored 客户端自己的贡献（经
   session/selectModel 的弹窗，已桥接）。REPL 的其余斜杠命令是
   REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
-- Models 设置页（`client-ui-settings-models`）**尚未** vendor——它是最后一
-  个有 CodeSmith 对应物的上游页面（providers 与 API key 在 config.toml +
-  keyring）。本次会话已钉死的实现配方：vendor 该包；服务一个名为
-  `llm-pi-ai` 的设置 namespace（页面的通用 OpenAI 兼容编辑器正是按这个
-  namespace 名选布局——其他名字只渲染"unknown"提示卡），取值
-  `{providers: {<route>: {apiKeyEnv?, baseURL?, models: [...]}}}`，schema
-  信封至少带 `providers.<route>.api` 与 `models[].reasoningEfforts` 探测
-  路径；底层接 config.toml（src-tauri path-dep `crates/config` 的
-  ProvidersToml）与 keyring（`crates/secrets`，`codesmith login` 的
-  provider-slot 命名）；应答 `llm/listConfigurableProviders`（由 config 生成
-  目录）、`llm/listProviders`、`llm/discoverModels`（reqwest 携 key GET
-  `{base_url}/models`）；`credentials/describe|set|unset` 映射到 keyring
-  （`CredentialInfo {configured, source?, writable}`——describe 绝不返回
-  值）。运行时大概率需重启 serve 才能看到 provider 改动（config 是加载期
-  状态）。
+- Models 设置页（`client-ui-settings-models`，桥接在 `host::llm` /
+  `host::credentials`）：服务一个名为 `llm-pi-ai` 的设置 namespace——
+  页面的通用 OpenAI 兼容编辑器正是按这个 namespace 名选布局（其他名字只
+  渲染 "unknown" 提示卡）。取值 `{providers: {<route>: {apiKeyEnv?,
+  displayName?, api?, baseURL?, models: [...]}}}`，底层读写 config.toml
+  （`crates/config` 的 ProvidersToml + `toml_edit` 的外科式写入——注释、
+  陌生键与 CLI 拥有的其它表原样保留）：route 是内置 provider slug 或
+  `[[providers.custom]]` id；`apiKeyEnv` 恒为页面自己的 `<ROUTE>_API_KEY`
+  推导（不落盘，读时重算；自托管运行时 sglang/vllm/ollama 不带，行就不
+  索要 key）；模型行映射 `id→model`、`name→display_model`、
+  `contextWindow→context_window`、`input 含 image→vision=true`。schema 信封
+  带页面要探测的 `providers.<route>.api` 协议 union——只有
+  `openai-completions` 一个选项（CodeSmith 的自定义网关走 openai-compat
+  后端），`models[].reasoningEfforts` 刻意缺席：CodeSmith 没有按模型的
+  推理档位配置，页面因此隐藏该列而不是让它编辑一个无人读取的字段。
+  目录 `llm/listConfigurableProviders` 由 config 生成（16 个内置 +
+  custom 条目，custom 标 declared=true），`llm/listProviders` 取自运行时
+  `/v1/models`，`llm/discoverModels` 无 baseURL 时以命名路由查运行时目
+  录、有 baseURL 时 reqwest 携 key GET `{base_url}/models`（OpenAI 兼容
+  `{data:[…]}`，键取表单现填的或该路由已存的）。`credentials/
+  describe|set|unset` 映射到 keyring（`crates/secrets`，slot 即
+  `codesmith login` 的 provider_slot 小写 slug），describe 只回
+  `{configured, source?, writable}` 绝不回值，set/unset 后推
+  `credentials/record-updated` 事件帧。revision 计数存于
+  `desktop/settings.json`，过期 `expectedRevision` 以 `settings/conflict`
+  拒绝。页面内建 welcome-notice 走的 `ui-settings-general` namespace 也已
+  服务（默认值即当前版本号——通知默认隐藏，上游升版后出现一次、自 dismissed
+  落盘）。已知限制：config.toml 每 provider 只配一个模型——写两个及以上
+  模型行会被拒绝（不会静默丢）；模型行的 `maxTokens` 无 config 归宿（可
+  输入、存为空）；provider 改动是运行时加载期状态，需重启 serve 才生效；
+  手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正服
+  务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）因
+  而永不出现。
 - 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器、子代理子会话视
   图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
   态。（Jobs 弹窗、附件呈现、改动审查标签页与右侧栏文件/预览标签页**已**

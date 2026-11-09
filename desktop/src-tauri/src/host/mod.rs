@@ -11,10 +11,12 @@
 pub mod changes;
 pub mod codesmith;
 pub mod commands;
+pub mod credentials;
 pub mod events;
 pub mod files;
 pub mod host_drop;
 pub mod jobs;
+pub mod llm;
 pub mod mapper;
 pub mod mux;
 pub mod schedule;
@@ -314,11 +316,14 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("skills/list: {err:#}")),
         },
-        "settings/describe" => rpc_ok(settings::describe(&host.settings_home())),
+        "settings/describe" => match settings::describe(&host.settings_home()) {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("settings/describe: {err:#}")),
+        },
         "settings/mutate" | "settings/update" => {
             match settings::mutate(host, &host.settings_home(), endpoint, args_of(payload)).await {
                 Ok(value) => rpc_ok(value),
-                Err(err) => rpc_error("gateway/arguments-invalid", format!("{endpoint}: {err:#}")),
+                Err(err) => rpc_error(err.code, format!("{endpoint}: {}", err.message)),
             }
         }
         "settings/openSettingsDocument" => rpc_ok(json!({ "opened": false })),
@@ -410,7 +415,17 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
-        "credentials/describe" => rpc_ok(json!({})),
+        // The Models settings page's provider surface (host::llm): the
+        // configurable directory from config.toml, the live route list, and
+        // one endpoint interrogation.
+        "llm/listConfigurableProviders" => llm::list_configurable_providers(),
+        "llm/listProviders" => llm::list_providers(host).await,
+        "llm/discoverModels" => llm::discover_models(host, args_of(payload)).await,
+        // The Models settings page's credential surface (host::credentials),
+        // mapped onto the keyring; values never ride back out.
+        "credentials/describe" => credentials::describe(args_of(payload)).await,
+        "credentials/set" => credentials::set(host, args_of(payload)).await,
+        "credentials/unset" => credentials::unset(host, args_of(payload)).await,
         "web/listProviders" => rpc_ok(json!({ "search": [], "fetch": [] })),
         "permissionPresets/catalog" => rpc_ok(json!({ "options": [] })),
         "account/getProfile" | "account/getBalance" | "account/getUnnotifiedBonuses" => {

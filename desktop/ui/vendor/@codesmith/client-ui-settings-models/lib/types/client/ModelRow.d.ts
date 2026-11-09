@@ -1,0 +1,42 @@
+/** Shared model fields and actions for both adapter catalog editors. */
+import type { ReactNode } from 'react';
+import type { CodeSmithModelDraft } from './CodeSmithModelsEditor.tsx';
+import type { ModelsKey } from './locales.ts';
+import type { ModelRowOrder } from './useModelRows.ts';
+/** A capacity's editable text and adapter-specific inherited hint. */
+interface CapacityInput {
+    value: string;
+    placeholder: string;
+    onChange: (value: string) => void;
+    onBlur?: () => void;
+}
+/** Adapter-owned data and actions for one model row. */
+interface ModelRowProps {
+    model: CodeSmithModelDraft;
+    rowKey: number;
+    position: number;
+    order: ModelRowOrder;
+    inputField: 'inputModalities' | 'input';
+    inputFallback?: readonly string[] | undefined;
+    inputLoading?: boolean;
+    /** Levels the row's `reasoningEfforts` may declare; absent or empty shows no reasoning control. */
+    reasoningLevels?: readonly string[] | undefined;
+    expanded: boolean;
+    disabled: boolean;
+    t: (key: ModelsKey) => string;
+    contextWindow: CapacityInput;
+    maxTokens: CapacityInput;
+    onFieldChange: (field: 'id' | 'name', value: string | undefined) => void;
+    onIdBlur?: (value: string) => void;
+    onChange: (model: CodeSmithModelDraft) => void;
+    onToggle: () => void;
+    onRemove: () => void;
+}
+/**
+ * Render model fields with the display name in the expanded area of narrow rows.
+ * @param props - drafted fields and their owning editor's actions.
+ * @returns one expandable model entry.
+ */
+export declare function ModelRow(props: ModelRowProps): ReactNode;
+export {};
+//# sourceMappingURL=ModelRow.d.ts.map

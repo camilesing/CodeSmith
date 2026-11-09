@@ -1,11 +1,14 @@
-//! `settings/describe|mutate|update` — the desktop shell's own preference
-//! document, persisted at `~/.codesmith/desktop/settings.json`.
+//! `settings/describe|mutate|update` — the desktop shell's preference
+//! namespaces plus the `llm-pi-ai` provider namespace, persisted at
+//! `~/.codesmith/desktop/settings.json` (UI preferences) and config.toml
+//! (providers, via `host::llm`).
 //!
-//! These namespaces are the vendored client's UI preferences (theme, fonts,
-//! enter behavior, transcript view) — desktop-shell state, not CodeSmith
-//! engine configuration. The engine has no remote settings surface, so
-//! nothing here pretends to configure providers or permissions; a namespace
-//! the UI asks for that the desktop does not own simply does not appear.
+//! The UI namespaces are the vendored client's preferences (theme, fonts,
+//! enter behavior, transcript view) — desktop-shell state. The provider
+//! namespace `llm-pi-ai` is the vendored Models settings page's view over
+//! config.toml (`host::llm` owns the mapping); its revision counter lives
+//! in the same document so a stale editor is refused with
+//! `settings/conflict` exactly like the UI namespaces.
 //!
 //! Wire contract (vendored `api-remotes` `SettingsDescribeValue`): each
 //! namespace view carries a schemastery `toJSON()` envelope, the redacted
@@ -22,6 +25,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
+use super::llm;
 use super::HostState;
 
 /// One namespace's static schema envelope + its section of the document.
@@ -38,6 +42,14 @@ struct NamespaceSpec {
 const THEME_SCHEMA: &str = r#"{"uid":29,"refs":{"2":{"type":"const","meta":{"required":true},"value":"light"},"4":{"type":"const","meta":{"required":true},"value":"dark"},"6":{"type":"const","meta":{"required":true},"value":"system"},"7":{"type":"union","meta":{"default":"system"},"list":[2,4,6]},"12":{"type":"number","meta":{"step":1,"min":10,"max":22,"default":14}},"17":{"type":"number","meta":{"step":1,"min":10,"max":16,"default":11}},"22":{"type":"number","meta":{"step":1,"min":10,"max":20,"default":13}},"24":{"type":"string","meta":{"default":""}},"26":{"type":"string","meta":{"default":""}},"28":{"type":"string","meta":{"default":""}},"29":{"type":"object","meta":{"default":{}},"dict":{"preference":7,"fontSize":12,"codeFontSize":17,"terminalFontSize":22,"textFontFamily":24,"codeFontFamily":26,"terminalFontFamily":28}}}}"#;
 const CONVERSATION_SCHEMA: &str = r#"{"uid":27,"refs":{"23":{"type":"const","meta":{"required":true},"value":"queue"},"25":{"type":"const","meta":{"required":true},"value":"steer"},"26":{"type":"union","meta":{"default":"queue"},"list":[23,25]},"27":{"type":"object","meta":{"default":{}},"dict":{"busyEnter":26}}}}"#;
 const CHAT_SCHEMA: &str = r#"{"uid":68,"refs":{"32":{"type":"const","meta":{"required":true},"value":"completion"},"34":{"type":"const","meta":{"required":true},"value":"next-input"},"35":{"type":"union","meta":{"default":"completion"},"list":[32,34]},"38":{"type":"const","meta":{"required":true},"value":"all"},"40":{"type":"const","meta":{"required":true},"value":"final"},"41":{"type":"union","meta":{"default":"all"},"list":[38,40]},"44":{"type":"const","meta":{"required":true},"value":"sidebar"},"46":{"type":"const","meta":{"required":true},"value":"new-tab"},"47":{"type":"union","meta":{"default":"sidebar"},"list":[44,46]},"50":{"type":"const","meta":{"required":true},"value":"compact"},"52":{"type":"const","meta":{"required":true},"value":"detailed"},"53":{"type":"union","meta":{"default":"detailed"},"list":[50,52]},"56":{"type":"const","meta":{"required":true},"value":"compact"},"58":{"type":"const","meta":{"required":true},"value":"standard"},"60":{"type":"const","meta":{"required":true},"value":"detailed"},"62":{"type":"const","meta":{"required":true},"value":"verbose"},"64":{"type":"const","meta":{"required":true},"value":"normal"},"66":{"type":"const","meta":{"required":true},"value":"expanded"},"67":{"type":"union","meta":{"loose":true},"list":[56,58,60,62,64,66]},"68":{"type":"object","meta":{"default":{}},"dict":{"collapseTiming":35,"foldedReplies":41,"linkOpening":47,"performanceUsage":53,"transcriptView":67}}}}"#;
+/// The vendored settings-general plugin's own runtime namespace — upstream
+/// `z.object({ welcomeNoticeVersion: z.string().volatile() })`.
+const SETTINGS_GENERAL_SCHEMA: &str = r#"{"uid":2,"refs":{"1":{"type":"string","meta":{"volatile":true}},"2":{"type":"object","meta":{"default":{}},"dict":{"welcomeNoticeVersion":1}}}}"#;
+/// The welcome-notice copy version the vendored page acknowledges through
+/// the `ui-settings-general` namespace. Seeding the default with it keeps
+/// the notice hidden; an upstream bump makes it appear once, and its own
+/// dismiss then persists the new value through this namespace.
+const WELCOME_NOTICE_VERSION: &str = "2026-09-28.1";
 
 fn specs() -> Vec<NamespaceSpec> {
     vec![
@@ -70,6 +82,12 @@ fn specs() -> Vec<NamespaceSpec> {
                 "linkOpening": "sidebar",
                 "performanceUsage": "detailed",
             }),
+        },
+        NamespaceSpec {
+            ns: "ui-settings-general",
+            schema: serde_json::from_str(SETTINGS_GENERAL_SCHEMA)
+                .expect("settings-general schema envelope"),
+            defaults: json!({ "welcomeNoticeVersion": WELCOME_NOTICE_VERSION }),
         },
     ]
 }
@@ -157,28 +175,64 @@ impl Document {
     }
 }
 
-/// `settings/describe` — every desktop-owned namespace view.
-pub fn describe(home: &std::path::Path) -> Value {
+/// A settings write refusal, with the wire code the vendored pages branch
+/// on (`settings/conflict` for a stale `expectedRevision`,
+/// `settings/rejected` for a write the owning store refuses).
+pub struct WriteError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl WriteError {
+    fn conflict(ns: &str, expected: u64, actual: u64) -> Self {
+        Self {
+            code: "settings/conflict",
+            message: format!(
+                "settings namespace {ns} is at revision {actual}, not the expected {expected}"
+            ),
+        }
+    }
+
+    fn rejected(message: String) -> Self {
+        Self { code: "settings/rejected", message }
+    }
+}
+
+/// `settings/describe` — every desktop-owned namespace view, plus the
+/// provider namespace over config.toml. A config.toml that does not parse
+/// fails the whole read, naming the file.
+pub fn describe(home: &std::path::Path) -> Result<Value> {
     let document = load_document(home);
-    let namespaces: Vec<Value> = specs().iter().map(|spec| document.view(spec)).collect();
-    json!({
+    let mut namespaces: Vec<Value> = specs().iter().map(|spec| document.view(spec)).collect();
+    namespaces.push(
+        llm::namespace_view(document.revision_of(llm::NS))
+            .with_context(|| "read the provider config for settings/describe")?,
+    );
+    Ok(json!({
         "writable": true,
         "hasDocument": false,
         "namespaces": namespaces,
-    })
+    }))
 }
 
-/// `settings/mutate(ns, ops, expectedRevision?)` (positional args) and
+/// `settings/mutate(ns, ops, expectedRevision?)` and
 /// `settings/update(ns, patch, expectedRevision?)` — both fold into the
 /// stored user section, bump the namespace revision, persist, notify
-/// `settings/document-updated`, and answer the updated view.
+/// `settings/document-updated`, and answer the updated view. The provider
+/// namespace routes its ops onto config.toml (`host::llm`) and keeps only
+/// its revision counter in this document.
 pub async fn mutate(
     host: &HostState,
     home: &std::path::Path,
     endpoint: &str,
     args: &Value,
-) -> Result<Value> {
-    let view = fold(home, endpoint, args)?;
+) -> std::result::Result<Value, WriteError> {
+    let view = if args.get("ns").and_then(Value::as_str) == Some(llm::NS) {
+        provider_fold(endpoint, home, args)?
+    } else {
+        fold(home, endpoint, args)
+            .map_err(|err| fold_write_error(&format!("{err:#}")))?
+    };
     let ns = view["ns"].as_str().unwrap_or_default().to_string();
     let revision = view["revision"].as_u64().unwrap_or(0);
     // Invalidate every open client surface the way the Host would.
@@ -189,6 +243,51 @@ pub async fn mutate(
     }))
     .await;
     Ok(view)
+}
+
+/// `fold`'s one conflict spelling (its stale-revision bail, five lines
+/// below) surfaces as the page's `settings/conflict`; everything else is a
+/// plain refusal.
+fn fold_write_error(message: &str) -> WriteError {
+    if message.starts_with("settings revision ") {
+        WriteError { code: "settings/conflict", message: message.to_string() }
+    } else {
+        WriteError::rejected(message.to_string())
+    }
+}
+
+/// The `llm-pi-ai` write core: check the revision, apply the ops onto
+/// config.toml, bump the revision counter, answer the fresh view.
+fn provider_fold(
+    endpoint: &str,
+    home: &std::path::Path,
+    args: &Value,
+) -> std::result::Result<Value, WriteError> {
+    if endpoint != "settings/mutate" {
+        return Err(WriteError::rejected(format!(
+            "{endpoint} does not serve the {} namespace",
+            llm::NS
+        )));
+    }
+    let ops = args
+        .get("ops")
+        .and_then(Value::as_array)
+        .ok_or_else(|| WriteError::rejected("settings mutate without ops".into()))?
+        .clone();
+    let mut document = load_document(home);
+    if let Some(expected) = args.get("expectedRevision").and_then(Value::as_u64) {
+        let current = document.revision_of(llm::NS);
+        if expected != current {
+            return Err(WriteError::conflict(llm::NS, expected, current));
+        }
+    }
+    llm::apply_ops(&ops).map_err(WriteError::rejected)?;
+    let next_revision = document.revision_of(llm::NS) + 1;
+    document.revisions.insert(llm::NS.to_string(), json!(next_revision));
+    document
+        .save()
+        .map_err(|err| WriteError::rejected(format!("{err:#}")))?;
+    llm::namespace_view(next_revision).map_err(|err| WriteError::rejected(format!("{err:#}")))
 }
 
 /// The pure write core behind `settings/mutate` / `settings/update`. The
@@ -285,13 +384,22 @@ mod tests {
     #[test]
     fn describe_serves_defaults_with_valid_envelopes() {
         let home = temp_home("describe");
-        let value = describe(&home);
+        // The provider namespace reads config.toml; point it at a scratch
+        // file so the test does not depend on (or touch) the real one.
+        let config = home.join("scratch-config.toml");
+        std::fs::write(&config, "[providers.openai]\nbase_url = \"https://g.example/v1\"\n").unwrap();
+        std::env::set_var("CODESMITH_CONFIG_PATH", &config);
+        let value = describe(&home).expect("describe");
+        std::env::remove_var("CODESMITH_CONFIG_PATH");
         let namespaces = value["namespaces"].as_array().unwrap();
         let ids: Vec<&str> = namespaces
             .iter()
             .map(|ns| ns["ns"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, vec!["ui-theme", "ui-conversation", "ui-chat"]);
+        assert_eq!(
+            ids,
+            vec!["ui-theme", "ui-conversation", "ui-chat", "ui-settings-general", "llm-pi-ai"]
+        );
         let theme = &namespaces[0];
         assert_eq!(theme["value"]["preference"], "system");
         assert_eq!(theme["value"]["fontSize"], 14);
@@ -300,6 +408,16 @@ mod tests {
         let root = &theme["schema"]["refs"][&uid];
         assert_eq!(root["type"], "object");
         assert!(root["dict"]["preference"].is_u64(), "field refs resolve");
+        // The welcome notice reads its namespace as already acknowledged.
+        let general = &namespaces[3];
+        assert_eq!(general["value"]["welcomeNoticeVersion"], WELCOME_NOTICE_VERSION);
+        // The provider namespace rides along with the live config.
+        let providers = &namespaces[4];
+        assert_eq!(
+            providers["value"]["providers"]["openai"]["baseURL"],
+            "https://g.example/v1"
+        );
+        assert_eq!(providers["revision"], 0);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -341,7 +459,11 @@ mod tests {
         .expect("update");
         assert_eq!(updated["value"]["fontSize"], 18);
         // The document survives a reload.
-        let reloaded = describe(&home);
+        let config = home.join("scratch-config.toml");
+        std::fs::write(&config, "").unwrap();
+        std::env::set_var("CODESMITH_CONFIG_PATH", &config);
+        let reloaded = describe(&home).expect("describe");
+        std::env::remove_var("CODESMITH_CONFIG_PATH");
         assert_eq!(reloaded["namespaces"][0]["value"]["fontSize"], 18);
         let _ = std::fs::remove_dir_all(&home);
     }

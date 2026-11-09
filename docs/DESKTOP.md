@@ -10,7 +10,7 @@ terminal REPL (see [CLI.md](CLI.md) → "Desktop UI (preset `all`)").
 
 ```
 Tauri App (desktop/)
-├─ WebView (vendored client UI, 58-package closure)
+├─ WebView (vendored client UI, 66-package closure)
 │   ├─ our boot: the __CODESMITH_BOOT__ plugin graph + first-party brand row
 │   └─ our connection carrier: unary rpc.call over HTTP; every stream rides
 │        the vendored WebSocket mux (one socket per client)
@@ -189,24 +189,49 @@ Known limitations of the current implementation:
   over `session/selectModel`, already bridged). The REPL's other slash
   commands are REPL-local and stay out of the catalog, so their
   "/"-prefixed lines fall through and submit as ordinary prompts.
-- The Models settings page (`client-ui-settings-models`) is NOT vendored
-  yet — it is the one remaining upstream page with a CodeSmith counterpart
-  (providers and API keys live in config.toml + the keyring). The recipe,
-  pinned by this session's contract reads: vendor the package; serve a
-  settings namespace named `llm-pi-ai` (the page's generic
-  OpenAI-compatible editor keys its layout on exactly that namespace —
-  anything else renders a hint-only 'unknown' card) whose value is
-  `{providers: {<route>: {apiKeyEnv?, baseURL?, models: [...]}}}` with a
-  schemastery envelope carrying at least `providers.<route>.api` and
-  `models[].reasoningEfforts` probe paths; back it with config.toml
-  (`crates/config` ProvidersToml via a path-dep from src-tauri) and the
-  keyring (`crates/secrets`, the `codesmith login` provider-slot naming);
-  answer `llm/listConfigurableProviders` (directory entries from config),
-  `llm/listProviders`, and `llm/discoverModels` (a reqwest GET
-  `{base_url}/models` with the key); and map `credentials/describe|set|unset`
-  onto the keyring (`CredentialInfo {configured, source?, writable}` —
-  describe never returns the value). A serve restart is likely needed for
-  the runtime to see provider edits (config is load-time state).
+- The Models settings page (`client-ui-settings-models`, bridged in
+  `host::llm` / `host::credentials`): the bridge serves a settings namespace
+  named exactly `llm-pi-ai` (the page's generic OpenAI-compatible editor
+  keys its layout on that name — anything else renders a hint-only 'unknown'
+  card). The value is `{providers: {<route>: {apiKeyEnv?, displayName?,
+  api?, baseURL?, models: [...]}}}`, read from and written to config.toml
+  (crates/config's `ProvidersToml` for the typed view, surgical `toml_edit`
+  writes that preserve comments, unknown keys, and every other table): a
+  route is a builtin provider slug or a `[[providers.custom]]` id;
+  `apiKeyEnv` is always the page's own `<ROUTE>_API_KEY` derivation (never
+  persisted, recomputed on read; self-hosted runtimes sglang/vllm/ollama
+  carry none, so their rows ask for no key); a model row maps
+  `id→model`, `name→display_model`, `contextWindow→context_window`,
+  `input` naming `image→vision=true`. The schemastery envelope carries the
+  `providers.<route>.api` protocol union the page probes — with exactly one
+  choice, `openai-completions` (CodeSmith custom gateways ride the
+  openai-compat backend) — while `models[].reasoningEfforts` is
+  deliberately absent: CodeSmith configures no per-model reasoning levels,
+  so the page hides that column instead of editing a field nothing reads.
+  `llm/listConfigurableProviders` builds the directory from config (the 16
+  builtins plus custom entries, customs flagged `declared: true`),
+  `llm/listProviders` comes from the runtime's `/v1/models`, and
+  `llm/discoverModels` answers a named route from the runtime catalog or
+  reqwest-GETs `{base_url}/models` with the key (the one the form just
+  typed, else the route's stored credential; OpenAI-compatible
+  `{data: […]}`). `credentials/describe|set|unset` map onto the keyring
+  (`crates/secrets`; a reference's slot is the lowercase `codesmith login`
+  provider slug), describe answering only `{configured, source?, writable}`
+  — never the value — and set/unset pushing a `credentials/record-updated`
+  event frame. The namespace revision counter lives in
+  `desktop/settings.json`; a stale `expectedRevision` is refused as
+  `settings/conflict`. The page's built-in welcome notice reads a
+  `ui-settings-general` namespace, now served too (its default is the
+  current copy version — the notice stays hidden; an upstream bump shows it
+  once and its own dismiss persists). Known limitations: config.toml
+  configures ONE model per provider — a write naming two or more rows is
+  refused, not silently dropped; a model row's `maxTokens` has no config
+  home (typed, saved as absent); provider edits are load-time state for the
+  runtime, so a running `codesmith serve` needs a restart; a hand-declared
+  custom route still needs a provider factory (`providers.toml` or an
+  extension) before the runtime can serve it; the first-run onboarding
+  dialog depends on a `llm-deepseek` namespace (not served) and never
+  appears.
 - Upstream-only concepts (accounts/balance, plugin market, sidebar
   terminal/browser, subagent child-session views, goal bar, plan preview)
   are not simulated — their plugins stay out of the boot roster or answer

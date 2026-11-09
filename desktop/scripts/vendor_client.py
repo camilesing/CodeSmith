@@ -74,10 +74,11 @@ REQUIRED_ENTRIES = [
 # /v1/automations, the attachment presentation — the composer's attachment
 # rail and drop overlay, over the bridged upload pipeline — the jobs popover
 # over /v1/tasks, the changes-review tab over the runtime's per-call
-# file-tool diffs, and the sidebar files tree + document preview over the
-# session workspace). Upstream pages with no CodeSmith equivalent (plugins,
-# account, goal, plan preview, sidebar terminal/browser) stay unvendored so
-# they never appear.
+# file-tool diffs, the sidebar files tree + document preview over the
+# session workspace, and the Models settings page over config.toml
+# providers + the keyring). Upstream pages with no CodeSmith equivalent
+# (plugins, account, goal, plan preview, sidebar terminal/browser) stay
+# unvendored so they never appear.
 EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-approval",
     "@deepseek-ai/dsh-client-ui-user-questions",
@@ -87,6 +88,7 @@ EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-secret-mask",
     "@deepseek-ai/dsh-client-ui-workflow-run",
     "@deepseek-ai/dsh-client-ui-settings-general",
+    "@deepseek-ai/dsh-client-ui-settings-models",
     "@deepseek-ai/dsh-client-ui-shortcuts",
     "@deepseek-ai/dsh-client-ui-trajectory",
     "@deepseek-ai/dsh-client-ui-schedule",
@@ -185,6 +187,10 @@ def build_rewrites(checkout: Path) -> list[tuple[str, str]]:
         (r"Deepseek", "Codesmith"),
         (r"DEEPSEEK", "CODESMITH"),
         (r"deepseek", "codesmith"),
+        # Hump case the word-boundary rules above miss: locale keys and
+        # identifiers (`deepSeekEndpointHint`, `deepSeekAccount`). Both a key
+        # and its lookups live in the one pass, so renames stay coherent.
+        (r"deepSeek", "codesmith"),
         # Globals (`__DSH_BOOT__`) and env names (`DSH_HOME`) merge into the
         # CODESMITH_ namespace; remaining uppercase/camel forms are prose or
         # identifiers (`isDSHRemoteError`, `parseDshClient`).
@@ -337,9 +343,8 @@ def apply_patches(name: str, files: dict[str, bytes], pkg_dir: Path) -> list[str
 
 
 def rebrand_files(files: dict[str, bytes], rewriter: Rewriter, counts: Counter, pkg_dir: Path) -> None:
+    branded: dict[str, bytes] = {}
     for rel, data in files.items():
-        if BRAND_RESIDUE.search(rel):
-            raise SystemExit(f"vendor: brand text in a vendored file path: {pkg_dir / rel}")
         if Path(rel).name in VERBATIM_NAMES or Path(rel).suffix not in TEXT_SUFFIXES:
             continue
         text = rewriter.text(data.decode("utf-8"), counts)
@@ -349,7 +354,17 @@ def rebrand_files(files: dict[str, bytes], rewriter: Rewriter, counts: Counter, 
             raise SystemExit(
                 f"vendor: rewrite table left brand text in {pkg_dir / rel}: "
                 f"…{text[start:residue.end() + 40]!r}… — extend build_rewrites")
-        files[rel] = text.encode("utf-8")
+        branded[rel] = text.encode("utf-8")
+    # A branded file name (upstream `DeepSeekModelsEditor.tsx`) is rewritten by
+    # the SAME table that rewrites the import specifiers naming it, so the
+    # renamed file and its renamed importers stay in lockstep.
+    renamed = {rewriter.text(rel): data for rel, data in branded.items()}
+    for rel, data in renamed.items():
+        if BRAND_RESIDUE.search(rel):
+            raise SystemExit(f"vendor: rewrite table left brand text in a file path: {pkg_dir / rel}")
+    files.update(renamed)
+    for rel in branded.keys() - renamed.keys():
+        del files[rel]
 
 
 def sync_tree(desired: dict[Path, bytes], managed: list[Path], legacy: list[Path]) -> tuple[int, int]:

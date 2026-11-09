@@ -29,6 +29,11 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "sync", "time", "io-util", "fs"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
+# The provider-settings bridge reads config.toml and the keyring directly —
+# the same crates and file formats `codesmith serve` uses.
+codesmith-config = { path = "../../crates/config" }
+codesmith-secrets = { path = "../../crates/secrets" }
+toml_edit = { version = "0.23", features = ["serde"] }
 
 [profile.release]
 codegen-units = 1

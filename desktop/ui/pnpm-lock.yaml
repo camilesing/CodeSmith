@@ -1421,6 +1421,43 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
 
+  vendor/@codesmith/client-ui-settings-models:
+    dependencies:
+      '@codesmith/schemastery':
+        specifier: workspace:~
+        version: link:../schemastery
+    devDependencies:
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-settings':
+        specifier: workspace:*
+        version: link:../client-ui-settings
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/util-values':
+        specifier: workspace:*
+        version: link:../util-values
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+
   vendor/@codesmith/client-ui-shortcuts:
     devDependencies:
       '@codesmith/brand':

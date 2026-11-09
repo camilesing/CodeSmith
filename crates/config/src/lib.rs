@@ -111,6 +111,50 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    /// Every builtin provider, in the onboarding / `auth list` order.
+    pub const ALL: [ProviderKind; 16] = [
+        ProviderKind::Deepseek,
+        ProviderKind::NvidiaNim,
+        ProviderKind::Openai,
+        ProviderKind::Atlascloud,
+        ProviderKind::WanjieArk,
+        ProviderKind::Volcengine,
+        ProviderKind::Openrouter,
+        ProviderKind::XiaomiMimo,
+        ProviderKind::Novita,
+        ProviderKind::Fireworks,
+        ProviderKind::Siliconflow,
+        ProviderKind::Moonshot,
+        ProviderKind::Sglang,
+        ProviderKind::Vllm,
+        ProviderKind::Ollama,
+        ProviderKind::Anthropic,
+    ];
+
+    /// Human-friendly label for configuration surfaces (provider pickers,
+    /// settings rows). Mirrors agent-runtime's `ApiProvider::display_name`.
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Deepseek => "DeepSeek",
+            Self::NvidiaNim => "NVIDIA NIM",
+            Self::Openai => "OpenAI-compatible",
+            Self::Atlascloud => "AtlasCloud",
+            Self::WanjieArk => "Wanjie Ark",
+            Self::Volcengine => "Volcengine Ark",
+            Self::Openrouter => "OpenRouter",
+            Self::XiaomiMimo => "Xiaomi MiMo",
+            Self::Novita => "Novita AI",
+            Self::Fireworks => "Fireworks AI",
+            Self::Siliconflow => "SiliconFlow",
+            Self::Moonshot => "Moonshot/Kimi",
+            Self::Sglang => "SGLang",
+            Self::Vllm => "vLLM",
+            Self::Ollama => "Ollama",
+            Self::Anthropic => "Anthropic",
+        }
+    }
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -242,6 +286,10 @@ pub struct CustomProviderToml {
     pub base_url: Option<String>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
+    /// Display name for configuration surfaces (the desktop Models page's
+    /// per-route label). Presentation only — the runtime addresses the entry
+    /// by `id` and never reads this.
+    pub display_name: Option<String>,
     #[serde(default)]
     pub http_headers: BTreeMap<String, String>,
 }
@@ -4905,6 +4953,7 @@ model = "b-1"
             base_url: Some("https://api.acme.dev/v1".to_string()),
             model: Some("acme-pro".to_string()),
             auth_mode: None,
+            display_name: None,
             http_headers: BTreeMap::new(),
         });
 
@@ -4951,6 +5000,7 @@ model = "b-1"
             base_url: Some("https://api.acme.dev/v1".to_string()),
             model: Some("acme-pro".to_string()),
             auth_mode: None,
+            display_name: None,
             http_headers: BTreeMap::new(),
         });
         config
@@ -5155,6 +5205,7 @@ model = "b-1"
             api_key: Some("sk-exfil".to_string()),
             model: None,
             auth_mode: None,
+            display_name: None,
             http_headers: BTreeMap::new(),
         });
 
@@ -5168,6 +5219,7 @@ model = "b-1"
             api_key: None,
             model: Some("acme-pro".to_string()),
             auth_mode: None,
+            display_name: None,
             http_headers: BTreeMap::new(),
         });
         user.merge_project_overrides(project);
