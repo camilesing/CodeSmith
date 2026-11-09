@@ -189,6 +189,24 @@ Known limitations of the current implementation:
   over `session/selectModel`, already bridged). The REPL's other slash
   commands are REPL-local and stay out of the catalog, so their
   "/"-prefixed lines fall through and submit as ordinary prompts.
+- The Models settings page (`client-ui-settings-models`) is NOT vendored
+  yet — it is the one remaining upstream page with a CodeSmith counterpart
+  (providers and API keys live in config.toml + the keyring). The recipe,
+  pinned by this session's contract reads: vendor the package; serve a
+  settings namespace named `llm-pi-ai` (the page's generic
+  OpenAI-compatible editor keys its layout on exactly that namespace —
+  anything else renders a hint-only 'unknown' card) whose value is
+  `{providers: {<route>: {apiKeyEnv?, baseURL?, models: [...]}}}` with a
+  schemastery envelope carrying at least `providers.<route>.api` and
+  `models[].reasoningEfforts` probe paths; back it with config.toml
+  (`crates/config` ProvidersToml via a path-dep from src-tauri) and the
+  keyring (`crates/secrets`, the `codesmith login` provider-slot naming);
+  answer `llm/listConfigurableProviders` (directory entries from config),
+  `llm/listProviders`, and `llm/discoverModels` (a reqwest GET
+  `{base_url}/models` with the key); and map `credentials/describe|set|unset`
+  onto the keyring (`CredentialInfo {configured, source?, writable}` —
+  describe never returns the value). A serve restart is likely needed for
+  the runtime to see provider edits (config is load-time state).
 - Upstream-only concepts (accounts/balance, plugin market, sidebar
   terminal/browser, subagent child-session views, goal bar, plan preview)
   are not simulated — their plugins stay out of the boot roster or answer

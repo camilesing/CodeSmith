@@ -65,7 +65,7 @@ struct ChangedFile {
 /// Parse the first unified-diff region of a tool result body: `@@` hunk
 /// headers with their bodies. Returns `None` when no hunk header appears
 /// (the body is a refusal, a notice, or a foreign call's prose).
-pub fn parse_unified_diff(text: &str) -> Option<FileDiff> {
+fn parse_unified_diff(text: &str) -> Option<FileDiff> {
     let mut diff = FileDiff::default();
     let mut current: Option<Hunk> = None;
     for line in text.lines() {
@@ -366,7 +366,8 @@ pub mod route {
 
     #[derive(Deserialize)]
     pub(crate) struct ChangesParams {
-        sessionId: Option<String>,
+        #[serde(rename = "sessionId")]
+        session_id: Option<String>,
         seq: Option<i64>,
         #[serde(default)]
         index: Option<usize>,
@@ -376,7 +377,7 @@ pub mod route {
 
     fn coordinates(params: &ChangesParams) -> Option<ChangesQuery> {
         Some(ChangesQuery {
-            session_id: params.sessionId.clone()?,
+            session_id: params.session_id.clone()?,
             seq: params.seq?,
             index: params.index.unwrap_or(0),
         })

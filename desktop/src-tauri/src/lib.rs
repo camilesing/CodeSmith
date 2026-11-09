@@ -52,10 +52,10 @@ pub fn run() {
                             // dragenter/dragleave (the vendored drop overlay's
                             // own signal — the DOM never sees native drags).
                             tauri::DragDropEvent::Enter { .. } => {
-                                let _ = drop_webview.eval(&host::host_drop::hover_script(true));
+                                let _ = drop_webview.eval(host::host_drop::hover_script(true));
                             }
                             tauri::DragDropEvent::Leave => {
-                                let _ = drop_webview.eval(&host::host_drop::hover_script(false));
+                                let _ = drop_webview.eval(host::host_drop::hover_script(false));
                             }
                             tauri::DragDropEvent::Drop { paths, .. } => {
                                 let paths = paths.clone();

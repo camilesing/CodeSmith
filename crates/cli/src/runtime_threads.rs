@@ -5726,8 +5726,7 @@ mod tests {
             .await?;
         assert_eq!(edited.text, "edited words");
         assert!(
-            !edited.image_paths.is_empty()
-                && edited.attachments_metadata.is_some(),
+            !edited.image_paths.is_empty() && edited.attachments_metadata.is_some(),
             "a text edit changes only the words: the attachments stay as enqueued"
         );
         let detail = manager.get_thread_detail(&thread.id).await?;

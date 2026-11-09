@@ -158,6 +158,21 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   箱策略。`/model` 走 vendored 客户端自己的贡献（经
   session/selectModel 的弹窗，已桥接）。REPL 的其余斜杠命令是
   REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
+- Models 设置页（`client-ui-settings-models`）**尚未** vendor——它是最后一
+  个有 CodeSmith 对应物的上游页面（providers 与 API key 在 config.toml +
+  keyring）。本次会话已钉死的实现配方：vendor 该包；服务一个名为
+  `llm-pi-ai` 的设置 namespace（页面的通用 OpenAI 兼容编辑器正是按这个
+  namespace 名选布局——其他名字只渲染"unknown"提示卡），取值
+  `{providers: {<route>: {apiKeyEnv?, baseURL?, models: [...]}}}`，schema
+  信封至少带 `providers.<route>.api` 与 `models[].reasoningEfforts` 探测
+  路径；底层接 config.toml（src-tauri path-dep `crates/config` 的
+  ProvidersToml）与 keyring（`crates/secrets`，`codesmith login` 的
+  provider-slot 命名）；应答 `llm/listConfigurableProviders`（由 config 生成
+  目录）、`llm/listProviders`、`llm/discoverModels`（reqwest 携 key GET
+  `{base_url}/models`）；`credentials/describe|set|unset` 映射到 keyring
+  （`CredentialInfo {configured, source?, writable}`——describe 绝不返回
+  值）。运行时大概率需重启 serve 才能看到 provider 改动（config 是加载期
+  状态）。
 - 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器、子代理子会话视
   图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
   态。（Jobs 弹窗、附件呈现、改动审查标签页与右侧栏文件/预览标签页**已**
