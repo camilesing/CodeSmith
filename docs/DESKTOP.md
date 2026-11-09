@@ -135,17 +135,21 @@ Known limitations of the current implementation:
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned
   first), manually ordered ones keep their relative order, and
-  never-dragged sessions follow in runtime recency order. The
-  slash-command catalog carries exactly `/compact`, bridged onto the
-  runtime's manual compaction over `commands/execute`: an invocation must
-  be argument- and attachment-free (upstream's own admission), the execute
-  result only claims the runtime accepted the compaction — the compaction
-  itself runs as an async turn and its transcript node (the mapped
-  `context_compaction` system message) carries the outcome — and a busy
-  thread surfaces the runtime's conflict text as the command's error
-  notice. The REPL's other slash commands are REPL-local and stay out of
-  the catalog, so their "/"-prefixed lines fall through and submit as
-  ordinary prompts.
+  never-dragged sessions follow in runtime recency order. The host
+  slash-command catalog carries `/compact` (bridged onto the runtime's
+  manual compaction over `commands/execute`: an invocation must be
+  argument- and attachment-free, the execute result only claims the
+  runtime accepted the compaction — the compaction itself runs as an async
+  turn and its transcript node carries the outcome, and a busy thread
+  surfaces the runtime's conflict text as the command's error notice) plus
+  the per-thread mode switches: `/mode <agent|plan|yolo|coordinator>`
+  (argument demanded, misspellings fail loud with the valid spellings) and
+  the `/plan` / `/yolo` shortcuts, each a `PATCH /v1/threads/{id}` of the
+  `mode` field whose next turn applies the mode's toolset and sandbox
+  policy. `/model` rides the vendored client's own contribution (a popup
+  over `session/selectModel`, already bridged). The REPL's other slash
+  commands are REPL-local and stay out of the catalog, so their
+  "/"-prefixed lines fall through and submit as ordinary prompts.
 - Upstream-only concepts (accounts/balance, plugin market, jobs list,
   sidebar terminal/files/browser/preview, subagent views, goal bar, plan
   preview) are not simulated — their plugins stay out of the boot roster or

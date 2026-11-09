@@ -382,10 +382,12 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error(err.code, err.message),
             }
         }
-        // The '/' catalog is the runtime's manual compaction (host::commands).
-        // The REPL's other slash commands are REPL-local and stay out of the
-        // catalog, so their "/"-prefixed lines fall through to ordinary
-        // prompts, exactly what the runtime does with them.
+        // The '/' catalog: compaction plus the per-thread mode switches
+        // (host::commands). The REPL's OTHER slash commands are REPL-local
+        // and stay out of the catalog, so their "/"-prefixed lines fall
+        // through to ordinary prompts, exactly what the runtime does with
+        // them. (/model needs no row: the vendored client registers it as a
+        // client contribution driving session/selectModel.)
         "commands/list" => rpc_ok(commands::catalog()),
         "commands/execute" => match commands::execute(host, args_of(payload)).await {
             Ok(commands::Outcome::Executed(value)) => rpc_ok(value),

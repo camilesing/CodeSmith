@@ -1,5 +1,5 @@
-//! `commands/list` + `commands/execute` — the '/' command catalog, bridged
-//! onto the runtime's manual compaction route.
+//! `commands/list` + `commands/execute` — the '/' command catalog: the
+//! runtime's manual compaction route plus its per-thread mode switches.
 //!
 //! Wire contracts (vendored `api-remotes`): the client sends
 //! `list {agentId}` and `execute {agentId, line, submittedAttachments}`
@@ -11,9 +11,16 @@
 //!
 //! Admission mirrors the upstream registry's order (`dsh-commands`
 //! `execute`): parse the line, resolve the name, refuse attachments
-//! (compact declares no `input.attachments`), refuse arguments — each
-//! refusal settles as a command error result, exactly the sentences the
-//! upstream `command-compact` plugin produces.
+//! (no entry declares `input.attachments`), refuse or demand arguments —
+//! each refusal settles as a command error result, exactly the sentences
+//! the upstream `command-compact` plugin produces.
+//!
+//! The mode commands bridge the runtime's per-thread `mode` field
+//! (`PATCH /v1/threads/{id}`, `AppMode::from_setting` spellings): `/mode`
+//! takes the mode name as its argument, `/plan` and `/yolo` are the REPL's
+//! own shortcuts for the two most-used switches. `/model` needs no catalog
+//! row — the vendored client registers it as a client contribution whose
+//! popup drives `session/selectModel` (already bridged).
 //!
 //! Known limitations:
 //! - the catalog is static for the life of the bridge process (the runtime
@@ -42,14 +49,35 @@ use super::HostState;
 /// zh alias 压缩 to this command.
 const COMPACT_DEFINITION_ID: &str = "@codesmith/command-compact";
 
-/// `commands/list` — the one-entry catalog (upstream's own host registers
-/// this exact name and description).
+/// The runtime's per-thread mode spellings (`AppMode::from_setting`;
+/// `coordinator_mode` stays an alias only the CLI accepts — one spelling
+/// per row keeps the menu honest).
+const MODES: [&str; 4] = ["agent", "plan", "yolo", "coordinator"];
+
+/// `commands/list` — the host catalog: compaction (upstream's own host
+/// registers this exact name and description) plus CodeSmith's per-thread
+/// mode switches.
 pub fn catalog() -> Value {
-    json!([{
-        "definitionId": COMPACT_DEFINITION_ID,
-        "name": "compact",
-        "description": "Compact older conversation history",
-    }])
+    json!([
+        {
+            "definitionId": COMPACT_DEFINITION_ID,
+            "name": "compact",
+            "description": "Compact older conversation history",
+        },
+        {
+            "name": "mode",
+            "description": "Switch this session's mode (agent, plan, yolo, coordinator)",
+            "input": { "hint": "agent | plan | yolo | coordinator" },
+        },
+        {
+            "name": "plan",
+            "description": "Plan mode — design before implementing",
+        },
+        {
+            "name": "yolo",
+            "description": "YOLO mode — full tool access, no approvals",
+        },
+    ])
 }
 
 /// One execute's answer to the dispatch table.
@@ -60,15 +88,6 @@ pub enum Outcome {
     Miss,
     /// An admitted execution: the `CommandExecution` value.
     Executed(Value),
-}
-
-/// The upstream registry's admission decision for a line, before any
-/// runtime call.
-enum Admission {
-    Miss,
-    /// A settled `kind:'error'` result (attachment or usage refusal).
-    Error(String),
-    Admitted,
 }
 
 /// Upstream `parseCommand`: `/name` where name is `[a-z][a-z0-9_-]*` and
@@ -92,22 +111,60 @@ fn parse_command(line: &str) -> Option<(&str, &str)> {
     Some((&rest[..end], after))
 }
 
-/// Admit one invocation against the compact definition (name resolution,
-/// attachment refusal, usage refusal — in the registry's order).
+/// One admitted invocation: the resolved command and its settled argument.
+#[derive(Debug)]
+enum Admitted {
+    Compact,
+    /// The mode value (already validated against [`MODES`]).
+    Mode(&'static str),
+}
+
+/// The upstream registry's admission decision for a line, before any
+/// runtime call.
+#[derive(Debug)]
+enum Admission {
+    Miss,
+    /// A settled `kind:'error'` result (attachment or usage refusal).
+    Error(String),
+    Admitted(Admitted),
+}
+
+/// Admit one invocation against the catalog (name resolution, attachment
+/// refusal, argument usage — in the registry's order). `/mode` demands its
+/// argument; `/compact`, `/plan` and `/yolo` refuse one.
 fn admit(line: &str, attachment_count: usize) -> Admission {
     let Some((name, raw_input)) = parse_command(line) else {
         return Admission::Miss;
     };
-    if name != "compact" {
-        return Admission::Miss;
+    if attachment_count > 0 && matches!(name, "compact" | "mode" | "plan" | "yolo") {
+        return Admission::Error(format!("/{name} does not accept attachments"));
     }
-    if attachment_count > 0 {
-        return Admission::Error("/compact does not accept attachments".into());
+    match name {
+        "compact" => {
+            if !raw_input.trim().is_empty() {
+                return Admission::Error("Usage: /compact (no arguments)".into());
+            }
+            Admission::Admitted(Admitted::Compact)
+        }
+        "mode" => {
+            let value = raw_input.trim();
+            match MODES.iter().find(|candidate| **candidate == value) {
+                Some(mode) => Admission::Admitted(Admitted::Mode(mode)),
+                None => Admission::Error(format!("Usage: /mode <{}>", MODES.join("|"))),
+            }
+        }
+        "plan" | "yolo" => {
+            if !raw_input.trim().is_empty() {
+                return Admission::Error(format!("Usage: /{name} (no arguments)"));
+            }
+            // The static lifetimes come from the match arms above.
+            Admission::Admitted(Admitted::Mode(match name {
+                "plan" => "plan",
+                _ => "yolo",
+            }))
+        }
+        _ => Admission::Miss,
     }
-    if !raw_input.trim().is_empty() {
-        return Admission::Error("Usage: /compact (no arguments)".into());
-    }
-    Admission::Admitted
 }
 
 /// Mint the next lifecycle pairing id (monotonic; instance-token-prefixed
@@ -145,8 +202,9 @@ fn internal(err: anyhow::Error) -> OpError {
     }
 }
 
-/// `commands/execute` — admit the line, then hand an admitted invocation
-/// to the runtime's manual compaction route.
+/// `commands/execute` — admit the line, then hand an admitted invocation to
+/// the runtime: compaction to the manual compact route, a mode switch to the
+/// thread PATCH.
 pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError> {
     let session_id = args
         .get("agentId")
@@ -167,27 +225,53 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
     match admit(line, attachment_count) {
         Admission::Miss => Ok(Outcome::Miss),
         Admission::Error(text) => Ok(Outcome::Executed(command_error(&text))),
-        Admission::Admitted => {
-            // The runtime claims the compaction turn synchronously, so its
-            // verdict — quoted from the runtime's own error body — settles
-            // as the command's error result (an upstream `busy` refusal
-            // settles the same way).
-            let path = format!("/v1/threads/{session_id}/compact");
-            let posted = host
-                .backend
-                .post_with_error_message::<Value>(&path, &json!({}))
-                .await
-                .map_err(internal)?;
-            match posted {
-                // 202 Accepted: the compaction runs as an async turn; the
-                // transcript carries its outcome (see the module notes).
-                Ok(_started) => Ok(Outcome::Executed(json!({
-                    "commandId": mint_command_id(),
-                    "result": { "kind": "success", "text": "Compaction requested." }
-                }))),
-                Err(runtime_message) => Ok(Outcome::Executed(command_error(&runtime_message))),
+        Admission::Admitted(admitted) => match admitted {
+            Admitted::Compact => {
+                // The runtime claims the compaction turn synchronously, so its
+                // verdict — quoted from the runtime's own error body — settles
+                // as the command's error result (an upstream `busy` refusal
+                // settles the same way).
+                let path = format!("/v1/threads/{session_id}/compact");
+                let posted = host
+                    .backend
+                    .post_with_error_message::<Value>(&path, &json!({}))
+                    .await
+                    .map_err(internal)?;
+                match posted {
+                    // 202 Accepted: the compaction runs as an async turn; the
+                    // transcript carries its outcome (see the module notes).
+                    Ok(_started) => Ok(Outcome::Executed(json!({
+                        "commandId": mint_command_id(),
+                        "result": { "kind": "success", "text": "Compaction requested." }
+                    }))),
+                    Err(runtime_message) => Ok(Outcome::Executed(command_error(&runtime_message))),
+                }
             }
-        }
+            Admitted::Mode(mode) => {
+                // The mode switch settles synchronously in the thread record;
+                // a runtime refusal (unknown spelling, busy write) settles as
+                // the command's error result, quoting the runtime's text.
+                let path = format!("/v1/threads/{session_id}");
+                let patched = host
+                    .backend
+                    .request_with_status(
+                        reqwest::Method::PATCH,
+                        &path,
+                        Some(&json!({ "mode": mode })),
+                    )
+                    .await
+                    .map_err(internal)?;
+                match patched {
+                    Ok(_) => Ok(Outcome::Executed(json!({
+                        "commandId": mint_command_id(),
+                        "result": { "kind": "success", "text": format!("Mode set to {mode}.") }
+                    }))),
+                    Err((_status, runtime_message)) => {
+                        Ok(Outcome::Executed(command_error(&runtime_message)))
+                    }
+                }
+            }
+        },
     }
 }
 
@@ -196,17 +280,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_serves_the_compact_descriptor_with_the_vendored_builtin_id() {
+    fn catalog_serves_the_host_descriptors() {
         let list = catalog();
-        let entry = list
-            .get(0)
-            .unwrap_or_else(|| panic!("the catalog carries the compact entry"));
-        assert_eq!(entry["name"], "compact");
-        assert_eq!(entry["definitionId"], "@codesmith/command-compact");
+        let names: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["compact", "mode", "plan", "yolo"]);
+        let compact = &list[0];
+        assert_eq!(compact["definitionId"], "@codesmith/command-compact");
         // `name` and `description` are the descriptor's required wire
         // fields; the client's zod array rejects an entry without them.
-        let description = entry["description"].as_str().unwrap_or_default();
-        assert!(!description.is_empty());
+        for entry in list.as_array().unwrap() {
+            assert!(!entry["description"].as_str().unwrap_or_default().is_empty());
+        }
+        // The mode entry advertises its argument so capable composers hint it.
+        assert_eq!(
+            list[1]["input"]["hint"], "agent | plan | yolo | coordinator"
+        );
     }
 
     #[test]
@@ -236,8 +329,11 @@ mod tests {
     }
 
     #[test]
-    fn admission_mirrors_the_upstream_compact_registry() {
-        assert!(matches!(admit("/compact", 0), Admission::Admitted));
+    fn admission_mirrors_the_registry_order() {
+        assert!(matches!(
+            admit("/compact", 0),
+            Admission::Admitted(Admitted::Compact)
+        ));
         // An attachment settles as a command error before the usage check.
         let Admission::Error(text) = admit("/compact", 1) else {
             panic!("an attachment-carrying invocation must refuse");
@@ -251,6 +347,45 @@ mod tests {
         assert!(matches!(admit("/model", 0), Admission::Miss));
         assert!(matches!(admit("/compact/", 0), Admission::Miss));
         assert!(matches!(admit("plain text", 0), Admission::Miss));
+    }
+
+    #[test]
+    fn mode_commands_admit_their_spellings_and_refuse_everything_else() {
+        for (line, mode) in [
+            ("/mode agent", "agent"),
+            ("/mode plan", "plan"),
+            ("/mode yolo", "yolo"),
+            ("/mode coordinator", "coordinator"),
+            ("/plan", "plan"),
+            ("/yolo", "yolo"),
+        ] {
+            match admit(line, 0) {
+                Admission::Admitted(Admitted::Mode(admitted)) => assert_eq!(admitted, mode),
+                other => panic!("{line} must admit mode {mode}, got {other:?}"),
+            }
+        }
+        // A bare or misspelled /mode fails loud with the valid spellings.
+        let Admission::Error(text) = admit("/mode", 0) else {
+            panic!("a bare /mode must refuse");
+        };
+        assert_eq!(text, "Usage: /mode <agent|plan|yolo|coordinator>");
+        let Admission::Error(text) = admit("/mode full-access", 0) else {
+            panic!("a misspelled mode must refuse");
+        };
+        assert_eq!(text, "Usage: /mode <agent|plan|yolo|coordinator>");
+        // The shortcuts refuse arguments and attachments like /compact.
+        for line in ["/plan now", "/yolo now"] {
+            let Admission::Error(text) = admit(line, 0) else {
+                panic!("{line} must refuse its argument");
+            };
+            assert!(text.starts_with("Usage: /"), "{text}");
+        }
+        for line in ["/plan", "/yolo", "/mode plan"] {
+            let Admission::Error(text) = admit(line, 1) else {
+                panic!("{line} with an attachment must refuse");
+            };
+            assert!(text.ends_with("does not accept attachments"), "{text}");
+        }
     }
 
     #[test]
