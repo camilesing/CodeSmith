@@ -22,8 +22,9 @@
 //! runtime resolves a provider key from the route's `[providers.<route>]`
 //! table (or a `[[providers.custom]]` entry, or the root `api_key` where the
 //! runtime accepts it), so a key the CLI wrote there is live even though
-//! this page never stored it. That view carries `configured` alone — no
-//! `source`, because the page did not save it, and `writable: false`,
+//! this page never stored it. That view reports `source: "file"` — the
+//! page's saved-credential branch, so its editor says "saved credentials"
+//! instead of claiming an environment variable — with `writable: false`,
 //! because this seam cannot replace or clear a config-file key (the page
 //! therefore offers no remove action for it).
 //!
@@ -145,10 +146,12 @@ fn describe_refs(
         let slot = slot_of_ref(r);
         let view = if inline.contains(&slot) {
             // The value lives in config.toml, which this seam can neither
-            // replace nor clear; no `source` (the page did not save it), and
-            // not writable (the page must not offer removal of a key its
-            // unset/delete would leave standing).
-            json!({ "configured": true, "writable": false })
+            // replace nor clear. `source: "file"` is the page's
+            // saved-credential branch: it describes the key as a saved
+            // credential instead of claiming an environment variable, and
+            // `writable: false` still withholds the removal a store write
+            // cannot honour (an unset would leave the config key standing).
+            json!({ "configured": true, "source": "file", "writable": false })
         } else {
             match secrets.resolve_with_source(&slot) {
                 Some((_, SecretSource::Keyring)) => json!({
@@ -327,20 +330,21 @@ mod tests {
     }
 
     #[test]
-    fn inline_config_keys_are_configured_but_not_page_writable() {
+    fn inline_config_keys_read_as_saved_but_stay_page_immutable() {
         // The runtime reads config.toml before the store, so a key the CLI
         // wrote there is live even though this page never stored it. The view
-        // must say configured, must not claim a page-controlled source, and
-        // must not invite an unset that would leave the key standing.
+        // must say configured with the page's saved-credential source (its
+        // generic "env var detected" copy would be wrong), and must not
+        // invite an unset that would leave the key standing.
         let secrets = test_secrets();
         secrets.set("openrouter", "sk-shadowed").unwrap();
         let inline: HashSet<String> = ["openrouter".to_string()].into_iter().collect();
         let views = describe_refs(&secrets, &[ref_of_slot("openrouter")], &inline);
         let view = &views[&ref_of_slot("openrouter")];
         assert_eq!(view["configured"], true);
-        assert!(
-            view.get("source").is_none(),
-            "a config-file key is not stored by this page"
+        assert_eq!(
+            view["source"], "file",
+            "the page's saved-credential branch, not its env-var fallback"
         );
         assert_eq!(view["writable"], false);
         assert!(!view.to_string().contains("sk-shadowed"));

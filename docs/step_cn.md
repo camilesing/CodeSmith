@@ -15,7 +15,7 @@ codesmith --version
 
 ## 步骤 2：配置 API key（唯一硬性凭据，三选一）
 
-所有 provider 地位平等，可通过 `--provider` / `CODESMITH_PROVIDER` / `provider = "<id>"` 任选；未配置任何 provider 时回退到 DeepSeek（模型 `deepseek-v4-pro`，base URL `https://api.deepseek.com/beta`）。凭据优先级为 CLI `--api-key` → config 文件 → OS keyring → 环境变量。
+所有 provider 地位平等，可通过 `--provider` / `CODESMITH_PROVIDER` / `provider = "<id>"` 任选；未配置任何 provider 时回退到 DeepSeek（模型 `deepseek-v4-pro`，base URL `https://api.deepseek.com/beta`）。凭据优先级为 CLI `--api-key` → config 文件 → 环境变量 → 凭据存储（运行时客户端构造；`codesmith auth status` 的探测顺序是 config → 凭据存储 → 环境变量）。
 
 方式 A（推荐，写入 `~/.codesmith/config.toml`）：
 

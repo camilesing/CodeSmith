@@ -48,8 +48,10 @@ Consolidated resolution order (highest first):
 1. CLI flags (`--provider`, `--model`, `--approval-policy`, …)
 2. config file values — the selected `[profiles.<name>]` profile over the
    file's top-level keys, then the per-project overlay merged on top
-3. API-key fallbacks after any explicit CLI `--api-key`:
-   `config -> keyring -> env`
+3. API-key fallbacks after any explicit CLI `--api-key`, by caller:
+   runtime client construction (REPL, `exec`, `serve`) resolves
+   `config -> env -> store`; `codesmith auth status` and the library
+   runtime-options resolver probe `config -> store -> env`
 4. managed config (`managed_config_path`, default
    `/etc/codesmith/managed_config.toml`), applied after user + env values
 5. requirements validation (`requirements_path`, default
@@ -122,11 +124,15 @@ provider auth and model defaults. `codesmith auth set --provider <id>` saves the
 key to `~/.codesmith/config.toml`, and `codesmith --model <model>` resolves to
 `CODESMITH_MODEL` for the session.
 
-Credential lookup uses `config -> keyring -> env` after any explicit CLI
-`--api-key`. Run `codesmith auth status` to inspect the active provider's config
-file, OS keyring backend, environment variable, winning source, and last-four
-label without printing the key itself. The command only probes the active
-provider's keyring entry.
+Credential lookup after any explicit CLI `--api-key` depends on the caller:
+runtime client construction (REPL, `exec`, `serve`) resolves
+`config -> env -> store` (a `[[providers.custom]]` route has no per-id
+environment slot, so it resolves `config -> store`), while `codesmith auth
+status` and the library runtime-options resolver probe
+`config -> store -> env`. Run `codesmith auth status` to inspect the active
+provider's config file, secret store backend, environment variable, winning
+source, and last-four label without printing the key itself. The command only
+probes the active provider's store entry.
 
 For hosted, generic OpenAI-compatible, or self-hosted providers, set
 `provider = "nvidia-nim"`, `"openai"`, `"atlascloud"`, `"wanjie-ark"`,
@@ -453,7 +459,9 @@ If a profile is selected but missing, codesmith exits with an error listing avai
 ## Environment Variables
 
 Most runtime environment variables override config values. API-key variables are
-fallbacks after saved config and keyring credentials.
+fallbacks after saved config values, and runtime client construction consults
+them before the credential store (`config -> env -> store`); `auth status` and
+the library resolver probe the store before the environment.
 
 App-level variables all use the `CODESMITH_*` prefix:
 

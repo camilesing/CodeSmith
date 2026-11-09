@@ -47,8 +47,10 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 1. CLI 参数（`--provider`、`--model`、`--approval-policy` 等）
 2. 配置文件值——先应用选中的 `[profiles.<name>]` 档案覆盖文件顶层键，
    再在其上合并项目级 overlay
-3. API 密钥回退链（在任何显式 CLI `--api-key` 之后）：
-   `config -> keyring -> env`
+3. API 密钥回退链（在任何显式 CLI `--api-key` 之后，按调用方区分）：
+   运行时客户端构造（REPL、`exec`、`serve`）按 `config -> env -> store`；
+   `codesmith auth status` 与库级 runtime-options 解析器按
+   `config -> store -> env`
 4. 托管配置（`managed_config_path`，默认
    `/etc/codesmith/managed_config.toml`），在用户 + 环境变量值之后应用
 5. requirements 校验（`requirements_path`，默认
@@ -110,10 +112,14 @@ preset = "experiment"  # 全部开启，含预览特性与侵入式机制
 将密钥保存到 `~/.codesmith/config.toml`，而 `codesmith --model <model>`
 会解析为会话的 `CODESMITH_MODEL`。
 
-凭证查找在任何显式 CLI `--api-key` 之后按 `config -> keyring -> env`
-的顺序进行。运行 `codesmith auth status` 可以查看当前活跃 provider 的
-配置文件、OS 密钥环后端、环境变量、胜出来源以及末四位标签，
-而不会打印密钥本身。该命令只探测当前活跃 provider 的密钥环条目。
+凭证查找在任何显式 CLI `--api-key` 之后按调用方区分：运行时客户端构造
+（REPL、`exec`、`serve`）按 `config -> env -> store` 解析
+（`[[providers.custom]]` 路由没有按 id 的环境变量槽位，按
+`config -> store` 解析），而 `codesmith auth status` 与库级
+runtime-options 解析器按 `config -> store -> env` 探测。运行
+`codesmith auth status` 可以查看当前活跃 provider 的配置文件、凭据存储
+后端、环境变量、胜出来源以及末四位标签，而不会打印密钥本身。该命令只
+探测当前活跃 provider 的存储条目。
 
 对于托管型、通用 OpenAI 兼容型或自托管 provider，可以设置
 `provider = "nvidia-nim"`、`"openai"`、`"atlascloud"`、`"wanjie-ark"`、
@@ -422,8 +428,9 @@ default_text_model = "codesmith-coder:1.3b"
 
 ## 环境变量
 
-大多数运行时环境变量会覆盖配置值。API 密钥变量排在已保存配置和
-密钥环凭证之后作为回退。
+大多数运行时环境变量会覆盖配置值。API 密钥变量排在已保存配置之后：
+运行时客户端构造先于凭据存储查询它们（`config -> env -> store`），而
+`auth status` 与库级解析器先探测存储、再探测环境变量。
 
 应用级变量统一使用 `CODESMITH_*` 前缀：
 

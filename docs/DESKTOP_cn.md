@@ -190,8 +190,11 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   不论底层是文件还是系统 keychain），`env` 表示进程环境变量命中。
   describe 还会探测 config.toml 里该路由的内联 `api_key`（custom 条目自
   己的 key，或运行时接受的根 key），命中时回 `{configured: true,
-  writable: false}` 且不带 `source`：它是运行时的第一 key 来源，页面既
-  不能替换也不能清除它。revision 计数存于
+  source: "file", writable: false}`：`source: "file"` 走页面的"已保存凭
+  据"文案（留空即用已保存的 key），而不是对 config 文件里的 key 误报
+  "检测到环境变量"；`writable: false` 使页面不提供它写存储也无法兑现的
+  移除操作。它是运行时的第一 key 来源，页面既不能替换也不能清除它。
+  revision 计数存于
   `desktop/settings.json`，过期 `expectedRevision` 以 `settings/conflict`
   拒绝。页面内建 welcome-notice 走的 `ui-settings-general` namespace 也已
   服务（默认值即当前版本号——通知默认隐藏，上游升版后出现一次、自 dismissed
@@ -200,11 +203,15 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   带它的写入会被拒绝而不是静默丢弃（CodeSmith 由模型的 context window
   推导输出上限），`llm/discoverModels` 也因此不再返回端点列出的
   `max_tokens`；config.toml `[providers.<route>] api_key` 里的内联密钥
-  现在读作已配置（绿点），但页面不能替换或移除它，运行时继续用内联值；
+  读作已配置（绿点，已保存凭据文案），但页面不能替换或移除它，运行时继
+  续用内联值——在该路由上从页面输入的 key 会写入存储，却仍被 config 里
+  的 key 遮住；
   页面保存的 key 落在凭据存储，且对后端有效：`codesmith serve` 构造引
   擎时按 config.toml → 进程环境 → 凭据存储解析 provider key（内置按
   provider slot，活动 custom 路由按其 `[[providers.custom]]` id）——后
-  端启动后保存的 key 在重启后生效，环境变量仍会遮住页面保存的 key；
+  端启动后保存的 key 在重启后生效，环境变量仍会遮住页面保存的 key
+  （页面自己的凭据视图先查存储再查环境变量，所以该路由仍显示为"已保存"
+  ——真正发出去的是环境变量里的 key）；
   provider 改动是运行时加载期状态，需重启 serve 才生
   效；手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正
   服务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）

@@ -72,9 +72,10 @@ Shared config lives at `~/.codesmith/config.toml`.
 ## Auth And Env Rules
 
 For hosted providers, `codesmith auth set --provider <id>` saves an API key for
-that provider. API-key environment variables are fallback inputs after saved
-config and keyring credentials; an explicit process-level `--api-key` still
-wins for that launch.
+that provider. An explicit process-level `--api-key` still wins for that
+launch; otherwise runtime client construction resolves `config -> env ->
+store` (the credential store is the last fallback), while `codesmith auth
+status` probes `config -> store -> env`.
 
 For base URL and model selection, prefer:
 

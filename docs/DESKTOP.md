@@ -229,12 +229,17 @@ Known limitations of the current implementation:
   this page's credential provider", whichever backend holds it) and `env`
   for a process-environment hit. Describe also probes config.toml for the
   route's inline `api_key` (a custom entry's own key, or the root key where
-  the runtime accepts it) and reports it `{configured: true, writable:
-  false}` with no `source`: it is the runtime's first key source, and this
-  page can neither replace nor clear it. The namespace revision counter
-  lives in `desktop/settings.json`; a stale `expectedRevision` is refused as
-  `settings/conflict`. The page's built-in welcome notice reads a
-  `ui-settings-general` namespace, now served too (its default is the
+  the runtime accepts it) and reports it `{configured: true, source:
+  "file", writable: false}`: `source: "file"` selects the page's
+  saved-credential copy (leave the field blank to use the saved key)
+  instead of its env-var fallback text, which would be false for a
+  config-file key; `writable: false` keeps the page from offering a
+  removal its store write could not honour. It is the runtime's first key
+  source, and this page can neither replace nor clear it. The namespace
+  revision counter lives in `desktop/settings.json`; a stale
+  `expectedRevision` is refused as `settings/conflict`. The page's built-in
+  welcome notice reads a `ui-settings-general` namespace, now served too
+  (its default is the
   current copy version — the notice stays hidden; an upstream bump shows it
   once and its own dismiss persists). Known limitations: config.toml
   configures ONE model per provider — a write naming two or more rows is
@@ -242,15 +247,19 @@ Known limitations of the current implementation:
   home, so a write carrying one is refused rather than silently dropped
   (CodeSmith derives the output cap from the model's context window) and
   `llm/discoverModels` does not advertise a listed `max_tokens` for the
-  same reason; an inline `[providers.<route>] api_key` now reads as
-  configured (green dot) but the page cannot replace or remove it, and the
-  runtime keeps using it; a key saved on the Models page lands in the
+  same reason; an inline `[providers.<route>] api_key` reads as configured
+  (green dot, saved-credential copy) but the page cannot replace or remove
+  it, and the runtime keeps using it — a key typed on the page for that
+  route lands in the store yet the config key still wins; a key saved on
+  the Models page lands in the
   credential store and is live for the backend: `codesmith serve` resolves
   provider keys from config.toml, then the process environment, then the
   store (builtins by provider slot, the active custom route by its
   `[[providers.custom]]` id) when it constructs an engine — a key saved
   after the backend started applies on restart, and an environment key
-  still shadows a page-saved one; provider edits are load-time state
+  still shadows a page-saved one (the page's credential view probes its
+  store before the environment, so that route still reads as saved — the
+  env var is what the runtime sends); provider edits are load-time state
   for the runtime, so a running `codesmith serve` needs a restart; a
   hand-declared custom route still needs a provider factory (`providers.toml`
   or an extension) before the runtime can serve it; the first-run onboarding

@@ -65,8 +65,9 @@ DeepSeek 在全球使用相同的官方 API 主机。
 ## 认证与环境变量规则
 
 对于托管提供商，`codesmith auth set --provider <id>` 会保存该提供商的
-API 密钥。API 密钥环境变量是排在已保存配置和密钥环凭据之后的回退输入；
-显式的进程级 `--api-key` 在该次启动中仍然优先。
+API 密钥。显式的进程级 `--api-key` 在该次启动中仍然优先；除此之外，
+运行时客户端构造按 `config -> env -> store` 解析（凭据存储是最后一层
+回退），而 `codesmith auth status` 按 `config -> store -> env` 探测。
 
 对于 base URL 和模型选择，优先使用：
 
