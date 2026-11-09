@@ -245,11 +245,12 @@ Known limitations of the current implementation:
   same reason; an inline `[providers.<route>] api_key` now reads as
   configured (green dot) but the page cannot replace or remove it, and the
   runtime keeps using it; a key saved on the Models page lands in the
-  credential store, while `codesmith serve` resolves provider keys from
-  config.toml and then the process environment — **a page-saved key alone
-  therefore does not reach a running backend** (`codesmith login` / `auth
-  set` also write config.toml, and those inline keys are what the page
-  detects); provider edits are load-time state
+  credential store and is live for the backend: `codesmith serve` resolves
+  provider keys from config.toml, then the process environment, then the
+  store (builtins by provider slot, the active custom route by its
+  `[[providers.custom]]` id) when it constructs an engine — a key saved
+  after the backend started applies on restart, and an environment key
+  still shadows a page-saved one; provider edits are load-time state
   for the runtime, so a running `codesmith serve` needs a restart; a
   hand-declared custom route still needs a provider factory (`providers.toml`
   or an extension) before the runtime can serve it; the first-run onboarding

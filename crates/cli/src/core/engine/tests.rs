@@ -44,7 +44,7 @@ use crate::models::{ContentBlock, Message, SystemBlock, SystemPrompt, Tool, Tool
 use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs, new_shared_plan_state};
 use crate::tools::spec::{ToolCapability, ToolError, ToolResult};
 use crate::tools::todo::{TodoStatus, new_shared_todo_list};
-use codesmith_agent_runtime::test_support::{HermeticEnv, lock_test_env};
+use codesmith_agent_runtime::test_support::{EnvVarGuard, HermeticEnv, lock_test_env};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -275,7 +275,7 @@ async fn resolve_llm_client_builds_via_registry() {
             api_key: Some("test-registry-key".to_string()),
             ..Config::default()
         };
-        super::resolve_llm_client(&cfg)
+        super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
             .expect("registry should build a client when an API key is configured")
         // `_guard` drops here — env restored, lock released before the await.
     };
@@ -313,7 +313,7 @@ async fn resolve_llm_client_routes_anthropic_to_rig_factory() {
             provider: Some("anthropic".to_string()),
             ..Config::default()
         };
-        super::resolve_llm_client(&cfg)
+        super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
             .expect("registry should build an anthropic client via the rig factory")
         // `_key` and `_guard` drop here — env restored, lock released.
     };
@@ -352,7 +352,8 @@ fn resolve_utility_llm_reuses_main_client_same_provider() {
         }),
         ..Config::default()
     };
-    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let main = super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
+        .expect("main client builds");
     let utility = super::resolve_utility_llm(&cfg, Some(&main))
         .expect("same-provider utility reuses the main client");
     assert_eq!(utility.model, "deepseek-v4-flash");
@@ -410,7 +411,8 @@ fn seam_resolution_defaults_to_flash_without_any_config() {
         api_key: Some("test-registry-key".to_string()),
         ..Config::default()
     };
-    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let main = super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
+        .expect("main client builds");
     let utility = super::resolve_utility_llm(&cfg, Some(&main));
     let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &utility);
     assert_eq!(model, crate::seam_manager::DEFAULT_SEAM_MODEL);
@@ -433,7 +435,8 @@ fn seam_resolution_uses_utility_model_default() {
         }),
         ..Config::default()
     };
-    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let main = super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
+        .expect("main client builds");
     let utility =
         super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
 
@@ -467,7 +470,8 @@ fn seam_resolution_explicit_model_wins_over_utility() {
         },
         ..Config::default()
     };
-    let main = super::resolve_llm_client(&cfg).expect("main client builds");
+    let main = super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
+        .expect("main client builds");
     let utility =
         super::resolve_utility_llm(&cfg, Some(&main)).expect("cross-provider utility builds");
 
@@ -505,13 +509,84 @@ fn resolve_llm_client_custom_provider_routes_by_id_to_registry() {
     };
     // `.err()` (not `expect_err`) — `LlmClientHandle` is `Arc<dyn LlmClient>`
     // and the trait has no `Debug` supertrait, so the `Ok` variant isn't Debug.
-    let err = super::resolve_llm_client(&cfg)
+    let err = super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
         .err()
         .expect("an unregistered custom provider should not build");
     let msg = format!("{err}");
     assert!(
         msg.contains("no provider factory registered for 'acme'"),
         "expected the custom id to reach the registry; got: {msg}"
+    );
+}
+
+/// The additive credential-store layer reaches client construction: a key
+/// that exists only in the store (what the desktop Models page writes, and
+/// what `codesmith auth migrate` leaves behind) resolves with no config.toml
+/// or environment key, and deleting it restores the missing-key error.
+/// The prompt-free accessor still refuses to read the store.
+#[test]
+fn resolve_llm_client_reads_key_from_secret_store() {
+    let _guard = lock_test_env();
+    let _deepseek_env = EnvVarGuard::remove("DEEPSEEK_API_KEY");
+    let _codesmith_env = EnvVarGuard::remove("CODESMITH_API_KEY");
+    let secrets = crate::no_keyring_secrets();
+    secrets
+        .set("deepseek", "store-only-key")
+        .expect("store write");
+
+    let cfg = Config::default();
+    assert!(
+        cfg.provider_api_key().is_err(),
+        "provider_api_key stays prompt-free"
+    );
+    super::resolve_llm_client_with_secrets(&cfg, &secrets)
+        .expect("a store-only key must build the client");
+
+    secrets.delete("deepseek").expect("store delete");
+    let err = super::resolve_llm_client_with_secrets(&cfg, &secrets)
+        .err()
+        .expect("no key anywhere must not build");
+    assert!(format!("{err}").contains("API key not found"), "got: {err}");
+}
+
+/// A custom route reads the store under its `[[providers.custom]]` id: the
+/// entry carries no key, so resolution only passes once the store holds one
+/// — after which the failure moves to the (intentionally unregistered)
+/// factory, proving the key gate was passed.
+#[test]
+fn resolve_llm_client_custom_provider_reads_key_from_store() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        custom_provider: Some("acme".to_string()),
+        providers: Some(crate::config::ProvidersConfig {
+            custom: vec![crate::config::CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                model: Some("acme-flagship".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+    let secrets = crate::no_keyring_secrets();
+    let err = super::resolve_llm_client_with_secrets(&cfg, &secrets)
+        .err()
+        .expect("no key anywhere must not build");
+    assert!(
+        format!("{err}").contains("custom provider 'acme' API key not found"),
+        "got: {err}"
+    );
+
+    secrets
+        .set("acme", "custom-store-key")
+        .expect("store write");
+    let err = super::resolve_llm_client_with_secrets(&cfg, &secrets)
+        .err()
+        .expect("an unregistered custom provider should not build");
+    assert!(
+        format!("{err}").contains("no provider factory registered for 'acme'"),
+        "the store key must clear the key gate; got: {err}"
     );
 }
 
@@ -1347,10 +1422,13 @@ fn subagent_spawn_family_declares_parallel_without_approval() {
 
     let tmp = tempdir().expect("tempdir");
     let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
-    let client = super::resolve_llm_client(&Config {
-        api_key: Some("test-key".to_string()),
-        ..Config::default()
-    })
+    let client = super::resolve_llm_client_with_secrets(
+        &Config {
+            api_key: Some("test-key".to_string()),
+            ..Config::default()
+        },
+        &crate::no_keyring_secrets(),
+    )
     .expect("stub client");
     let client: crate::llm_client::LlmClientHandle = client;
     let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
@@ -1400,10 +1478,13 @@ fn subagent_spawn_family_declares_parallel_without_approval() {
 fn print_agent_tool_catalog_metrics() {
     let tmp = tempdir().expect("tempdir");
     let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
-    let client = super::resolve_llm_client(&Config {
-        api_key: Some("test-key".to_string()),
-        ..Config::default()
-    })
+    let client = super::resolve_llm_client_with_secrets(
+        &Config {
+            api_key: Some("test-key".to_string()),
+            ..Config::default()
+        },
+        &crate::no_keyring_secrets(),
+    )
     .expect("stub client");
     let client: crate::llm_client::LlmClientHandle = client;
     let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);

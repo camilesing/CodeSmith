@@ -528,6 +528,21 @@ pub(crate) fn shared_providers() -> &'static SharedProviderRegistry {
 }
 
 pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClientHandle> {
+    resolve_llm_client_with_secrets(api_config, &codesmith_secrets::Secrets::auto_detect())
+}
+
+/// [`resolve_llm_client`] over an explicit credential-store facade.
+///
+/// The production wrapper auto-detects the store (the same backend
+/// `codesmith auth set` and the desktop Models page write); tests inject an
+/// in-memory store so key resolution never touches a real keychain. This is
+/// the resolution point that makes a store-only key live — config.toml and
+/// the environment still win, and prompt-free probes (`doctor`/`status`,
+/// `Config::provider_api_key`) never reach the store.
+pub(crate) fn resolve_llm_client_with_secrets(
+    api_config: &Config,
+    secrets: &codesmith_secrets::Secrets,
+) -> anyhow::Result<LlmClientHandle> {
     // §D2 — when `custom_provider` is set, route to `ProviderId::Custom(id)`
     // so a host-registered factory (e.g. `mock`, or a user crate's factory)
     // is selected by id. The neutral `ProviderConfig` fields (api_key /
@@ -540,7 +555,7 @@ pub(crate) fn resolve_llm_client(api_config: &Config) -> anyhow::Result<LlmClien
     };
     let cfg = ProviderConfig {
         provider,
-        api_key: api_config.provider_api_key()?,
+        api_key: api_config.provider_api_key_from_secrets(secrets)?,
         base_url: api_config.provider_base_url(),
         default_model: api_config.default_model(),
         retry: codesmith_agent::llm_client::RetryConfig::from(api_config.retry_policy()),
@@ -610,7 +625,12 @@ pub(crate) fn resolve_utility_llm(
     let api_key = if let Some(key) = utility.api_key.clone() {
         key
     } else if provider == main_provider {
-        api_config.provider_api_key().unwrap_or_default()
+        // Mirror the main client's resolution (config → env → credential
+        // store): a dedicated same-provider endpoint must accept a key that
+        // only the store holds, or assists 401 while the main turn works.
+        api_config
+            .provider_api_key_from_secrets(&codesmith_secrets::Secrets::auto_detect())
+            .unwrap_or_default()
     } else if crate::config::has_api_key_for(api_config, provider)
         || crate::config::provider_is_self_hosted(provider)
     {
@@ -618,6 +638,9 @@ pub(crate) fn resolve_utility_llm(
         // main provider's) when the config key is empty.
         String::new()
     } else {
+        // Known limitation: a cross-provider utility key that exists only in
+        // the credential store still lands here — `has_api_key_for` is
+        // prompt-free by contract and does not probe the store.
         tracing::warn!(
             "utility model provider '{}' has no api_key (keys are never inherited across \
              providers); assists fall back to the main model",

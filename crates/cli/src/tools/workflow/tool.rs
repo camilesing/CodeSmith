@@ -456,7 +456,8 @@ mod tests {
             api_key: Some("test-key".to_string()),
             ..crate::config::Config::default()
         };
-        crate::core::engine::resolve_llm_client(&config).expect("stub client should construct")
+        crate::core::engine::resolve_llm_client_with_secrets(&config, &crate::no_keyring_secrets())
+            .expect("stub client should construct")
     }
 
     #[tokio::test]

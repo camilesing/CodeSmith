@@ -2421,15 +2421,43 @@ impl Config {
             || self.active_provider_preserves_custom_base_url_model()
     }
 
-    /// Read the API key.
+    /// Read the API key without touching credential stores.
     ///
     /// Precedence: **explicit in-memory override → provider/root config
-    /// → environment**.
+    /// → environment**. Prompt-free callers (doctor/status, `auth`) use this;
+    /// runtime client construction uses
+    /// [`provider_api_key_from_secrets`](Self::provider_api_key_from_secrets).
     ///
     /// The in-memory `self.api_key` override is only honored when the user
     /// explicitly set the field (not the legacy `API_KEYRING_SENTINEL`
     /// placeholder, not empty whitespace).
     pub fn provider_api_key(&self) -> Result<String> {
+        self.resolve_provider_api_key(None)
+    }
+
+    /// Read the API key for a real request path, falling back to the
+    /// configured credential store before failing.
+    ///
+    /// Same precedence as [`provider_api_key`](Self::provider_api_key), then
+    /// the secret store: a builtin reads its canonical provider slot (the
+    /// lowercase slug `codesmith auth set` writes), the active
+    /// `[[providers.custom]]` entry reads its own id (the slot the desktop
+    /// Models page writes). This is the additive layer that makes a
+    /// store-only key live at engine construction; doctor/status keep the
+    /// prompt-free accessor. A store read error is logged and treated as
+    /// "not configured" (matching `Secrets::resolve`) so an unavailable
+    /// backend leaves the caller's missing-key error actionable.
+    pub fn provider_api_key_from_secrets(
+        &self,
+        secrets: &codesmith_secrets::Secrets,
+    ) -> Result<String> {
+        self.resolve_provider_api_key(Some(secrets))
+    }
+
+    fn resolve_provider_api_key(
+        &self,
+        secrets: Option<&codesmith_secrets::Secrets>,
+    ) -> Result<String> {
         // §D2 — custom provider: resolve from the entry's api_key, then the
         // root `api_key` (custom endpoints legitimately reuse it). There is no
         // per-id env slot for an arbitrary custom id, so env lookup is skipped
@@ -2447,6 +2475,12 @@ impl Config {
                 && configured != API_KEYRING_SENTINEL
             {
                 return Ok(configured.clone());
+            }
+            // The credential store's custom-route slot is the entry id itself
+            // (`[[providers.custom]] id`), the reference the desktop Models
+            // page derives from the route name.
+            if let Some(value) = stored_provider_key(secrets, id) {
+                return Ok(value);
             }
             if base_url_uses_local_host(&self.provider_base_url()) {
                 return Ok(String::new());
@@ -2506,11 +2540,16 @@ impl Config {
             return Ok(configured);
         }
 
-        // 2. Environment variables. Do not query platform credential stores
-        // here; routine startup and doctor checks must stay prompt-free.
+        // 2. Environment variables.
         if let Some(value) = codesmith_secrets::env_for(slot)
             && !value.trim().is_empty()
         {
+            return Ok(value);
+        }
+
+        // 3. Credential store — only when a facade was injected (runtime
+        // client construction). Prompt-free callers stop at step 2.
+        if let Some(value) = stored_provider_key(secrets, slot) {
             return Ok(value);
         }
 
@@ -4845,6 +4884,22 @@ pub fn active_provider_has_config_api_key(config: &Config) -> bool {
 pub fn active_provider_uses_env_only_api_key(config: &Config) -> bool {
     active_provider_has_env_api_key(config) && !active_provider_has_config_api_key(config)
 }
+/// One credential-store lookup for
+/// [`Config::provider_api_key_from_secrets`]: a stored, non-empty value.
+/// Backend errors are logged and treated as "not configured" — the same
+/// leniency as `Secrets::resolve`, so an unavailable store does not turn
+/// every client build into a hard failure.
+fn stored_provider_key(secrets: Option<&codesmith_secrets::Secrets>, slot: &str) -> Option<String> {
+    let secrets = secrets?;
+    match secrets.get(slot) {
+        Ok(Some(value)) if !value.trim().is_empty() => Some(value),
+        Ok(_) => None,
+        Err(err) => {
+            tracing::warn!("credential store read for '{slot}' failed: {err}");
+            None
+        }
+    }
+}
 pub fn provider_is_self_hosted(provider: ApiProvider) -> bool {
     codesmith_config::ProviderKind::parse(provider.as_str())
         .is_some_and(codesmith_config::provider_is_self_hosted)
@@ -6918,6 +6973,142 @@ api_key = "old-openrouter-key"
         let _err = config
             .provider_api_key()
             .expect_err("sentinel placeholder must not satisfy the API key check");
+        Ok(())
+    }
+
+    fn in_memory_secrets() -> codesmith_secrets::Secrets {
+        codesmith_secrets::Secrets::new(std::sync::Arc::new(
+            codesmith_secrets::InMemoryKeyringStore::new(),
+        ))
+    }
+
+    /// The additive runtime layer: a key only the credential store holds (the
+    /// desktop Models page's write path) resolves at client construction,
+    /// while the prompt-free accessor keeps ignoring the store.
+    #[test]
+    fn provider_api_key_from_secrets_falls_back_to_store_for_builtin() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-store-fallback-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        // EnvGuard does not clear the app-wide fallback name.
+        let _codesmith_key =
+            codesmith_agent_runtime::test_support::EnvVarGuard::remove("CODESMITH_API_KEY");
+
+        let secrets = in_memory_secrets();
+        secrets.set("deepseek", "store-only-key")?;
+        let config = Config::default();
+
+        assert!(
+            config.provider_api_key().is_err(),
+            "provider_api_key must stay prompt-free (it is doctor/status's path)"
+        );
+        assert_eq!(
+            config.provider_api_key_from_secrets(&secrets)?,
+            "store-only-key"
+        );
+
+        // An empty stored value is not a key.
+        secrets.set("deepseek", "   ")?;
+        assert!(config.provider_api_key_from_secrets(&secrets).is_err());
+        Ok(())
+    }
+
+    /// Config file and environment still win: the store is the last layer,
+    /// consulted only before the missing-key error.
+    #[test]
+    fn provider_api_key_from_secrets_keeps_config_and_env_ahead_of_store() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-store-precedence-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+        let _codesmith_key =
+            codesmith_agent_runtime::test_support::EnvVarGuard::remove("CODESMITH_API_KEY");
+
+        let secrets = in_memory_secrets();
+        secrets.set("deepseek", "store-key")?;
+
+        let config = Config {
+            api_key: Some("config-key".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.provider_api_key_from_secrets(&secrets)?,
+            "config-key"
+        );
+
+        let config = Config::default();
+        unsafe { env::set_var("DEEPSEEK_API_KEY", "env-key") };
+        assert_eq!(config.provider_api_key_from_secrets(&secrets)?, "env-key");
+        unsafe { env::remove_var("DEEPSEEK_API_KEY") };
+        assert_eq!(config.provider_api_key_from_secrets(&secrets)?, "store-key");
+        Ok(())
+    }
+
+    /// A custom route reads the store under its `[[providers.custom]]` id and
+    /// an unset puts the missing-key error back — the desktop page's set /
+    /// unset contract, seen from the runtime side.
+    #[test]
+    fn provider_api_key_from_secrets_serves_custom_provider_by_id() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-store-custom-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config = Config {
+            custom_provider: Some("acme".to_string()),
+            providers: Some(ProvidersConfig {
+                custom: vec![CustomProviderConfig {
+                    id: "acme".to_string(),
+                    base_url: Some("https://gateway.acme.example/v1".to_string()),
+                    model: Some("acme-flagship".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+        let secrets = in_memory_secrets();
+        assert!(
+            config.provider_api_key().is_err(),
+            "no config or env key exists for the remote custom route"
+        );
+
+        secrets.set("acme", "custom-store-key")?;
+        assert_eq!(
+            config.provider_api_key_from_secrets(&secrets)?,
+            "custom-store-key"
+        );
+
+        secrets.delete("acme")?;
+        assert!(
+            config.provider_api_key_from_secrets(&secrets).is_err(),
+            "unset must restore the missing-key error"
+        );
         Ok(())
     }
 

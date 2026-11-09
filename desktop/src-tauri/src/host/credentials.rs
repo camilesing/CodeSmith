@@ -27,15 +27,20 @@
 //! because this seam cannot replace or clear a config-file key (the page
 //! therefore offers no remove action for it).
 //!
+//! A key stored here is live for the runtime too: `codesmith serve` and
+//! `codesmith exec` resolve provider keys from config.toml, then the process
+//! environment, then this credential store — builtins by their provider
+//! slot, the active custom route by its `[[providers.custom]]` id. Client
+//! resolution happens at engine/thread construction, so a key saved after a
+//! backend started applies at its next start; and an environment key still
+//! wins over a page-saved one (the store is the last layer, consulted only
+//! before the missing-key error).
+//!
 //! Known limitations: `writable` is otherwise a constant `true` — the
 //! auto-detected store is writable whenever it exists, and a store that
 //! cannot write fails the write itself. The event frame rides
 //! `record-updated`; upstream's reference seam names its set/unset fan-out
-//! `reference-updated`, and the vendored page listens to both. The runtime
-//! (`codesmith serve`) resolves provider keys from config.toml and the
-//! process environment; it does not read the credential store, so a key
-//! stored only by this page reaches a running backend only when the CLI's
-//! own login/auth wrote the same key into config.toml.
+//! `reference-updated`, and the vendored page listens to both.
 
 use std::collections::HashSet;
 

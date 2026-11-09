@@ -201,10 +201,11 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   推导输出上限），`llm/discoverModels` 也因此不再返回端点列出的
   `max_tokens`；config.toml `[providers.<route>] api_key` 里的内联密钥
   现在读作已配置（绿点），但页面不能替换或移除它，运行时继续用内联值；
-  页面保存的 key 落在凭据存储，而 `codesmith serve` 只从 config.toml
-  再进程环境解析 provider key——**仅存在页面里的 key 不会进入运行中的后
-  端**（`codesmith login` / `auth set` 同时写 config.toml，页面探测的正
-  是这些内联 key）；provider 改动是运行时加载期状态，需重启 serve 才生
+  页面保存的 key 落在凭据存储，且对后端有效：`codesmith serve` 构造引
+  擎时按 config.toml → 进程环境 → 凭据存储解析 provider key（内置按
+  provider slot，活动 custom 路由按其 `[[providers.custom]]` id）——后
+  端启动后保存的 key 在重启后生效，环境变量仍会遮住页面保存的 key；
+  provider 改动是运行时加载期状态，需重启 serve 才生
   效；手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正
   服务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）
   因而永不出现。

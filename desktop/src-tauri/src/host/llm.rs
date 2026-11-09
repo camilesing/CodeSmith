@@ -40,9 +40,9 @@
 //! only after a restart; a hand-declared custom route needs a provider
 //! factory (`providers.toml` or an extension) before the runtime can serve
 //! it. Credential precedence is the runtime's (config.toml's inline
-//! `api_key`, then the environment): a key stored only in the page's
-//! credential store is reported by `credentials/describe`, but the runtime
-//! does not read that store — see `credentials.rs`.
+//! `api_key`, then the environment, then the credential store): a key saved
+//! on the Models page is live for the next backend start — see
+//! `credentials.rs`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
