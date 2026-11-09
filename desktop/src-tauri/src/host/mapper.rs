@@ -145,6 +145,12 @@ fn content_text(detail: Option<&str>) -> String {
     detail.unwrap_or_default().to_string()
 }
 
+/// The instant a replayed turn's trailing events carry: its `ended_at` when
+/// the record stamped one, else the turn's start.
+fn ended_instant(turn: &Value, turn_start: i64) -> i64 {
+    record_time(turn, &["ended_at"]).unwrap_or(turn_start)
+}
+
 /// A user message's content parts: the text part, then one part per
 /// attachment the item's additive metadata records (the runtime's turn API
 /// writes them; see `StartTurnRequest.attachments`). Upstream's
@@ -292,6 +298,9 @@ pub struct SessionMapper {
     /// usage fold derives its `routes` from `message.source`. Empty strings
     /// leave the route unattributed, which the client renders by omitting it.
     model_source: (String, String),
+    /// Whether the current turn settled a file change — its end then
+    /// announces `workspace/changes` (the changed-files card's anchor).
+    turn_has_file_changes: bool,
 }
 
 impl SessionMapper {
@@ -394,6 +403,7 @@ impl SessionMapper {
             "turn.started" => {
                 self.turn_no += 1;
                 self.step = 0;
+                self.turn_has_file_changes = false;
                 frames.push(Frame::Event(self.seq.event(
                     "turn/start",
                     json!({ "turn": self.turn_no }),
@@ -411,6 +421,19 @@ impl SessionMapper {
                     "error" | "failed" => "error",
                     _ => "completed",
                 };
+                // The turn's changed-files announcement precedes its end:
+                // the deliverables card anchors on this event's seq and the
+                // bridge's /api/changes.* routes serve its summary from the
+                // thread record.
+                if self.turn_has_file_changes {
+                    frames.push(Frame::Event(self.seq.event(
+                        "workspace/changes",
+                        json!({ "turn": self.turn_no }),
+                        false,
+                        time,
+                    )));
+                }
+                self.turn_has_file_changes = false;
                 frames.push(Frame::Event(self.seq.event(
                     "turn/end",
                     json!({ "turn": self.turn_no, "reason": { "kind": reason } }),
@@ -605,6 +628,9 @@ impl SessionMapper {
                         )));
                     }
                     "tool_call" | "command_execution" | "file_change" => {
+                        if kind == "file_change" && status != "in_progress" {
+                            self.turn_has_file_changes = true;
+                        }
                         frames.push(Frame::Event(self.seq.event(
                             "tool/result",
                             json!({
@@ -779,6 +805,12 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
         // message (preferring a text message over reasoning), mirroring the
         // live path's attachment to the final agent item.
         let mut usage_target: Option<usize> = None;
+        // Whether the turn settled a file change (the replay announces
+        // `workspace/changes` like the live path does).
+        let turn_has_file_changes = turn_items.iter().any(|item| {
+            item.get("kind").and_then(Value::as_str) == Some("file_change")
+                && item.get("status").and_then(Value::as_str) != Some("in_progress")
+        });
         for item in turn_items {
             let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
             let detail_text = item.get("detail").and_then(Value::as_str);
@@ -902,6 +934,16 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
             if let Some(data) = events.get_mut(index).map(|event| &mut event["data"]) {
                 data["usage"] = sample;
             }
+        }
+        // The changed-files announcement, when the turn settled a file
+        // change — the live path emits the same event before `turn/end`.
+        if turn_has_file_changes {
+            events.push(seq.event(
+                "workspace/changes",
+                json!({ "turn": turn_no }),
+                false,
+                ended_instant(turn, turn_start),
+            ));
         }
         if let Some(reason) = turn_end_reason(turn) {
             events.push(seq.event(
@@ -1495,6 +1537,78 @@ mod tests {
             message["data"]["message"]["source"],
             json!({ "kind": "model", "provider": "ollama", "model": "qwen2.5" })
         );
+    }
+
+    #[test]
+    fn turns_with_file_changes_announce_workspace_changes() {
+        // Live: the announcement precedes turn/end when the turn settled a
+        // file change (whatever else it did), and never appears otherwise.
+        let mut mapper = SessionMapper::default();
+        let mut frames = Vec::new();
+        for envelope in [
+            json!({ "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {} }),
+            json!({ "event": "item.started", "item_id": "item_f", "timestamp": "2026-11-06T10:00:01Z",
+                    "payload": { "item": { "id": "item_f", "kind": "file_change", "status": "in_progress" },
+                                 "tool": { "name": "write_file", "input": { "path": "a.txt" } } } }),
+            json!({ "event": "item.completed", "item_id": "item_f", "timestamp": "2026-11-06T10:00:02Z",
+                    "payload": { "item": { "id": "item_f", "kind": "file_change", "status": "completed", "detail": "@@ -0,0 +1 @@\n+hi\n" } } }),
+            json!({ "event": "turn.completed", "timestamp": "2026-11-06T10:00:03Z",
+                    "payload": { "turn": { "status": "completed" } } }),
+        ] {
+            frames.extend(mapper.map_envelope(&envelope));
+        }
+        let kinds: Vec<String> = frames
+            .iter()
+            .filter_map(|frame| match frame {
+                Frame::Event(event) => Some(event["type"].as_str().unwrap().to_string()),
+                Frame::Stream(_) => None,
+            })
+            .collect();
+        let announce = kinds
+            .iter()
+            .position(|kind| kind == "workspace/changes")
+            .expect("the file-change turn announces");
+        let end = kinds
+            .iter()
+            .position(|kind| kind == "turn/end")
+            .expect("the turn ends");
+        assert!(announce < end, "the announcement precedes the turn end");
+
+        // A turn with no file change announces nothing (live and replay).
+        let mut quiet = SessionMapper::default();
+        let frames = quiet.map_envelope(&json!({
+            "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        assert!(frames
+            .iter()
+            .all(|frame| frame.to_wire()["event"]["type"] != "workspace/changes"));
+
+        // Replay: the same announcement before the turn's end event.
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "completed", "ended_at": "2026-11-06T10:00:09Z" }],
+            "items": [
+                { "id": "item_f", "turn_id": "turn_1", "kind": "file_change",
+                  "status": "completed", "detail": "@@ -0,0 +1 @@\n+hi\n",
+                  "summary": "write_file: wrote", "started_at": "2026-11-06T10:00:01Z",
+                  "ended_at": "2026-11-06T10:00:02Z" },
+            ],
+        });
+        let events = replay_events(&detail);
+        let types: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert!(types.contains(&"workspace/changes"));
+        assert_eq!(
+            events.iter().find(|e| e["type"] == "workspace/changes").unwrap()["data"]["turn"],
+            1
+        );
+        // And its seq resolves through the replay — the changes routes
+        // address a summary by exactly this coordinate.
+        let seq = events
+            .iter()
+            .find(|e| e["type"] == "workspace/changes")
+            .unwrap()["seq"]
+            .as_i64()
+            .unwrap();
+        assert!(seq > 0);
     }
 
     #[test]

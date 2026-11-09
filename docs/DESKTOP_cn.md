@@ -113,11 +113,38 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   （`POST /v1/threads/{id}/queue`）：队列坞从 `inbox` 投影渲染它（运行时的
   `queue.updated` 事件，实时推送），排队的 prompt 在运行中的 turn 一结束就按
   FIFO 开始、每个 turn 一条（interrupt 不清队列）。`session/updateQueue` 桥接
-  队列坞的三个动作：edit（纯文本——条目的附件被丢弃，队列坞对带附件的行禁用
-  Edit）、remove、steer（把条目拉进运行中的 turn，附件随行）。缺口：
-  `serve` 重启后队列仍在，但要等下一次 prompt 或
-  turn 结束才开始（resume-idle）；排队的 turn 使用线程默认值，不带逐 prompt
-  覆盖项。
+  队列坞的三个动作：edit（纯文本；编辑现在**保留**条目的附件——vendored
+  队列坞自身对带附件的行仍禁用 Edit）、remove、steer（把条目拉进运行中的
+  turn，附件随行）。熬过 `serve` 重启的队列在客户端一观看线程事件流即恢复
+  （运行时加载引擎并排空——观看者可以应答该 turn 的审批）；开机不会无人
+  值守地触发。排队的 turn 仍使用线程默认值，不带逐 prompt 覆盖项。
+- 输入框的附件呈现是 vendored 附件插件（`client-ui-attachment`）：草稿附件
+  栏（缩略图、文件卡、重试、移除）、全屏拖放遮罩与消息图片画廊，构建在已
+  桥接的上传管线之上。遮罩自身的信号——文档拖放事件——在 wry 原生拖放
+  下永不触发，壳的 DragDrop Enter/Leave 驱动页面上的合成
+  `dragenter`/`dragleave`（`__codesmithHostDragHover`）；真正的 Drop 仍经
+  宿主路径粘贴管线到达，落定后同时清除 hover（wry 在 Drop 后不发
+  Leave）。上传进度结构性缺失：vendored 上传运行时的 custom-transport
+  钩子（负责把上传改道到桥 origin）按契约丢弃进度回调——而环回上传几十
+  毫秒内落定，进度条也不会可见地动。
+- Jobs 弹窗（`client-ui-jobs` + job-controller remote）桥到运行时的后台
+  任务：`job/list` 以整集 `rows` 帧服务该会话的任务名册（打开期间 2 秒轮
+  询），`job/follow` 把任务 timeline 流成输出环（连续 message 增量拼接，
+  其余条目各成一行 log——1 秒轮询，以终态 `status` 帧收尾），`job/kill`
+  映射到 `POST /v1/tasks/{id}/cancel`（`requested` /
+  `already-finished`；未知 id 为 `job/not-found`）。状态映射：
+  queued/running → running、completed、failed、canceled → killed。无关联
+  线程的任务不属于任何会话，名册不列出；没有进度行或字节上限可报。
+- 改动审查标签页与轮尾改动文件卡（`client-ui-deliverables`）由线程的持久
+  化工具条目供数：每个文件工具（`write_file`、`edit_file`、`apply_patch`）
+  返回 unified diff，mapper 对每个落定了文件改动的 turn 发
+  `workspace/changes` 日志事件（实时与回放一致）。桥替页面服务
+  `/api/changes.summary|diff|open`（及 `/api/present.host|open`）——页面的
+  fetch 钩子把页内相对 `/api/…` 路由携到桥 origin。一个 turn 内对同一路径
+  的多次编辑折成一行（计数累加；对比取最后一次调用的 hunks——运行时保存
+  逐调用 diff，而非 turn 首尾快照）。`changes.open` 在系统文件管理器中定
+  位该文件；`present.open`（声明文件开启器）按客户端的
+  `nativeUnavailable` 应答——CodeSmith 没有声明文件注册表。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
   前列（最近置顶在前），手动排序保持相对顺序，从未拖动过的会话按运行时
@@ -131,9 +158,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   箱策略。`/model` 走 vendored 客户端自己的贡献（经
   session/selectModel 的弹窗，已桥接）。REPL 的其余斜杠命令是
   REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
-- 上游独有概念（账户/余额、插件市场、后台任务列表、右侧栏
-  终端/文件/浏览器/预览、子代理视图、目标条、计划预览）不仿真——对应
-  插件不进 boot roster 或返回空态。
+- 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器/预览、子代理子会
+  话视图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
+  态。（Jobs 弹窗、附件呈现与改动审查标签页**已**桥接——见上文各条；右侧
+  栏文件/预览标签页待办。）
 - 附件上传已端到端桥接。输入框的上传先暂存在桥里（`fileUploads/upload`
   与原始字节路由 `api/session/uploadFileBinary`，由页面安装的
   `__CODESMITH_FILE_UPLOAD__` 钩子改道到桥的 origin），`session/prompt`

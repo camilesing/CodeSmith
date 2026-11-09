@@ -1,0 +1,87 @@
+import type { TurnTailOwnerProps } from '@codesmith/client-ui-chat/client';
+import type { ConversationNodeDefinition } from '@codesmith/client-ui-conversation/client';
+import type { MarkdownFileMentions } from '@codesmith/client-ui-primitives';
+import type { PresentedFile } from '@codesmith/tool-present/types';
+/** A declared file with its authorized open coordinates. */
+export interface PresentedPath extends PresentedFile {
+    readonly seq: number;
+    readonly index: number;
+}
+interface ProducedPath {
+    readonly path: string;
+    readonly argumentPath?: string;
+}
+/** The latest `workspace/changes` announcement of one Turn; the Host serves its summary by this sequence. */
+export interface ChangesTurnData {
+    readonly seq: number;
+}
+/** Immutable produced-file facts published against one Turn. */
+export interface DeliverablesTurnData {
+    readonly produced: readonly ProducedPath[];
+    readonly presented?: readonly PresentedPath[];
+    readonly changes?: ChangesTurnData;
+}
+declare module '@codesmith/client-ui-conversation/client' {
+    interface ConversationTurnDataMap {
+        /** Successful mutation paths, recorded changed files, and deliveries accumulated in this Turn. */
+        deliverables: DeliverablesTurnData;
+    }
+}
+interface DeliverablesState extends DeliverablesTurnData {
+    readonly turn: number;
+    readonly calls: ReadonlyMap<string, string | null>;
+}
+/**
+ * Files produced by one Turn data value.
+ *
+ * The source is successful `write`, `edit`, and mutating `str_replace_editor`
+ * calls and their recorded absolute targets; legacy results use arguments. A produced file must be
+ * listed whether or not the model remembered to name it. Reads, unsupported
+ * tools, malformed calls, and failed results contribute nothing. Paths keep
+ * first-seen order and appear once, so a file written and then edited in the
+ * same turn is one entry.
+ *
+ * The Conversation Location index owns turn membership before this function
+ * runs, so paths cannot spill across turns and this derivation does not infer
+ * boundaries from neighboring presentation Nodes. Mutations settled after the
+ * closing reply are included, matching {@link presentedForClosing}.
+ * @param data - engine-published Deliverables data for one Turn.
+ * @returns Produced paths in first-seen order; empty when the turn wrote nothing.
+ */
+export declare function producedForClosing(data: Readonly<DeliverablesTurnData> | undefined): readonly string[];
+/**
+ * Claim the turn-tail chain only when its closing turn produced files.
+ * @param owner - Turn-tail owner currency for the closing assistant.
+ * @returns Produced paths as the component's match, or null to decline before mount.
+ */
+export declare function selectProducedFiles(owner: TurnTailOwnerProps): readonly string[] | null;
+/** Turn-local successful mutation accumulator; it publishes no view Node. */
+export declare const deliverablesDefinition: ConversationNodeDefinition<DeliverablesState>;
+/**
+ * The turn's latest change announcement.
+ * @param owner - closing turn.
+ * @returns the announcement, or null when the Host recorded none.
+ */
+export declare function changesForClosing(owner: TurnTailOwnerProps): ChangesTurnData | null;
+/**
+ * Select the latest declaration of each path in the closing turn, including
+ * declarations recorded after the closing reply.
+ * @param owner - closing turn.
+ * @returns replayable deliveries in first-seen path order.
+ */
+export declare function presentedForClosing(owner: TurnTailOwnerProps): PresentedPath[];
+export { basename } from '../presented.ts';
+/**
+ * Resolves inline-code references against one turn's produced or delivered
+ * paths and explicit mutation arguments. A reference resolves only when every
+ * exact or basename match identifies one target. Ambiguous and unknown tokens stay inert.
+ * @param paths - The turn's produced or delivered paths, already deduplicated.
+ * @param openFile - The chat view's file opener.
+ * @param label - Localizes the accessible open-label for a resolved path.
+ * @param operations - successful mutations whose literal arguments may name the same canonical targets.
+ * @param getFileTriggerProps - optional gesture bindings for the resolved original path.
+ * @returns The resolver MarkdownText consumes; the full path rides `title`,
+ * the same disambiguator the row's chips carry.
+ */
+export declare function producedFileMentions(paths: readonly string[], openFile: (path: string) => void, label: (path: string) => string, operations?: readonly Pick<ProducedPath, 'path' | 'argumentPath'>[], getFileTriggerProps?: (path: string) => NonNullable<ReturnType<MarkdownFileMentions['resolve']>>['contextMenuProps']): MarkdownFileMentions;
+//# sourceMappingURL=turn-deliverables.d.ts.map

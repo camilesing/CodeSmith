@@ -8,6 +8,7 @@
 //! - attachment staging is in-memory (see `host::uploads`): receipts die
 //!   with the bridge process.
 
+pub mod changes;
 pub mod codesmith;
 pub mod commands;
 pub mod events;
@@ -815,6 +816,23 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         // extractor (which would reject `application/octet-stream`).
         .route("/api/session/uploadFileBinary", post(upload_binary_handler))
         .route("/api/host/dropBytes/{id}", get(drop_bytes_handler))
+        // The changes-review routes (host::changes): plain authenticated
+        // GET/POSTs the page's fetch hook carries here, ahead of the unary
+        // wildcard.
+        .route(
+            "/api/changes.summary",
+            get(changes::route::summary),
+        )
+        .route("/api/changes.diff", get(changes::route::diff))
+        .route(
+            "/api/changes.open",
+            get(changes::route::open).post(changes::route::open),
+        )
+        .route("/api/present.host", get(changes::route::present_host))
+        .route(
+            "/api/present.open",
+            get(changes::route::present_open).post(changes::route::present_open),
+        )
         .route("/api/{*endpoint}", post(unary_handler))
         .layer(cors)
         // The runtime's per-file attachment cap is 10MB; the same bytes as

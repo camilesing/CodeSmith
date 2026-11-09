@@ -7,7 +7,7 @@ import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
 import { installHostDropBridge } from './host-drop'
-import { bridgeUrl, initTransport } from './transport'
+import { bridgeUrl, initTransport, installApiRouteRedirect } from './transport'
 
 const g = globalThis as {
   __CODESMITH_BOOT__?: unknown
@@ -29,8 +29,11 @@ const g = globalThis as {
   }
   // The drag-drop bridge (host-path citations and staged image bytes) is
   // captured the same way: before boot, because the composer's slot injector
-  // reads `__CODESMITH_HOST_PATHS__` once at mount time.
+  // reads `__CODESMITH_HOST_PATHS__` once at mount time. The page-relative
+  // /api HTTP routes (changes review, present metadata) carry to the bridge
+  // origin the same way.
   installHostDropBridge(bridge)
+  installApiRouteRedirect(bridge)
 }
 
 // Dev affordance for the pixel baseline: `?theme=dark|light` pins the color

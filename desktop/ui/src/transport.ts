@@ -103,6 +103,29 @@ export function bridgeUrl(): string {
   return `http://127.0.0.1:${port}`
 }
 
+/**
+ * Redirect the vendored client's page-relative `/api/…` HTTP routes (the
+ * changes-review reads, the present metadata) onto the bridge origin. This
+ * page's origin serves no HTTP API — upstream's host process does — so
+ * without the redirect every such fetch would 404 against the app bundle.
+ * Absolute URLs (the unary RPCs, the mux, uploads) pass through untouched.
+ */
+export function installApiRouteRedirect(bridge: string): void {
+  const bridgeOrigin = new URL(bridge).origin
+  const nativeFetch = globalThis.fetch.bind(globalThis)
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const resolved = new URL(url, globalThis.location?.href ?? '/')
+    // Already-absolute bridge URLs (the upload hook) pass through.
+    if (resolved.pathname.startsWith('/api/') && resolved.origin !== bridgeOrigin) {
+      const target = `${bridge}${resolved.pathname}${resolved.search}`
+      return nativeFetch(target, init)
+    }
+    return nativeFetch(input as RequestInfo, init)
+  }
+}
+
 async function bridgeHealthy(): Promise<boolean> {
   try {
     const probe = new AbortController()

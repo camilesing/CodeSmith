@@ -125,12 +125,51 @@ Known limitations of the current implementation:
   `inbox` projection (the runtime's `queue.updated` event, pushed live), and
   queued prompts start FIFO, one per turn, as soon as the running turn ends
   (an interrupt keeps the queue). `session/updateQueue` bridges the dock's
-  three actions: edit (text-only — the item's attachments are dropped, and
-  the dock disables Edit on attachment rows), remove, and steer (pull the
-  item into the running turn, attachments included). Gaps: after a `serve`
-  restart the queue
-  is still there but waits for the next prompt or turn end (resume-idle);
-  a queued turn takes the thread's defaults, not per-prompt overrides.
+  three actions: edit (text-only; the edit now KEEPS the item's attachments —
+  the vendored dock still disables Edit on attachment rows, its own gate),
+  remove, and steer (pull the item into the running turn, attachments
+  included). A queue that outlives a `serve` restart resumes as soon as a
+  client watches the thread's event stream (the runtime loads the engine and
+  drains — a watcher can answer the turn's approvals); nothing fires
+  unattended at boot. A queued turn still takes the thread's defaults, not
+  per-prompt overrides.
+- The composer's attachment presentation is the vendored attachment plugin
+  (`client-ui-attachment`): the draft attachment rail (thumbnails, file
+  cards, retry, remove), the full-viewport drop overlay, and the message
+  image galleries, over the bridged upload pipeline. The overlay's own
+  signal — document drag events — never fires under wry's native
+  drag-drop, so the shell's DragDrop Enter/Leave drive synthetic
+  `dragenter`/`dragleave` on the page (`__codesmithHostDragHover`); the
+  drop itself still arrives through the host-path paste intake, which also
+  clears the hover (wry emits no Leave after a Drop). Upload progress is
+  structurally absent: the vendored upload runtime's custom-transport hook
+  (which carries uploads to the bridge origin) drops the progress callback
+  by contract — and loopback uploads settle in tens of milliseconds, so
+  the bar would never visibly move.
+- The jobs popover (`client-ui-jobs` + the job-controller remote) is bridged
+  onto the runtime's background tasks: `job/list` serves the session's task
+  roster as whole-set `rows` frames (2s poll while open), `job/follow`
+  streams a task's timeline as the output ring (consecutive message deltas
+  concatenate; every other entry is one log line — 1s poll, ending with the
+  terminal `status` frame), and `job/kill` maps onto
+  `POST /v1/tasks/{id}/cancel` (`requested` / `already-finished`;
+  `job/not-found` for an unknown id). Status mapping: queued/running →
+  running, completed, failed, canceled → killed. A task with no linked
+  thread belongs to no session, so no roster lists it; there is no progress
+  line or byte cap to report.
+- The changes-review tab and changed-files card (`client-ui-deliverables`)
+  are served from the thread's durable tool items: every file tool
+  (`write_file`, `edit_file`, `apply_patch`) returns a unified diff, and the
+  mapper announces each turn that settled a file change with a
+  `workspace/changes` journal event (live and on replay). The bridge serves
+  `/api/changes.summary|diff|open` (+ `/api/present.host|open`) on the page's
+  behalf — the page's fetch hook carries page-relative `/api/…` routes to
+  the bridge origin. Repeated edits to one path in a turn fold into one row
+  (counts sum; the comparison is the last call's hunks — the runtime keeps
+  per-call diffs, not turn-start/end snapshots). `changes.open` reveals the
+  file in the OS file manager; `present.open` (the declared-file opener)
+  answers the client's `nativeUnavailable` — CodeSmith has no declared-file
+  registry.
 - Sidebar pins and the manual session order are desktop-shell state,
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned
@@ -150,10 +189,12 @@ Known limitations of the current implementation:
   over `session/selectModel`, already bridged). The REPL's other slash
   commands are REPL-local and stay out of the catalog, so their
   "/"-prefixed lines fall through and submit as ordinary prompts.
-- Upstream-only concepts (accounts/balance, plugin market, jobs list,
-  sidebar terminal/files/browser/preview, subagent views, goal bar, plan
+- Upstream-only concepts (accounts/balance, plugin market, sidebar
+  terminal/browser/preview, subagent child-session views, goal bar, plan
   preview) are not simulated — their plugins stay out of the boot roster or
-  answer empty states.
+  answer empty states. (The jobs popover, the attachment presentation and
+  the changes-review tab ARE bridged — see their bullets above; the sidebar
+  files/preview tabs are pending.)
 - Attachment upload IS bridged, end to end. The composer's uploads stage in
   the bridge (`fileUploads/upload`, and the raw-bytes
   `api/session/uploadFileBinary` route, carried to the bridge origin by the
