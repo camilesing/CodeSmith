@@ -12,7 +12,11 @@
 //! answers one `{configured, source?, writable}` view per reference — never
 //! the value — and `set`/`unset` write through `Secrets` and follow with a
 //! `credentials/record-updated` event frame on `$events` so every open
-//! surface re-reads.
+//! surface re-reads. A store-backed value reports source `file` — the
+//! vendored page's spelling for "saved by this page's credential provider"
+//! (upstream's local provider labels its store `file`); an environment hit
+//! reports `env`. The label names the page's branch, not the physical
+//! backend: CodeSmith's file store and OS keychain are both page-writable.
 //!
 //! Known limitations: `writable` is a constant `true` — the auto-detected
 //! store is writable whenever it exists, and a store that cannot write
@@ -107,7 +111,7 @@ fn describe_refs(secrets: &Secrets, refs: &[String]) -> serde_json::Map<String, 
         let view = match secrets.resolve_with_source(&slot) {
             Some((_, SecretSource::Keyring)) => json!({
                 "configured": true,
-                "source": "keyring",
+                "source": "file",
                 "writable": true,
             }),
             Some((_, SecretSource::Env)) => json!({
@@ -262,7 +266,9 @@ mod tests {
         let views = describe_refs(&secrets, &[ref_of_slot("openrouter"), ref_of_slot("novita")]);
         let configured = &views[&ref_of_slot("openrouter")];
         assert_eq!(configured["configured"], true);
-        assert_eq!(configured["source"], "keyring");
+        // The vendored page's "saved" branch is `source === 'file'`; its local
+        // provider labels the page-writable store that way.
+        assert_eq!(configured["source"], "file");
         assert_eq!(configured["writable"], true);
         assert!(
             !configured.to_string().contains("sk-live-value"),

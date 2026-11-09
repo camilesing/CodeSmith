@@ -214,11 +214,16 @@ Known limitations of the current implementation:
   `llm/discoverModels` answers a named route from the runtime catalog or
   reqwest-GETs `{base_url}/models` with the key (the one the form just
   typed, else the route's stored credential; OpenAI-compatible
-  `{data: […]}`). `credentials/describe|set|unset` map onto the keyring
-  (`crates/secrets`; a reference's slot is the lowercase `codesmith login`
-  provider slug), describe answering only `{configured, source?, writable}`
-  — never the value — and set/unset pushing a `credentials/record-updated`
-  event frame. The namespace revision counter lives in
+  `{data: […]}`; its two-parameter remote packs its args object-keyed, so
+  the draft rides under `request` — `{settingsNs, request: {provider?,
+  baseURL?, apiKey?}}`). `credentials/describe|set|unset` map onto the
+  keyring (`crates/secrets`; a reference's slot is the lowercase
+  `codesmith login` provider slug), describe answering only
+  `{configured, source?, writable}` — never the value — and set/unset
+  pushing a `credentials/record-updated` event frame; `source` is `file`
+  for a store-supplied value (the vendored page's spelling for "saved by
+  this page's credential provider", whichever backend holds it) and `env`
+  for a process-environment hit. The namespace revision counter lives in
   `desktop/settings.json`; a stale `expectedRevision` is refused as
   `settings/conflict`. The page's built-in welcome notice reads a
   `ui-settings-general` namespace, now served too (its default is the
@@ -226,10 +231,13 @@ Known limitations of the current implementation:
   once and its own dismiss persists). Known limitations: config.toml
   configures ONE model per provider — a write naming two or more rows is
   refused, not silently dropped; a model row's `maxTokens` has no config
-  home (typed, saved as absent); provider edits are load-time state for the
-  runtime, so a running `codesmith serve` needs a restart; a hand-declared
-  custom route still needs a provider factory (`providers.toml` or an
-  extension) before the runtime can serve it; the first-run onboarding
+  home (typed, saved as absent); a key stored inline in
+  `[providers.<route>] api_key` is not a keyring credential, so the page's
+  key dot reads it as missing until the key is re-entered there (the
+  runtime keeps using the inline one); provider edits are load-time state
+  for the runtime, so a running `codesmith serve` needs a restart; a
+  hand-declared custom route still needs a provider factory (`providers.toml`
+  or an extension) before the runtime can serve it; the first-run onboarding
   dialog depends on a `llm-deepseek` namespace (not served) and never
   appears.
 - Upstream-only concepts (accounts/balance, plugin market, sidebar

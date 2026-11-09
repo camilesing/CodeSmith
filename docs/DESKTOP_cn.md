@@ -177,20 +177,26 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   custom 条目，custom 标 declared=true），`llm/listProviders` 取自运行时
   `/v1/models`，`llm/discoverModels` 无 baseURL 时以命名路由查运行时目
   录、有 baseURL 时 reqwest 携 key GET `{base_url}/models`（OpenAI 兼容
-  `{data:[…]}`，键取表单现填的或该路由已存的）。`credentials/
-  describe|set|unset` 映射到 keyring（`crates/secrets`，slot 即
-  `codesmith login` 的 provider_slot 小写 slug），describe 只回
-  `{configured, source?, writable}` 绝不回值，set/unset 后推
-  `credentials/record-updated` 事件帧。revision 计数存于
+  `{data:[…]}`，键取表单现填的或该路由已存的；这个双参数 remote 的 args
+  按参数名打包，草稿在 `request` 下——`{settingsNs, request: {provider?,
+  baseURL?, apiKey?}}`）。`credentials/describe|set|unset` 映射到
+  keyring（`crates/secrets`，slot 即 `codesmith login` 的 provider_slot
+  小写 slug），describe 只回 `{configured, source?, writable}` 绝不回
+  值，set/unset 后推 `credentials/record-updated` 事件帧；`source` 为
+  `file` 表示值来自凭据存储（vendored 页面称"本页保存的凭据"的写法，
+  不论底层是文件还是系统 keychain），`env` 表示进程环境变量命中。
+  revision 计数存于
   `desktop/settings.json`，过期 `expectedRevision` 以 `settings/conflict`
   拒绝。页面内建 welcome-notice 走的 `ui-settings-general` namespace 也已
   服务（默认值即当前版本号——通知默认隐藏，上游升版后出现一次、自 dismissed
   落盘）。已知限制：config.toml 每 provider 只配一个模型——写两个及以上
   模型行会被拒绝（不会静默丢）；模型行的 `maxTokens` 无 config 归宿（可
-  输入、存为空）；provider 改动是运行时加载期状态，需重启 serve 才生效；
-  手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正服
-  务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）因
-  而永不出现。
+  输入、存为空）；写在 config.toml `[providers.<route>] api_key` 里的内
+  联密钥不是 keyring 凭据，页面密钥点会读作缺失、直到在页面重填一次（运
+  行时仍用内联值）；provider 改动是运行时加载期状态，需重启 serve 才生
+  效；手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正
+  服务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）
+  因而永不出现。
 - 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器、子代理子会话视
   图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
   态。（Jobs 弹窗、附件呈现、改动审查标签页与右侧栏文件/预览标签页**已**

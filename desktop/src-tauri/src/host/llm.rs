@@ -667,6 +667,22 @@ pub async fn list_providers(host: &HostState) -> Value {
     }
 }
 
+/// The draft fields of one `llm/discoverModels` call. The remote takes two
+/// parameters (`settingsNs`, `request`), and the gateway packs a client's
+/// args object-keyed, so the draft rides under `request` — reading it off the
+/// top level always finds an empty draft.
+fn discovery_draft(args: &Value) -> (Option<&str>, Option<&str>, Option<&str>) {
+    let request = args.get("request");
+    let provider = request.and_then(|r| r.get("provider")).and_then(Value::as_str);
+    let base_url = request
+        .and_then(|r| r.get("baseURL"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty());
+    let api_key = request.and_then(|r| r.get("apiKey")).and_then(Value::as_str);
+    (provider, base_url, api_key)
+}
+
 /// `llm/discoverModels` — one endpoint interrogation. With a `baseURL` the
 /// bridge asks the endpoint's own model listing (OpenAI-compatible
 /// `{data: [...]}`); without one, a named route answers from the runtime's
@@ -680,12 +696,7 @@ pub async fn discover_models(host: &HostState, args: &Value) -> Value {
             format!("llm/discoverModels: unknown settings namespace {ns:?}"),
         );
     }
-    let provider = args.get("provider").and_then(Value::as_str);
-    let base_url = args
-        .get("baseURL")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|url| !url.is_empty());
+    let (provider, base_url, api_key) = discovery_draft(args);
     let Some(base_url) = base_url else {
         let Some(provider) = provider else {
             return rpc_error(
@@ -722,7 +733,7 @@ pub async fn discover_models(host: &HostState, args: &Value) -> Value {
             ),
         };
     };
-    interrogate_endpoint(base_url, provider, args.get("apiKey").and_then(Value::as_str)).await
+    interrogate_endpoint(base_url, provider, api_key).await
 }
 
 /// GET `{base}/models` with the key the form typed, else the named route's
@@ -839,6 +850,30 @@ mod tests {
             }?;
         }
         Some(node)
+    }
+
+    #[test]
+    fn discovery_reads_the_object_keyed_request() {
+        // `llm/discoverModels(settingsNs, request)` is a two-parameter remote;
+        // the gateway packs its args object-keyed, so the draft is nested.
+        let args = json!({
+            "settingsNs": NS,
+            "request": {
+                "provider": "openai",
+                "baseURL": " http://127.0.0.1:18080/v1 ",
+                "apiKey": "sk-typed",
+            },
+        });
+        let (provider, base_url, api_key) = discovery_draft(&args);
+        assert_eq!(provider, Some("openai"));
+        assert_eq!(base_url, Some("http://127.0.0.1:18080/v1"));
+        assert_eq!(api_key, Some("sk-typed"));
+        // A draft with no fields (the add card's first probe) exposes none.
+        let empty = json!({ "settingsNs": NS, "request": { "baseURL": "  " } });
+        let (provider, base_url, api_key) = discovery_draft(&empty);
+        assert!(provider.is_none());
+        assert!(base_url.is_none());
+        assert!(api_key.is_none());
     }
 
     #[test]
