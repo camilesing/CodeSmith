@@ -1641,8 +1641,8 @@ async fn enqueue_thread_item(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-/// `PATCH /v1/threads/{id}/queue/{item_id}` — text-only edit (attachments
-/// are dropped, upstream parity).
+/// `PATCH /v1/threads/{id}/queue/{item_id}` — text-only edit (the item's
+/// attachments stay as enqueued).
 async fn edit_thread_queue_item(
     State(state): State<RuntimeApiState>,
     Path((id, item_id)): Path<(String, String)>,
@@ -1754,11 +1754,24 @@ async fn stream_thread_events(
     Path(id): Path<String>,
     Query(query): Query<ThreadEventsQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>>, ApiError> {
-    let _ = state
+    let thread = state
         .runtime_threads
         .get_thread(&id)
         .await
         .map_err(map_thread_err)?;
+    // Resume-idle: a restored queue (a serve restart between enqueue and
+    // turn) starts once a client watches the thread — the watcher can answer
+    // the turn's approvals. Never blocks the stream open; a no-op whenever
+    // the queue is empty or the thread is busy.
+    if !thread.queue.is_empty() {
+        let runtime = state.runtime_threads.clone();
+        let thread_id = id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = runtime.resume_queued_on_watch(&thread_id).await {
+                tracing::warn!("queue resume on watch of {thread_id} failed: {err:#}");
+            }
+        });
+    }
 
     // Subscribe before reading the backlog so no event can slip between the
     // snapshot and the subscription; the `seq <= last_seq` check inside the

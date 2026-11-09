@@ -2402,9 +2402,26 @@ impl RuntimeThreadManager {
         }
     }
 
+    /// Resume a restored queue once a client watches the thread's event
+    /// stream (resume-idle). A queued item whose engine never loaded (a
+    /// serve restart) would otherwise wait for the next prompt or turn end,
+    /// even though nothing is running and a watcher is now present to answer
+    /// the turn's approvals. A no-op whenever the queue is empty or the
+    /// thread is busy.
+    pub async fn resume_queued_on_watch(&self, thread_id: &str) -> Result<()> {
+        let thread = self.get_thread(thread_id).await?;
+        if thread.queue.is_empty() {
+            return Ok(());
+        }
+        self.ensure_engine_loaded(&thread).await?;
+        self.drain_queue(thread_id).await;
+        Ok(())
+    }
+
     /// `PATCH /threads/{id}/queue/{item_id}`: replace one queued item's
-    /// text. Text-only, like upstream's queue edit — the item's attachments
-    /// are dropped and its summary follows the new text.
+    /// text. A text edit changes only the words — the item's attachments
+    /// (appendix, image paths, metadata) stay exactly as enqueued; dropping
+    /// them silently thinned a reworded prompt.
     pub async fn edit_queued(
         &self,
         thread_id: &str,
@@ -2423,9 +2440,6 @@ impl RuntimeThreadManager {
             };
             item.input_summary = summarize_text(&text, SUMMARY_LIMIT);
             item.text = text;
-            item.appendix = None;
-            item.image_paths = Vec::new();
-            item.attachments_metadata = None;
             Ok(Some(item.clone()))
         })
         .await?
@@ -5672,7 +5686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_queued_replaces_text_and_drops_attachments() -> Result<()> {
+    async fn edit_queued_replaces_text_and_keeps_attachments() -> Result<()> {
         let _home = ScratchHome::mount();
         let manager = test_manager(test_runtime_dir())?;
         let thread = attachment_thread(&manager).await?;
@@ -5712,10 +5726,9 @@ mod tests {
             .await?;
         assert_eq!(edited.text, "edited words");
         assert!(
-            edited.image_paths.is_empty()
-                && edited.appendix.is_none()
-                && edited.attachments_metadata.is_none(),
-            "an edit is text-only: attachments are dropped"
+            !edited.image_paths.is_empty()
+                && edited.attachments_metadata.is_some(),
+            "a text edit changes only the words: the attachments stay as enqueued"
         );
         let detail = manager.get_thread_detail(&thread.id).await?;
         assert_eq!(detail.queue[0].text, "edited words");
