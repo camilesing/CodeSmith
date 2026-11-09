@@ -164,9 +164,55 @@ const bridgeRpc = (bridge: string): ClientConnectionRpc => ({
     if (!resp.ok) {
       return { ok: false, error: { code: 'gateway/internal', message: `bridge ${endpoint}: HTTP ${resp.status}`, details: {} } }
     }
+    const mediaType = resp.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+    if (mediaType === 'multipart/form-data') return parseBinaryResult(await resp.formData())
     return (await resp.json()) as RpcResult
   },
 })
+
+/**
+ * Decode the bridge's binary-answer form (workspaceFiles/readBytes): a
+ * `metadata` field carrying the `{ok, value}` envelope plus an attachments
+ * manifest, and one binary part per attachment to plant at its path — the
+ * vendored result codecs only accept a real Uint8Array, which JSON cannot
+ * carry.
+ */
+async function parseBinaryResult(form: FormData): Promise<RpcResult> {
+  const metadata = form.get('metadata')
+  if (typeof metadata !== 'string') {
+    return { ok: false, error: { code: 'gateway/internal', message: 'binary response without metadata', details: {} } }
+  }
+  const envelope = JSON.parse(metadata) as {
+    ok: boolean
+    value?: unknown
+    error?: { code: string; message: string; details: Record<string, unknown> }
+    attachments?: { codec: 'bytes'; part: string; path: (string | number)[] }[]
+  }
+  if (!envelope.ok) {
+    return { ok: false, error: envelope.error ?? { code: 'gateway/internal', message: 'binary response failed', details: {} } }
+  }
+  const root: { value: unknown } = { value: envelope.value }
+  for (const attachment of envelope.attachments ?? []) {
+    const part = form.get(attachment.part)
+    if (!(part instanceof Blob)) {
+      return { ok: false, error: { code: 'gateway/internal', message: `binary response lacks part ${attachment.part}`, details: {} } }
+    }
+    // Plant the bytes at the manifest's path; the envelope carries null at
+    // the leaf (the bridge's own contract, both ends ours).
+    let parent: Record<string, unknown> | unknown[] = root
+    let key: string | number = 'value'
+    for (const segment of attachment.path) {
+      const container = (parent as Record<string, unknown>)[key]
+      if (typeof container !== 'object' || container === null) {
+        return { ok: false, error: { code: 'gateway/internal', message: 'binary response path mismatch', details: {} } }
+      }
+      parent = container as Record<string, unknown> | unknown[]
+      key = segment
+    }
+    ;(parent as Record<string, unknown>)[key] = new Uint8Array(await part.arrayBuffer())
+  }
+  return { ok: true, value: root.value }
+}
 
 function offlineBadge(): void {
   const badge = document.createElement('div')

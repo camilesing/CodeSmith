@@ -73,10 +73,11 @@ REQUIRED_ENTRIES = [
 # shortcuts reference, the trajectory view, the schedule page over
 # /v1/automations, the attachment presentation — the composer's attachment
 # rail and drop overlay, over the bridged upload pipeline — the jobs popover
-# over /v1/tasks, and the changes-review tab over the runtime's per-call
-# file-tool diffs). Upstream pages with no CodeSmith equivalent (plugins,
-# account, goal, plan preview, sidebar terminal/files/browser/preview) stay
-# unvendored so they never appear.
+# over /v1/tasks, the changes-review tab over the runtime's per-call
+# file-tool diffs, and the sidebar files tree + document preview over the
+# session workspace). Upstream pages with no CodeSmith equivalent (plugins,
+# account, goal, plan preview, sidebar terminal/browser) stay unvendored so
+# they never appear.
 EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-approval",
     "@deepseek-ai/dsh-client-ui-user-questions",
@@ -93,6 +94,9 @@ EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-jobs",
     "@deepseek-ai/dsh-api-job-controller",
     "@deepseek-ai/dsh-client-ui-deliverables",
+    "@deepseek-ai/dsh-client-ui-sidebar-files",
+    "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+    "@deepseek-ai/dsh-api-workspace-files",
 ]
 
 # Scan roots for scoped packages inside the upstream checkout.

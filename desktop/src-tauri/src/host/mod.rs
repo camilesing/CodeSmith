@@ -12,6 +12,7 @@ pub mod changes;
 pub mod codesmith;
 pub mod commands;
 pub mod events;
+pub mod files;
 pub mod host_drop;
 pub mod jobs;
 pub mod mapper;
@@ -400,6 +401,12 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(commands::Outcome::Miss) => json!({ "ok": true }),
             Err(err) => rpc_error(err.code, err.message),
         },
+        // The files tree and preview reads (host::files), over the session
+        // workspace.
+        "workspaceFileScope" => files::scope(host, args_of(payload)).await,
+        "workspaceFiles/list" => files::list(host, args_of(payload)).await,
+        "workspaceFiles/read" => files::read(host, args_of(payload)).await,
+        "workspaceFiles/stat" => files::stat(host, args_of(payload)).await,
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
@@ -454,6 +461,8 @@ pub async fn open_stream(
             .await
             .map_err(|err| stream_failure("gateway/internal", format!("job/list: {err:#}"))),
         "job/follow" => jobs::follow(host, args_of(payload), &tx).await,
+        // The files tab's watch feed (host::files).
+        "workspaceFiles/changes" => files::changes(host, args_of(payload), &tx).await,
         // The runtime's user-input requests carry no tool call id, so the
         // client never opens a foreground claim; an explicit attachWait (a
         // continued question) has no answerable wait here and ends with no
@@ -756,8 +765,46 @@ async fn unary_handler(
     body: Option<Json<Value>>,
 ) -> Response {
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    // `workspaceFiles/readBytes` answers multipart/form-data: the client's
+    // strict result codec only accepts a real Uint8Array, which JSON cannot
+    // carry — the envelope holds `data: null` and an attachments manifest,
+    // and the bytes ride as a binary part the page's carrier plants.
+    if endpoint == "workspaceFiles/readBytes" {
+        return match files::read_bytes(&host, &payload).await {
+            Ok((mut value, bytes)) => multipart_response(&mut value, bytes),
+            Err(error) => Json(error).into_response(),
+        };
+    }
     let result = dispatch(&host, &endpoint, &payload).await;
     Json(result).into_response()
+}
+
+/// One binary-answer RPC response: the `metadata` field (the `{ok, value}`
+/// envelope with an attachments manifest naming the bytes part and its path
+/// inside the value) plus the part itself. Both ends are ours, so the
+/// envelope is the plain rpc shape, not the connection's server-response.
+fn multipart_response(value: &mut Value, bytes: Vec<u8>) -> Response {
+    let part = "bytes-0";
+    if let Some(object) = value.as_object_mut() {
+        object.insert("attachments".into(), json!([{ "codec": "bytes", "part": part, "path": ["data"] }]));
+    }
+    let envelope = json!({ "ok": true, "value": value });
+    let boundary = format!("cds-{}", uuid::Uuid::new_v4());
+    let mut body: Vec<u8> = Vec::new();
+    let metadata = envelope.to_string();
+    body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"metadata\"\r\ncontent-type: application/json\r\n\r\n{metadata}\r\n").as_bytes());
+    body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"{part}\"\r\ncontent-type: application/octet-stream\r\n\r\n").as_bytes());
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(&format!("multipart/form-data; boundary={boundary}"))
+                .expect("boundary is header-safe"),
+        )],
+        body,
+    )
+        .into_response()
 }
 
 /// The vendored client's raw-bytes upload route — every image and every

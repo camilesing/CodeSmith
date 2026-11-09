@@ -158,10 +158,24 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   箱策略。`/model` 走 vendored 客户端自己的贡献（经
   session/selectModel 的弹窗，已桥接）。REPL 的其余斜杠命令是
   REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
-- 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器/预览、子代理子会
-  话视图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
-  态。（Jobs 弹窗、附件呈现与改动审查标签页**已**桥接——见上文各条；右侧
-  栏文件/预览标签页待办。）
+- 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器、子代理子会话视
+  图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
+  态。（Jobs 弹窗、附件呈现、改动审查标签页与右侧栏文件/预览标签页**已**
+  桥接——见各条。）
+- 右侧栏文件树与文档预览（`client-ui-sidebar-files` +
+  `client-ui-sidebar-documentpreview`，经 `workspaceFiles` remote，
+  `host::files`）直接读会话工作区：`workspaceFileScope` 从线程记录解析
+  根，`list` 服务单层目录（工作区路径词汇、词法上锁死在根内），`read`
+  分页读文本，`stat` 给新鲜度令牌（`mtime:size`），`changes` 是 1 秒
+  stat 轮询、推上游的 `ready`/`change` 帧。`readBytes` 以
+  multipart/form-data 应答——值信封带 `data: null` 与附件清单，字节作为
+  二进制 part 随行，由页面 carrier 植回（客户端的严格 codec 只接受真
+  `Uint8Array`）。渲染器为 vendored 纯 web 集合（markdown、代码、文
+  本、图片、PDF、Excel/CSV）；OFFICE 渲染器的宿主转换 RPC
+  （`officeToPdf/render`，上游需宿主进程内的 LibreOffice）未实现、按
+  `method-unavailable` 应答，office 文件预览为其不可用态。读取拒绝末段
+  符号链接（上游自身的门），`baseFile` 相对解析未实现（预览按绝对路径
+  寻址文件）。
 - 附件上传已端到端桥接。输入框的上传先暂存在桥里（`fileUploads/upload`
   与原始字节路由 `api/session/uploadFileBinary`，由页面安装的
   `__CODESMITH_FILE_UPLOAD__` 钩子改道到桥的 origin），`session/prompt`

@@ -61,6 +61,7 @@
     "@codesmith/api-session-controller": "workspace:*",
     "@codesmith/util-values": "workspace:*",
     "@codesmith/util-workspace-path": "workspace:*",
+    "@codesmith/api-workspace-files": "workspace:*",
     "@codesmith/client-ui-settings": "workspace:*",
     "@codesmith/client-ui-context-menu": "workspace:*"
   },

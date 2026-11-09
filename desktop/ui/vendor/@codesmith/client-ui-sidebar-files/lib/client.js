@@ -1,0 +1,2251 @@
+window.__ModuleLoader__.load({
+	id: "@codesmith/client-ui-sidebar-files",
+	factory: (require) => {
+		var module = { exports: {} };
+		var exports = module.exports;
+		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+		let _codesmith_client_ui_primitives = require("@codesmith/client-ui-primitives");
+		let _codesmith_client_store = require("@codesmith/client-store");
+		require("@codesmith/cordis");
+		let react_jsx_runtime = require("react/jsx-runtime");
+		let react = require("react");
+		//#region lib/types/client/definition.js
+		/** The tab kind this package owns. */
+		const FILES_KIND = "files";
+		/** This implementation's identity in the tab system, and the key its body registers under. */
+		const FILES_ID = "@codesmith/client-ui-sidebar-files";
+		/**
+		* The files type's registry definition.
+		* @param t - namespace-bound translate, read fresh on every label call.
+		* @returns the definition to register.
+		*/
+		function filesDefinition(t) {
+			return {
+				id: FILES_ID,
+				kind: FILES_KIND,
+				priority: "builtin",
+				title: () => t("type.label"),
+				guide: [{
+					id: "workspace",
+					commandId: "workspace.files",
+					order: 10,
+					title: () => t("guide.title"),
+					description: () => t("guide.description"),
+					icon: _codesmith_client_ui_primitives.GuideArtworkFiles
+				}]
+			};
+		}
+		//#endregion
+		//#region ../../util/workspace-path/src/file-address.ts
+		/** The scheme and type every file address opens with. */
+		const FILE_ADDRESS_PREFIX = "cds-resource://file/";
+		/** Component-encode one id or path segment, keeping `:` literal for drive letters. */
+		function encodeSegment(segment) {
+			return encodeURIComponent(segment).replace(/%3A/gi, ":");
+		}
+		/** Encode a `/`-separated path segment by segment. */
+		function encodePath(path) {
+			return path.split("/").map(encodeSegment).join("/");
+		}
+		/** Whether a decoded first path segment is a Windows drive (`C:`). */
+		function isDriveSegment(segment) {
+			return segment !== void 0 && /^[A-Za-z]:$/.test(segment);
+		}
+		/**
+		* Build the address of a file read through one Session.
+		* @param sessionId - the Session whose Host workspace resolves the path.
+		* @param path - absolute or workspace-relative path; backslashes are normalized to `/`, and leading `./` prefixes are dropped.
+		* @returns the `cds-resource://file/session/<sessionId>/<path>` address.
+		*/
+		function sessionFileAddress(sessionId, path) {
+			const normalized = path.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+			return `${FILE_ADDRESS_PREFIX}session/${encodeSegment(sessionId)}/${encodePath(normalized)}`;
+		}
+		/**
+		* Read a file address back into its parts without resolving `.` or `..`.
+		* Query and fragment suffixes are ignored; encoded path segments are decoded.
+		* @param address - a candidate address.
+		* @returns the parts, or `undefined` when the string is not a `cds-resource://file/` URI in a known scope with a path, or a segment is not validly encoded.
+		*/
+		function parseFileAddress(address) {
+			try {
+				if (!address.startsWith(FILE_ADDRESS_PREFIX)) return void 0;
+				const end = address.search(/[?#]/);
+				const [scope, ...rest] = address.slice(20, end === -1 ? void 0 : end).split("/");
+				if (scope === "session") {
+					const [id, ...segments] = rest;
+					if (id === void 0 || id === "" || segments.length === 0) return void 0;
+					return {
+						scope,
+						sessionId: decodeURIComponent(id),
+						path: segments.map(decodeURIComponent).join("/")
+					};
+				}
+				if (scope === "absolute") {
+					const unc = rest[0] === "" && rest.length > 1;
+					const segments = (unc ? rest.slice(1) : rest).map(decodeURIComponent);
+					if (segments.length === 0 || segments[0] === "") return void 0;
+					if (unc) return {
+						scope,
+						path: `//${segments.join("/")}`
+					};
+					return {
+						scope,
+						path: isDriveSegment(segments[0]) ? segments.join("/") : `/${segments.join("/")}`
+					};
+				}
+				return;
+			} catch {
+				return;
+			}
+		}
+		//#endregion
+		//#region ../../util/workspace-path/src/index.ts
+		/**
+		* Browser-safe Workspace path and display helpers.
+		* @module @codesmith/util-workspace-path
+		*/
+		/** Whether a path uses a Windows drive or UNC prefix. */
+		function isWindowsStylePath(value) {
+			return /^[A-Za-z]:[/\\]/.test(value) || value.startsWith("\\\\");
+		}
+		/**
+		* Whether a path is absolute in either spelling the Host accepts: POSIX (`/a/b`) or Windows drive or UNC.
+		* @param path - the path to classify.
+		* @returns `true` for an absolute path; `false` for a Workspace-relative one.
+		*/
+		function isAbsoluteWorkspacePath(path) {
+			return path.startsWith("/") || isWindowsStylePath(path);
+		}
+		/**
+		* The address for a path as a caller holds it: a relative path, or an absolute
+		* path inside the Session's workspace, becomes a `session`-scoped address; an
+		* absolute path outside it, or one whose workspace root is unknown, keeps its
+		* absolute path in that Session's address.
+		* @param sessionId - the Session the path is read in.
+		* @param cwd - that Session's workspace root, when known.
+		* @param path - absolute or workspace-relative path, in either separator spelling.
+		* @returns the `cds-resource://file/…` address.
+		*/
+		function fileAddressFor(sessionId, cwd, path) {
+			const normalized = path.replace(/\\/g, "/");
+			if (!isAbsoluteWorkspacePath(normalized)) return sessionFileAddress(sessionId, normalized);
+			const root = cwd === void 0 ? "" : cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+			if (root !== "" && normalized === root) return sessionFileAddress(sessionId, "");
+			if (root !== "" && normalized.startsWith(`${root}/`)) return sessionFileAddress(sessionId, normalized.slice(root.length + 1));
+			return sessionFileAddress(sessionId, normalized);
+		}
+		/** The narrowest navigator, when the row has room for it. */
+		const NAVIGATOR_MINIMUM = 180;
+		/** What a navigator floating over the row leaves of it uncovered. */
+		const ROW_REMAINDER = 120;
+		/**
+		* Fit the navigator to the row it shares with the preview. In a row at least
+		* `PUSH_FROM` wide the navigator sits beside the body, so it is at most the
+		* row less its card's margins and `PREVIEW_MINIMUM`; in a narrower row it
+		* floats over the body and is at most the row less `ROW_REMAINDER`.
+		* @param available - the row's width in CSS pixels; `undefined` before it is measured.
+		* @param width - the pane's width preference.
+		* @returns the resize bounds and the width drawn.
+		*/
+		function navigatorGeometry(available, width) {
+			if (available === void 0) {
+				const drawn = Math.max(NAVIGATOR_MINIMUM, width);
+				return {
+					minimum: NAVIGATOR_MINIMUM,
+					maximum: drawn,
+					width: drawn
+				};
+			}
+			const maximum = Math.max(0, available - (available >= 560 ? 336 : ROW_REMAINDER));
+			const minimum = Math.min(NAVIGATOR_MINIMUM, maximum);
+			return {
+				minimum,
+				maximum,
+				width: Math.min(Math.max(minimum, width), maximum)
+			};
+		}
+		/**
+		* The absolute path of one child entry.
+		*
+		* Joined with `/` whatever the parent's separators: the Host resolves mixed
+		* separators, and the tree only needs a stable key.
+		* @param parent - absolute path of the listed directory.
+		* @param name - the entry's basename.
+		* @returns the child's absolute path.
+		*/
+		function childPath(parent, name) {
+			return `${parent.replace(/[/\\]+$/, "")}/${name}`;
+		}
+		/**
+		* Whether a root is a Windows drive or UNC path, in either separator spelling,
+		* where names compare regardless of case.
+		* @param root - the tree's root, or a prefix built from it.
+		* @returns `true` for a drive letter followed by a separator, or a leading double separator.
+		*/
+		function windowsRoot(root) {
+			const path = root.replace(/\\/g, "/");
+			return /^[A-Za-z]:\//.test(path) || path.startsWith("//");
+		}
+		/**
+		* Walk the listed levels to a workspace-relative file, keeping the listing's
+		* spelling of each name; a Windows root also matches names regardless of case.
+		* @param tree - the pane's tree.
+		* @param relativePath - the file's path under the tree's root, `/`-separated.
+		* @returns the ancestors found so far, the file's tree key, and whether a level is pending.
+		*/
+		function locateFile(tree, relativePath) {
+			const caseless = windowsRoot(tree.root);
+			const parts = relativePath.split("/");
+			const ancestors = [];
+			let parent = tree.root;
+			for (const [index, part] of parts.entries()) {
+				const level = tree.levels[parent];
+				if (level?.kind !== "ready") return {
+					ancestors,
+					current: void 0,
+					pending: level === void 0 || level.kind === "loading"
+				};
+				const type = index === parts.length - 1 ? "file" : "directory";
+				const candidates = level.level.entries.filter((entry) => entry.type === type);
+				const entry = candidates.find((candidate) => candidate.name === part) ?? (caseless ? candidates.find((candidate) => candidate.name.toLowerCase() === part.toLowerCase()) : void 0);
+				if (entry === void 0) return {
+					ancestors,
+					current: void 0,
+					pending: level.refreshing === true
+				};
+				const path = childPath(parent, entry.name);
+				if (type === "directory") ancestors.push({
+					parent,
+					path
+				});
+				parent = path;
+			}
+			return {
+				ancestors,
+				current: parent,
+				pending: false
+			};
+		}
+		/**
+		* The workspace-relative path of the file a tab shows, when it is a file of
+		* this Session under the tree's root; dot segments are not resolved here. An
+		* absolute path is under a Windows drive or UNC root regardless of case and
+		* separator spelling, and under a POSIX root only with the root's exact case.
+		* @param address - the tab's content address.
+		* @param sessionId - the Session the tree lists.
+		* @param root - the tree's root.
+		* @returns the `/`-separated relative path, or `undefined` for anything else.
+		*/
+		function relativeFileOf(address, sessionId, root) {
+			const file = parseFileAddress(address);
+			if (file?.scope !== "session" || file.sessionId !== sessionId) return void 0;
+			const path = file.path.replace(/\\/g, "/");
+			const normalized = isAbsoluteWorkspacePath(path) ? underRoot(path, root) : path;
+			if (normalized === void 0 || normalized === "" || isAbsoluteWorkspacePath(normalized)) return void 0;
+			return normalized.split("/").some((part) => part === "" || part === "." || part === "..") ? void 0 : normalized;
+		}
+		/**
+		* An absolute `/`-separated path relative to a tree's root.
+		* @param path - the absolute path, `/`-separated.
+		* @param root - the tree's root, in either separator spelling.
+		* @returns the path under the root, or `undefined` outside it.
+		*/
+		function underRoot(path, root) {
+			const prefix = `${root.replace(/\\/g, "/").replace(/\/+$/, "")}/`;
+			const head = path.slice(0, prefix.length);
+			return (windowsRoot(prefix) ? head.toLowerCase() === prefix.toLowerCase() : head === prefix) ? path.slice(prefix.length) : void 0;
+		}
+		/**
+		* One pane's record, created by its first write.
+		* @param state - the draft.
+		* @param paneId - the pane being written.
+		* @returns the pane's record.
+		*/
+		function pane(state, paneId) {
+			state.byPane[paneId] ??= {
+				open: void 0,
+				width: 260,
+				tree: void 0
+			};
+			return state.byPane[paneId];
+		}
+		/**
+		* One pane's tree, which every writer after `start` relies on: the face only
+		* dispatches while it holds the pane's records, and `forget` runs as it drops them.
+		* @param state - the draft.
+		* @param paneId - the pane being written.
+		* @returns the pane's tree.
+		*/
+		function tree(state, paneId) {
+			const started = state.byPane[paneId]?.tree;
+			if (started === void 0) throw new Error(`ui-sidebar-files: no tree for pane "${paneId}"`);
+			return started;
+		}
+		/**
+		* Declare the file tree's store.
+		*
+		* A factory rather than a shared handle: the registration declares it as an
+		* exclusive store, so the framework mints one instance per session.
+		* @returns the store handle to declare on the registration.
+		*/
+		function createFilesStore() {
+			return (0, _codesmith_client_store.defineStore)({
+				init: () => ({ byPane: {} }),
+				actions: {
+					autoRefresh: (d, paneId, enabled) => {
+						tree(d, paneId).autoRefresh = enabled;
+					},
+					/**
+					* Seed one pane's tree at its workspace root, with the root expanded.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param root - absolute path of the workspace root.
+					*/
+					start: (d, paneId, root) => {
+						pane(d, paneId).tree = {
+							root,
+							levels: {},
+							expanded: [root],
+							autoRefresh: true
+						};
+					},
+					/**
+					* Mark one directory as being listed; a listed level keeps its entries and is marked refreshing.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param path - absolute directory path.
+					*/
+					loading: (d, paneId, path) => {
+						const state = tree(d, paneId);
+						const level = state.levels[path];
+						if (level?.kind !== "ready") state.levels[path] = { kind: "loading" };
+						else if (level.refreshing !== true) state.levels[path] = {
+							...level,
+							refreshing: true
+						};
+					},
+					/**
+					* Record one directory's contents.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param path - absolute directory path.
+					* @param level - the listing to show under it.
+					*/
+					loaded: (d, paneId, path, level) => {
+						const state = tree(d, paneId);
+						const previous = state.levels[path];
+						if (previous?.kind === "ready") {
+							const directories = new Set(level.entries.filter((entry) => entry.type === "directory").map((entry) => entry.name));
+							for (const entry of previous.level.entries) {
+								if (entry.type !== "directory" || directories.has(entry.name)) continue;
+								const removed = childPath(path, entry.name);
+								state.expanded = state.expanded.filter((value) => value !== removed && !value.startsWith(`${removed}/`));
+								state.levels = Object.fromEntries(Object.entries(state.levels).filter(([key]) => key !== removed && !key.startsWith(`${removed}/`)));
+							}
+						}
+						state.levels[path] = {
+							kind: "ready",
+							level
+						};
+					},
+					/**
+					* Record why one directory could not be listed, and end the refresh of the levels below it.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param path - absolute directory path.
+					* @param failure - the settled Remote failure.
+					*/
+					failed: (d, paneId, path, failure) => {
+						const state = tree(d, paneId);
+						const level = state.levels[path];
+						state.levels[path] = level?.kind === "ready" ? {
+							kind: "ready",
+							level: level.level,
+							failure
+						} : {
+							kind: "failed",
+							failure
+						};
+						const below = `${path.replace(/[/\\]+$/, "")}/`;
+						for (const [key, kept] of Object.entries(state.levels)) {
+							if (!key.startsWith(below) || kept.kind !== "ready" || kept.refreshing !== true) continue;
+							state.levels[key] = kept.failure === void 0 ? {
+								kind: "ready",
+								level: kept.level
+							} : {
+								kind: "ready",
+								level: kept.level,
+								failure: kept.failure
+							};
+						}
+					},
+					/**
+					* Open a collapsed directory, or collapse an open one.
+					*
+					* A collapsed level keeps what it loaded, so reopening it draws at once.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param path - absolute directory path.
+					*/
+					toggled: (d, paneId, path) => {
+						const state = tree(d, paneId);
+						const at = state.expanded.indexOf(path);
+						if (at >= 0) state.expanded.splice(at, 1);
+						else state.expanded.push(path);
+					},
+					/**
+					* Show or hide one pane's navigator.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param open - whether the navigator is shown.
+					*/
+					shown: (d, paneId, open) => {
+						pane(d, paneId).open = open;
+					},
+					/**
+					* Record one pane's navigator width preference.
+					* @param d - draft state.
+					* @param paneId - the pane being drawn.
+					* @param width - the preferred width, in CSS pixels.
+					*/
+					resized: (d, paneId, width) => {
+						pane(d, paneId).width = width;
+					},
+					/**
+					* Forget one pane's navigator and tree.
+					* @param d - draft state.
+					* @param paneId - the pane whose records go.
+					*/
+					forget: (d, paneId) => {
+						d.byPane = Object.fromEntries(Object.entries(d.byPane).filter(([id]) => id !== paneId));
+					}
+				}
+			});
+		}
+		//#endregion
+		//#region ../../typert/protocol/src/remote-error.ts
+		/**
+		* One Remote call failure: a real Error carrying its stable code and typed
+		* details. Owners throw it at the failure point; the Host Gateway encodes it
+		* onto the wire unchanged; the Client face rebuilds an instance for the
+		* `RemoteResult` error branch, so `throw result.error` keeps throw semantics.
+		* Discrimination is always by `code`, never by instanceof.
+		*/
+		var RemoteError = class extends Error {
+			code;
+			details;
+			/** Structural marker: cross-realm/bundle identification never uses instanceof. */
+			isCodeSmithRemoteError = true;
+			/**
+			* @param code - stable failure code declared in {@link RemoteErrorDetailsMap}.
+			* @param message - human diagnostic carried across the wire.
+			* @param details - structured payload typed by the code.
+			* @param options - standard Error options (`cause` survives in-process only).
+			*/
+			constructor(code, message, details, options) {
+				super(message, options);
+				this.code = code;
+				this.details = details;
+				this.name = "RemoteError";
+			}
+		};
+		//#endregion
+		//#region ../../typert/protocol/src/index.ts
+		/**
+		* Remote decorators and explicit Gateway bindings backed by versioned
+		* descriptors carried on decorated class prototypes. Strict reflection
+		* remains a Typert compiler responsibility.
+		* @module @codesmith/typert-protocol
+		*/
+		//#endregion
+		//#region lib/types/client/directory-node.js
+		/** One open directory and its active child nodes; cached view preferences live in the store. */
+		var DirectoryNode = class DirectoryNode {
+			path;
+			load;
+			watch;
+			failed;
+			restore;
+			/** Open direct-child directories, keyed by absolute path. */
+			children = /* @__PURE__ */ new Map();
+			controller = new AbortController();
+			signal;
+			task;
+			reading;
+			dirty = false;
+			initialized = false;
+			automatic = true;
+			constructor(path, load, watch, failed, lifetime, restore = []) {
+				this.path = path;
+				this.load = load;
+				this.watch = watch;
+				this.failed = failed;
+				this.restore = restore;
+				this.signal = AbortSignal.any([lifetime, this.controller.signal]);
+			}
+			/**
+			* Start observation once; readiness triggers the initial listing.
+			* @returns this node.
+			*/
+			open() {
+				this.task ??= this.follow();
+				return this;
+			}
+			/**
+			* Find an active node in this subtree.
+			* @param path - absolute directory path.
+			* @returns the matching node, or undefined when that directory is closed.
+			*/
+			find(path) {
+				if (path === this.path) return this;
+				for (const child of this.children.values()) {
+					const found = child.find(path);
+					if (found !== void 0) return found;
+				}
+			}
+			/**
+			* Update the expansion preferences used by pending directory listings.
+			* @param expanded - latest expansion preferences from the store.
+			*/
+			setExpanded(expanded) {
+				this.restore = expanded;
+				for (const child of this.children.values()) child.setExpanded(expanded);
+			}
+			/**
+			* Open a direct child using this node's lifetime and automatic-refresh setting.
+			* @param path - absolute direct-child directory path.
+			* @param restore - descendant expansion preferences to restore after listing.
+			* @returns the active child, or undefined after cancellation.
+			*/
+			expand(path, restore = []) {
+				if (this.signal.aborted) return void 0;
+				let child = this.children.get(path);
+				if (child === void 0) {
+					child = new DirectoryNode(path, this.load, this.watch, this.failed, this.signal, restore);
+					child.automatic = this.automatic;
+					this.children.set(path, child);
+				}
+				return child.open();
+			}
+			/**
+			* Remove a child and its pending restoration preferences.
+			* @param path - absolute direct-child directory path.
+			* @returns once the child subtree's reads and watches have ended.
+			*/
+			async collapse(path) {
+				this.restore = this.restore.filter((value) => value !== path && !value.startsWith(`${path}/`));
+				const child = this.children.get(path);
+				this.children.delete(path);
+				await child?.close();
+			}
+			/**
+			* Control subtree rereads without ending subscriptions.
+			* @param enabled - refresh dirty nodes automatically.
+			*/
+			setAutomatic(enabled) {
+				this.automatic = enabled;
+				if (enabled && this.dirty) this.refresh();
+				for (const child of this.children.values()) child.setAutomatic(enabled);
+			}
+			/** Queue a reread, coalescing with active work. @returns completion of the active read and its coalesced rereads. */
+			refresh() {
+				this.dirty = true;
+				this.reading ??= this.read();
+				return this.reading;
+			}
+			/** Refresh this node and its open descendants. @returns once their listings settle. */
+			async refreshTree() {
+				await this.refresh();
+				await Promise.all([...this.children.values()].map((child) => child.refreshTree()));
+			}
+			/** Cancel the active subtree. @returns once all owned reads and watches have ended. */
+			async close() {
+				this.controller.abort();
+				await Promise.all([
+					this.task,
+					this.reading,
+					...[...this.children.values()].map((child) => child.close())
+				]);
+				this.children.clear();
+			}
+			async follow() {
+				try {
+					for await (const _event of this.watch(this.path, this.signal)) {
+						this.dirty = true;
+						if (!this.initialized || this.automatic) this.refresh();
+					}
+				} catch (error) {
+					if (!this.signal.aborted) {
+						if (!this.initialized) await this.refresh();
+						if (!(typeof error === "object" && error !== null && "code" in error && error.code === "workspace-file/watch-unsupported")) this.failed(this.path, error);
+					}
+				}
+			}
+			async read() {
+				const readAgain = () => this.dirty && this.automatic && !this.signal.aborted;
+				try {
+					do {
+						this.dirty = false;
+						const level = await this.load(this.path, this.signal);
+						if (this.signal.aborted || level === void 0) return;
+						this.initialized = true;
+						const directories = new Set(level.entries.filter((entry) => entry.type === "directory").map((entry) => `${this.path.replace(/[/\\]+$/, "")}/${entry.name}`));
+						for (const path of this.children.keys()) if (!directories.has(path)) await this.collapse(path);
+						for (const path of directories) if (this.restore.includes(path)) this.expand(path, this.restore);
+						this.restore = [];
+					} while (readAgain());
+				} finally {
+					this.reading = void 0;
+				}
+			}
+		};
+		//#endregion
+		//#region lib/types/client/navigator-layout.js
+		/** Matches the right Sidebar's fullscreen viewport and FilesBody.module.css. */
+		const FULLSCREEN_QUERY = "(width < 768px)";
+		//#endregion
+		//#region lib/types/client/face.js
+		/**
+		* The box an element is laid out in: its nearest ancestor that generates one,
+		* passing over wrappers drawn with `display: contents`.
+		* @param element - the laid-out element.
+		* @returns that ancestor, or `null` for a detached element.
+		*/
+		function layoutParent(element) {
+			let parent = element.parentElement;
+			while (parent !== null && getComputedStyle(parent).display === "contents") parent = parent.parentElement;
+			return parent;
+		}
+		/**
+		* Bind directory observation to the Remote stream supervisor.
+		* @param remote - Client Remote with workspace file streams.
+		* @returns a watcher that awaits stream disposal when its node ends.
+		*/
+		function createWatch(remote) {
+			return async function* (sessionId, path, signal) {
+				const aborted = () => signal.aborted;
+				if (aborted()) return;
+				const stream = remote.$stream({
+					name: `directory ${path}`,
+					open: (lifetime) => remote.workspaceFiles.changes(sessionId, path, lifetime),
+					ended: () => /* @__PURE__ */ new Error(`Directory watch ended: ${path}`)
+				});
+				const abort = () => {
+					stream.dispose();
+				};
+				signal.addEventListener("abort", abort, { once: true });
+				try {
+					for await (const item of stream) {
+						if (aborted()) return;
+						if (item.value.kind === "ready") item.accept();
+						yield item.value.kind;
+					}
+				} finally {
+					signal.removeEventListener("abort", abort);
+					await stream.dispose();
+				}
+			};
+		}
+		/**
+		* Bind the listing to one Remote face.
+		* @param remote - the Client Remote face carrying the `workspaceFiles` namespace.
+		* @returns the listing the tree's face performs.
+		*/
+		function createList(remote) {
+			return async (sessionId, path, signal) => {
+				const result = await remote.workspaceFiles.list(sessionId, path, signal);
+				if (!result.ok) return result;
+				return {
+					ok: true,
+					value: {
+						entries: result.value.entries,
+						truncated: result.value.truncated
+					}
+				};
+			};
+		}
+		/**
+		* Observe whether any registered tab type can open an address.
+		* @param registry - the right Sidebar's tab type registry.
+		* @returns a source whose snapshot is a predicate, replaced whenever registrations change.
+		*/
+		function canOpenOf(registry) {
+			let seen = registry.entries();
+			let check = (address) => registry.candidates(address).length > 0;
+			return {
+				getSnapshot: () => {
+					const entries = registry.entries();
+					if (entries !== seen) {
+						seen = entries;
+						check = (address) => registry.candidates(address).length > 0;
+					}
+					return check;
+				},
+				subscribe: (listener) => registry.subscribe(listener)
+			};
+		}
+		/** `focus` asked for the tree's keyboard focus. */
+		const REQUESTED = {};
+		/**
+		* Bind the tree's face to one directory listing.
+		* @param list - the bound `workspaceFiles.list` call.
+		* @param watch - target-scoped directory observation.
+		* @param canOpen - whether some tab type can open an address.
+		* @param navigationOf - the attached tab's navigation; subscriptions end with this plugin or their disposer.
+		* @returns the face factory: session, its store instance, and where to place the face beside tabs in, face out.
+		*/
+		function filesFace(list, watch, canOpen, navigationOf) {
+			return (sessionId, store, place) => {
+				const { actions } = store;
+				const panes = /* @__PURE__ */ new Map();
+				const record = (paneId) => {
+					let pane = panes.get(paneId);
+					if (pane === void 0) {
+						pane = {
+							lifetime: void 0,
+							mounts: 0,
+							tabs: /* @__PURE__ */ new Set(),
+							holds: 0,
+							root: void 0,
+							scrollTop: 0,
+							revealed: void 0,
+							revealing: void 0,
+							drawn: void 0,
+							current: void 0,
+							scrollToCurrent: false,
+							focus: void 0,
+							show: false,
+							width: (0, _codesmith_client_store.createSnapshotStore)(void 0),
+							navigator: void 0,
+							closable: false,
+							unobserve: void 0,
+							toggle: void 0
+						};
+						panes.set(paneId, pane);
+					}
+					return pane;
+				};
+				/** Each open tab's latest pane. */
+				const homes = /* @__PURE__ */ new Map();
+				const forget = (paneId, pane) => {
+					pane.lifetime?.abort();
+					pane.root?.close();
+					pane.root = void 0;
+					pane.unobserve?.();
+					panes.delete(paneId);
+					actions.forget(paneId);
+				};
+				const settle = (paneId, pane) => {
+					if (pane.mounts > 0 || pane.tabs.size > 0) return;
+					queueMicrotask(() => {
+						if (pane.mounts === 0 && pane.tabs.size === 0 && panes.get(paneId) === pane) forget(paneId, pane);
+					});
+				};
+				const leave = (tabId, home) => {
+					home.pane.tabs.delete(tabId);
+					settle(home.paneId, home.pane);
+				};
+				const load = async (paneId, path, signal) => {
+					const aborted = () => signal.aborted;
+					if (aborted()) return void 0;
+					actions.loading(paneId, path);
+					const result = await list(sessionId, path, signal);
+					if (aborted()) return void 0;
+					if (result.ok) actions.loaded(paneId, path, result.value);
+					else actions.failed(paneId, path, result.error);
+					return result.ok ? result.value : void 0;
+				};
+				let batching = false;
+				const batch = (write) => {
+					batching = true;
+					try {
+						write();
+					} finally {
+						batching = false;
+					}
+				};
+				const relisting = (paneId, paths) => {
+					for (const path of paths) if (store.getSnapshot().byPane[paneId]?.tree?.levels[path]?.kind === "ready") actions.loading(paneId, path);
+				};
+				const drop = (paneId) => {
+					const pane = panes.get(paneId);
+					if (pane !== void 0 && pane.lifetime === void 0) settle(paneId, pane);
+				};
+				const expand = (paneId, parentPath, path, expanded, manual) => {
+					const pane = panes.get(paneId);
+					const root = pane?.root;
+					if (pane === void 0 || root === void 0) return;
+					const parent = root.find(parentPath);
+					if (parent === void 0 && !expanded.includes(parentPath)) return;
+					const collapsing = expanded.includes(path);
+					if (manual && collapsing && pane.revealing !== void 0) {
+						pane.revealed = pane.revealing;
+						pane.revealing = void 0;
+					}
+					const next = collapsing ? expanded.filter((value) => value !== path) : [...expanded, path];
+					root.setExpanded(next);
+					if (collapsing) parent?.collapse(path);
+					else parent?.expand(path, next);
+					batch(() => {
+						actions.toggled(paneId, path);
+						if (!collapsing) relisting(paneId, next.filter((value) => value === path || value.startsWith(childPath(path, ""))));
+					});
+					reveal();
+				};
+				const focusTree = (pane) => {
+					const handoff = {};
+					pane.focus = handoff;
+					queueMicrotask(() => {
+						if (pane.focus !== handoff) return;
+						pane.focus = void 0;
+						(pane.current ?? pane.drawn?.body)?.focus();
+					});
+				};
+				const step = (paneId, pane) => {
+					const address = pane.revealing;
+					const tree = store.getSnapshot().byPane[paneId]?.tree;
+					if (address === void 0 || tree === void 0 || pane.root === void 0) return;
+					const path = relativeFileOf(address, sessionId, tree.root);
+					const location = path === void 0 ? void 0 : locateFile(tree, path);
+					const next = location?.ancestors.find((ancestor) => !tree.expanded.includes(ancestor.path));
+					if (next !== void 0) {
+						expand(paneId, next.parent, next.path, tree.expanded, false);
+						return;
+					}
+					if (location?.pending === true) return;
+					pane.revealing = void 0;
+					pane.revealed = address;
+					if (location?.current === void 0) return;
+					if (pane.current === void 0) pane.scrollToCurrent = true;
+					else pane.current.scrollIntoView({
+						block: "nearest",
+						inline: "nearest"
+					});
+				};
+				const reveal = () => {
+					for (const [paneId, pane] of panes) if (pane.revealing !== void 0) step(paneId, pane);
+				};
+				store.subscribe(() => {
+					if (!batching) reveal();
+				});
+				const open = (paneId, pane, signal, root) => {
+					if (pane.root?.path === root) return;
+					pane.root?.close();
+					const tree = store.getSnapshot().byPane[paneId]?.tree;
+					const kept = tree?.root === root ? tree : void 0;
+					if (kept === void 0) {
+						actions.start(paneId, root);
+						pane.scrollTop = 0;
+						pane.revealed = void 0;
+						pane.revealing = pane.drawn?.address;
+					}
+					const node = new DirectoryNode(root, (path, lifetime) => load(paneId, path, lifetime), (path, lifetime) => watch(sessionId, path, lifetime), (path, error) => {
+						if (pane.root === node) actions.failed(paneId, path, new RemoteError("gateway/internal", error instanceof Error ? error.message : String(error), {}));
+					}, signal, kept?.expanded);
+					if (kept !== void 0) node.setAutomatic(kept.autoRefresh);
+					pane.root = node;
+					node.open();
+					if (kept !== void 0) batch(() => {
+						relisting(paneId, kept.expanded);
+					});
+					step(paneId, pane);
+				};
+				const answerNavigation = (home) => {
+					if (home.mounts === 0) return;
+					const navigation = home.navigation.getSnapshot();
+					if (navigation.revision <= home.revision) return;
+					const { pane, paneId } = home;
+					if (store.getSnapshot().byPane[paneId]?.open !== true) {
+						home.revision = navigation.revision;
+						return;
+					}
+					const navigator = pane.navigator;
+					if (navigator === void 0 || pane.drawn?.address !== navigation.address) return;
+					const row = layoutParent(navigator);
+					if (row === null) return;
+					home.revision = navigation.revision;
+					const window = row.ownerDocument.defaultView;
+					if (pane.closable && (row.getBoundingClientRect().width < 400 || typeof window?.matchMedia === "function" && window.matchMedia("(width < 768px)").matches)) face.hide(paneId);
+				};
+				const answerDrawn = (pane) => {
+					for (const home of homes.values()) if (home.pane === pane) answerNavigation(home);
+				};
+				const face = {
+					attach(paneId, tabId, tabSignal) {
+						if (tabSignal.aborted) {
+							drop(paneId);
+							return () => {};
+						}
+						const pane = record(paneId);
+						pane.lifetime ??= new AbortController();
+						if (pane.show) {
+							pane.show = false;
+							actions.shown(paneId, true);
+						}
+						pane.mounts += 1;
+						let home = homes.get(tabId);
+						if (home === void 0) {
+							const first = {
+								paneId,
+								pane,
+								mounts: 0,
+								revision: 0,
+								navigation: navigationOf(sessionId, tabId)
+							};
+							home = first;
+							homes.set(tabId, first);
+							const unsubscribe = first.navigation.subscribe(() => {
+								answerNavigation(first);
+							});
+							tabSignal.addEventListener("abort", () => {
+								unsubscribe();
+								homes.delete(tabId);
+								leave(tabId, first);
+							}, { once: true });
+						} else if (home.pane !== pane) {
+							leave(tabId, home);
+							home.paneId = paneId;
+							home.pane = pane;
+						}
+						home.mounts += 1;
+						pane.tabs.add(tabId);
+						answerNavigation(home);
+						let attached = true;
+						return () => {
+							if (!attached) return;
+							attached = false;
+							pane.mounts -= 1;
+							home.mounts -= 1;
+							settle(paneId, pane);
+						};
+					},
+					placeBeside: (tabId) => place(tabId, face),
+					hold(paneId, root) {
+						const pane = panes.get(paneId);
+						if (pane?.lifetime === void 0) return () => {};
+						pane.holds += 1;
+						open(paneId, pane, pane.lifetime.signal, root);
+						let held = true;
+						return () => {
+							if (!held) return;
+							held = false;
+							pane.holds -= 1;
+							queueMicrotask(() => {
+								if (pane.holds > 0) return;
+								pane.root?.close();
+								pane.root = void 0;
+							});
+						};
+					},
+					refresh: (paneId) => {
+						panes.get(paneId)?.root?.refreshTree();
+					},
+					setAutoRefresh: (paneId, enabled) => {
+						actions.autoRefresh(paneId, enabled);
+						panes.get(paneId)?.root?.setAutomatic(enabled);
+					},
+					toggle: (paneId, parentPath, path, expanded) => {
+						expand(paneId, parentPath, path, expanded, true);
+					},
+					scrolled: (paneId, scrollTop) => {
+						const pane = panes.get(paneId);
+						if (pane?.lifetime !== void 0) pane.scrollTop = scrollTop;
+					},
+					hide(paneId) {
+						const pane = panes.get(paneId);
+						if (pane?.lifetime === void 0) return;
+						const navigator = pane.navigator;
+						const held = pane.focus !== void 0 || navigator?.contains(navigator.ownerDocument.activeElement) === true;
+						pane.focus = void 0;
+						actions.shown(paneId, false);
+						if (held) queueMicrotask(() => {
+							panes.get(paneId)?.toggle?.focus();
+						});
+					},
+					focus(paneId) {
+						const pane = panes.get(paneId);
+						if (pane === void 0) return;
+						if (pane.lifetime === void 0) pane.show = true;
+						else actions.shown(paneId, true);
+						if (pane.drawn === void 0) pane.focus = REQUESTED;
+						else focusTree(pane);
+					},
+					bodyDrawn(paneId, address, body) {
+						if (body === null) {
+							const pane = panes.get(paneId);
+							if (pane === void 0) return;
+							const gone = pane.drawn?.body;
+							pane.drawn = void 0;
+							pane.revealing = void 0;
+							pane.scrollToCurrent = false;
+							drop(paneId);
+							if (gone?.contains(gone.ownerDocument.activeElement) !== true) return;
+							const handoff = {};
+							pane.focus = handoff;
+							queueMicrotask(() => {
+								if (pane.focus === handoff) pane.focus = void 0;
+							});
+							return;
+						}
+						const pane = record(paneId);
+						pane.drawn = {
+							body,
+							address
+						};
+						body.scrollTop = pane.scrollTop;
+						if (pane.focus !== void 0) focusTree(pane);
+						pane.revealing = pane.revealed === address ? void 0 : address;
+						step(paneId, pane);
+					},
+					currentDrawn(paneId, row) {
+						if (row === null) {
+							const pane = panes.get(paneId);
+							if (pane !== void 0) pane.current = void 0;
+							drop(paneId);
+							return;
+						}
+						const pane = record(paneId);
+						pane.current = row;
+						if (!pane.scrollToCurrent) return;
+						pane.scrollToCurrent = false;
+						row.scrollIntoView({
+							block: "nearest",
+							inline: "nearest"
+						});
+					},
+					navigatorDrawn(paneId, navigator, closable) {
+						const pane = navigator === null ? panes.get(paneId) : record(paneId);
+						if (pane === void 0) return;
+						pane.unobserve?.();
+						pane.unobserve = void 0;
+						pane.navigator = navigator ?? void 0;
+						pane.closable = closable;
+						if (navigator === null) {
+							drop(paneId);
+							return;
+						}
+						const row = layoutParent(navigator);
+						if (row === null) return;
+						const document = row.ownerDocument;
+						let edge;
+						const handOff = () => {
+							const held = edge;
+							if (held === void 0) return;
+							const active = document.activeElement;
+							if (active !== held && active !== document.body && active !== null) {
+								edge = void 0;
+								return;
+							}
+							if (held.isConnected && getComputedStyle(held).display !== "none") {
+								if (active !== held) edge = void 0;
+								return;
+							}
+							edge = void 0;
+							focusTree(pane);
+						};
+						const focusin = (event) => {
+							edge = event.target instanceof Element && event.target.hasAttribute("data-files-navigator-resize") ? event.target : void 0;
+						};
+						const focusout = (event) => {
+							if (event.relatedTarget === null) queueMicrotask(handOff);
+							else edge = void 0;
+						};
+						const viewport = closable && typeof matchMedia === "function" ? matchMedia(FULLSCREEN_QUERY) : void 0;
+						let filling = false;
+						const hidden = (element) => getComputedStyle(element).visibility === "hidden";
+						let covered;
+						const release = (event) => {
+							const target = event.target;
+							covered = event.relatedTarget === null && target instanceof Element && !navigator.contains(target) && hidden(target) ? target : void 0;
+						};
+						const forget = () => {
+							covered = void 0;
+						};
+						const measure = () => {
+							const active = document.activeElement;
+							const blurred = covered;
+							covered = void 0;
+							const width = row.getBoundingClientRect().width;
+							const fills = closable && (width < 400 || viewport?.matches === true);
+							const entering = fills && !filling;
+							filling = fills;
+							pane.width.set(width);
+							answerDrawn(pane);
+							const inContent = active !== null && row.contains(active) && !navigator.contains(active);
+							const blurredByFill = blurred !== void 0 && (active === null || active === document.body) && row.contains(blurred) && hidden(blurred);
+							if (entering && store.getSnapshot().byPane[paneId]?.open === true && (inContent || blurredByFill) && pane.focus === void 0) focusTree(pane);
+							if (edge !== void 0) queueMicrotask(handOff);
+						};
+						const close = (event) => {
+							if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+							if (!(event.target instanceof Node) || !row.contains(event.target)) return;
+							event.preventDefault();
+							pane.toggle?.focus();
+							actions.shown(paneId, false);
+						};
+						measure();
+						const observer = new ResizeObserver(measure);
+						observer.observe(row);
+						viewport?.addEventListener("change", measure);
+						if (closable) {
+							document.addEventListener("keydown", close);
+							row.addEventListener("focusout", release);
+							document.addEventListener("focusin", forget, true);
+							document.addEventListener("pointerdown", forget, true);
+							window.addEventListener("blur", forget);
+						}
+						navigator.addEventListener("focusin", focusin);
+						navigator.addEventListener("focusout", focusout);
+						pane.unobserve = () => {
+							observer.disconnect();
+							viewport?.removeEventListener("change", measure);
+							document.removeEventListener("keydown", close);
+							row.removeEventListener("focusout", release);
+							document.removeEventListener("focusin", forget, true);
+							document.removeEventListener("pointerdown", forget, true);
+							window.removeEventListener("blur", forget);
+							navigator.removeEventListener("focusin", focusin);
+							navigator.removeEventListener("focusout", focusout);
+						};
+					},
+					toggleDrawn(paneId, toggle) {
+						if (toggle !== null) {
+							record(paneId).toggle = toggle;
+							return;
+						}
+						const pane = panes.get(paneId);
+						if (pane !== void 0) pane.toggle = void 0;
+						drop(paneId);
+					},
+					hooks: { canOpen },
+					keyedHooks: { rowWidth: (paneId) => record(paneId).width }
+				};
+				return face;
+			};
+		}
+		//#endregion
+		//#region ../../../node_modules/.pnpm/clsx@2.1.1/node_modules/clsx/dist/clsx.mjs
+		function r(e) {
+			var t, f, n = "";
+			if ("string" == typeof e || "number" == typeof e) n += e;
+			else if ("object" == typeof e) if (Array.isArray(e)) {
+				var o = e.length;
+				for (t = 0; t < o; t++) e[t] && (f = r(e[t])) && (n && (n += " "), n += f);
+			} else for (f in e) e[f] && (n && (n += " "), n += f);
+			return n;
+		}
+		function clsx() {
+			for (var e, t, f = 0, n = "", o = arguments.length; f < o; f++) (e = arguments[f]) && (t = r(e)) && (n && (n += " "), n += t);
+			return n;
+		}
+		//#endregion
+		//#region \0cds-css:/upstream/packages/client/ui-sidebar-files/src/client/FileTree.module.css.mjs
+		const css$1 = ".aK_JrW_level{margin:0;padding:0;list-style:none}.aK_JrW_level .aK_JrW_level{padding-left:18px}.aK_JrW_item{margin:0;padding:0}.aK_JrW_row{border-radius:var(--dsw-radius-md);align-items:center;width:100%;min-width:0;display:flex}.aK_JrW_action{min-width:0;color:inherit;font:inherit;text-align:left;border-radius:var(--dsw-radius-md);cursor:pointer;background:0 0;border:0;flex:1;align-items:center;gap:6px;padding:5px 10px;display:flex}.aK_JrW_accessory:empty{display:none}.aK_JrW_accessory{flex:none;align-items:center;padding-right:10px;display:flex}@media (hover:hover){.aK_JrW_row:hover{background:var(--dsw-alias-interactive-bg-hover)}.aK_JrW_current:hover{background:var(--dsw-alias-interactive-bg-active)}}.aK_JrW_current{background:var(--dsw-alias-interactive-bg-active)}.aK_JrW_icon{color:var(--dsw-alias-label-tertiary);flex:none}.aK_JrW_fileIcon{flex:none}.aK_JrW_name{white-space:nowrap;text-overflow:ellipsis;min-width:0;overflow:hidden}.aK_JrW_hidden{color:var(--dsw-alias-label-secondary)}.aK_JrW_other{color:var(--dsw-alias-label-tertiary);cursor:default}@media (hover:hover){.aK_JrW_inactive:hover{background:0 0}}.aK_JrW_note{color:var(--dsw-alias-label-tertiary);margin:0;padding:3px 10px;font-size:12px}";
+		const tagId$1 = "@codesmith/client-ui-sidebar-files/FileTree.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
+			const tag = document.createElement("style");
+			tag.dataset.plugin = "@codesmith/client-ui-sidebar-files";
+			tag.dataset.pluginCss = tagId$1;
+			tag.textContent = css$1;
+			document.head.appendChild(tag);
+		}
+		var FileTree_module_css_default = {
+			"accessory": "aK_JrW_accessory",
+			"action": "aK_JrW_action",
+			"current": "aK_JrW_current",
+			"fileIcon": "aK_JrW_fileIcon",
+			"hidden": "aK_JrW_hidden",
+			"icon": "aK_JrW_icon",
+			"inactive": "aK_JrW_inactive",
+			"item": "aK_JrW_item",
+			"level": "aK_JrW_level",
+			"name": "aK_JrW_name",
+			"note": "aK_JrW_note",
+			"other": "aK_JrW_other",
+			"row": "aK_JrW_row"
+		};
+		//#endregion
+		//#region lib/types/client/FileTree.js
+		/**
+		* A controlled file tree Component Factory over flat entries. The caller owns
+		* the data, which directories are expanded, each directory's listing
+		* state, and what a click does; the tree derives each entry's level from its
+		* path, adds the directories the paths imply, orders every drawn level, and
+		* draws the rows and their icons. It redraws when its
+		* props or the occurrence's local selection change, and orders a drawn level
+		* again only when the names or directory kinds in that level change.
+		*/
+		/** No row accessory unless the caller selects a local Component. */
+		function EmptyAccessory() {
+			return null;
+		}
+		/** Natural, case-insensitive name order, so `file2` precedes `file10`. */
+		const byName = new Intl.Collator(void 0, {
+			numeric: true,
+			sensitivity: "base"
+		});
+		/**
+		* The key of the level an entry is listed in.
+		* @param path - the entry's key.
+		* @param root - the root's key.
+		* @returns the part of `path` before its last `/`, or `root` when it has none.
+		*/
+		function parentOf$1(path, root) {
+			const slash = path.lastIndexOf("/");
+			return slash < 0 ? root : path.slice(0, slash);
+		}
+		/**
+		* Group entries under their parent keys, adding the directories their paths imply.
+		* @param entries - the caller's entries; a repeated `path` keeps its first entry.
+		* @param root - the root's key.
+		* @returns each parent key's children.
+		*/
+		function levelsOf(entries, root) {
+			const byPath = /* @__PURE__ */ new Map();
+			for (const entry of entries) if (entry.path !== root && !byPath.has(entry.path)) byPath.set(entry.path, entry);
+			for (const entry of entries) {
+				if (entry.path === root) continue;
+				for (let parent = parentOf$1(entry.path, root); parent !== root && parent !== "" && !byPath.has(parent); parent = parentOf$1(parent, root)) byPath.set(parent, {
+					path: parent,
+					name: parent.slice(parent.lastIndexOf("/") + 1),
+					meta: { kind: "directory" }
+				});
+			}
+			const groups = /* @__PURE__ */ new Map();
+			for (const entry of byPath.values()) {
+				const parent = parentOf$1(entry.path, root);
+				const group = groups.get(parent);
+				if (group === void 0) groups.set(parent, [entry]);
+				else group.push(entry);
+			}
+			const levels = /* @__PURE__ */ new Map();
+			for (const [parent, group] of groups) levels.set(parent, group.map((entry) => ({
+				entry,
+				kind: entry.meta?.kind ?? (groups.has(entry.path) ? "directory" : "file")
+			})));
+			return levels;
+		}
+		/**
+		* One level's display order: directories first, then everything else, each by name.
+		* @param level - one parent key's children.
+		* @returns the children's indices in display order.
+		*/
+		function orderOf(level) {
+			return level.map((node, index) => ({
+				node,
+				index
+			})).sort(({ node: left }, { node: right }) => {
+				const group = Number(right.kind === "directory") - Number(left.kind === "directory");
+				return group !== 0 ? group : byName.compare(left.entry.name, right.entry.name);
+			}).map(({ index }) => index);
+		}
+		/** One entry's row, and its children when it is an expanded directory. */
+		function Entry({ node, tree }) {
+			const { input, Accessory } = tree;
+			const { entry, kind } = node;
+			const hidden = entry.meta?.hidden === true && FileTree_module_css_default.hidden;
+			const label = (0, react_jsx_runtime.jsx)("span", {
+				className: FileTree_module_css_default.name,
+				children: entry.name
+			});
+			if (kind === "directory") {
+				const expanded = tree.expanded.has(entry.path);
+				return (0, react_jsx_runtime.jsxs)("li", {
+					className: FileTree_module_css_default.item,
+					"data-files-entry": "directory",
+					"data-files-path": entry.path,
+					children: [(0, react_jsx_runtime.jsxs)("div", {
+						className: FileTree_module_css_default.row,
+						children: [(0, react_jsx_runtime.jsxs)("button", {
+							type: "button",
+							className: clsx(FileTree_module_css_default.action, hidden),
+							"aria-expanded": expanded,
+							onClick: () => {
+								input.onToggle(entry, !expanded);
+							},
+							...input.rowTriggerProps?.(entry, "directory"),
+							children: [expanded ? (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconFolderOpenRegular, { className: FileTree_module_css_default.icon }) : (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconFolderCloseRegular, { className: FileTree_module_css_default.icon }), label]
+						}), (0, react_jsx_runtime.jsx)("div", {
+							className: FileTree_module_css_default.accessory,
+							children: (0, react_jsx_runtime.jsx)(Accessory, { entry })
+						})]
+					}), expanded && (0, react_jsx_runtime.jsx)("ul", {
+						className: FileTree_module_css_default.level,
+						children: (0, react_jsx_runtime.jsx)(Level, {
+							path: entry.path,
+							tree
+						})
+					})]
+				});
+			}
+			if (kind === "file" && input.canOpen?.(entry) !== false) {
+				const current = entry.path === input.current;
+				return (0, react_jsx_runtime.jsx)("li", {
+					className: FileTree_module_css_default.item,
+					"data-files-entry": "file",
+					"data-files-path": entry.path,
+					children: (0, react_jsx_runtime.jsxs)("div", {
+						className: clsx(FileTree_module_css_default.row, current && FileTree_module_css_default.current),
+						children: [(0, react_jsx_runtime.jsxs)("button", {
+							type: "button",
+							className: clsx(FileTree_module_css_default.action, hidden),
+							"aria-current": current || void 0,
+							ref: current ? input.currentRef : void 0,
+							...input.rowTriggerProps?.(entry, "file"),
+							onClick: () => {
+								input.onOpen(entry);
+							},
+							children: [(0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.FileTypeIcon, {
+								kind: (0, _codesmith_client_ui_primitives.classifyFileType)(entry.name),
+								size: 16,
+								className: FileTree_module_css_default.fileIcon
+							}), label]
+						}), (0, react_jsx_runtime.jsx)("div", {
+							className: FileTree_module_css_default.accessory,
+							children: (0, react_jsx_runtime.jsx)(Accessory, { entry })
+						})]
+					})
+				});
+			}
+			const file = kind === "file";
+			return (0, react_jsx_runtime.jsx)("li", {
+				className: FileTree_module_css_default.item,
+				"data-files-entry": kind,
+				"data-files-path": entry.path,
+				children: (0, react_jsx_runtime.jsxs)("div", {
+					className: clsx(FileTree_module_css_default.row, FileTree_module_css_default.inactive),
+					children: [(0, react_jsx_runtime.jsxs)("span", {
+						className: clsx(FileTree_module_css_default.action, hidden, FileTree_module_css_default.other),
+						"aria-disabled": "true",
+						title: tree.t(file ? "entry.noViewer" : "entry.other"),
+						children: [file && (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.FileTypeIcon, {
+							kind: (0, _codesmith_client_ui_primitives.classifyFileType)(entry.name),
+							size: 16,
+							className: FileTree_module_css_default.fileIcon
+						}), label]
+					}), (0, react_jsx_runtime.jsx)("div", {
+						className: FileTree_module_css_default.accessory,
+						children: (0, react_jsx_runtime.jsx)(Accessory, { entry })
+					})]
+				})
+			});
+		}
+		/** No entries, shared so that an empty level orders nothing. */
+		const NO_ENTRIES = [];
+		/** One directory's rows: a loading line until it is listed, then its entries and notes. */
+		function Level({ path, tree }) {
+			const { t } = tree;
+			const state = tree.input.directories?.[path];
+			const level = tree.levels.get(path) ?? NO_ENTRIES;
+			const order = (0, react.useMemo)(() => orderOf(level), [JSON.stringify(level.map((node) => [node.kind === "directory", node.entry.name]))]);
+			if (state?.loading === true) return (0, react_jsx_runtime.jsx)("li", {
+				className: FileTree_module_css_default.note,
+				"data-files-row": "loading",
+				children: t("loading")
+			});
+			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				state?.failure !== void 0 && (0, react_jsx_runtime.jsx)("li", {
+					className: FileTree_module_css_default.note,
+					"data-files-row": "failed",
+					children: state.failure
+				}),
+				level.length === 0 && state?.failure === void 0 && (0, react_jsx_runtime.jsx)("li", {
+					className: FileTree_module_css_default.note,
+					"data-files-row": "empty",
+					children: t("empty")
+				}),
+				order.map((index) => level[index]).filter((node) => node !== void 0).map((node) => (0, react_jsx_runtime.jsx)(Entry, {
+					node,
+					tree
+				}, node.entry.path)),
+				state?.truncated === true && (0, react_jsx_runtime.jsx)("li", {
+					className: FileTree_module_css_default.note,
+					"data-files-row": "truncated",
+					children: t("truncated")
+				})
+			] });
+		}
+		/**
+		* The tree from its root.
+		* @param props - the caller's entries, expansion, states, callbacks, and framework seats.
+		* @returns the root level's list.
+		*/
+		function FileTreeView({ t, useFactorySlot, ...input }) {
+			const Accessory = useFactorySlot("accessory", EmptyAccessory);
+			const tree = {
+				levels: (0, react.useMemo)(() => levelsOf(input.entries, input.root), [input.entries, input.root]),
+				expanded: (0, react.useMemo)(() => new Set(input.expanded), [input.expanded]),
+				input,
+				t,
+				Accessory
+			};
+			return (0, react_jsx_runtime.jsx)("ul", {
+				className: FileTree_module_css_default.level,
+				children: (0, react_jsx_runtime.jsx)(Level, {
+					path: input.root,
+					tree
+				})
+			});
+		}
+		/**
+		* The file tree. It redraws when a prop or the occurrence's local selection
+		* changes, so a caller keeps its inputs and local selection stable between renders.
+		*/
+		const FileTree = (0, react.memo)(FileTreeView);
+		//#endregion
+		//#region lib/types/client/workspace-tree.js
+		/**
+		* Say why a directory could not be listed, in terms of the directory.
+		* @param t - namespace-bound translate.
+		* @param failure - the settled Remote failure.
+		* @returns the line to show under the directory.
+		*/
+		function failureLine(t, failure) {
+			switch (failure.code) {
+				case "workspace-file/not-found": return t("error.notFound");
+				case "workspace-file/outside-workspace": return t("error.outsideWorkspace");
+				case "workspace-file/not-directory": return t("error.notDirectory");
+				default: return t("error.unavailable", { message: failure.message });
+			}
+		}
+		/**
+		* The tree key of a workspace root.
+		* @param root - the root's absolute path as the Host reports it.
+		* @returns the path without trailing separators.
+		*/
+		function treeRootOf(root) {
+			return root.replace(/[/\\]+$/, "");
+		}
+		/**
+		* The store key of the directory a tree key's entry is listed in.
+		* @param tree - the pane's tree.
+		* @param path - an entry's tree key.
+		* @returns the absolute path of its parent, the root spelled as the store keeps it.
+		*/
+		function parentOf(tree, path) {
+			const parent = path.slice(0, path.lastIndexOf("/"));
+			return parent === treeRootOf(tree.root) ? tree.root : parent;
+		}
+		/**
+		* Every listed entry of a pane's tree, collapsed levels included, each named
+		* as its listing spells it.
+		* @param levels - the pane's level states.
+		* @returns the entries keyed as the tree draws them.
+		*/
+		function workspaceEntries(levels) {
+			return Object.entries(levels).flatMap(([path, level]) => level.kind !== "ready" ? [] : level.level.entries.map((entry) => ({
+				path: childPath(path, entry.name),
+				name: entry.name,
+				meta: { kind: entry.type }
+			})));
+		}
+		/**
+		* Each directory's listing state: loading until its first listing settles, then
+		* its latest failure and whether its listing is truncated.
+		* @param tree - the pane's root, level states, and expanded directories.
+		* @param t - namespace-bound translate, for failure lines.
+		* @returns the states keyed as the tree draws them.
+		*/
+		function workspaceDirectories(tree, t) {
+			const { root, levels, expanded } = tree;
+			const directories = {};
+			const keyOf = (path) => path === root ? treeRootOf(path) : path;
+			for (const path of expanded) directories[keyOf(path)] = { loading: true };
+			for (const [path, level] of Object.entries(levels)) {
+				const key = keyOf(path);
+				if (level.kind === "loading") directories[key] = { loading: true };
+				else if (level.kind === "failed") directories[key] = { failure: failureLine(t, level.failure) };
+				else {
+					const state = {};
+					if (level.failure !== void 0) state.failure = failureLine(t, level.failure);
+					if (level.level.truncated) state.truncated = true;
+					directories[key] = state;
+				}
+			}
+			return directories;
+		}
+		//#endregion
+		//#region \0cds-css:/upstream/packages/client/ui-sidebar-files/src/client/FilesBody.module.css.mjs
+		const css = ".YYsmxa_page{min-width:0;height:100%;min-height:0;color:var(--dsw-alias-label-primary);font-size:var(--cds-content-font-size-secondary,13px);flex-direction:column;flex:auto;line-height:1.5;display:flex}.YYsmxa_content{isolation:isolate;flex:auto;min-width:0;min-height:0;display:flex;position:relative}.YYsmxa_navigator{box-sizing:border-box;width:var(--files-navigator-width);min-width:0;height:100%;min-height:0;color:var(--dsw-alias-label-primary);font-size:var(--cds-content-font-size-secondary,13px);background:var(--dsw-alias-bg-base);border-left:.5px solid var(--dsw-alias-border-l3);flex-direction:column;flex:none;line-height:1.5;display:flex;position:relative}.YYsmxa_wholePage{border-left:0;flex:auto;width:auto}.YYsmxa_separator{z-index:1;cursor:col-resize;touch-action:none;width:8px;position:absolute;top:0;bottom:0;left:-4px}.YYsmxa_fill{z-index:2;border-left:0;width:auto;height:auto;position:absolute;inset:0}:has(>.YYsmxa_navigator.YYsmxa_fill)>:not(.YYsmxa_navigator){visibility:hidden}@media (width<768px){:has(>.YYsmxa_navigator:not(.YYsmxa_wholePage))>:not(.YYsmxa_navigator){visibility:hidden}.YYsmxa_navigator{z-index:2;border-left:0;width:auto;height:auto;position:absolute;inset:0}.YYsmxa_separator{display:none}}@media (width>=768px){.YYsmxa_push,.YYsmxa_overlay{background:var(--dsw-alias-bg-layer-2);border-radius:var(--dsw-radius-lg);--dsw-elevation-stroke-color:var(--dsw-alias-border-l2);box-shadow:var(--dsw-elevation-prominent);--cds-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--cds-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border:0}.YYsmxa_push{align-self:stretch;height:auto;margin:8px}.YYsmxa_overlay{z-index:2;height:auto;position:absolute;top:8px;bottom:8px;right:8px}body[data-ds-dark-theme] .YYsmxa_push,body[data-ds-dark-theme] .YYsmxa_overlay{background:var(--dsw-alias-bg-base);box-shadow:var(--dsw-elevation-stroke), 0 3px 8px 0 color-mix(in srgb, var(--dsw-static-neutral-00) 8%, transparent), 0 0 20px 0 color-mix(in srgb, var(--dsw-static-neutral-00) 6%, transparent)}.YYsmxa_push .YYsmxa_body::-webkit-scrollbar-track,.YYsmxa_overlay .YYsmxa_body::-webkit-scrollbar-track{margin:var(--dsw-radius-lg) 2px}}.YYsmxa_dragging{cursor:col-resize;user-select:none}.YYsmxa_header{box-sizing:border-box;border-bottom:.5px solid var(--dsw-alias-border-l3);flex:none;align-items:center;gap:4px;height:38px;padding:0 6px 0 16px;display:flex}.YYsmxa_path{margin-right:12px}.YYsmxa_body{scrollbar-gutter:stable;flex:auto;min-height:0;margin-right:2px;padding:8px 0 8px 8px;overflow:auto}.YYsmxa_body::-webkit-scrollbar-track{margin:2px}.YYsmxa_note{color:var(--dsw-alias-label-tertiary);margin:0;padding:3px 10px;font-size:12px}.YYsmxa_status{flex-direction:column;padding:12px 10px;display:flex}.YYsmxa_statusLine{color:var(--dsw-alias-label-secondary);font-size:var(--cds-content-font-size-secondary,13px);margin:0;line-height:1.6}.YYsmxa_tool{width:28px;height:28px;color:var(--dsw-alias-label-secondary);border-radius:var(--dsw-radius-sm);cursor:pointer;background:0 0;border:none;flex:none;justify-content:center;align-items:center;padding:6px;line-height:1;display:inline-flex}.YYsmxa_tool svg{width:15px;height:15px}@media (hover:hover){.YYsmxa_tool:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}}.YYsmxa_tool[aria-pressed=true],.YYsmxa_tool[aria-expanded=true]{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}.YYsmxa_titleIcon{flex:none}";
+		const tagId = "@codesmith/client-ui-sidebar-files/FilesBody.module.css";
+		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
+			const tag = document.createElement("style");
+			tag.dataset.plugin = "@codesmith/client-ui-sidebar-files";
+			tag.dataset.pluginCss = tagId;
+			tag.textContent = css;
+			document.head.appendChild(tag);
+		}
+		var FilesBody_module_css_default = {
+			"body": "YYsmxa_body",
+			"content": "YYsmxa_content",
+			"dragging": "YYsmxa_dragging",
+			"fill": "YYsmxa_fill",
+			"header": "YYsmxa_header",
+			"navigator": "YYsmxa_navigator",
+			"note": "YYsmxa_note",
+			"overlay": "YYsmxa_overlay",
+			"page": "YYsmxa_page",
+			"path": "YYsmxa_path",
+			"push": "YYsmxa_push",
+			"separator": "YYsmxa_separator",
+			"status": "YYsmxa_status",
+			"statusLine": "YYsmxa_statusLine",
+			"titleIcon": "YYsmxa_titleIcon",
+			"tool": "YYsmxa_tool",
+			"wholePage": "YYsmxa_wholePage"
+		};
+		//#endregion
+		//#region lib/types/client/FileNavigator.js
+		/**
+		* One pane's workspace navigator: the tree and the edge that resizes it. The
+		* `files` page draws it below its header; beside a preview the preview's own
+		* header is the only one. Everything it shows lives in the store and face,
+		* keyed by pane, so a remount on a tab switch or replacement draws it
+		* unchanged, keyboard focus included when the tree held it. Its layout
+		* follows `PUSH_FROM`, `FILL_BELOW`, and `FULLSCREEN_QUERY`; the package
+		* README describes its behavior.
+		*/
+		/** One keyboard resize step. */
+		const RESIZE_STEP = 20;
+		/**
+		* The layout a preview's navigator takes in a row; `FULLSCREEN_QUERY` makes every layout fill in CSS.
+		* @param rowWidth - the row's width measured by the face; `undefined` before it is measured.
+		* @returns `overlay` until measured, then the layout for the width.
+		*/
+		function navigatorMode(rowWidth) {
+			if (rowWidth === void 0) return "overlay";
+			return rowWidth >= 560 ? "push" : rowWidth >= 400 ? "overlay" : "fill";
+		}
+		/**
+		* The navigator Factory's component.
+		* @param props - the tab it is drawn for, the pane's store records, the tree's face, and copy.
+		* @returns the navigator, or nothing while hidden or without a workspace.
+		*/
+		function FileNavigator({ useTabInfo, page, onOpen, sessionId, useSessions, useStore, actions, useRowWidth, useCanOpen, attach, placeBeside, hold, toggle, scrolled, bodyDrawn, currentDrawn, navigatorDrawn, t, renderFactorySlot, useContextMenu }) {
+			const { tab, panel } = useTabInfo();
+			const { getTriggerProps } = useContextMenu();
+			const paneId = panel.id;
+			const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
+			const state = useStore((store) => store.byPane[paneId]);
+			const rowWidth = useRowWidth(paneId);
+			const canOpen = useCanOpen((check) => check);
+			const open = page || state?.open === true;
+			const mode = navigatorMode(rowWidth);
+			const tree = state?.tree?.root === cwd ? state?.tree : void 0;
+			const [dragging, setDragging] = (0, react.useState)(false);
+			const drag = (0, react.useRef)(void 0);
+			const navigatorRef = (0, react.useCallback)((element) => {
+				navigatorDrawn(paneId, element, !page);
+			}, [
+				navigatorDrawn,
+				paneId,
+				page
+			]);
+			const bodyRef = (0, react.useCallback)((body) => {
+				bodyDrawn(paneId, tab.contentId, body);
+			}, [
+				bodyDrawn,
+				paneId,
+				tab.contentId
+			]);
+			const currentRef = (0, react.useCallback)((row) => {
+				currentDrawn(paneId, row);
+			}, [currentDrawn, paneId]);
+			(0, react.useEffect)(() => attach(paneId, tab.id, tab.signal), [
+				attach,
+				paneId,
+				tab.id,
+				tab.signal
+			]);
+			(0, react.useEffect)(() => page || cwd === void 0 ? void 0 : placeBeside(tab.id), [
+				page,
+				cwd,
+				placeBeside,
+				tab.id
+			]);
+			(0, react.useEffect)(() => cwd === void 0 || !open ? void 0 : hold(paneId, cwd), [
+				cwd,
+				open,
+				paneId,
+				hold
+			]);
+			const relativePath = tree === void 0 ? void 0 : relativeFileOf(tab.contentId, sessionId, tree.root);
+			const location = (0, react.useMemo)(() => tree === void 0 || relativePath === void 0 ? void 0 : locateFile(tree, relativePath), [tree, relativePath]);
+			const root = tree?.root;
+			const levels = tree?.levels;
+			const expanded = tree?.expanded;
+			const entries = (0, react.useMemo)(() => levels === void 0 ? void 0 : workspaceEntries(levels), [levels]);
+			const directories = (0, react.useMemo)(() => root === void 0 || levels === void 0 || expanded === void 0 ? void 0 : workspaceDirectories({
+				root,
+				levels,
+				expanded
+			}, t), [
+				root,
+				levels,
+				expanded,
+				t
+			]);
+			const view = (0, react.useMemo)(() => {
+				if (tree === void 0) return void 0;
+				return {
+					root: treeRootOf(tree.root),
+					expanded: tree.expanded,
+					onToggle: (entry) => {
+						toggle(paneId, parentOf(tree, entry.path), entry.path, tree.expanded);
+					},
+					onOpen: (entry) => {
+						onOpen(fileAddressFor(sessionId, tree.root, entry.path));
+					},
+					canOpen: (entry) => canOpen(fileAddressFor(sessionId, tree.root, entry.path)),
+					rowTriggerProps: (entry, kind) => getTriggerProps(kind === "directory" ? {
+						kind,
+						value: {
+							sessionId,
+							path: entry.path
+						}
+					} : {
+						kind,
+						value: {
+							sessionId,
+							path: entry.path,
+							paneId
+						}
+					})
+				};
+			}, [
+				tree,
+				paneId,
+				sessionId,
+				toggle,
+				canOpen,
+				onOpen,
+				getTriggerProps
+			]);
+			if (cwd === void 0 || !open) return null;
+			const geometry = navigatorGeometry(rowWidth, state?.width ?? 260);
+			const shown = page ? void 0 : mode;
+			const clamp = (next) => Math.min(Math.max(next, geometry.minimum), geometry.maximum);
+			return (0, react_jsx_runtime.jsxs)("aside", {
+				ref: navigatorRef,
+				className: clsx(FilesBody_module_css_default.navigator, shown === void 0 ? FilesBody_module_css_default.wholePage : FilesBody_module_css_default[shown], dragging && FilesBody_module_css_default.dragging),
+				style: page ? void 0 : { "--files-navigator-width": `${geometry.width}px` },
+				"aria-label": t("guide.title"),
+				"data-files-navigator": paneId,
+				"data-files-navigator-mode": shown,
+				"data-files-state": "tree",
+				"data-files-root": cwd,
+				children: [shown !== void 0 && shown !== "fill" && (0, react_jsx_runtime.jsx)("div", {
+					className: FilesBody_module_css_default.separator,
+					role: "separator",
+					"aria-orientation": "vertical",
+					"aria-label": t("navigator.resize"),
+					"aria-valuemin": geometry.minimum,
+					"aria-valuemax": geometry.maximum,
+					"aria-valuenow": geometry.width,
+					tabIndex: 0,
+					"data-files-navigator-resize": true,
+					onKeyDown: (event) => {
+						const next = event.key === "ArrowLeft" ? geometry.width + RESIZE_STEP : event.key === "ArrowRight" ? geometry.width - RESIZE_STEP : event.key === "Home" ? geometry.minimum : event.key === "End" ? geometry.maximum : void 0;
+						if (next === void 0) return;
+						event.preventDefault();
+						actions.resized(paneId, clamp(next));
+					},
+					onPointerDown: (event) => {
+						if (event.button !== 0) return;
+						event.preventDefault();
+						event.currentTarget.setPointerCapture(event.pointerId);
+						drag.current = {
+							x: event.clientX,
+							width: geometry.width
+						};
+						setDragging(true);
+					},
+					onPointerMove: (event) => {
+						const origin = drag.current;
+						if (origin === void 0) return;
+						actions.resized(paneId, clamp(origin.width + origin.x - event.clientX));
+					},
+					onPointerUp: (event) => {
+						event.currentTarget.releasePointerCapture(event.pointerId);
+					},
+					onLostPointerCapture: () => {
+						drag.current = void 0;
+						setDragging(false);
+					}
+				}), (0, react_jsx_runtime.jsx)("div", {
+					ref: bodyRef,
+					className: FilesBody_module_css_default.body,
+					tabIndex: -1,
+					"data-files-body": true,
+					onScroll: (event) => {
+						scrolled(paneId, event.currentTarget.scrollTop);
+					},
+					children: view === void 0 || entries === void 0 || directories === void 0 ? (0, react_jsx_runtime.jsx)("p", {
+						className: FilesBody_module_css_default.note,
+						"data-files-row": "loading",
+						children: t("loading")
+					}) : renderFactorySlot("sidebar.files.tree", {
+						...view,
+						entries,
+						directories,
+						current: location?.current,
+						currentRef
+					})
+				})]
+			});
+		}
+		//#endregion
+		//#region lib/types/client/FilesBody.js
+		/**
+		* The `files` page: a file browser with no file chosen yet.
+		*
+		* Its header spans the page: the workspace root's path, the tree's reload and
+		* the directory actions, in the order a preview's header ends with its own
+		* reload and file actions. The pane's navigator fills the page below it and
+		* stays shown, so the page draws no toggle; picking a file leaves this page as
+		* it is and opens the file where the right Sidebar places it by default
+		* (`FileNavigator`).
+		*/
+		/**
+		* The `files` page body.
+		* @param props - composed slot props.
+		* @returns the header above the pane's navigator, or the workspace line.
+		*/
+		function FilesBody(props) {
+			const { useTabInfo, sessionId, useSessions, useStore, refresh, setAutoRefresh, renderSlot, renderFactorySlot, t, useContextMenu } = props;
+			const { tab, panel } = useTabInfo();
+			const { getTriggerProps } = useContextMenu();
+			const onOpen = (0, react.useCallback)((address) => {
+				if (panel.isFloating) tab.actions.openResource(address);
+				else tab.actions.openResource(address, { paneId: panel.id });
+			}, [
+				tab.actions,
+				panel.id,
+				panel.isFloating
+			]);
+			(0, react.useEffect)(() => tab.actions.bindCommands({ refresh: () => {
+				refresh(panel.id);
+			} }), [
+				tab.actions,
+				panel.id,
+				refresh
+			]);
+			const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
+			const autoRefresh = useStore((store) => {
+				const tree = store.byPane[panel.id]?.tree;
+				return tree?.root === cwd ? tree?.autoRefresh : void 0;
+			});
+			if (cwd === void 0) return (0, react_jsx_runtime.jsx)("div", {
+				className: FilesBody_module_css_default.status,
+				"data-files-state": "no-workspace",
+				children: (0, react_jsx_runtime.jsx)("p", {
+					className: FilesBody_module_css_default.statusLine,
+					children: t("noWorkspace")
+				})
+			});
+			const automatic = autoRefresh ?? true;
+			const navigator = renderFactorySlot("sidebar.files.navigator", {
+				useTabInfo,
+				page: true,
+				onOpen
+			});
+			return (0, react_jsx_runtime.jsxs)("div", {
+				className: FilesBody_module_css_default.page,
+				"data-files-page": true,
+				children: [(0, react_jsx_runtime.jsxs)("div", {
+					className: FilesBody_module_css_default.header,
+					children: [
+						(0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.PathLabel, {
+							path: cwd,
+							className: FilesBody_module_css_default.path,
+							"data-files-path": true,
+							...getTriggerProps({
+								kind: "directory",
+								value: {
+									sessionId,
+									path: cwd
+								}
+							})
+						}),
+						(0, react_jsx_runtime.jsx)("span", {
+							hidden: true,
+							children: (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: FilesBody_module_css_default.tool,
+								"aria-label": t("autoRefresh"),
+								"aria-pressed": automatic,
+								disabled: autoRefresh === void 0,
+								"data-files-auto-refresh": true,
+								title: t(automatic ? "autoRefresh.disable" : "autoRefresh.enable"),
+								onClick: () => {
+									setAutoRefresh(panel.id, !automatic);
+								},
+								children: automatic ? (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconPauseOutlineRegular, {}) : (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconPlayOutlineRegular, {})
+							})
+						}),
+						(0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.Tooltip, {
+							label: t("reload"),
+							shortcutKeys: tab.refreshShortcut?.keys,
+							side: "bottom",
+							delayMs: 500,
+							children: (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: FilesBody_module_css_default.tool,
+								"aria-label": t("reload"),
+								"aria-keyshortcuts": tab.refreshShortcut?.aria,
+								"data-files-reload": true,
+								onClick: () => {
+									refresh(panel.id);
+								},
+								children: (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconRefreshOutlineRegular, {})
+							})
+						}),
+						renderSlot("sidebar.right.tab.files.actions", { absolutePath: cwd })
+					]
+				}), (0, react_jsx_runtime.jsx)("div", {
+					className: FilesBody_module_css_default.content,
+					"data-files-content": true,
+					children: navigator
+				})]
+			});
+		}
+		//#endregion
+		//#region lib/types/client/FilesTitle.js
+		/**
+		* The title as the chip and a floating panel's header show it.
+		* @param props - the tab information hook.
+		* @returns the folder sheet followed by the tab's title text.
+		*/
+		function FilesTitle({ useTabInfo }) {
+			const { tab } = useTabInfo();
+			return (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [(0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.FileTypeIcon, {
+				kind: "folder",
+				size: 16,
+				className: FilesBody_module_css_default.titleIcon
+			}), tab.title] });
+		}
+		//#endregion
+		//#region lib/types/client/locales.js
+		/** Simplified Chinese dictionary and key-set source of truth. */
+		const zh = {
+			"shortcut.noSession": "请先选择会话",
+			"type.label": "文件",
+			"guide.title": "工作区文件",
+			"guide.description": "浏览会话工作区的文件",
+			loading: "正在读取…",
+			empty: "空目录",
+			truncated: "条目太多，只显示了一部分。",
+			noWorkspace: "这个会话没有工作区目录。",
+			reload: "重新读取",
+			autoRefresh: "自动刷新",
+			"autoRefresh.enable": "开启自动刷新",
+			"autoRefresh.disable": "关闭自动刷新",
+			"entry.other": "这不是文件或目录，没法打开。",
+			"entry.noViewer": "没有可以打开此文件的查看器。",
+			"navigator.show": "显示文件树",
+			"navigator.hide": "隐藏文件树",
+			"navigator.resize": "调整文件树宽度",
+			"error.notFound": "这个目录不在了。可能已被移动或删除。",
+			"error.outsideWorkspace": "这个目录在工作区之外，侧栏不会读取它。",
+			"error.notDirectory": "这不是一个目录。",
+			"error.unavailable": "读取失败：{message}"
+		};
+		/** English dictionary, checked against the Chinese key set. */
+		const en = {
+			"shortcut.noSession": "Select a session first",
+			"type.label": "Files",
+			"guide.title": "Workspace files",
+			"guide.description": "Browse files in this session's workspace",
+			loading: "Reading…",
+			empty: "Empty directory",
+			truncated: "Too many entries, showing only some of them.",
+			noWorkspace: "This session has no workspace directory.",
+			reload: "Reload",
+			autoRefresh: "Auto refresh",
+			"autoRefresh.enable": "Enable auto refresh",
+			"autoRefresh.disable": "Disable auto refresh",
+			"entry.other": "Not a file or a directory, so it cannot be opened.",
+			"entry.noViewer": "No viewer can open this file.",
+			"navigator.show": "Show file tree",
+			"navigator.hide": "Hide file tree",
+			"navigator.resize": "Resize file tree",
+			"error.notFound": "That directory is gone. It may have been moved or deleted.",
+			"error.outsideWorkspace": "That directory is outside the workspace, so the sidebar will not read it.",
+			"error.notDirectory": "That is not a directory.",
+			"error.unavailable": "Read failed: {message}"
+		};
+		/** Japanese copy, checked against the English keys. */
+		const ja = {
+			"shortcut.noSession": "先にセッションを選択してください",
+			"type.label": "ファイル",
+			"guide.title": "ワークスペースのファイル",
+			"guide.description": "このセッションのワークスペース内のファイルを参照",
+			"loading": "読み取り中…",
+			"empty": "空のディレクトリ",
+			"truncated": "エントリが多すぎるため、一部のみ表示しています。",
+			"noWorkspace": "このセッションにはワークスペースディレクトリがありません。",
+			"reload": "再読み込み",
+			"autoRefresh": "自動更新",
+			"autoRefresh.enable": "自動更新を有効にする",
+			"autoRefresh.disable": "自動更新を無効にする",
+			"entry.other": "ファイルでもディレクトリでもないため、開けません。",
+			"entry.noViewer": "このファイルを開けるビューアーがありません。",
+			"navigator.show": "ファイルツリーを表示",
+			"navigator.hide": "ファイルツリーを非表示",
+			"navigator.resize": "ファイルツリーの幅を調整",
+			"error.notFound": "そのディレクトリは存在しません。移動または削除された可能性があります。",
+			"error.outsideWorkspace": "そのディレクトリはワークスペース外のため、サイドバーでは読み取りません。",
+			"error.notDirectory": "それはディレクトリではありません。",
+			"error.unavailable": "読み取りに失敗しました: {message}"
+		};
+		/** Spanish dictionary, checked against the English keys. */
+		const es = {
+			"shortcut.noSession": "Seleccione una sesión primero",
+			"type.label": "Archivos",
+			"guide.title": "Archivos de espacio de trabajo",
+			"guide.description": "Explorar archivos en el espacio de trabajo de esta sesión",
+			loading: "Leyendo…",
+			empty: "directorio vacio",
+			truncated: "Demasiadas entradas y solo se muestran algunas de ellas.",
+			noWorkspace: "Esta sesión no tiene ningún directorio de espacio de trabajo.",
+			reload: "recargar",
+			autoRefresh: "Actualización automática",
+			"autoRefresh.enable": "Habilitar actualización automática",
+			"autoRefresh.disable": "Deshabilitar la actualización automática",
+			"entry.other": "No es un archivo ni un directorio, por lo que no se puede abrir.",
+			"entry.noViewer": "Ningún visor puede abrir este archivo.",
+			"navigator.show": "Mostrar árbol de archivos",
+			"navigator.hide": "Ocultar árbol de archivos",
+			"navigator.resize": "Cambiar el ancho del árbol de archivos",
+			"error.notFound": "Ese directorio desapareció. Es posible que se haya movido o eliminado.",
+			"error.outsideWorkspace": "Ese directorio está fuera del espacio de trabajo, por lo que la barra lateral no lo leerá.",
+			"error.notDirectory": "Eso no es un directorio.",
+			"error.unavailable": "Error de lectura: {message}"
+		};
+		/** French dictionary, checked against the English keys. */
+		const fr = {
+			"shortcut.noSession": "Sélectionnez d'abord une session",
+			"type.label": "Fichiers",
+			"guide.title": "Fichiers de l'espace de travail",
+			"guide.description": "Parcourir les fichiers dans l'espace de travail de cette session",
+			loading: "Lecture…",
+			empty: "Répertoire vide",
+			truncated: "Trop d'entrées, n'en affichant que certaines.",
+			noWorkspace: "Cette session n'a pas de répertoire d'espace de travail.",
+			reload: "Recharger",
+			autoRefresh: "Actualisation automatique",
+			"autoRefresh.enable": "Activer l'actualisation automatique",
+			"autoRefresh.disable": "Désactiver l'actualisation automatique",
+			"entry.other": "Il ne s'agit pas d'un fichier ou d'un répertoire, il ne peut donc pas être ouvert.",
+			"entry.noViewer": "Aucune visionneuse ne peut ouvrir ce fichier.",
+			"navigator.show": "Afficher l'arborescence des fichiers",
+			"navigator.hide": "Masquer l'arborescence des fichiers",
+			"navigator.resize": "Redimensionner l'arborescence des fichiers",
+			"error.notFound": "Ce répertoire a disparu. Il a peut-être été déplacé ou supprimé.",
+			"error.outsideWorkspace": "Ce répertoire se trouve en dehors de l’espace de travail, donc la barre latérale ne le lira pas.",
+			"error.notDirectory": "Ce n'est pas un répertoire.",
+			"error.unavailable": "Échec de lecture\xA0: {message}"
+		};
+		/** German dictionary, checked against the English keys. */
+		const de = {
+			"shortcut.noSession": "Wählen Sie zunächst eine Sitzung aus",
+			"type.label": "Dateien",
+			"guide.title": "Arbeitsbereichsdateien",
+			"guide.description": "Durchsuchen Sie die Dateien im Arbeitsbereich dieser Sitzung",
+			loading: "Lesen…",
+			empty: "Leeres Verzeichnis",
+			truncated: "Zu viele Einträge, es werden nur einige davon angezeigt.",
+			noWorkspace: "Diese Sitzung hat kein Arbeitsbereichsverzeichnis.",
+			reload: "Neu laden",
+			autoRefresh: "Automatische Aktualisierung",
+			"autoRefresh.enable": "Aktivieren Sie die automatische Aktualisierung",
+			"autoRefresh.disable": "Deaktivieren Sie die automatische Aktualisierung",
+			"entry.other": "Keine Datei oder kein Verzeichnis, daher kann sie nicht geöffnet werden.",
+			"entry.noViewer": "Kein Viewer kann diese Datei öffnen.",
+			"navigator.show": "Dateibaum anzeigen",
+			"navigator.hide": "Dateibaum ausblenden",
+			"navigator.resize": "Breite des Dateibaums ändern",
+			"error.notFound": "Dieses Verzeichnis ist weg. Möglicherweise wurde es verschoben oder gelöscht.",
+			"error.outsideWorkspace": "Dieses Verzeichnis liegt außerhalb des Arbeitsbereichs und wird daher von der Seitenleiste nicht gelesen.",
+			"error.notDirectory": "Das ist kein Verzeichnis.",
+			"error.unavailable": "Lesen fehlgeschlagen: {message}"
+		};
+		/** Russian dictionary, checked against the English keys. */
+		const ru = {
+			"shortcut.noSession": "Сначала выберите сеанс",
+			"type.label": "Файлы",
+			"guide.title": "Файлы рабочей области",
+			"guide.description": "Просмотр файлов в рабочей области этого сеанса",
+			loading: "Чтение…",
+			empty: "Пустой каталог",
+			truncated: "Слишком много записей, показаны только некоторые из них.",
+			noWorkspace: "В этом сеансе нет каталога рабочей области.",
+			reload: "Перезагрузить",
+			autoRefresh: "Автоматическое обновление",
+			"autoRefresh.enable": "Включить автоматическое обновление",
+			"autoRefresh.disable": "Отключить автоматическое обновление",
+			"entry.other": "Это не файл и не каталог, поэтому его нельзя открыть.",
+			"entry.noViewer": "Нет средства просмотра, которое может открыть этот файл.",
+			"navigator.show": "Показать дерево файлов",
+			"navigator.hide": "Скрыть дерево файлов",
+			"navigator.resize": "Изменить ширину дерева файлов",
+			"error.notFound": "Этот каталог исчез. Возможно, оно было перемещено или удалено.",
+			"error.outsideWorkspace": "Этот каталог находится за пределами рабочей области, поэтому боковая панель его не читает.",
+			"error.notDirectory": "Это не каталог.",
+			"error.unavailable": "Не удалось прочитать: {message}."
+		};
+		/** Portuguese dictionary, checked against the English keys. */
+		const pt = {
+			"shortcut.noSession": "Selecione uma sessão primeiro",
+			"type.label": "Arquivos",
+			"guide.title": "Arquivos do espaço de trabalho",
+			"guide.description": "Procure arquivos no espaço de trabalho desta sessão",
+			loading: "Lendo…",
+			empty: "Diretório vazio",
+			truncated: "Muitas entradas, mostrando apenas algumas delas.",
+			noWorkspace: "Esta sessão não possui diretório de espaço de trabalho.",
+			reload: "Recarregar",
+			autoRefresh: "Atualização automática",
+			"autoRefresh.enable": "Ativar atualização automática",
+			"autoRefresh.disable": "Desativar atualização automática",
+			"entry.other": "Não é um arquivo ou diretório, portanto não pode ser aberto.",
+			"entry.noViewer": "Nenhum visualizador pode abrir este arquivo.",
+			"navigator.show": "Mostrar árvore de arquivos",
+			"navigator.hide": "Ocultar árvore de arquivos",
+			"navigator.resize": "Redimensionar árvore de arquivos",
+			"error.notFound": "Esse diretório desapareceu. Pode ter sido movido ou excluído.",
+			"error.outsideWorkspace": "Esse diretório está fora da área de trabalho, portanto a barra lateral não o lerá.",
+			"error.notDirectory": "Isso não é um diretório.",
+			"error.unavailable": "Falha na leitura: {message}"
+		};
+		//#endregion
+		//#region lib/types/client/NavigatorToggle.js
+		/**
+		* The navigator's show/hide control, at the end of a document preview's
+		* header through its Factory; the `files` page's tree is always
+		* shown and has none. It writes the pane's choice, which every file tab of
+		* the pane reads, and registers itself with the face, which hands it the
+		* keyboard when Escape closes the navigator.
+		*/
+		/**
+		* Show or hide the pane's navigator.
+		* @param props - the tab, the pane records, the face's registration, and copy.
+		* @returns the toggle, or nothing without a workspace.
+		*/
+		function NavigatorToggle({ useTabInfo, sessionId, useSessions, useStore, actions, toggleDrawn, t }) {
+			const { panel } = useTabInfo();
+			const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
+			const open = useStore((store) => store.byPane[panel.id]?.open) === true;
+			const toggleRef = (0, react.useCallback)((button) => {
+				toggleDrawn(panel.id, button);
+			}, [toggleDrawn, panel.id]);
+			if (cwd === void 0) return null;
+			const label = t(open ? "navigator.hide" : "navigator.show");
+			return (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.Tooltip, {
+				label,
+				side: "bottom",
+				delayMs: 500,
+				children: (0, react_jsx_runtime.jsx)("button", {
+					ref: toggleRef,
+					type: "button",
+					className: FilesBody_module_css_default.tool,
+					"aria-label": label,
+					"aria-expanded": open,
+					"data-files-navigator-toggle": true,
+					onClick: () => {
+						actions.shown(panel.id, !open);
+					},
+					children: open ? (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconFolderOpenRegular, {}) : (0, react_jsx_runtime.jsx)(_codesmith_client_ui_primitives.IconFolderCloseRegular, {})
+				})
+			});
+		}
+		//#endregion
+		//#region lib/types/client/index.js
+		/** This package's copy namespace. */
+		const NS = "sidebarFiles";
+		/**
+		* Required browser services: the tab registry, the keyed seat, the Remote
+		* carrier and its namespace, and copy.
+		*/
+		const inject = [
+			"slots",
+			"locale",
+			"sidebarRightTabs",
+			"sidebarRight",
+			"remote",
+			"remote.workspaceFiles"
+		];
+		/**
+		* Client plugin body: register the type, its shortcut, its dictionaries, the
+		* navigator and toggle Factories, the page body, and its
+		* chip title.
+		* @param ctx - client root context carrying the registry, the slots, and the Remote face.
+		*/
+		function apply(ctx) {
+			const t = ctx.locale.bind(NS);
+			const handle = createFilesStore();
+			const face = filesFace(createList(ctx.remote), createWatch(ctx.remote), canOpenOf(ctx.sidebarRightTabs), (sessionId, tabId) => {
+				const source = ctx.sidebarRight.tabDomain.occurrence(sessionId, { id: tabId }).navigation;
+				return {
+					getSnapshot: () => source.getSnapshot(),
+					subscribe: (listener) => ctx.effect(() => {
+						let active = true;
+						const unsubscribe = source.subscribe(() => {
+							queueMicrotask(() => {
+								if (active) listener();
+							});
+						});
+						return () => {
+							active = false;
+							unsubscribe();
+						};
+					}, "ui-sidebar-files: tab navigation")
+				};
+			});
+			const faces = /* @__PURE__ */ new WeakMap();
+			const beside = /* @__PURE__ */ new Map();
+			const place = (sessionId) => (tabId, bound) => {
+				const tabs = beside.get(sessionId) ?? /* @__PURE__ */ new Map();
+				beside.set(sessionId, tabs);
+				const held = tabs.get(tabId);
+				const entry = held?.face === bound ? held : {
+					face: bound,
+					placed: 0
+				};
+				entry.placed += 1;
+				tabs.set(tabId, entry);
+				let placed = true;
+				return () => {
+					if (!placed) return;
+					placed = false;
+					entry.placed -= 1;
+					if (entry.placed > 0 || tabs.get(tabId) !== entry) return;
+					tabs.delete(tabId);
+					if (tabs.size === 0) beside.delete(sessionId);
+				};
+			};
+			const store = {
+				...handle,
+				create: (scopeKey) => {
+					const instance = handle.create(scopeKey);
+					if (scopeKey === void 0) return instance;
+					const sessionId = scopeKey;
+					faces.set(instance.actions, face(sessionId, instance, place(sessionId)));
+					return instance;
+				}
+			};
+			const injectFace = (sessionId, actions) => {
+				const bound = faces.get(actions);
+				if (bound === void 0) throw new Error(`ui-sidebar-files: Session "${sessionId}" has no files store instance`);
+				return bound;
+			};
+			ctx.inject(["shortcuts"], (ctx) => {
+				ctx.effect(() => ctx.shortcuts.register({
+					id: "workspace.files",
+					label: () => t("guide.title"),
+					aliases: ["workspace files", "files"],
+					defaults: {
+						"desktop:macos": {
+							code: "KeyP",
+							modifiers: ["primary"]
+						},
+						"desktop:windows": {
+							code: "KeyP",
+							modifiers: ["primary"]
+						},
+						"desktop:linux": {
+							code: "KeyP",
+							modifiers: ["primary"]
+						},
+						"web:macos": {
+							code: "KeyP",
+							modifiers: ["primary", "alt"]
+						},
+						"web:windows": {
+							code: "KeyP",
+							modifiers: ["primary", "alt"]
+						}
+					},
+					regions: [
+						"page",
+						"editable",
+						"terminal"
+					],
+					modals: [],
+					resolve: ({ target: element }) => {
+						const target = ctx.sidebarRight.commandTarget(element);
+						if (target === void 0) return {
+							status: "blocked",
+							reason: t("shortcut.noSession")
+						};
+						return {
+							status: "handled",
+							run: () => {
+								const placed = target.tabId === void 0 ? void 0 : beside.get(target.sessionId)?.get(target.tabId);
+								if (target.host === "dock" && placed !== void 0) {
+									if (!ctx.sidebarRight.isExpanded()) ctx.sidebarRight.toggleExpanded();
+									placed.face.focus(target.paneId);
+									return;
+								}
+								ctx.sidebarRight.openTabFromTarget(FILES_KIND, target);
+							}
+						};
+					}
+				}), "ui-sidebar-files: shortcut");
+			});
+			ctx.effect(() => ctx.sidebarRightTabs.register(filesDefinition(t)), "ui-sidebar-files: files type");
+			ctx.effect(() => ctx.locale.register(NS, {
+				zh,
+				en,
+				ja,
+				es,
+				fr,
+				de,
+				ru,
+				pt
+			}), "ui-sidebar-files: dictionaries");
+			ctx.effect(() => ctx.slots.registerFactory({
+				name: "sidebar.files.tree",
+				scope: "root",
+				locale: NS,
+				slots: { accessory: { scope: "root" } }
+			}, FileTree), "ui-sidebar-files: tree factory");
+			ctx.effect(() => ctx.slots.registerFactory({
+				name: "sidebar.files.navigator",
+				scope: "session",
+				locale: NS,
+				store,
+				inject: injectFace
+			}, FileNavigator), "ui-sidebar-files: navigator factory");
+			ctx.effect(() => ctx.slots.registerFactory({
+				name: "sidebar.files.navigator.toggle",
+				scope: "session",
+				locale: NS,
+				store,
+				inject: injectFace
+			}, NavigatorToggle), "ui-sidebar-files: navigator toggle factory");
+			ctx.effect(() => ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({
+				name: "sidebar.right.pane.tab",
+				key: FILES_ID,
+				locale: NS,
+				store,
+				inject: injectFace,
+				children: { "sidebar.right.tab.files.actions": {
+					kind: "list",
+					scope: "session"
+				} }
+			}, FilesBody)), "ui-sidebar-files: files tab body");
+			ctx.effect(() => ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({
+				name: "sidebar.right.pane.tab.title",
+				key: FILES_ID
+			}, FilesTitle)), "ui-sidebar-files: files tab title");
+		}
+		//#endregion
+		exports.apply = apply;
+		exports.inject = inject;
+		return module.exports;
+	}
+});
+
+//# sourceMappingURL=client.js.map

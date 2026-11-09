@@ -190,11 +190,29 @@ Known limitations of the current implementation:
   commands are REPL-local and stay out of the catalog, so their
   "/"-prefixed lines fall through and submit as ordinary prompts.
 - Upstream-only concepts (accounts/balance, plugin market, sidebar
-  terminal/browser/preview, subagent child-session views, goal bar, plan
-  preview) are not simulated — their plugins stay out of the boot roster or
-  answer empty states. (The jobs popover, the attachment presentation and
-  the changes-review tab ARE bridged — see their bullets above; the sidebar
-  files/preview tabs are pending.)
+  terminal/browser, subagent child-session views, goal bar, plan preview)
+  are not simulated — their plugins stay out of the boot roster or answer
+  empty states. (The jobs popover, the attachment presentation, the
+  changes-review tab and the sidebar files/preview tabs ARE bridged — see
+  their bullets.)
+- The sidebar files tree and document preview
+  (`client-ui-sidebar-files` + `client-ui-sidebar-documentpreview` over the
+  `workspaceFiles` remote, `host::files`) read the session's workspace
+  directly: `workspaceFileScope` resolves the root from the thread record,
+  `list` serves one directory's children (workspace-path vocabulary,
+  lexically confined to the root), `read` serves line pages of text files,
+  `stat` the freshness token (`mtime:size`), and `changes` is a 1s stat
+  poll pushing upstream's `ready`/`change` frames. `readBytes` answers
+  multipart/form-data — the value envelope carries `data: null` plus an
+  attachments manifest and the bytes ride as a binary part, which the
+  page's carrier plants (the client's strict codec only accepts a real
+  `Uint8Array`). Renderers are the vendored pure-web ones (markdown, code,
+  text, image, PDF, Excel/CSV); the OFFICE renderer's host conversion RPC
+  (`officeToPdf/render`, upstream needs LibreOffice in the host process)
+  stays unimplemented and answers `method-unavailable`, so office files
+  preview as their unavailable state. Reads refuse a final-component
+  symlink (upstream's own gate) and `baseFile`-relative resolution is not
+  implemented (the preview addresses files by absolute path).
 - Attachment upload IS bridged, end to end. The composer's uploads stage in
   the bridge (`fileUploads/upload`, and the raw-bytes
   `api/session/uploadFileBinary` route, carried to the bridge origin by the

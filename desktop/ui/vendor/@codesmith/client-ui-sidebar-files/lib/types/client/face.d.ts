@@ -1,0 +1,198 @@
+/**
+ * The navigator's half outside React. The injected face (`filesFace`) lists
+ * directories into the store through its own actions, reveals the tab's file,
+ * carries scroll and keyboard focus between drawings of a pane's tree, and
+ * measures the navigator's row. The component never awaits or observes
+ * anything: it registers what it draws and calls the face. The per-pane
+ * lifetimes are stated on `attach` and `hold`. Beside the face live its
+ * inputs: the Remote listing and watch bindings and `canOpenOf`.
+ */
+import type { ClientRemote, RemoteResult } from '@codesmith/api-remotes/client';
+import type { PaneId, TabId } from '@codesmith/client-ui-dockkit';
+import type { SidebarRightTabDefinition, SidebarRightTabNavigation } from '@codesmith/client-ui-sidebar-right/client';
+import type { HostObservable } from '@codesmith/client-ui-slots';
+import type { SessionId } from '@codesmith/session/types';
+import { type DirLevel, type FilesStoreInstance } from './store.ts';
+/**
+ * Observe one directory without recursively watching its descendants.
+ * @param sessionId - Session owning the directory tree.
+ * @param path - absolute directory path.
+ * @param signal - node lifetime.
+ * @returns readiness and invalidation notifications.
+ */
+export type WatchWorkspaceDirectory = (sessionId: SessionId, path: string, signal: AbortSignal) => AsyncIterable<'ready' | 'change'>;
+/**
+ * Bind directory observation to the Remote stream supervisor.
+ * @param remote - Client Remote with workspace file streams.
+ * @returns a watcher that awaits stream disposal when its node ends.
+ */
+export declare function createWatch(remote: ClientRemote): WatchWorkspaceDirectory;
+/**
+ * One directory listing, bound to a Remote face.
+ *
+ * The session travels with the call because the endpoint resolves the workspace
+ * root from it: the same path means different directories in different sessions.
+ * A Remote call does not reject — the result carries the failure.
+ */
+export type ListWorkspaceDirectory = (sessionId: SessionId, path: string, signal: AbortSignal) => Promise<RemoteResult<DirLevel>>;
+/**
+ * The slice of the Client Remote face this package calls: the `workspaceFiles`
+ * namespace's `list`, exactly as the Host's generated client declares it.
+ */
+export type WorkspaceFilesListRemote = {
+    readonly workspaceFiles: Pick<ClientRemote['workspaceFiles'], 'list'>;
+};
+/**
+ * Bind the listing to one Remote face.
+ * @param remote - the Client Remote face carrying the `workspaceFiles` namespace.
+ * @returns the listing the tree's face performs.
+ */
+export declare function createList(remote: WorkspaceFilesListRemote): ListWorkspaceDirectory;
+/** The tree's injected business face, as the navigator receives it. */
+export interface FilesInjected {
+    /**
+     * Register a navigator mounted for one tab in one pane, until the returned
+     * release. A pane's records — the store's tree, the scroll offset, the file
+     * revealed last — last while a navigator is registered there or an open tab,
+     * judged by its `tabSignal`, whose latest navigator was there. Once neither
+     * holds when the task ends, they are forgotten, the listing closes, and a
+     * listing that settles afterwards writes nothing. A tab replaced in place
+     * keeps them because its successor registers in the same task; floating or
+     * docking a tab never ends them by itself.
+     * @param paneId - the pane being drawn.
+     * @param tabId - the tab the navigator is drawn for.
+     * @param tabSignal - that tab's lifetime.
+     * @returns the release.
+     */
+    readonly attach: (paneId: PaneId, tabId: TabId, tabSignal: AbortSignal) => () => void;
+    /**
+     * Place this face beside a tab's content for the workspace command, while a
+     * navigator that can draw a tree is mounted there, until the returned
+     * release; the pane's records do not depend on it.
+     * @param tabId - the tab whose content the navigator sits beside.
+     * @returns the release.
+     */
+    readonly placeBeside: (tabId: TabId) => () => void;
+    /**
+     * List an attached pane's tree at a workspace directory, with its watches,
+     * while a navigator draws it. A tree the store keeps at that root is listed
+     * again in place, its kept rows still drawn; one at another root, or none, is
+     * replaced, resetting the scroll offset and the revealed file. A hold taken
+     * in the same task as the last release, as a tab switch's next drawing does,
+     * keeps the listing open and lists nothing.
+     * @param paneId - the pane being drawn.
+     * @param root - absolute path of the workspace root.
+     * @returns the release; the listing closes once no hold remains when the current task ends.
+     */
+    readonly hold: (paneId: PaneId, root: string) => () => void;
+    /** Refresh the open directory tree. @param paneId - owning pane. */
+    readonly refresh: (paneId: PaneId) => void;
+    /** Control automatic rereads without closing watches. @param paneId - owning pane. @param enabled - automatic-refresh setting. */
+    readonly setAutoRefresh: (paneId: PaneId, enabled: boolean) => void;
+    /**
+     * Open or collapse one directory, retaining intent during ancestor restoration.
+     * @param paneId - the pane being drawn.
+     * @param parentPath - the listed parent directory's exact tree key.
+     * @param path - absolute directory path.
+     * @param expanded - current expansion preferences, including descendants to restore.
+     */
+    readonly toggle: (paneId: PaneId, parentPath: string, path: string, expanded: readonly string[]) => void;
+    /**
+     * Record where a pane's tree is scrolled to, without rendering anything.
+     * @param paneId - the pane being drawn.
+     * @param scrollTop - the scroll offset in px.
+     */
+    readonly scrolled: (paneId: PaneId, scrollTop: number) => void;
+    /**
+     * Hide a pane's navigator; when its drawing held keyboard focus, the pane's
+     * toggle takes it once the commit ends, as on Escape.
+     * @param paneId - the pane to hide it in.
+     */
+    readonly hide: (paneId: PaneId) => void;
+    /**
+     * Show a pane's navigator and give its tree keyboard focus now, or when it
+     * is next drawn; a pane drawn but not yet attached shows it once attached.
+     * A pane with no drawing recorded is left alone.
+     * @param paneId - the pane whose tree takes focus.
+     */
+    readonly focus: (paneId: PaneId) => void;
+    /**
+     * Register the tree's scroll container as drawn for one tab, or with `null`
+     * as gone. Drawing restores the pane's scroll offset, takes keyboard focus
+     * that the previous drawing held when it went or that `focus` asked for, and
+     * reveals the tab's file unless the pane revealed it last.
+     * @param paneId - the pane being drawn.
+     * @param address - the tab's content address.
+     * @param body - the scroll container, or `null` once it is removed.
+     */
+    readonly bodyDrawn: (paneId: PaneId, address: string, body: HTMLElement | null) => void;
+    /**
+     * Register the drawn row of the tab's file, or with `null` as gone; a reveal
+     * that completed before the row was drawn scrolls it into view then.
+     * @param paneId - the pane being drawn.
+     * @param row - the row, or `null` once it is removed or no longer current.
+     */
+    readonly currentDrawn: (paneId: PaneId, row: HTMLElement | null) => void;
+    /**
+     * Register a navigator's element, or with `null` as gone. While it is
+     * drawn, the face measures the row it is laid out in and, when `closable`,
+     * closes the navigator on Escape in that row. When a new width leaves the
+     * focused resize edge removed or hidden, the tree takes keyboard focus.
+     * When a closable navigator starts filling the row, including its first
+     * drawing, focus in the covered content moves to the tree without closing it;
+     * so does focus that hiding the covered content left on the document body,
+     * unless the reader moved the keyboard or pointer or the window lost focus
+     * before the width was reported.
+     * @param paneId - the pane being drawn.
+     * @param navigator - the navigator element, or `null` once it is removed.
+     * @param closable - whether Escape closes this drawing; the `files` page's tree stays shown.
+     */
+    readonly navigatorDrawn: (paneId: PaneId, navigator: HTMLElement | null, closable: boolean) => void;
+    /**
+     * Register the drawn show/hide control of a pane's navigator, or with `null` as gone.
+     * @param paneId - the pane the control is drawn in.
+     * @param toggle - the control, or `null` once it is removed.
+     */
+    readonly toggleDrawn: (paneId: PaneId, toggle: HTMLElement | null) => void;
+    readonly hooks: {
+        /** Whether some registered tab type can open an address; a new predicate whenever the tab types change. */
+        readonly canOpen: HostObservable<(address: string) => boolean>;
+    };
+    readonly keyedHooks: {
+        /** The measured width of the row a pane's navigator is laid out in, in CSS pixels, keyed by pane id; `undefined` until measured. */
+        readonly rowWidth: (paneId: string) => HostObservable<number | undefined>;
+    };
+}
+/** The slice of the right Sidebar's tab type registry that tells whether an address can be opened. */
+export interface TabTypeRegistry {
+    /** @returns the registered types; a new array whenever registrations change. */
+    entries(): readonly SidebarRightTabDefinition[];
+    /** @param address - a resource address. @returns the types that would open it, best first. */
+    candidates(address: string): readonly SidebarRightTabDefinition[];
+    /** @param listener - called after registrations change. @returns the unsubscribe. */
+    subscribe(listener: () => void): () => void;
+}
+/**
+ * Observe whether any registered tab type can open an address.
+ * @param registry - the right Sidebar's tab type registry.
+ * @returns a source whose snapshot is a predicate, replaced whenever registrations change.
+ */
+export declare function canOpenOf(registry: TabTypeRegistry): HostObservable<(address: string) => boolean>;
+/**
+ * Place a face beside a tab's content, where the workspace command finds it,
+ * until the returned release.
+ * @param tabId - the tab whose content a navigator sits beside.
+ * @param face - the face that navigator draws through.
+ * @returns the release.
+ */
+export type PlaceFace = (tabId: TabId, face: FilesInjected) => () => void;
+/**
+ * Bind the tree's face to one directory listing.
+ * @param list - the bound `workspaceFiles.list` call.
+ * @param watch - target-scoped directory observation.
+ * @param canOpen - whether some tab type can open an address.
+ * @param navigationOf - the attached tab's navigation; subscriptions end with this plugin or their disposer.
+ * @returns the face factory: session, its store instance, and where to place the face beside tabs in, face out.
+ */
+export declare function filesFace(list: ListWorkspaceDirectory, watch: WatchWorkspaceDirectory, canOpen: HostObservable<(address: string) => boolean>, navigationOf: (sessionId: SessionId, tabId: TabId) => HostObservable<SidebarRightTabNavigation>): (sessionId: SessionId, store: Pick<FilesStoreInstance, 'actions' | 'getSnapshot' | 'subscribe'>, place: PlaceFace) => FilesInjected;
+//# sourceMappingURL=face.d.ts.map

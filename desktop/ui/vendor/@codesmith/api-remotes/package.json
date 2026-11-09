@@ -55,6 +55,7 @@
     "@codesmith/api-job-controller": "workspace:*",
     "@codesmith/api-session-controller": "workspace:*",
     "@codesmith/api-workspace-controller": "workspace:*",
+    "@codesmith/api-workspace-files": "workspace:*",
     "@codesmith/client-connection": "workspace:*",
     "@codesmith/client-file-upload": "workspace:*",
     "@codesmith/typert-protocol": "workspace:*",
