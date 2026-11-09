@@ -316,10 +316,21 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("skills/list: {err:#}")),
         },
-        "settings/describe" => match settings::describe(&host.settings_home()) {
-            Ok(value) => rpc_ok(value),
-            Err(err) => rpc_error("gateway/internal", format!("settings/describe: {err:#}")),
-        },
+        "settings/describe" => {
+            // The provider namespace reads config.toml and probes the
+            // credential store for custom-route key presence.
+            let home = host.settings_home();
+            match tokio::task::spawn_blocking(move || settings::describe(&home)).await {
+                Ok(Ok(value)) => rpc_ok(value),
+                Ok(Err(err)) => {
+                    rpc_error("gateway/internal", format!("settings/describe: {err:#}"))
+                }
+                Err(err) => rpc_error(
+                    "gateway/internal",
+                    format!("settings/describe join failed: {err}"),
+                ),
+            }
+        }
         "settings/mutate" | "settings/update" => {
             match settings::mutate(host, &host.settings_home(), endpoint, args_of(payload)).await {
                 Ok(value) => rpc_ok(value),

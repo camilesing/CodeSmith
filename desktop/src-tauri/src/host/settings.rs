@@ -200,12 +200,18 @@ impl WriteError {
 
 /// `settings/describe` — every desktop-owned namespace view, plus the
 /// provider namespace over config.toml. A config.toml that does not parse
-/// fails the whole read, naming the file.
+/// fails the whole read, naming the file. The provider view probes the
+/// credential store for custom-route key presence; the caller runs this
+/// whole read on a blocking thread (store and file I/O).
 pub fn describe(home: &std::path::Path) -> Result<Value> {
+    describe_with(home, &llm::credential_probe())
+}
+
+fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
     let document = load_document(home);
     let mut namespaces: Vec<Value> = specs().iter().map(|spec| document.view(spec)).collect();
     namespaces.push(
-        llm::namespace_view(document.revision_of(llm::NS))
+        llm::namespace_view(document.revision_of(llm::NS), has_secret)
             .with_context(|| "read the provider config for settings/describe")?,
     );
     Ok(json!({
@@ -227,12 +233,15 @@ pub async fn mutate(
     endpoint: &str,
     args: &Value,
 ) -> std::result::Result<Value, WriteError> {
-    let view = if args.get("ns").and_then(Value::as_str) == Some(llm::NS) {
-        provider_fold(endpoint, home, args)?
-    } else {
-        fold(home, endpoint, args)
-            .map_err(|err| fold_write_error(&format!("{err:#}")))?
-    };
+    // The write folds config.toml and, for the provider namespace, probes the
+    // credential store for custom-route key presence: keep both off the
+    // async worker threads. The event frame waits until the fold landed.
+    let home = home.to_path_buf();
+    let endpoint = endpoint.to_string();
+    let args = args.clone();
+    let view = tokio::task::spawn_blocking(move || write_view(&home, &endpoint, &args))
+        .await
+        .map_err(|err| WriteError::rejected(format!("settings write join failed: {err}")))??;
     let ns = view["ns"].as_str().unwrap_or_default().to_string();
     let revision = view["revision"].as_u64().unwrap_or(0);
     // Invalidate every open client surface the way the Host would.
@@ -243,6 +252,21 @@ pub async fn mutate(
     }))
     .await;
     Ok(view)
+}
+
+/// The blocking half of {@link mutate}: the provider namespace routes its ops
+/// onto config.toml (`host::llm`); every other namespace folds into the
+/// desktop settings document.
+fn write_view(
+    home: &std::path::Path,
+    endpoint: &str,
+    args: &Value,
+) -> std::result::Result<Value, WriteError> {
+    if args.get("ns").and_then(Value::as_str) == Some(llm::NS) {
+        provider_fold(endpoint, home, args)
+    } else {
+        fold(home, endpoint, args).map_err(|err| fold_write_error(&format!("{err:#}")))
+    }
 }
 
 /// `fold`'s one conflict spelling (its stale-revision bail, five lines
@@ -287,7 +311,8 @@ fn provider_fold(
     document
         .save()
         .map_err(|err| WriteError::rejected(format!("{err:#}")))?;
-    llm::namespace_view(next_revision).map_err(|err| WriteError::rejected(format!("{err:#}")))
+    llm::namespace_view(next_revision, &llm::credential_probe())
+        .map_err(|err| WriteError::rejected(format!("{err:#}")))
 }
 
 /// The pure write core behind `settings/mutate` / `settings/update`. The
@@ -389,7 +414,7 @@ mod tests {
         let config = home.join("scratch-config.toml");
         std::fs::write(&config, "[providers.openai]\nbase_url = \"https://g.example/v1\"\n").unwrap();
         std::env::set_var("CODESMITH_CONFIG_PATH", &config);
-        let value = describe(&home).expect("describe");
+        let value = describe_with(&home, &|_| false).expect("describe");
         std::env::remove_var("CODESMITH_CONFIG_PATH");
         let namespaces = value["namespaces"].as_array().unwrap();
         let ids: Vec<&str> = namespaces
@@ -462,7 +487,7 @@ mod tests {
         let config = home.join("scratch-config.toml");
         std::fs::write(&config, "").unwrap();
         std::env::set_var("CODESMITH_CONFIG_PATH", &config);
-        let reloaded = describe(&home).expect("describe");
+        let reloaded = describe_with(&home, &|_| false).expect("describe");
         std::env::remove_var("CODESMITH_CONFIG_PATH");
         assert_eq!(reloaded["namespaces"][0]["value"]["fontSize"], 18);
         let _ = std::fs::remove_dir_all(&home);

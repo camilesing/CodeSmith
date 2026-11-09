@@ -165,10 +165,13 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   displayName?, api?, baseURL?, models: [...]}}}`，底层读写 config.toml
   （`crates/config` 的 ProvidersToml + `toml_edit` 的外科式写入——注释、
   陌生键与 CLI 拥有的其它表原样保留）：route 是内置 provider slug 或
-  `[[providers.custom]]` id；`apiKeyEnv` 恒为页面自己的 `<ROUTE>_API_KEY`
+  `[[providers.custom]]` id；`apiKeyEnv` 是页面自己的 `<ROUTE>_API_KEY`
   推导（不落盘，读时重算；自托管运行时 sglang/vllm/ollama 不带，行就不
-  索要 key）；模型行映射 `id→model`、`name→display_model`、
-  `contextWindow→context_window`、`input 含 image→vision=true`。schema 信封
+  索要 key；自定义路由仅在实际持有凭据时才带——内联 `api_key` 或
+  store/env 里的密钥——无 key 的网关因此保持 create card 的
+  provider-native auth 姿态，不显示缺 key 红点）；模型行映射
+  `id→model`、`name→display_model`、`contextWindow→context_window`、
+  `input 含 image→vision=true`。schema 信封
   带页面要探测的 `providers.<route>.api` 协议 union——只有
   `openai-completions` 一个选项（CodeSmith 的自定义网关走 openai-compat
   后端），`models[].reasoningEfforts` 刻意缺席：CodeSmith 没有按模型的
@@ -185,15 +188,23 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   值，set/unset 后推 `credentials/record-updated` 事件帧；`source` 为
   `file` 表示值来自凭据存储（vendored 页面称"本页保存的凭据"的写法，
   不论底层是文件还是系统 keychain），`env` 表示进程环境变量命中。
-  revision 计数存于
+  describe 还会探测 config.toml 里该路由的内联 `api_key`（custom 条目自
+  己的 key，或运行时接受的根 key），命中时回 `{configured: true,
+  writable: false}` 且不带 `source`：它是运行时的第一 key 来源，页面既
+  不能替换也不能清除它。revision 计数存于
   `desktop/settings.json`，过期 `expectedRevision` 以 `settings/conflict`
   拒绝。页面内建 welcome-notice 走的 `ui-settings-general` namespace 也已
   服务（默认值即当前版本号——通知默认隐藏，上游升版后出现一次、自 dismissed
   落盘）。已知限制：config.toml 每 provider 只配一个模型——写两个及以上
-  模型行会被拒绝（不会静默丢）；模型行的 `maxTokens` 无 config 归宿（可
-  输入、存为空）；写在 config.toml `[providers.<route>] api_key` 里的内
-  联密钥不是 keyring 凭据，页面密钥点会读作缺失、直到在页面重填一次（运
-  行时仍用内联值）；provider 改动是运行时加载期状态，需重启 serve 才生
+  模型行会被拒绝（不会静默丢）；模型行的 `maxTokens` 无 config 归宿，
+  带它的写入会被拒绝而不是静默丢弃（CodeSmith 由模型的 context window
+  推导输出上限），`llm/discoverModels` 也因此不再返回端点列出的
+  `max_tokens`；config.toml `[providers.<route>] api_key` 里的内联密钥
+  现在读作已配置（绿点），但页面不能替换或移除它，运行时继续用内联值；
+  页面保存的 key 落在凭据存储，而 `codesmith serve` 只从 config.toml
+  再进程环境解析 provider key——**仅存在页面里的 key 不会进入运行中的后
+  端**（`codesmith login` / `auth set` 同时写 config.toml，页面探测的正
+  是这些内联 key）；provider 改动是运行时加载期状态，需重启 serve 才生
   效；手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正
   服务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）
   因而永不出现。

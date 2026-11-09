@@ -3,9 +3,9 @@
 //!
 //! The page's references follow its own convention (`deriveKeyRef`): a
 //! provider route `nvidia-nim` addresses its key as `NVIDIA_NIM_API_KEY`.
-//! The slot a reference resolves to is the same lowercase slug `codesmith
-//! login` writes (`provider_slot`), so a key stored here is the key the CLI
-//! and the runtime read.
+//! The slot a reference resolves to is the same lowercase slug the CLI's
+//! `auth` commands and `codesmith login` address (`provider_slot`), so the
+//! two surfaces write and read one credential slot.
 //!
 //! Wire contract (vendored `api-settings-controller` credentials remote,
 //! object-keyed args per the gateway's `prepareInvocation`): `describe`
@@ -18,11 +18,26 @@
 //! reports `env`. The label names the page's branch, not the physical
 //! backend: CodeSmith's file store and OS keychain are both page-writable.
 //!
-//! Known limitations: `writable` is a constant `true` — the auto-detected
-//! store is writable whenever it exists, and a store that cannot write
-//! fails the write itself. The event frame rides `record-updated`; upstream's
-//! reference seam names its set/unset fan-out `reference-updated`, and the
-//! vendored page listens to both.
+//! `describe` also treats a config.toml inline key as configured: the
+//! runtime resolves a provider key from the route's `[providers.<route>]`
+//! table (or a `[[providers.custom]]` entry, or the root `api_key` where the
+//! runtime accepts it), so a key the CLI wrote there is live even though
+//! this page never stored it. That view carries `configured` alone — no
+//! `source`, because the page did not save it, and `writable: false`,
+//! because this seam cannot replace or clear a config-file key (the page
+//! therefore offers no remove action for it).
+//!
+//! Known limitations: `writable` is otherwise a constant `true` — the
+//! auto-detected store is writable whenever it exists, and a store that
+//! cannot write fails the write itself. The event frame rides
+//! `record-updated`; upstream's reference seam names its set/unset fan-out
+//! `reference-updated`, and the vendored page listens to both. The runtime
+//! (`codesmith serve`) resolves provider keys from config.toml and the
+//! process environment; it does not read the credential store, so a key
+//! stored only by this page reaches a running backend only when the CLI's
+//! own login/auth wrote the same key into config.toml.
+
+use std::collections::HashSet;
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -90,36 +105,59 @@ pub async fn describe(args: &Value) -> Value {
             format!("credentials/describe: reference {bad:?} is not a POSIX identifier"),
         );
     }
-    // Keyring reads may hit the OS credential store — keep them off the
-    // async worker threads.
-    let views = tokio::task::spawn_blocking(move || describe_refs(&Secrets::auto_detect(), &refs))
-        .await
-        .unwrap_or_else(|err| {
+    // Keyring reads may hit the OS credential store and the config probe
+    // reads config.toml — keep both off the async worker threads.
+    let slots: Vec<String> = refs.iter().map(|r| slot_of_ref(r)).collect();
+    let views = tokio::task::spawn_blocking(move || {
+        let inline = super::llm::inline_key_slots(&slots).map_err(|err| format!("{err:#}"))?;
+        Ok::<_, String>(describe_refs(&Secrets::auto_detect(), &refs, &inline))
+    })
+    .await;
+    match views {
+        Ok(Ok(views)) => rpc_ok(Value::Object(views)),
+        Ok(Err(message)) => rpc_error(
+            "gateway/internal",
+            format!("credentials/describe: read the provider config: {message}"),
+        ),
+        Err(err) => {
             eprintln!("codesmith desktop: credentials describe join failed: {err}");
-            serde_json::Map::new()
-        });
-    rpc_ok(Value::Object(views))
+            rpc_ok(Value::Object(serde_json::Map::new()))
+        }
+    }
 }
 
 /// The pure describe core over one secrets facade (testable without the
-/// process env): resolve each reference's slot through the store → env
-/// chain and project exactly the fields `CredentialInfo` declares.
-fn describe_refs(secrets: &Secrets, refs: &[String]) -> serde_json::Map<String, Value> {
+/// process env): an inline config key wins (the runtime sends it), then each
+/// reference's slot through the store → env chain, projected to exactly the
+/// fields `CredentialInfo` declares.
+fn describe_refs(
+    secrets: &Secrets,
+    refs: &[String],
+    inline: &HashSet<String>,
+) -> serde_json::Map<String, Value> {
     let mut views = serde_json::Map::new();
     for r in refs {
         let slot = slot_of_ref(r);
-        let view = match secrets.resolve_with_source(&slot) {
-            Some((_, SecretSource::Keyring)) => json!({
-                "configured": true,
-                "source": "file",
-                "writable": true,
-            }),
-            Some((_, SecretSource::Env)) => json!({
-                "configured": true,
-                "source": "env",
-                "writable": true,
-            }),
-            None => json!({ "configured": false, "writable": true }),
+        let view = if inline.contains(&slot) {
+            // The value lives in config.toml, which this seam can neither
+            // replace nor clear; no `source` (the page did not save it), and
+            // not writable (the page must not offer removal of a key its
+            // unset/delete would leave standing).
+            json!({ "configured": true, "writable": false })
+        } else {
+            match secrets.resolve_with_source(&slot) {
+                Some((_, SecretSource::Keyring)) => json!({
+                    "configured": true,
+                    "source": "file",
+                    "writable": true,
+                }),
+                Some((_, SecretSource::Env)) => json!({
+                    "configured": true,
+                    "source": "env",
+                    "writable": true,
+                }),
+                None => json!({ "configured": false, "writable": true }),
+            }
         };
         views.insert(r.clone(), view);
     }
@@ -263,7 +301,11 @@ mod tests {
     fn describe_reports_configured_source_and_never_the_value() {
         let secrets = test_secrets();
         secrets.set("openrouter", "sk-live-value").unwrap();
-        let views = describe_refs(&secrets, &[ref_of_slot("openrouter"), ref_of_slot("novita")]);
+        let views = describe_refs(
+            &secrets,
+            &[ref_of_slot("openrouter"), ref_of_slot("novita")],
+            &HashSet::new(),
+        );
         let configured = &views[&ref_of_slot("openrouter")];
         assert_eq!(configured["configured"], true);
         // The vendored page's "saved" branch is `source === 'file'`; its local
@@ -277,5 +319,25 @@ mod tests {
         let missing = &views[&ref_of_slot("novita")];
         assert_eq!(missing["configured"], false);
         assert!(missing.get("source").is_none());
+    }
+
+    #[test]
+    fn inline_config_keys_are_configured_but_not_page_writable() {
+        // The runtime reads config.toml before the store, so a key the CLI
+        // wrote there is live even though this page never stored it. The view
+        // must say configured, must not claim a page-controlled source, and
+        // must not invite an unset that would leave the key standing.
+        let secrets = test_secrets();
+        secrets.set("openrouter", "sk-shadowed").unwrap();
+        let inline: HashSet<String> = ["openrouter".to_string()].into_iter().collect();
+        let views = describe_refs(&secrets, &[ref_of_slot("openrouter")], &inline);
+        let view = &views[&ref_of_slot("openrouter")];
+        assert_eq!(view["configured"], true);
+        assert!(
+            view.get("source").is_none(),
+            "a config-file key is not stored by this page"
+        );
+        assert_eq!(view["writable"], false);
+        assert!(!view.to_string().contains("sk-shadowed"));
     }
 }

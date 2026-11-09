@@ -198,9 +198,13 @@ Known limitations of the current implementation:
   (crates/config's `ProvidersToml` for the typed view, surgical `toml_edit`
   writes that preserve comments, unknown keys, and every other table): a
   route is a builtin provider slug or a `[[providers.custom]]` id;
-  `apiKeyEnv` is always the page's own `<ROUTE>_API_KEY` derivation (never
+  `apiKeyEnv` is the page's own `<ROUTE>_API_KEY` derivation (never
   persisted, recomputed on read; self-hosted runtimes sglang/vllm/ollama
-  carry none, so their rows ask for no key); a model row maps
+  carry none, so their rows ask for no key, and a custom route carries it
+  only when it actually has a credential — an inline `api_key` or a
+  store/env secret — so a keyless gateway keeps the create card's
+  provider-native-auth posture instead of showing the missing-key dot); a
+  model row maps
   `id→model`, `name→display_model`, `contextWindow→context_window`,
   `input` naming `image→vision=true`. The schemastery envelope carries the
   `providers.<route>.api` protocol union the page probes — with exactly one
@@ -223,18 +227,29 @@ Known limitations of the current implementation:
   pushing a `credentials/record-updated` event frame; `source` is `file`
   for a store-supplied value (the vendored page's spelling for "saved by
   this page's credential provider", whichever backend holds it) and `env`
-  for a process-environment hit. The namespace revision counter lives in
-  `desktop/settings.json`; a stale `expectedRevision` is refused as
+  for a process-environment hit. Describe also probes config.toml for the
+  route's inline `api_key` (a custom entry's own key, or the root key where
+  the runtime accepts it) and reports it `{configured: true, writable:
+  false}` with no `source`: it is the runtime's first key source, and this
+  page can neither replace nor clear it. The namespace revision counter
+  lives in `desktop/settings.json`; a stale `expectedRevision` is refused as
   `settings/conflict`. The page's built-in welcome notice reads a
   `ui-settings-general` namespace, now served too (its default is the
   current copy version — the notice stays hidden; an upstream bump shows it
   once and its own dismiss persists). Known limitations: config.toml
   configures ONE model per provider — a write naming two or more rows is
   refused, not silently dropped; a model row's `maxTokens` has no config
-  home (typed, saved as absent); a key stored inline in
-  `[providers.<route>] api_key` is not a keyring credential, so the page's
-  key dot reads it as missing until the key is re-entered there (the
-  runtime keeps using the inline one); provider edits are load-time state
+  home, so a write carrying one is refused rather than silently dropped
+  (CodeSmith derives the output cap from the model's context window) and
+  `llm/discoverModels` does not advertise a listed `max_tokens` for the
+  same reason; an inline `[providers.<route>] api_key` now reads as
+  configured (green dot) but the page cannot replace or remove it, and the
+  runtime keeps using it; a key saved on the Models page lands in the
+  credential store, while `codesmith serve` resolves provider keys from
+  config.toml and then the process environment — **a page-saved key alone
+  therefore does not reach a running backend** (`codesmith login` / `auth
+  set` also write config.toml, and those inline keys are what the page
+  detects); provider edits are load-time state
   for the runtime, so a running `codesmith serve` needs a restart; a
   hand-declared custom route still needs a provider factory (`providers.toml`
   or an extension) before the runtime can serve it; the first-run onboarding

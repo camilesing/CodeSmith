@@ -257,6 +257,15 @@ pub fn provider_is_self_hosted(provider: ProviderKind) -> bool {
     )
 }
 
+/// Whether this provider also reads the legacy root `api_key` field (the
+/// built-in compatibility slot the original provider still uses). One
+/// spelling of the runtime rule, shared by credential resolution and the
+/// desktop Models bridge.
+#[must_use]
+pub fn provider_accepts_root_api_key(provider: ProviderKind) -> bool {
+    matches!(provider, ProviderKind::Deepseek)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfigToml {
     pub api_key: Option<String>,
@@ -1770,7 +1779,7 @@ impl ConfigToml {
         let provider = cli.provider.or(env.provider).unwrap_or(self.provider);
 
         let provider_cfg = self.providers.for_provider(provider);
-        let root_deepseek_api_key = (provider == ProviderKind::Deepseek)
+        let root_deepseek_api_key = provider_accepts_root_api_key(provider)
             .then(|| self.api_key.clone())
             .flatten();
         let root_deepseek_base_url = (provider == ProviderKind::Deepseek)

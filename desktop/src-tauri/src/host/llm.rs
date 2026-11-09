@@ -10,12 +10,16 @@
 //! - the namespace **value** is `{providers: {<route>: profile}}` where a
 //!   route is a builtin provider slug or a `[[providers.custom]]` id, and a
 //!   profile is `{apiKeyEnv?, displayName?, api?, baseURL?, models: […]}`.
-//!   `apiKeyEnv` is always the page's own `<ROUTE>_API_KEY` derivation
-//!   (never persisted — it is recomputable), `api` is the single protocol
-//!   CodeSmith custom gateways speak, and `models` carries the provider's
-//!   one configured model (`id` → `model`, `name` → `display_model`,
-//!   `contextWindow` → `context_window`, an `input` naming `image` →
-//!   `vision = true`).
+//!   `apiKeyEnv` is the page's own `<ROUTE>_API_KEY` derivation (never
+//!   persisted — it is recomputable): always present on a key-requiring
+//!   builtin, present on a custom route only when that route actually has a
+//!   credential (an inline `api_key` the runtime reads, or a store/env
+//!   secret under its slot) — a keyless gateway keeps the create card's
+//!   provider-native-auth posture instead of showing the missing-key dot.
+//!   `api` is the single protocol CodeSmith custom gateways speak, and
+//!   `models` carries the provider's one configured model (`id` → `model`,
+//!   `name` → `display_model`, `contextWindow` → `context_window`, an
+//!   `input` naming `image` → `vision = true`).
 //! - **writes** are the page's path ops against `providers.<route>`
 //!   (`settings/mutate`, dispatched in `settings.rs`), applied surgically
 //!   through `toml_edit` so comments, unknown keys, and CLI-owned fields
@@ -29,12 +33,18 @@
 //!
 //! Known limitations, beside the module docs above: config.toml configures
 //! ONE model per provider — a write naming two or more rows is refused
-//! rather than silently dropping the rest, and a row's `maxTokens` has no
-//! config home (typed, saved as absent); provider edits are load-time state
-//! for the runtime, so a running `codesmith serve` sees them only after a
-//! restart; a hand-declared custom route needs a provider factory
-//! (`providers.toml` or an extension) before the runtime can serve it.
+//! rather than silently dropping the rest, and a write carrying a row's
+//! `maxTokens` is refused rather than silently dropped (CodeSmith derives
+//! the output cap from the model's context window); provider edits are
+//! load-time state for the runtime, so a running `codesmith serve` sees them
+//! only after a restart; a hand-declared custom route needs a provider
+//! factory (`providers.toml` or an extension) before the runtime can serve
+//! it. Credential precedence is the runtime's (config.toml's inline
+//! `api_key`, then the environment): a key stored only in the page's
+//! credential store is reported by `credentials/describe`, but the runtime
+//! does not read that store — see `credentials.rs`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -42,9 +52,10 @@ use serde_json::{json, Map, Value};
 use toml_edit::{DocumentMut, Item, Table};
 
 use codesmith_config::{
-    custom_endpoint_provider_default, provider_is_self_hosted, resolve_config_path, ProviderKind,
-    ProvidersToml,
+    custom_endpoint_provider_default, provider_accepts_root_api_key, provider_is_self_hosted,
+    resolve_config_path, ProviderKind, ProvidersToml,
 };
+use codesmith_secrets::Secrets;
 
 use super::credentials::ref_of_slot;
 use super::{rpc_error, rpc_ok, HostState};
@@ -147,14 +158,22 @@ fn providers_toml(doc: &DocumentMut) -> Result<ProvidersToml> {
 
 /// The `llm-pi-ai` namespace view for `settings/describe`: the resolved
 /// value is the live config, every configured route is user-layer (the
-/// composition base is empty — removal restores defaults).
-pub fn namespace_view(revision: u64) -> Result<Value> {
-    namespace_view_at(&config_path()?, revision)
+/// composition base is empty — removal restores defaults). `has_secret`
+/// answers whether a route slot has a credential in the store/environment;
+/// it is consulted for custom routes only (builtins carry `apiKeyEnv`
+/// unconditionally, and refusing them a key would hide the missing-key dot
+/// they exist to show).
+pub fn namespace_view(revision: u64, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
+    namespace_view_at(&config_path()?, revision, has_secret)
 }
 
-fn namespace_view_at(path: &Path, revision: u64) -> Result<Value> {
+fn namespace_view_at(
+    path: &Path,
+    revision: u64,
+    has_secret: &dyn Fn(&str) -> bool,
+) -> Result<Value> {
     let doc = read_config(path)?;
-    let providers = providers_value(&doc)?;
+    let providers = providers_value(&doc, has_secret)?;
     let mut view = json!({
         "autoGenerate": true,
         "ns": NS,
@@ -173,11 +192,16 @@ fn namespace_view_at(path: &Path, revision: u64) -> Result<Value> {
 
 /// The providers map the namespace value and user layer share: builtin
 /// providers with any configured field, plus every `[[providers.custom]]`
-/// entry. Key-requiring routes (everything but the self-hosted runtimes —
-/// and customs always, whose gateway may not need one but the missing-key
-/// dot is the safer default) carry the derived `apiKeyEnv`; self-hosted
-/// ones carry none, so the row asks for no key.
-fn providers_value(doc: &DocumentMut) -> Result<Map<String, Value>> {
+/// entry. Key-requiring builtin routes (everything but the self-hosted
+/// runtimes) carry the derived `apiKeyEnv`; self-hosted ones carry none, so
+/// the row asks for no key. A custom route names a reference only when it
+/// has a credential (the runtime's inline key, or a store/env secret), which
+/// keeps a keyless gateway out of the red-dot state the create card avoids
+/// by not naming one.
+fn providers_value(
+    doc: &DocumentMut,
+    has_secret: &dyn Fn(&str) -> bool,
+) -> Result<Map<String, Value>> {
     let typed = providers_toml(doc)?;
     let mut providers = Map::new();
     for kind in ProviderKind::ALL {
@@ -202,7 +226,9 @@ fn providers_value(doc: &DocumentMut) -> Result<Map<String, Value>> {
     }
     for custom in &typed.custom {
         let mut profile = Map::new();
-        profile.insert("apiKeyEnv".into(), json!(ref_of_slot(&custom.id)));
+        if inline_key_configured(doc, &custom.id) || has_secret(&custom.id) {
+            profile.insert("apiKeyEnv".into(), json!(ref_of_slot(&custom.id)));
+        }
         if let Some(name) = non_empty(custom.display_name.as_deref()) {
             profile.insert("displayName".into(), json!(name));
         }
@@ -266,6 +292,63 @@ fn custom_table<'a>(doc: &'a DocumentMut, id: &str) -> Option<&'a Table> {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.filter(|v| !v.trim().is_empty())
+}
+
+/// The CLI's legacy "this key lives in the credential store" placeholder
+/// (`crates/cli/src/config.rs`); a table holding it names no inline key.
+const KEYRING_SENTINEL: &str = "__KEYRING__";
+
+fn inline_key(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != KEYRING_SENTINEL
+    })
+}
+
+/// Whether config.toml carries an inline API key the runtime would send for
+/// `route`: a builtin provider table, a `[[providers.custom]]` entry, or the
+/// root `api_key` where the runtime accepts it (the legacy root-key builtin,
+/// and the selected `custom_provider`). Read-only — the value never leaves
+/// this predicate.
+fn inline_key_configured(doc: &DocumentMut, route: &str) -> bool {
+    if let Some(kind) = builtin_kind(route) {
+        let provider_key = builtin_table(doc, &toml_key(kind))
+            .and_then(|table| table.get("api_key"))
+            .and_then(|value| value.as_str());
+        let root_key = provider_accepts_root_api_key(kind)
+            .then(|| doc.get("api_key").and_then(|value| value.as_str()))
+            .flatten();
+        return inline_key(provider_key) || inline_key(root_key);
+    }
+    let entry_key = custom_table(doc, route)
+        .and_then(|table| table.get("api_key"))
+        .and_then(|value| value.as_str());
+    if inline_key(entry_key) {
+        return true;
+    }
+    doc.get("custom_provider").and_then(|value| value.as_str()) == Some(route)
+        && inline_key(doc.get("api_key").and_then(|value| value.as_str()))
+}
+
+/// The subset of `slots` whose config.toml carries an inline key. Used by
+/// `credentials/describe` so a route the CLI configured directly reports
+/// configured — the runtime sends that key, even though this page never
+/// stored it. Values never leave this function.
+pub(crate) fn inline_key_slots(slots: &[String]) -> Result<HashSet<String>> {
+    let doc = read_config(&config_path()?)?;
+    Ok(slots
+        .iter()
+        .filter(|slot| inline_key_configured(&doc, slot))
+        .cloned()
+        .collect())
+}
+
+/// The credential-presence probe the namespace view uses: a route slot
+/// resolves in the page's credential store or the environment. The value is
+/// dropped immediately; only its presence reaches the view.
+pub fn credential_probe() -> impl Fn(&str) -> bool {
+    let secrets = Secrets::auto_detect();
+    move |slot| secrets.resolve(slot).is_some()
 }
 
 // === Mutate (config.toml writes) ===========================================
@@ -343,6 +426,16 @@ fn write_models(table: &mut Table, models: &Value) -> Result<(), String> {
             Ok(())
         }
         [row] => {
+            // A field the write would silently lose is a refusal, not a
+            // success: CodeSmith derives the output cap from the model's
+            // context window and has no per-model `maxTokens` config key.
+            if row.get("maxTokens").is_some_and(|value| !value.is_null()) {
+                return Err(
+                    "a model row's maxTokens has no config.toml home; CodeSmith derives the \
+                     output cap from the model's context window (clear the field to save)"
+                        .into(),
+                );
+            }
             let Some(id) = row.get("id").and_then(Value::as_str).filter(|id| !id.trim().is_empty())
             else {
                 return Err("a model row without an id cannot be saved".into());
@@ -792,7 +885,11 @@ async fn interrogate_endpoint(
         }
     };
     // OpenAI-compatible listings carry `{data: [{id, display_name?,
-    // context_length?}]}`; ollama spells the window `context_window`.
+    // context_length?}]}`; ollama spells the window `context_window`. A
+    // listed `max_tokens` is deliberately not advertised: the page's model
+    // row would adopt it into a draft whose write config.toml refuses
+    // (no per-model output-cap key), so discovery returns only what the
+    // bridge can persist.
     let Some(rows) = body.get("data").and_then(Value::as_array) else {
         return rpc_error(
             "llm/model-discovery-rejected",
@@ -816,9 +913,6 @@ async fn interrogate_endpoint(
                     discovered["contextWindow"] = json!(window);
                     break;
                 }
-            }
-            if let Some(max) = row.get("max_tokens").and_then(Value::as_u64) {
-                discovered["maxTokens"] = json!(max);
             }
             Some(discovered)
         })
@@ -923,7 +1017,7 @@ display_name = "Acme"
 "#,
         )
         .unwrap();
-        let view = namespace_view_at(&path, 3).unwrap();
+        let view = namespace_view_at(&path, 3, &|_| true).unwrap();
         assert_eq!(view["ns"], NS);
         assert_eq!(view["revision"], 3);
         assert_eq!(view["base"], json!({ "providers": {} }));
@@ -950,6 +1044,100 @@ display_name = "Acme"
         assert_eq!(acme["models"], json!([{ "id": "acme-1" }]));
         // Every configured route is user-layer (removable).
         assert_eq!(view["user"]["providers"].as_object().unwrap().len(), 4);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn custom_routes_name_a_credential_only_when_one_exists() {
+        let path = temp_config("custom-keys");
+        std::fs::write(
+            &path,
+            r#"
+[[providers.custom]]
+id = "keyless"
+base_url = "http://localhost:8080/v1"
+model = "local"
+
+[[providers.custom]]
+id = "inline-keyed"
+base_url = "https://inline.example/v1"
+api_key = "sk-inline"
+
+[[providers.custom]]
+id = "stored-keyed"
+base_url = "https://stored.example/v1"
+"#,
+        )
+        .unwrap();
+        // The store/environment probe answers only for the route the page
+        // saved a key under; the inline key is read from config.
+        let view = namespace_view_at(&path, 1, &|slot| slot == "stored-keyed").unwrap();
+        let providers = view["value"]["providers"].as_object().unwrap();
+        assert!(
+            providers["keyless"].get("apiKeyEnv").is_none(),
+            "a keyless gateway keeps its provider-native auth posture"
+        );
+        assert_eq!(providers["inline-keyed"]["apiKeyEnv"], "INLINE_KEYED_API_KEY");
+        assert_eq!(providers["stored-keyed"]["apiKeyEnv"], "STORED_KEYED_API_KEY");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn inline_config_keys_are_detected_per_route() {
+        let path = temp_config("inline-keys");
+        std::fs::write(
+            &path,
+            r#"
+api_key = "sk-root"
+custom_provider = "selected"
+
+[providers.openai]
+api_key = "sk-openai"
+
+[providers.moonshot]
+api_key = "__KEYRING__"
+
+[[providers.custom]]
+id = "selected"
+base_url = "https://selected.example/v1"
+
+[[providers.custom]]
+id = "unselected"
+base_url = "https://unselected.example/v1"
+
+[[providers.custom]]
+id = "own-key"
+base_url = "https://own.example/v1"
+api_key = "sk-custom"
+"#,
+        )
+        .unwrap();
+        let doc = read_config(&path).unwrap();
+        let root_route = ProviderKind::ALL
+            .iter()
+            .copied()
+            .find(|kind| provider_accepts_root_api_key(*kind))
+            .expect("a root-key provider exists")
+            .as_str();
+        assert!(inline_key_configured(&doc, "openai"), "a builtin table's key");
+        assert!(
+            inline_key_configured(&doc, root_route),
+            "the legacy root key serves its provider"
+        );
+        assert!(
+            inline_key_configured(&doc, "selected"),
+            "the root key serves the selected custom route"
+        );
+        assert!(
+            !inline_key_configured(&doc, "unselected"),
+            "the root key does not serve an unselected custom route"
+        );
+        assert!(inline_key_configured(&doc, "own-key"), "a custom entry's own key");
+        assert!(
+            !inline_key_configured(&doc, "moonshot"),
+            "the keyring sentinel is not an inline key"
+        );
+        assert!(!inline_key_configured(&doc, "ollama"), "no table, no root claim");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1085,6 +1273,13 @@ display_name = "Acme"
             "value": { "baseURL": "https://a.example", "models": [{ "name": "no id" }] },
         })];
         assert!(apply_ops_at(&path, &ops).is_err());
+        // A maxTokens row has no config home; refused rather than dropped.
+        let ops = [json!({
+            "op": "set", "path": ["providers", "acme"],
+            "value": { "baseURL": "https://a.example", "models": [{ "id": "a", "maxTokens": 8192 }] },
+        })];
+        let err = apply_ops_at(&path, &ops).unwrap_err();
+        assert!(err.contains("maxTokens"), "{err}");
         assert!(
             std::fs::read_to_string(&path).unwrap().is_empty(),
             "refused writes change nothing"
