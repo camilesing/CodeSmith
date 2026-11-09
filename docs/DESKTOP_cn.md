@@ -156,10 +156,31 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   定时、不足一小时的间隔、异时区、其余 cron 形态在创建/编辑时响亮失败，
   而不是静默改期。"让模型创建"只打开会话——模型没有注册日程的工具，
   请用手动表单。
-- 工具调用的输出增量不流式；工具节点由持久化结果落定。工具名在桥的
-  事件映射处规范化为 vendored 卡片词汇（`exec_shell` → bash 卡、
-  `read_file` → read 卡……）；运行时记录保留 CodeSmith 真名，且回放的
-  工具调用丢失参数（持久化条目只带结果元数据）。
+- 工具调用的输出增量不流式——vendored 卡片本身也不消费实时输出
+  （运行中的卡片显示流光动画，由 `tool/result` 落定），与上游交互一
+  致。工具名在桥的事件映射处规范化为 vendored 卡片词汇（`exec_shell`
+  → bash 卡、`read_file` → read 卡……）；运行时记录保留 CodeSmith 真
+  名。工具条目把参数记入附加的 `metadata.arguments`（被结果自身的元
+  数据替换时保留），因此回放的工具调用能渲染参数；无参数记录的回放
+  （该字段存在之前的外来 HTTP 客户端回合）回退为 `{}`。
+  `toolResults/watch`（轨迹视图的按需取结果）按 seq 回答已落定的
+  `tool/result` 线事件——无状态地从线程记录重放推导；映射不到的 seq
+  回 `{available:false}` 并挂起。
+- Token 计量端到端打通。运行时按"回合"上报 usage；最后一个 agent 条
+  目的完成载荷携带它（运行时把这次发射推迟到回合收尾——usage 届时已
+  知；回合中途落定则在下一个引擎事件前发射，保持日志顺序），桥再把
+  客户端的 usage 样本挂到该条目的 `assistant/message` 上
+  （`inputTokens` = 未命中份额、`cacheReadTokens` = 命中份额、
+  `totalTokens` = 输入 + 输出），消息 source 带座位上真实的
+  (provider, model)——客户端的回合折叠把样本聚成轮尾用量胶囊，实时
+  与回放一致（回放把 `turns[].usage` 盖在该轮最后一个落定的 agent 消
+  息上）。`sessionStats` 与 `tokenUsage` 投影（输入框的活动/用量
+  pill）从持久化记录折出：回合数、步数、LLM/工具耗时、解码 token；
+  TTFT 无法从持久化记录分离，投影不报，解码时长用 agent 条目完整跨
+  度（偏保守的速度读数）。上下文表的分母由 `contextPressure` 投影里
+  的 `contextWindow` 提供，来自 `GET /v1/models` 的逐模型
+  `context_window` 估计（运行时估不出时省略——表随之保持隐藏）；
+  CodeSmith 不上报缓存写桶，该行永不出现。
 - 用户问题没有 HTTP 取消路由，未作答的问题 waterfall 等运行时自身的
   截止时间；问题请求不带工具调用 id，输入框的问题卡不渲染倒计时。
 - `$events` waterfall 遵循上游 gateway 契约：每条流有自己的

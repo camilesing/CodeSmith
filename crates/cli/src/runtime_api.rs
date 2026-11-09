@@ -1339,6 +1339,10 @@ struct ModelEntry {
     supports_tools: bool,
     supports_reasoning: bool,
     default: bool,
+    /// Approximate context window in tokens (absent when unknown), so a GUI
+    /// can render context occupancy without hard-coding model tables.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window: Option<u32>,
 }
 
 /// `GET /v1/models` — the model registry with the effective default flagged,
@@ -1357,6 +1361,7 @@ async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntr
             .into_iter()
             .map(|m| ModelEntry {
                 default: m.id == default_model,
+                context_window: codesmith_agent::models::context_window_for_model(&m.id),
                 id: m.id,
                 provider: m.provider.as_str().to_string(),
                 aliases: m.aliases,

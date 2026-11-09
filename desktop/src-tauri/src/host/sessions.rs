@@ -92,17 +92,34 @@ pub async fn follow(
         .backend
         .get(&format!("/v1/threads/{session_id}"))
         .await?;
-    let events = replay_events(&detail);
+    // The seat's model chip reads the session's modelSelection projection; a
+    // thread without an explicit model resolves to the catalog default so a
+    // fresh session never waits on a projection nobody will push.
+    let models = runtime_models(host).await;
+    // Settled assistant messages carry the seat's (provider, model) as their
+    // source — the usage fold derives its routes from it. The user's own
+    // pick wins (see `model_selection`).
+    let thread_model = detail
+        .pointer("/thread/model")
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty());
+    let seat = model_selection(
+        thread_model,
+        host.model_choices.lock().await.get(&session_id),
+        &models,
+    );
+    let events = match seat.as_ref() {
+        Some((provider, model)) => {
+            super::mapper::replay_events_sourced(&detail, provider, model)
+        }
+        None => replay_events(&detail),
+    };
     // 0-based journal: an empty one opens at cursor -1 (mapper::WireSeq).
     let last_seq = events.last().and_then(|e| e["seq"].as_i64()).unwrap_or(-1);
     let title = detail
         .pointer("/thread/title")
         .and_then(Value::as_str)
         .unwrap_or("New Session");
-    // The seat's model chip reads the session's modelSelection projection; a
-    // thread without an explicit model resolves to the catalog default so a
-    // fresh session never waits on a projection nobody will push.
-    let models = runtime_models(host).await;
     let values = projection_values(host, &session_id, &detail, &models).await;
     let snapshot = json!({
         "type": "snapshot",
@@ -132,6 +149,9 @@ pub async fn follow(
         .await?;
     let (turn_baseline, step_baseline) = resume_counters(&detail);
     let mut mapper = SessionMapper::resume_at(last_seq, turn_baseline, step_baseline);
+    if let Some((provider, model)) = seat.as_ref() {
+        mapper.set_model_source(provider, model);
+    }
     use futures_util::StreamExt;
     let mut buffer = String::new();
     while let Some(chunk) = lines.next().await {
@@ -179,7 +199,13 @@ pub async fn follow(
                 }
                 // A settled user message carries its own `source.rpcId` (the
                 // mapper reads the item's metadata), so the client retires
-                // its optimistic copy by identity.
+                // its optimistic copy by identity. The model source follows
+                // the freshest UI choice: a switch journals no runtime event.
+                if let Some((provider, model)) =
+                    host.model_choices.lock().await.get(&session_id)
+                {
+                    mapper.set_model_source(provider, model);
+                }
                 for frame in mapper.map_envelope(&envelope) {
                     if tx.send(frame.to_wire()).await.is_err() {
                         return Ok(());
@@ -195,6 +221,45 @@ pub async fn follow(
             break;
         }
     }
+    Ok(())
+}
+
+/// `toolResults/watch` — the trajectory inspector's on-demand result lookup.
+/// The wire `tool/result` event at `seq` is the value (the client renders it
+/// as a JSON tree); a seq the replay lacks answers "no live value" and the
+/// stream parks — ending it would read as a failure to the client's watcher.
+/// Stateless over the thread record: works after a bridge restart with no
+/// follow stream having run, at the cost of one thread read per watch.
+pub async fn tool_results_watch(
+    host: &HostState,
+    request: &Value,
+    tx: &tokio::sync::mpsc::Sender<Value>,
+) -> Result<()> {
+    let session_id = request
+        .get("sessionId")
+        .or_else(|| request.get("session_id"))
+        .and_then(Value::as_str)
+        .context("toolResults/watch without sessionId")?;
+    let seq = request
+        .get("seq")
+        .and_then(Value::as_i64)
+        .context("toolResults/watch without seq")?;
+    let detail: Value = host
+        .backend
+        .get(&format!("/v1/threads/{session_id}"))
+        .await?;
+    let value = replay_events(&detail)
+        .into_iter()
+        .find(|event| event["type"] == "tool/result" && event["seq"].as_i64() == Some(seq))
+        .map(|event| event["data"].clone());
+    let frame = match value {
+        Some(data) => json!({ "available": true, "value": data }),
+        None => json!({ "available": false }),
+    };
+    if tx.send(frame).await.is_err() {
+        return Ok(());
+    }
+    tx.closed().await;
     Ok(())
 }
 
@@ -925,6 +990,10 @@ struct RuntimeModel {
     provider: String,
     #[serde(default)]
     default: bool,
+    /// Approximate context window in tokens (absent when the runtime can't
+    /// estimate it) — feeds the context meter's capacity denominator.
+    #[serde(default)]
+    context_window: Option<u64>,
 }
 
 /// The runtime model registry, read once per projection batch. A failed read
@@ -1009,11 +1078,136 @@ fn context_pressure(detail: &Value) -> Option<u64> {
         })
 }
 
+/// Whole-log token accounting (the client's `tokenUsage` projection): the
+/// three prompt-side billing buckets plus output, summed over every turn that
+/// reported usage. CodeSmith's providers report no cache-write bucket, so it
+/// stays 0 (the client renders that row only when non-zero).
+fn token_usage_projection(detail: &Value) -> Option<Value> {
+    let turns = detail.get("turns")?.as_array()?;
+    let mut uncached = 0u64;
+    let mut output = 0u64;
+    let mut cache_read = 0u64;
+    let mut any = false;
+    for turn in turns {
+        let Some(usage) = turn.get("usage").filter(|usage| !usage.is_null()) else {
+            continue;
+        };
+        let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let input = count("input_tokens");
+        let hit = count("prompt_cache_hit_tokens");
+        let miss = usage
+            .get("prompt_cache_miss_tokens")
+            .and_then(Value::as_u64);
+        uncached += miss.unwrap_or_else(|| input.saturating_sub(hit));
+        cache_read += hit;
+        output += count("output_tokens");
+        any = true;
+    }
+    any.then(|| {
+        json!({
+            "uncachedInputTokens": uncached,
+            "outputTokens": output,
+            "cacheReadTokens": cache_read,
+            "cacheWriteTokens": 0,
+        })
+    })
+}
+
+/// Whole-log activity stats (the client's `sessionStats` projection): turn and
+/// step counts plus wall times folded from the durable records. TTFT is not
+/// separable from durable records (they carry only item spans), so it reports
+/// none; decode time uses the full agent-item spans of turns that reported
+/// output tokens, which reads as a conservative (lower-bound) speed.
+fn session_stats_projection(detail: &Value) -> Value {
+    let turns = detail
+        .get("turns")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let items = detail
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let span_ms = |item: &Value| {
+        let started = item
+            .get("started_at")
+            .and_then(Value::as_str)
+            .and_then(super::mapper::epoch_ms);
+        let ended = item
+            .get("ended_at")
+            .and_then(Value::as_str)
+            .and_then(super::mapper::epoch_ms);
+        started.zip(ended).map(|(start, end)| (end - start).max(0) as u64)
+    };
+    let is_agent = |item: &Value| {
+        matches!(
+            item.get("kind").and_then(Value::as_str),
+            Some("agent_message") | Some("agent_reasoning")
+        )
+    };
+    let is_tool = |item: &Value| {
+        matches!(
+            item.get("kind").and_then(Value::as_str),
+            Some("tool_call") | Some("command_execution") | Some("file_change")
+        )
+    };
+    let settled = |item: &Value| item.get("status").and_then(Value::as_str) != Some("in_progress");
+
+    let mut steps = 0u64;
+    let mut llm_ms = 0u64;
+    let mut tool_ms = 0u64;
+    for item in &items {
+        if !settled(item) {
+            continue;
+        }
+        if is_agent(item) {
+            steps += 1;
+            llm_ms += span_ms(item).unwrap_or(0);
+        } else if is_tool(item) {
+            tool_ms += span_ms(item).unwrap_or(0);
+        }
+    }
+    // Decode time: the agent-item spans of turns that billed output tokens.
+    let mut decode_ms = 0u64;
+    let mut decode_tokens = 0u64;
+    for turn in &turns {
+        let Some(usage) = turn.get("usage").filter(|usage| !usage.is_null()) else {
+            continue;
+        };
+        let turn_id = turn.get("id").and_then(Value::as_str).unwrap_or_default();
+        decode_tokens += usage
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        decode_ms += items
+            .iter()
+            .filter(|item| {
+                item.get("turn_id").and_then(Value::as_str) == Some(turn_id)
+                    && is_agent(item)
+                    && settled(item)
+            })
+            .filter_map(span_ms)
+            .sum::<u64>();
+    }
+    json!({
+        "turns": turns.len(),
+        "steps": steps,
+        "llmMs": llm_ms,
+        "toolMs": tool_ms,
+        "ttftMs": 0,
+        "ttftSteps": 0,
+        "decodeMs": decode_ms,
+        "decodeTokens": decode_tokens,
+    })
+}
+
 /// One session's projection values the bridge can compute from the runtime:
-/// title, context pressure, model selection and the queue (`inbox`). Every
-/// other key stays absent (capability absent, per the projection contract).
-/// Each write is a whole baseline for these keys, so they are always all
-/// computed together.
+/// title, context pressure (with the model's context window), model
+/// selection, the queue (`inbox`), whole-log token usage and activity stats.
+/// Every other key stays absent (capability absent, per the projection
+/// contract). Each write is a whole baseline for these keys, so they are
+/// always all computed together.
 async fn projection_values(
     host: &HostState,
     session_id: &str,
@@ -1028,16 +1222,29 @@ async fn projection_values(
         .cloned()
         .unwrap_or_default();
     values.insert("inbox".into(), super::mapper::inbox_projection(&queue));
-    if let Some(tokens) = context_pressure(detail) {
-        values.insert(
-            "contextPressure".into(),
-            json!({ "pressureTokens": tokens, "projectedTokens": tokens }),
-        );
-    }
     let thread_model = detail
         .pointer("/thread/model")
         .and_then(Value::as_str)
         .filter(|m| !m.is_empty());
+    if let Some(tokens) = context_pressure(detail) {
+        // The capacity denominator: the thread model's (else the default
+        // model's) declared context window; absent when the runtime can't
+        // estimate one, which leaves the meter hidden rather than wrong.
+        let window = thread_model
+            .and_then(|id| models.iter().find(|m| m.id == id))
+            .or_else(|| models.iter().find(|m| m.default))
+            .or_else(|| models.first())
+            .and_then(|m| m.context_window);
+        let mut pressure = json!({ "pressureTokens": tokens, "projectedTokens": tokens });
+        if let Some(window) = window {
+            pressure["contextWindow"] = json!(window);
+        }
+        values.insert("contextPressure".into(), pressure);
+    }
+    if let Some(usage) = token_usage_projection(detail) {
+        values.insert("tokenUsage".into(), usage);
+    }
+    values.insert("sessionStats".into(), session_stats_projection(detail));
     let choice = host.model_choices.lock().await.get(session_id).cloned();
     if let Some((provider, model)) = model_selection(thread_model, choice.as_ref(), models) {
         // ModelSelectionProjection: `next` feeds the next model step;
@@ -1285,6 +1492,7 @@ mod tests {
             id: id.into(),
             provider: provider.into(),
             default,
+            context_window: None,
         }
     }
 

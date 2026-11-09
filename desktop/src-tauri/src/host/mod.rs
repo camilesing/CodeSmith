@@ -436,6 +436,13 @@ pub async fn open_stream(
             events_stream(host, &tx).await;
             Ok(())
         }
+        // The trajectory inspector's on-demand tool-result lookup
+        // (host::sessions): one value frame, then the stream parks.
+        "toolResults/watch" => sessions::tool_results_watch(host, args_of(payload), &tx)
+            .await
+            .map_err(|err| {
+                stream_failure("gateway/internal", format!("toolResults/watch: {err:#}"))
+            }),
         // The runtime's user-input requests carry no tool call id, so the
         // client never opens a foreground claim; an explicit attachWait (a
         // continued question) has no answerable wait here and ends with no
@@ -519,10 +526,6 @@ async fn events_stream(host: &HostState, tx: &mpsc::Sender<Value>) {
 async fn stream_baseline(host: &HostState, endpoint: &str) -> Result<Vec<Value>> {
     match endpoint {
         "session/control" => sessions::control_baseline(host).await,
-        // CodeSmith does not stream tool output deltas (known limitation):
-        // one "no live value" frame, then the stream parks until the watcher
-        // unsubscribes.
-        "toolResults/watch" => Ok(vec![json!({ "available": false })]),
         "workspace/follow" => {
             let (view, live, archived) = workspace_view_with_archived(host).await;
             Ok(vec![json!({

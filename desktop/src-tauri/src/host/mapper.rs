@@ -24,9 +24,12 @@
 //! its `ended_at` — the instants the live envelopes carried — so a reload
 //! keeps the clocks and turn durations the client derives from them.
 //!
-//! Known limitations: tool-call output deltas are not streamed (the tool node
-//! settles from `tool/result`); durable tool items lose their tool name, so
-//! `tool/call` recovers it from the item summary prefix on replay; an item
+//! Known limitations: tool-call output deltas are not streamed (the vendored
+//! cards don't consume live output either — a running card shows its shimmer
+//! and settles from `tool/result`, so this matches the upstream interaction);
+//! durable tool items carry their arguments in additive `metadata.arguments`
+//! (the runtime records them at call start and preserves them across the
+//! result), so replayed cards render their arguments; an item
 //! whose `item.started` was missed (follow opened mid-item) is adopted with a
 //! synthesized `step/start` + stream start, so its block may miss early deltas
 //! and its step clock starts at the first delta seen. An envelope or record
@@ -35,6 +38,12 @@
 //! Tool names are normalized to the vendored client's card vocabulary
 //! (`tool_view_name`): the runtime record keeps CodeSmith's own names, this is
 //! presentation-layer translation only.
+//!
+//! Token usage: the runtime reports usage per TURN (the final agent item's
+//! completion payload and `turns[].usage` carry it); the client accounts per
+//! settled step, so the mapper attaches the turn's sample to that final
+//! agent item's `assistant/message` — the client's turn fold aggregates the
+//! per-attempt samples into the exact turn total (`TurnTokenUsage`).
 
 use std::collections::HashMap;
 
@@ -182,6 +191,39 @@ fn user_message_content(item: &Value, detail_text: Option<&str>) -> Value {
     Value::Array(parts)
 }
 
+/// The runtime's per-turn `Usage` record as the client's usage sample
+/// (`inputTokens` = uncached prompt input, `cacheReadTokens` the cached
+/// share, `totalTokens` the provider-exact aggregate). The client's
+/// `normalizeUsage` rejects a sample whose buckets contradict its total, so
+/// the arithmetic here must round-trip: with the runtime's convention
+/// `input_tokens = cache_hit + cache_miss`, `total = input + output` keeps
+/// `exactPrompt == knownPrompt`.
+fn client_usage_sample(usage: &Value) -> Option<Value> {
+    let count = |key: &str| usage.get(key).and_then(Value::as_u64);
+    let input = count("input_tokens")?;
+    let output = count("output_tokens")?;
+    // Uncached input: the miss share when the provider splits it; when only
+    // the hit share is reported, subtract it so the buckets still add up.
+    let hit = count("prompt_cache_hit_tokens");
+    let uncached = count("prompt_cache_miss_tokens")
+        .or_else(|| hit.map(|hit| input.saturating_sub(hit)))
+        .unwrap_or(input);
+    let mut sample = json!({
+        "inputTokens": uncached,
+        "outputTokens": output,
+        "totalTokens": input + output,
+    });
+    if let Some(hit) = hit {
+        sample["cacheReadTokens"] = json!(hit);
+    }
+    if let Some(reasoning) = count("reasoning_tokens") {
+        if reasoning <= output {
+            sample["reasoningTokens"] = json!(reasoning);
+        }
+    }
+    Some(sample)
+}
+
 /// A user message's `source`: the client's correlation id rides the item's
 /// additive metadata (`metadata.rpc_id`, recorded by the runtime's queue and
 /// steer routes), so the client retires its optimistic copy by identity —
@@ -246,6 +288,10 @@ pub struct SessionMapper {
     /// Current step ordinal within the turn (agent items increment it).
     step: u64,
     attempts: HashMap<String, Attempt>,
+    /// The (provider, model) stamped on settled assistant messages — the
+    /// usage fold derives its `routes` from `message.source`. Empty strings
+    /// leave the route unattributed, which the client renders by omitting it.
+    model_source: (String, String),
 }
 
 impl SessionMapper {
@@ -261,6 +307,22 @@ impl SessionMapper {
             step,
             ..Self::default()
         }
+    }
+
+    /// Stamp the (provider, model) settled assistant messages carry as their
+    /// `message.source` — the follow loop refreshes it from the session's
+    /// model selection before mapping each envelope.
+    pub fn set_model_source(&mut self, provider: &str, model: &str) {
+        self.model_source = (provider.to_string(), model.to_string());
+    }
+
+    /// `ModelMessageSource` for a settled assistant message.
+    fn model_source(&self) -> Value {
+        json!({
+            "kind": "model",
+            "provider": self.model_source.0,
+            "model": self.model_source.1,
+        })
     }
 
     fn started_after_seq(&self) -> i64 {
@@ -497,25 +559,28 @@ impl SessionMapper {
                         // The durable message event must precede the end frame
                         // (the client fold stages the settlement, then the end
                         // frame publishes it).
-                        let message = self.seq.event(
-                            "assistant/message",
-                            json!({
-                                "turn": self.turn_no,
-                                "step": self.step,
-                                "message": {
-                                    "id": item_id,
-                                    "role": "assistant",
-                                    "content": [{ "type": block_type, "text": text }],
-                                    // ModelMessageSource + empty stream records: the
-                                    // usage fold reads source.provider/model and
-                                    // stream.length on every settlement.
-                                    "source": { "kind": "model", "provider": "codesmith", "model": "" },
-                                },
-                                "stream": []
-                            }),
-                            true,
-                            time,
-                        );
+                        let usage = payload
+                            .get("usage")
+                            .filter(|usage| !usage.is_null())
+                            .and_then(client_usage_sample);
+                        let mut data = json!({
+                            "turn": self.turn_no,
+                            "step": self.step,
+                            "message": {
+                                "id": item_id,
+                                "role": "assistant",
+                                "content": [{ "type": block_type, "text": text }],
+                                // ModelMessageSource + empty stream records: the
+                                // usage fold reads source.provider/model and
+                                // stream.length on every settlement.
+                                "source": self.model_source(),
+                            },
+                            "stream": [],
+                        });
+                        if let Some(sample) = usage {
+                            data["usage"] = sample;
+                        }
+                        let message = self.seq.event("assistant/message", data, true, time);
                         let message_seq = message["seq"].as_u64().unwrap_or(0);
                         frames.push(Frame::Event(message));
                         if let Some(attempt) = self.attempts.remove(&item_id) {
@@ -658,6 +723,13 @@ fn replay_tool_arguments(item: &Value) -> String {
 /// the record instant its live counterpart's envelope carried: start-side
 /// events `started_at`, settle-side events `ended_at`.
 pub fn replay_events(detail: &Value) -> Vec<Value> {
+    replay_events_sourced(detail, "", "")
+}
+
+/// [`replay_events`] with the (provider, model) settled assistant messages
+/// carry as their `source` — the caller resolves it from the thread record
+/// and the model catalog the way the live path does.
+pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec<Value> {
     let mut seq = WireSeq::default();
     let mut events = Vec::new();
     let now = chrono::Utc::now().timestamp_millis();
@@ -703,6 +775,10 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                 .to_string()
         });
         let mut step: u64 = 0;
+        // Where this turn's usage sample lands: the last settled agent
+        // message (preferring a text message over reasoning), mirroring the
+        // live path's attachment to the final agent item.
+        let mut usage_target: Option<usize> = None;
         for item in turn_items {
             let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
             let detail_text = item.get("detail").and_then(Value::as_str);
@@ -749,13 +825,20 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                                 "content": [{ "type": block_type, "text": content_text(detail_text) }],
                                 // ModelMessageSource + empty stream records
                                 // (see the live arm).
-                                "source": { "kind": "model", "provider": "codesmith", "model": "" },
+                                "source": { "kind": "model", "provider": provider, "model": model },
                             },
                             "stream": []
                         }),
                         true,
                         ended,
                     ));
+                    if kind == "agent_message" {
+                        // A text message outranks an earlier reasoning-only
+                        // target for the turn's usage.
+                        usage_target = Some(events.len() - 1);
+                    } else if usage_target.is_none() {
+                        usage_target = Some(events.len() - 1);
+                    }
                     events.push(seq.event(
                         "step/end",
                         json!({ "turn": turn_no, "step": step }),
@@ -806,6 +889,18 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
                     ended,
                 )),
                 _ => {}
+            }
+        }
+        // The turn's provider-reported usage, on the last settled agent
+        // message — the same placement the live path stamps.
+        if let (Some(index), Some(sample)) = (
+            usage_target,
+            turn.get("usage")
+                .filter(|usage| !usage.is_null())
+                .and_then(client_usage_sample),
+        ) {
+            if let Some(data) = events.get_mut(index).map(|event| &mut event["data"]) {
+                data["usage"] = sample;
             }
         }
         if let Some(reason) = turn_end_reason(turn) {
@@ -1317,6 +1412,140 @@ mod tests {
             .unwrap();
         assert_eq!(call_b["data"]["name"], "edit");
         assert_eq!(call_b["data"]["arguments"], json!("{\"path\":\"a.rs\"}"));
+    }
+
+    #[test]
+    fn usage_samples_map_the_runtime_buckets() {
+        // Runtime convention: input_tokens = cache_hit + cache_miss. The
+        // client's normalizeUsage rejects contradictory totals, so the
+        // arithmetic must round-trip (input + output).
+        let split = client_usage_sample(&json!({
+            "input_tokens": 1200, "output_tokens": 300,
+            "prompt_cache_hit_tokens": 1000, "prompt_cache_miss_tokens": 200,
+            "reasoning_tokens": 80,
+        }))
+        .expect("split sample maps");
+        assert_eq!(
+            split,
+            json!({
+                "inputTokens": 200, "outputTokens": 300, "totalTokens": 1500,
+                "cacheReadTokens": 1000, "reasoningTokens": 80,
+            })
+        );
+        // No cache split: the whole input is the uncached share.
+        assert_eq!(
+            client_usage_sample(&json!({ "input_tokens": 10, "output_tokens": 5 })).unwrap(),
+            json!({ "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 })
+        );
+        // Hit reported without a miss share: subtract so buckets still add up.
+        assert_eq!(
+            client_usage_sample(&json!({
+                "input_tokens": 10, "output_tokens": 5, "prompt_cache_hit_tokens": 4,
+            }))
+            .unwrap(),
+            json!({ "inputTokens": 6, "outputTokens": 5, "totalTokens": 15, "cacheReadTokens": 4 })
+        );
+        // Reasoning beyond output contradicts the client's bucket check.
+        let beyond = client_usage_sample(&json!({
+            "input_tokens": 1, "output_tokens": 2, "reasoning_tokens": 3,
+        }))
+        .unwrap();
+        assert!(beyond.get("reasoningTokens").is_none());
+        // No output count: no sample (the fold treats the attempt unbilled).
+        assert!(client_usage_sample(&json!({ "input_tokens": 1 })).is_none());
+    }
+
+    #[test]
+    fn final_agent_message_carries_turn_usage_and_route() {
+        // The runtime attaches the turn's usage to the final agent item's
+        // completion payload; the client's turn fold aggregates per-attempt
+        // samples into the exact turn total.
+        let mut mapper = SessionMapper::default();
+        mapper.set_model_source("ollama", "qwen2.5");
+        let mut frames = Vec::new();
+        for envelope in [
+            json!({ "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {} }),
+            json!({ "event": "item.started", "item_id": "item_m", "timestamp": "2026-11-06T10:00:01Z",
+                    "payload": { "item": { "id": "item_m", "kind": "agent_message", "status": "in_progress" } } }),
+            json!({ "event": "item.delta", "item_id": "item_m", "timestamp": "2026-11-06T10:00:01Z",
+                    "payload": { "delta": "hi", "kind": "agent_message" } }),
+            json!({ "event": "item.completed", "item_id": "item_m", "timestamp": "2026-11-06T10:00:02Z",
+                    "payload": {
+                        "item": { "id": "item_m", "kind": "agent_message", "status": "completed", "detail": "hi" },
+                        "usage": { "input_tokens": 100, "output_tokens": 7,
+                                   "prompt_cache_hit_tokens": 90, "prompt_cache_miss_tokens": 10 },
+                    } }),
+            json!({ "event": "turn.completed", "timestamp": "2026-11-06T10:00:03Z",
+                    "payload": { "turn": { "status": "completed" } } }),
+        ] {
+            frames.extend(mapper.map_envelope(&envelope));
+        }
+        let message = frames
+            .iter()
+            .find_map(|frame| match frame {
+                Frame::Event(event) if event["type"] == "assistant/message" => Some(event.clone()),
+                _ => None,
+            })
+            .expect("the assistant message settles");
+        assert_eq!(
+            message["data"]["usage"],
+            json!({ "inputTokens": 10, "outputTokens": 7, "totalTokens": 107, "cacheReadTokens": 90 })
+        );
+        assert_eq!(
+            message["data"]["message"]["source"],
+            json!({ "kind": "model", "provider": "ollama", "model": "qwen2.5" })
+        );
+    }
+
+    #[test]
+    fn replay_stamps_turn_usage_on_the_last_agent_message() {
+        // The turn's usage rides the LAST settled agent message (a text
+        // message outranks an earlier reasoning-only target), so the client's
+        // turn fold accounts the turn exactly once.
+        let detail = json!({
+            "thread": { "model": "qwen2.5" },
+            "turns": [{
+                "id": "turn_1", "status": "completed",
+                "usage": { "input_tokens": 50, "output_tokens": 9,
+                           "prompt_cache_miss_tokens": 50 },
+            }],
+            "items": [
+                { "id": "item_u", "turn_id": "turn_1", "kind": "user_message",
+                  "status": "completed", "detail": "hi", "summary": "hi",
+                  "started_at": "2026-11-06T10:00:00Z" },
+                { "id": "item_r", "turn_id": "turn_1", "kind": "agent_reasoning",
+                  "status": "completed", "detail": "hmm", "summary": "hmm",
+                  "started_at": "2026-11-06T10:00:01Z", "ended_at": "2026-11-06T10:00:02Z" },
+                { "id": "item_m", "turn_id": "turn_1", "kind": "agent_message",
+                  "status": "completed", "detail": "done", "summary": "done",
+                  "started_at": "2026-11-06T10:00:03Z", "ended_at": "2026-11-06T10:00:04Z" },
+                { "id": "item_r2", "turn_id": "turn_1", "kind": "agent_reasoning",
+                  "status": "completed", "detail": "tail", "summary": "tail",
+                  "started_at": "2026-11-06T10:00:05Z", "ended_at": "2026-11-06T10:00:06Z" },
+            ],
+        });
+        let events = super::replay_events_sourced(&detail, "ollama", "qwen2.5");
+        let messages: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["type"] == "assistant/message")
+            .collect();
+        assert_eq!(messages.len(), 3);
+        for (index, message) in messages.iter().enumerate() {
+            let has_usage = message["data"].get("usage").is_some();
+            assert_eq!(
+                has_usage,
+                index == 1,
+                "only the agent_message (messages[1]) carries the turn usage"
+            );
+            assert_eq!(
+                message["data"]["message"]["source"],
+                json!({ "kind": "model", "provider": "ollama", "model": "qwen2.5" })
+            );
+        }
+        assert_eq!(
+            messages[1]["data"]["usage"],
+            json!({ "inputTokens": 50, "outputTokens": 9, "totalTokens": 59 })
+        );
     }
 
     #[test]

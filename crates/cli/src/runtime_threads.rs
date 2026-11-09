@@ -3112,6 +3112,12 @@ impl RuntimeThreadManager {
     ) -> Result<()> {
         let mut current_message_item: Option<(String, String)> = None;
         let mut current_reasoning_item: Option<(String, String)> = None;
+        // A settled message whose `item.completed` emission is deferred: the
+        // turn's usage arrives only with `TurnComplete`, and attaching it to
+        // this payload (where GUI clients read per-turn accounting) must not
+        // reorder the journal — the next engine event flushes it first, and
+        // the turn end flushes it last, with the usage.
+        let mut pending_message_emit: Option<(String, Value)> = None;
         let mut tool_items: HashMap<String, String> = HashMap::new();
         let mut compaction_items: HashMap<String, String> = HashMap::new();
         let mut turn_usage: Option<Usage> = None;
@@ -3139,6 +3145,23 @@ impl RuntimeThreadManager {
                 }
                 break;
             };
+
+            // Flush a deferred message completion before anything else emits
+            // (preserving journal order) — except for `TurnComplete`, whose
+            // handler breaks the loop and lets the post-loop flush attach the
+            // turn's usage to this very payload.
+            if !matches!(event, EngineEvent::TurnComplete { .. }) {
+                if let Some((pending_id, pending_item)) = pending_message_emit.take() {
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        Some(&pending_id),
+                        "item.completed",
+                        json!({ "item": pending_item }),
+                    )
+                    .await?;
+                }
+            }
 
             match event {
                 EngineEvent::TurnStarted { .. } => {
@@ -3199,14 +3222,11 @@ impl RuntimeThreadManager {
                         item.detail = Some(text);
                         item.ended_at = Some(Utc::now());
                         self.store.save_item(&item)?;
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            Some(&item_id),
-                            "item.completed",
-                            json!({ "item": item }),
-                        )
-                        .await?;
+                        // The store settles now; the emission defers (see
+                        // `pending_message_emit`) so the completion payload
+                        // can carry the turn's usage when the turn ends here.
+                        pending_message_emit =
+                            Some((item_id, serde_json::to_value(&item).unwrap_or_default()));
                     }
                 }
                 EngineEvent::ThinkingStarted { .. } => {
@@ -3280,7 +3300,10 @@ impl RuntimeThreadManager {
                         status: TurnItemLifecycleStatus::InProgress,
                         summary,
                         detail: Some(serde_json::to_string(&input).unwrap_or_default()),
-                        metadata: None,
+                        // The call's arguments ride additive metadata so a
+                        // replayed item keeps them after `detail` is replaced
+                        // by the result (older readers ignore the key).
+                        metadata: Some(json!({ "arguments": input })),
                         artifact_refs: Vec::new(),
                         started_at: Some(Utc::now()),
                         ended_at: None,
@@ -3313,6 +3336,14 @@ impl RuntimeThreadManager {
                         let mut item = self.store.load_item(&item_id)?;
                         let now = Utc::now();
                         item.ended_at = Some(now);
+                        // The start-time metadata carries the call's
+                        // arguments; keep them when the result's own metadata
+                        // replaces it, so replays render the arguments.
+                        let prior_arguments = item
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("arguments"))
+                            .cloned();
                         match result {
                             Ok(output) => {
                                 item.status = if output.success {
@@ -3326,6 +3357,13 @@ impl RuntimeThreadManager {
                                 );
                                 item.detail = Some(output.content.clone());
                                 item.metadata = output.metadata.clone();
+                                if let Some(arguments) = prior_arguments {
+                                    let metadata =
+                                        item.metadata.get_or_insert_with(|| serde_json::json!({}));
+                                    if let Some(object) = metadata.as_object_mut() {
+                                        object.entry("arguments").or_insert(arguments);
+                                    }
+                                }
                             }
                             Err(err) => {
                                 item.status = TurnItemLifecycleStatus::Failed;
@@ -3966,6 +4004,34 @@ impl RuntimeThreadManager {
             turn_status = RuntimeTurnStatus::Interrupted;
         }
 
+        // The turn's provider usage settles with the final agent item: this
+        // flush runs after `TurnComplete` was consumed, so the item's
+        // completion payload can carry it (additive key — clients that don't
+        // read it ignore it). Exactly one item takes it, so a turn with a
+        // trailing message AND reasoning doesn't double-account.
+        let mut final_usage = turn_usage
+            .as_ref()
+            .map(|usage| serde_json::to_value(usage).unwrap_or(Value::Null))
+            .filter(|usage| !usage.is_null());
+
+        // A message that settled during the turn emits now (deferred, see
+        // `pending_message_emit`) — first in line for the usage, because a
+        // text message outranks a trailing reasoning item.
+        if let Some((item_id, item)) = pending_message_emit.take() {
+            let mut payload = json!({ "item": item });
+            if let Some(usage) = final_usage.take() {
+                payload["usage"] = usage;
+            }
+            self.emit_event(
+                &thread_id,
+                Some(&turn_id),
+                Some(&item_id),
+                "item.completed",
+                payload,
+            )
+            .await?;
+        }
+
         if let Some((item_id, text)) = current_message_item.take() {
             let mut item = self.store.load_item(&item_id)?;
             if turn_status == RuntimeTurnStatus::Interrupted {
@@ -3977,6 +4043,10 @@ impl RuntimeThreadManager {
             item.detail = Some(text);
             item.ended_at = Some(Utc::now());
             self.store.save_item(&item)?;
+            let mut payload = json!({ "item": item });
+            if let Some(usage) = final_usage.take() {
+                payload["usage"] = usage;
+            }
             self.emit_event(
                 &thread_id,
                 Some(&turn_id),
@@ -3986,7 +4056,7 @@ impl RuntimeThreadManager {
                 } else {
                     "item.completed"
                 },
-                json!({ "item": item }),
+                payload,
             )
             .await?;
         }
@@ -4002,6 +4072,10 @@ impl RuntimeThreadManager {
             item.detail = Some(text);
             item.ended_at = Some(Utc::now());
             self.store.save_item(&item)?;
+            let mut payload = json!({ "item": item });
+            if let Some(usage) = final_usage.take() {
+                payload["usage"] = usage;
+            }
             self.emit_event(
                 &thread_id,
                 Some(&turn_id),
@@ -4011,7 +4085,7 @@ impl RuntimeThreadManager {
                 } else {
                     "item.completed"
                 },
-                json!({ "item": item }),
+                payload,
             )
             .await?;
         }
@@ -4938,6 +5012,168 @@ mod tests {
                     == Some("getting_crowded")),
             "expected machine-readable coherence event after restart"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_message_completion_carries_turn_usage_and_tool_items_keep_arguments()
+    -> Result<()> {
+        let runtime_dir = test_runtime_dir();
+        let manager = test_manager(runtime_dir)?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+        let tx_event = harness.tx_event;
+        tokio::spawn(async move {
+            if matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        turn_id: "engine_turn_1".to_string(),
+                        synthesized: false,
+                    })
+                    .await;
+                // Tool first: its item must complete BEFORE the message's.
+                let _ = tx_event
+                    .send(EngineEvent::ToolCallStarted {
+                        id: "call_1".to_string(),
+                        name: "write_file".to_string(),
+                        input: json!({ "path": "a.txt", "content": "hi" }),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::ToolCallComplete {
+                        id: "call_1".to_string(),
+                        name: "write_file".to_string(),
+                        result: Ok(codesmith_tools::ToolResult {
+                            canonical: None,
+                            content: "wrote a.txt".to_string(),
+                            success: true,
+                            metadata: Some(json!({ "bytes": 2 })),
+                        }),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: "done".to_string(),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageComplete { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        usage: Usage {
+                            input_tokens: 100,
+                            output_tokens: 7,
+                            prompt_cache_hit_tokens: Some(90),
+                            prompt_cache_miss_tokens: Some(10),
+                            ..Usage::default()
+                        },
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                        reported_model: None,
+                        failed_attempts: Vec::new(),
+                    })
+                    .await;
+            }
+        });
+
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "write and summarize".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: Vec::new(),
+                },
+            )
+            .await?;
+        let completed = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
+        assert_eq!(completed.status, RuntimeTurnStatus::Completed);
+
+        let events = manager.events_since(&thread.id, None)?;
+        // The message's deferred completion carries the turn's usage, and it
+        // lands after the tool's completion but before the turn's.
+        let message_completed = events
+            .iter()
+            .position(|ev| {
+                ev.event == "item.completed"
+                    && ev
+                        .payload
+                        .pointer("/item/kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("agent_message")
+            })
+            .expect("message item.completed emitted");
+        let tool_completed = events
+            .iter()
+            .position(|ev| {
+                ev.event == "item.completed"
+                    && ev
+                        .payload
+                        .pointer("/item/kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("file_change")
+            })
+            .expect("tool item.completed emitted (write_file maps to file_change)");
+        let turn_completed = events
+            .iter()
+            .position(|ev| ev.event == "turn.completed")
+            .expect("turn.completed emitted");
+        assert!(tool_completed < message_completed, "tool settles first");
+        assert!(
+            message_completed < turn_completed,
+            "message before turn end"
+        );
+        let usage = events[message_completed].payload.get("usage").cloned();
+        assert_eq!(
+            usage,
+            Some(json!({
+                "input_tokens": 100, "output_tokens": 7,
+                "prompt_cache_hit_tokens": 90, "prompt_cache_miss_tokens": 10,
+            })),
+            "the final agent completion carries the turn's usage"
+        );
+
+        // The durable tool item keeps its arguments alongside the result's
+        // own metadata, so replays render the call's input.
+        let detail = manager.get_thread_detail(&thread.id).await?;
+        let tool_item = detail
+            .items
+            .iter()
+            .find(|item| item.kind == TurnItemKind::FileChange)
+            .expect("durable tool item (write_file maps to file_change)");
+        let metadata = tool_item.metadata.as_ref().expect("tool metadata");
+        assert_eq!(
+            metadata.get("arguments"),
+            Some(&json!({ "path": "a.txt", "content": "hi" })),
+            "arguments survive the result's metadata replacement"
+        );
+        assert_eq!(metadata.get("bytes"), Some(&json!(2)));
         Ok(())
     }
 

@@ -185,11 +185,38 @@ Known limitations of the current implementation:
   zones, and other cron shapes fail loud at create/edit instead of silently
   rescheduling. "Ask the model" task creation opens a session, but the model
   has no schedule-registration tool — use the manual form.
-- Tool-call output deltas are not streamed; tool nodes settle from their
-  durable results. Tool names are normalized to the vendored cards'
-  vocabulary at the wire (`exec_shell` → bash card, `read_file` → read card,
-  …); the runtime record keeps CodeSmith's real names, and replayed tool
-  calls lose their arguments (durable items carry result metadata only).
+- Tool-call output deltas are not streamed — the vendored cards don't
+  consume live output either (a running card shows its shimmer and settles
+  from `tool/result`), so this matches the upstream interaction. Tool names
+  are normalized to the vendored cards' vocabulary at the wire (`exec_shell`
+  → bash card, `read_file` → read card, …); the runtime record keeps
+  CodeSmith's real names. Tool items record their arguments in additive
+  `metadata.arguments` (preserved when the result's own metadata replaces
+  it), so replayed tool calls render their arguments; a replay with no
+  recorded arguments falls back to `{}` (foreign HTTP clients' turns from
+  before the field existed). `toolResults/watch` (the trajectory inspector's
+  on-demand lookup) answers the settled `tool/result` wire event for a seq,
+  statelessly from a thread-record replay — a seq nothing maps to answers
+  `{available:false}` and parks.
+- Token accounting is bridged end to end. The runtime reports usage per TURN;
+  the final agent item's completion payload carries it (the runtime defers
+  that emission to the turn's end so the usage is known — a mid-turn settle
+  emits before the next engine event, preserving journal order), and the
+  mapper attaches the client's usage sample to that item's
+  `assistant/message` (`inputTokens` = the uncached share,
+  `cacheReadTokens` = the hit share, `totalTokens` = input + output), with
+  the seat's real (provider, model) as the message source — the client's
+  turn fold aggregates samples into the per-turn pill, live and on replay
+  (replay stamps the turn's `turns[].usage` on its last settled agent
+  message). The `sessionStats` and `tokenUsage` projections (the composer's
+  activity and usage pills) fold from the durable records: turns, steps,
+  LLM/tool wall time, decode tokens; TTFT is not separable from durable
+  records, so the projection reports none and decode time uses the full
+  agent-item spans (a conservative speed). The context meter's denominator
+  rides `contextWindow` in the `contextPressure` projection, from
+  `GET /v1/models`'s per-model `context_window` estimate (absent when the
+  runtime can't estimate one — the meter then stays hidden); CodeSmith
+  reports no cache-write bucket, so that row never appears.
 - User questions have no HTTP cancel route, so an unanswered question
   waterfall waits for the runtime's own deadline; question requests carry no
   tool call id, so the composer card renders without the countdown claim.
