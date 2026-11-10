@@ -174,47 +174,59 @@ async fn list_inner(host: &HostState, args: &Value) -> Result<Value, FileError> 
     let root = workspace_root(host, &session_id).await?;
     let root = Path::new(&root);
     let target = resolve_target(root, &path)?;
-    let metadata = std::fs::metadata(&target)
-        .map_err(|_| FileError::new("workspace-file/not-found", format!("{path} not found")))?;
-    if !metadata.is_dir() {
-        return Err(FileError::new(
-            "workspace-file/not-directory",
-            format!("{path} is not a directory"),
-        ));
-    }
-    let mut entries: Vec<Value> = Vec::new();
-    let mut truncated = false;
-    let mut names: Vec<String> = std::fs::read_dir(&target)
-        .map_err(|err| FileError::new("workspace-file/not-found", format!("list {path}: {err}")))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    for name in names {
-        if entries.len() >= MAX_LIST_ENTRIES {
-            truncated = true;
-            break;
+    // Blocking directory walk (metadata, read_dir, per-child stats); the
+    // caller runs on the async runtime, so park it — read/readBytes/locate
+    // already do.
+    let root_cl = root.to_path_buf();
+    let path_cl = path.clone();
+    let (entries, truncated, display) = tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&target)
+            .map_err(|_| FileError::new("workspace-file/not-found", format!("{path_cl} not found")))?;
+        if !metadata.is_dir() {
+            return Err(FileError::new(
+                "workspace-file/not-directory",
+                format!("{path_cl} is not a directory"),
+            ));
         }
-        let child = target.join(&name);
-        let child_type = match std::fs::metadata(&child) {
-            Ok(metadata) if metadata.is_dir() => "directory",
-            Ok(metadata) if metadata.is_file() => "file",
-            Ok(_) => "other",
-            Err(_) => continue,
-        };
-        let mut entry = json!({ "name": name, "type": child_type });
-        if child_type == "file" {
-            if let Ok(metadata) = std::fs::metadata(&child) {
-                entry["size"] = json!(metadata.len());
+        let mut entries: Vec<Value> = Vec::new();
+        let mut truncated = false;
+        let mut names: Vec<String> = std::fs::read_dir(&target)
+            .map_err(|err| {
+                FileError::new("workspace-file/not-found", format!("list {path_cl}: {err}"))
+            })?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in names {
+            if entries.len() >= MAX_LIST_ENTRIES {
+                truncated = true;
+                break;
             }
+            let child = target.join(&name);
+            let child_type = match std::fs::metadata(&child) {
+                Ok(metadata) if metadata.is_dir() => "directory",
+                Ok(metadata) if metadata.is_file() => "file",
+                Ok(_) => "other",
+                Err(_) => continue,
+            };
+            let mut entry = json!({ "name": name, "type": child_type });
+            if child_type == "file" {
+                if let Ok(metadata) = std::fs::metadata(&child) {
+                    entry["size"] = json!(metadata.len());
+                }
+            }
+            entries.push(entry);
         }
-        entries.push(entry);
-    }
-    // The listed directory's workspace path: empty for the root itself.
-    let display = target
-        .strip_prefix(root)
-        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
+        // The listed directory's workspace path: empty for the root itself.
+        let display = target
+            .strip_prefix(&root_cl)
+            .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        Ok((entries, truncated, display))
+    })
+    .await
+    .map_err(|err| FileError::new("gateway/internal", format!("list join: {err}")))??;
     Ok(json!({ "path": display, "entries": entries, "truncated": truncated }))
 }
 
@@ -424,13 +436,13 @@ pub async fn changes(
     if tx.send(json!({ "kind": "ready" })).await.is_err() {
         return Ok(());
     }
-    let mut last = stat_version(&target);
+    let mut last = stat_version(&target).await;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
             _ = tx.closed() => return Ok(()),
         }
-        let current = stat_version(&target);
+        let current = stat_version(&target).await;
         if current != last {
             let change = match &current {
                 Some(version) => json!({
@@ -456,9 +468,13 @@ pub async fn changes(
     }
 }
 
-/// The target's current version token, or `None` when it is gone.
-fn stat_version(target: &Path) -> Option<String> {
-    std::fs::symlink_metadata(target).ok().map(|metadata| version_of(&metadata))
+/// The target's current version token, or `None` when it is gone. Async:
+/// the watch poll runs on the runtime, so the stat must not block a worker.
+async fn stat_version(target: &Path) -> Option<String> {
+    tokio::fs::symlink_metadata(target)
+        .await
+        .ok()
+        .map(|metadata| version_of(&metadata))
 }
 
 #[cfg(test)]

@@ -689,11 +689,19 @@ fn custom_ids(doc: &DocumentMut) -> Vec<String> {
 
 /// `llm/listConfigurableProviders` — the directory the page joins with live
 /// routes: every builtin provider (declared `false` — the runtime ships
-/// them) plus every `[[providers.custom]]` entry (declared `true`).
-pub fn list_configurable_providers() -> Value {
-    match directory_entries() {
-        Ok(entries) => rpc_ok(entries),
-        Err(err) => rpc_error("gateway/internal", format!("llm/listConfigurableProviders: {err:#}")),
+/// them) plus every `[[providers.custom]]` entry (declared `true`). The
+/// directory reads config.toml — blocking file I/O, parked off the async
+/// workers the way every other config read here is.
+pub async fn list_configurable_providers() -> Value {
+    match tokio::task::spawn_blocking(directory_entries).await {
+        Ok(Ok(entries)) => rpc_ok(entries),
+        Ok(Err(err)) => {
+            rpc_error("gateway/internal", format!("llm/listConfigurableProviders: {err:#}"))
+        }
+        Err(err) => rpc_error(
+            "gateway/internal",
+            format!("llm/listConfigurableProviders join failed: {err}"),
+        ),
     }
 }
 

@@ -946,7 +946,7 @@ pub async fn set_archived(host: &HostState, request: &Value, archived: bool) -> 
                 .collect()
         })
         .unwrap_or_default();
-    let pinned = super::workspace::pinned_live(&host.settings_home(), &live);
+    let pinned = super::workspace::pinned_live_parked(&host.settings_home(), live).await;
     host.push_live(
         "workspace/follow",
         json!({

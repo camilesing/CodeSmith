@@ -204,7 +204,7 @@ pub(super) async fn workspace_view_live(host: &HostState) -> Value {
         .await
     {
         let live: Vec<String> = threads.into_iter().map(|t| t.id).collect();
-        view["sessionIds"] = json!(workspace::ordered_live(&host.settings_home(), &live));
+        view["sessionIds"] = json!(workspace::ordered_live_parked(&host.settings_home(), live).await);
     }
     view
 }
@@ -429,7 +429,7 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         // The Models settings page's provider surface (host::llm): the
         // configurable directory from config.toml, the live route list, and
         // one endpoint interrogation.
-        "llm/listConfigurableProviders" => llm::list_configurable_providers(),
+        "llm/listConfigurableProviders" => llm::list_configurable_providers().await,
         "llm/listProviders" => llm::list_providers(host).await,
         "llm/discoverModels" => llm::discover_models(host, args_of(payload)).await,
         // The Models settings page's credential surface (host::credentials),
@@ -579,7 +579,7 @@ async fn stream_baseline(host: &HostState, endpoint: &str) -> Result<Vec<Value>>
                 "value": {
                     "items": [view],
                     "archivedSessionIds": archived,
-                    "pinnedSessionIds": workspace::pinned_live(&host.settings_home(), &live),
+                    "pinnedSessionIds": workspace::pinned_live_parked(&host.settings_home(), live).await,
                 }
             })])
         }

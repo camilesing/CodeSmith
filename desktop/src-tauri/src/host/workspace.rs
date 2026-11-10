@@ -28,12 +28,13 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::HostState;
 
 /// The persisted sidebar state: `{ "pinned": […], "order": […] }`.
+#[derive(Clone)]
 pub struct SidebarState {
     pinned: Vec<String>,
     order: Vec<String>,
@@ -214,6 +215,47 @@ pub fn pinned_live(home: &Path, live: &[String]) -> Vec<String> {
     }
 }
 
+/// [`ordered_live`] parked off the async workers — the state file read is
+/// blocking I/O and the view builders run on the runtime.
+pub async fn ordered_live_parked(home: &Path, live: Vec<String>) -> Vec<String> {
+    let home = home.to_path_buf();
+    let fallback = live.clone();
+    tokio::task::spawn_blocking(move || ordered_live(&home, &live))
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("codesmith desktop: sidebar order read join failed: {err}");
+            fallback
+        })
+}
+
+/// [`pinned_live`] parked off the async workers.
+pub async fn pinned_live_parked(home: &Path, live: Vec<String>) -> Vec<String> {
+    let home = home.to_path_buf();
+    tokio::task::spawn_blocking(move || pinned_live(&home, &live))
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("codesmith desktop: sidebar pins read join failed: {err}");
+            Vec::new()
+        })
+}
+
+/// [`load`] parked off the async workers (the mutation handlers run on the
+/// runtime).
+pub async fn load_parked(home: &Path) -> Result<SidebarState> {
+    let home = home.to_path_buf();
+    tokio::task::spawn_blocking(move || load(&home))
+        .await
+        .map_err(|err| anyhow!("sidebar state read join failed: {err}"))?
+}
+
+/// [`SidebarState::save`] parked off the async workers.
+pub async fn save_parked(state: &SidebarState) -> Result<()> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || state.save())
+        .await
+        .map_err(|err| anyhow!("sidebar state write join failed: {err}"))?
+}
+
 /// The live (non-archived) and archived thread id lists from the runtime.
 async fn thread_sets(host: &HostState) -> Result<(Vec<String>, Vec<String>)> {
     #[derive(serde::Deserialize)]
@@ -251,7 +293,7 @@ pub async fn pin_or_unpin(host: &HostState, pin: bool, args: &Value) -> Result<V
         .map_err(internal)?
         .to_string();
     let (live, archived) = thread_sets(host).await.map_err(internal)?;
-    let mut state = load(&host.settings_home()).map_err(internal)?;
+    let mut state = load_parked(&host.settings_home()).await.map_err(internal)?;
     if pin && !live.contains(&session_id) {
         return Err(if archived.contains(&session_id) {
             OpError::code(
@@ -271,7 +313,7 @@ pub async fn pin_or_unpin(host: &HostState, pin: bool, args: &Value) -> Result<V
         // Unpin is idempotent by contract — an unpinned id is not an error.
         state.unpin(&session_id);
     }
-    state.save().map_err(internal)?;
+    save_parked(&state).await.map_err(internal)?;
     let pins = state.live_pins(&live);
     host.push_live(
         "workspace/follow",
@@ -308,11 +350,11 @@ pub async fn insert_session_before(host: &HostState, args: &Value) -> Result<Val
         .and_then(Value::as_str)
         .map(|s| s.to_string());
     let (live, _archived) = thread_sets(host).await.map_err(internal)?;
-    let mut state = load(&host.settings_home()).map_err(internal)?;
+    let mut state = load_parked(&host.settings_home()).await.map_err(internal)?;
     state
         .insert_before(&live, &session_id, before.as_deref())
         .map_err(|err| OpError::code("workspace/move-invalid", format!("{err:#}")))?;
-    state.save().map_err(internal)?;
+    save_parked(&state).await.map_err(internal)?;
     let view = super::workspace_view_live(host).await;
     host.push_live(
         "workspace/follow",
