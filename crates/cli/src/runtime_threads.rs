@@ -3181,17 +3181,17 @@ impl RuntimeThreadManager {
             // (preserving journal order) — except for `TurnComplete`, whose
             // handler breaks the loop and lets the post-loop flush attach the
             // turn's usage to this very payload.
-            if !matches!(event, EngineEvent::TurnComplete { .. }) {
-                if let Some((pending_id, pending_item)) = pending_message_emit.take() {
-                    self.emit_event(
-                        &thread_id,
-                        Some(&turn_id),
-                        Some(&pending_id),
-                        "item.completed",
-                        json!({ "item": pending_item }),
-                    )
-                    .await?;
-                }
+            if !matches!(event, EngineEvent::TurnComplete { .. })
+                && let Some((pending_id, pending_item)) = pending_message_emit.take()
+            {
+                self.emit_event(
+                    &thread_id,
+                    Some(&turn_id),
+                    Some(&pending_id),
+                    "item.completed",
+                    json!({ "item": pending_item }),
+                )
+                .await?;
             }
 
             match event {
