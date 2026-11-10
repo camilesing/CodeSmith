@@ -1,4 +1,4 @@
-//! Session data plane — the DSH `core/session` + `session/*` counterpart,
+//! Session data plane — the general agent's `core/session` + `session/*` counterpart,
 //! split out of `codesmith-agent-runtime` in round 9.
 //!
 //! - [`zones`]: the three-zone request contract — `AppendLog` (the live,

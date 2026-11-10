@@ -1,4 +1,4 @@
 id = "replace-tool"
 name = "Replace a built-in tool"
 version = "0.1.0"
-description = "DSH pattern d demo: take over an existing tool's execution (list_dir), observe every call in the log, optionally rewrite the input, and delegate to the original implementation."
+description = "general-agent pattern d demo: take over an existing tool's execution (list_dir), observe every call in the log, optionally rewrite the input, and delegate to the original implementation."

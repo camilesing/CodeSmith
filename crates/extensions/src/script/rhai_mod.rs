@@ -22,7 +22,7 @@
 //! points, and no wall-clock timeout for ordinary emits (only the
 //! hot-path events carry a dispatch budget, in `callback_bridge`); the
 //! engine registers no fs/net/process natives, so a script mod cannot do
-//! I/O — absence is the sandbox. `on_event` is the DSH-aligned subset
+//! I/O — absence is the sandbox. `on_event` is the general-agent-aligned subset
 //! (Emit/Serial kinds; a waterfall kind fails the mod's load at capture —
 //! its transforms stay on `on()`, its deny floor on `register_guard`);
 //! around-dispatch and `Ask` have no script form at all (async / UI
@@ -94,7 +94,7 @@ pub enum ScriptRegistration {
         callback: rhai::FnPtr,
     },
     /// A registered-tool replacement captured by the `replace_tool(spec, cb)`
-    /// native (DSH pattern d — wrap/delegate the incumbent). Replayed at
+    /// native (general-agent pattern d — wrap/delegate the incumbent). Replayed at
     /// `configure` via `ExtensionApi::replace_tool`; the host adapter
     /// preserves the incumbent's safety metadata (capabilities/approval
     /// ladder) and resolves `delegate()` against the incumbent it captured.
@@ -938,11 +938,11 @@ fn register_natives(
         },
     );
 
-    // on_event(kind, callback) — the DSH-aligned registration: emit
+    // on_event(kind, callback) — the general-agent-aligned registration: emit
     // listeners and serial vetoes only. The gate reads the contract
     // (`ExtensionEventKind::dispatch_mode`), so a waterfall kind fails
     // the mod's load here — its transform fold is the `on()` surface,
-    // its deny floor is `register_guard`; on_event is the DSH-portable
+    // its deny floor is `register_guard`; on_event is the general-agent-portable
     // subset, not a second waterfall channel. The registration itself is
     // identical to `on`: same Handler cell entry, same `on_variant`
     // replay (Script origin, Global scope stamped by the load path).
@@ -1018,7 +1018,7 @@ fn register_natives(
     );
 
     // replace_tool(spec_map, callback) — substitute the execution of an
-    // already-registered tool (DSH pattern d: wrap/delegate the incumbent).
+    // already-registered tool (general-agent pattern d: wrap/delegate the incumbent).
     // `name` is mandatory; optional `description` / `schema` overrides are
     // model-visible only — the incumbent's capabilities/approval ladder
     // stays (a replacement can never relax an approval gate). Resolved at
@@ -1227,7 +1227,7 @@ fn register_natives(
     );
 
     // register_guard(callback) — route B (1.2 alignment): a deny-only tool
-    // guard (dsh `ctx.tools.guard()`). The closure takes the tool-call
+    // guard (the general agent's `ctx.tools.guard()`). The closure takes the tool-call
     // payload (`|e|` — `#{kind, id, name, input}`, same shape as a
     // `tool-call` handler's payload); returning a string denies the call
     // with that reason, anything else abstains. There is no allow or
@@ -2151,7 +2151,7 @@ mod tests {
         assert_eq!(m.loop_entry(), Some("main"));
     }
 
-    // === on_event (DSH-aligned Emit/Serial registration) ====================
+    // === on_event (general-agent-aligned Emit/Serial registration) ====================
 
     /// An Emit-kind on_event callback runs at dispatch: the hook records
     /// the payload into the mod's KV, which outlives the runner. Without

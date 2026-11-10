@@ -100,7 +100,7 @@ Everything an extension can register, and what the host does with it:
   (a child's turn dispatches `ToolCall` at its agent-type scope;
   script-origin handlers ride along); a script error abstains with a warn.
 - **Event handlers (`on` / `on_variant`; Rhai shapes: `on(event, cb)` for
-  any kind, `on_event(kind, cb)` for the DSH-aligned emit/serial subset —
+  any kind, `on_event(kind, cb)` for the general-agent-aligned emit/serial subset —
   a waterfall kind fails the mod's load)** — see
   [Handlers](#handlers-outcomes--per-variant-subscription).
 
@@ -146,7 +146,7 @@ is the user-facing surface:
 | `/extension info <id>` | Shows metadata for one extension (version, source, dylib path, config, provenance, enabled). |
 | `/extension enable <id>` | Marks it enabled in `extensions_state.toml`; takes effect on the next `/extension reload`. |
 | `/extension disable <id>` | Marks it disabled; same reload caveat. |
-| `/extension status` | Reports the bound runner's generation + bound tool/command counts (plus failed loads from the startup audit), then the turn-executor slots (DSH D1): every registered `turn_executor` id, which one this session selected, and the turns in flight on each — main turn and sub-agents by spawn depth, read off the lease registry (`idle` when none). Read-only; the registry types stay crate-private. |
+| `/extension status` | Reports the bound runner's generation + bound tool/command counts (plus failed loads from the startup audit), then the turn-executor slots (general-agent D1): every registered `turn_executor` id, which one this session selected, and the turns in flight on each — main turn and sub-agents by spawn depth, read off the lease registry (`idle` when none). Read-only; the registry types stay crate-private. |
 | `/extension reload` | Re-populates the shared runner `Arc` — the same chokepoint the `manage_mods` tool uses (see below). |
 | `/extension install <source> [--global]` | Fetches (`git:` / `path:` / `crate:` / `prebuilt:`) → builds (`cargo build` for source kinds) → places under `<root>/<id>/`, writes `extension.toml` + the sha256 sidecar the loader verifies, and records `installed[]` provenance. Default scope is the project root; `--global` opts into `~/.codesmith/extensions`. A project-scope install into an **untrusted** workspace prints a warning (the discovery-side gate still refuses to load it — `/trust add <path>` to trust the workspace). `/extension reload` loads it. |
 | `/extension uninstall <id>` | Removes `<root>/<id>/` and clears the provenance record; bindings clear on the next reload, the dylib unloads at the next turn boundary. |
@@ -159,16 +159,16 @@ and the `manage_mods` tool — `crates/cli/src/mod_ops.rs` →
 `reload_extension_runtime`, `crates/cli/src/core/engine.rs`):
 
 - It re-populates the **shared runner `Arc`**, and first drains the
-  runtime's in-flight sub-agent turns (structural ownership, DSH
+  runtime's in-flight sub-agent turns (structural ownership, general-agent
   alignment — `agent-runtime/src/turn_lease.rs`): each lease gets a
-  reason-tagged cancel (`extension reload`, the DSH `disposed` analog),
+  reason-tagged cancel (`extension reload`, the general agent's `disposed` analog),
   deepest spawn depth first, and a bounded wait (`RELOAD_DRAIN_TIMEOUT`,
   5s) for the runs to settle; a lease that outlives the bound is
   reported in the reload message and the reload continues (children hold
   no dylib handles, so the unload below stays safe). The main turn
   (depth 0) is never drained — from the REPL no main turn is in flight,
   and from the `manage_mods` tool the main turn is the reload's
-  initiator (the DSH self-lineage exclusion; draining it would be a
+  initiator (the general-agent self-lineage exclusion; draining it would be a
   self-wait). A turn-executor id with in-flight leases also refuses
   replacement (`TurnExecutorRegistry::register` fails loud with the
   count). Then: the runner's clear suite
@@ -277,7 +277,7 @@ so a single crate gives them both the traits and the runtime helpers.
   stale-context guard, plus the route-A/B registrations above and the
   scoped variants (`register_tool_scoped` / `on_variant_scoped` /
   `restrict_tools` — see
-  [Registration scopes](#registration-scopes-dsh-alignment)).
+  [Registration scopes](#registration-scopes-general-agent-alignment)).
 - **`ExtensionContext`** — read-mostly host state handed to handlers:
   `cwd() / mode() / is_idle() / signal() / generation()` are live;
   `abort() / shutdown() / compact() / get_context_usage()` return
@@ -285,7 +285,7 @@ so a single crate gives them both the traits and the runtime helpers.
 - **`ExtensionCommandContext: ExtensionContext`** — strict sub-trait handed
   to command handlers; it carries no session-mutation methods (the split
   exists for type safety).
-- **`ExtensionEvent`** — `#[non_exhaustive]`, 32 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the DSH retry waterfall; `turn-stopping` with the DSH serial steer; the five workflow lifecycle events with the model-writable `workflow` tool; `result-verified` with the result-claim verifier's post-turn verdict):
+- **`ExtensionEvent`** — `#[non_exhaustive]`, 32 variants (`resources-discover` removed in 0.11.0; `provider-request-error` added with the general-agent retry waterfall; `turn-stopping` with the general-agent serial steer; the five workflow lifecycle events with the model-writable `workflow` tool; `result-verified` with the result-claim verifier's post-turn verdict):
   `SessionStart` / `TurnStart` / `ToolCall` / `ToolResult` / `TurnEnd` /
   `SessionShutdown` / `ProjectTrust` / `Input` /
   `BeforeAgentStart` / `AgentStart` / `BeforeProviderHeaders` /
@@ -319,7 +319,7 @@ so a single crate gives them both the traits and the runtime helpers.
   ignored (treated as `Continue`). `emit` chains handlers in
   registration order so a `Transform` is visible to the next handler;
   `Cancel`/`Block`/`Ask` short-circuit.
-- **`AroundToolHandler`** — DSH around-dispatch (tools/execute):
+- **`AroundToolHandler`** — general-agent around-dispatch (tools/execute):
   `async fn call(&self, call: ToolCallEvent, next: ToolCallNext<'_>) ->
   Result<ToolResult, ToolError>`. Register via
   `ExtensionApi::register_around_tool`; handlers compose in registration
@@ -332,7 +332,7 @@ so a single crate gives them both the traits and the runtime helpers.
   results: they count toward the loop-guard failure escalation (unlike a
   `Block` intervention). Not offered to script mods (async seam — see
   `docs/MODS.md`).
-- **`AroundTurnHandler`** — kernel composition, runtime half (DSH
+- **`AroundTurnHandler`** — kernel composition, runtime half (general-agent
   `next()` over a whole turn, the main turn's and every sub-agent's):
   `async fn call(&self, turn:
   TurnAroundEvent, next: TurnNext<'_>) -> anyhow::Result<StopReason>`.
@@ -403,9 +403,9 @@ async fn configure(api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
 }
 ```
 
-## Registration scopes (DSH alignment)
+## Registration scopes (general-agent alignment)
 
-Registrations carry a **scope** — the DSH per-agent scope key, reduced to
+Registrations carry a **scope** — the general-agent per-agent scope key, reduced to
 two states: `Scope::Global` (the default; what every plain
 `register_tool` / `on` / `on_variant` uses) and
 `Scope::AgentType(id)` (a sub-agent type string: `general`, `explore`,
@@ -426,7 +426,7 @@ two states: `Scope::Global` (the default; what every plain
   deny: there is no allow form, entries intersect, and nothing re-admits
   a denied name. Restrictions never prune scoped registrations (what an
   agent type declares for itself cannot be voted away by a deployment
-  restriction — DSH: "restrictions do not affect scoped registrations"),
+  restriction — general-agent: "restrictions do not affect scoped registrations"),
   and they prune only the extension layer's own tools — denying a builtin
   is `GuardHandler` (execution-time deny) or config `disabled_tools`
   territory.
@@ -454,14 +454,14 @@ child's scope too — the same dylib-safety rule); session-level events
 offered to script mods. Denying a builtin by name is not this list's
 job (see above).
 
-## Dispatch three-states (DSH alignment) + host seam mapping
+## Dispatch three-states (general-agent alignment) + host seam mapping
 
 Every `ExtensionEventKind` declares its dispatch mode
 (`dispatch_mode()`) — one of three states, named after the
-deepseek-harness (DSH) extension model so both frameworks share one
+general-agent extension model so both frameworks share one
 vocabulary:
 
-| CodeSmith `DispatchMode` | DSH term | Semantics |
+| CodeSmith `DispatchMode` | general-agent term | Semantics |
 |---|---|---|
 | `Emit` | emit | broadcast: handlers run in subscription order, outcomes are advisory (`Transform`/`Cancel`/`Block` ignored) |
 | `Serial` | serial | ordered listeners with veto: a `Cancel` aborts the pending host operation and short-circuits the chain (`SessionBefore*` seams; `TurnStopping` — where the pending operation is the stop itself, so `Cancel { reason }` continues the turn: the steer, `reason` becoming the model-visible note) |
@@ -470,12 +470,12 @@ vocabulary:
 
 The match is exhaustive like `kind()` and pinned by the
 `event_dispatch_contract_table` test, so the declared contract cannot
-drift silently. Of DSH's five modes only these three are ported —
+drift silently. Of the general agent's five modes only these three are ported —
 parallel fan-out and first-value-wins (bail) are intentionally not built;
-add one only with a real consumer. CodeSmith does **not** adopt DSH's
+add one only with a real consumer. CodeSmith does **not** adopt the general agent's
 everything-is-a-plugin kernel — the kernel (turn loop, provider
 registry, session log) stays compile-time assembled; only the dispatch
-vocabulary is shared. Nor does `Waterfall` wrap the operation DSH-style
+vocabulary is shared. Nor does `Waterfall` wrap the operation general-agent-style
 with `next()` — it stays a fold chain, each transform visible to the
 next handler; the `next()`-wrapping form exists only for tool execution
 (`AroundToolHandler`, section below). The capability graph
@@ -498,7 +498,7 @@ and `Ask` have no script form in any channel (async / UI decision
 channel; no `ask()` control value exists, so a script can never produce
 an `Ask` outcome).
 
-### Around-dispatch (DSH tools/execute)
+### Around-dispatch (general-agent tools/execute)
 
 The `next()`-wrapping form exists only for tool execution, as the
 `AroundToolHandler` trait (registered via `ExtensionApi::register_around_tool`)
@@ -506,7 +506,7 @@ The `next()`-wrapping form exists only for tool execution, as the
 as a fold. `wrap_tool_dispatch` composes the registration-ordered chain
 (outermost first) around the dispatch terminal of BOTH arms in
 `turn::batches` — the parallel arm's early-reuse-or-run and the serial
-arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
+arm's approval-gate-plus-run. Never awaiting `next` vetoes. The general-agent
 `tools/execute` middleware and this seam are one vocabulary; the
 `Waterfall` fold above stays a fold.
 
@@ -516,17 +516,17 @@ arm's approval-gate-plus-run. Never awaiting `next` vetoes. The DSH
 | `SessionShutdown` | `engine/mod.rs` post-MCP-shutdown | emit | — |
 | `TurnStart` | `host_executor` turn entry | emit | — |
 | `TurnEnd` | `host_executor` turn exit (interrupted + no-tool-calls) | emit | — |
-| `TurnStopping(TurnStoppingEvent)` | `host_executor` no-tool-calls arm — after the steer flush + sub-agent drain resume branches, before the terminal path | **Cancel** | the DSH turn-stopping serial steer: asked before the turn ends on `NoToolCalls`; `Continue` (or no handler) abstains — the default stop; the first `Cancel { reason }` steers — `reason` is appended verbatim as a `user`-role message (model-visible ⇒ session-recorded; append-only, prefix cache untouched) and the turn resumes on a fresh step. Steers are capped at 3 per turn by the loop guard — a capped steer is dropped (`tracing` warn, no note) and the turn ends. `reason` is why the turn would end (`no-tool-calls` at the only emit site); the `MaxSteps`/`Interrupted`/`Error` terminal paths do not ask |
+| `TurnStopping(TurnStoppingEvent)` | `host_executor` no-tool-calls arm — after the steer flush + sub-agent drain resume branches, before the terminal path | **Cancel** | the general-agent turn-stopping serial steer: asked before the turn ends on `NoToolCalls`; `Continue` (or no handler) abstains — the default stop; the first `Cancel { reason }` steers — `reason` is appended verbatim as a `user`-role message (model-visible ⇒ session-recorded; append-only, prefix cache untouched) and the turn resumes on a fresh step. Steers are capped at 3 per turn by the loop guard — a capped steer is dropped (`tracing` warn, no note) and the turn ends. `reason` is why the turn would end (`no-tool-calls` at the only emit site); the `MaxSteps`/`Interrupted`/`Error` terminal paths do not ask |
 | `Input(InputEvent)` | every user-input intake (`engine::input_through_extensions`): `Engine::handle_send_message` at turn assembly (the submitted turn text — before `BeforeAgentStart` / `AgentStart`), each mid-turn steer (`HostAgentExecutor::push_steer_message`: pre-request drain, sub-agent hold, mid-stream flush), and `host_executor::run_inner`'s seed when the executor seeds the transcript itself (embeds) | **Transform** | rewrites the input `text` before it is recorded and sent; a steer rewritten to whitespace is dropped. The engine runs the executor with an empty seed, so the main turn's text meets the seam at assembly — never twice |
 | `BeforeAgentStart(AgentStartEvent)` | `host_executor::run_inner` top | **Transform** | injects `inject_message` (history push) + overrides `system_prompt` if set |
 | `AgentStart` | `host_executor::run_inner` (emit) | emit | — |
 | `BeforeProviderHeaders(BeforeProviderHeadersEvent)` | `host_executor` before `request` build | emit | payload = the provider client's extra HTTP headers as a JSON object, credential-bearing values masked; the transport's auth headers (from the api key) are not listed — they never leave the client |
 | `BeforeProviderRequest(BeforeProviderRequestEvent)` | `host_executor` after `request` built, before stream | **Transform** | rewrites `request.messages` |
 | `AfterProviderResponse(AfterProviderResponseEvent)` | `host_executor` `Content` arm after `accumulate_usage` | emit | payload = the assembled `MessageResponse` serialized (streaming synthesis: `id` is empty — no wire response object reaches the reducer; `content`/`stop_reason`/`usage` come from the stream reduction) |
-| `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the DSH request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
+| `ProviderRequestError(ProviderRequestErrorEvent)` | `stream_with_transparent_retry` `Empty` arm, before each retry decision | **Transform + Block** | the general-agent request-error waterfall, asked inside the transparent-retry guard: `Continue` keeps the default policy (bounded retries; rate-limit backoff); `Transform` rewrites `plan` — `Retry { delay_ms }` overrides the backoff (clamped to 5 min) or forces a retry past the default budget (forced retries capped at 6); `Block` gives up and surfaces the failure. `failure` carries the classified category (snake_case) + raw message; `attempt` is the 1-based failing-attempt number. Retries never enter the model context — `tracing` records the extension decisions |
 | `AssistantStream(AssistantStreamEvent)` | callback-bridge stream-delta path (`agent-runtime/src/callback_bridge.rs`) | emit | one incremental assistant **text** chunk per wire delta; dispatch runs off-thread under a 250 ms per-delta + 1 s cumulative-per-turn budget — an over-budget handler is detached (runs to completion, outcome discarded, never cancelled mid-flight) and later deltas that turn skip dispatch; no dispatch at all when nothing subscribes; thinking deltas stay UI-only |
 | `ToolCall(ToolCallEvent)` | `host_executor` parallel + serial tool dispatch — the one loop, main turn and sub-agent turns alike (a child's tool calls dispatch at the child's `AgentType` scope — script/compiled-in handlers only, dylib handlers skipped) | **Transform + Block + Ask** | a handler may rewrite the call's `input`, deny it, or ask the user. `Block` skips approval + `tool.run` → `Err(ToolError::permission_denied(reason))`, `blocked = true`. `Ask { reason }` routes the call through the approval decision channel regardless of its static classification — on the serial arm it forces the gate (fail-closed: no channel ⇒ denied); on the parallel arm the batch's sequential pre-dispatch loop asks inline (a read-only call becomes user-gated), a denial records like a block and an approved escalation logs + runs with the fixed context. In the parallel batch a rewritten input must re-classify as auto-approved or the call is blocked there — a rewrite cannot smuggle a non-approved input through the approval-free batch; the model can re-issue the call to route it through the serial approval gate. `on_tool_start` and the audit record see the rewritten input. Around-dispatch (`AroundToolHandler`) wraps the dispatch terminal of both arms — see the section above. In a sub-agent turn: `Block` denies, `Ask` fails closed (a child's turn carries no approval channel — denied, reason fed back), a transform's rewritten input is what executes and what the child transcript records |
-| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` — the one loop, main turn and sub-agent turns alike (after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the DSH post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
+| `ToolResult(ToolResultEvent)` | `host_executor` parallel + serial, emit reordered BEFORE `on_tool_end` — the one loop, main turn and sub-agent turns alike (after each child tool execution, at the child's scope — the final content is what the child transcript records) | **Transform** | replaces the result; `on_tool_end` + downstream `outcomes[idx].result` see the transformed result. This is the general-agent post-execute accept/replace equivalent — `Continue` accepts, `Transform` replaces (a deny does not exist post-execution; use the `ToolCall` seam). `ToolResult` carries a canonical/rendered split: `content` is the model-visible rendering, `canonical` the structured machine value (live-process only, not persisted in the transcript) — rewriting `content` must not rewrite `canonical` |
 | `ToolExecutionStart` | `host_executor` tool closure (before `tool.run`) | emit | — |
 | `ToolExecutionEnd` | `host_executor` tool closure (after `tool.run`) | emit | — |
 | `AgentEnd` | `host_executor::run_inner` each `return Ok(...)` | emit | — |
@@ -620,7 +620,7 @@ proof.
   script mods get neither (async / UI decision channel); see
   `docs/MODS.md`. Around-chain results count toward the loop-guard
   failure escalation, unlike `Block` interventions.
-- The script-side DSH surface is `on_event` (emit/serial kinds only) +
+- The script-side general-agent surface is `on_event` (emit/serial kinds only) +
   `register_guard`; waterfall participation from scripts stays on the
   older `on()` full surface, and scripts see no registration scopes (no
   `on_event_scoped`).

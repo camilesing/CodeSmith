@@ -19,9 +19,9 @@
 //! extension pub/sub (the former §F3 EventBus skeleton) was deleted with
 //! zero consumers; it returns only when an extension actually needs it.
 //!
-//! ## Kernel composition (DSH alignment)
+//! ## Kernel composition (general-agent alignment)
 //!
-//! CodeSmith adopts DSH's kernel-composition model at two seams, by
+//! CodeSmith adopts the general agent's kernel-composition model at two seams, by
 //! founder decision (2026-10-30), replacing the earlier stance that the
 //! kernel stayed compile-time assembled with the extension surface as a
 //! seam onto it:
@@ -32,7 +32,7 @@
 //!   (`codesmith-agent-runtime`, `engine/executor_composition.rs`) at
 //!   every turn assembly; alternates land as registry entries.
 //! - **Composition** — [`AroundTurnHandler`] wraps the whole main turn
-//!   with DSH's `next()` form ([`ExtensionApi::register_around_turn`]),
+//!   with the general agent's `next()` form ([`ExtensionApi::register_around_turn`]),
 //!   so an extension composes behaviour around whichever loop runs, with
 //!   generation-scoped unload.
 //!
@@ -51,8 +51,8 @@
 //! from-scratch loop implementation (the factory contract would have to
 //! name runtime-side types across this crate's boundary) — it wraps.
 //!
-//! [`DispatchMode`] names its three states after the deepseek-harness
-//! (DSH) extension model — `Emit` (broadcast, advisory outcomes),
+//! [`DispatchMode`] names its three states after the general-agent
+//! extension model — `Emit` (broadcast, advisory outcomes),
 //! `Serial` (ordered listeners, veto short-circuits), `Waterfall
 //! { can_deny }` (transform fold, optionally deny) — so both frameworks
 //! share one vocabulary for the same dispatch semantics.
@@ -344,7 +344,7 @@ pub enum RetryPlan {
     GiveUp,
 }
 
-/// Payload for [`ExtensionEvent::ProviderRequestError`] — the DSH
+/// Payload for [`ExtensionEvent::ProviderRequestError`] — the general-agent
 /// request-error waterfall, asked inside the engine's transparent-retry
 /// guard before each retry decision. `plan` arrives pre-filled with the
 /// host's default policy: `Continue` keeps it, a `Transform` rewrites it
@@ -358,7 +358,7 @@ pub struct ProviderRequestErrorEvent {
     pub plan: RetryPlan,
 }
 
-/// Payload for [`ExtensionEvent::TurnStopping`] — the DSH turn-stopping
+/// Payload for [`ExtensionEvent::TurnStopping`] — the general-agent turn-stopping
 /// serial steer, asked when the turn is about to end on `NoToolCalls`
 /// (after the steer flush and sub-agent drain resume branches, before the
 /// terminal path). `reason` is why the turn would end (`NoToolCalls` at
@@ -520,7 +520,7 @@ pub struct WorkflowEndEvent {
 /// Lifecycle events. §F1 minimal set (spec §10.1) + §F2a full set (spec
 /// §10.2 + §4): 32 variants total (23 §F2a + `AssistantStream` +
 /// `ToolsChange`, minus the removed `ResourcesDiscover`, plus the
-/// DSH-alignment `ProviderRequestError` + `TurnStopping`, plus the
+/// general-agent-alignment `ProviderRequestError` + `TurnStopping`, plus the
 /// 5-variant workflow lifecycle family and `ResultVerified` — all `Emit`),
 /// `#[non_exhaustive]`
 /// so future
@@ -568,11 +568,11 @@ pub enum ExtensionEvent {
     BeforeProviderHeaders(BeforeProviderHeadersEvent),
     BeforeProviderRequest(BeforeProviderRequestEvent),
     AfterProviderResponse(AfterProviderResponseEvent),
-    /// The DSH request-error waterfall: asked inside the engine's
+    /// The general-agent request-error waterfall: asked inside the engine's
     /// transparent-retry guard before each retry decision (a denying
     /// `Waterfall` — see [`ProviderRequestErrorEvent`]).
     ProviderRequestError(ProviderRequestErrorEvent),
-    /// The DSH turn-stopping serial steer: asked when the turn is about
+    /// The general-agent turn-stopping serial steer: asked when the turn is about
     /// to end on `NoToolCalls`; `Cancel { reason }` steers the turn
     /// onward (see [`TurnStoppingEvent`]).
     TurnStopping(TurnStoppingEvent),
@@ -706,30 +706,30 @@ impl ExtensionEvent {
 /// an implementation detail of a seam (discipline 3: the dispatch mode is
 /// declared with the event). See [`ExtensionEventKind::dispatch_mode`].
 ///
-/// Three states named after the DSH (deepseek-harness) dispatch model,
-/// which this contract aligns with: `Emit` = DSH emit, `Serial` = DSH
-/// serial, `Waterfall` = DSH waterfall.
+/// Three states named after the general-agent dispatch model,
+/// which this contract aligns with: `Emit` = general-agent emit, `Serial` = general-agent
+/// serial, `Waterfall` = general-agent waterfall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DispatchMode {
-    /// DSH **emit** — broadcast: handlers run in subscription order and
+    /// general-agent **emit** — broadcast: handlers run in subscription order and
     /// outcomes are advisory — `Transform`/`Cancel`/`Block` are ignored
     /// at these seams.
     Emit,
-    /// DSH **serial** — ordered listeners with veto: handlers run in
+    /// general-agent **serial** — ordered listeners with veto: handlers run in
     /// subscription order; a handler's `Cancel` aborts the pending host
     /// operation and short-circuits the chain (the `SessionBefore*`
     /// seams). [`ExtensionEventKind::TurnStopping`] is serial with an
     /// inverted reading: the pending operation there IS the stop, so
     /// `Cancel { reason }` continues the turn — the steer.
     Serial,
-    /// DSH **waterfall** — transform fold: each handler's `Transform`
+    /// general-agent **waterfall** — transform fold: each handler's `Transform`
     /// folds into the running event (immediately visible to the next
     /// handler); the terminal actionable field is applied to the host
     /// operation. `can_deny: true` additionally honors `Block` — a
     /// handler may deny the operation outright; the deny is monotonic, no
     /// later handler can flip it (the chain has already stopped). The
-    /// fold stays a fold — DSH's `next()`-wrapping around-dispatch exists
+    /// fold stays a fold — the general agent's `next()`-wrapping around-dispatch exists
     /// separately for tool execution ([`AroundToolHandler`]); no event
     /// kind dispatches around-style.
     Waterfall {
@@ -900,7 +900,7 @@ pub trait ToolDefinition: Send + Sync {
     ) -> Result<ToolResult, ExtensionError>;
 }
 
-/// Extension-side tool-**replacement** contract (DSH pattern d — wrap or
+/// Extension-side tool-**replacement** contract (general-agent pattern d — wrap or
 /// substitute an existing tool). Where [`ToolDefinition`] *adds* a new
 /// model-visible tool, a `ToolReplacement` substitutes the **execution** of
 /// an already-registered tool (the [`target`](Self::target)), optionally
@@ -968,7 +968,7 @@ pub trait CommandDefinition: Send + Sync {
 /// `ExtensionRunner::emit` (`codesmith_extensions`)
 /// (spec §4: "一个 handler 的修改对下一个可见"). Which outcomes the host
 /// honors is the event's
-/// [`dispatch mode`](ExtensionEventKind::dispatch_mode) — the three DSH
+/// [`dispatch mode`](ExtensionEventKind::dispatch_mode) — the three general-agent
 /// states:
 ///
 /// - `Continue` — no change; proceed to the next handler.
@@ -1059,7 +1059,7 @@ pub type ToolGuardFn = Arc<dyn Fn(&ToolCallEvent) -> Option<String> + Send + Syn
 /// attributed: the block reason reads `"<label>: <reason>"`, so the blocked
 /// result names the guard that denied the call.
 ///
-/// Known limitations (deliberate, dsh `tools.guard()` placement differs):
+/// Known limitations (deliberate, the general agent's `tools.guard()` placement differs):
 /// - Evaluated at the `ToolCall` seam, i.e. before approval. A denied call
 ///   is never dispatched, so no approval path observes or flips it; there
 ///   is no post-approval evaluation point (CodeSmith has no execution path
@@ -1121,7 +1121,7 @@ impl Handler for GuardHandler {
     }
 }
 
-// === Around-dispatch (DSH tools/execute) ==================================
+// === Around-dispatch (general-agent tools/execute) ==================================
 
 /// The boxed continuation an [`AroundToolHandler`] receives: awaiting it
 /// runs the next around handler, or — after the last one — the host's
@@ -1130,7 +1130,7 @@ impl Handler for GuardHandler {
 pub type ToolCallNext<'a> =
     Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>>;
 
-/// DSH-style around-dispatch for tool execution ("waterfall with next"):
+/// general-agent-style around-dispatch for tool execution ("waterfall with next"):
 /// `call` receives the tool call and `next`, and may inspect, wrap, defer,
 /// or veto the execution by never awaiting `next`. Handlers compose in
 /// registration order — the first registered is outermost; the last one's
@@ -1180,7 +1180,7 @@ pub fn wrap_tool_dispatch<'a>(
     next
 }
 
-// === Around-turn (DSH waterfall next() over the whole main turn) ==========
+// === Around-turn (general-agent waterfall next() over the whole main turn) ==========
 
 /// The boxed continuation an [`AroundTurnHandler`] receives: awaiting it
 /// runs the next around-turn handler, or — after the last one — the
@@ -1197,7 +1197,7 @@ pub struct TurnAroundEvent {
     pub turn_id: String,
 }
 
-/// DSH-style around-dispatch for the whole main turn ("waterfall with
+/// general-agent-style around-dispatch for the whole main turn ("waterfall with
 /// next" over `AgentExecutor::run`): `call` receives the turn payload and
 /// `next`, and may run pre/post phases around the loop or veto by
 /// returning its own `StopReason` without awaiting `next`. Handlers
@@ -1208,7 +1208,7 @@ pub struct TurnAroundEvent {
 /// behaviour around it at runtime.
 ///
 /// Known limitations: `next` is a single-shot future — awaiting it runs
-/// the inner turn once, so "re-run the loop" (DSH's callable `next()`)
+/// the inner turn once, so "re-run the loop" (the general agent's callable `next()`)
 /// is not expressible here (a handler wanting retries needs a factory
 /// form; add it with a real consumer); dylib-origin handlers wrap the
 /// main turn only (a sub-agent's turn composes the chain at its
@@ -1242,14 +1242,14 @@ pub fn wrap_turn_dispatch<'a>(
     next
 }
 
-// === Registration scope (DSH alignment) ===================================
+// === Registration scope (general-agent alignment) ===================================
 
-/// Where a registration applies — the DSH per-agent scope key, reduced to
+/// Where a registration applies — the general-agent per-agent scope key, reduced to
 /// CodeSmith's two states. Every registration method has a `Global`
 /// default (the plain `register_tool` / `on` / `on_variant` forms); the
 /// `*_scoped` variants name an explicit scope.
 ///
-/// Scope resolution rules (DSH `ToolLayer` alignment):
+/// Scope resolution rules (the general agent's `ToolLayer` alignment):
 /// - A **tool** registered for `AgentType(id)` shadows a same-name global
 ///   tool in that agent type's catalog view; the global view (the main
 ///   turn) never sees it.
@@ -1259,7 +1259,7 @@ pub fn wrap_turn_dispatch<'a>(
 /// - A **restrict entry** (`restrict_tools`) prunes the *global* tool
 ///   layer for the views its scope covers — deny-only, and it never prunes
 ///   scoped registrations (what an agent type declares for itself cannot
-///   be voted away by a deployment restriction; DSH: "restrictions do not
+///   be voted away by a deployment restriction; general-agent: "restrictions do not
 ///   affect scoped registrations").
 ///
 /// `AgentType` ids are sub-agent type strings (`SubAgentType::as_str()`:
@@ -1381,7 +1381,7 @@ pub trait ExtensionApi: Send + Sync {
         handler: Arc<dyn Handler>,
     ) -> Result<(), ExtensionError>;
 
-    /// DSH registration scope — register a tool for one scope. A
+    /// general-agent registration scope — register a tool for one scope. A
     /// `Scope::AgentType(id)` tool shadows a same-name global tool in that
     /// agent type's catalog view and never enters the global (main-turn)
     /// view; `Scope::Global` is equivalent to
@@ -1400,7 +1400,7 @@ pub trait ExtensionApi: Send + Sync {
         ))
     }
 
-    /// DSH registration scope — subscribe `handler` to a single event
+    /// general-agent registration scope — subscribe `handler` to a single event
     /// variant **at a scope**. A `Scope::AgentType(id)` handler receives
     /// only events dispatched at that scope (`emit_scoped`); the main
     /// turn's `emit` (Global) never reaches it. `Scope::Global` is
@@ -1420,7 +1420,7 @@ pub trait ExtensionApi: Send + Sync {
         ))
     }
 
-    /// DSH tool restriction — a **deny-only** name list that prunes the
+    /// general-agent tool restriction — a **deny-only** name list that prunes the
     /// *global* extension-tool layer for the views `scope` covers (a
     /// `Global` entry prunes every view including the main turn; an
     /// `AgentType(id)` entry prunes that type's view only). Monotonic by
@@ -1440,7 +1440,7 @@ pub trait ExtensionApi: Send + Sync {
         ))
     }
 
-    /// DSH pattern d — replace the **execution** of an already-registered
+    /// general-agent pattern d — replace the **execution** of an already-registered
     /// tool (see [`ToolReplacement`]). Resolved at registry assembly: the
     /// incumbent is captured (so [`ReplacementOutcome::Delegate`] reaches
     /// it) and the replacement takes effect at the next turn's build;
@@ -1456,7 +1456,7 @@ pub trait ExtensionApi: Send + Sync {
         ))
     }
 
-    /// DSH around-dispatch — register a handler that wraps every tool
+    /// general-agent around-dispatch — register a handler that wraps every tool
     /// execution (the `next()` chain; see [`AroundToolHandler`]).
     /// Registration order composes outermost-first; reload clears the
     /// generation's registrations with the other bound registrations.
@@ -2052,7 +2052,7 @@ mod tests {
     /// cannot drift silently. 31 rows = the full §F2a set +
     /// assistant-stream + tools-change (minus the removed
     /// `ResourcesDiscover`) + provider-request-error + turn-stopping
-    /// (DSH alignment) + the 5 workflow lifecycle events (Emit-only).
+    /// (general-agent alignment) + the 5 workflow lifecycle events (Emit-only).
     #[test]
     fn event_dispatch_contract_table() {
         use DispatchMode as M;
@@ -2875,7 +2875,7 @@ mod tests {
         assert!(matches!(out, HandlerOutcome::Continue));
     }
 
-    // === Registration scope (DSH alignment) =============================
+    // === Registration scope (general-agent alignment) =============================
 
     #[test]
     fn scope_covers_matrix() {
@@ -2909,7 +2909,7 @@ mod tests {
         }
     }
 
-    // === Around-dispatch (DSH tools/execute) =============================
+    // === Around-dispatch (general-agent tools/execute) =============================
 
     /// An around handler that records its visit, optionally vetoes, and
     /// otherwise stamps its label through the result.
@@ -3010,7 +3010,7 @@ mod tests {
         );
     }
 
-    // === Around-turn (DSH waterfall next() over the main turn) ===========
+    // === Around-turn (general-agent waterfall next() over the main turn) ===========
 
     /// An around-turn handler that records its pre phase, optionally
     /// vetoes (returning its own `StopReason` without awaiting `next`),

@@ -529,7 +529,7 @@
 //!   steps (a child settling while a tool batch runs) or between turns (a
 //!   cancelled / step-capped turn left children running) are delivered by
 //!   `drain_subagent_completions`
-//!   at the step-top seam, ahead of the request snapshot — DSH's pre-step
+//!   at the step-top seam, ahead of the request snapshot — the general agent's pre-step
 //!   settlement delivery. Before this they waited for the post-stream
 //!   no-tool-calls drain, so the model answered a new user message first and
 //!   read the settled child only on the resume round. The post-stream drain
@@ -1497,7 +1497,7 @@ pub struct HostAgentExecutor {
 
     /// The registration scope every extension dispatch of this turn runs
     /// at — `Global` for the main turn, the agent type for a sub-agent turn
-    /// (DSH: one scope per agent, the same loop for every agent). At an
+    /// (general agent: one scope per agent, the same loop for every agent). At an
     /// agent-type scope the runner skips dylib-origin handlers and around
     /// wrappers (§F5d unload safety), so a child's dispatch never runs
     /// dylib code. Defaults to `Global` (embeds/tests).
@@ -4339,7 +4339,7 @@ impl HostAgentExecutor {
                         continue;
                     }
                 }
-                // TurnStopping (DSH serial turn-steer): the turn is about to
+                // TurnStopping (general-agent serial turn-steer): the turn is about to
                 // end on `NoToolCalls` — ask the extensions first. The
                 // question sits INSIDE the ending branch (same shape as the
                 // iteration-2 retry guard): no handler bound, all-abstain,
@@ -16170,7 +16170,7 @@ mod tests {
         );
     }
 
-    /// Pre-request delivery (DSH pre-step settlement): a child that settles
+    /// Pre-request delivery (general-agent pre-step settlement): a child that settles
     /// while the parent runs a tool batch is read on the NEXT request —
     /// alongside the tool result — not after the model's next reply. Without
     /// the step-top drain the completion waited for the post-stream
@@ -17993,7 +17993,7 @@ mod tests {
         );
     }
 
-    // === Iteration 4 — around-dispatch + Ask (DSH tool-chain sites) =========
+    // === Iteration 4 — around-dispatch + Ask (general-agent tool-chain sites) =========
 
     /// An around handler that optionally vetoes and otherwise stamps its
     /// label through the result, recording the calls it saw.

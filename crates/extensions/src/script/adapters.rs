@@ -216,7 +216,7 @@ impl ToolDefinition for ScriptToolDefinition {
 // === ScriptToolReplacement ==================================================
 
 /// A `replace_tool(spec, |input, ctx| {...})` registration — substitutes the
-/// **execution** of an already-registered tool (DSH pattern d). The host
+/// **execution** of an already-registered tool (general-agent pattern d). The host
 /// adapter (`codesmith-agent-runtime`, `tools/replacement.rs`) captures the
 /// incumbent, keeps its safety metadata (capabilities/approval ladder), and
 /// resolves [`ReplacementOutcome::Delegate`] against the incumbent; this
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(out2.content, "hello");
     }
 
-    // === replace_tool (DSH pattern d) =======================================
+    // === replace_tool (general-agent pattern d) =======================================
 
     #[test]
     fn replace_tool_maps_ok_err_and_bare_returns() {

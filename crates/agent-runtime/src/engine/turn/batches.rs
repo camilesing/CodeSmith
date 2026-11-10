@@ -178,7 +178,7 @@ impl HostAgentExecutor {
         let mut loop_guard_halt: Option<String> = None;
         let mut plan_approved = false;
         let n = tool_uses.len();
-        // DSH around-dispatch (tools/execute): the generation's around
+        // general-agent around-dispatch (tools/execute): the generation's around
         // handlers wrap the dispatch terminal in BOTH arms below — the view
         // at this turn's dispatch scope (a sub-agent's chain drops
         // dylib-origin wrappers). An empty snapshot (no runner / none
@@ -635,7 +635,7 @@ impl HostAgentExecutor {
                             .cloned()
                             .unwrap_or_else(|| plan.input.clone());
                         let index = plan.index;
-                        // Iteration 4 — the per-future around snapshot (DSH
+                        // Iteration 4 — the per-future around snapshot (general-agent
                         // tools/execute); `Arc` clones only.
                         let around = around_handlers.clone();
                         futs.push(Box::pin(async move {
@@ -876,7 +876,7 @@ impl HostAgentExecutor {
                                 )
                                 .await;
                         }
-                        // Iteration 4 — the around chain (DSH tools/execute)
+                        // Iteration 4 — the around chain (general-agent tools/execute)
                         // wraps the serial dispatch terminal: the approval
                         // gate + run, i.e. the whole execution transaction (a
                         // veto skips the question too). An `Ask` forces the

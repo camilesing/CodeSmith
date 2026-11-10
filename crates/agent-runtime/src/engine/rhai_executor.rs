@@ -1,7 +1,7 @@
 //! `rhai` turn executor — a script-driven loop as a crate-compiled
 //! registry entry (config `turn_executor = "rhai"`).
 //!
-//! The DSH "everything is a plugin" translation for this codebase: the
+//! The general-agent "everything is a plugin" translation for this codebase: the
 //! loop *shape* is script (a mod's `register_loop("main")` entry), the
 //! loop *steps* stay the host's — every capability call the script makes
 //! (`llm_request()`, `run_tools(calls)`, …) executes the same

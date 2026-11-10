@@ -1,4 +1,4 @@
-//! Session context plane — the DSH `context/*` counterpart, split out of
+//! Session context plane — the general agent's `context/*` counterpart, split out of
 //! `codesmith-agent-runtime` in round 9.
 //!
 //! - [`project_docs`] / [`claudemd`]: AGENTS/CLAUDE.md discovery up the

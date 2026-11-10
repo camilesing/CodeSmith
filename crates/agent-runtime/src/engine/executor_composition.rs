@@ -9,8 +9,8 @@
 //! through the dyn-safe [`AgentExecutor`] seam. A sub-agent turn takes the
 //! same path through [`run_child_turn`](super::child_turn::run_child_turn):
 //! a child-shaped `TurnDeps` (`TurnShape::Child`), the same registry,
-//! the same factory (DSH: one factory makes every agent). This is the
-//! deepseek-harness (DSH) kernel-composition model adapted to this
+//! the same factory (general agent: one factory makes every agent). This is the
+//! general-agent kernel-composition model adapted to this
 //! codebase: kernel services stay owned by the host, and "which loop runs"
 //! is a *selection*, resolved at a defined chokepoint, not a composition
 //! of the engine itself.
@@ -21,7 +21,7 @@
 //! effect-at-next-chokepoint semantics — a registration takes effect at the
 //! next turn's assembly, never mid-turn (the in-flight executor is
 //! refcounted). Replacing an id is refused while turns are in flight on it
-//! (the [`crate::turn_lease`] registry; DSH `setFactory` conflict
+//! (the [`crate::turn_lease`] registry; the general agent's `setFactory` conflict
 //! semantics) — the error names the count. The builtin factory
 //! (`HostAgentExecutorFactory`) carries exactly the construction the
 //! engine used to inline, so the default path is the same assembly.
@@ -36,7 +36,7 @@
 //!   dylib is the around-turn seam (`crates/agent/src/extension.rs`).
 //! - **One selection for every agent.** `turn_executor` picks the loop for
 //!   the main turn and every in-process child alike; there is no per-type
-//!   selection (DSH plan D2 — no consumer yet). External-provider children
+//!   selection (general-agent plan D2 — no consumer yet). External-provider children
 //!   (out of process) run whatever loop their own process selects.
 //! - **Approval is loop discipline, not dispatcher-enforced.** A factory
 //!   receives the approval router and the cancel/steer channels in
@@ -94,7 +94,7 @@ pub const BUILTIN_TURN_EXECUTOR_ID: &str = "builtin";
 /// Which agent a turn is assembled for — the one shape question a factory
 /// answers (the builtin factory reads it for the dispatch scope). What a
 /// child lacks is an absent (`None`) service in [`TurnDeps`], never a
-/// branch in the loop: DSH is one scope per agent, not a pile of branches
+/// branch in the loop: the general agent is one scope per agent, not a pile of branches
 /// per agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TurnShape {
@@ -277,7 +277,7 @@ pub trait TurnHarvest: Send + Sync {
 /// id, identity-checked RAII unregister, lock held only for the map
 /// operation (`build` always runs outside it). The paired
 /// [`TurnLeaseRegistry`](crate::turn_lease::TurnLeaseRegistry) carries the
-/// registry's in-flight accounting (DSH: the agent registry owns both the
+/// registry's in-flight accounting (general agent: the agent registry owns both the
 /// factory slot and the live agents), so `register` can refuse to replace
 /// an id that still has turns running on it.
 pub(crate) struct TurnExecutorRegistry {
@@ -323,7 +323,7 @@ impl TurnExecutorRegistry {
 
     /// Register (or replace) a factory, keyed by its id. Replacing an
     /// incumbent fails loud while any turn is still in flight on that id
-    /// (DSH `setFactory` conflict: a replacement never takes the old
+    /// (the general agent's `setFactory` conflict: a replacement never takes the old
     /// factory's live handles away) — let the turns finish (or drain the
     /// sub-agents via a reload) and retry. A first registration of an id
     /// is not a replacement and is never refused, which is what lets the
@@ -394,7 +394,7 @@ impl TurnExecutorRegistry {
     }
 
     /// Read-only snapshot of every slot with its in-flight census, sorted
-    /// by id (DSH D1 observability — see [`turn_executor_status`]).
+    /// by id (general-agent D1 observability — see [`turn_executor_status`]).
     #[must_use]
     pub fn slots(&self) -> Vec<TurnExecutorSlot> {
         self.ids()
@@ -426,7 +426,7 @@ impl TurnExecutorRegistry {
     }
 }
 
-/// One registered turn-executor slot as an operator sees it (DSH D1): the
+/// One registered turn-executor slot as an operator sees it (general-agent D1): the
 /// id and the turns in flight on it, main turn and sub-agents by spawn
 /// depth. Which slot is the session's selection is the host's
 /// `turn_executor` config, not registry state — the host marks it. The
@@ -679,7 +679,7 @@ mod tests {
         assert!(registry.ids().is_empty());
     }
 
-    /// DSH `setFactory` conflict semantics: an incumbent id with in-flight
+    /// the general agent's `setFactory` conflict semantics: an incumbent id with in-flight
     /// leases is not replaceable; the error names the count (fail loud).
     /// Releasing the leases unblocks the replacement.
     #[test]

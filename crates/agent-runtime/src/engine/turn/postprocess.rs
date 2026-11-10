@@ -147,7 +147,7 @@ impl HostAgentExecutor {
     /// `<codesmith:runtime_event kind="subagent_completion">` user message
     /// ahead of the request snapshot, so the model reads a settled child on
     /// THIS request instead of after its next reply — the pre-step delivery
-    /// DSH's inbox gives its parent agents. Non-blocking (`try_recv`); the
+    /// the general agent's inbox gives its parent agents. Non-blocking (`try_recv`); the
     /// lock is held only for the synchronous drain, never across the
     /// `history.push`. Completions that land during inference, and the
     /// blocking hold for children still running, stay in the post-stream

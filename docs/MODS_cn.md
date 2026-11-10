@@ -32,7 +32,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
-| turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 DSH `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
+| turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 通用 Agent `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
 | 压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建；压缩的*旋钮*是 policy，算法不是） |
 
 经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
@@ -172,25 +172,25 @@ register_command("calls", "显示工具调用次数", |args, ctx| {
 `tools-change` 在回合边界触发：当编译后的模型可见目录相对上一主回合发生变化（模式切换、mod 重载、选择变更）。首回合只建立基线、不触发；sub-agent 工具集不会触发；没有读取当前目录的 API——事件只携带差量。`/tools` 按来源（builtin / plugin / extension / mcp）分组展示当前基线。
 
 分发模式是每个事件契约的一部分（`ExtensionEventKind::dispatch_mode`，由契约测试锁定）
-—— 三态命名对齐 DSH（deepseek-harness）模型：**waterfall**、**serial**、**emit**：
+—— 三态命名对齐通用 Agent 模型：**waterfall**、**serial**、**emit**：
 
 - **waterfall**：`input`、`before-agent-start`、`before-provider-request`、`tool-result` —— transform 逐个折叠、后续 handler 可见、终值作用于宿主操作
 - **waterfall + deny**：`tool-call` —— 改写调用 `input`（改写后的输入才是审批与实际执行的输入，也是入档输入），或 `block(reason)` 拒绝（单调——后续 handler 不可翻转）；`provider-request-error` —— 改写重试 `plan`，或 `block(reason)` 放弃
 - **serial**：`session-before-switch`、`session-before-fork`、`session-before-compact`、`turn-stopping`（倒置：`cancel(reason)` 让轮继续——提示即 steer）
 - **emit**（outcomes 仅供参考）：其余全部，含 `assistant-stream`（随文本 delta 逐次触发——handler 须轻量）与 `tools-change`（回合分发收口的目录差量）
 
-#### `on_event` —— DSH 对齐的监听/否决形态
+#### `on_event` —— 通用 Agent 对齐的监听/否决形态
 
 `on_event("<event>", |e, ctx| { ... })` 的回调形态与 `on` 完全相同
 （同样的 payload、同样可省略的 `ctx`、同样的控制值），但只接受 **emit**
-与 **serial** 事件——可直迁 DSH 的子集。waterfall 事件（`input`、
+与 **serial** 事件——可直迁 通用 Agent 的子集。waterfall 事件（`input`、
 `before-agent-start`、`before-provider-request`、`tool-result`、
 `tool-call`、`provider-request-error`）会让 mod **加载失败**，错误点名
 该事件：它的 transform 链属于 `on()`，拒绝底线属于 `register_guard`。
 emit 事件下一切返回值仅具参考性；serial 事件下 `cancel(reason)` 即否决。
-只监听或只否决的 mod 用 `on_event`——这样的 mod 与 DSH 的 emit/serial
+只监听或只否决的 mod 用 `on_event`——这样的 mod 与 通用 Agent 的 emit/serial
 模型一一对应；需要完整 CodeSmith 表面（含 waterfall transform——刻意
-超出 DSH 脚本面的超集）时用 `on()`。
+超出 通用 Agent 脚本面的超集）时用 `on()`。
 
 作用域：`on_event` 注册是 global 作用域、script 来源——global 注册覆盖
 所有分发作用域，因此 `on_event` 回调既观察到主 turn 的 emit/serial 事件，
@@ -239,7 +239,7 @@ Transform 可变字段（一个 handler 的改写对后续 handler 立即可见�
 | `register_guard(callback)` | 注册 deny-only 的工具调用守卫（见下） |
 | `replace_tool(spec, callback)` | 接管一个已注册工具的执行（见下） |
 | `delegate(input?)` | 替换回调的控制值：运行原实现——`()` 原样透传入参，map 则改写后传入 |
-| `on_event(kind, callback)` | 注册 DSH 对齐的钩子——仅 emit/serial 事件（waterfall 事件导致加载失败；见上） |
+| `on_event(kind, callback)` | 注册 通用 Agent 对齐的钩子——仅 emit/serial 事件（waterfall 事件导致加载失败；见上） |
 | `register_message_projection(key, init, fold)` | 注册由宿主维护的会话日志折叠（见下） |
 | `projection_state(key)` | 读取本 mod 的投影状态（钩子/工具内可用） |
 | `register_policy(kind, config)` | 覆盖宿主机制策略（见下） |
@@ -393,7 +393,7 @@ register_guard(|e| {
 `tool-call`，script 来源的处理器一并覆盖）；reload 清除该 generation
 的全部守卫。
 
-### 替换内建工具（DSH 模式 d）
+### 替换内建工具（通用 Agent 模式 d）
 
 ```rhai
 replace_tool(#{

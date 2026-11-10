@@ -1,4 +1,4 @@
-// Replace-tool (DSH pattern d) as a runtime-swappable Rhai mod.
+// Replace-tool (general-agent pattern d) as a runtime-swappable Rhai mod.
 //
 // `register_tool` ADDS a new tool; `replace_tool` takes over the EXECUTION
 // of one that already exists. This demo wraps `list_dir`: every call is

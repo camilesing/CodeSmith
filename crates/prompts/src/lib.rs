@@ -1,4 +1,4 @@
-//! System-prompt assembly — the DSH `core/system-prompt` counterpart, split
+//! System-prompt assembly — the general agent's `core/system-prompt` counterpart, split
 //! out of `codesmith-agent-runtime` in round 9.
 //!
 //! - [`assembly`]: `BASE_PROMPT` + mode deltas + personality overlays +

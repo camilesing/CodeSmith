@@ -1,4 +1,4 @@
-//! Execution-policy and sandbox plane — the DSH `sandbox/*` +
+//! Execution-policy and sandbox plane — the general agent's `sandbox/*` +
 //! policy-family counterpart, split out of `codesmith-agent-runtime` in
 //! round 9.
 //!

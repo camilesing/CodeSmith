@@ -1,7 +1,7 @@
 //! Unified inbox vocabulary — one set of terms for the three delivery
 //! mechanisms that already exist in the kernel (P1-1).
 //!
-//! CodeSmith does not have DSH's `ReactLoopInbox` data structure, and P1-1
+//! CodeSmith does not have the general agent's `ReactLoopInbox` data structure, and P1-1
 //! deliberately does not add one: the mechanisms below already implement
 //! the semantics, and a second queue next to them would be a second inbox
 //! wearing a hat. What was missing was the *vocabulary* — three names for
@@ -41,7 +41,7 @@
 //!
 //! - Targets are not per-agent addressable: completions deliver to the
 //!   parent main turn (the spawning session); team dispatches go through
-//!   the leader poller on the same op seam. A DSH-style addressable team /
+//!   the leader poller on the same op seam. A general-agent-style addressable team /
 //!   workflow inbox is future work on this seam, not present vocabulary.
 //! - Sub-agent transcripts keep no journal (P0-2 open), so inbox entries
 //!   carry no journal generation; delivery correctness rests on the

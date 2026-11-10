@@ -186,7 +186,7 @@ fn status(state: &ReplState) {
             "no extension runner bound in this session (embed or pre-engine start)".dimmed()
         ),
     }
-    // DSH D1 — the turn-executor slots (process-shared registry) and this
+    // general-agent D1 — the turn-executor slots (process-shared registry) and this
     // session's selection; in-flight counts are the lease census.
     let selected = state.config.turn_executor_id();
     println!("turn executors:");

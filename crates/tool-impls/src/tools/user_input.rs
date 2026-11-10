@@ -8,15 +8,15 @@
 //! stays in this crate (`codesmith-tool-impls`).
 //!
 //! Known limitations, recorded beside the behaviour it owns — this tool is the
-//! equivalent of dsh's `ask_user_question`, and the differences below are
+//! equivalent of the general agent's `ask_user_question`, and the differences below are
 //! deliberate:
 //!
-//! - No timed mode. dsh can release the model to keep working independently
+//! - No timed mode. The general agent can release the model to keep working independently
 //!   after a deadline; a single-task terminal REPL has no consumer for that
 //!   shape, so the ask blocks until answered.
 //! - Subagents cannot call it: the subagent registration chain
 //!   (`with_full_agent_surface`) does not register this tool — the structural
-//!   equivalent of dsh's "live child agent cannot call" guard.
+//!   equivalent of the general agent's "live child agent cannot call" guard.
 
 use async_trait::async_trait;
 use codesmith_agent_runtime::tools::spec::{

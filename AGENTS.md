@@ -180,14 +180,14 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   prose under `crates/prompts/src/assets/`) is the sole base prompt by
   convention; `crates/cli/src/prompts.rs` has tests asserting required tags.
   Same rule: move the code, not the prose, if that changes.
-- One loop implementation drives every agent (DSH kernel-composition
+- One loop implementation drives every agent (general-agent kernel-composition
   model, adopted by founder decision 2026-10-30; sub-agents moved onto it
   in round 11). At every turn assembly the engine snapshots its kernel
   services into `TurnDeps` and resolves the configured factory from the
   process-shared `TurnExecutorRegistry`
   (`crates/agent-runtime/src/engine/executor_composition.rs`, config key
   `turn_executor`, default `builtin`), then wraps the run with the
-  registered `AroundTurnHandler` chain (`register_around_turn`, DSH
+  registered `AroundTurnHandler` chain (`register_around_turn`, general-agent
   `next()`; Rust extensions, wrapped around the main turn and every
   sub-agent turn alike — a child composes the chain at its agent-type
   scope, dylib wrappers excluded). Every in-process
@@ -208,7 +208,7 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   `crates/agent-runtime/src/engine/` (turn phases in `engine/turn/`).
   `crates/cli/src/core/` is a thin re-export and construction bridge
   (`EngineHost`/`build_engine`), not a second loop; `crates/core` is a
-  separate crate and runs no turns. Structural ownership (DSH): every
+  separate crate and runs no turns. Structural ownership (general agent): every
   running turn holds a `TurnLease` (`crates/agent-runtime/src/turn_lease.rs`;
   key = agent id + extension generation + executor id, runner-scoped;
   main turn at assembly, in-process sub-agents in `run_child_turn`) — a

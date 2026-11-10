@@ -36,9 +36,9 @@ Tauri App (desktop/)
 
 ## vendor 管线与去品牌
 
-`desktop/scripts/vendor_client.py` 从上游 checkout（默认
-`/Users/camile/Work/TypeScript/deepseek-harness`，可用 `--upstream` 或
-`CODESMITH_DESKTOP_UPSTREAM` 覆盖）拷贝已构建的客户端闭包，依次应用：
+`desktop/scripts/vendor_client.py` 从本地上游 checkout（经 `--upstream` 或
+`CODESMITH_DESKTOP_UPSTREAM` 环境变量定位）拷贝已构建的客户端闭包，
+依次应用：
 
 1. **VENDOR_PATCHES**——精确字符串的产品文案补丁（上游字符串消失即
    fail-loud）。

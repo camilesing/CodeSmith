@@ -784,7 +784,7 @@ pub struct PopulateReport {
     /// extension/mod with its terminal status. Failures keep the original
     /// error string; `failed_audit_lines` is the shared diagnostic format.
     pub audit: Vec<StartupAuditEntry>,
-    /// The in-flight-turn drain a RELOAD performed before clearing (DSH
+    /// The in-flight-turn drain a RELOAD performed before clearing (general-agent
     /// structural ownership, `turn_lease`). `None` on startup populate —
     /// a fresh runtime has nothing in flight to drain.
     pub drain: Option<codesmith_agent_runtime::turn_lease::DrainOutcome>,
@@ -1293,7 +1293,7 @@ fn populate_extension_runtime(
     report
 }
 
-/// The reason a reload drain writes onto every lease it cancels (the DSH
+/// The reason a reload drain writes onto every lease it cancels (the general-agent
 /// `disposed` analog) — the stopped sub-agent surfaces it as its progress
 /// line.
 pub const EXTENSION_RELOAD_DRAIN_REASON: &str = "extension reload";
@@ -1307,7 +1307,7 @@ pub const RELOAD_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// §F2b T7 — live reload: re-discover + re-load + re-bind on the **shared**
 /// runner `Arc` (every holder — `App.extension_runner` + the Engine's per-turn
 /// `HostAgentExecutor` clone — sees the update, since it's the same `Arc`).
-/// First drains the runner's in-flight sub-agent turns (DSH structural
+/// First drains the runner's in-flight sub-agent turns (general-agent structural
 /// ownership; see below), then clears handlers so `bind_core`'s append-drain
 /// doesn't duplicate, + bumps generation so any previously-captured
 /// `ExtensionApi`/`ExtensionContext` reads stale (spec §7.3). Called by
@@ -1326,7 +1326,7 @@ pub fn reload_extension_runtime(
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
     drain_timeout: std::time::Duration,
 ) -> PopulateReport {
-    // Structural ownership (DSH), before anything is cleared: cancel the
+    // Structural ownership (general agent), before anything is cleared: cancel the
     // in-flight sub-agent turns assembled under this runner — reason
     // latched, deepest spawn depth first — and wait a bounded time for
     // them to release. Depth 0 (the main turn) is never selected: from

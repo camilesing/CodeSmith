@@ -34,11 +34,11 @@ FRAMEWORK = {
     "codesmith-config",  # config schema + precedence; framework needs it
     "codesmith-secrets",  # secret-store facade; config and engine need it
     "codesmith-extensions",  # extension runtime: loading, dispatch, reload
-    "codesmith-session",  # session data plane: store, journal, zones (DSH core/session)
-    "codesmith-sandbox",  # execution-policy and sandbox plane (DSH sandbox/*)
-    "codesmith-context",  # session context plane: project docs, memory, trust (DSH context/*)
-    "codesmith-mcp-client",  # MCP client pool + OAuth (DSH mcp/*; codesmith-mcp is the server side)
-    "codesmith-prompts",  # system-prompt assembly: base, modes, skills, prefix-cache (DSH system-prompt)
+    "codesmith-session",  # session data plane: store, journal, zones (general-agent core/session)
+    "codesmith-sandbox",  # execution-policy and sandbox plane (general-agent sandbox/*)
+    "codesmith-context",  # session context plane: project docs, memory, trust (general-agent context/*)
+    "codesmith-mcp-client",  # MCP client pool + OAuth (general-agent mcp/*; codesmith-mcp is the server side)
+    "codesmith-prompts",  # system-prompt assembly: base, modes, skills, prefix-cache (general-agent system-prompt)
     "codesmith-agent-runtime",  # the kernel: one turn loop, engine, compaction
 }
 

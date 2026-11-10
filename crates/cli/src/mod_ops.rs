@@ -632,7 +632,7 @@ pub fn reload_mods(
         runner.generation(),
         report.loaded_mods
     );
-    // Structural ownership (DSH): the reload drained in-flight sub-agents
+    // Structural ownership (general agent): the reload drained in-flight sub-agents
     // first — say so, so a cancelled child is never a surprise.
     if let Some(drain) = &report.drain {
         if !drain.drained.is_empty() {

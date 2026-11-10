@@ -1,5 +1,5 @@
 //! In-flight turn leases — structural ownership of running turns
-//! (DSH alignment, iteration A).
+//! (general-agent alignment, iteration A).
 //!
 //! Every running turn holds a [`TurnLease`] for its lifetime: the main
 //! turn acquires one at assembly in
@@ -15,14 +15,14 @@
 //! - **Reload drain** (`crates/cli/src/core/engine.rs`:
 //!   `reload_extension_runtime`): before the two-phase dylib unload,
 //!   cancel the in-flight sub-agent turns of the runtime being reloaded —
-//!   reason-tagged (DSH `disposed`), deepest spawn depth first — and wait
+//!   reason-tagged (the general agent's `disposed`), deepest spawn depth first — and wait
 //!   a bounded time for them to release ([`TurnLeaseRegistry::drain`]).
 //!   Depth 0 is never selected: from the REPL no main turn is in flight,
 //!   and from the `manage_mods` tool the main turn is the initiator, so
-//!   draining it would be a self-wait (the DSH self-lineage exclusion).
+//!   draining it would be a self-wait (the general-agent self-lineage exclusion).
 //! - **Executor replacement guard**
 //!   (`TurnExecutorRegistry::register`):
-//!   an id with in-flight leases cannot be replaced (DSH `setFactory`
+//!   an id with in-flight leases cannot be replaced (the general agent's `setFactory`
 //!   conflict semantics); the error names the count.
 //! - **dlclose safety net** (engine op-loop top): `drop_pending` is
 //!   deferred while a lease assembled under a *retired* generation may
@@ -164,7 +164,7 @@ impl TurnLeaseRegistry {
     /// Read-only census of the leases held on `executor`, per spawn depth:
     /// `(depth, count)` pairs, depth ascending — depth 0 is a main turn,
     /// depth ≥ 1 a sub-agent. Empty when nothing is in flight. Operator
-    /// observability (DSH D1), never a decision input.
+    /// observability (general-agent D1), never a decision input.
     #[must_use]
     pub fn in_flight_by_depth(&self, executor: &str) -> Vec<(u32, usize)> {
         let mut counts: Vec<(u32, usize)> = Vec::new();

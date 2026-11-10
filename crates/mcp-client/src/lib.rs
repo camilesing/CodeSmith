@@ -1,4 +1,4 @@
-//! MCP client pool — the DSH `mcp/*` counterpart, split out of
+//! MCP client pool — the general agent's `mcp/*` counterpart, split out of
 //! `codesmith-agent-runtime` in round 9. (`codesmith-mcp`, the pre-existing
 //! `crates/mcp`, is the *server* side — stdio server + config types — and is
 //! unchanged.)

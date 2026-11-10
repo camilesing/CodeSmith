@@ -38,9 +38,9 @@ Tauri App (desktop/)
 
 ## Vendor pipeline and rebranding
 
-`desktop/scripts/vendor_client.py` copies the built client closure from an
-upstream checkout (default `/Users/camile/Work/TypeScript/deepseek-harness`,
-override with `--upstream` or `CODESMITH_DESKTOP_UPSTREAM`) and then applies,
+`desktop/scripts/vendor_client.py` copies the built client closure from a
+local upstream checkout (located via `--upstream` or the
+`CODESMITH_DESKTOP_UPSTREAM` environment variable) and then applies,
 in order:
 
 1. **VENDOR_PATCHES** — exact-string product-copy patches (fail loud if the

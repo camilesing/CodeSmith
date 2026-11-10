@@ -33,7 +33,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Providers | alias only (`register_provider`) | — | ✓ full `ProviderFactory` | a script cannot implement `LlmClient` (no async/net) |
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
-| Turn loop (every agent) | ✓ `register_loop` (drive, via the `rhai` executor) | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (`builtin`, or `"rhai"` to run a mod's loop script) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with DSH `next()` (every turn — a sub-agent composes the chain at its agent-type scope); a script loop owns only the loop SHAPE — its capability calls (`llm_request`, `run_tools`) execute the host's step services (see "Writing a loop script") |
+| Turn loop (every agent) | ✓ `register_loop` (drive, via the `rhai` executor) | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (`builtin`, or `"rhai"` to run a mod's loop script) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with the general agent's `next()` (every turn — a sub-agent composes the chain at its agent-type scope); a script loop owns only the loop SHAPE — its capability calls (`llm_request`, `run_tools`) execute the host's step services (see "Writing a loop script") |
 | Compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries; compaction *knobs* are policy, the algorithm is not) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
@@ -180,27 +180,26 @@ events (`session-*`, `agent-settled`, `tools-change`) stay main-turn-only.
 `tools-change` fires at the turn boundary when the compiled model-visible catalog changed since the previous main turn (mode switch, mod reload, selection change). The first turn establishes the baseline silently; sub-agent toolsets never trigger it, and there is no API to read the current catalog — the event carries the diff only. `/tools` renders the current baseline grouped by origin (builtin / plugin / extension / mcp).
 
 Dispatch modes are part of each event's contract (`ExtensionEventKind::dispatch_mode`,
-checked by a contract test) — three states named after the DSH (deepseek-harness)
-model: **waterfall**, **serial**, **emit**:
+checked by a contract test) — three states named after the general-agent model: **waterfall**, **serial**, **emit**:
 
 - **waterfall**: `input`, `before-agent-start`, `before-provider-request`, `tool-result` — each transform folds in, the next handler sees it, the final field applies
 - **waterfall + deny**: `tool-call` — rewrite the call's `input` (the rewritten input is what approval gates and what runs, and it is the recorded input) or `block(reason)` to deny (monotonic — no later handler can flip it); `provider-request-error` — rewrite the retry `plan` or `block(reason)` to give up
 - **serial**: `session-before-switch`, `session-before-fork`, `session-before-compact`, `turn-stopping` (inverted: `cancel(reason)` continues the turn — the note steers it)
 - **emit** (outcomes advisory): everything else, including `assistant-stream` (fires per text delta — keep handlers cheap) and `tools-change` (catalog diff at the turn-dispatch chokepoint)
 
-#### `on_event` — the DSH-aligned listener/veto form
+#### `on_event` — the general-agent-aligned listener/veto form
 
 `on_event("<event>", |e, ctx| { ... })` takes the same callback shape as
 `on` (same payloads, same optional `ctx`, same control values) but accepts
-only **emit** and **serial** events — the DSH-portable subset. A waterfall
+only **emit** and **serial** events — the general-agent-portable subset. A waterfall
 event (`input`, `before-agent-start`, `before-provider-request`,
 `tool-result`, `tool-call`, `provider-request-error`) fails the mod's
 **load** with an error naming the kind: its transform chain belongs to
 `on()`, its deny floor to `register_guard`. At emit kinds every return
 value is advisory; at serial kinds `cancel(reason)` is the veto. Use
 `on_event` when a mod only listens or vetoes — such a mod maps 1:1 onto
-DSH's emit/serial model; use `on()` for the full CodeSmith surface
-(waterfall transforms included — a deliberate superset beyond the DSH
+the general agent's emit/serial model; use `on()` for the full CodeSmith surface
+(waterfall transforms included — a deliberate superset beyond the general-agent
 script surface).
 
 Scope: `on_event` registrations are global-scope, script-origin — a
@@ -254,7 +253,7 @@ Transform mutable fields (one handler's rewrite is immediately visible to the ne
 | `register_guard(callback)` | Register a deny-only tool-call guard (see below) |
 | `replace_tool(spec, callback)` | Take over a registered tool's execution (see below) |
 | `delegate(input?)` | Replacement-callback control: run the original implementation — `()` passes the input verbatim, a map rewrites it |
-| `on_event(kind, callback)` | Register a DSH-aligned hook — emit/serial events only (waterfall kinds fail the load; see above) |
+| `on_event(kind, callback)` | Register a general-agent-aligned hook — emit/serial events only (waterfall kinds fail the load; see above) |
 | `register_message_projection(key, init, fold)` | Register a session-log fold the host maintains (see below) |
 | `projection_state(key)` | Read this mod's projection state (inside hooks/tools) |
 | `register_policy(kind, config)` | Override a host-mechanism policy (see below) |
@@ -442,7 +441,7 @@ so no approval path can flip it), gate sub-agent tool calls too (a child's
 turn dispatches `tool-call` at its agent-type scope and script-origin
 handlers ride along), and reload clears the generation's guards.
 
-### Replacing a built-in tool (DSH pattern d)
+### Replacing a built-in tool (general-agent pattern d)
 
 ```rhai
 replace_tool(#{

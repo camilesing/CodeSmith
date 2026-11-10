@@ -1,4 +1,4 @@
-//! Sub-agent turns on the one loop — the child-turn seam (DSH alignment,
+//! Sub-agent turns on the one loop — the child-turn seam (general-agent alignment,
 //! iteration B: one factory makes every agent).
 //!
 //! The host (the CLI's spawn path) knows what a child is *for*: its
@@ -21,7 +21,7 @@
 //!   claim verifier, prefix-stability observation and the session journal
 //!   (sub-agents keep no journal; the host stores the final transcript);
 //! - an approval prompt or `request_user_input`: a child never asks through
-//!   the loop (DSH: delegated approval is "never"). Its tool surface
+//!   the loop (general agent: delegated approval is "never"). Its tool surface
 //!   carries the delegation policy and asks out-of-workspace path questions
 //!   through the parent's approval router itself;
 //! - sub-agent completion delivery or the blocking hold: only the main
@@ -241,7 +241,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
             spent_ms: std::sync::atomic::AtomicU64::new(0),
         }),
     });
-    // Composition parity (DSH): a sub-agent's run is wrapped by the
+    // Composition parity (general agent): a sub-agent's run is wrapped by the
     // around-turn chain at its scope — the same `next()` composition the
     // main turn gets, minus dylib-origin wrappers (5b). Snapshotted at this
     // turn's assembly, like the engine's.
@@ -597,7 +597,7 @@ mod tests {
     }
 
     /// The child turn is assembled by the factory the configured id names
-    /// (DSH: one factory makes every agent), in the child shape, and runs
+    /// (general agent: one factory makes every agent), in the child shape, and runs
     /// the shared streaming loop with the child's own model route.
     #[tokio::test]
     async fn child_turn_is_built_by_the_configured_factory() {
@@ -938,7 +938,7 @@ mod tests {
         }
     }
 
-    /// The child-scope coverage table (DSH plan iteration C): which event
+    /// The child-scope coverage table (general-agent plan iteration C): which event
     /// kinds a sub-agent turn dispatches at its agent-type scope, pinned
     /// over a representative run (a follow-up input, a tool call, a final
     /// text answer). Every kind is listed — adding a kind without placing

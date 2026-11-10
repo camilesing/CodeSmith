@@ -1,4 +1,4 @@
-//! `ReplacementToolSpec` — mounts an extension's [`ToolReplacement`] (DSH
+//! `ReplacementToolSpec` — mounts an extension's [`ToolReplacement`] (general-agent
 //! pattern d: wrap or substitute an existing tool's execution) onto the
 //! host's [`ToolSpec`] contract, and the per-turn apply helper the main
 //! turn and sub-agent registries both call after their extension-tool

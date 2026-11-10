@@ -207,7 +207,7 @@ pub fn unanswered_tool_use_ids(messages: &[Message]) -> Vec<String> {
 /// Whether every `tool_use` in `messages` is answered by a `tool_result`
 /// and no `tool_result` orphans a missing call — the pairing invariant a
 /// provider-acceptable transcript (and every compaction cut) must hold
-/// (dsh `toolPairingBalanced` counterpart). Compaction paths enforce this
+/// (the general agent's `toolPairingBalanced` counterpart). Compaction paths enforce this
 /// via `enforce_tool_call_pairs`; the session-load repair enforces it by
 /// appending `TOOL_OUTCOME_UNKNOWN` terminators. This predicate is the
 /// shared post-condition both are checked against.

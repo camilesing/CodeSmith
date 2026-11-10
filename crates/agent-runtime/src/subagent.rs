@@ -39,7 +39,7 @@
 //!
 //! # Decision record: model-writable orchestration
 //!
-//! Re-opened by founder decision (2026-10-26), with deepseek-harness
+//! Re-opened by founder decision (2026-10-26), with the general agent's
 //! `workflow-ptc` as the reference shape. The `workflow` tool lets the model
 //! write a Python orchestration script executed on a one-shot RLM kernel
 //! (`agent-runtime/src/workflow.rs` seam; provider in

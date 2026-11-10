@@ -704,7 +704,7 @@ impl Engine {
             // loop waiting on `rx_op` IS the idle state: turns execute
             // inline in the match below), a sub-agent completion parked in
             // the parent-completion channel synthesizes the next turn so
-            // the executor's pre-request drain delivers it — the DSH
+            // the executor's pre-request drain delivers it — the general-agent
             // inbox-wake equivalent, without a second queue (see
             // `engine::idle_wake`). Real ops always win the race
             // (`biased`), and a synthesized turn never queues ahead of a
@@ -1710,7 +1710,7 @@ impl Engine {
                     .as_deref(),
             );
         }
-        // Kernel composition (DSH model): snapshot this turn's kernel
+        // Kernel composition (general-agent model): snapshot this turn's kernel
         // services into `TurnDeps`, then resolve the configured factory
         // (`turn_executor`, default "builtin") from the process-shared
         // registry and build the main turn through the seam. The builtin
@@ -1801,7 +1801,7 @@ impl Engine {
                 };
             }
         };
-        // Structural ownership (DSH, `turn_lease`): hold this turn's
+        // Structural ownership (general agent, `turn_lease`): hold this turn's
         // in-flight lease for the executor's lifetime — the reload drain,
         // the executor-replacement guard and the dlclose safety net all
         // read the registry. Taken after the factory resolved (a

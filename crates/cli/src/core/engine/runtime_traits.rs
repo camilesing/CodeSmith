@@ -596,7 +596,7 @@ impl HostServices for super::EngineHost {
             );
         }
 
-        // Mod-declared replacements (DSH pattern d) — wrap each target's
+        // Mod-declared replacements (general-agent pattern d) — wrap each target's
         // incumbent after the extension-tool mount (a replacement may also
         // wrap an extension tool of the same name). Applied before the
         // capability removal so a disabled name still prunes a replaced

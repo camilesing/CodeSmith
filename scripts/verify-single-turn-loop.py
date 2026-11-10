@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single turn-loop gate (DSH alignment, iteration B — "one loop drives every agent").
+"""Single turn-loop gate (general-agent alignment, iteration B — "one loop drives every agent").
 
 Every agent turn — the main turn and every in-process sub-agent turn — runs
 on the turn executor resolved from the `TurnExecutorRegistry`

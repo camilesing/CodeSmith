@@ -74,7 +74,7 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   （`inventory`）、安装的 Rust dylib（`/extension install` + reload）。
   新的可插拔行为落在其中一层上——逻辑/数据用 Rhai，异步/IO 用 Rust
   扩展——而不是新开一个编译期接线点。注册面是作用域感知的
-  （`Scope::Global | Scope::AgentType(id)`，DSH 对齐）：scoped 工具在该
+  （`Scope::Global | Scope::AgentType(id)`，通用 Agent 对齐）：scoped 工具在该
   agent 类型的目录视图里遮蔽同名 global 工具
   （`ExtensionRunner::bound_tools_scoped`），deny-only 的
   `restrict_tools` 名单按视图剪掉扩展层的 global 工具，主轮目录
@@ -82,11 +82,11 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   解析自己的视图（5b：script/compiled-in 工具可挂载进子代理，dylib 工具
   保持仅主轮——detached 后台子代理可能活得比一次 reload 的两阶段 dylib
   drop 更久）。唯一的 `BASE_PROMPT` 与子代理工具注册表的内建表面是
-  契约声明的核心，不做插件化；一个 turn 循环驱动所有 agent（DSH 内核
+  契约声明的核心，不做插件化；一个 turn 循环驱动所有 agent（通用 Agent 内核
   组合模型）——引擎从进程共享 `TurnExecutorRegistry`
   （`engine/executor_composition.rs`）解析按配置选择的 factory
   （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目
-  落地，并以 `AroundTurnHandler` 链（`register_around_turn`，DSH
+  落地，并以 `AroundTurnHandler` 链（`register_around_turn`，通用 Agent
   `next()`，Rust 扩展）包裹主 turn 与每个子代理 turn（子代理在其
   agent-type scope 上组合该链，dylib 包装被跳过）。每个进程内子代理 turn 经
   `engine/child_turn.rs` 走同一个 factory：CLI 的 spawn 路径交出
@@ -97,7 +97,7 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   与 around-tool 包装在此被跳过）。子代理与主 turn 一样流式 + idle 看门狗；
   委托策略（白名单、按角色审批、终端接管拒绝、经父级 router 的路径提问）
   落在子代理的工具面上（`DelegatedTool`），而不是循环里（逐表面地图见
-  MODS_cn.md "该用哪一层"）。结构性所有权（DSH，
+  MODS_cn.md "该用哪一层"）。结构性所有权（通用 Agent，
   `agent-runtime/src/turn_lease.rs`）：每个运行中的 turn 都持有一份
   `TurnLease`（键：agent id + 扩展代次 + 执行器 id，按 runner 作用域）
   ——主 turn 在装配时持有、每个进程内子代理 turn 在 `run_child_turn` 中
@@ -211,11 +211,11 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
 - **`crates/providers`** - 位于 Cargo feature 之后的可插拔 LLM 客户端实现（openai-compat、anthropic、mock；rig 适配器）。
 - **`crates/release`** - 发布发现 / 版本比较。
 - **`crates/secrets`** - 用于 API 密钥存储的操作系统密钥环集成。
-- **`crates/sandbox`** - 执行策略与沙箱面（对应 DSH `sandbox/*`，第九轮从 `agent-runtime` 拆出）：可移植的策略/后端类型与各平台执行器（Seatbelt、Landlock、bwrap、Windows 桩）、命令安全分析、execpolicy 模式语言、网络策略与不可信内容消毒。以 `agent_runtime::{sandbox, command_safety, execpolicy, bash_ast, network_policy, sanitization, shell_dispatcher}` 再导出。
-- **`crates/prompts`** - 系统提示词组装（对应 DSH `core/system-prompt`，第九轮从 `agent-runtime` 拆出）：`BASE_PROMPT` 与全部提示词资产（模式、人格、审批、风格）、带稳定性/缓存注记的提示词分段注册、`/inspect` 提示词渲染、`PrefixStabilityManager` 漂移检查、默认活动工具分类，以及技能发现 + 模型可见目录 + 内建系统技能。以 `agent_runtime::{prompts, prompt_runtime, prompt_sources, prompt_inspect, prefix_cache, skills}` 再导出。工具输出溢写（`truncate`）移至 `codesmith_session::spillover`；`AppMode`/`ApprovalMode` 移至 `codesmith_agent::mode`。
-- **`crates/mcp-client`** - MCP 客户端池（对应 DSH `mcp/*`，第九轮从 `agent-runtime` 拆出）：stdio / Streamable-HTTP / SSE / WebSocket 传输上的连接池、工具发现、按调用超时、重连语义与 HTTP 服务器的 OAuth 设备流。以 `agent_runtime::{mcp, mcp_oauth}` 再导出。（`crates/mcp`——`codesmith-mcp`——是服务端，未改动。）
-- **`crates/context`** - 会话上下文面（对应 DSH `context/*`，第九轮从 `agent-runtime` 拆出）：AGENTS/CLAUDE.md 项目文档发现、渲染进 `<turn_meta>` 的工作集、工作区信任与引导状态、用户记忆（`MEMORY.md`）、KoD 知识与按代理记忆目录。以历史路径 `agent_runtime::{project_context, claudemd, working_set, workspace_trust, memory, knowledge, agent_memory, onboarding, settings_file, …}` 再导出。
-- **`crates/session`** - 会话数据面（对应 DSH `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。消费者直接从本 crate 导入（历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 与 CLI 的 `session_manager` 已随拆分移除）。
+- **`crates/sandbox`** - 执行策略与沙箱面（对应 通用 Agent `sandbox/*`，第九轮从 `agent-runtime` 拆出）：可移植的策略/后端类型与各平台执行器（Seatbelt、Landlock、bwrap、Windows 桩）、命令安全分析、execpolicy 模式语言、网络策略与不可信内容消毒。以 `agent_runtime::{sandbox, command_safety, execpolicy, bash_ast, network_policy, sanitization, shell_dispatcher}` 再导出。
+- **`crates/prompts`** - 系统提示词组装（对应 通用 Agent `core/system-prompt`，第九轮从 `agent-runtime` 拆出）：`BASE_PROMPT` 与全部提示词资产（模式、人格、审批、风格）、带稳定性/缓存注记的提示词分段注册、`/inspect` 提示词渲染、`PrefixStabilityManager` 漂移检查、默认活动工具分类，以及技能发现 + 模型可见目录 + 内建系统技能。以 `agent_runtime::{prompts, prompt_runtime, prompt_sources, prompt_inspect, prefix_cache, skills}` 再导出。工具输出溢写（`truncate`）移至 `codesmith_session::spillover`；`AppMode`/`ApprovalMode` 移至 `codesmith_agent::mode`。
+- **`crates/mcp-client`** - MCP 客户端池（对应 通用 Agent `mcp/*`，第九轮从 `agent-runtime` 拆出）：stdio / Streamable-HTTP / SSE / WebSocket 传输上的连接池、工具发现、按调用超时、重连语义与 HTTP 服务器的 OAuth 设备流。以 `agent_runtime::{mcp, mcp_oauth}` 再导出。（`crates/mcp`——`codesmith-mcp`——是服务端，未改动。）
+- **`crates/context`** - 会话上下文面（对应 通用 Agent `context/*`，第九轮从 `agent-runtime` 拆出）：AGENTS/CLAUDE.md 项目文档发现、渲染进 `<turn_meta>` 的工作集、工作区信任与引导状态、用户记忆（`MEMORY.md`）、KoD 知识与按代理记忆目录。以历史路径 `agent_runtime::{project_context, claudemd, working_set, workspace_trust, memory, knowledge, agent_memory, onboarding, settings_file, …}` 再导出。
+- **`crates/session`** - 会话数据面（对应 通用 Agent `core/session`，第九轮从 `agent-runtime` 拆出）：`AppendLog` / 三区请求契约、只追加的会话日志、会话存储及其格式治理、产物登记与事实账本。消费者直接从本 crate 导入（历史路径 `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` 与 CLI 的 `session_manager` 已随拆分移除）。
 - **`crates/state`** - SQLite 线程/会话持久化层。
 - **`crates/tool-impls`** - 具体的模型可见工具实现。
 - **`crates/tools`** - 共享工具调用原语，包括 CLI 运行时使用的工具结果/错误/能力类型。

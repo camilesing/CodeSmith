@@ -6928,7 +6928,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
     );
 }
 
-// === Structural ownership (DSH, iteration A) — reload drain ===============
+// === Structural ownership (general agent, iteration A) — reload drain ===============
 //
 // A reload drains the runner's in-flight sub-agent turns before the
 // two-phase dylib unload: reason-tagged cancel, deepest first, bounded

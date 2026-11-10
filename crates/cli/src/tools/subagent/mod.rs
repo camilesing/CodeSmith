@@ -7105,7 +7105,7 @@ impl SubAgentToolRegistry {
                 runner,
                 &codesmith_agent::extension::Scope::AgentType(agent_type.as_str().to_string()),
             );
-            // Mod replacements (DSH pattern d) — the sub-agent-safe view
+            // Mod replacements (general-agent pattern d) — the sub-agent-safe view
             // (dylib-origin excluded), applied after the ext-tool mount so a
             // replacement may also wrap an extension tool, and before the
             // capability removal / read-only narrowing so those filters
@@ -7304,7 +7304,7 @@ impl SubAgentToolRegistry {
     }
 }
 
-/// The trust envelope a parent hands its child (DSH: delegation narrows the
+/// The trust envelope a parent hands its child (general agent: delegation narrows the
 /// envelope, never the loop). The shared turn loop never asks the user on a
 /// child's behalf — every [`DelegatedTool`] reports `Auto` — so this gate
 /// decides instead, before the call runs: the child's allowlist, the

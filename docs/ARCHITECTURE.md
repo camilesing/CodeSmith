@@ -91,7 +91,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   (`/extension install` + reload). New pluggable behavior lands on one
   of these tiers — logic/data in Rhai, async/IO in a Rust extension —
   rather than a fresh compile-time wiring site. The registration surface
-  is scope-aware (`Scope::Global | Scope::AgentType(id)`, DSH alignment):
+  is scope-aware (`Scope::Global | Scope::AgentType(id)`, general-agent alignment):
   a scoped tool shadows its global namesake in that agent type's catalog
   view (`ExtensionRunner::bound_tools_scoped`), a deny-only
   `restrict_tools` list prunes the extension layer's global tools per
@@ -101,14 +101,14 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   tools stay main-turn-only — a detached background child can outlive a
   reload's two-phase dylib drop). The sole `BASE_PROMPT` and sub-agent tool
   registries' built-in surface are core by contract, not plugins; one
-  turn loop drives every agent (DSH kernel-composition model) — the
+  turn loop drives every agent (general-agent kernel-composition model) — the
   engine resolves a config-selected factory (`turn_executor`, default
   `builtin`; `"rhai"` runs a mod's `register_loop` script over the host's
   step services, `engine/rhai_executor.rs`) from the process-shared
   `TurnExecutorRegistry` (`engine/executor_composition.rs`), with
   alternates as crate-compiled registry entries, and wraps every turn with
   the `AroundTurnHandler`
-  chain (`register_around_turn`, DSH `next()`, Rust extensions; a child
+  chain (`register_around_turn`, the general agent's `next()`, Rust extensions; a child
   composes it at its agent-type scope, dylib wrappers excluded). Every
   in-process sub-agent turn rides the same factory through
   `engine/child_turn.rs`: the CLI spawn path hands over a `ChildTurnSpec`
@@ -123,7 +123,7 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   path questions through the parent's router) rides the child's tool
   surface (`DelegatedTool`), not the loop (per-surface map: MODS.md
   "Which tier when"). Structural ownership
-  (DSH, `agent-runtime/src/turn_lease.rs`): every running turn holds a
+  (general agent, `agent-runtime/src/turn_lease.rs`): every running turn holds a
   `TurnLease` (key: agent id + extension generation + executor id,
   runner-scoped) — the main turn at assembly, each in-process sub-agent
   turn in `run_child_turn` — so a reload drains the runtime's in-flight sub-agents
@@ -236,10 +236,10 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
 - **`crates/providers`** - Pluggable LLM client implementations (openai-compat, anthropic, mock; rig adapter) behind Cargo features.
 - **`crates/release`** - Release discovery / version comparison.
 - **`crates/secrets`** - OS keyring integration for API key storage.
-- **`crates/prompts`** - System-prompt assembly (DSH `core/system-prompt` counterpart, split out of `agent-runtime` in round 9): `BASE_PROMPT` and all prompt assets (modes, personalities, approvals, styles), prompt-section registration with stability/cache annotations, the `/inspect` prompt render, the `PrefixStabilityManager` drift check, the default active-tool taxonomy, and skill discovery + the model-facing catalogue + built-in system skills. Re-exported as `agent_runtime::{prompts, prompt_runtime, prompt_sources, prompt_inspect, prefix_cache, skills}`. The tool-output spillover (`truncate`) moved to `codesmith_session::spillover`; `AppMode`/`ApprovalMode` to `codesmith_agent::mode`.
-- **`crates/mcp-client`** - MCP client pool (DSH `mcp/*` counterpart, split out of `agent-runtime` in round 9): the connection pool over stdio / Streamable-HTTP / SSE / WebSocket transports, tool discovery, per-call timeouts, reconnect semantics, and the OAuth device flow for HTTP servers. Re-exported as `agent_runtime::{mcp, mcp_oauth}`. (`crates/mcp` — `codesmith-mcp` — is the server side and is unchanged.)
-- **`crates/context`** - Session context plane (DSH `context/*` counterpart, split out of `agent-runtime` in round 9): AGENTS/CLAUDE.md project-doc discovery, the working set rendered into `<turn_meta>`, workspace trust and onboarding state, user memory (`MEMORY.md`), knowledge-on-demand, and per-agent memory directories. Re-exported under the historical `agent_runtime::{project_context, claudemd, working_set, workspace_trust, memory, knowledge, agent_memory, onboarding, settings_file, …}` paths.
-- **`crates/session`** - Session data plane (DSH `core/session` counterpart, split out of `agent-runtime` in round 9): the `AppendLog` / three-zone request contract, the append-only session journal, the saved-session store and its format governance, the artifact registry and fact ledger. Consumers import it directly (the historical `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` and CLI `session_manager` paths were removed with the split).
+- **`crates/prompts`** - System-prompt assembly (the general agent's `core/system-prompt` counterpart, split out of `agent-runtime` in round 9): `BASE_PROMPT` and all prompt assets (modes, personalities, approvals, styles), prompt-section registration with stability/cache annotations, the `/inspect` prompt render, the `PrefixStabilityManager` drift check, the default active-tool taxonomy, and skill discovery + the model-facing catalogue + built-in system skills. Re-exported as `agent_runtime::{prompts, prompt_runtime, prompt_sources, prompt_inspect, prefix_cache, skills}`. The tool-output spillover (`truncate`) moved to `codesmith_session::spillover`; `AppMode`/`ApprovalMode` to `codesmith_agent::mode`.
+- **`crates/mcp-client`** - MCP client pool (the general agent's `mcp/*` counterpart, split out of `agent-runtime` in round 9): the connection pool over stdio / Streamable-HTTP / SSE / WebSocket transports, tool discovery, per-call timeouts, reconnect semantics, and the OAuth device flow for HTTP servers. Re-exported as `agent_runtime::{mcp, mcp_oauth}`. (`crates/mcp` — `codesmith-mcp` — is the server side and is unchanged.)
+- **`crates/context`** - Session context plane (the general agent's `context/*` counterpart, split out of `agent-runtime` in round 9): AGENTS/CLAUDE.md project-doc discovery, the working set rendered into `<turn_meta>`, workspace trust and onboarding state, user memory (`MEMORY.md`), knowledge-on-demand, and per-agent memory directories. Re-exported under the historical `agent_runtime::{project_context, claudemd, working_set, workspace_trust, memory, knowledge, agent_memory, onboarding, settings_file, …}` paths.
+- **`crates/session`** - Session data plane (the general agent's `core/session` counterpart, split out of `agent-runtime` in round 9): the `AppendLog` / three-zone request contract, the append-only session journal, the saved-session store and its format governance, the artifact registry and fact ledger. Consumers import it directly (the historical `agent_runtime::{session_store, session_journal, prompt_zones, artifacts}` and CLI `session_manager` paths were removed with the split).
 - **`crates/state`** - SQLite thread/session persistence layer.
 - **`crates/tool-impls`** - Concrete model-visible tool implementations.
 - **`crates/tools`** - Shared tool invocation primitives, including tool result/error/capability types used by the CLI runtime.

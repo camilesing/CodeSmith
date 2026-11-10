@@ -1,7 +1,7 @@
 //! `codesmith bench` — three user-path performance benchmarks with dry-run
 //! budgets (P1-3).
 //!
-//! Paths (one benchmark each, deliberately not the full DSH eight):
+//! Paths (one benchmark each, deliberately not the general agent's full eight):
 //!
 //! 1. **session-open** — `FileSessionStore::load_session` over a long
 //!    (600-message) saved session. Migration-shape note: the session
@@ -19,7 +19,7 @@
 //!    recorded informationally as `session-search-cold`).
 //!
 //! Budgets are **source constants** — deliberately not env-overridable
-//! (same discipline as DSH's benchmark gates): a budget someone can dial
+//! (same discipline as the general agent's benchmark gates): a budget someone can dial
 //! out from under CI is not a budget. Enforcement is **dry-run** for now:
 //! breaches are recorded in the report and printed, never non-zero-exit —
 //! turning them on requires the explicit approval step recorded in

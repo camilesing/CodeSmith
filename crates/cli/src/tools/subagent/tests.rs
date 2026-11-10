@@ -4279,7 +4279,7 @@ fn child_runtime_propagates_external_provider() {
     assert!(runtime.child_runtime().external_provider.is_some());
 }
 
-// === Structural ownership (DSH, iteration A) — sub-agent lease + drain ===
+// === Structural ownership (general agent, iteration A) — sub-agent lease + drain ===
 
 /// A client that never answers: the child parks in its per-step
 /// `create_message` race until its cancel token fires, which is exactly
@@ -4655,7 +4655,7 @@ async fn background_child_keeps_the_completion_contract() {
     );
 }
 
-/// The session's `turn_executor` selection applies to children (DSH plan
+/// The session's `turn_executor` selection applies to children (general-agent plan
 /// §6 decision 3): an id no factory is registered under fails the child
 /// loudly through the normal failure contract — never a silent fallback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

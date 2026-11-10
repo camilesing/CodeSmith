@@ -2092,7 +2092,7 @@ mod tool_pairing_balance_tests {
         assert!(tool_call_pairs_balanced(&repaired));
     }
 
-    /// Compaction cut-point property (dsh `toolPairingBalanced`
+    /// Compaction cut-point property (the general agent's `toolPairingBalanced`
     /// counterpart): after the planner pins its keep-set and
     /// `enforce_tool_call_pairs` fixes the pin boundaries, the retained
     /// slice must be pair-balanced — a cut may never strand a call or a
