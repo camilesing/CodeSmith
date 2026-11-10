@@ -103,12 +103,12 @@ impl HostState {
     }
 
     /// The desktop shell's settings home (`<codesmith home>/desktop`), where
-    /// the UI preference document lives.
+    /// the UI preference document lives. `CODESMITH_HOME` names the CodeSmith
+    /// root itself (`codesmith_config::codesmith_home` — the same rule the
+    /// attachment store root follows), not the parent `.codesmith` hangs
+    /// under, so it must not be joined again.
     pub fn settings_home(&self) -> PathBuf {
-        std::env::var("CODESMITH_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| self.cwd.clone()))
-            .join(".codesmith")
+        codesmith_config::codesmith_home().unwrap_or_else(|_| self.cwd.clone())
     }
 
     /// Push one increment frame to every open stream of `endpoint`. Sinks of
