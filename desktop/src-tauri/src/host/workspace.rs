@@ -241,6 +241,9 @@ async fn thread_sets(host: &HostState) -> Result<(Vec<String>, Vec<String>)> {
 /// runtime's live/archived sets, mutate the persisted pin set, echo the
 /// `pinned` increment to every open workspace follow.
 pub async fn pin_or_unpin(host: &HostState, pin: bool, args: &Value) -> Result<Value, OpError> {
+    // The workspace remote's single `request` parameter: the gateway packs
+    // its args as `{request: {…}}` (the shape every bridge reader unwraps).
+    let args = args.get("request").unwrap_or(args);
     let session_id = args
         .get("sessionId")
         .and_then(Value::as_str)
@@ -282,6 +285,7 @@ pub async fn pin_or_unpin(host: &HostState, pin: bool, args: &Value) -> Result<V
 /// updated workspace view, echoed as an `upsert` increment (the shape
 /// `session/create` already established).
 pub async fn insert_session_before(host: &HostState, args: &Value) -> Result<Value, OpError> {
+    let args = args.get("request").unwrap_or(args);
     let workspace_id = args
         .get("workspaceId")
         .and_then(Value::as_str)
