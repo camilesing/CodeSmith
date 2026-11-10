@@ -85,10 +85,12 @@ cargo tauri build --manifest-path desktop/src-tauri/Cargo.toml
 环境变量：`CODESMITH_DESKTOP_CODESMITH`（后端二进制）、
 `CODESMITH_DESKTOP_BRIDGE_PORT`（桥端口）、`CODESMITH_DESKTOP_APP`
 （CLI 从哪里拉起应用）。只起浏览器预览（`pnpm dev` 不起壳）时回退到
-内存 stub 传输，并显示可见的「离线演示模式」角标；stub 服务通用设置的
-`ui-settings-general`/`locale`/`ui-settings`/`permission` 命名空间（含
-内存写入）、权限 catalog、`session/events` 与空的 `@` 文件源，让这些页面
-在无壳时也能渲染。
+内存 stub 传输，并显示可见的「离线演示模式」角标。stub 服务全部设置命名
+空间——`ui-settings-general`、`locale`、`ui-settings`、`permission`、
+`ui-theme`、`ui-conversation`、`ui-chat`——按桥端的 schema 提供内存写入，
+所以开关、步进器和菜单选项都能生效，并在关闭设置后保留；权限 catalog 的
+标签跟随内存里的语言设置。此外还提供 `session/events` 与空的 `@` 文件源，
+让这些页面在无壳时也能渲染。
 
 测试：`cargo test --manifest-path desktop/src-tauri/Cargo.toml`——映射器
 （seq/revision 不变量、帧形状）、waterfall 映射、journal page 契约、流 mux

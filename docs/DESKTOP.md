@@ -93,10 +93,13 @@ Env knobs: `CODESMITH_DESKTOP_CODESMITH` (backend binary),
 `CODESMITH_DESKTOP_BRIDGE_PORT` (bridge port), `CODESMITH_DESKTOP_APP`
 (where the CLI launches the app from). The browser-only preview
 (`pnpm dev` without the shell) falls back to an offline stub transport with a
-visible 离线演示模式 badge; the stub serves the General settings namespaces
-(`ui-settings-general`, `locale`, `ui-settings`, `permission`, with in-memory
-writes), the permission catalog, `session/events`, and an empty `@` file
-source so those pages render without the shell.
+visible 离线演示模式 badge. The stub serves the settings namespaces —
+`ui-settings-general`, `locale`, `ui-settings`, `permission`, `ui-theme`,
+`ui-conversation`, `ui-chat` — with in-memory writes and the bridge's schemas,
+so toggles, steppers and menu pickers work and survive closing Settings. It
+also serves the permission catalog (labels follow the in-memory locale),
+`session/events`, and an empty `@` file source, so those pages render without
+the shell.
 
 Tests: `cargo test --manifest-path desktop/src-tauri/Cargo.toml` — the mapper
 (seq/revision invariants, frame shapes), the waterfall mappings, the journal

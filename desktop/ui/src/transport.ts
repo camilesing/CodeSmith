@@ -45,6 +45,15 @@ async function parked(signal: AbortSignal): Promise<void> {
 // Offline mirrors of the desktop bridge's General-settings namespaces. The
 // vendored pages validate a namespace against its schemastery envelope, so
 // the envelopes are the ones host::settings serves (same field ids).
+// The appearance, input-behavior and transcript-view namespaces (the
+// General/Settings rows the shell edits). The envelopes are byte-identical
+// to `host::settings`'s THEME_SCHEMA / CONVERSATION_SCHEMA / CHAT_SCHEMA —
+// the vendored pages validate a namespace against its schemastery envelope,
+// so the field ids and defaults must track those constants.
+const OFFLINE_THEME_SCHEMA = `{"uid":29,"refs":{"2":{"type":"const","meta":{"required":true},"value":"light"},"4":{"type":"const","meta":{"required":true},"value":"dark"},"6":{"type":"const","meta":{"required":true},"value":"system"},"7":{"type":"union","meta":{"default":"system"},"list":[2,4,6]},"12":{"type":"number","meta":{"step":1,"min":10,"max":22,"default":14}},"17":{"type":"number","meta":{"step":1,"min":10,"max":16,"default":11}},"22":{"type":"number","meta":{"step":1,"min":10,"max":20,"default":13}},"24":{"type":"string","meta":{"default":""}},"26":{"type":"string","meta":{"default":""}},"28":{"type":"string","meta":{"default":""}},"29":{"type":"object","meta":{"default":{}},"dict":{"preference":7,"fontSize":12,"codeFontSize":17,"terminalFontSize":22,"textFontFamily":24,"codeFontFamily":26,"terminalFontFamily":28}}}}`
+const OFFLINE_CONVERSATION_SCHEMA = `{"uid":27,"refs":{"23":{"type":"const","meta":{"required":true},"value":"queue"},"25":{"type":"const","meta":{"required":true},"value":"steer"},"26":{"type":"union","meta":{"default":"queue"},"list":[23,25]},"27":{"type":"object","meta":{"default":{}},"dict":{"busyEnter":26}}}}`
+const OFFLINE_CHAT_SCHEMA = `{"uid":68,"refs":{"32":{"type":"const","meta":{"required":true},"value":"completion"},"34":{"type":"const","meta":{"required":true},"value":"next-input"},"35":{"type":"union","meta":{"default":"completion"},"list":[32,34]},"38":{"type":"const","meta":{"required":true},"value":"all"},"40":{"type":"const","meta":{"required":true},"value":"final"},"41":{"type":"union","meta":{"default":"all"},"list":[38,40]},"44":{"type":"const","meta":{"required":true},"value":"sidebar"},"46":{"type":"const","meta":{"required":true},"value":"new-tab"},"47":{"type":"union","meta":{"default":"sidebar"},"list":[44,46]},"50":{"type":"const","meta":{"required":true},"value":"compact"},"52":{"type":"const","meta":{"required":true},"value":"detailed"},"53":{"type":"union","meta":{"default":"detailed"},"list":[50,52]},"56":{"type":"const","meta":{"required":true},"value":"compact"},"58":{"type":"const","meta":{"required":true},"value":"standard"},"60":{"type":"const","meta":{"required":true},"value":"detailed"},"62":{"type":"const","meta":{"required":true},"value":"verbose"},"64":{"type":"const","meta":{"required":true},"value":"normal"},"66":{"type":"const","meta":{"required":true},"value":"expanded"},"67":{"type":"union","meta":{"loose":true},"list":[56,58,60,62,64,66]},"68":{"type":"object","meta":{"default":{}},"dict":{"collapseTiming":35,"foldedReplies":41,"linkOpening":47,"performanceUsage":53,"transcriptView":67}}}}`
+
 const OFFLINE_SETTINGS_SCHEMAS: Record<string, unknown> = {
   'ui-settings-general': {
     uid: 2,
@@ -74,6 +83,11 @@ const OFFLINE_SETTINGS_SCHEMAS: Record<string, unknown> = {
       9: { type: 'object', meta: { default: {} }, dict: { defaultPreset: 8 } },
     },
   },
+  // Appearance, input behavior and transcript view: the shell-owned rows the
+  // Settings pages edit. Parsed from the same envelopes the bridge serves.
+  'ui-theme': JSON.parse(OFFLINE_THEME_SCHEMA),
+  'ui-conversation': JSON.parse(OFFLINE_CONVERSATION_SCHEMA),
+  'ui-chat': JSON.parse(OFFLINE_CHAT_SCHEMA),
 }
 
 const OFFLINE_SETTINGS: Record<string, { value: Record<string, unknown>; revision: number }> = {
@@ -83,6 +97,29 @@ const OFFLINE_SETTINGS: Record<string, { value: Record<string, unknown>; revisio
   locale: { value: {}, revision: 0 },
   'ui-settings': { value: { enabled: true }, revision: 0 },
   permission: { value: { defaultPreset: 'agent' }, revision: 0 },
+  'ui-theme': {
+    value: {
+      preference: 'system',
+      fontSize: 14,
+      codeFontSize: 11,
+      terminalFontSize: 13,
+      textFontFamily: '',
+      codeFontFamily: '',
+      terminalFontFamily: '',
+    },
+    revision: 0,
+  },
+  'ui-conversation': { value: { busyEnter: 'queue' }, revision: 0 },
+  'ui-chat': {
+    value: {
+      transcriptView: 'detailed',
+      collapseTiming: 'completion',
+      foldedReplies: 'all',
+      linkOpening: 'sidebar',
+      performanceUsage: 'detailed',
+    },
+    revision: 0,
+  },
 }
 
 function offlineSettingsView(ns: string): unknown {
@@ -91,7 +128,10 @@ function offlineSettingsView(ns: string): unknown {
     autoGenerate: true,
     ns,
     schema: OFFLINE_SETTINGS_SCHEMAS[ns],
-    value: state.value,
+    // The client freezes the views it receives (its stores are snapshot
+    // stores), so the preview hands out a COPY — a later write must never
+    // hit a frozen object owned by the page.
+    value: structuredClone(state.value),
     applies: 'live',
     secrets: [],
     revision: state.revision,
@@ -123,13 +163,21 @@ function offlineSettingsMutate(payload: unknown): RpcResult {
 }
 
 function offlineCatalog(): RpcResult {
+  // The bridge localizes these CodeSmith-specific labels from
+  // `locale.preference`; the in-memory write is the offline equivalent, so a
+  // language picked on the offline Settings page applies on the next fetch.
+  const preference = OFFLINE_SETTINGS.locale.value.preference
+  const zh = typeof preference === 'string' && preference.toLowerCase().startsWith('zh')
   const options = [
-    { value: 'agent', name: 'Agent' },
-    { value: 'plan', name: 'Plan' },
-    { value: 'danger-full-access', name: 'Full access' },
-    { value: 'coordinator', name: 'Coordinator' },
+    { value: 'agent', name: zh ? '智能体' : 'Agent' },
+    { value: 'plan', name: zh ? '计划' : 'Plan' },
+    { value: 'danger-full-access', name: zh ? '完全权限' : 'Full access' },
+    { value: 'coordinator', name: zh ? '协调者' : 'Coordinator' },
   ]
-  return ok({ options, defaultOptions: options, defaultPreset: 'agent' })
+  const defaultPreset = typeof OFFLINE_SETTINGS.permission.value.defaultPreset === 'string'
+    ? OFFLINE_SETTINGS.permission.value.defaultPreset
+    : 'agent'
+  return ok({ options, defaultOptions: options, defaultPreset })
 }
 
 const UNARY: Record<string, (payload?: unknown) => RpcResult> = {
