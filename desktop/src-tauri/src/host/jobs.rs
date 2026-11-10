@@ -169,6 +169,19 @@ fn follow_from(request: &Value) -> usize {
         .min(usize::MAX as u64) as usize
 }
 
+/// A resume offset the render can actually slice from: clamped to the
+/// current length and snapped forward off any partial UTF-8 character. The
+/// offsets the client echoes back are always frame `next` values (char
+/// boundaries), but a hand-rolled caller's `from` must not panic the
+/// stream — slicing `output[served..]` mid-character would abort it.
+fn resume_offset(output: &str, from: usize) -> usize {
+    let mut at = from.min(output.len());
+    while !output.is_char_boundary(at) {
+        at += 1;
+    }
+    at
+}
+
 /// `job/list` — the session's task roster as whole-set `rows` frames, then a
 /// 2s poll keeping the popover's rows current while it is open.
 pub async fn list(
@@ -227,7 +240,7 @@ pub async fn follow(
     let mut current = task(host, job_id)
         .await
         .map_err(|err| super::stream_failure("job/not-found", format!("{err:#}")))?;
-    let mut served = from.min(render_output(&current).len());
+    let mut served = resume_offset(&render_output(&current), from);
     if tx.send(json!({ "type": "opened", "job": job_view(&current), "from": served })).await.is_err() {
         return Ok(());
     }
@@ -306,6 +319,22 @@ pub async fn kill(host: &HostState, request: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_offsets_never_slice_mid_character() {
+        // A render whose first bytes are multi-byte: offsets inside the
+        // character snap forward, past-the-end offsets clamp, and every
+        // returned offset is a boundary the follow loop can slice from.
+        let output = "图!";
+        for from in 0..8 {
+            let at = resume_offset(output, from);
+            assert!(output.is_char_boundary(at), "from {from} -> {at}");
+        }
+        assert_eq!(resume_offset(output, 0), 0);
+        assert_eq!(resume_offset(output, 4), 4, "past the end clamps");
+        let empty = "";
+        assert_eq!(resume_offset(empty, 5), 0);
+    }
 
     fn timeline_entry(kind: &str, summary: &str) -> Value {
         json!({ "timestamp": "2026-11-06T10:00:00Z", "kind": kind, "summary": summary })
