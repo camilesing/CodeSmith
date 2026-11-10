@@ -165,18 +165,32 @@ Known limitations of the current implementation:
   thread belongs to no session, so no roster lists it; there is no progress
   line or byte cap to report.
 - The changes-review tab and changed-files card (`client-ui-deliverables`)
-  are served from the thread's durable tool items: every file tool
-  (`write_file`, `edit_file`, `apply_patch`) returns a unified diff, and the
-  mapper announces each turn that settled a file change with a
+  are served from the thread's durable tool items: `write_file` and
+  `edit_file` return a unified diff as the call's result, and `apply_patch`
+  returns a JSON summary whose requested hunks the bridge recovers from the
+  call's own `patch` argument (one region per file header), so all three
+  list with counts and a comparison; its whole-file `changes` form lists
+  paths without a comparison (the runtime keeps no pre-written content to
+  diff against). A failed or denied file call changed nothing and is not
+  listed. The mapper announces each turn that settled a file change with a
   `workspace/changes` journal event (live and on replay). The bridge serves
   `/api/changes.summary|diff|open` (+ `/api/present.host|open`) on the page's
   behalf — the page's fetch hook carries page-relative `/api/…` routes to
   the bridge origin. Repeated edits to one path in a turn fold into one row
   (counts sum; the comparison is the last call's hunks — the runtime keeps
-  per-call diffs, not turn-start/end snapshots). `changes.open` reveals the
-  file in the OS file manager; `present.open` (the declared-file opener)
-  answers the client's `nativeUnavailable` — CodeSmith has no declared-file
-  registry.
+  per-call diffs, not turn-start/end snapshots). `changes.open` resolves a
+  listed relative path against the session workspace and opens/reveals it in
+  the OS file manager (404 when the file is gone, 204 on success); the
+  summary and comparison routes answer `cache-control: no-store`.
+  `present.open` (the declared-file opener) answers the client's
+  `nativeUnavailable` — CodeSmith has no declared-file registry. Known
+  limitations: the card/review tab's OS open/reveal control is a slot
+  contributor (`deliverables.file.actions` /
+  `deliverables.review.file.actions`), and upstream fills it from
+  `client-ui-open-in-app`, which is not vendored — it needs an open-in-app
+  host surface plus `session/workspacePathApplications` /
+  `openWorkspacePath`, so the served `changes.open` route has no button on
+  this page yet.
 - Sidebar pins and the manual session order are desktop-shell state,
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned

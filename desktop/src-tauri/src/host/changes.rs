@@ -3,13 +3,16 @@
 //! tab and changed-files card, served from the thread's durable tool items.
 //!
 //! Upstream's host snapshots the git tree around each turn; CodeSmith's
-//! runtime instead makes every file tool (`write_file`, `edit_file`,
-//! `apply_patch`) return a unified diff of what it did, and the item records
-//! it durably as its result (`detail`), with the call's arguments in
-//! `metadata.arguments`. These routes aggregate one turn's settled
+//! runtime instead has every file tool report what it did, and the item
+//! records that report durably: `write_file` and `edit_file` return a
+//! unified diff as their result (`detail`), while `apply_patch` returns a
+//! JSON summary and keeps the requested hunks in its `patch` argument
+//! (recovered here, one region per file header). The call's arguments stay
+//! in `metadata.arguments`. These routes aggregate one turn's completed
 //! `file_change` items into the summary the card lists and re-serve each
 //! file's diff as the comparison the review tab renders — the same evidence
-//! the transcript's tool cards show, folded per file.
+//! the transcript's tool cards show, folded per file. A failed or denied
+//! call changed nothing and is not listed.
 //!
 //! Coordinates: the client addresses a summary by the seq of its
 //! `workspace/changes` journal event (the mapper emits one per turn that
@@ -18,13 +21,15 @@
 //!
 //! Known limitations: a turn's repeated edits to one path fold into one row
 //! whose comparison is the LAST call's (the runtime keeps per-call diffs,
-//! not a turn-start/end pair — the aggregate counts still sum every call); a
+//! not a turn-start/end pair — the aggregate counts still sum every call);
+//! `apply_patch`'s whole-file `changes` form lists its paths without a
+//! comparison (the runtime keeps no pre-written content to diff against); a
 //! `file_change` item whose result carries no parsable diff (a foreign HTTP
 //! client's call, or a record from before arguments were kept) lists without
 //! counts and its comparison serves empty hunks; binary files carry no
 //! marker in the runtime record, so they parse as text.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -97,12 +102,15 @@ fn parse_unified_diff(text: &str) -> Option<FileDiff> {
             continue;
         }
         if let Some(hunk) = current.as_mut() {
-            // A diff body line is prefixed ' ', '+', '-', or '\'; the tool's
+            // A "\ No newline at end of file" marker is not a hunk body line
+            // (the client's hunk validator accepts only '+', '-', ' ');
+            // skipping it keeps the served comparison decodable.
+            if line.starts_with('\\') {
+                continue;
+            }
+            // A diff body line is prefixed ' ', '+', or '-'; the tool's
             // trailing summary line after the last hunk ends the region.
-            if !matches!(
-                line.chars().next(),
-                Some(' ') | Some('+') | Some('-') | Some('\\')
-            ) {
+            if !matches!(line.chars().next(), Some(' ') | Some('+') | Some('-')) {
                 break;
             }
             if line.starts_with('+') {
@@ -128,6 +136,102 @@ fn display_path(workspace: &str, path: &str) -> String {
     relative.replace('\\', "/")
 }
 
+/// One file path from a `---`/`+++` patch header, normalized the way
+/// `apply_patch`'s own parser normalizes it: drop a tab-separated timestamp,
+/// diff(1)'s quoting, and the `a/`/`b/` prefix. `/dev/null` names no side.
+fn patch_header_path(raw: &str) -> Option<String> {
+    let raw = raw.split('\t').next().unwrap_or(raw).trim();
+    let raw = raw.trim_matches('"');
+    if raw.is_empty() || raw == "/dev/null" || raw == "dev/null" {
+        return None;
+    }
+    Some(
+        raw.strip_prefix("a/")
+            .or_else(|| raw.strip_prefix("b/"))
+            .unwrap_or(raw)
+            .to_string(),
+    )
+}
+
+/// Per-file hunks of a multi-file `patch` argument, keyed by the path the
+/// tool itself resolved. A path-override call passes one hunk stream instead
+/// and never reaches this splitter.
+fn patch_file_diffs(patch: &str) -> Vec<(String, FileDiff)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut old_path: Option<String> = None;
+    for line in patch.lines() {
+        if let Some(raw) = line.strip_prefix("--- ") {
+            old_path = patch_header_path(raw);
+        } else if let Some(raw) = line.strip_prefix("+++ ") {
+            // A deletion's `+++ /dev/null` names the old side.
+            if let Some(path) = patch_header_path(raw).or_else(|| old_path.clone()) {
+                sections.push((path, String::new()));
+            }
+        } else if let Some((_, body)) = sections.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    sections
+        .into_iter()
+        .filter_map(|(path, body)| parse_unified_diff(&body).map(|diff| (path, diff)))
+        .collect()
+}
+
+/// The (path, diff) entries one completed file-change item reports.
+///
+/// `write_file`/`edit_file` return the diff as their result; `apply_patch`
+/// returns a JSON summary and keeps the hunks in its argument. Its whole-file
+/// `changes` form names paths with no comparison — there is no pre-written
+/// content to diff against. A call without a parsable diff still lists its
+/// authored path (a foreign client's edit) with zero counts and no hunks.
+fn item_entries(item: &Value) -> Vec<(String, FileDiff)> {
+    let arguments = item
+        .pointer("/metadata/arguments")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let authored = arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty());
+    let result_diff = item
+        .get("detail")
+        .and_then(Value::as_str)
+        .and_then(parse_unified_diff);
+    if let Some(diff) = result_diff {
+        return authored
+            .map(|path| vec![(path.to_string(), diff)])
+            .unwrap_or_default();
+    }
+    if let Some(patch) = arguments.get("patch").and_then(Value::as_str) {
+        // With `path`, the tool applies the whole hunk stream to that one
+        // file (any headers are advisory); without it, per-header regions.
+        if let Some(path) = authored {
+            return vec![(
+                path.to_string(),
+                parse_unified_diff(patch).unwrap_or_default(),
+            )];
+        }
+        return patch_file_diffs(patch);
+    }
+    if let Some(changes) = arguments.get("changes").and_then(Value::as_array) {
+        return changes
+            .iter()
+            .filter_map(|change| {
+                change
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| (path.to_string(), FileDiff::default()))
+            })
+            .collect();
+    }
+    authored
+        .map(|path| (path.to_string(), FileDiff::default()))
+        .into_iter()
+        .collect()
+}
+
 /// One turn's changed files, folded per path (a repeated edit keeps the last
 /// call's hunks; the counts still sum every call).
 fn turn_changes(detail: &Value, turn_id: &str, workspace: &str) -> Vec<ChangedFile> {
@@ -138,57 +242,55 @@ fn turn_changes(detail: &Value, turn_id: &str, workspace: &str) -> Vec<ChangedFi
         .into_iter()
         .flatten()
     {
+        // Only a completed call changed a file: a failed or denied one left
+        // the workspace untouched and must not be listed.
         if item.get("turn_id").and_then(Value::as_str) != Some(turn_id)
             || item.get("kind").and_then(Value::as_str) != Some("file_change")
-            || item.get("status").and_then(Value::as_str) == Some("in_progress")
+            || item.get("status").and_then(Value::as_str) != Some("completed")
         {
             continue;
         }
-        let path = item
-            .pointer("/metadata/arguments/path")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if path.is_empty() {
-            continue;
-        }
-        // A call without a parsable diff still lists the path (a foreign
-        // client's edit), with zero counts and empty hunks.
-        let diff = item
-            .get("detail")
-            .and_then(Value::as_str)
-            .and_then(parse_unified_diff)
-            .unwrap_or_default();
-        // The fold keys on the workspace-relative display path, so one file
-        // addressed in two spellings (absolute and relative) is one row; the
-        // row keeps the first call's authored `path`.
-        let display = if Path::new(&path).is_absolute() {
-            display_path(workspace, &path)
-        } else {
-            path.replace('\\', "/")
-        };
-        match files.iter_mut().find(|file| file.display == display) {
-            Some(existing) => {
-                existing.diff.added += diff.added;
-                existing.diff.deleted += diff.deleted;
-                if !diff.hunks.is_empty() {
-                    existing.diff.hunks = diff.hunks;
+        for (path, diff) in item_entries(item) {
+            // The fold keys on the workspace-relative display path, so one
+            // file addressed in two spellings (absolute and relative) is one
+            // row; the row keeps the first call's authored `path`.
+            let display = if Path::new(&path).is_absolute() {
+                display_path(workspace, &path)
+            } else {
+                path.replace('\\', "/")
+            };
+            match files.iter_mut().find(|file| file.display == display) {
+                Some(existing) => {
+                    existing.diff.added += diff.added;
+                    existing.diff.deleted += diff.deleted;
+                    if !diff.hunks.is_empty() {
+                        existing.diff.hunks = diff.hunks;
+                    }
                 }
+                None => files.push(ChangedFile {
+                    path,
+                    display,
+                    diff,
+                }),
             }
-            None => files.push(ChangedFile {
-                path,
-                display,
-                diff,
-            }),
         }
     }
     files.sort_by(|a, b| a.display.cmp(&b.display));
     files
 }
 
-/// The summary a `workspace/changes` event at `seq` announces, as the
-/// client's `ChangesSummary`.
-async fn changes_summary(host: &HostState, session_id: &str, seq: i64) -> Option<Value> {
+/// The thread's workspace: the root listed `path` values are relative to.
+fn workspace_of(detail: &Value) -> &str {
+    detail
+        .pointer("/thread/workspace")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// The thread record plus the turn one `workspace/changes` seq announced.
+/// The route's coordinates are a replay cursor, so seq → turn resolves through
+/// the same replay the client consumed.
+async fn resolve_turn(host: &HostState, session_id: &str, seq: i64) -> Option<(Value, u64, Value)> {
     let detail: Value = host
         .backend
         .get(&format!("/v1/threads/{session_id}"))
@@ -196,26 +298,30 @@ async fn changes_summary(host: &HostState, session_id: &str, seq: i64) -> Option
         .ok()?;
     let turn_no = super::mapper::replay_events(&detail)
         .into_iter()
-        .find(|event| {
-            event["type"] == "workspace/changes" && event["seq"].as_i64() == Some(seq)
-        })
+        .find(|event| event["type"] == "workspace/changes" && event["seq"].as_i64() == Some(seq))
         .and_then(|event| event["data"]["turn"].as_u64())?;
     let turn = detail
         .get("turns")
         .and_then(Value::as_array)
-        .and_then(|turns| turns.get(turn_no.checked_sub(1)? as usize))?;
-    let workspace = detail
-        .pointer("/thread/workspace")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let files = turn_changes(&detail, turn.get("id")?.as_str()?, workspace);
-    let (added, deleted): (u64, u64) =
-        files.iter().fold((0, 0), |(a, d), file| {
-            (a + file.diff.added, d + file.diff.deleted)
-        });
-    Some(json!({
+        .and_then(|turns| turns.get(turn_no.checked_sub(1)? as usize))?
+        .clone();
+    Some((detail, turn_no, turn))
+}
+
+/// The wire summary for one replayed turn, as the client's `ChangesSummary`
+/// (`{turn, files, total, added, deleted}` — upstream keeps the working
+/// directory and snapshot ids on the Host).
+fn summary_for_turn(detail: &Value, turn_no: u64, turn: &Value) -> Value {
+    let files = turn_changes(
+        detail,
+        turn.get("id").and_then(Value::as_str).unwrap_or_default(),
+        workspace_of(detail),
+    );
+    let (added, deleted): (u64, u64) = files.iter().fold((0, 0), |(a, d), file| {
+        (a + file.diff.added, d + file.diff.deleted)
+    });
+    json!({
         "turn": turn_no,
-        "cwd": workspace,
         "files": files.iter().map(|file| json!({
             "path": file.path,
             "display": file.display,
@@ -225,41 +331,11 @@ async fn changes_summary(host: &HostState, session_id: &str, seq: i64) -> Option
         "total": files.len(),
         "added": added,
         "deleted": deleted,
-    }))
+    })
 }
 
-/// The comparison for one summary file, as the client's `WorkspaceFileDiff`.
-async fn changes_diff(
-    host: &HostState,
-    session_id: &str,
-    seq: i64,
-    index: usize,
-) -> Option<Value> {
-    let summary = changes_summary(host, session_id, seq).await?;
-    let file = summary
-        .get("files")
-        .and_then(Value::as_array)
-        .and_then(|files| files.get(index))?;
-    let path = file.get("path")?.as_str()?.to_string();
-    let display = file.get("display")?.as_str()?.to_string();
-    // Re-fold the turn to recover this file's hunks.
-    let detail: Value = host
-        .backend
-        .get(&format!("/v1/threads/{session_id}"))
-        .await
-        .ok()?;
-    let turn_no = summary.get("turn")?.as_u64()?;
-    let turn = detail
-        .get("turns")
-        .and_then(Value::as_array)
-        .and_then(|turns| turns.get(turn_no.checked_sub(1)? as usize))?;
-    let workspace = detail
-        .pointer("/thread/workspace")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let changed = turn_changes(&detail, turn.get("id")?.as_str()?, workspace)
-        .into_iter()
-        .find(|changed| changed.path == path)?;
+/// The comparison for one listed file, as the client's `WorkspaceFileDiff`.
+fn diff_for_changed(changed: &ChangedFile) -> Value {
     let hunks_json = |hunks: &[Hunk]| -> Vec<Value> {
         hunks
             .iter()
@@ -281,7 +357,11 @@ async fn changes_diff(
         .map(|hunk| hunk.lines.iter().map(|line| line.len() + 1).sum::<usize>())
         .sum();
     if hunks_bytes > MAX_DIFF_BYTES {
-        return Some(json!({ "kind": "oversized", "path": path, "display": display }));
+        return json!({
+            "kind": "oversized",
+            "path": changed.path,
+            "display": changed.display,
+        });
     }
     let before = changed
         .diff
@@ -293,23 +373,59 @@ async fn changes_diff(
         .hunks
         .iter()
         .any(|hunk| hunk.new_lines > 0 || hunk.lines.iter().any(|l| l.starts_with('+')));
-    Some(json!({
+    json!({
         "kind": "text",
-        "path": path,
-        "display": display,
+        "path": changed.path,
+        "display": changed.display,
         "before": before,
         "after": after,
         "hunks": hunks_json(&changed.diff.hunks),
         "coarse": false,
-    }))
+    })
+}
+
+/// The summary a `workspace/changes` event at `seq` announces.
+async fn changes_summary(host: &HostState, session_id: &str, seq: i64) -> Option<Value> {
+    let (detail, turn_no, turn) = resolve_turn(host, session_id, seq).await?;
+    Some(summary_for_turn(&detail, turn_no, &turn))
+}
+
+/// The comparison for one summary file.
+async fn changes_diff(host: &HostState, session_id: &str, seq: i64, index: usize) -> Option<Value> {
+    let (detail, _turn_no, turn) = resolve_turn(host, session_id, seq).await?;
+    // The summary's files are this same fold, in display order.
+    let changed = turn_changes(&detail, turn.get("id")?.as_str()?, workspace_of(&detail))
+        .into_iter()
+        .nth(index)?;
+    Some(diff_for_changed(&changed))
+}
+
+/// Where a listed file lives on this machine: an absolute listed path is used
+/// as-is (upstream lists files outside the workspace too); a relative one
+/// resolves against the session workspace. `None` is the client's
+/// `nativeUnavailable` — the path cannot be mapped.
+fn open_target(workspace: &str, path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    (!workspace.is_empty()).then(|| Path::new(workspace).join(path))
+}
+
+/// One changed-file open attempt: the launcher's outcome, with "the file is
+/// gone" separated from "the opener failed" (upstream's 404 vs 500).
+enum OpenOutcome {
+    Opened,
+    Missing,
+    Failed(String),
 }
 
 /// Open or reveal one changed file in the OS (`action` = `open` | `reveal`).
-/// Blocking (process spawn); the axum handler runs it on `spawn_blocking`.
-pub fn open_changed_file(action: &str, path: &str) -> Result<(), String> {
-    let target = Path::new(path);
+/// Blocking (stat + process spawn); the axum handler runs it on
+/// `spawn_blocking`.
+pub fn open_changed_file(action: &str, target: &Path) -> Result<(), String> {
     if !target.is_absolute() {
-        return Err(format!("{path} is not an absolute path"));
+        return Err(format!("{} is not an absolute path", target.display()));
     }
     let status = match (action, std::env::consts::OS) {
         ("open", "macos") => std::process::Command::new("open").arg(target).status(),
@@ -332,8 +448,8 @@ pub fn open_changed_file(action: &str, path: &str) -> Result<(), String> {
     };
     match status {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("open {path} exited {status}")),
-        Err(err) => Err(format!("open {path} failed: {err}")),
+        Ok(status) => Err(format!("open {} exited {status}", target.display())),
+        Err(err) => Err(format!("open {} failed: {err}", target.display())),
     }
 }
 
@@ -359,7 +475,7 @@ pub mod route {
     use super::*;
 
     use axum::extract::{Query, State};
-    use axum::http::StatusCode;
+    use axum::http::{header, HeaderValue, StatusCode};
     use axum::response::{IntoResponse, Response};
     use axum::Json;
     use serde::Deserialize;
@@ -379,8 +495,20 @@ pub mod route {
         Some(ChangesQuery {
             session_id: params.session_id.clone()?,
             seq: params.seq?,
-            index: params.index.unwrap_or(0),
+            index: params.index?,
         })
+    }
+
+    /// The summary and comparison responses must not be cached: a listed
+    /// file's record can gain hunks only before its turn settles, but the
+    /// client treats a cached 404 as permanent (`retryable: false`), so a
+    /// pre-settlement miss would pin "missing" across the turn's end.
+    fn no_store(response: Response) -> Response {
+        let mut response = response;
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
     }
 
     /// `GET /api/changes.summary?sessionId&seq`
@@ -388,13 +516,16 @@ pub mod route {
         State(host): State<super::super::SharedHost>,
         Query(params): Query<ChangesParams>,
     ) -> Response {
-        let Some(query) = coordinates(&params) else {
+        let Some(session_id) = params.session_id.clone() else {
             return StatusCode::BAD_REQUEST.into_response();
         };
-        match changes_summary(&host, &query.session_id, query.seq).await {
+        let Some(seq) = params.seq else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        no_store(match changes_summary(&host, &session_id, seq).await {
             Some(summary) => Json(summary).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
-        }
+        })
     }
 
     /// `GET /api/changes.diff?sessionId&seq&index`
@@ -405,14 +536,18 @@ pub mod route {
         let Some(query) = coordinates(&params) else {
             return StatusCode::BAD_REQUEST.into_response();
         };
-        match changes_diff(&host, &query.session_id, query.seq, query.index).await {
-            Some(diff) => Json(diff).into_response(),
-            None => StatusCode::NOT_FOUND.into_response(),
-        }
+        no_store(
+            match changes_diff(&host, &query.session_id, query.seq, query.index).await {
+                Some(diff) => Json(diff).into_response(),
+                None => StatusCode::NOT_FOUND.into_response(),
+            },
+        )
     }
 
     /// `GET|POST /api/changes.open?sessionId&seq&index&action` — open or
-    /// reveal one changed file; 422 is the client's `nativeUnavailable`.
+    /// reveal one changed file. 404 means the listed file is gone, 422 the
+    /// path cannot be mapped to this machine (the client's
+    /// `nativeUnavailable`), 500 the launcher failed.
     pub async fn open(
         State(host): State<super::super::SharedHost>,
         Query(params): Query<ChangesParams>,
@@ -424,29 +559,46 @@ pub mod route {
         if action != "open" && action != "reveal" {
             return StatusCode::BAD_REQUEST.into_response();
         }
-        let Some(summary) = changes_summary(&host, &query.session_id, query.seq).await else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        let Some(path) = summary
-            .pointer("/files")
-            .and_then(Value::as_array)
-            .and_then(|files| files.get(query.index))
-            .and_then(|file| file.get("path"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+        let Some((detail, _turn_no, turn)) =
+            resolve_turn(&host, &query.session_id, query.seq).await
         else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        let opened =
-            tokio::task::spawn_blocking(move || open_changed_file(&action, &path)).await;
-        match opened {
-            Ok(Ok(())) => StatusCode::OK.into_response(),
-            Ok(Err(_failure)) => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+        let workspace = workspace_of(&detail).to_string();
+        let Some(changed) = turn.get("id").and_then(Value::as_str).and_then(|turn_id| {
+            turn_changes(&detail, turn_id, &workspace)
+                .into_iter()
+                .nth(query.index)
+        }) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let Some(target) = open_target(&workspace, &changed.path) else {
+            return no_store(StatusCode::UNPROCESSABLE_ENTITY.into_response());
+        };
+        let opened = tokio::task::spawn_blocking(move || {
+            if !target.exists() {
+                return OpenOutcome::Missing;
+            }
+            match open_changed_file(&action, &target) {
+                Ok(()) => OpenOutcome::Opened,
+                Err(err) => OpenOutcome::Failed(err),
+            }
+        })
+        .await;
+        no_store(match opened {
+            Ok(OpenOutcome::Opened) => StatusCode::NO_CONTENT.into_response(),
+            Ok(OpenOutcome::Missing) => StatusCode::NOT_FOUND.into_response(),
+            Ok(OpenOutcome::Failed(err)) => {
+                // The launcher's own text can carry the path; keep it in the
+                // log, answer the client with the status only.
+                eprintln!("codesmith desktop: changes.open failed: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
             Err(err) => {
                 eprintln!("codesmith desktop: changes.open join failed: {err}");
-                StatusCode::UNPROCESSABLE_ENTITY.into_response()
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-        }
+        })
     }
 
     /// `GET /api/present.host` — desktop metadata for the "Open in" menu.
@@ -518,5 +670,157 @@ mod tests {
         assert_eq!(files[0].diff.added, 3, "counts sum both calls");
         assert_eq!(files[0].diff.deleted, 2);
         assert_eq!(files[0].diff.hunks.len(), 1, "the last call's hunks");
+    }
+
+    #[test]
+    fn apply_patch_comparisons_come_from_its_patch_argument() {
+        // apply_patch's result is a JSON summary, not a diff: the requested
+        // hunks ride the call's own argument, one region per file header.
+        let patch = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+extra\n--- /dev/null\n+++ b/src/b.rs\n@@ -0,0 +1 @@\n+created\n";
+        let detail = json!({
+            "thread": { "workspace": "/w/proj" },
+            "turns": [{ "id": "turn_1", "status": "completed" }],
+            "items": [
+                { "id": "i1", "turn_id": "turn_1", "kind": "file_change", "status": "completed",
+                  "detail": "{\"success\":true,\"touched_files\":[\"src/a.rs\",\"src/b.rs\"]}",
+                  "metadata": { "arguments": { "patch": patch } } },
+            ],
+        });
+        let files = turn_changes(&detail, "turn_1", "/w/proj");
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["src/a.rs", "src/b.rs"]
+        );
+        let a = files
+            .iter()
+            .find(|file| file.display == "src/a.rs")
+            .unwrap();
+        assert_eq!((a.diff.added, a.diff.deleted), (2, 1));
+        assert_eq!(a.diff.hunks.len(), 1);
+        let b = files
+            .iter()
+            .find(|file| file.display == "src/b.rs")
+            .unwrap();
+        assert_eq!((b.diff.added, b.diff.deleted), (1, 0));
+        // The comparison flags the creation: no old side.
+        let diff = diff_for_changed(b);
+        assert_eq!(diff["before"], false);
+        assert_eq!(diff["after"], true);
+        assert_eq!(diff["hunks"][0]["oldLines"], 0);
+        // Every served hunk line stays decodable by the client.
+        for hunk in diff["hunks"].as_array().unwrap() {
+            for line in hunk["lines"].as_array().unwrap() {
+                let line = line.as_str().unwrap();
+                assert!(
+                    line.starts_with('+') || line.starts_with('-') || line.starts_with(' '),
+                    "{line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apply_patch_whole_file_changes_list_paths_without_a_comparison() {
+        let detail = json!({
+            "thread": { "workspace": "/w/proj" },
+            "turns": [{ "id": "turn_1", "status": "completed" }],
+            "items": [
+                { "id": "i1", "turn_id": "turn_1", "kind": "file_change", "status": "completed",
+                  "detail": "{\"success\":true}",
+                  "metadata": { "arguments": { "changes": [
+                      { "path": "docs/a.md", "content": "x" },
+                      { "path": "docs/b.md", "content": "y" }
+                  ] } } },
+            ],
+        });
+        let files = turn_changes(&detail, "turn_1", "/w/proj");
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.display.clone())
+                .collect::<Vec<_>>(),
+            vec!["docs/a.md", "docs/b.md"]
+        );
+        assert!(files.iter().all(|file| file.diff.hunks.is_empty()));
+        let summary = summary_for_turn(&detail, 1, &detail["turns"][0]);
+        assert_eq!(summary["total"], 2);
+        assert_eq!(summary["added"], 0);
+        // Upstream keeps the working directory on the Host, not on the wire.
+        assert!(!summary.as_object().unwrap().contains_key("cwd"));
+    }
+
+    #[test]
+    fn open_targets_resolve_relative_paths_against_the_workspace() {
+        // The summary lists workspace-relative paths (upstream's shape); the
+        // OS opener needs an absolute one. A session without a workspace
+        // cannot map a relative path — the client's nativeUnavailable.
+        let workspace = std::env::temp_dir();
+        let workspace_text = workspace.to_string_lossy().into_owned();
+        assert_eq!(
+            open_target(&workspace_text, "notes/a.txt"),
+            Some(workspace.join("notes").join("a.txt"))
+        );
+        assert_eq!(open_target("", "notes/a.txt"), None);
+        let absolute = workspace.join("elsewhere.txt");
+        assert_eq!(
+            open_target(&workspace_text, &absolute.to_string_lossy()),
+            Some(absolute)
+        );
+    }
+
+    #[test]
+    fn failed_file_calls_are_not_changed_files() {
+        let detail = json!({
+            "thread": { "workspace": "/w/proj" },
+            "turns": [{ "id": "turn_1", "status": "failed" }],
+            "items": [
+                { "id": "i1", "turn_id": "turn_1", "kind": "file_change", "status": "failed",
+                  "detail": "permission denied",
+                  "metadata": { "arguments": { "path": "src/a.rs" } } },
+            ],
+        });
+        assert!(turn_changes(&detail, "turn_1", "/w/proj").is_empty());
+        assert_eq!(
+            summary_for_turn(&detail, 1, &detail["turns"][0])["total"],
+            0
+        );
+    }
+
+    #[test]
+    fn summary_and_comparison_serve_one_fold() {
+        let detail = json!({
+            "thread": { "workspace": "/w/proj" },
+            "turns": [{ "id": "turn_1", "status": "completed" }],
+            "items": [
+                { "id": "i1", "turn_id": "turn_1", "kind": "file_change", "status": "completed",
+                  "detail": "@@ -0,0 +1,3 @@\n+alpha\n+beta\n+gamma\n",
+                  "metadata": { "arguments": { "path": "src/a.rs" } } },
+                { "id": "i2", "turn_id": "turn_1", "kind": "file_change", "status": "completed",
+                  "detail": "@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n",
+                  "metadata": { "arguments": { "path": "src/a.rs" } } },
+                { "id": "i3", "turn_id": "turn_1", "kind": "file_change", "status": "completed",
+                  "detail": "@@ -0,0 +1,2 @@\n+one\n+two\n",
+                  "metadata": { "arguments": { "path": "src/b.rs" } } },
+            ],
+        });
+        let summary = summary_for_turn(&detail, 1, &detail["turns"][0]);
+        assert_eq!(summary["turn"], 1);
+        assert_eq!(summary["total"], 2);
+        assert_eq!(summary["added"], 6, "counts sum every call");
+        assert_eq!(summary["deleted"], 1);
+        let files = turn_changes(&detail, "turn_1", "/w/proj");
+        let diff = diff_for_changed(&files[0]);
+        assert_eq!(diff["path"], "src/a.rs");
+        assert_eq!(diff["display"], "src/a.rs");
+        assert_eq!(diff["before"], true);
+        assert_eq!(diff["after"], true);
+        assert_eq!(
+            diff["hunks"][0]["lines"],
+            json!([" alpha", "-beta", "+BETA", " gamma"]),
+            "the comparison is the last call's hunks"
+        );
     }
 }

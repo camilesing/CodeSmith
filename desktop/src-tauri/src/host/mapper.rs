@@ -674,7 +674,9 @@ impl SessionMapper {
                         )));
                     }
                     "tool_call" | "command_execution" | "file_change" => {
-                        if kind == "file_change" && status != "in_progress" {
+                        // A failed or denied file call changed nothing: the
+                        // changes card must not announce it.
+                        if kind == "file_change" && status == "completed" {
                             self.turn_has_file_changes = true;
                         }
                         frames.push(Frame::Event(self.seq.event(
@@ -959,11 +961,12 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
         // message (preferring a text message over reasoning), mirroring the
         // live path's attachment to the final agent item.
         let mut usage_target: Option<usize> = None;
-        // Whether the turn settled a file change (the replay announces
-        // `workspace/changes` like the live path does).
+        // Whether the turn settled a completed file change (the replay
+        // announces `workspace/changes` like the live path does; a failed or
+        // denied call changed nothing and announces nothing).
         let turn_has_file_changes = turn_items.iter().any(|item| {
             item.get("kind").and_then(Value::as_str) == Some("file_change")
-                && item.get("status").and_then(Value::as_str) != Some("in_progress")
+                && item.get("status").and_then(Value::as_str) == Some("completed")
         });
         for item in turn_items {
             let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
@@ -1799,6 +1802,50 @@ mod tests {
             .as_i64()
             .unwrap();
         assert!(seq > 0);
+    }
+
+    #[test]
+    fn failed_file_changes_do_not_announce_the_changes_card() {
+        // A denied file tool changed nothing: neither the live stream nor the
+        // replay may publish the card's `workspace/changes` anchor.
+        let mut mapper = SessionMapper::default();
+        let mut frames = Vec::new();
+        for envelope in [
+            json!({ "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {} }),
+            json!({ "event": "item.started", "item_id": "item_f", "timestamp": "2026-11-06T10:00:01Z",
+                    "payload": { "item": { "id": "item_f", "kind": "file_change", "status": "in_progress" },
+                                 "tool": { "name": "write_file", "input": { "path": "a.txt" } } } }),
+            json!({ "event": "item.failed", "item_id": "item_f", "timestamp": "2026-11-06T10:00:02Z",
+                    "payload": { "item": { "id": "item_f", "kind": "file_change", "status": "failed",
+                                           "detail": "denied" } } }),
+            json!({ "event": "turn.completed", "timestamp": "2026-11-06T10:00:03Z",
+                    "payload": { "turn": { "status": "completed" } } }),
+        ] {
+            frames.extend(mapper.map_envelope(&envelope));
+        }
+        assert!(
+            !frames.iter().any(|frame| matches!(
+                frame,
+                Frame::Event(event) if event["type"] == "workspace/changes"
+            )),
+            "a failed file call announces no changes"
+        );
+
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "completed", "ended_at": "2026-11-06T10:00:09Z" }],
+            "items": [
+                { "id": "item_f", "turn_id": "turn_1", "kind": "file_change",
+                  "status": "failed", "detail": "denied", "summary": "write_file failed",
+                  "started_at": "2026-11-06T10:00:01Z", "ended_at": "2026-11-06T10:00:02Z" },
+            ],
+        });
+        let events = replay_events(&detail);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event["type"] == "workspace/changes"),
+            "the replay announces no changes either"
+        );
     }
 
     #[test]

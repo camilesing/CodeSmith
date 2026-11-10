@@ -142,15 +142,25 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   queued/running → running、completed、failed、canceled → killed。无关联
   线程的任务不属于任何会话，名册不列出；没有进度行或字节上限可报。
 - 改动审查标签页与轮尾改动文件卡（`client-ui-deliverables`）由线程的持久
-  化工具条目供数：每个文件工具（`write_file`、`edit_file`、`apply_patch`）
-  返回 unified diff，mapper 对每个落定了文件改动的 turn 发
-  `workspace/changes` 日志事件（实时与回放一致）。桥替页面服务
+  化工具条目供数：`write_file`、`edit_file` 把 unified diff 作为调用结果
+  返回，`apply_patch` 返回 JSON 摘要、请求的 hunks 留在调用自身的 `patch`
+  参数里（桥按文件头逐段还原），因此三者都能列出计数与对比；它的整文件
+  `changes` 形式只列路径、没有对比（运行时没有写前内容可 diff）。失败或
+  被拒绝的文件调用没有改动任何东西，不列出。mapper 对每个落定了文件改动
+  的 turn 发 `workspace/changes` 日志事件（实时与回放一致）。桥替页面服务
   `/api/changes.summary|diff|open`（及 `/api/present.host|open`）——页面的
   fetch 钩子把页内相对 `/api/…` 路由携到桥 origin。一个 turn 内对同一路径
   的多次编辑折成一行（计数累加；对比取最后一次调用的 hunks——运行时保存
-  逐调用 diff，而非 turn 首尾快照）。`changes.open` 在系统文件管理器中定
-  位该文件；`present.open`（声明文件开启器）按客户端的
-  `nativeUnavailable` 应答——CodeSmith 没有声明文件注册表。
+  逐调用 diff，而非 turn 首尾快照）。`changes.open` 把列出的相对路径解析到
+  会话工作区，再在系统文件管理器中打开/定位（文件已不存在时 404，成功
+  204）；summary 与对比路由应答 `cache-control: no-store`。`present.open`
+  （声明文件开启器）按客户端的 `nativeUnavailable` 应答——CodeSmith 没有
+  声明文件注册表。已知限制：卡片/审查标签页的系统打开、定位控件是 slot
+  贡献项（`deliverables.file.actions` /
+  `deliverables.review.file.actions`），上游由 `client-ui-open-in-app`
+  填充，而后者未 vendor——它需要一个 open-in-app 宿主面以及
+  `session/workspacePathApplications` / `openWorkspacePath`，所以已服务的
+  `changes.open` 路由在本页还没有按钮。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
   前列（最近置顶在前），手动排序保持相对顺序，从未拖动过的会话按运行时
