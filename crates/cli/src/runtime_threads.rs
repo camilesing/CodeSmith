@@ -1495,7 +1495,7 @@ impl RuntimeThreadManager {
 
         if !changes.is_empty() {
             thread.updated_at = Utc::now();
-            self.store.save_thread(&thread)?;
+            self.save_thread_queue_synced(&mut thread).await?;
             self.emit_event(
                 &thread.id,
                 None,
@@ -1998,7 +1998,7 @@ impl RuntimeThreadManager {
 
             thread.latest_turn_id = Some(turn_id.clone());
             thread.updated_at = now;
-            self.store.save_thread(&thread)?;
+            self.save_thread_queue_synced(&mut thread).await?;
 
             self.emit_event(
                 thread_id,
@@ -2237,6 +2237,23 @@ impl RuntimeThreadManager {
     /// so together they are the honest busy test.
     fn thread_busy(state: &ActiveThreadState) -> bool {
         state.active_turn.is_some() || state.engine.turn_in_flight()
+    }
+
+    /// Whole-record save that keeps the queue's two homes consistent: the
+    /// in-memory mirror owns the queue while the engine is loaded
+    /// (`mutate_queue` syncs record←mirror under the `active` lock), so a
+    /// caller's snapshot saved outside that lock would revert a prompt parked
+    /// in the gap — most visibly `launch_turn`, whose pre-claim auto-routing
+    /// can hold the window open for a model call's duration, erasing the
+    /// parked item from the durable record (a restart or LRU eviction would
+    /// then lose the user's prompt). Sync the queue from the mirror and save
+    /// under the same lock `mutate_queue` serializes on.
+    async fn save_thread_queue_synced(&self, thread: &mut ThreadRecord) -> Result<()> {
+        let mut active = self.active.lock().await;
+        if let Some(state) = active.engines.get_mut(&thread.id) {
+            thread.queue = state.queue.clone();
+        }
+        self.store.save_thread(thread)
     }
 
     /// Apply one mutation to a loaded thread's queue. The closure sees the
@@ -2573,7 +2590,7 @@ impl RuntimeThreadManager {
 
             thread.latest_turn_id = Some(turn_id.clone());
             thread.updated_at = now;
-            self.store.save_thread(&thread)?;
+            self.save_thread_queue_synced(&mut thread).await?;
 
             self.emit_event(
                 thread_id,
@@ -3504,7 +3521,7 @@ impl RuntimeThreadManager {
                     let mut thread = self.store.load_thread(&thread_id)?;
                     thread.coherence_state = state;
                     thread.updated_at = Utc::now();
-                    self.store.save_thread(&thread)?;
+                    self.save_thread_queue_synced(&mut thread).await?;
                     self.emit_event(
                         &thread_id,
                         Some(&turn_id),
@@ -4118,7 +4135,7 @@ impl RuntimeThreadManager {
         let mut thread = self.get_thread(&thread_id).await?;
         thread.latest_turn_id = Some(turn_id.clone());
         thread.updated_at = Utc::now();
-        self.store.save_thread(&thread)?;
+        self.save_thread_queue_synced(&mut thread).await?;
 
         self.emit_event(
             &thread_id,
@@ -5188,6 +5205,74 @@ mod tests {
             "arguments survive the result's metadata replacement"
         );
         assert_eq!(metadata.get("bytes"), Some(&json!(2)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn whole_record_saves_keep_a_parked_prompt_alive() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+
+        // A prompt parked while another writer's record snapshot was already
+        // in flight: the in-memory mirror holds it, the durable record does
+        // not yet — exactly the divergence a whole-record save outside the
+        // `active` lock makes permanent (a restart or LRU eviction re-seeds
+        // the mirror from the record, losing the user's prompt).
+        {
+            let mut active = manager.active.lock().await;
+            let state = active
+                .engines
+                .get_mut(thread.id.as_str())
+                .expect("mock engine installed");
+            state.queue.push(QueuedItemRecord {
+                schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+                id: "qitem_parked".to_string(),
+                text: "parked prompt".to_string(),
+                appendix: None,
+                image_paths: Vec::new(),
+                attachments_metadata: None,
+                rpc_id: None,
+                input_summary: "parked prompt".to_string(),
+                created_at: Utc::now(),
+            });
+        }
+
+        // The stale-snapshot field write: update_thread loads the record,
+        // whose queue predates the park.
+        manager
+            .update_thread(
+                &thread.id,
+                UpdateThreadRequest {
+                    title: Some("Renamed".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let record = manager.store.load_thread(&thread.id)?;
+        assert_eq!(
+            record
+                .queue
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["qitem_parked"],
+            "the parked prompt survives a concurrent whole-record save"
+        );
+        assert_eq!(record.title.as_deref(), Some("Renamed"));
         Ok(())
     }
 
