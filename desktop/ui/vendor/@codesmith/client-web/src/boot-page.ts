@@ -34,7 +34,7 @@ export class BootPage {
     this.root = div(css.boot)
     this.root.dataset.cdsBoot = ''
     this.card = div(css.card)
-    this.wordmark = div(css.wordmark, 'CodeS')
+    this.wordmark = div(css.wordmark, 'CodeSmith')
     this.spinner = div(css.spinner)
     this.spinner.dataset.cdsBootSpinner = ''
     this.hint = div(css.hint, 'Loading plugins…')

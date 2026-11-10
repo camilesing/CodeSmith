@@ -152,25 +152,25 @@ VENDOR_PATCHES: list[dict[str, str]] = [
         "package": "@deepseek-ai/dsh-client-locale",
         "files": ["src/locales/zh.ts", "lib/client.js"],
         "find": "DSH 本地构建",
-        "replace": "CodeS",
+        "replace": "CodeSmith",
     },
     {
         "package": "@deepseek-ai/dsh-client-locale",
         "files": ["src/locales/en.ts", "lib/client.js"],
         "find": "DSH Local Build",
-        "replace": "CodeS",
+        "replace": "CodeSmith",
     },
     {
         "package": "@deepseek-ai/dsh-client-web",
         "files": ["src/boot-page.ts"],
         "find": "css.wordmark, 'HARNESS'",
-        "replace": "css.wordmark, 'CodeS'",
+        "replace": "css.wordmark, 'CodeSmith'",
     },
     {
         "package": "@deepseek-ai/dsh-client-web",
         "files": ["lib/index.js"],
         "find": 'css.wordmark, "HARNESS"',
-        "replace": 'css.wordmark, "CodeS"',
+        "replace": 'css.wordmark, "CodeSmith"',
     },
 ]
 

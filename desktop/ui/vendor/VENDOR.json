@@ -822,7 +822,7 @@
    "dir": "packages/client/locale",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "afde9284c402da1712901700ee1c7497e7670ebd1cab7a37bd721c3ec56c66eb",
+    "lib/client.js": "86d05c6a2a5f5e50bbf83342278c0b643d86846d995b40b5e095587868344822",
     "lib/index.js": "9e19a2639c0f231a0c19e728e0da6c8ca841684d28bba5a9fb0c00b012ccf961",
     "lib/types/client/LanguageRow.d.ts": "a2b0cdf8c0ac255394502806f29d8ebfda651ddddb8f1d4d23eef0a6dc51f878",
     "lib/types/client/LanguageRow.js": "2cf2970442acdb0e1364c1622a4e0d21c8f40c467a68c5e2b4129a95b634c181",
@@ -874,7 +874,7 @@
     "src/index.ts": "2207592392658032311da5843ab0825cdf9032d7d5039a3ca8a5cd6fbfff8266",
     "src/locale-settings.ts": "211f38b5d12e6f301695bd4e96c329fd575a391d926a8dee8e6019bfcbf80b19",
     "src/locales/de.ts": "0c75d59d6408a9828c9dd4b6f49ca91c7733ae36acca906ed27af32b64f7e5c1",
-    "src/locales/en.ts": "e44e84ff4095eb6c6c14f5ca37c81a4694e8228d290a951f4ad4aedbe88d0e71",
+    "src/locales/en.ts": "b645848a2e579f95e23344db0e36d0495bc245e1207379e0c600b6d4e1bbe046",
     "src/locales/es.ts": "dba928e12df4191b61b8633d5111c498ffc2260b271431bea9a841ef4adfb5a9",
     "src/locales/fr.ts": "94204b8deb632b73b2298480d0849fe0c442eac29a871a2d067ea60bc6565111",
     "src/locales/index.ts": "658092cc20c9da88060c5325d20648ee0c65f514a43a8035402940f7e559ef53",
@@ -882,7 +882,7 @@
     "src/locales/pt.ts": "1d8f2f761862ffa05a51f31e19f60c5b79fe2a31d963d17d8f5cd00e72b1d5d2",
     "src/locales/ru.ts": "6d37242dbd3f80066656805238804c64d236b9f8ac38bd48388073bfa56fd689",
     "src/locales/settings.ts": "6c2cc59e177a796f851a286009c5462332c7dc88187cbc999bb2abea29025359",
-    "src/locales/zh.ts": "7a4a123302d71a3cb7805ff35f4180051ce5847cd6ea0152dcf380ed2a59911b"
+    "src/locales/zh.ts": "33dd0f62b168abb85aa0eb90c87e66afa71f61739778f7c8f819d9e2746563ae"
    },
    "patched_files": [
     "lib/client.js",
@@ -5170,7 +5170,7 @@
     "lib/apply-injections.js": "c019115f387f615a9d61644af7dafa7f69620ea745959e80130e7c28d866d617",
     "lib/base.css": "1b4e694636bea5d9297748ffe532edf36de2c69f26787fa52b54bf2e456dd6fd",
     "lib/boot-page.module.css": "bec199be988ca63b4189373e55e3dff498f4258299eae3e3439d2bd570cbba26",
-    "lib/index.js": "5937c218497bb005a4aae243725db21c333a971cbac1bddb8ce1c112e6dc6188",
+    "lib/index.js": "ea0c222207807b255689a66c6733ee5f3aa7f2336f96fc5703c2c5b732653bd6",
     "lib/types/apply-injections.d.ts": "7585f2c3e6181c63dc1c10160e292e47520232d6125f0169974e1de5ff4efce1",
     "lib/types/apply-injections.js": "1418e839adcc978a4aee34dd50d757aaf5b822a6e60dace3be32c9dd63e91ca2",
     "lib/types/boot-client.d.ts": "fda6bbf685724f19cac4c6d272c379ea40aba91059c87d3a222f4524451ce904",
@@ -5198,7 +5198,7 @@
     "src/base.css": "1b4e694636bea5d9297748ffe532edf36de2c69f26787fa52b54bf2e456dd6fd",
     "src/boot-client.ts": "e1bbac8b7ca0502715ddcc9e73f37acb2b764419440faaaf8614322853a2aad1",
     "src/boot-page.module.css": "bec199be988ca63b4189373e55e3dff498f4258299eae3e3439d2bd570cbba26",
-    "src/boot-page.ts": "aa9e7baf2b776920807b65b9b7c7f457f4a79d99748dfef9f397e1a294d8d17f",
+    "src/boot-page.ts": "33c007df348a446b6e72174a661479221ba0d74f8fcb3dfd32434b0f74c457d9",
     "src/boot.ts": "767b50143f4ebc32c5884adafb5099d1117f9543a322b642685c98938695f6e2",
     "src/css-modules.d.ts": "e28410d74a0d763364c04fa690c2ca2202ad3019c74f8f5205e8dc6cba69c02f",
     "src/index.ts": "594eae46ed36150b3393717b2c067adc6e08a3abe6327ec51cdc9e4cc29231a3",

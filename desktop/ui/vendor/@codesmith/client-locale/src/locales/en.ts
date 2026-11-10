@@ -35,7 +35,7 @@ export const en = {
   'subtitle.expand': 'Expand description for {name}',
   'subtitle.collapse': 'Collapse description for {name}',
   'back': 'Back',
-  'brand.localBuild': 'CodeS',
+  'brand.localBuild': 'CodeSmith',
   'workspace.defaultName': 'Default workspace',
   'unknown': 'Unknown',
   'none': 'None',
