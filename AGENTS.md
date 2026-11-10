@@ -38,6 +38,11 @@ sites is not ponytail, it is a guess.
 **Never cut, at any rung:** trust-boundary validation, data-loss handling,
 security, accessibility. Brevity is not a reason to drop a guard.
 
+**No speculative hardening.** Before adding complexity for a speculative or
+vanishingly unlikely race or security edge case, explain the concrete failure
+mode, likelihood, and complexity cost to the user and get their buy-in. Do not
+silently expand scope for theoretical robustness.
+
 Rung 2 is the one this repository keeps failing — "one turn loop, one base
 prompt" is rung 2 with a name. Two corollaries earned here:
 
