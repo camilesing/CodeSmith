@@ -933,13 +933,25 @@ pub async fn set_archived(host: &HostState, request: &Value, archived: bool) -> 
         .iter()
         .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
         .collect();
-    // Fold the new list into every open workspace follow stream.
+    // Fold the new list into every open workspace follow stream. The pin set
+    // in the baseline is the live one (the follow stream's own baseline
+    // serves it); an empty set would read as "no pins" and drop every
+    // client's pin display until its next reload.
     let view = super::workspace_view_live(host).await;
+    let live: Vec<String> = view["sessionIds"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let pinned = super::workspace::pinned_live(&host.settings_home(), &live);
     host.push_live(
         "workspace/follow",
         json!({
             "type": "baseline",
-            "value": { "items": [view], "archivedSessionIds": archived_ids, "pinnedSessionIds": [] }
+            "value": { "items": [view], "archivedSessionIds": archived_ids, "pinnedSessionIds": pinned }
         }),
     )
     .await;
