@@ -43,11 +43,11 @@ Tauri App (desktop/)
 1. **VENDOR_PATCHES**——精确字符串的产品文案补丁（上游字符串消失即
    fail-loud）。
 2. **REWRITES**——作用于每个 vendored 文本文件的机械改写表（顺序敏感）：
-   包作用域 `@deepseek-ai/dsh-*` → `@codesmith/*`、bundler 标识符、
-   全局 `__DSH_*` → `__CODESMITH_*`、环境变量 `DSH_*` → `CODESMITH_*`、
-   产品文案，以及小写 `dsh-` 前缀（CSS 变量、存储键、URL scheme）→
-   `cds-`（**长度不变**，硬编码偏移如 `key.slice(21)` 保持有效）。
-   改写表连同上游 commit 与逐文件哈希记录在 `ui/vendor/VENDOR.json`；
+   上游包作用域 → `@codesmith/*`、bundler 标识符、上游全局 →
+   `__CODESMITH_*`、上游环境变量名 → `CODESMITH_*`、产品文案，以及小写
+   上游前缀（CSS 变量、存储键、URL scheme）→ `cds-`（**长度不变**，
+   硬编码偏移如 `key.slice(21)` 保持有效）。改写表（含精确源字符串）
+   连同上游 commit 与逐文件哈希记录在 `ui/vendor/VENDOR.json`；
    重复执行是幂等的。
 
 随后 `desktop/scripts/gen_boot_graph.mjs` 生成 boot 图
@@ -257,7 +257,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   chip 切换。不会自动提交实现 kickoff。已知限制：没有“请求修改”评
   审语义——审批卡仍是允许/拒绝；从未写过计划文件的 plan-mode turn 不出卡
   片。
-- 权限面（`client-ui-permission-presets`）按 DSH 的两档预设表把 vendored
+- 权限面（`client-ui-permission-presets`）按通用 Agent 的两档预设表把 vendored
   预设选择器映射到线程 mode：`workspace-write`（线程 mode `agent`）与
   `danger-full-access`（即 CodeSmith 的 `yolo`，保留选择器的显式风险确
   认）。plan 不是预设：线程处于 `plan` 时投影为派生值 `read-only`，

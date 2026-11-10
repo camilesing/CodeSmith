@@ -3,9 +3,9 @@
 This document provides an overview of the codesmith architecture for developers and contributors.
 For the deep design narrative (provider seam, framework-core agent executor, guardrail
 absorption, extension system), see [DESIGN_INTERNALS.md](DESIGN_INTERNALS.md).
-For the DSH event-stream concept map (Source / Thread / Eval / Policy / Ticket /
-Mandate / Subscription / Assignment / Executor / Channel, each pinned to the code
-that owns it here), see [DSH_CONCEPTS.md](DSH_CONCEPTS.md).
+For the general-agent event-stream concept map (Source / Thread / Eval / Policy /
+Ticket / Mandate / Subscription / Assignment / Executor / Channel, each pinned to
+the code that owns it here), see [AGENT_CONCEPTS.md](AGENT_CONCEPTS.md).
 
 Current boundary note (v0.12.0):
 - **Framework / implementation layer split.** The workspace is divided into a

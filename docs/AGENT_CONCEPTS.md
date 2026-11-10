@@ -1,8 +1,8 @@
-# DSH Concept Map — the event-stream vocabulary, located
+# General Agent Concept Map — the event-stream vocabulary, located
 
-A widely-circulated article about DeepSeekHarness (DSH) describes a harness as
-layers cut across one event stream, each concept with its own job — not a
-pipeline:
+A widely-circulated article on general-purpose agent harnesses (written about
+DeepSeekHarness, DSH) describes a harness as layers cut across one event
+stream, each concept with its own job — not a pipeline:
 
 > Source translates the external world into events; Thread groups events by
 > clue; Eval makes an intake decision and Policy hands it the ruler; Ticket
@@ -26,7 +26,7 @@ one inbox, the seam triple, prefix-cache discipline.
 
 ## The map
 
-| DSH concept | What owns it here |
+| Concept | What owns it here |
 |---|---|
 | Source | ingress mechanisms + the runtime-event frame catalog |
 | Thread | runtime-API threads + the session journal |
@@ -71,7 +71,7 @@ Runtime-API threads (`Thread*` in `crates/protocol/src/lib.rs`,
 `crates/cli/src/runtime_threads.rs`): one engine plus one per-thread JSONL
 event stream per conversation — Codex-like lifecycle semantics, the durable
 authoritative record. Note the word collision: these are *conversations*, not
-DSH's clue-grouped event threads; nothing here groups events by clue, and no
+the general agent's clue-grouped event threads; nothing here groups events by clue, and no
 such grouping is planned. The durable per-session record underneath every
 thread is the session journal (`crates/session/src/journal.rs`).
 
@@ -123,7 +123,7 @@ Partial. What exists is push-at-assembly: the child→parent
 `SubAgentCompletion.context_patch` (tighten-only), the fact ledger
 (`crates/session/src/fact_ledger.rs`), and agent memory
 (`crates/context/src/agent_memory/`) — all flowing context into the next
-assembly without a model call. **Open ground:** DSH's session-reference
+assembly without a model call. **Open ground:** the general agent's session-reference
 (cross-session recall injected automatically) has no counterpart here. Any
 future slice must keep the prefix-cache discipline: volatile facts enter as
 user-role messages, never the frozen prefix.
@@ -138,7 +138,7 @@ running `run_child_turn`; plus the team task assignment flow
 ### Executor — the work runs
 
 The strongest overlap, already adopted deliberately (founder decision
-2026-10-30, the DSH kernel-composition model): every turn — main and child
+2026-10-30, the general-agent kernel-composition model): every turn — main and child
 alike — resolves its factory from the process-shared `TurnExecutorRegistry`
 (`crates/agent-runtime/src/engine/executor_composition.rs`), with
 `HostAgentExecutor` as the production loop, the `rhai` registry entry for
@@ -163,7 +163,7 @@ runtime API threads (HTTP), and the desktop app's loopback bridge
 - **No second inbox or loop.** `engine/inbox.rs` is vocabulary over the
   existing mechanisms; a second queue beside them would be "a second inbox
   wearing a hat."
-- **No addressable team/workflow inbox** (DSH-style per-agent delivery) —
+- **No addressable team/workflow inbox** (general-agent-style per-agent delivery) —
   future work on the inbox seam, not present vocabulary.
 - **No new journal holes:** sub-agent transcripts stay unjournaled
   (documented limitation, `ARCHITECTURE.md`); injected frames are logged

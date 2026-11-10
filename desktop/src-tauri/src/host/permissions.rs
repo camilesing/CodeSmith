@@ -1,7 +1,7 @@
 //! The permission-preset surface — the vendored `client-ui-permission-presets`
 //! plugin's host half.
 //!
-//! Upstream (DSH) models permissions as one sandbox + approval bundle chosen
+//! The upstream general agent models permissions as one sandbox + approval bundle chosen
 //! per session; plan is a separate collaboration state and coordinator is not
 //! a permission at all. CodeSmith still carries a single `thread.mode` ring
 //! (`agent` / `plan` / `yolo` / `coordinator`), so the bridge projects that

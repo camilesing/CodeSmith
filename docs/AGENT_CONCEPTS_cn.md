@@ -1,7 +1,8 @@
-# DSH 概念图谱 —— 落到代码的事件流词汇
+# 通用 Agent 概念图谱 —— 落到代码的事件流词汇
 
-一篇流传较广的 DeepSeekHarness（DSH）文章把 harness 描述为围绕同一条事件流
-做的层次切分，各概念各司其职，而不是一条龙流水线：
+一篇流传较广的通用 Agent harness 文章（讲的是 DeepSeekHarness，即 DSH）把
+harness 描述为围绕同一条事件流做的层次切分，各概念各司其职，而不是一条龙
+流水线：
 
 > Source 把外部世界翻译成事件；Thread 把事件按线索归拢；Eval 做一次接单
 > 判断，Policy 给它尺子；Ticket 让工作有身份，Mandate 给它边界；
@@ -22,7 +23,7 @@
 
 ## 映射总表
 
-| DSH 概念 | 本仓库的归属 |
+| 概念 | 本仓库的归属 |
 |---|---|
 | Source | 各入口机制 + runtime-event 帧目录 |
 | Thread | runtime-API 线程 + 会话日志 |
@@ -66,7 +67,7 @@
 Runtime-API 线程（`crates/protocol/src/lib.rs` 的 `Thread*`、
 `crates/cli/src/runtime_threads.rs`）：每个会话一个引擎加一条 per-thread
 JSONL 事件流 —— Codex 式生命周期语义，持久化的权威记录。注意撞名：它们是
-*会话*，不是 DSH 那种按线索归拢的事件线程；本仓库没有任何按线索分组事件
+*会话*，不是通用 Agent 那种按线索归拢的事件线程；本仓库没有任何按线索分组事件
 的机制，也没有规划。每条线程之下的持久会话记录是会话日志
 （`crates/session/src/journal.rs`）。
 
@@ -115,7 +116,7 @@ messages 是任务，tools 是收窄后的面。"委托收窄包络，从不改�
 `SubAgentCompletion.context_patch`（只收紧）、事实账本
 （`crates/session/src/fact_ledger.rs`）、agent 记忆
 （`crates/context/src/agent_memory/`）—— 都在无需模型调用的情况下把上下文
-送进下一次组装。**空地：** DSH 的 session-reference（跨会话 recall 自动注
+送进下一次组装。**空地：** 通用 Agent 的 session-reference（跨会话 recall 自动注
 入）在这里没有对应物。未来的切片必须守住 prefix-cache 纪律：易变事实以
 user-role 消息进入，绝不进冻结前缀。
 
@@ -127,7 +128,7 @@ user-role 消息进入，绝不进冻结前缀。
 
 ### Executor —— 工作被执行
 
-重叠最强、且是刻意采纳的一块（founder 决定 2026-10-30，DSH
+重叠最强、且是刻意采纳的一块（founder 决定 2026-10-30，通用 Agent
 kernel-composition 模型）：每个回合 —— 主回合与子回合 alike —— 从进程共享
 的 `TurnExecutorRegistry`
 （`crates/agent-runtime/src/engine/executor_composition.rs`）解析自己的工
@@ -149,7 +150,7 @@ UI 事件通道（`crates/agent-runtime/src/events.rs`）、spawn 树 `Mailbox`
   （`RuntimeEventKind`、`DelegationPolicy`、……）。
 - **不加第二个收件箱或循环。** `engine/inbox.rs` 是既有机制之上的词汇；
   在它们旁边再立一个队列就是"戴帽子的第二个收件箱"。
-- **不做可寻址的团队/工作流收件箱**（DSH 式 per-agent 投递）—— 收件箱
+- **不做可寻址的团队/工作流收件箱**（通用 Agent 式 per-agent 投递）—— 收件箱
   seam 上的未来工作，不是现有词汇。
 - **不开新的日志洞：** 子代理转写继续无日志（已记录的限制，
   `ARCHITECTURE.md`）；注入帧因为帧文本本身就是记录而被记下

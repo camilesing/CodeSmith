@@ -144,7 +144,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         // Upstream #1247 kept /plan and /agent as compatibility shorthands
-        // for /mode; /plan now also carries the DSH-style `/plan off` exit so
+        // for /mode; /plan now also carries the general-agent-style `/plan off` exit so
         // plan is a state you leave, not a ring stop you toggle past.
         Command::Plan => {
             cmd_plan(state, &arg_str);
@@ -1272,7 +1272,7 @@ fn cmd_plan(state: &mut ReplState, arg: &str) {
     }
 }
 
-/// The DSH permission preset a mode currently represents. `plan` and
+/// The general-agent permission preset a mode currently represents. `plan` and
 /// `coordinator` are derived values outside the selectable table.
 fn permission_preset(mode: AppMode) -> &'static str {
     match mode {

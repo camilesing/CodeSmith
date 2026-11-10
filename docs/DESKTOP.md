@@ -46,13 +46,13 @@ in order:
 1. **VENDOR_PATCHES** — exact-string product-copy patches (fail loud if the
    upstream string disappeared).
 2. **REWRITES** — a mechanical, order-dependent table applied to every
-   vendored text file: package scope `@deepseek-ai/dsh-*` → `@codesmith/*`,
-   bundler identifiers, globals `__DSH_*` → `__CODESMITH_*`, env `DSH_*` →
-   `CODESMITH_*`, product prose, and the lowercase `dsh-` prefixes (CSS
+   vendored text file: the upstream package scope → `@codesmith/*`, bundler
+   identifiers, upstream globals → `__CODESMITH_*`, upstream env names →
+   `CODESMITH_*`, product prose, and the lowercase upstream prefixes (CSS
    variables, storage keys, URL schemes) → `cds-`, a **length-preserving**
-   rename so hard-coded offsets (`key.slice(21)`) stay valid. The table is
-   recorded in `ui/vendor/VENDOR.json` (with the upstream commit and
-   per-file hashes); re-running is a no-op.
+   rename so hard-coded offsets (`key.slice(21)`) stay valid. The table
+   (exact source strings included) is recorded in `ui/vendor/VENDOR.json`
+   (with the upstream commit and per-file hashes); re-running is a no-op.
 
 `desktop/scripts/gen_boot_graph.mjs` then generates the boot graph
 (`ui/src/boot-graph.generated.ts`) and stages the classic-script bundles
@@ -322,7 +322,7 @@ Known limitations of the current implementation:
   approval card stays allow/deny — and a plan-mode turn that never wrote a
   plan file submits no card.
 - The permission surfaces (`client-ui-permission-presets`) map the vendored
-  preset picker onto the thread mode through DSH's two-preset table:
+  preset picker onto the thread mode through the general agent's two-preset table:
   `workspace-write` (thread mode `agent`) and `danger-full-access`
   (CodeSmith's `yolo`, keeping the picker's explicit risk confirmation). Plan
   is not a preset: while the thread is in `plan` the projection reports the

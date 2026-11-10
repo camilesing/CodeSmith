@@ -1,6 +1,6 @@
 //! Runtime-event frames — the typed catalog of the sentinel user messages
 //! the engine injects into the transcript (the Source row of
-//! `docs/DSH_CONCEPTS.md`, the DSH concept map).
+//! `docs/AGENT_CONCEPTS.md`, the general-agent concept map).
 //!
 //! Every internal input that becomes a user-role message — sub-agent and
 //! shell-job completions, verification verdicts, plan-mode reminders,
@@ -27,7 +27,7 @@
 //!   (`engine/tool_catalog.rs`) is a tool-discovery activation marker.
 //!   Neither folds in.
 //! - The kind set is closed and owned here: a new injected input adds a
-//!   variant (and updates `docs/DSH_CONCEPTS.md`), never a raw
+//!   variant (and updates `docs/AGENT_CONCEPTS.md`), never a raw
 //!   `kind="..."` string at a construction site.
 
 use super::RUNTIME_EVENT_PREFIX;

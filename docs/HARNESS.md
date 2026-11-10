@@ -113,7 +113,7 @@ secrets.
 
 Three modes control the action space: plan is read-only, agent gates
 destructive operations behind approval, and yolo auto-approves in trusted
-workspaces. The user-facing control surface follows DSH's split: a
+workspaces. The user-facing control surface follows the general agent's split: a
 **permission preset** names the sandbox + approval bundle a session runs
 under, and **plan** is a separate collaboration state rather than a third
 preset. Two presets are selectable — `workspace-write` (agent mode) and

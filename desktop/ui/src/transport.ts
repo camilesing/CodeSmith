@@ -163,7 +163,7 @@ function offlineSettingsMutate(payload: unknown): RpcResult {
 }
 
 function offlineCatalog(): RpcResult {
-  // The catalog carries only the DSH permission presets — sandbox plus
+  // The catalog carries only the general-agent permission presets — sandbox plus
   // approval. Plan is a separate chip and coordinator is not a permission.
   // Values double as names so the vendored locale dictionaries localize the
   // conventional rows; legacy mode-shaped defaults normalize on read.

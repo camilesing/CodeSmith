@@ -297,7 +297,7 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
             Admitted::Permission(mode) => {
                 // Plan is a separate state, not a permission: switching the
                 // sandbox/approval bundle would silently leave it. Make the
-                // user leave plan explicitly, matching the DSH model where
+                // user leave plan explicitly, matching the general-agent model where
                 // the two controls are independent.
                 if sessions::current_mode(host, &session_id).await.as_deref() == Some("plan") {
                     return Ok(Outcome::Executed(command_error(
