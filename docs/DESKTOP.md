@@ -93,7 +93,10 @@ Env knobs: `CODESMITH_DESKTOP_CODESMITH` (backend binary),
 `CODESMITH_DESKTOP_BRIDGE_PORT` (bridge port), `CODESMITH_DESKTOP_APP`
 (where the CLI launches the app from). The browser-only preview
 (`pnpm dev` without the shell) falls back to an offline stub transport with a
-visible 离线演示模式 badge.
+visible 离线演示模式 badge; the stub serves the General settings namespaces
+(`ui-settings-general`, `locale`, `ui-settings`, `permission`, with in-memory
+writes), the permission catalog, `session/events`, and an empty `@` file
+source so those pages render without the shell.
 
 Tests: `cargo test --manifest-path desktop/src-tauri/Cargo.toml` — the mapper
 (seq/revision invariants, frame shapes), the waterfall mappings, the journal
@@ -280,17 +283,32 @@ Known limitations of the current implementation:
   argument schema and reads the plan file itself, so the bridge attaches the
   latest `write_plan_file` body as the call's `arguments.plan` both on replay
   and live (the live mapper is seeded from the replayed snapshot for a stream
-  that joins mid-turn). Approving the call restores the thread mode to
-  `agent`, mirroring the REPL host's handoff; a runtime refusal leaves the
-  switch to the plan chip. No implementation kickoff is submitted. Known limitations: there is no “request changes” review intent —
-  the approval card stays allow/deny — and a plan-mode turn that never wrote a
+  that joins mid-turn). The vendored card also needs a `# title` heading; a
+  plan the model wrote without one gets `# Plan` prepended on the wire only
+  (the plan file stays exactly as written). The runtime records an approved
+  exit as a `status` item, not a tool item, so the bridge synthesizes the
+  `exit_plan_mode` call from that item (its id is the plan's call id) — that
+  is what feeds the card and the plan resource. Approving the call queues the
+  thread-mode restore to `agent`, mirroring the REPL host's handoff; the
+  restore runs when the turn-end event arrives, because the runtime's own
+  settlement save would overwrite a PATCH sent mid-turn. A runtime refusal
+  leaves the switch to the plan chip. No implementation kickoff is submitted.
+  Known limitations: there is no “request changes” review intent — the
+  approval card stays allow/deny — and a plan-mode turn that never wrote a
   plan file submits no card.
 - The permission surfaces (`client-ui-permission-presets`) map the vendored
   preset picker onto the thread mode: `agent`, `plan`, `danger-full-access`
   (CodeSmith's `yolo`, keeping the picker's localized label and explicit risk
   confirmation), and `coordinator`. `/permission <value>` joins `/mode` in the
   host command catalog; a pick PATCHes the thread mode and pushes the
-  `permissions` projection. The General settings row's
+  `permissions` projection. The same PATCH carries `auto_approve` (on for
+  `yolo`/`coordinator`, off otherwise): the runtime's prompt assembly requires
+  that pairing, and leaving full access for plan mode must still ask before
+  exiting it. A thread left by an older build in full-access mode without the
+  flag is repaired when it is first followed or prompted. The picker's own rows localize from the
+  `locale.preference` setting (`zh-*` gets Chinese labels; other languages
+  keep the English ones), fetched with the catalog — a language switch
+  applies on the next catalog fetch/reload. The General settings row's
   `permission.defaultPreset` lives in `desktop/settings.json`, and
   `session/create` applies it to the new thread (an unknown or hand-edited
   value falls back to `agent`).
@@ -301,11 +319,15 @@ Known limitations of the current implementation:
   dependency/build directories are skipped, and symlinks are not followed. The
   index is cached per workspace and dropped when a turn settles. The
   `workingDirectory` projection (`thread.workspace`) lets file chips and file
-  links resolve. `sessionReferenceResolver/candidates` answers an empty list:
+  links resolve, and `session/list` rows carry the bridge's `cwd` (the one
+  implicit workspace) for the sidebar files tree and the chip resolver.
+  `sessionReferenceResolver/candidates` answers an empty list:
   CodeSmith has no cross-session context-injection feature, so the menu is
   file-only.
 - Control projections also carry `todos` (the latest successful whole-list
-  `todo`/`checklist_write` call, pushed live on the tool's `item.started`),
+  `todo`/`checklist_write` call, pushed live on the tool's `item.started`;
+  single-item `todo_add`/`todo_update`/`checklist_add`/`checklist_update`
+  calls fold their resulting snapshot from the result metadata),
   `plan`, `permissions`, `workingDirectory`, and `turnOutline` (every started
   turn's seq plus bounded prompt/response previews). `contextBreakdown` and
   `userQuestions` stay absent: the runtime records no per-request

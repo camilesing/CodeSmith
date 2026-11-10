@@ -60,7 +60,14 @@ pub fn mode_of_preset(preset: &str) -> Option<&'static str> {
 /// General settings row read. `defaultPreset` is validated against the
 /// advertised options so the settings row's "current default" lookup cannot
 /// throw on a hand-edited document.
-pub fn catalog(default_preset: &str) -> Value {
+///
+/// The vendored presentation layer localizes `danger-full-access` by value
+/// when it receives the English default label; `agent`/`plan`/`coordinator`
+/// have no built-in dictionary entry, so the bridge supplies their
+/// CodeSmith-specific labels. `locale` is the user's explicit language
+/// preference; an unsupported language keeps the English labels. A language
+/// switch reaches the labels on the next catalog fetch (a reload).
+pub fn catalog(default_preset: &str, locale: Option<&str>) -> Value {
     let default = if PRESETS.contains(&default_preset) {
         default_preset
     } else {
@@ -71,7 +78,7 @@ pub fn catalog(default_preset: &str) -> Value {
         .map(|preset| {
             json!({
                 "value": preset,
-                "name": display_name(preset),
+                "name": display_name(preset, locale),
             })
         })
         .collect();
@@ -82,9 +89,18 @@ pub fn catalog(default_preset: &str) -> Value {
     })
 }
 
-/// The host-supplied label. The vendored presentation layer localizes
-/// `danger-full-access` by value; the other three display as supplied.
-fn display_name(preset: &str) -> &'static str {
+/// The host-supplied label. The English names match the vendored full-access
+/// dictionary's default so that one row still localizes itself.
+fn display_name(preset: &str, locale: Option<&str>) -> &'static str {
+    if locale.is_some_and(|locale| locale.to_ascii_lowercase().starts_with("zh")) {
+        return match preset {
+            "agent" => "智能体",
+            "plan" => "计划",
+            FULL_ACCESS_PRESET => "完全权限",
+            "coordinator" => "协调者",
+            _ => "智能体",
+        };
+    }
     match preset {
         "agent" => "Agent",
         "plan" => "Plan",
@@ -116,7 +132,7 @@ mod tests {
     #[test]
     fn catalog_default_is_always_advertised() {
         for default in ["agent", "plan", FULL_ACCESS_PRESET, "coordinator", "stale"] {
-            let value = catalog(default);
+            let value = catalog(default, None);
             let options = value["defaultOptions"].as_array().unwrap();
             let advertised = options
                 .iter()
@@ -124,10 +140,10 @@ mod tests {
             assert!(advertised, "default {default:?} must be advertised");
             assert_eq!(value["options"], value["defaultOptions"]);
         }
-        assert_eq!(catalog("stale")["defaultPreset"], DEFAULT_PRESET);
+        assert_eq!(catalog("stale", None)["defaultPreset"], DEFAULT_PRESET);
         // The picker's full-access row keys its risk confirmation and
         // localized label on this value.
-        let full = catalog("agent")["options"]
+        let full = catalog("agent", None)["options"]
             .as_array()
             .unwrap()
             .iter()
@@ -135,5 +151,11 @@ mod tests {
             .cloned()
             .expect("full-access option");
         assert_eq!(full["name"], "Full access");
+        // The language preference localizes the CodeSmith-specific rows; an
+        // unsupported language keeps the English labels.
+        let zh = catalog("agent", Some("zh-CN"));
+        assert_eq!(zh["options"][0]["name"], "智能体");
+        assert_eq!(zh["options"][2]["name"], "完全权限");
+        assert_eq!(catalog("agent", Some("fr"))["options"][0]["name"], "Agent");
     }
 }

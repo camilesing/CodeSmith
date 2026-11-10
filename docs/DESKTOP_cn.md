@@ -85,7 +85,10 @@ cargo tauri build --manifest-path desktop/src-tauri/Cargo.toml
 环境变量：`CODESMITH_DESKTOP_CODESMITH`（后端二进制）、
 `CODESMITH_DESKTOP_BRIDGE_PORT`（桥端口）、`CODESMITH_DESKTOP_APP`
 （CLI 从哪里拉起应用）。只起浏览器预览（`pnpm dev` 不起壳）时回退到
-内存 stub 传输，并显示可见的「离线演示模式」角标。
+内存 stub 传输，并显示可见的「离线演示模式」角标；stub 服务通用设置的
+`ui-settings-general`/`locale`/`ui-settings`/`permission` 命名空间（含
+内存写入）、权限 catalog、`session/events` 与空的 `@` 文件源，让这些页面
+在无壳时也能渲染。
 
 测试：`cargo test --manifest-path desktop/src-tauri/Cargo.toml`——映射器
 （seq/revision 不变量、帧形状）、waterfall 映射、journal page 契约、流 mux
@@ -227,27 +230,39 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   计划渲染为 turn 尾部卡片与右侧栏计划标签页。运行时的 `exit_plan_mode`
   参数 schema 为空、自己读计划文件，因此桥在重放与实时路径上把最近一次
   `write_plan_file` 的正文作为该调用的 `arguments.plan`（中途接入的实时流
-  用重放快照 seed mapper）。批准该调用会把线程 mode 恢复为 `agent`，对齐
-  REPL 宿主的行为；运行时拒绝时留给计划 chip 切换。不会自动提交实现
-  kickoff。已知限制：没有“请求修改”评
+  用重放快照 seed mapper）。vendored 卡片还要求 `# 标题`：模型没写标题时
+  只在桥上补 `# Plan`，计划文件本身保持原样。运行时把批准的退出记为
+  `status` item 而非工具 item，桥据该 item 合成 `exit_plan_mode` 调用
+  （item id 即计划的 call id），计划卡与计划资源都从它取数。批准该调用
+  会把线程 mode 恢复为 `agent` 的交接排入队列，在 turn 结束事件到达时执行
+  ——运行时的落定保存会覆盖中途发出的 PATCH。运行时拒绝时留给计划 chip
+  切换。不会自动提交实现 kickoff。已知限制：没有“请求修改”评
   审语义——审批卡仍是允许/拒绝；从未写过计划文件的 plan-mode turn 不出卡
   片。
 - 权限面（`client-ui-permission-presets`）把 vendored 预设选择器映射到线
   程 mode：`agent`、`plan`、`danger-full-access`（即 CodeSmith 的
   `yolo`，保留选择器的本地化标签与显式风险确认）、`coordinator`。
   `/permission <value>` 与 `/mode` 并列进入宿主命令目录；选择后 PATCH 线
-  程 mode 并推送 `permissions` 投影。通用设置行的
+  程 mode 并推送 `permissions` 投影。同一个 PATCH 携带 `auto_approve`
+  （`yolo`/`coordinator` 为开，其余为关）：运行时的 prompt 组装要求这一
+  配对，且从完全权限切到计划模式后退出计划仍须询问用户。旧版本遗留的
+  “完全权限但未开 auto_approve”线程在首次 follow 或首次 prompt 时会被修复。选择器自身的行按
+  `locale.preference` 本地化（`zh-*` 得到中文标签，其他语言保留英文），
+  与 catalog 一起取——切换语言在下一次 catalog 拉取/重载时生效。通用设置行的
   `permission.defaultPreset` 存在 `desktop/settings.json`，
   `session/create` 会把它应用到新线程（未知或手改的值回落到 `agent`）。
 - `@` 菜单（`client-ui-reference`）经 `fileReferences/list` 列出工作区文
   件与目录：空 query 列根目录，带路径的 query 列该目录，裸片段在 5 万条上
   限的工作区索引里按上游打分搜索。隐藏项与版本控制/依赖/构建目录被跳过，
   不跟随符号链接；索引按工作区缓存，turn 落定后丢弃。`workingDirectory`
-  投影（`thread.workspace`）让文件 chip 与文件链接正确解析。
+  投影（`thread.workspace`）让文件 chip 与文件链接正确解析；`session/list`
+  行携带桥的 `cwd`（唯一隐式工作区），供右侧栏文件树与 chip 解析使用。
   `sessionReferenceResolver/candidates` 返回空列表：CodeSmith 没有跨会话
   上下文注入能力，菜单只列文件。
 - 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`
-  调用，工具 `item.started` 时实时推送）、`plan`、`permissions`、
+  调用，工具 `item.started` 时实时推送；单项的
+  `todo_add`/`todo_update`/`checklist_add`/`checklist_update` 从结果
+  metadata 折叠其快照）、`plan`、`permissions`、
   `workingDirectory` 与 `turnOutline`（每个已开始 turn 的 seq 与截断的
   prompt/response 预览）。`contextBreakdown` 与 `userQuestions` 仍缺
   席：运行时没有记录逐请求的 system/tools/message 组成，问题请求也没有

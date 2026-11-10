@@ -309,6 +309,11 @@ pub struct SessionMapper {
     /// its `arguments.plan` — the vendored plan card/preview matches a
     /// `tool/call` whose arguments name `plan`.
     plan_content: Option<String>,
+    /// Whether this turn already published the `exit_plan_mode` call the plan
+    /// card anchors on. The runtime records an approved exit as a `status`
+    /// item, not a tool item, so the mapper synthesizes that call from the
+    /// plan body at the turn's approval status.
+    plan_call_emitted: bool,
 }
 
 impl SessionMapper {
@@ -419,6 +424,7 @@ impl SessionMapper {
                 self.turn_no += 1;
                 self.step = 0;
                 self.turn_has_file_changes = false;
+                self.plan_call_emitted = false;
                 frames.push(Frame::Event(self.seq.event(
                     "turn/start",
                     json!({ "turn": self.turn_no }),
@@ -491,9 +497,14 @@ impl SessionMapper {
                             }
                         }
                         let name = tool_view_name(&raw_name);
+                        if name == "exit_plan_mode" {
+                            // A runtime that records the call itself needs no
+                            // synthesized copy at the approval status.
+                            self.plan_call_emitted = true;
+                        }
                         let arguments = if name == "exit_plan_mode" {
                             match &self.plan_content {
-                                Some(plan) => json!({ "plan": plan }).to_string(),
+                                Some(plan) => plan_call_arguments(plan),
                                 None => tool
                                     .get("input")
                                     .cloned()
@@ -689,6 +700,27 @@ impl SessionMapper {
                     // item already carries its text); re-emitting here would
                     // duplicate the message.
                     "context_compaction" | "error" | "status" => {
+                        // An approved plan exits as a status item, not a
+                        // tool item: publish the `exit_plan_mode` call the
+                        // plan card/preview anchors on from the plan body
+                        // this stream already holds.
+                        if is_plan_approved(&item) && !self.plan_call_emitted {
+                            if let Some(plan) = &self.plan_content {
+                                self.plan_call_emitted = true;
+                                frames.push(Frame::Event(self.seq.event(
+                                    "tool/call",
+                                    json!({
+                                        "turn": self.turn_no,
+                                        "step": self.step,
+                                        "callId": item_id,
+                                        "name": "exit_plan_mode",
+                                        "arguments": plan_call_arguments(plan),
+                                    }),
+                                    false,
+                                    time,
+                                )));
+                            }
+                        }
                         frames.push(Frame::Event(self.seq.event(
                             "system/message",
                             json!({
@@ -791,6 +823,51 @@ pub(super) fn tool_argument(item: &Value, key: &str) -> Option<String> {
     None
 }
 
+/// Whether plan markdown already opens with the `# <title>` heading the
+/// vendored plan card requires (`submittedPlan` drops a plan without one).
+fn plan_has_title(markdown: &str) -> bool {
+    let Some(rest) = markdown.trim_start().strip_prefix('#') else {
+        return false;
+    };
+    // The title text must sit on the heading's own line: `#\nStep` is an
+    // empty heading followed by a paragraph, not a document title.
+    let line = rest.split(['\r', '\n']).next().unwrap_or_default();
+    let mut chars = line.chars();
+    match chars.next() {
+        Some(space) if space.is_whitespace() => chars.any(|c| !c.is_whitespace()),
+        _ => false,
+    }
+}
+
+/// `exit_plan_mode`'s wire arguments. The plan file is the source of truth,
+/// but the vendored card needs a `# title` heading to identify the document;
+/// a plan the model wrote without one gets the generic heading prepended on
+/// the wire only (the file itself stays exactly as written).
+pub(super) fn plan_call_arguments(content: &str) -> String {
+    let markdown = if plan_has_title(content) {
+        content.to_string()
+    } else {
+        format!("# Plan\n\n{content}")
+    };
+    json!({ "plan": markdown }).to_string()
+}
+
+/// A status item's text: its summary (how the runtime stores it), else the
+/// detail body.
+fn item_status_text(item: &Value) -> &str {
+    item.get("summary")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .or_else(|| item.get("detail").and_then(Value::as_str))
+        .unwrap_or_default()
+}
+
+/// Whether a status item records the approved `exit_plan_mode` handoff.
+fn is_plan_approved(item: &Value) -> bool {
+    item.get("kind").and_then(Value::as_str) == Some("status")
+        && item_status_text(item).contains("Plan approved")
+}
+
 /// The latest plan-file body in a thread record, in item order. Seeding a
 /// live mapper with it covers a follow stream that connects after the
 /// `write_plan_file` call but before `exit_plan_mode`.
@@ -875,6 +952,9 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                 .to_string()
         });
         let mut step: u64 = 0;
+        // Whether this turn already published its `exit_plan_mode` call (see
+        // the live arm's plan-call synthesis).
+        let mut plan_call_emitted = false;
         // Where this turn's usage sample lands: the last settled agent
         // message (preferring a text message over reasoning), mirroring the
         // live path's attachment to the final agent item.
@@ -960,9 +1040,12 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                         }
                     }
                     let name = tool_view_name(&raw_name);
+                    if name == "exit_plan_mode" {
+                        plan_call_emitted = true;
+                    }
                     let arguments = if name == "exit_plan_mode" {
                         match &plan_content {
-                            Some(plan) => json!({ "plan": plan }).to_string(),
+                            Some(plan) => plan_call_arguments(plan),
                             None => replay_tool_arguments(item),
                         }
                     } else {
@@ -1000,14 +1083,33 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                         ));
                     }
                 }
-                "context_compaction" | "error" | "status" => events.push(seq.event(
-                    "system/message",
-                    json!({
-                        "message": { "id": item_id, "content": [{ "type": "text", "text": content_text(detail_text) }] }
-                    }),
-                    true,
-                    ended,
-                )),
+                "context_compaction" | "error" | "status" => {
+                    if is_plan_approved(item) && !plan_call_emitted {
+                        if let Some(plan) = &plan_content {
+                            plan_call_emitted = true;
+                            events.push(seq.event(
+                                "tool/call",
+                                json!({
+                                    "turn": turn_no,
+                                    "step": step,
+                                    "callId": item_id,
+                                    "name": "exit_plan_mode",
+                                    "arguments": plan_call_arguments(plan),
+                                }),
+                                false,
+                                ended,
+                            ));
+                        }
+                    }
+                    events.push(seq.event(
+                        "system/message",
+                        json!({
+                            "message": { "id": item_id, "content": [{ "type": "text", "text": content_text(detail_text) }] }
+                        }),
+                        true,
+                        ended,
+                    ));
+                }
                 _ => {}
             }
         }
@@ -1907,6 +2009,98 @@ mod tests {
         let args: Value =
             serde_json::from_str(call["data"]["arguments"].as_str().unwrap()).unwrap();
         assert_eq!(args["plan"], "# Plan\nStep 1");
+    }
+
+    #[test]
+    fn plan_arguments_gain_a_title_only_when_the_body_lacks_one() {
+        assert!(plan_has_title("# Plan\n\nStep"));
+        assert!(plan_has_title("  # Plan"));
+        assert!(plan_has_title("#\tPlan"));
+        assert!(!plan_has_title("## Step"));
+        assert!(!plan_has_title("#\nStep"));
+        assert!(!plan_has_title("# \nStep"));
+        assert!(!plan_has_title("Plan\n# Later"));
+
+        let titled: Value =
+            serde_json::from_str(&plan_call_arguments("# Real title\nbody")).unwrap();
+        assert_eq!(titled["plan"], "# Real title\nbody");
+        let untitled: Value =
+            serde_json::from_str(&plan_call_arguments("## Step 1\nbody")).unwrap();
+        assert_eq!(untitled["plan"], "# Plan\n\n## Step 1\nbody");
+    }
+
+    #[test]
+    fn approved_plan_without_a_tool_item_synthesizes_the_plan_call() {
+        // CodeSmith records an approved exit_plan_mode as a status item, so
+        // replay attaches the plan call the card anchors on.
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "completed",
+                "created_at": "2026-11-06T10:00:00Z", "started_at": "2026-11-06T10:00:00Z",
+                "ended_at": "2026-11-06T10:00:09Z" }],
+            "items": [
+                { "id": "item_w", "turn_id": "turn_1", "kind": "file_change",
+                  "status": "completed", "detail": "ok", "summary": "write_plan_file: ok",
+                  "metadata": { "arguments": { "content": "## Step 1" } },
+                  "started_at": "2026-11-06T10:00:05Z", "ended_at": "2026-11-06T10:00:06Z" },
+                { "id": "item_s", "turn_id": "turn_1", "kind": "status",
+                  "status": "completed", "summary": "Plan approved — the turn ends here",
+                  "detail": "Plan approved — the turn ends here",
+                  "started_at": "2026-11-06T10:00:08Z", "ended_at": "2026-11-06T10:00:08Z" },
+            ],
+        });
+        let events = replay_events(&detail);
+        let call = events
+            .iter()
+            .find(|event| event["type"] == "tool/call" && event["data"]["name"] == "exit_plan_mode")
+            .expect("synthesized exit_plan_mode call");
+        assert_eq!(call["data"]["callId"], "item_s");
+        let args: Value =
+            serde_json::from_str(call["data"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["plan"], "# Plan\n\n## Step 1");
+
+        // The live stream synthesizes the same call at the approval status,
+        // once.
+        let mut mapper = SessionMapper::default();
+        let _ = mapper.map_envelope(&json!({
+            "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        let _ = mapper.map_envelope(&json!({
+            "event": "item.started", "item_id": "item_w",
+            "timestamp": "2026-11-06T10:00:05Z",
+            "payload": {
+                "item": { "id": "item_w", "kind": "file_change", "status": "in_progress" },
+                "tool": { "name": "write_plan_file", "input": { "content": "## Step 1" } }
+            }
+        }));
+        let completed = json!({
+            "event": "item.completed", "item_id": "item_s",
+            "timestamp": "2026-11-06T10:00:08Z",
+            "payload": { "item": { "id": "item_s", "kind": "status", "status": "completed",
+                "summary": "Plan approved — the turn ends here",
+                "detail": "Plan approved — the turn ends here" } }
+        });
+        let frames = mapper.map_envelope(&completed);
+        let call = frames
+            .iter()
+            .find_map(|frame| match frame {
+                Frame::Event(event) if event["data"]["name"] == "exit_plan_mode" => {
+                    Some(event.clone())
+                }
+                _ => None,
+            })
+            .expect("live synthesized exit_plan_mode call");
+        assert_eq!(call["data"]["callId"], "item_s");
+        let args: Value =
+            serde_json::from_str(call["data"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["plan"], "# Plan\n\n## Step 1");
+        let again = mapper.map_envelope(&completed);
+        assert!(
+            !again.iter().any(|frame| matches!(
+                frame,
+                Frame::Event(event) if event["data"]["name"] == "exit_plan_mode"
+            )),
+            "the status re-delivery must not duplicate the plan call"
+        );
     }
 
     #[test]

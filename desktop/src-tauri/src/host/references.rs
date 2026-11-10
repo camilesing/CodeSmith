@@ -123,10 +123,21 @@ impl ReferenceIndex {
     }
 }
 
+/// The session a `fileReferences/list` call addresses. The generated remote
+/// declares the session as an `agent`-scope lookup, so its wire name is
+/// `agentId` (the client suppresses a failed lookup to an empty menu, which
+/// made a sessionId-only reader silently useless); accept the direct names
+/// too, for hand-written callers and older wire shapes.
+fn reference_session_id(request: &Value) -> Option<&str> {
+    ["sessionId", "agentId", "session_id"]
+        .iter()
+        .find_map(|key| request.get(*key).and_then(Value::as_str))
+}
+
 /// `fileReferences/list` — the `@` menu's file source.
 pub async fn list(host: &HostState, args: &Value) -> Value {
     let request = args.get("request").unwrap_or(args);
-    let Some(session_id) = request.get("sessionId").and_then(Value::as_str) else {
+    let Some(session_id) = reference_session_id(request) else {
         return rpc_error(
             "gateway/arguments-invalid",
             "fileReferences/list without sessionId",
@@ -376,6 +387,26 @@ fn kind_rank(candidate: &Candidate) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_id_reads_the_remotes_agent_scope_wire_name() {
+        // The generated remote (sessionFileReferences.list) scopes on the
+        // agent and sends `{agentId, query}`; a sessionId-only reader
+        // answered a wire error the client turned into an empty menu.
+        assert_eq!(
+            reference_session_id(&json!({ "agentId": "thr_1", "query": "" })),
+            Some("thr_1")
+        );
+        assert_eq!(
+            reference_session_id(&json!({ "sessionId": "thr_2" })),
+            Some("thr_2")
+        );
+        assert_eq!(
+            reference_session_id(&json!({ "session_id": "thr_3" })),
+            Some("thr_3")
+        );
+        assert_eq!(reference_session_id(&json!({ "query": "" })), None);
+    }
 
     fn temp_workspace(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("cds-refs-{tag}-{}", std::process::id()));

@@ -42,10 +42,109 @@ async function parked(signal: AbortSignal): Promise<void> {
   await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
 }
 
-const UNARY: Record<string, () => RpcResult> = {
+// Offline mirrors of the desktop bridge's General-settings namespaces. The
+// vendored pages validate a namespace against its schemastery envelope, so
+// the envelopes are the ones host::settings serves (same field ids).
+const OFFLINE_SETTINGS_SCHEMAS: Record<string, unknown> = {
+  'ui-settings-general': {
+    uid: 2,
+    refs: {
+      1: { type: 'string', meta: { volatile: true } },
+      2: { type: 'object', meta: { default: {} }, dict: { welcomeNoticeVersion: 1 } },
+    },
+  },
+  locale: {
+    uid: 3,
+    refs: {
+      2: { type: 'string', meta: { pattern: { source: '^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$', flags: 'u' }, required: false } },
+      3: { type: 'object', meta: { default: {} }, dict: { preference: 2 } },
+    },
+  },
+  'ui-settings': {
+    uid: 6,
+    refs: {
+      5: { type: 'boolean', meta: { default: true } },
+      6: { type: 'object', meta: { default: {} }, dict: { enabled: 5 } },
+    },
+  },
+  permission: {
+    uid: 9,
+    refs: {
+      8: { type: 'string', meta: { volatile: true } },
+      9: { type: 'object', meta: { default: {} }, dict: { defaultPreset: 8 } },
+    },
+  },
+}
+
+const OFFLINE_SETTINGS: Record<string, { value: Record<string, unknown>; revision: number }> = {
+  // Upstream's current copy version: treating it as already acknowledged
+  // keeps the preview notice from blocking the offline page.
+  'ui-settings-general': { value: { welcomeNoticeVersion: '2026-09-28.1' }, revision: 0 },
+  locale: { value: {}, revision: 0 },
+  'ui-settings': { value: { enabled: true }, revision: 0 },
+  permission: { value: { defaultPreset: 'agent' }, revision: 0 },
+}
+
+function offlineSettingsView(ns: string): unknown {
+  const state = OFFLINE_SETTINGS[ns]
+  return {
+    autoGenerate: true,
+    ns,
+    schema: OFFLINE_SETTINGS_SCHEMAS[ns],
+    value: state.value,
+    applies: 'live',
+    secrets: [],
+    revision: state.revision,
+  }
+}
+
+/** Apply the vendored pages' `{op:'set'|'unset', path, value}` ops in memory. */
+function offlineSettingsMutate(payload: unknown): RpcResult {
+  const args = (payload as { args?: Record<string, unknown> })?.args ?? {}
+  const ns = typeof args.ns === 'string' ? args.ns : ''
+  const state = OFFLINE_SETTINGS[ns]
+  if (state === undefined) {
+    return { ok: false, error: { code: 'settings/rejected', message: `offline preview does not serve ${ns}`, details: {} } }
+  }
+  // `settings/update` carries a flat patch instead of ops.
+  const patch = args.patch
+  if (typeof patch === 'object' && patch !== null && !Array.isArray(patch)) {
+    Object.assign(state.value, patch)
+  }
+  const ops = Array.isArray(args.ops) ? args.ops : []
+  for (const op of ops as { op?: string; path?: unknown[]; value?: unknown }[]) {
+    const key = Array.isArray(op.path) && typeof op.path[0] === 'string' ? op.path[0] : undefined
+    if (key === undefined) continue
+    if (op.op === 'set') state.value[key] = op.value
+    if (op.op === 'unset') delete state.value[key]
+  }
+  state.revision += 1
+  return ok(offlineSettingsView(ns))
+}
+
+function offlineCatalog(): RpcResult {
+  const options = [
+    { value: 'agent', name: 'Agent' },
+    { value: 'plan', name: 'Plan' },
+    { value: 'danger-full-access', name: 'Full access' },
+    { value: 'coordinator', name: 'Coordinator' },
+  ]
+  return ok({ options, defaultOptions: options, defaultPreset: 'agent' })
+}
+
+const UNARY: Record<string, (payload?: unknown) => RpcResult> = {
   'session/list': () => ok({ items: [] }),
   'workspace/initializeDefault': () => ok(undefined),
-  'settings/describe': () => ok({ writable: true, hasDocument: false, namespaces: [] }),
+  'settings/describe': () => ok({
+    writable: true,
+    hasDocument: false,
+    namespaces: Object.keys(OFFLINE_SETTINGS).map(offlineSettingsView),
+  }),
+  'settings/mutate': payload => offlineSettingsMutate(payload),
+  'settings/update': payload => offlineSettingsMutate(payload),
+  'session/events': () => ok({ cursor: -1, records: [], hasMore: false }),
+  'fileReferences/list': () => ok([]),
+  'sessionReferenceResolver/candidates': () => ok([]),
   'session/modelCatalog': () => ok({
     default: { provider: 'codesmith', model: 'default' },
     routableProviders: [],
@@ -57,7 +156,7 @@ const UNARY: Record<string, () => RpcResult> = {
   'dynamicCordisRunner/inventory': () => ok([]),
   'credentials/describe': () => ok({}),
   'web/listProviders': () => ok({ search: [], fetch: [] }),
-  'permissionPresets/catalog': () => ok({ options: [] }),
+  'permissionPresets/catalog': () => offlineCatalog(),
   'account/getProfile': () => ok(null),
   'account/getBalance': () => ok(null),
   'account/getUnnotifiedBonuses': () => ok(null),
@@ -74,10 +173,10 @@ const STREAM_BASELINES: Record<string, unknown[]> = {
 }
 
 const fakeRpc: ClientConnectionRpc = {
-  async call(_channel, endpoint, _payload, signal) {
+  async call(_channel, endpoint, payload, signal) {
     if (signal?.aborted) return { ok: false, error: { code: 'gateway/cancelled', message: 'aborted', details: {} } }
     const handler = UNARY[endpoint]
-    return handler ? handler() : unavailable(endpoint)
+    return handler ? handler(payload) : unavailable(endpoint)
   },
   async *open(_channel, endpoint, _payload, signal) {
     if (endpoint === '$events') {

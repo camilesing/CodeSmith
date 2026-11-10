@@ -79,6 +79,62 @@ fn session_status_frame(session_id: &str, running: bool) -> Value {
     })
 }
 
+/// Repair a thread left in the inconsistent legacy pairing: `yolo` /
+/// `coordinator` mode with `auto_approve` off. The bridge used to PATCH only
+/// the mode when the permission default was full access, and the runtime's
+/// prompt assembly asserts the pairing — prompting such a thread panics in
+/// debug builds and describes approval behavior the runtime does not follow.
+/// The repair runs when the session is first followed or prompted; a failed
+/// PATCH is logged and the turn surfaces its own error.
+async fn repair_auto_approve_pairing(host: &HostState, session_id: &str, detail: &Value) {
+    let mode = detail
+        .pointer("/thread/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("agent");
+    if !matches!(mode, "yolo" | "coordinator") {
+        return;
+    }
+    if detail
+        .pointer("/thread/auto_approve")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return;
+    }
+    let path = format!("/v1/threads/{session_id}");
+    match host
+        .backend
+        .request_with_status(
+            reqwest::Method::PATCH,
+            &path,
+            Some(&super::commands::mode_patch(mode)),
+        )
+        .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err((_status, message))) => {
+            eprintln!("codesmith desktop: auto-approve repair refused for {session_id}: {message}")
+        }
+        Err(err) => {
+            eprintln!("codesmith desktop: auto-approve repair failed for {session_id}: {err:#}")
+        }
+    }
+}
+
+/// [`repair_auto_approve_pairing`] for a session a prompt is about to drive:
+/// a client may load history without opening a follow stream, so the prompt
+/// path must not assume the follow-time repair already ran.
+async fn repair_before_prompt(host: &HostState, session_id: &str) {
+    let Ok(detail) = host
+        .backend
+        .get::<Value>(&format!("/v1/threads/{session_id}"))
+        .await
+    else {
+        return;
+    };
+    repair_auto_approve_pairing(host, session_id, &detail).await;
+}
+
 /// Snapshot + live frames for `session/follow`. Yields the snapshot first;
 /// live envelopes arrive as `{type:'event'}` frames on the returned channel.
 pub async fn follow(
@@ -93,6 +149,7 @@ pub async fn follow(
         .backend
         .get(&format!("/v1/threads/{session_id}"))
         .await?;
+    repair_auto_approve_pairing(host, &session_id, &detail).await;
     // The seat's model chip reads the session's modelSelection projection; a
     // thread without an explicit model resolves to the catalog default so a
     // fresh session never waits on a projection nobody will push.
@@ -121,10 +178,21 @@ pub async fn follow(
         .pointer("/thread/title")
         .and_then(Value::as_str)
         .unwrap_or("New Session");
+    // SessionHeader's `cwd` is how a client knows the workspace to browse;
+    // the desktop presents the thread's own workspace (which its
+    // single-workspace list rows also carry).
+    let cwd = detail
+        .pointer("/thread/workspace")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.is_empty());
     let values = projection_values(host, &session_id, &detail, &models).await;
+    let mut header = json!({ "sessionId": session_id, "title": title });
+    if let Some(cwd) = cwd {
+        header["cwd"] = json!(cwd);
+    }
     let snapshot = json!({
         "type": "snapshot",
-        "header": { "sessionId": session_id, "title": title },
+        "header": header,
         "cursor": last_seq,
         "records": events.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
         "hasMore": false,
@@ -358,8 +426,54 @@ pub(super) async fn handle_waterfall_envelope(
         }
         "turn.completed" | "turn.failed" => {
             host.cancel_pending_for_session(session_id).await;
+            restore_plan_handoff(host, session_id).await;
         }
         _ => {}
+    }
+}
+
+/// The plan-mode handoff an approved `exit_plan_mode` owes: thread mode
+/// `plan` → `agent`, so the next turn carries the writing toolset. The
+/// approval is delivered mid-turn; the runtime saves the turn's thread at
+/// settlement, which overwrites a PATCH sent at approval time. Waiting for
+/// the turn-end envelope is what makes the restore stick. The pending set
+/// makes this fire once (the follow stream and the background watcher both
+/// deliver the same turn-end event); a denial never enqueues it.
+pub(super) async fn restore_plan_handoff(host: &HostState, session_id: &str) {
+    if !host.plan_handoffs.lock().await.remove(session_id) {
+        return;
+    }
+    let path = format!("/v1/threads/{session_id}");
+    match host.backend.get::<Value>(&path).await {
+        Ok(detail) => {
+            let mode = detail
+                .pointer("/thread/mode")
+                .and_then(Value::as_str)
+                .unwrap_or("agent");
+            if mode != "plan" {
+                return;
+            }
+            match host
+                .backend
+                .request_with_status(
+                    reqwest::Method::PATCH,
+                    &path,
+                    Some(&super::commands::mode_patch("agent")),
+                )
+                .await
+            {
+                Ok(Ok(_)) => push_control_projection(host, session_id).await,
+                Ok(Err((_status, message))) => {
+                    eprintln!("codesmith desktop: plan handoff refused for {session_id}: {message}")
+                }
+                Err(err) => {
+                    eprintln!("codesmith desktop: plan handoff failed for {session_id}: {err:#}")
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!("codesmith desktop: plan handoff read failed for {session_id}: {err:#}")
+        }
     }
 }
 
@@ -622,6 +736,7 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
         .context("prompt without sessionId")?
         .to_string();
     let mode = inner.get("mode").and_then(Value::as_str).unwrap_or("queue");
+    repair_before_prompt(host, &session_id).await;
     let rpc_id = prompt_request_id(inner);
     let content: Vec<PromptPart> = serde_json::from_value(
         inner
@@ -1300,16 +1415,21 @@ fn todos_projection(detail: &Value) -> Value {
             continue;
         }
         let name = super::mapper::tool_name_from_summary(item);
-        if !matches!(name.as_str(), "todo" | "todo_write" | "checklist_write") {
-            continue;
-        }
-        let Some(args) = item
-            .pointer("/metadata/arguments")
-            .or_else(|| item.pointer("/metadata/input"))
-        else {
-            continue;
+        let todos = match name.as_str() {
+            // Whole-list writes carry the list in their own input.
+            "todo" | "todo_write" | "checklist_write" => item
+                .pointer("/metadata/arguments")
+                .or_else(|| item.pointer("/metadata/input"))
+                .and_then(|args| args.get("todos")),
+            // Single-item mutations publish the resulting snapshot in their
+            // result metadata; folding it keeps the dock correct when the
+            // model uses the add/update aliases instead of a whole-list write.
+            "todo_add" | "todo_update" | "checklist_add" | "checklist_update" => {
+                item.pointer("/metadata/task_updates/checklist/items")
+            }
+            _ => continue,
         };
-        let Some(todos) = args.get("todos") else {
+        let Some(todos) = todos else {
             continue;
         };
         latest = normalize_todos(todos);
@@ -1611,6 +1731,38 @@ mod tests {
             ])
         );
         assert_eq!(todos_projection(&json!({ "items": [] })), Value::Null);
+    }
+
+    #[test]
+    fn todos_fold_single_item_alias_snapshots() {
+        // checklist_add/checklist_update publish the whole resulting list in
+        // result metadata; the projection must prefer the latest snapshot
+        // over an earlier whole-list write.
+        let detail = json!({
+            "items": [
+                { "kind": "tool_call", "status": "completed", "summary": "todo_write: ok",
+                  "metadata": { "arguments": { "todos": [
+                      { "content": "a", "status": "pending" }
+                  ] } } },
+                { "kind": "tool_call", "status": "completed", "summary": "checklist_add: ok",
+                  "metadata": { "task_updates": { "checklist": { "items": [
+                      { "id": 0, "content": "a", "status": "in_progress" },
+                      { "id": 1, "content": "b", "status": "pending" }
+                  ] } } } },
+                { "kind": "tool_call", "status": "completed", "summary": "todo_update: ok",
+                  "metadata": { "task_updates": { "checklist": { "items": [
+                      { "id": 0, "content": "a", "status": "completed" },
+                      { "id": 1, "content": "b", "status": "in_progress" }
+                  ] } } } },
+            ],
+        });
+        assert_eq!(
+            todos_projection(&detail),
+            json!([
+                { "content": "a", "status": "completed" },
+                { "content": "b", "status": "in_progress" }
+            ])
+        );
     }
 
     #[test]

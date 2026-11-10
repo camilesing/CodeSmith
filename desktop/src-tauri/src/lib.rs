@@ -85,6 +85,7 @@ pub fn run() {
                             uploads: Default::default(),
                             drop_bytes,
                             reference_index: Default::default(),
+                            plan_handoffs: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

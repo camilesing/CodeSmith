@@ -252,6 +252,21 @@ pub fn default_permission_preset(home: &std::path::Path) -> String {
         .unwrap_or_else(|| "agent".to_string())
 }
 
+/// The explicit UI-language preference (`locale.preference`), if the user
+/// picked one. The permission catalog localizes its CodeSmith-specific
+/// preset labels from it; absent leaves the page on the browser locale,
+/// which the bridge cannot know.
+pub fn locale_preference(home: &std::path::Path) -> Option<String> {
+    let document = load_document(home);
+    document
+        .sections
+        .get("locale")
+        .and_then(|section| section.get("preference"))
+        .and_then(Value::as_str)
+        .filter(|preference| !preference.is_empty())
+        .map(str::to_string)
+}
+
 fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
     let document = load_document(home);
     let mut namespaces: Vec<Value> = specs().iter().map(|spec| document.view(spec)).collect();

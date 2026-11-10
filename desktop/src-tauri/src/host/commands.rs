@@ -56,6 +56,20 @@ const COMPACT_DEFINITION_ID: &str = "@codesmith/command-compact";
 /// per row keeps the menu honest).
 const MODES: [&str; 4] = ["agent", "plan", "yolo", "coordinator"];
 
+/// The thread PATCH a mode switch sends. `yolo` and `coordinator` require
+/// the thread's auto-approve flag — the prompt assembly asserts that pairing
+/// (a yolo/coordinator turn with `auto_approve` off panics in debug builds
+/// and would describe approval behavior the runtime does not follow). Every
+/// other mode clears it: entering `plan` from `yolo` must still ask the user
+/// to approve `exit_plan_mode`. The shell default is untouched (the bridge
+/// never widens it).
+pub(super) fn mode_patch(mode: &str) -> Value {
+    json!({
+        "mode": mode,
+        "auto_approve": matches!(mode, "yolo" | "coordinator"),
+    })
+}
+
 /// `commands/list` — the host catalog: compaction (upstream's own host
 /// registers this exact name and description) plus CodeSmith's per-thread
 /// mode switches.
@@ -277,11 +291,7 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                 let path = format!("/v1/threads/{session_id}");
                 let patched = host
                     .backend
-                    .request_with_status(
-                        reqwest::Method::PATCH,
-                        &path,
-                        Some(&json!({ "mode": mode })),
-                    )
+                    .request_with_status(reqwest::Method::PATCH, &path, Some(&mode_patch(mode)))
                     .await
                     .map_err(internal)?;
                 match patched {
@@ -307,6 +317,29 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mode_switches_keep_the_auto_approve_pairing() {
+        // The runtime's prompt assembly asserts this pairing; a yolo thread
+        // with auto_approve off panics in debug builds.
+        assert_eq!(
+            mode_patch("yolo"),
+            json!({ "mode": "yolo", "auto_approve": true })
+        );
+        assert_eq!(
+            mode_patch("coordinator"),
+            json!({ "mode": "coordinator", "auto_approve": true })
+        );
+        // Leaving yolo for agent/plan must make plan approval ask again.
+        assert_eq!(
+            mode_patch("agent"),
+            json!({ "mode": "agent", "auto_approve": false })
+        );
+        assert_eq!(
+            mode_patch("plan"),
+            json!({ "mode": "plan", "auto_approve": false })
+        );
+    }
 
     #[test]
     fn catalog_serves_the_host_descriptors() {

@@ -27,7 +27,7 @@ pub mod settings;
 pub mod uploads;
 pub mod workspace;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -92,6 +92,12 @@ pub struct HostState {
     /// Per-workspace `@` file index (see `host::references`); dropped when a
     /// turn settles because the turn may have written files.
     pub reference_index: references::ReferenceIndex,
+    /// Sessions whose approved `exit_plan_mode` still owes the plan-mode
+    /// handoff (thread mode `plan` → `agent`). The approval is delivered
+    /// mid-turn, and the runtime saves the thread when the turn settles — a
+    /// PATCH sent at approval time is overwritten by that save, so the
+    /// restore waits for the turn's own end event.
+    pub plan_handoffs: Mutex<HashSet<String>>,
 }
 
 impl HostState {
@@ -433,11 +439,14 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "permissionPresets/catalog" => {
             let home = host.settings_home();
             match tokio::task::spawn_blocking(move || {
-                settings::default_permission_preset(&home)
+                (
+                    settings::default_permission_preset(&home),
+                    settings::locale_preference(&home),
+                )
             })
             .await
             {
-                Ok(default) => rpc_ok(permissions::catalog(&default)),
+                Ok((default, locale)) => rpc_ok(permissions::catalog(&default, locale.as_deref())),
                 Err(err) => rpc_error(
                     "gateway/internal",
                     format!("permissionPresets/catalog: {err}"),
@@ -656,12 +665,17 @@ async fn session_list(host: &HostState) -> Value {
                         t.latest_turn_status.as_deref(),
                         Some("in_progress") | Some("queued")
                     );
+                    // The sidebar files tree and the `@` file-chip resolver
+                    // read the session list's `cwd`; the bridge presents one
+                    // implicit workspace, so every row carries this
+                    // process's working directory.
                     let mut row = json!({
                         "sessionId": t.id,
                         "updatedAt": updated_ms,
                         "running": running,
                         "blank": t.latest_turn_id.is_none(),
                         "agentAvailable": true,
+                        "cwd": host.cwd.to_string_lossy(),
                     });
                     let obj = row.as_object_mut().unwrap();
                     if let Some(turn) = t.latest_turn_id {
@@ -700,7 +714,7 @@ async fn session_create(host: &HostState) -> Value {
                         .request_with_status(
                             reqwest::Method::PATCH,
                             &path,
-                            Some(&json!({ "mode": mode })),
+                            Some(&commands::mode_patch(mode)),
                         )
                         .await
                     {
@@ -809,68 +823,52 @@ async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
     match pending.kind {
         events::InputKind::Approval => {
             let decision = events::approval_decision(&outcome);
-            let delivered = host
+            // Approving a plan is the plan-mode handoff: the REPL host
+            // restores the session mode when it approves exit_plan_mode, and
+            // the desktop bridge mirrors that so the next turn can write.
+            // The decision lands mid-turn; the runtime saves the thread when
+            // the turn settles, so a PATCH now would be overwritten. Record
+            // the handoff BEFORE delivering, because the turn can complete
+            // while the decision POST is still in flight; the turn-end event
+            // in the follow/watcher stream performs the restore
+            // (see `sessions::restore_plan_handoff`).
+            let plan_handoff = decision == "allow"
+                && pending
+                    .frame
+                    .pointer("/request/toolName")
+                    .and_then(Value::as_str)
+                    == Some("exit_plan_mode");
+            if plan_handoff {
+                host.plan_handoffs
+                    .lock()
+                    .await
+                    .insert(pending.session_id.clone());
+            }
+            let delivered = match host
                 .backend
                 .post_settle(
                     &format!("/v1/approvals/{}", pending.input_id),
                     &json!({ "decision": decision, "remember": false }),
                 )
                 .await
-                .context("deliver approval decision")?;
+                .context("deliver approval decision")
+            {
+                Ok(delivered) => delivered,
+                Err(err) => {
+                    if plan_handoff {
+                        host.plan_handoffs.lock().await.remove(&pending.session_id);
+                    }
+                    return Err(err);
+                }
+            };
+            if plan_handoff && !delivered {
+                host.plan_handoffs.lock().await.remove(&pending.session_id);
+            }
             // The upstream host cancels an event once decided; without this
             // frame the answering client's card never learns the request
             // ended (the runtime's own `approval.decided` echo and the
             // turn-end sweep only cancel what is still pending).
             host.cancel_pending(&event_id).await;
-            // Approving a plan is the plan-mode handoff: the REPL host
-            // restores the session mode when it approves exit_plan_mode, and
-            // the desktop bridge mirrors that so the next turn can write.
-            // Only a thread currently in plan mode is touched.
-            if decision == "allow"
-                && pending
-                    .frame
-                    .pointer("/request/toolName")
-                    .and_then(Value::as_str)
-                    == Some("exit_plan_mode")
-            {
-                let path = format!("/v1/threads/{}", pending.session_id);
-                match host.backend.get::<Value>(&path).await {
-                    Ok(detail) => {
-                        let mode = detail
-                            .pointer("/thread/mode")
-                            .and_then(Value::as_str)
-                            .unwrap_or("agent");
-                        if mode == "plan" {
-                            match host
-                                .backend
-                                .request_with_status(
-                                    reqwest::Method::PATCH,
-                                    &path,
-                                    Some(&json!({ "mode": "agent" })),
-                                )
-                                .await
-                            {
-                                Ok(Ok(_)) => {
-                                    sessions::push_control_projection(host, &pending.session_id)
-                                        .await;
-                                }
-                                Ok(Err((_status, message))) => eprintln!(
-                                    "codesmith desktop: plan handoff refused for {}: {message}",
-                                    pending.session_id
-                                ),
-                                Err(err) => eprintln!(
-                                    "codesmith desktop: plan handoff failed for {}: {err:#}",
-                                    pending.session_id
-                                ),
-                            }
-                        }
-                    }
-                    Err(err) => eprintln!(
-                        "codesmith desktop: plan handoff read failed for {}: {err:#}",
-                        pending.session_id
-                    ),
-                }
-            }
             Ok(json!({ "delivered": delivered, "decision": decision }))
         }
         events::InputKind::Questions => {
