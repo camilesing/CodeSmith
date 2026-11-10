@@ -235,6 +235,9 @@ pub async fn tool_results_watch(
     request: &Value,
     tx: &tokio::sync::mpsc::Sender<Value>,
 ) -> Result<()> {
+    // The remote's single `request` parameter: the gateway packs its args as
+    // `{request: {…}}` (the shape every bridge reader unwraps).
+    let request = request.get("request").unwrap_or(request);
     let session_id = request
         .get("sessionId")
         .or_else(|| request.get("session_id"))
