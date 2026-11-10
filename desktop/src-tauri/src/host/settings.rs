@@ -45,6 +45,15 @@ const CHAT_SCHEMA: &str = r#"{"uid":68,"refs":{"32":{"type":"const","meta":{"req
 /// The vendored settings-general plugin's own runtime namespace — upstream
 /// `z.object({ welcomeNoticeVersion: z.string().volatile() })`.
 const SETTINGS_GENERAL_SCHEMA: &str = r#"{"uid":2,"refs":{"1":{"type":"string","meta":{"volatile":true}},"2":{"type":"object","meta":{"default":{}},"dict":{"welcomeNoticeVersion":1}}}}"#;
+/// The locale plugin's namespace — upstream `LocaleSettingsSchema`
+/// (`z.object({ preference: z.string().pattern(...).required(false) })`).
+const LOCALE_SCHEMA: &str = r#"{"uid":3,"refs":{"2":{"type":"string","meta":{"pattern":{"source":"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$","flags":"u"},"required":false}},"3":{"type":"object","meta":{"default":{}},"dict":{"preference":2}}}}"#;
+/// The shared developer-tools namespace — upstream
+/// `z.object({ enabled: z.boolean().default(true) })`.
+const UI_SETTINGS_SCHEMA: &str = r#"{"uid":6,"refs":{"5":{"type":"boolean","meta":{"default":true}},"6":{"type":"object","meta":{"default":{}},"dict":{"enabled":5}}}}"#;
+/// The permission-presets namespace — upstream
+/// `z.object({ defaultPreset: z.string().volatile() })`.
+const PERMISSION_SCHEMA: &str = r#"{"uid":9,"refs":{"8":{"type":"string","meta":{"volatile":true}},"9":{"type":"object","meta":{"default":{}},"dict":{"defaultPreset":8}}}}"#;
 /// The welcome-notice copy version the vendored page acknowledges through
 /// the `ui-settings-general` namespace. Seeding the default with it keeps
 /// the notice hidden; an upstream bump makes it appear once, and its own
@@ -88,6 +97,27 @@ fn specs() -> Vec<NamespaceSpec> {
             schema: serde_json::from_str(SETTINGS_GENERAL_SCHEMA)
                 .expect("settings-general schema envelope"),
             defaults: json!({ "welcomeNoticeVersion": WELCOME_NOTICE_VERSION }),
+        },
+        // The Language row: an explicit BCP 47-style preference, absent until
+        // the user picks one (absence delegates to the browser locale).
+        NamespaceSpec {
+            ns: "locale",
+            schema: serde_json::from_str(LOCALE_SCHEMA).expect("locale schema envelope"),
+            defaults: json!({}),
+        },
+        // Developer tools: diagnostic views, change summaries and scripted
+        // HTML previews. Default on, like upstream's new installations.
+        NamespaceSpec {
+            ns: "ui-settings",
+            schema: serde_json::from_str(UI_SETTINGS_SCHEMA).expect("ui-settings schema envelope"),
+            defaults: json!({ "enabled": true }),
+        },
+        // The permission row's new-session default; the bridge applies it to
+        // sessions it creates (host::permissions maps the preset to a mode).
+        NamespaceSpec {
+            ns: "permission",
+            schema: serde_json::from_str(PERMISSION_SCHEMA).expect("permission schema envelope"),
+            defaults: json!({ "defaultPreset": "agent" }),
         },
     ]
 }
@@ -205,6 +235,21 @@ impl WriteError {
 /// whole read on a blocking thread (store and file I/O).
 pub fn describe(home: &std::path::Path) -> Result<Value> {
     describe_with(home, &llm::credential_probe())
+}
+
+/// The new-session permission default (`permission.defaultPreset`), read from
+/// the same document. `session/create` applies it to the thread it creates;
+/// an unknown stored value falls back to `agent` (a hand-edited document must
+/// not make session creation fail).
+pub fn default_permission_preset(home: &std::path::Path) -> String {
+    let document = load_document(home);
+    document
+        .sections
+        .get("permission")
+        .and_then(|section| section.get("defaultPreset"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "agent".to_string())
 }
 
 fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
@@ -423,7 +468,16 @@ mod tests {
             .collect();
         assert_eq!(
             ids,
-            vec!["ui-theme", "ui-conversation", "ui-chat", "ui-settings-general", "llm-pi-ai"]
+            vec![
+                "ui-theme",
+                "ui-conversation",
+                "ui-chat",
+                "ui-settings-general",
+                "locale",
+                "ui-settings",
+                "permission",
+                "llm-pi-ai"
+            ]
         );
         let theme = &namespaces[0];
         assert_eq!(theme["value"]["preference"], "system");
@@ -436,8 +490,16 @@ mod tests {
         // The welcome notice reads its namespace as already acknowledged.
         let general = &namespaces[3];
         assert_eq!(general["value"]["welcomeNoticeVersion"], WELCOME_NOTICE_VERSION);
+        // The language row starts unset (browser locale) and the developer
+        // tools default on; the permission row starts at the agent mode.
+        assert_eq!(namespaces[4]["ns"], "locale");
+        assert!(namespaces[4]["value"].get("preference").is_none());
+        assert_eq!(namespaces[5]["ns"], "ui-settings");
+        assert_eq!(namespaces[5]["value"]["enabled"], true);
+        assert_eq!(namespaces[6]["ns"], "permission");
+        assert_eq!(namespaces[6]["value"]["defaultPreset"], "agent");
         // The provider namespace rides along with the live config.
-        let providers = &namespaces[4];
+        let providers = &namespaces[7];
         assert_eq!(
             providers["value"]["providers"]["openai"]["baseURL"],
             "https://g.example/v1"
@@ -483,6 +545,29 @@ mod tests {
         )
         .expect("update");
         assert_eq!(updated["value"]["fontSize"], 18);
+        // The locale, developer-tools and permission namespaces persist
+        // through the same fold.
+        let locale = fold(
+            &home,
+            "settings/mutate",
+            &json!({ "ns": "locale", "ops": [ { "op": "set", "path": ["preference"], "value": "zh-CN" } ] }),
+        )
+        .expect("locale mutate");
+        assert_eq!(locale["value"]["preference"], "zh-CN");
+        let tools = fold(
+            &home,
+            "settings/mutate",
+            &json!({ "ns": "ui-settings", "ops": [ { "op": "set", "path": ["enabled"], "value": false } ] }),
+        )
+        .expect("ui-settings mutate");
+        assert_eq!(tools["value"]["enabled"], false);
+        fold(
+            &home,
+            "settings/mutate",
+            &json!({ "ns": "permission", "ops": [ { "op": "set", "path": ["defaultPreset"], "value": "danger-full-access" } ] }),
+        )
+        .expect("permission mutate");
+        assert_eq!(default_permission_preset(&home), "danger-full-access");
         // The document survives a reload.
         let config = home.join("scratch-config.toml");
         std::fs::write(&config, "").unwrap();
@@ -490,6 +575,12 @@ mod tests {
         let reloaded = describe_with(&home, &|_| false).expect("describe");
         std::env::remove_var("CODESMITH_CONFIG_PATH");
         assert_eq!(reloaded["namespaces"][0]["value"]["fontSize"], 18);
+        assert_eq!(reloaded["namespaces"][4]["value"]["preference"], "zh-CN");
+        assert_eq!(reloaded["namespaces"][5]["value"]["enabled"], false);
+        assert_eq!(
+            reloaded["namespaces"][6]["value"]["defaultPreset"],
+            "danger-full-access"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

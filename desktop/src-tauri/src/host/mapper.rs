@@ -63,6 +63,9 @@ pub fn tool_view_name(name: &str) -> String {
         "fetch_url" | "web_run" => "web_fetch".into(),
         "web_search" => "web_search".into(),
         "todo" => "todo_write".into(),
+        // The registry's primary checklist writer is `checklist_write`; its
+        // whole-list input is the card's todo shape.
+        "checklist_write" => "todo_write".into(),
         "user_input" => "ask_user_question".into(),
         other => other.into(),
     }
@@ -301,6 +304,11 @@ pub struct SessionMapper {
     /// Whether the current turn settled a file change — its end then
     /// announces `workspace/changes` (the changed-files card's anchor).
     turn_has_file_changes: bool,
+    /// The latest `write_plan_file` body seen in this stream. `exit_plan_mode`
+    /// carries an empty argument schema, so the bridge attaches this body as
+    /// its `arguments.plan` — the vendored plan card/preview matches a
+    /// `tool/call` whose arguments name `plan`.
+    plan_content: Option<String>,
 }
 
 impl SessionMapper {
@@ -323,6 +331,13 @@ impl SessionMapper {
     /// model selection before mapping each envelope.
     pub fn set_model_source(&mut self, provider: &str, model: &str) {
         self.model_source = (provider.to_string(), model.to_string());
+    }
+
+    /// Seed the plan body from the replayed snapshot: a follow stream can
+    /// connect mid-turn, after the `write_plan_file` call that the live tail
+    /// will never re-deliver.
+    pub fn seed_plan_content(&mut self, content: Option<String>) {
+        self.plan_content = content;
     }
 
     /// `ModelMessageSource` for a settled assistant message.
@@ -459,18 +474,38 @@ impl SessionMapper {
                     }
                     "tool_call" | "command_execution" | "file_change" => {
                         let tool = payload.get("tool").cloned().unwrap_or(Value::Null);
-                        let name = tool_view_name(
-                            &tool
-                                .get("name")
+                        let raw_name = tool
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| tool_name_from_summary(&item));
+                        // The plan file is the source of truth for the plan
+                        // card: remember its latest body so the following
+                        // exit_plan_mode call can carry it as arguments.plan.
+                        if raw_name == "write_plan_file" {
+                            if let Some(content) = tool
+                                .pointer("/input/content")
                                 .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| tool_name_from_summary(&item)),
-                        );
-                        let arguments = tool
-                            .get("input")
-                            .cloned()
-                            .map(|input| input.to_string())
-                            .unwrap_or_else(|| "{}".into());
+                            {
+                                self.plan_content = Some(content.to_string());
+                            }
+                        }
+                        let name = tool_view_name(&raw_name);
+                        let arguments = if name == "exit_plan_mode" {
+                            match &self.plan_content {
+                                Some(plan) => json!({ "plan": plan }).to_string(),
+                                None => tool
+                                    .get("input")
+                                    .cloned()
+                                    .map(|input| input.to_string())
+                                    .unwrap_or_else(|| "{}".into()),
+                            }
+                        } else {
+                            tool.get("input")
+                                .cloned()
+                                .map(|input| input.to_string())
+                                .unwrap_or_else(|| "{}".into())
+                        };
                         frames.push(Frame::Event(self.seq.event(
                             "tool/call",
                             json!({
@@ -713,7 +748,7 @@ impl SessionMapper {
 
 /// Durable tool items keep only summary/detail; the summary is
 /// "<name>: <output>" after completion and "<name> started" while running.
-fn tool_name_from_summary(item: &Value) -> String {
+pub(super) fn tool_name_from_summary(item: &Value) -> String {
     let raw = item
         .get("summary")
         .and_then(Value::as_str)
@@ -731,7 +766,7 @@ fn tool_name_from_summary(item: &Value) -> String {
 /// `item.started` payload — durable items keep result metadata — so replayed
 /// cards render from summary/detail and the arguments stay empty unless a
 /// future runtime revision records them under `metadata.arguments`.
-fn replay_tool_arguments(item: &Value) -> String {
+pub(super) fn replay_tool_arguments(item: &Value) -> String {
     for key in ["arguments", "input"] {
         if let Some(args) = item.pointer(&format!("/metadata/{key}")).cloned() {
             if args.is_object() {
@@ -740,6 +775,42 @@ fn replay_tool_arguments(item: &Value) -> String {
         }
     }
     "{}".into()
+}
+
+/// One named string argument of a durable tool item (`metadata.arguments` is
+/// the shape the runtime records; `input` is the older alias).
+pub(super) fn tool_argument(item: &Value, key: &str) -> Option<String> {
+    for container in ["arguments", "input"] {
+        if let Some(value) = item
+            .pointer(&format!("/metadata/{container}/{key}"))
+            .and_then(Value::as_str)
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// The latest plan-file body in a thread record, in item order. Seeding a
+/// live mapper with it covers a follow stream that connects after the
+/// `write_plan_file` call but before `exit_plan_mode`.
+pub(super) fn latest_plan_content(detail: &Value) -> Option<String> {
+    let items = detail.get("items").and_then(Value::as_array)?;
+    let mut content = None;
+    for item in items {
+        if !matches!(
+            item.get("kind").and_then(Value::as_str),
+            Some("tool_call") | Some("command_execution") | Some("file_change")
+        ) {
+            continue;
+        }
+        if tool_name_from_summary(item) == "write_plan_file" {
+            if let Some(body) = tool_argument(item, "content") {
+                content = Some(body);
+            }
+        }
+    }
+    content
 }
 
 /// Replay a `ThreadDetail` (GET /v1/threads/{id}) into wire events.
@@ -758,6 +829,9 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
 pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec<Value> {
     let mut seq = WireSeq::default();
     let mut events = Vec::new();
+    // The latest plan file body before the current item; `exit_plan_mode`
+    // carries it as arguments.plan (its own durable arguments are empty).
+    let mut plan_content: Option<String> = None;
     let now = chrono::Utc::now().timestamp_millis();
     let turns = detail
         .get("turns")
@@ -879,7 +953,21 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                     ));
                 }
                 "tool_call" | "command_execution" | "file_change" => {
-                    let name = tool_view_name(&tool_name_from_summary(item));
+                    let raw_name = tool_name_from_summary(item);
+                    if raw_name == "write_plan_file" {
+                        if let Some(content) = tool_argument(item, "content") {
+                            plan_content = Some(content);
+                        }
+                    }
+                    let name = tool_view_name(&raw_name);
+                    let arguments = if name == "exit_plan_mode" {
+                        match &plan_content {
+                            Some(plan) => json!({ "plan": plan }).to_string(),
+                            None => replay_tool_arguments(item),
+                        }
+                    } else {
+                        replay_tool_arguments(item)
+                    };
                     events.push(seq.event(
                         "tool/call",
                         json!({
@@ -887,7 +975,7 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                             "step": step,
                             "callId": item_id,
                             "name": name,
-                            "arguments": replay_tool_arguments(item),
+                            "arguments": arguments,
                         }),
                         false,
                         started,
@@ -1727,6 +1815,98 @@ mod tests {
             mapper.abandon_open_attempts().is_empty(),
             "second abandon is a no-op"
         );
+    }
+
+    #[test]
+    fn exit_plan_mode_carries_the_last_plan_file_body() {
+        // Replay: durable items keep write_plan_file's input; exit_plan_mode's
+        // own schema is empty, so the bridge attaches the plan body.
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "completed",
+                "created_at": "2026-11-06T10:00:00Z", "started_at": "2026-11-06T10:00:00Z",
+                "ended_at": "2026-11-06T10:00:09Z" }],
+            "items": [
+                { "id": "item_w", "turn_id": "turn_1", "kind": "tool_call",
+                  "status": "completed", "detail": "ok", "summary": "write_plan_file: ok",
+                  "metadata": { "arguments": { "content": "# Plan\nStep 1" } },
+                  "started_at": "2026-11-06T10:00:05Z", "ended_at": "2026-11-06T10:00:06Z" },
+                { "id": "item_e", "turn_id": "turn_1", "kind": "tool_call",
+                  "status": "completed", "detail": "ok", "summary": "exit_plan_mode: ok",
+                  "metadata": { "arguments": {} },
+                  "started_at": "2026-11-06T10:00:07Z", "ended_at": "2026-11-06T10:00:08Z" },
+            ],
+        });
+        let events = replay_events(&detail);
+        let exit = events
+            .iter()
+            .find(|event| {
+                event["type"] == "tool/call" && event["data"]["name"] == "exit_plan_mode"
+            })
+            .expect("exit_plan_mode call");
+        let args: Value =
+            serde_json::from_str(exit["data"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["plan"], "# Plan\nStep 1");
+
+        // Live: the mapper remembers the write and injects it on the exit.
+        let mut mapper = SessionMapper::default();
+        let _ = mapper.map_envelope(&json!({
+            "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        let _ = mapper.map_envelope(&json!({
+            "event": "item.started", "item_id": "item_w",
+            "timestamp": "2026-11-06T10:00:05Z",
+            "payload": {
+                "item": { "id": "item_w", "kind": "tool_call", "status": "in_progress" },
+                "tool": { "name": "write_plan_file", "input": { "content": "# Live plan" } }
+            }
+        }));
+        let frames = mapper.map_envelope(&json!({
+            "event": "item.started", "item_id": "item_e",
+            "timestamp": "2026-11-06T10:00:07Z",
+            "payload": {
+                "item": { "id": "item_e", "kind": "tool_call", "status": "in_progress" },
+                "tool": { "name": "exit_plan_mode", "input": {} }
+            }
+        }));
+        let call = frames
+            .iter()
+            .find_map(|frame| match frame {
+                Frame::Event(event) if event["data"]["name"] == "exit_plan_mode" => {
+                    Some(event.clone())
+                }
+                _ => None,
+            })
+            .expect("live exit_plan_mode call");
+        let args: Value =
+            serde_json::from_str(call["data"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["plan"], "# Live plan");
+
+        // A follow stream that joined after the write seeds the body.
+        let mut mapper = SessionMapper::default();
+        mapper.seed_plan_content(latest_plan_content(&detail));
+        let _ = mapper.map_envelope(&json!({
+            "event": "turn.started", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+        }));
+        let frames = mapper.map_envelope(&json!({
+            "event": "item.started", "item_id": "item_e",
+            "timestamp": "2026-11-06T10:00:07Z",
+            "payload": {
+                "item": { "id": "item_e", "kind": "tool_call", "status": "in_progress" },
+                "tool": { "name": "exit_plan_mode", "input": {} }
+            }
+        }));
+        let call = frames
+            .iter()
+            .find_map(|frame| match frame {
+                Frame::Event(event) if event["data"]["name"] == "exit_plan_mode" => {
+                    Some(event.clone())
+                }
+                _ => None,
+            })
+            .expect("seeded exit_plan_mode call");
+        let args: Value =
+            serde_json::from_str(call["data"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["plan"], "# Plan\nStep 1");
     }
 
     #[test]

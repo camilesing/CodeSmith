@@ -42,9 +42,9 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// A workspace-files failure: the wire's error code plus its message.
 #[derive(Debug)]
-struct FileError {
-    code: &'static str,
-    message: String,
+pub(super) struct FileError {
+    pub(super) code: &'static str,
+    pub(super) message: String,
 }
 
 impl FileError {
@@ -72,7 +72,7 @@ fn path_arg(args: &Value) -> Option<String> {
 }
 
 /// The session's workspace root, from the runtime thread record.
-async fn workspace_root(host: &HostState, session_id: &str) -> Result<String, FileError> {
+pub(super) async fn workspace_root(host: &HostState, session_id: &str) -> Result<String, FileError> {
     let detail: Value = host
         .backend
         .get(&format!("/v1/threads/{session_id}"))
@@ -90,7 +90,7 @@ async fn workspace_root(host: &HostState, session_id: &str) -> Result<String, Fi
 /// Resolve one method's target: an absolute path as-is (when it lies inside
 /// the root), else the root-relative join. Every target must land inside the
 /// workspace — the tree's own fence.
-fn resolve_target(root: &Path, path: &str) -> Result<PathBuf, FileError> {
+pub(super) fn resolve_target(root: &Path, path: &str) -> Result<PathBuf, FileError> {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {

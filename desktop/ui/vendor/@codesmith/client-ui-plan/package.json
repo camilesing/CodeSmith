@@ -1,0 +1,69 @@
+{
+  "name": "@codesmith/client-ui-plan",
+  "description": "Plan mode controls, persistent transcript plan cards, and sidebar Markdown previews",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-remotes",
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-conversation",
+        "@codesmith/client-ui-sidebar-right",
+        "@codesmith/client-ui-chat",
+        "@codesmith/client-ui-user-questions",
+        "@codesmith/client-resources",
+        "@codesmith/api-session-controller"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-ui-conversation": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/cordis": "workspace:~",
+    "react": "^18.2.0",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/client-ui-chat": "workspace:*",
+    "@codesmith/client-ui-sidebar-right": "workspace:*",
+    "@codesmith/client-ui-user-questions": "workspace:*",
+    "@codesmith/client-resources": "workspace:*",
+    "@codesmith/typert-protocol": "workspace:*",
+    "@codesmith/util-crypto": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ]
+}

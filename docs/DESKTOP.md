@@ -10,7 +10,7 @@ terminal REPL (see [CLI.md](CLI.md) → "Desktop UI (preset `all`)").
 
 ```
 Tauri App (desktop/)
-├─ WebView (vendored client UI, 66-package closure)
+├─ WebView (vendored client UI, 69-package closure)
 │   ├─ our boot: the __CODESMITH_BOOT__ plugin graph + first-party brand row
 │   └─ our connection carrier: unary rpc.call over HTTP; every stream rides
 │        the vendored WebSocket mux (one socket per client)
@@ -118,8 +118,12 @@ Known limitations of the current implementation:
   `gateway/method-unavailable` instead of pretending success. Session
   rename/fork/search, archive/unarchive, session pinning and the sidebar's
   manual order, the prompt queue, the skills catalog, the desktop settings
-  document, schedules over `/v1/automations`, and the control projections
-  ARE bridged.
+  document (theme, fonts, enter behavior, transcript view, language,
+  developer tools, the new-session permission default), schedules over
+  `/v1/automations`, the control projections, the plan page
+  (`session/events` + the plan body injected into `exit_plan_mode`), the
+  permission surfaces (`permissionPresets/catalog` over the thread mode), and
+  the `@` file source (`fileReferences/list`) ARE bridged.
 - A prompt sent while a turn runs parks on the runtime thread's queue
   (`POST /v1/threads/{id}/queue`): the queue dock renders it from the
   `inbox` projection (the runtime's `queue.updated` event, pushed live), and
@@ -265,12 +269,58 @@ Known limitations of the current implementation:
   or an extension) before the runtime can serve it; the first-run onboarding
   dialog depends on a `llm-deepseek` namespace (not served) and never
   appears.
-- Upstream-only concepts (accounts/balance, plugin market, sidebar
-  terminal/browser, subagent child-session views, goal bar, plan preview)
-  are not simulated — their plugins stay out of the boot roster or answer
-  empty states. (The jobs popover, the attachment presentation, the
-  changes-review tab and the sidebar files/preview tabs ARE bridged — see
-  their bullets.)
+- The General settings document also serves `locale` (the Language row
+  persists across reloads), `ui-settings` (developer tools; default on, which
+  restores the Trajectory tab, the changed-files card and scripted HTML
+  previews), and `permission` (the new-session default below).
+- Plan mode is a full desktop surface (`client-ui-plan`): the composer plan
+  chip reads the `plan` projection (`active` = thread mode `plan`), `/plan
+  off` leaves the mode, and a submitted plan renders as a turn-tail card plus
+  the right-sidebar plan tab. The runtime's `exit_plan_mode` has an empty
+  argument schema and reads the plan file itself, so the bridge attaches the
+  latest `write_plan_file` body as the call's `arguments.plan` both on replay
+  and live (the live mapper is seeded from the replayed snapshot for a stream
+  that joins mid-turn). Approving the call restores the thread mode to
+  `agent`, mirroring the REPL host's handoff; a runtime refusal leaves the
+  switch to the plan chip. No implementation kickoff is submitted. Known limitations: there is no “request changes” review intent —
+  the approval card stays allow/deny — and a plan-mode turn that never wrote a
+  plan file submits no card.
+- The permission surfaces (`client-ui-permission-presets`) map the vendored
+  preset picker onto the thread mode: `agent`, `plan`, `danger-full-access`
+  (CodeSmith's `yolo`, keeping the picker's localized label and explicit risk
+  confirmation), and `coordinator`. `/permission <value>` joins `/mode` in the
+  host command catalog; a pick PATCHes the thread mode and pushes the
+  `permissions` projection. The General settings row's
+  `permission.defaultPreset` lives in `desktop/settings.json`, and
+  `session/create` applies it to the new thread (an unknown or hand-edited
+  value falls back to `agent`).
+- The `@` menu (`client-ui-reference`) lists workspace files and directories
+  over `fileReferences/list`: an empty query lists the root, a path query
+  lists that directory, and a bare fragment searches a bounded (50k) workspace
+  index with upstream's scoring. Hidden entries and the version-control/
+  dependency/build directories are skipped, and symlinks are not followed. The
+  index is cached per workspace and dropped when a turn settles. The
+  `workingDirectory` projection (`thread.workspace`) lets file chips and file
+  links resolve. `sessionReferenceResolver/candidates` answers an empty list:
+  CodeSmith has no cross-session context-injection feature, so the menu is
+  file-only.
+- Control projections also carry `todos` (the latest successful whole-list
+  `todo`/`checklist_write` call, pushed live on the tool's `item.started`),
+  `plan`, `permissions`, `workingDirectory`, and `turnOutline` (every started
+  turn's seq plus bounded prompt/response previews). `contextBreakdown` and
+  `userQuestions` stay absent: the runtime records no per-request
+  system/tools/message composition, and question requests carry no tool-call
+  id or cancel route.
+- Upstream-only concepts (accounts/balance, plugin market, agent presets,
+  sidebar terminal/browser, subagent child-session views, goal bar) are not
+  simulated — their plugins stay out of the boot roster or answer empty
+  states. CodeSmith's goal is REPL-local (`/goal`; runtime threads carry no
+  goal state), its subagents are in-process rather than threads, and the
+  workflow lifecycle rides extension events that are not journaled, so the
+  workflow-run panel is not fed either. (The jobs popover, the attachment
+  presentation, the changes-review tab, the sidebar files/preview tabs, the
+  plan page, the permission surfaces and the `@` file source ARE bridged —
+  see their bullets.)
 - The sidebar files tree and document preview
   (`client-ui-sidebar-files` + `client-ui-sidebar-documentpreview` over the
   `workspaceFiles` remote, `host::files`) read the session's workspace

@@ -84,6 +84,7 @@ pub fn run() {
                             waterfall_watchers: Default::default(),
                             uploads: Default::default(),
                             drop_bytes,
+                            reference_index: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

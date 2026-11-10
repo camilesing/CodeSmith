@@ -40,6 +40,8 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use super::permissions;
+use super::sessions;
 use super::workspace::OpError;
 use super::HostState;
 
@@ -72,6 +74,11 @@ pub fn catalog() -> Value {
         {
             "name": "plan",
             "description": "Plan mode — design before implementing",
+        },
+        {
+            "name": "permission",
+            "description": "Switch this session's permission preset",
+            "input": { "hint": "agent | plan | danger-full-access | coordinator" },
         },
         {
             "name": "yolo",
@@ -136,7 +143,9 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
     let Some((name, raw_input)) = parse_command(line) else {
         return Admission::Miss;
     };
-    if attachment_count > 0 && matches!(name, "compact" | "mode" | "plan" | "yolo") {
+    if attachment_count > 0
+        && matches!(name, "compact" | "mode" | "plan" | "permission" | "yolo")
+    {
         return Admission::Error(format!("/{name} does not accept attachments"));
     }
     match name {
@@ -153,15 +162,29 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
                 None => Admission::Error(format!("Usage: /mode <{}>", MODES.join("|"))),
             }
         }
-        "plan" | "yolo" => {
-            if !raw_input.trim().is_empty() {
-                return Admission::Error(format!("Usage: /{name} (no arguments)"));
+        "plan" => {
+            // The plan chip exits through `/plan off`; a bare `/plan` enters
+            // the mode. Anything else is a usage error, not a mode switch.
+            match raw_input.trim() {
+                "" => Admission::Admitted(Admitted::Mode("plan")),
+                "off" => Admission::Admitted(Admitted::Mode("agent")),
+                _ => Admission::Error("Usage: /plan [off]".into()),
             }
-            // The static lifetimes come from the match arms above.
-            Admission::Admitted(Admitted::Mode(match name {
-                "plan" => "plan",
-                _ => "yolo",
-            }))
+        }
+        "permission" => {
+            match permissions::mode_of_preset(raw_input.trim()) {
+                Some(mode) => Admission::Admitted(Admitted::Mode(mode)),
+                None => Admission::Error(format!(
+                    "Usage: /permission <{}>",
+                    permissions::PRESETS.join("|")
+                )),
+            }
+        }
+        "yolo" => {
+            if !raw_input.trim().is_empty() {
+                return Admission::Error("Usage: /yolo (no arguments)".into());
+            }
+            Admission::Admitted(Admitted::Mode("yolo"))
         }
         _ => Admission::Miss,
     }
@@ -262,10 +285,16 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                     .await
                     .map_err(internal)?;
                 match patched {
-                    Ok(_) => Ok(Outcome::Executed(json!({
-                        "commandId": mint_command_id(),
-                        "result": { "kind": "success", "text": format!("Mode set to {mode}.") }
-                    }))),
+                    Ok(_) => {
+                        // The plan/permission chips read the control
+                        // projections; publish the new mode now instead of
+                        // waiting for the next settled turn.
+                        sessions::push_control_projection(host, &session_id).await;
+                        Ok(Outcome::Executed(json!({
+                            "commandId": mint_command_id(),
+                            "result": { "kind": "success", "text": format!("Mode set to {mode}.") }
+                        })))
+                    }
                     Err((_status, runtime_message)) => {
                         Ok(Outcome::Executed(command_error(&runtime_message)))
                     }
@@ -288,7 +317,7 @@ mod tests {
             .iter()
             .map(|entry| entry["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["compact", "mode", "plan", "yolo"]);
+        assert_eq!(names, vec!["compact", "mode", "plan", "permission", "yolo"]);
         let compact = &list[0];
         assert_eq!(compact["definitionId"], "@codesmith/command-compact");
         // `name` and `description` are the descriptor's required wire
@@ -299,6 +328,12 @@ mod tests {
         // The mode entry advertises its argument so capable composers hint it.
         assert_eq!(
             list[1]["input"]["hint"], "agent | plan | yolo | coordinator"
+        );
+        // The permission row advertises the picker's preset values; the
+        // vendored picker decorates this exact command name.
+        assert_eq!(
+            list[3]["input"]["hint"],
+            "agent | plan | danger-full-access | coordinator"
         );
     }
 
@@ -357,6 +392,12 @@ mod tests {
             ("/mode yolo", "yolo"),
             ("/mode coordinator", "coordinator"),
             ("/plan", "plan"),
+            ("/plan off", "agent"),
+            ("/permission agent", "agent"),
+            ("/permission plan", "plan"),
+            ("/permission danger-full-access", "yolo"),
+            ("/permission coordinator", "coordinator"),
+            ("/permission yolo", "yolo"),
             ("/yolo", "yolo"),
         ] {
             match admit(line, 0) {
@@ -373,6 +414,13 @@ mod tests {
             panic!("a misspelled mode must refuse");
         };
         assert_eq!(text, "Usage: /mode <agent|plan|yolo|coordinator>");
+        let Admission::Error(text) = admit("/permission", 0) else {
+            panic!("a bare /permission must refuse");
+        };
+        assert_eq!(
+            text,
+            "Usage: /permission <agent|plan|danger-full-access|coordinator>"
+        );
         // The shortcuts refuse arguments and attachments like /compact.
         for line in ["/plan now", "/yolo now"] {
             let Admission::Error(text) = admit(line, 0) else {
@@ -380,7 +428,7 @@ mod tests {
             };
             assert!(text.starts_with("Usage: /"), "{text}");
         }
-        for line in ["/plan", "/yolo", "/mode plan"] {
+        for line in ["/plan", "/yolo", "/mode plan", "/permission plan"] {
             let Admission::Error(text) = admit(line, 1) else {
                 panic!("{line} with an attachment must refuse");
             };

@@ -1,0 +1,162 @@
+/** `reference` dictionaries for the unified `@` source and inline file navigation. */
+/** Dictionary namespace owned by this plugin. */
+export declare const NS = "reference";
+/**
+ * Simplified Chinese dictionary (the key-set source of truth).
+ *
+ * The `time.*` bucket words are this namespace's own copy of the session-row
+ * vocabulary: locale-owned copy keeps the words per plugin, while the
+ * bucketing they name is the one shared {@link relativeTime} in ui-primitives.
+ */
+export declare const zh: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** The reference namespace key union. */
+export type ReferenceKey = keyof typeof zh;
+declare module '@codesmith/client-ui-slots' {
+    interface LocaleNamespaceMap {
+        /** Reference menu and per-file navigation feedback. */
+        reference: ReferenceKey;
+    }
+}
+/** English dictionary, checked complete against the zh key set. */
+export declare const en: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** Japanese copy, checked against the English keys. */
+export declare const ja: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** Spanish dictionary, checked against the English keys. */
+export declare const es: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** French dictionary, checked against the English keys. */
+export declare const fr: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** German dictionary, checked against the English keys. */
+export declare const de: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** Russian dictionary, checked against the English keys. */
+export declare const ru: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+/** Portuguese dictionary, checked against the English keys. */
+export declare const pt: {
+    'section.files': string;
+    'section.subagents': string;
+    'section.sessions': string;
+    'candidate.noCwd': string;
+    'crumb.root': string;
+    'fileOpen.title': string;
+    'fileOpen.failed': string;
+    'fileOpen.close': string;
+    'fileOpen.retry': string;
+    'time.now': string;
+    'time.minutes': string;
+    'time.hours': string;
+    'time.days': string;
+    'time.months': string;
+    'time.years': string;
+};
+//# sourceMappingURL=locales.d.ts.map

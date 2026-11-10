@@ -19,6 +19,8 @@ pub mod jobs;
 pub mod llm;
 pub mod mapper;
 pub mod mux;
+pub mod permissions;
+pub mod references;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
@@ -87,6 +89,9 @@ pub struct HostState {
     /// because the window's drag-drop handler fills it before this state
     /// exists.
     pub drop_bytes: host_drop::DropStaging,
+    /// Per-workspace `@` file index (see `host::references`); dropped when a
+    /// turn settles because the turn may have written files.
+    pub reference_index: references::ReferenceIndex,
 }
 
 impl HostState {
@@ -246,6 +251,10 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error("gateway/internal", format!("session/page: {err:#}")),
             }
         }
+        "session/events" => match sessions::events(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/events: {err:#}")),
+        },
         "session/prompt" => {
             match sessions::prompt(host_arc, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),
@@ -417,12 +426,35 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(commands::Outcome::Miss) => json!({ "ok": true }),
             Err(err) => rpc_error(err.code, err.message),
         },
+        // The permission picker's process catalog (host::permissions): the
+        // upstream preset values over CodeSmith's per-thread mode. The default
+        // is the new-session preference stored in the desktop settings
+        // document.
+        "permissionPresets/catalog" => {
+            let home = host.settings_home();
+            match tokio::task::spawn_blocking(move || {
+                settings::default_permission_preset(&home)
+            })
+            .await
+            {
+                Ok(default) => rpc_ok(permissions::catalog(&default)),
+                Err(err) => rpc_error(
+                    "gateway/internal",
+                    format!("permissionPresets/catalog: {err}"),
+                ),
+            }
+        }
         // The files tree and preview reads (host::files), over the session
         // workspace.
         "workspaceFileScope" => files::scope(host, args_of(payload)).await,
         "workspaceFiles/list" => files::list(host, args_of(payload)).await,
         "workspaceFiles/read" => files::read(host, args_of(payload)).await,
         "workspaceFiles/stat" => files::stat(host, args_of(payload)).await,
+        // The `@` menu's file source (host::references); session references
+        // are not a CodeSmith capability — the resolver answers an empty
+        // list, which the vendored source degrades to file-only rows.
+        "fileReferences/list" => references::list(host, args_of(payload)).await,
+        "sessionReferenceResolver/candidates" => rpc_ok(json!([])),
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
@@ -438,7 +470,6 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "credentials/set" => credentials::set(host, args_of(payload)).await,
         "credentials/unset" => credentials::unset(host, args_of(payload)).await,
         "web/listProviders" => rpc_ok(json!({ "search": [], "fetch": [] })),
-        "permissionPresets/catalog" => rpc_ok(json!({ "options": [] })),
         "account/getProfile" | "account/getBalance" | "account/getUnnotifiedBonuses" => {
             rpc_ok(Value::Null)
         }
@@ -652,6 +683,37 @@ async fn session_create(host: &HostState) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // The permission row's new-session default (desktop settings
+            // state). Apply it after creation; a runtime refusal is logged,
+            // not fatal — the session exists and `agent` is the fallback.
+            let home = host.settings_home();
+            let preset = tokio::task::spawn_blocking(move || {
+                settings::default_permission_preset(&home)
+            })
+            .await
+            .unwrap_or_else(|_| permissions::DEFAULT_PRESET.to_string());
+            if let Some(mode) = permissions::mode_of_preset(&preset) {
+                if mode != "agent" {
+                    let path = format!("/v1/threads/{session_id}");
+                    match host
+                        .backend
+                        .request_with_status(
+                            reqwest::Method::PATCH,
+                            &path,
+                            Some(&json!({ "mode": mode })),
+                        )
+                        .await
+                    {
+                        Ok(Ok(_)) => {}
+                        Ok(Err((_status, message))) => eprintln!(
+                            "codesmith desktop: permission default {preset:?} refused for {session_id}: {message}"
+                        ),
+                        Err(err) => eprintln!(
+                            "codesmith desktop: permission default {preset:?} failed for {session_id}: {err:#}"
+                        ),
+                    }
+                }
+            }
             // The new session must land in the workspace the sidebar groups
             // by: push an upsert increment to every open workspace follow.
             let mut view = workspace_view_live(host).await;
@@ -760,6 +822,55 @@ async fn events_result(host: &HostState, args: &Value) -> Result<Value> {
             // ended (the runtime's own `approval.decided` echo and the
             // turn-end sweep only cancel what is still pending).
             host.cancel_pending(&event_id).await;
+            // Approving a plan is the plan-mode handoff: the REPL host
+            // restores the session mode when it approves exit_plan_mode, and
+            // the desktop bridge mirrors that so the next turn can write.
+            // Only a thread currently in plan mode is touched.
+            if decision == "allow"
+                && pending
+                    .frame
+                    .pointer("/request/toolName")
+                    .and_then(Value::as_str)
+                    == Some("exit_plan_mode")
+            {
+                let path = format!("/v1/threads/{}", pending.session_id);
+                match host.backend.get::<Value>(&path).await {
+                    Ok(detail) => {
+                        let mode = detail
+                            .pointer("/thread/mode")
+                            .and_then(Value::as_str)
+                            .unwrap_or("agent");
+                        if mode == "plan" {
+                            match host
+                                .backend
+                                .request_with_status(
+                                    reqwest::Method::PATCH,
+                                    &path,
+                                    Some(&json!({ "mode": "agent" })),
+                                )
+                                .await
+                            {
+                                Ok(Ok(_)) => {
+                                    sessions::push_control_projection(host, &pending.session_id)
+                                        .await;
+                                }
+                                Ok(Err((_status, message))) => eprintln!(
+                                    "codesmith desktop: plan handoff refused for {}: {message}",
+                                    pending.session_id
+                                ),
+                                Err(err) => eprintln!(
+                                    "codesmith desktop: plan handoff failed for {}: {err:#}",
+                                    pending.session_id
+                                ),
+                            }
+                        }
+                    }
+                    Err(err) => eprintln!(
+                        "codesmith desktop: plan handoff read failed for {}: {err:#}",
+                        pending.session_id
+                    ),
+                }
+            }
             Ok(json!({ "delivered": delivered, "decision": decision }))
         }
         events::InputKind::Questions => {

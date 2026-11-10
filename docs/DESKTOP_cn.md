@@ -10,7 +10,7 @@ CodeSmith 桌面端是一个 Tauri 2 应用：UI 整体 vendor 自一个上游�
 
 ```
 Tauri App (desktop/)
-├─ WebView（vendored 客户端 UI，66 包闭包）
+├─ WebView（vendored 客户端 UI，69 包闭包）
 │   ├─ 我方 boot：__CODESMITH_BOOT__ 插件图 + 第一方品牌行
 │   └─ 我方 connection 载体：一元 rpc.call 走 HTTP；所有流走 vendored
 │        WebSocket mux（每客户端一条 socket）
@@ -107,8 +107,11 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   commit）；没有实时跟踪。
 - RPC 面是子集；未实现端点按 `gateway/method-unavailable` 返回错误态，
   不假装成功。会话重命名/复刻/搜索、归档/取消归档、会话置顶与侧栏手动
-  排序、提示队列、技能目录、桌面设置文档、基于 `/v1/automations` 的
-  任务页、控制流投影均已接通。
+  排序、提示队列、技能目录、桌面设置文档（主题、字体、回车行为、转录视
+  图、语言、开发者工具、新建会话的权限默认值）、基于
+  `/v1/automations` 的任务页、控制流投影、计划页（`session/events` + 注入
+  `exit_plan_mode` 的计划正文）、权限面（`permissionPresets/catalog` 映
+  射线程 mode）以及 `@` 文件源（`fileReferences/list`）均已接通。
 - turn 运行中发出的 prompt 停到运行时线程的队列上
   （`POST /v1/threads/{id}/queue`）：队列坞从 `inbox` 投影渲染它（运行时的
   `queue.updated` 事件，实时推送），排队的 prompt 在运行中的 turn 一结束就按
@@ -216,10 +219,46 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   效；手工声明的自定义路由还需 providers.toml/扩展注册 factory 才能真正
   服务；页面首启 onboarding 弹窗依赖 `llm-deepseek` namespace（不服务）
   因而永不出现。
-- 上游独有概念（账户/余额、插件市场、右侧栏终端/浏览器、子代理子会话视
-  图、目标条、计划预览）不仿真——对应插件不进 boot roster 或返回空
-  态。（Jobs 弹窗、附件呈现、改动审查标签页与右侧栏文件/预览标签页**已**
-  桥接——见各条。）
+- 通用设置文档还服务 `locale`（Language 行跨重启持久）、`ui-settings`
+  （开发者工具；默认开启，恢复 Trajectory 标签、changed-files 卡片与脚本
+  HTML 预览）和 `permission`（下条的新会话默认值）。
+- 计划模式是完整的桌面面（`client-ui-plan`）：composer 的计划 chip 读
+  `plan` 投影（`active` = 线程 mode 为 `plan`），`/plan off` 退出，提交的
+  计划渲染为 turn 尾部卡片与右侧栏计划标签页。运行时的 `exit_plan_mode`
+  参数 schema 为空、自己读计划文件，因此桥在重放与实时路径上把最近一次
+  `write_plan_file` 的正文作为该调用的 `arguments.plan`（中途接入的实时流
+  用重放快照 seed mapper）。批准该调用会把线程 mode 恢复为 `agent`，对齐
+  REPL 宿主的行为；运行时拒绝时留给计划 chip 切换。不会自动提交实现
+  kickoff。已知限制：没有“请求修改”评
+  审语义——审批卡仍是允许/拒绝；从未写过计划文件的 plan-mode turn 不出卡
+  片。
+- 权限面（`client-ui-permission-presets`）把 vendored 预设选择器映射到线
+  程 mode：`agent`、`plan`、`danger-full-access`（即 CodeSmith 的
+  `yolo`，保留选择器的本地化标签与显式风险确认）、`coordinator`。
+  `/permission <value>` 与 `/mode` 并列进入宿主命令目录；选择后 PATCH 线
+  程 mode 并推送 `permissions` 投影。通用设置行的
+  `permission.defaultPreset` 存在 `desktop/settings.json`，
+  `session/create` 会把它应用到新线程（未知或手改的值回落到 `agent`）。
+- `@` 菜单（`client-ui-reference`）经 `fileReferences/list` 列出工作区文
+  件与目录：空 query 列根目录，带路径的 query 列该目录，裸片段在 5 万条上
+  限的工作区索引里按上游打分搜索。隐藏项与版本控制/依赖/构建目录被跳过，
+  不跟随符号链接；索引按工作区缓存，turn 落定后丢弃。`workingDirectory`
+  投影（`thread.workspace`）让文件 chip 与文件链接正确解析。
+  `sessionReferenceResolver/candidates` 返回空列表：CodeSmith 没有跨会话
+  上下文注入能力，菜单只列文件。
+- 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`
+  调用，工具 `item.started` 时实时推送）、`plan`、`permissions`、
+  `workingDirectory` 与 `turnOutline`（每个已开始 turn 的 seq 与截断的
+  prompt/response 预览）。`contextBreakdown` 与 `userQuestions` 仍缺
+  席：运行时没有记录逐请求的 system/tools/message 组成，问题请求也没有
+  tool-call id 或取消路由。
+- 上游独有概念（账户/余额、插件市场、agent presets、右侧栏终端/浏览器、
+  子代理子会话视图、目标条）不仿真——对应插件不进 boot roster 或返回空
+  态。CodeSmith 的 goal 是 REPL 本地功能（`/goal`；runtime thread 不携
+  带 goal 状态），其 subagent 是进程内而非 thread，workflow 生命周期走
+  extension event、没有写进会话日志，因此 workflow-run 面板也没有数据
+  源。（Jobs 弹窗、附件呈现、改动审查标签页、右侧栏文件/预览标签页、计划
+  页、权限面与 `@` 文件源**已**桥接——见各条。）
 - 右侧栏文件树与文档预览（`client-ui-sidebar-files` +
   `client-ui-sidebar-documentpreview`，经 `workspaceFiles` remote，
   `host::files`）直接读会话工作区：`workspaceFileScope` 从线程记录解析

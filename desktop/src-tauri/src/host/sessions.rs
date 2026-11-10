@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::mapper::{replay_events, SessionMapper};
+use super::permissions;
 use super::workspace::OpError;
 use super::{HostState, SharedHost};
 
@@ -149,6 +150,9 @@ pub async fn follow(
         .await?;
     let (turn_baseline, step_baseline) = resume_counters(&detail);
     let mut mapper = SessionMapper::resume_at(last_seq, turn_baseline, step_baseline);
+    // A follow stream can connect after the turn's write_plan_file call; the
+    // replayed snapshot seeds the body the live exit_plan_mode needs.
+    mapper.seed_plan_content(super::mapper::latest_plan_content(&detail));
     if let Some((provider, model)) = seat.as_ref() {
         mapper.set_model_source(provider, model);
     }
@@ -187,10 +191,17 @@ pub async fn follow(
                     // its turn settled with fresh usage.
                     Some("turn.completed") | Some("turn.failed") => {
                         push_control_projection(host, &session_id).await;
+                        // The turn may have written files: the `@` index is
+                        // stale until the next walk.
+                        host.reference_index.invalidate();
                     }
                     // A queue drain starts turns no prompt of this bridge
                     // armed the watcher for; re-arm (a no-op while armed).
                     Some("turn.started") => ensure_waterfall_watcher(host, &session_id).await,
+                    // The todo dock updates as the model writes its list.
+                    Some("item.started") => {
+                        push_live_todos(host, &session_id, &envelope).await
+                    }
                     Some("queue.updated") => {
                         push_inbox_projection(host, &session_id, &envelope["payload"]["items"])
                             .await;
@@ -442,6 +453,10 @@ async fn watch_session_waterfalls(host: &HostState, session_id: &str) {
 /// the requested `throughSeq` (inclusive cut; omitted = log end), records
 /// stay under `beforeSeq` (exclusive), `hasMore` reports earlier history.
 pub async fn page(host: &HostState, request: &Value) -> Result<Value> {
+    // A single object parameter arrives wrapped under `request` from the
+    // generated client; unwrap it so the cut fields and the address read the
+    // same object.
+    let request = request.get("request").unwrap_or(request);
     let session_id = address_session_id(request)?;
     let through_seq = request.get("throughSeq").and_then(Value::as_i64);
     let before_seq = request.get("beforeSeq").and_then(Value::as_i64);
@@ -466,6 +481,25 @@ pub async fn page(host: &HostState, request: &Value) -> Result<Value> {
     Ok(json!({
         "records": selected.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
         "hasMore": has_more,
+    }))
+}
+
+/// `session/events` — the log-end window a resource provider reads before
+/// paging backwards (`ui-plan`'s plan lookup fixes its cut here). Same record
+/// shape as `session/page`, plus the cursor the resource carries into
+/// `session/page` as `throughSeq`.
+pub async fn events(host: &HostState, request: &Value) -> Result<Value> {
+    let session_id = address_session_id(request)?;
+    let detail: Value = host
+        .backend
+        .get(&format!("/v1/threads/{session_id}"))
+        .await?;
+    let events = replay_events(&detail);
+    let cursor = events.last().and_then(|event| event["seq"].as_i64()).unwrap_or(-1);
+    Ok(json!({
+        "cursor": cursor,
+        "records": events.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
+        "hasMore": false,
     }))
 }
 
@@ -1217,6 +1251,173 @@ fn session_stats_projection(detail: &Value) -> Value {
     })
 }
 
+/// The thread's mode (`thread.mode`; absent reads as the runtime default).
+fn thread_mode(detail: &Value) -> &str {
+    detail
+        .pointer("/thread/mode")
+        .and_then(Value::as_str)
+        .unwrap_or("agent")
+}
+
+/// Normalize one tool call's `todos` argument into the projection's item
+/// shape; a non-array value is not a todo write.
+fn normalize_todos(todos: &Value) -> Option<Value> {
+    let array = todos.as_array()?;
+    Some(Value::Array(
+        array
+            .iter()
+            .filter_map(|todo| {
+                let content = todo.get("content").and_then(Value::as_str)?;
+                let status = todo
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .filter(|status| matches!(*status, "pending" | "in_progress" | "completed"))
+                    .unwrap_or("pending");
+                Some(json!({ "content": content, "status": status }))
+            })
+            .collect(),
+    ))
+}
+
+/// The latest whole-list todo snapshot (`todo`/`checklist_write`), or null
+/// before the first successful write. The runtime stores the call's input in
+/// `metadata.arguments`, so the fold is a replay-time scan, not a second
+/// state store.
+fn todos_projection(detail: &Value) -> Value {
+    let Some(items) = detail.get("items").and_then(Value::as_array) else {
+        return Value::Null;
+    };
+    let mut latest = None;
+    for item in items {
+        if !matches!(
+            item.get("kind").and_then(Value::as_str),
+            Some("tool_call") | Some("command_execution") | Some("file_change")
+        ) {
+            continue;
+        }
+        // Only a settled, successful call is a write the model saw land.
+        if item.get("status").and_then(Value::as_str) != Some("completed") {
+            continue;
+        }
+        let name = super::mapper::tool_name_from_summary(item);
+        if !matches!(name.as_str(), "todo" | "todo_write" | "checklist_write") {
+            continue;
+        }
+        let Some(args) = item
+            .pointer("/metadata/arguments")
+            .or_else(|| item.pointer("/metadata/input"))
+        else {
+            continue;
+        };
+        let Some(todos) = args.get("todos") else {
+            continue;
+        };
+        latest = normalize_todos(todos);
+    }
+    latest.unwrap_or(Value::Null)
+}
+
+/// Push a live `todos` frame the moment the model writes its list — the
+/// dock should appear mid-turn, not only when the turn settles. An
+/// in-progress call's list is what the model is trying; the turn-end refresh
+/// replaces it if the call fails.
+async fn push_live_todos(host: &HostState, session_id: &str, envelope: &Value) {
+    let Some(tool) = envelope.pointer("/payload/tool") else {
+        return;
+    };
+    let Some(name) = tool.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    if !matches!(name, "todo" | "todo_write" | "checklist_write") {
+        return;
+    }
+    let Some(todos) = tool.pointer("/input/todos").and_then(normalize_todos) else {
+        return;
+    };
+    let seq = host.next_projection_seq();
+    host.push_live(
+        "session/control",
+        projection_update(session_id, seq, &json!({ "todos": todos })),
+    )
+    .await;
+}
+
+/// The plan-mode collaboration state the composer chip reads (`active` only;
+/// the bridge has no pending-command window to report).
+fn plan_projection(mode: &str) -> Value {
+    json!({ "active": mode == "plan", "pending": false })
+}
+
+/// The current permission selection over the mode ↔ preset mapping.
+fn permissions_projection(mode: &str) -> Value {
+    json!({ "currentValue": permissions::preset_of_mode(mode) })
+}
+
+/// One rail-card preview: collapsed whitespace, bounded on a char boundary.
+fn bounded_preview(text: &str, limit: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= limit {
+        return normalized;
+    }
+    let mut out: String = normalized.chars().take(limit).collect();
+    out.push('…');
+    out
+}
+
+/// Every started turn with its `turn/start` seq and bounded previews — the
+/// turn navigator's data for history the client has not paged in.
+fn turn_outline_projection(detail: &Value) -> Value {
+    let events = replay_events(detail);
+    let seqs: std::collections::HashMap<u64, i64> = events
+        .iter()
+        .filter(|event| event["type"] == "turn/start")
+        .filter_map(|event| {
+            Some((
+                event["data"]["turn"].as_u64()?,
+                event["seq"].as_i64()?,
+            ))
+        })
+        .collect();
+    let turns = detail
+        .get("turns")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let items = detail
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut outline = Vec::new();
+    for (index, turn) in turns.iter().enumerate() {
+        let turn_no = (index as u64) + 1;
+        let Some(seq) = seqs.get(&turn_no) else {
+            continue;
+        };
+        let prompt = turn
+            .get("input_summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let turn_id = turn.get("id").and_then(Value::as_str).unwrap_or_default();
+        let response = items
+            .iter()
+            .filter(|item| {
+                item.get("turn_id").and_then(Value::as_str) == Some(turn_id)
+                    && item.get("kind").and_then(Value::as_str) == Some("agent_message")
+            })
+            .filter_map(|item| item.get("detail").and_then(Value::as_str))
+            .next_back()
+            .unwrap_or_default();
+        outline.push(json!({
+            "turn": turn_no,
+            "seq": seq,
+            "prompt": bounded_preview(prompt, 200),
+            "response": bounded_preview(response, 600),
+        }));
+    }
+    Value::Array(outline)
+}
+
 /// One session's projection values the bridge can compute from the runtime:
 /// title, context pressure (with the model's context window), model
 /// selection, the queue (`inbox`), whole-log token usage and activity stats.
@@ -1231,6 +1432,18 @@ async fn projection_values(
 ) -> Value {
     let mut values = serde_json::Map::new();
     values.insert("title".into(), session_title(detail));
+    let mode = thread_mode(detail).to_string();
+    // Composer docks/controls: the plan chip, the permission chip, the todo
+    // dock, the turn navigator's history rail, and the workspace an `@` file
+    // chip resolves against.
+    values.insert("plan".into(), plan_projection(&mode));
+    values.insert("permissions".into(), permissions_projection(&mode));
+    values.insert("todos".into(), todos_projection(detail));
+    values.insert("turnOutline".into(), turn_outline_projection(detail));
+    values.insert(
+        "workingDirectory".into(),
+        json!(detail.pointer("/thread/workspace").and_then(Value::as_str)),
+    );
     let queue = detail
         .get("queue")
         .and_then(Value::as_array)
@@ -1368,6 +1581,99 @@ fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn todos_fold_takes_the_latest_successful_whole_list() {
+        let detail = json!({
+            "items": [
+                { "kind": "tool_call", "status": "completed", "summary": "checklist_write: ok",
+                  "metadata": { "arguments": { "todos": [
+                      { "content": "a", "status": "completed" }
+                  ] } } },
+                { "kind": "tool_call", "status": "completed", "summary": "todo_write: ok",
+                  "metadata": { "arguments": { "todos": [
+                      { "content": "b", "status": "in_progress" },
+                      { "content": "c", "status": "bogus" }
+                  ] } } },
+                { "kind": "tool_call", "status": "failed", "summary": "todo: err",
+                  "metadata": { "arguments": { "todos": [
+                      { "content": "failed", "status": "pending" }
+                  ] } } },
+            ],
+        });
+        assert_eq!(
+            todos_projection(&detail),
+            json!([
+                { "content": "b", "status": "in_progress" },
+                // An unrecognized status reads as pending, the live tool's
+                // own default.
+                { "content": "c", "status": "pending" }
+            ])
+        );
+        assert_eq!(todos_projection(&json!({ "items": [] })), Value::Null);
+    }
+
+    #[test]
+    fn plan_and_permissions_projections_follow_the_thread_mode() {
+        assert_eq!(
+            plan_projection("plan"),
+            json!({ "active": true, "pending": false })
+        );
+        assert_eq!(
+            plan_projection("agent"),
+            json!({ "active": false, "pending": false })
+        );
+        assert_eq!(
+            permissions_projection("yolo")["currentValue"],
+            "danger-full-access"
+        );
+        assert_eq!(permissions_projection("plan")["currentValue"], "plan");
+        assert_eq!(permissions_projection("agent")["currentValue"], "agent");
+        assert_eq!(
+            permissions_projection("coordinator")["currentValue"],
+            "coordinator"
+        );
+    }
+
+    #[test]
+    fn turn_outline_uses_replayed_turn_seqs() {
+        let detail = json!({
+            "turns": [
+                { "id": "turn_1", "status": "completed", "input_summary": "first  task",
+                  "created_at": "2026-11-06T10:00:00Z", "started_at": "2026-11-06T10:00:00Z",
+                  "ended_at": "2026-11-06T10:00:09Z" },
+                { "id": "turn_2", "status": "completed", "input_summary": "second",
+                  "created_at": "2026-11-06T10:01:00Z", "started_at": "2026-11-06T10:01:00Z",
+                  "ended_at": "2026-11-06T10:01:09Z" },
+            ],
+            "items": [
+                { "id": "item_a", "turn_id": "turn_1", "kind": "agent_message",
+                  "status": "completed", "detail": "first answer",
+                  "started_at": "2026-11-06T10:00:01Z", "ended_at": "2026-11-06T10:00:04Z" },
+                { "id": "item_b", "turn_id": "turn_2", "kind": "agent_message",
+                  "status": "completed", "detail": "second answer",
+                  "started_at": "2026-11-06T10:01:01Z", "ended_at": "2026-11-06T10:01:04Z" },
+            ],
+        });
+        let outline = turn_outline_projection(&detail);
+        let turns = outline.as_array().unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0]["turn"], 1);
+        assert_eq!(turns[0]["prompt"], "first task");
+        assert_eq!(turns[0]["response"], "first answer");
+        assert!(turns[0]["seq"].as_i64().unwrap() < turns[1]["seq"].as_i64().unwrap());
+        assert_eq!(turns[1]["turn"], 2);
+        assert_eq!(turns[1]["response"], "second answer");
+    }
+
+    #[test]
+    fn previews_collapse_whitespace_and_bound_on_a_char_boundary() {
+        assert_eq!(bounded_preview("  a\n\n b\tc ", 20), "a b c");
+        let long = "计".repeat(40);
+        let preview = bounded_preview(&long, 10);
+        assert_eq!(preview.chars().count(), 11, "ten chars plus the ellipsis");
+        assert!(preview.ends_with('…'));
+    }
 
     #[test]
     fn duplicate_waterfall_registration_pushes_only_the_first() {
