@@ -246,9 +246,12 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   只在桥上补 `# Plan`，计划文件本身保持原样。运行时把批准的退出记为
   `status` item 而非工具 item，桥据该 item 合成 `exit_plan_mode` 调用
   （item id 即计划的 call id），计划卡与计划资源都从它取数。批准该调用
-  会把线程 mode 恢复为 `agent` 的交接排入队列，在 turn 结束事件到达时执行
-  ——运行时的落定保存会覆盖中途发出的 PATCH。运行时拒绝时留给计划 chip
-  切换。不会自动提交实现 kickoff。已知限制：没有“请求修改”评
+  会把线程 mode 恢复为会话进入计划前的模式——对应 REPL 的
+  `plan_restore_mode`；桥在自己的 mode 写入进入 `plan` 时记下该模式。若桥
+  首次看到某线程时它已在 `plan`（别的主机切换过，或桥重启后页面再次批
+  准），则没有记录，回退到运行时默认的 `agent`。交接在 turn 结束事件到达
+  时执行——运行时的落定保存会覆盖中途发出的 PATCH。运行时拒绝时留给计划
+  chip 切换。不会自动提交实现 kickoff。已知限制：没有“请求修改”评
   审语义——审批卡仍是允许/拒绝；从未写过计划文件的 plan-mode turn 不出卡
   片。
 - 权限面（`client-ui-permission-presets`）把 vendored 预设选择器映射到线

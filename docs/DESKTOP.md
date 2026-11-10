@@ -306,10 +306,14 @@ Known limitations of the current implementation:
   exit as a `status` item, not a tool item, so the bridge synthesizes the
   `exit_plan_mode` call from that item (its id is the plan's call id) — that
   is what feeds the card and the plan resource. Approving the call queues the
-  thread-mode restore to `agent`, mirroring the REPL host's handoff; the
-  restore runs when the turn-end event arrives, because the runtime's own
-  settlement save would overwrite a PATCH sent mid-turn. A runtime refusal
-  leaves the switch to the plan chip. No implementation kickoff is submitted.
+  thread-mode restore to the mode the session came from — the REPL's
+  `plan_restore_mode` — which the bridge stashes whenever one of its own mode
+  writes enters `plan`; a thread already in `plan` when the bridge first sees
+  it (another host switched it, or a page re-approves after a bridge restart)
+  has no stash and falls back to `agent`, the runtime default. The restore
+  runs when the turn-end event arrives, because the runtime's own settlement
+  save would overwrite a PATCH sent mid-turn. A runtime refusal leaves the
+  switch to the plan chip. No implementation kickoff is submitted.
   Known limitations: there is no “request changes” review intent — the
   approval card stays allow/deny — and a plan-mode turn that never wrote a
   plan file submits no card.

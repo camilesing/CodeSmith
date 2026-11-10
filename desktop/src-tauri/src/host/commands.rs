@@ -288,14 +288,13 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                 // The mode switch settles synchronously in the thread record;
                 // a runtime refusal (unknown spelling, busy write) settles as
                 // the command's error result, quoting the runtime's text.
-                let path = format!("/v1/threads/{session_id}");
-                let patched = host
-                    .backend
-                    .request_with_status(reqwest::Method::PATCH, &path, Some(&mode_patch(mode)))
+                // `sessions::set_mode` also keeps the plan-return stash, so a
+                // later plan approval hands the session back to this mode.
+                let patched = sessions::set_mode(host, &session_id, mode)
                     .await
                     .map_err(internal)?;
                 match patched {
-                    Ok(_) => {
+                    Ok(()) => {
                         // The plan/permission chips read the control
                         // projections; publish the new mode now instead of
                         // waiting for the next settled turn.

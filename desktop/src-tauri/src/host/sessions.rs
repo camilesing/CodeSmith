@@ -101,17 +101,8 @@ async fn repair_auto_approve_pairing(host: &HostState, session_id: &str, detail:
     {
         return;
     }
-    let path = format!("/v1/threads/{session_id}");
-    match host
-        .backend
-        .request_with_status(
-            reqwest::Method::PATCH,
-            &path,
-            Some(&super::commands::mode_patch(mode)),
-        )
-        .await
-    {
-        Ok(Ok(_)) => {}
+    match set_mode(host, session_id, mode).await {
+        Ok(Ok(())) => {}
         Ok(Err((_status, message))) => {
             eprintln!("codesmith desktop: auto-approve repair refused for {session_id}: {message}")
         }
@@ -432,13 +423,19 @@ pub(super) async fn handle_waterfall_envelope(
     }
 }
 
-/// The plan-mode handoff an approved `exit_plan_mode` owes: thread mode
-/// `plan` → `agent`, so the next turn carries the writing toolset. The
-/// approval is delivered mid-turn; the runtime saves the turn's thread at
-/// settlement, which overwrites a PATCH sent at approval time. Waiting for
-/// the turn-end envelope is what makes the restore stick. The pending set
-/// makes this fire once (the follow stream and the background watcher both
-/// deliver the same turn-end event); a denial never enqueues it.
+/// The plan-mode handoff an approved `exit_plan_mode` owes: back to the mode
+/// the session came from, so the next turn carries that mode's toolset — the
+/// REPL's `plan_restore_mode` rule, not a fixed `agent`. The approval is
+/// delivered mid-turn; the runtime saves the turn's thread at settlement,
+/// which overwrites a PATCH sent at approval time. Waiting for the turn-end
+/// envelope is what makes the restore stick. The pending set makes this fire
+/// once (the follow stream and the background watcher both deliver the same
+/// turn-end event); a denial never enqueues it.
+///
+/// Known limitation: the stash is bridge-process state. A thread already in
+/// `plan` when this process first sees it (another host switched it, or a
+/// reloaded page re-approving a plan) has no stashed mode and falls back to
+/// `agent`, which is the runtime's own default.
 pub(super) async fn restore_plan_handoff(host: &HostState, session_id: &str) {
     if !host.plan_handoffs.lock().await.remove(session_id) {
         return;
@@ -450,19 +447,15 @@ pub(super) async fn restore_plan_handoff(host: &HostState, session_id: &str) {
                 .pointer("/thread/mode")
                 .and_then(Value::as_str)
                 .unwrap_or("agent");
+            let restore = host.plan_return_modes.lock().await.remove(session_id);
             if mode != "plan" {
+                // Left plan by some other route (the plan chip, `/mode`):
+                // the stash would arm a restore the session no longer owes.
                 return;
             }
-            match host
-                .backend
-                .request_with_status(
-                    reqwest::Method::PATCH,
-                    &path,
-                    Some(&super::commands::mode_patch("agent")),
-                )
-                .await
-            {
-                Ok(Ok(_)) => push_control_projection(host, session_id).await,
+            let restore = restore.as_deref().unwrap_or("agent").to_string();
+            match set_mode(host, session_id, &restore).await {
+                Ok(Ok(())) => push_control_projection(host, session_id).await,
                 Ok(Err((_status, message))) => {
                     eprintln!("codesmith desktop: plan handoff refused for {session_id}: {message}")
                 }
@@ -475,6 +468,67 @@ pub(super) async fn restore_plan_handoff(host: &HostState, session_id: &str) {
             eprintln!("codesmith desktop: plan handoff read failed for {session_id}: {err:#}")
         }
     }
+}
+
+/// Write a thread's mode through the bridge, keeping the plan-return stash.
+///
+/// Every mode write the bridge performs goes through here: the `/mode` and
+/// `/plan`/`/yolo` commands, the new-session permission default, the
+/// auto-approve pairing repair, and the handoff itself. A direct PATCH
+/// elsewhere would skip the stash, and the handoff would fall back to
+/// `agent` — the very behaviour this function exists to avoid.
+///
+/// Entering `plan` records the mode the thread was in (`agent` when the read
+/// fails, the runtime's default). Leaving plan, by any route, clears it: a
+/// session that already left plan owes no handoff.
+///
+/// The outer error is the loopback transport; the inner one is the runtime's
+/// verdict, which the command catalog quotes verbatim.
+pub(super) async fn set_mode(
+    host: &HostState,
+    session_id: &str,
+    mode: &str,
+) -> Result<std::result::Result<(), (reqwest::StatusCode, String)>> {
+    let previous = if mode == "plan" {
+        current_mode(host, session_id).await
+    } else {
+        None
+    };
+    let path = format!("/v1/threads/{session_id}");
+    let written = host
+        .backend
+        .request_with_status(
+            reqwest::Method::PATCH,
+            &path,
+            Some(&super::commands::mode_patch(mode)),
+        )
+        .await?;
+    if written.is_ok() {
+        let mut stash = host.plan_return_modes.lock().await;
+        if mode == "plan" {
+            // A `plan` → `plan` write (or a failed previous-mode read) must
+            // not stash `plan` itself; the handoff would then restore plan.
+            if let Some(previous) = previous.filter(|previous| previous != "plan") {
+                stash.insert(session_id.to_string(), previous);
+            }
+        } else {
+            // Left plan by some other route: a stash would arm a restore the
+            // session no longer owes.
+            stash.remove(session_id);
+        }
+    }
+    Ok(written.map(|_| ()))
+}
+
+/// The thread's current mode, or `None` when the read fails.
+async fn current_mode(host: &HostState, session_id: &str) -> Option<String> {
+    host.backend
+        .get::<Value>(&format!("/v1/threads/{session_id}"))
+        .await
+        .ok()?
+        .pointer("/thread/mode")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 /// Arm the session's background waterfall watcher. The runtime surfaces

@@ -93,11 +93,16 @@ pub struct HostState {
     /// turn settles because the turn may have written files.
     pub reference_index: references::ReferenceIndex,
     /// Sessions whose approved `exit_plan_mode` still owes the plan-mode
-    /// handoff (thread mode `plan` → `agent`). The approval is delivered
-    /// mid-turn, and the runtime saves the thread when the turn settles — a
-    /// PATCH sent at approval time is overwritten by that save, so the
-    /// restore waits for the turn's own end event.
+    /// handoff (see `sessions::restore_plan_handoff`). The approval is
+    /// delivered mid-turn, and the runtime saves the thread when the turn
+    /// settles — a PATCH sent at approval time is overwritten by that save,
+    /// so the restore waits for the turn's own end event.
     pub plan_handoffs: Mutex<HashSet<String>>,
+    /// The mode each session was in when the bridge last switched it to
+    /// `plan` (see `sessions::set_mode`). The runtime thread records only the
+    /// current mode, so the bridge stashes the pre-plan mode — the REPL's
+    /// `plan_restore_mode` — and the handoff hands the session back to it.
+    pub plan_return_modes: Mutex<HashMap<String, String>>,
 }
 
 impl HostState {
@@ -737,17 +742,8 @@ async fn session_create(host: &HostState) -> Value {
             .unwrap_or_else(|_| permissions::DEFAULT_PRESET.to_string());
             if let Some(mode) = permissions::mode_of_preset(&preset) {
                 if mode != "agent" {
-                    let path = format!("/v1/threads/{session_id}");
-                    match host
-                        .backend
-                        .request_with_status(
-                            reqwest::Method::PATCH,
-                            &path,
-                            Some(&commands::mode_patch(mode)),
-                        )
-                        .await
-                    {
-                        Ok(Ok(_)) => {}
+                    match sessions::set_mode(host, &session_id, mode).await {
+                        Ok(Ok(())) => {}
                         Ok(Err((_status, message))) => eprintln!(
                             "codesmith desktop: permission default {preset:?} refused for {session_id}: {message}"
                         ),
