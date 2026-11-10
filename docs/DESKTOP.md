@@ -333,8 +333,12 @@ Known limitations of the current implementation:
   dependency/build directories are skipped, and symlinks are not followed. The
   index is cached per workspace and dropped when a turn settles. The
   `workingDirectory` projection (`thread.workspace`) lets file chips and file
-  links resolve, and `session/list` rows carry the bridge's `cwd` (the one
-  implicit workspace) for the sidebar files tree and the chip resolver.
+  links resolve, and each `session/list` row carries its own thread's
+  workspace as `cwd` — the bridge joins the summary rows with the runtime's
+  thread list (one loopback read per page, no protocol change), so a session
+  left by an earlier run in another directory still opens the right files
+  tree and resolves chips there; a row whose record cannot be read falls
+  back to the bridge process's directory.
   `sessionReferenceResolver/candidates` answers an empty list:
   CodeSmith has no cross-session context-injection feature, so the menu is
   file-only.

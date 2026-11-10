@@ -266,7 +266,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   限的工作区索引里按上游打分搜索。隐藏项与版本控制/依赖/构建目录被跳过，
   不跟随符号链接；索引按工作区缓存，turn 落定后丢弃。`workingDirectory`
   投影（`thread.workspace`）让文件 chip 与文件链接正确解析；`session/list`
-  行携带桥的 `cwd`（唯一隐式工作区），供右侧栏文件树与 chip 解析使用。
+  的每一行携带它自己线程的工作区作为 `cwd`——桥把 summary 行与运行时的线程
+  列表按 id 连接（每页一次环回读取，不改协议），因此早先在其他目录启动留下
+  的会话仍会打开正确的工作区文件树、chip 也在正确目录解析；记录读取失败的
+  行回落到桥进程所在目录。
   `sessionReferenceResolver/candidates` 返回空列表：CodeSmith 没有跨会话
   上下文注入能力，菜单只列文件。
 - 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`

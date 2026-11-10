@@ -645,43 +645,72 @@ struct ThreadSummary {
     updated_at: String,
 }
 
+/// The cwd half of a runtime thread record. `/v1/threads/summary` carries the
+/// row's status fields but no workspace, so the list joins the full thread
+/// list by id — one extra loopback read for the whole page, not one detail
+/// read per row, and no runtime protocol change.
+#[derive(serde::Deserialize)]
+struct ThreadWorkspace {
+    id: String,
+    workspace: PathBuf,
+}
+
+/// One `session/list` row. Client optional fields must be ABSENT, not null —
+/// a null reaches the client as a typed value it then dereferences.
+fn session_row(t: ThreadSummary, cwd: &std::path::Path) -> Value {
+    // Client timestamps are epoch milliseconds; the wire `time` and list
+    // `updatedAt` must both be integer numbers.
+    let updated_ms =
+        mapper::epoch_ms(&t.updated_at).unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let running = matches!(
+        t.latest_turn_status.as_deref(),
+        Some("in_progress") | Some("queued")
+    );
+    // The sidebar files tree and the `@` file-chip resolver read the row's
+    // `cwd`; serve the thread's own workspace, which may not be this bridge
+    // process's working directory (a session left by an earlier run in
+    // another directory).
+    let mut row = json!({
+        "sessionId": t.id,
+        "updatedAt": updated_ms,
+        "running": running,
+        "blank": t.latest_turn_id.is_none(),
+        "agentAvailable": true,
+        "cwd": cwd.to_string_lossy(),
+    });
+    let obj = row.as_object_mut().unwrap();
+    if let Some(turn) = t.latest_turn_id {
+        obj.insert("formatStatus".into(), json!(format!("turn:{turn}")));
+    }
+    row
+}
+
 async fn session_list(host: &HostState) -> Value {
-    match host
-        .backend
-        .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200")
-        .await
-    {
+    let (summaries, records) = tokio::join!(
+        host.backend
+            .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200"),
+        host.backend
+            .get::<Vec<ThreadWorkspace>>("/v1/threads?limit=200"),
+    );
+    let workspaces: HashMap<String, PathBuf> = match records {
+        Ok(records) => records
+            .into_iter()
+            .map(|record| (record.id, record.workspace))
+            .collect(),
+        Err(err) => {
+            // A list without the full records still renders; those rows fall
+            // back to this process's working directory (the pre-join shape).
+            eprintln!("codesmith desktop: session/list thread workspaces: {err:#}");
+            HashMap::new()
+        }
+    };
+    match summaries {
         Ok(threads) => rpc_ok(json!({
             "items": threads
                 .into_iter()
-                // Client optional fields must be ABSENT, not null — a null
-                // reaches the client as a typed value it then dereferences.
                 .map(|t| {
-                    // Client timestamps are epoch milliseconds; the wire `time`
-                    // and list `updatedAt` must both be integer numbers.
-                    let updated_ms = mapper::epoch_ms(&t.updated_at)
-                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-                    let running = matches!(
-                        t.latest_turn_status.as_deref(),
-                        Some("in_progress") | Some("queued")
-                    );
-                    // The sidebar files tree and the `@` file-chip resolver
-                    // read the session list's `cwd`; the bridge presents one
-                    // implicit workspace, so every row carries this
-                    // process's working directory.
-                    let mut row = json!({
-                        "sessionId": t.id,
-                        "updatedAt": updated_ms,
-                        "running": running,
-                        "blank": t.latest_turn_id.is_none(),
-                        "agentAvailable": true,
-                        "cwd": host.cwd.to_string_lossy(),
-                    });
-                    let obj = row.as_object_mut().unwrap();
-                    if let Some(turn) = t.latest_turn_id {
-                        obj.insert("formatStatus".into(), json!(format!("turn:{turn}")));
-                    }
-                    row
+                    let cwd = workspaces.get(&t.id).cloned().unwrap_or_else(|| host.cwd.clone());
+                    session_row(t, &cwd)
                 })
                 .collect::<Vec<_>>(),
         })),
@@ -1027,4 +1056,45 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_rows_carry_the_threads_workspace_and_status_fields() {
+        let active = session_row(
+            ThreadSummary {
+                id: "thr_1".into(),
+                latest_turn_id: Some("turn_1".into()),
+                latest_turn_status: Some("queued".into()),
+                updated_at: "2026-11-06T10:00:00Z".into(),
+            },
+            std::path::Path::new("/w/other"),
+        );
+        // A session left by a run in another directory keeps its own cwd;
+        // the bridge's process directory is only the fallback.
+        assert_eq!(active["cwd"], "/w/other");
+        assert_eq!(active["running"], true);
+        assert_eq!(active["blank"], false);
+        assert_eq!(active["formatStatus"], "turn:turn_1");
+        assert!(active["updatedAt"].as_i64().unwrap() > 0);
+
+        let blank = session_row(
+            ThreadSummary {
+                id: "thr_2".into(),
+                latest_turn_id: None,
+                latest_turn_status: None,
+                updated_at: "2026-11-06T10:00:00Z".into(),
+            },
+            std::path::Path::new("/w"),
+        );
+        assert_eq!(blank["blank"], true);
+        assert_eq!(blank["running"], false);
+        assert!(
+            blank.get("formatStatus").is_none(),
+            "optional fields stay absent"
+        );
+    }
 }
