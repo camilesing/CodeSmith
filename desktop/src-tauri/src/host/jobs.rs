@@ -152,6 +152,14 @@ fn job_view(task: &Value) -> Value {
     view
 }
 
+/// The jobs remote's single `request` parameter: the gateway packs its args
+/// as `{request: {…}}` (one object per wire parameter name), so every reader
+/// here unwraps that member first — the shape `session/prompt` and friends
+/// established.
+fn inner_request(args: &Value) -> &Value {
+    args.get("request").unwrap_or(args)
+}
+
 /// The byte offset `from` the client asked to resume at (default 0).
 fn follow_from(request: &Value) -> usize {
     request
@@ -168,6 +176,7 @@ pub async fn list(
     request: &Value,
     tx: &tokio::sync::mpsc::Sender<Value>,
 ) -> Result<()> {
+    let request = inner_request(request);
     let session_id = request
         .get("sessionId")
         .or_else(|| request.get("session_id"))
@@ -207,6 +216,7 @@ pub async fn follow(
     request: &Value,
     tx: &tokio::sync::mpsc::Sender<Value>,
 ) -> Result<(), Value> {
+    let request = inner_request(request);
     let job_id = request
         .get("jobId")
         .or_else(|| request.get("job_id"))
@@ -262,6 +272,7 @@ pub async fn follow(
 /// vocabulary (`requested` / `already-finished`); an unknown job is the
 /// client's `job/not-found` error.
 pub async fn kill(host: &HostState, request: &Value) -> Value {
+    let request = inner_request(request);
     let job_id = match request
         .get("jobId")
         .or_else(|| request.get("job_id"))
