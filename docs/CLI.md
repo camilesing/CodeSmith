@@ -65,10 +65,15 @@ baseline — as TOML, with every value under a secret-looking key (`api_key`,
 
 Inside the REPL, `/help` is the live list of slash commands — typing `/`
 reports how many exist, `Tab` completes the name (press it twice to list the
-matches), and the dim text after the cursor previews what the match does. `/plan`,
-`/agent`, and `/yolo` are shortcuts for the matching `/mode` value — or cycle
-them with `Shift+Tab` at the prompt (`agent → plan → yolo`, plus `coordinator`
-while the experimental `coordinator_mode` feature is enabled). Commands layer
+matches), and the dim text after the cursor previews what the match does.
+`/mode` switches the run mode and `/permission` switches the sandbox + approval
+preset (`workspace-write` or `danger-full-access`); `/plan` is a separate state,
+and `/plan off` leaves it and restores the preset you came from. While plan is
+active the preset reports `read-only` and `/permission` asks for `/plan off`
+first instead of quietly leaving plan. `/agent` and `/yolo` stay shortcuts for
+`/mode agent` and `/mode yolo`; `Shift+Tab` cycles the modes (`agent → plan →
+yolo`, plus `coordinator` while the experimental `coordinator_mode` feature is
+enabled). Commands layer
 user-defined (`.codesmith/commands/*.md`) over mod-registered over built-in,
 and a built-in can be turned off without removing its implementation:
 `[commands] disabled = [...]` in config.toml hides those names from

@@ -206,10 +206,14 @@ Known limitations of the current implementation:
   turn and its transcript node carries the outcome, and a busy thread
   surfaces the runtime's conflict text as the command's error notice) plus
   the per-thread mode switches: `/mode <agent|plan|yolo|coordinator>`
-  (argument demanded, misspellings fail loud with the valid spellings) and
-  the `/plan` / `/yolo` shortcuts, each a `PATCH /v1/threads/{id}` of the
-  `mode` field whose next turn applies the mode's toolset and sandbox
-  policy. `/model` rides the vendored client's own contribution (a popup
+  (argument demanded, misspellings fail loud with the valid spellings),
+  `/plan [off]` and the `/yolo` shortcut, and `/permission
+  <workspace-write|danger-full-access>` (argument demanded) — each a
+  `PATCH /v1/threads/{id}` of the `mode` field whose next turn applies the
+  mode's toolset and approval policy. A `/permission` switch while the
+  thread is in `plan` is refused with text pointing at `/plan off`, so the
+  preset picker cannot silently drop plan. `/model` rides the vendored
+  client's own contribution (a popup
   over `session/selectModel`, already bridged). The REPL's other slash
   commands are REPL-local and stay out of the catalog, so their
   "/"-prefixed lines fall through and submit as ordinary prompts.
@@ -318,21 +322,29 @@ Known limitations of the current implementation:
   approval card stays allow/deny — and a plan-mode turn that never wrote a
   plan file submits no card.
 - The permission surfaces (`client-ui-permission-presets`) map the vendored
-  preset picker onto the thread mode: `agent`, `plan`, `danger-full-access`
-  (CodeSmith's `yolo`, keeping the picker's localized label and explicit risk
-  confirmation), and `coordinator`. `/permission <value>` joins `/mode` in the
-  host command catalog; a pick PATCHes the thread mode and pushes the
-  `permissions` projection. The same PATCH carries `auto_approve` (on for
-  `yolo`/`coordinator`, off otherwise): the runtime's prompt assembly requires
-  that pairing, and leaving full access for plan mode must still ask before
-  exiting it. A thread left by an older build in full-access mode without the
-  flag is repaired when it is first followed or prompted. The picker's own rows localize from the
-  `locale.preference` setting (`zh-*` gets Chinese labels; other languages
-  keep the English ones), fetched with the catalog — a language switch
-  applies on the next catalog fetch/reload. The General settings row's
-  `permission.defaultPreset` lives in `desktop/settings.json`, and
-  `session/create` applies it to the new thread (an unknown or hand-edited
-  value falls back to `agent`).
+  preset picker onto the thread mode through DSH's two-preset table:
+  `workspace-write` (thread mode `agent`) and `danger-full-access`
+  (CodeSmith's `yolo`, keeping the picker's explicit risk confirmation). Plan
+  is not a preset: while the thread is in `plan` the projection reports the
+  derived `read-only`, and `coordinator` reports `custom`; neither is
+  advertised in the catalog nor pickable. `/permission
+  <workspace-write|danger-full-access>` joins `/mode` in the host command
+  catalog; a pick resolves to the mode the preset names and settles as the
+  same thread-mode `PATCH` (the `permissions` projection follows it), and a
+  pick made while the thread is in `plan` is refused with text pointing at
+  `/plan off` rather than silently leaving plan. The same PATCH carries
+  `auto_approve` (on for `yolo`/`coordinator`, off otherwise): the runtime's
+  prompt assembly requires that pairing, and leaving full access for plan
+  mode must still ask before exiting it. A thread left by an older build in
+  full-access mode without the flag is repaired when it is first followed or
+  prompted. The picker localizes the built-in preset names itself (the
+  catalog's `name` equals its `value`, and a name outside the built-in set is
+  title-cased), so no `locale.preference` round trip is involved and a
+  language switch applies on the next catalog fetch/reload. The General
+  settings row's `permission.defaultPreset` lives in `desktop/settings.json`
+  and defaults to `workspace-write`; `session/create` applies it to the new
+  thread (a legacy `agent`/`plan`/`yolo`/`coordinator` value normalizes on
+  read, and any other unknown value falls back to `workspace-write`).
 - The `@` menu (`client-ui-reference`) lists workspace files and directories
   over `fileReferences/list`: an empty query lists the root, a path query
   lists that directory, and a bare fragment searches a bounded (50k) workspace

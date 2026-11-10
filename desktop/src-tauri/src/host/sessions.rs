@@ -158,9 +158,7 @@ pub async fn follow(
         &models,
     );
     let events = match seat.as_ref() {
-        Some((provider, model)) => {
-            super::mapper::replay_events_sourced(&detail, provider, model)
-        }
+        Some((provider, model)) => super::mapper::replay_events_sourced(&detail, provider, model),
         None => replay_events(&detail),
     };
     // 0-based journal: an empty one opens at cursor -1 (mapper::WireSeq).
@@ -258,9 +256,7 @@ pub async fn follow(
                     // armed the watcher for; re-arm (a no-op while armed).
                     Some("turn.started") => ensure_waterfall_watcher(host, &session_id).await,
                     // The todo dock updates as the model writes its list.
-                    Some("item.started") => {
-                        push_live_todos(host, &session_id, &envelope).await
-                    }
+                    Some("item.started") => push_live_todos(host, &session_id, &envelope).await,
                     Some("queue.updated") => {
                         push_inbox_projection(host, &session_id, &envelope["payload"]["items"])
                             .await;
@@ -271,9 +267,7 @@ pub async fn follow(
                 // mapper reads the item's metadata), so the client retires
                 // its optimistic copy by identity. The model source follows
                 // the freshest UI choice: a switch journals no runtime event.
-                if let Some((provider, model)) =
-                    host.model_choices.lock().await.get(&session_id)
-                {
+                if let Some((provider, model)) = host.model_choices.lock().await.get(&session_id) {
                     mapper.set_model_source(provider, model);
                 }
                 for frame in mapper.map_envelope(&envelope) {
@@ -521,14 +515,58 @@ pub(super) async fn set_mode(
 }
 
 /// The thread's current mode, or `None` when the read fails.
-async fn current_mode(host: &HostState, session_id: &str) -> Option<String> {
-    host.backend
+pub(super) async fn current_mode(host: &HostState, session_id: &str) -> Option<String> {
+    read_mode(host, session_id).await.ok().flatten()
+}
+
+/// The same read with the transport error preserved, for callers that must
+/// distinguish "not in plan" from "could not tell".
+async fn read_mode(host: &HostState, session_id: &str) -> Result<Option<String>> {
+    Ok(host
+        .backend
         .get::<Value>(&format!("/v1/threads/{session_id}"))
-        .await
-        .ok()?
+        .await?
         .pointer("/thread/mode")
         .and_then(Value::as_str)
-        .map(str::to_owned)
+        .map(str::to_owned))
+}
+
+/// What `/plan off` settled on.
+pub(super) enum PlanExit {
+    /// The thread was in plan mode and now carries the mode it came from.
+    Left,
+    /// The thread was not in plan mode; nothing was written.
+    NotActive,
+}
+
+/// Leave plan mode, restoring the permission mode the session came from
+/// (the same stash an approved `exit_plan_mode` uses), or `agent` when the
+/// bridge has no record. Refuses to write `agent` over a mode that was never
+/// `plan`: `/plan off` is idempotent, not a hidden mode reset.
+pub(super) async fn leave_plan(
+    host: &HostState,
+    session_id: &str,
+) -> Result<std::result::Result<PlanExit, (reqwest::StatusCode, String)>> {
+    if read_mode(host, session_id).await?.as_deref() != Some("plan") {
+        return Ok(Ok(PlanExit::NotActive));
+    }
+    let restore = host
+        .plan_return_modes
+        .lock()
+        .await
+        .get(session_id)
+        .cloned()
+        .unwrap_or_else(|| "agent".to_string());
+    // A stash that somehow names plan itself would re-enter the state we are
+    // leaving; the runtime's default is the safe fallback.
+    let restore = if restore == "plan" {
+        "agent".to_string()
+    } else {
+        restore
+    };
+    Ok(set_mode(host, session_id, &restore)
+        .await?
+        .map(|()| PlanExit::Left))
 }
 
 /// Arm the session's background waterfall watcher. The runtime surfaces
@@ -663,7 +701,10 @@ pub async fn events(host: &HostState, request: &Value) -> Result<Value> {
         .get(&format!("/v1/threads/{session_id}"))
         .await?;
     let events = replay_events(&detail);
-    let cursor = events.last().and_then(|event| event["seq"].as_i64()).unwrap_or(-1);
+    let cursor = events
+        .last()
+        .and_then(|event| event["seq"].as_i64())
+        .unwrap_or(-1);
     Ok(json!({
         "cursor": cursor,
         "records": events.into_iter().map(|event| json!({ "type": "event", "event": event })).collect::<Vec<_>>(),
@@ -1356,7 +1397,9 @@ fn session_stats_projection(detail: &Value) -> Value {
             .get("ended_at")
             .and_then(Value::as_str)
             .and_then(super::mapper::epoch_ms);
-        started.zip(ended).map(|(start, end)| (end - start).max(0) as u64)
+        started
+            .zip(ended)
+            .map(|(start, end)| (end - start).max(0) as u64)
     };
     let is_agent = |item: &Value| {
         matches!(
@@ -1545,12 +1588,7 @@ fn turn_outline_projection(detail: &Value) -> Value {
     let seqs: std::collections::HashMap<u64, i64> = events
         .iter()
         .filter(|event| event["type"] == "turn/start")
-        .filter_map(|event| {
-            Some((
-                event["data"]["turn"].as_u64()?,
-                event["seq"].as_i64()?,
-            ))
-        })
+        .filter_map(|event| Some((event["data"]["turn"].as_u64()?, event["seq"].as_i64()?)))
         .collect();
     let turns = detail
         .get("turns")
@@ -1833,11 +1871,14 @@ mod tests {
             permissions_projection("yolo")["currentValue"],
             "danger-full-access"
         );
-        assert_eq!(permissions_projection("plan")["currentValue"], "plan");
-        assert_eq!(permissions_projection("agent")["currentValue"], "agent");
+        assert_eq!(permissions_projection("plan")["currentValue"], "read-only");
+        assert_eq!(
+            permissions_projection("agent")["currentValue"],
+            "workspace-write"
+        );
         assert_eq!(
             permissions_projection("coordinator")["currentValue"],
-            "coordinator"
+            "custom"
         );
     }
 

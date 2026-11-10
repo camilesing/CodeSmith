@@ -96,7 +96,7 @@ const OFFLINE_SETTINGS: Record<string, { value: Record<string, unknown>; revisio
   'ui-settings-general': { value: { welcomeNoticeVersion: '2026-09-28.1' }, revision: 0 },
   locale: { value: {}, revision: 0 },
   'ui-settings': { value: { enabled: true }, revision: 0 },
-  permission: { value: { defaultPreset: 'agent' }, revision: 0 },
+  permission: { value: { defaultPreset: 'workspace-write' }, revision: 0 },
   'ui-theme': {
     value: {
       preference: 'system',
@@ -163,20 +163,18 @@ function offlineSettingsMutate(payload: unknown): RpcResult {
 }
 
 function offlineCatalog(): RpcResult {
-  // The bridge localizes these CodeSmith-specific labels from
-  // `locale.preference`; the in-memory write is the offline equivalent, so a
-  // language picked on the offline Settings page applies on the next fetch.
-  const preference = OFFLINE_SETTINGS.locale.value.preference
-  const zh = typeof preference === 'string' && preference.toLowerCase().startsWith('zh')
+  // The catalog carries only the DSH permission presets — sandbox plus
+  // approval. Plan is a separate chip and coordinator is not a permission.
+  // Values double as names so the vendored locale dictionaries localize the
+  // conventional rows; legacy mode-shaped defaults normalize on read.
   const options = [
-    { value: 'agent', name: zh ? '智能体' : 'Agent' },
-    { value: 'plan', name: zh ? '计划' : 'Plan' },
-    { value: 'danger-full-access', name: zh ? '完全权限' : 'Full access' },
-    { value: 'coordinator', name: zh ? '协调者' : 'Coordinator' },
+    { value: 'workspace-write', name: 'workspace-write' },
+    { value: 'danger-full-access', name: 'danger-full-access' },
   ]
-  const defaultPreset = typeof OFFLINE_SETTINGS.permission.value.defaultPreset === 'string'
-    ? OFFLINE_SETTINGS.permission.value.defaultPreset
-    : 'agent'
+  const stored = OFFLINE_SETTINGS.permission.value.defaultPreset
+  const defaultPreset = stored === 'danger-full-access' || stored === 'yolo'
+    ? 'danger-full-access'
+    : 'workspace-write'
   return ok({ options, defaultOptions: options, defaultPreset })
 }
 

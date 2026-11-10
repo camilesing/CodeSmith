@@ -87,12 +87,13 @@ pub fn catalog() -> Value {
         },
         {
             "name": "plan",
-            "description": "Plan mode — design before implementing",
+            "description": "Enter or leave plan mode",
+            "input": { "hint": "[off]" },
         },
         {
             "name": "permission",
-            "description": "Switch this session's permission preset",
-            "input": { "hint": "agent | plan | danger-full-access | coordinator" },
+            "description": "Switch this session's permission preset (sandbox + approval)",
+            "input": { "hint": "workspace-write | danger-full-access" },
         },
         {
             "name": "yolo",
@@ -136,8 +137,12 @@ fn parse_command(line: &str) -> Option<(&str, &str)> {
 #[derive(Debug)]
 enum Admitted {
     Compact,
-    /// The mode value (already validated against [`MODES`]).
+    /// A `/mode` (or shortcut) switch.
     Mode(&'static str),
+    /// `/plan off`: leave plan and restore the permission mode it came from.
+    PlanOff,
+    /// A permission-preset switch; the value is the thread mode it writes.
+    Permission(&'static str),
 }
 
 /// The upstream registry's admission decision for a line, before any
@@ -157,9 +162,7 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
     let Some((name, raw_input)) = parse_command(line) else {
         return Admission::Miss;
     };
-    if attachment_count > 0
-        && matches!(name, "compact" | "mode" | "plan" | "permission" | "yolo")
-    {
+    if attachment_count > 0 && matches!(name, "compact" | "mode" | "plan" | "permission" | "yolo") {
         return Admission::Error(format!("/{name} does not accept attachments"));
     }
     match name {
@@ -177,23 +180,22 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
             }
         }
         "plan" => {
-            // The plan chip exits through `/plan off`; a bare `/plan` enters
-            // the mode. Anything else is a usage error, not a mode switch.
+            // `/plan` enters the separate plan state; `/plan off` leaves it
+            // and restores the permission mode the session came from. Any
+            // other argument is a usage error, not a mode switch.
             match raw_input.trim() {
                 "" => Admission::Admitted(Admitted::Mode("plan")),
-                "off" => Admission::Admitted(Admitted::Mode("agent")),
+                "off" => Admission::Admitted(Admitted::PlanOff),
                 _ => Admission::Error("Usage: /plan [off]".into()),
             }
         }
-        "permission" => {
-            match permissions::mode_of_preset(raw_input.trim()) {
-                Some(mode) => Admission::Admitted(Admitted::Mode(mode)),
-                None => Admission::Error(format!(
-                    "Usage: /permission <{}>",
-                    permissions::PRESETS.join("|")
-                )),
-            }
-        }
+        "permission" => match permissions::mode_of_preset(raw_input.trim()) {
+            Some(mode) => Admission::Admitted(Admitted::Permission(mode)),
+            None => Admission::Error(format!(
+                "Usage: /permission <{}>",
+                permissions::PRESETS.join("|")
+            )),
+        },
         "yolo" => {
             if !raw_input.trim().is_empty() {
                 return Admission::Error("Usage: /yolo (no arguments)".into());
@@ -290,26 +292,75 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                 // the command's error result, quoting the runtime's text.
                 // `sessions::set_mode` also keeps the plan-return stash, so a
                 // later plan approval hands the session back to this mode.
-                let patched = sessions::set_mode(host, &session_id, mode)
+                settle_mode_switch(host, &session_id, mode, format!("Mode set to {mode}.")).await
+            }
+            Admitted::Permission(mode) => {
+                // Plan is a separate state, not a permission: switching the
+                // sandbox/approval bundle would silently leave it. Make the
+                // user leave plan explicitly, matching the DSH model where
+                // the two controls are independent.
+                if sessions::current_mode(host, &session_id).await.as_deref() == Some("plan") {
+                    return Ok(Outcome::Executed(command_error(
+                        "Plan mode is active; run /plan off before switching permission presets.",
+                    )));
+                }
+                let preset = permissions::preset_of_mode(mode);
+                settle_mode_switch(
+                    host,
+                    &session_id,
+                    mode,
+                    format!("Permission set to {preset}."),
+                )
+                .await
+            }
+            Admitted::PlanOff => {
+                match sessions::leave_plan(host, &session_id)
                     .await
-                    .map_err(internal)?;
-                match patched {
-                    Ok(()) => {
-                        // The plan/permission chips read the control
-                        // projections; publish the new mode now instead of
-                        // waiting for the next settled turn.
+                    .map_err(internal)?
+                {
+                    Ok(sessions::PlanExit::Left) => {
                         sessions::push_control_projection(host, &session_id).await;
-                        Ok(Outcome::Executed(json!({
-                            "commandId": mint_command_id(),
-                            "result": { "kind": "success", "text": format!("Mode set to {mode}.") }
-                        })))
+                        Ok(Outcome::Executed(command_success("Plan mode off.")))
                     }
+                    Ok(sessions::PlanExit::NotActive) => Ok(Outcome::Executed(command_success(
+                        "Plan mode is already inactive.",
+                    ))),
                     Err((_status, runtime_message)) => {
                         Ok(Outcome::Executed(command_error(&runtime_message)))
                     }
                 }
             }
         },
+    }
+}
+
+/// A settled `kind:'success'` execution in the upstream shape.
+fn command_success(text: &str) -> Value {
+    json!({
+        "commandId": mint_command_id(),
+        "result": { "kind": "success", "text": text }
+    })
+}
+
+/// Write one mode and publish the control projections the chips read now,
+/// instead of waiting for the next settled turn. A runtime refusal (unknown
+/// spelling, busy write) settles as the command's error result, quoting the
+/// runtime's text.
+async fn settle_mode_switch(
+    host: &HostState,
+    session_id: &str,
+    mode: &str,
+    success: String,
+) -> Result<Outcome, OpError> {
+    let patched = sessions::set_mode(host, session_id, mode)
+        .await
+        .map_err(internal)?;
+    match patched {
+        Ok(()) => {
+            sessions::push_control_projection(host, session_id).await;
+            Ok(Outcome::Executed(command_success(&success)))
+        }
+        Err((_status, runtime_message)) => Ok(Outcome::Executed(command_error(&runtime_message))),
     }
 }
 
@@ -359,14 +410,16 @@ mod tests {
         }
         // The mode entry advertises its argument so capable composers hint it.
         assert_eq!(
-            list[1]["input"]["hint"], "agent | plan | yolo | coordinator"
+            list[1]["input"]["hint"],
+            "agent | plan | yolo | coordinator"
         );
-        // The permission row advertises the picker's preset values; the
+        // The permission row advertises the two sandbox+approval bundles; the
         // vendored picker decorates this exact command name.
         assert_eq!(
             list[3]["input"]["hint"],
-            "agent | plan | danger-full-access | coordinator"
+            "workspace-write | danger-full-access"
         );
+        assert_eq!(list[2]["input"]["hint"], "[off]");
     }
 
     #[test]
@@ -424,17 +477,30 @@ mod tests {
             ("/mode yolo", "yolo"),
             ("/mode coordinator", "coordinator"),
             ("/plan", "plan"),
-            ("/plan off", "agent"),
-            ("/permission agent", "agent"),
-            ("/permission plan", "plan"),
-            ("/permission danger-full-access", "yolo"),
-            ("/permission coordinator", "coordinator"),
-            ("/permission yolo", "yolo"),
             ("/yolo", "yolo"),
         ] {
             match admit(line, 0) {
                 Admission::Admitted(Admitted::Mode(admitted)) => assert_eq!(admitted, mode),
                 other => panic!("{line} must admit mode {mode}, got {other:?}"),
+            }
+        }
+        assert!(matches!(
+            admit("/plan off", 0),
+            Admission::Admitted(Admitted::PlanOff)
+        ));
+        for (line, mode) in [
+            ("/permission workspace-write", "agent"),
+            ("/permission danger-full-access", "yolo"),
+            // Legacy spellings keep working for muscle memory from the
+            // mode-shaped picker.
+            ("/permission agent", "agent"),
+            ("/permission yolo", "yolo"),
+        ] {
+            match admit(line, 0) {
+                Admission::Admitted(Admitted::Permission(admitted)) => {
+                    assert_eq!(admitted, mode, "{line}");
+                }
+                other => panic!("{line} must admit permission {mode}, got {other:?}"),
             }
         }
         // A bare or misspelled /mode fails loud with the valid spellings.
@@ -451,8 +517,22 @@ mod tests {
         };
         assert_eq!(
             text,
-            "Usage: /permission <agent|plan|danger-full-access|coordinator>"
+            "Usage: /permission <workspace-write|danger-full-access>"
         );
+        // Plan and coordinator are not permissions.
+        for line in [
+            "/permission plan",
+            "/permission coordinator",
+            "/permission read-only",
+        ] {
+            let Admission::Error(text) = admit(line, 0) else {
+                panic!("{line} must refuse a non-permission state");
+            };
+            assert_eq!(
+                text,
+                "Usage: /permission <workspace-write|danger-full-access>"
+            );
+        }
         // The shortcuts refuse arguments and attachments like /compact.
         for line in ["/plan now", "/yolo now"] {
             let Admission::Error(text) = admit(line, 0) else {
@@ -460,7 +540,12 @@ mod tests {
             };
             assert!(text.starts_with("Usage: /"), "{text}");
         }
-        for line in ["/plan", "/yolo", "/mode plan", "/permission plan"] {
+        for line in [
+            "/plan",
+            "/yolo",
+            "/mode plan",
+            "/permission workspace-write",
+        ] {
             let Admission::Error(text) = admit(line, 1) else {
                 panic!("{line} with an attachment must refuse");
             };

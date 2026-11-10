@@ -217,7 +217,8 @@ Next: [CLI.md](CLI.md) is the command and subcommand reference.
 
 ## 5. Modes
 
-CodeSmith has three visible modes:
+CodeSmith runs under a permission preset — the sandbox + approval bundle —
+and separately has three visible modes:
 
 | Mode | Use it for | Default posture |
 | --- | --- | --- |
@@ -225,7 +226,9 @@ CodeSmith has three visible modes:
 | Agent | Normal multi-step coding work | Tool use with approval gates |
 | YOLO | Trusted repos where you want automatic execution | Auto-approval and trust |
 
-Switch modes in the REPL directly:
+Only agent and yolo are permission presets (`workspace-write` and
+`danger-full-access`); plan is its own state, and coordinator an experimental
+fourth mode. Switch modes in the REPL directly:
 
 ```text
 /mode plan
@@ -233,8 +236,19 @@ Switch modes in the REPL directly:
 /mode yolo
 ```
 
-(`/plan`, `/agent`, and `/yolo` are shortcuts for the matching `/mode`
-value; a bare `/mode` prints the current mode.) `Shift+Tab` at the prompt
+Switch the permission preset the same way, and leave plan mode with `/plan
+off`:
+
+```text
+/permission workspace-write
+/permission danger-full-access
+/plan off
+```
+
+(`/agent` and `/yolo` are shortcuts for the matching `/mode` value; a bare
+`/mode` prints the current mode. A bare `/permission` prints the current
+preset, and switching it while plan is active is refused — run `/plan off`
+first.) `Shift+Tab` at the prompt
 cycles the same modes without typing a command — `agent → plan → yolo`, with
 `coordinator` as a fourth stop while the experimental `coordinator_mode`
 feature is enabled. The switch applies to the next message you send, and the
@@ -259,7 +273,9 @@ is the same thing spelled out, and a bare `[r]` asks you for the words on the ne
 line. A refusal leaves plan mode active and the plan file in place, so revising
 never means starting over. There is deliberately no `[a]`/`[e]` at this gate: the
 plan tool has no arguments to scope by, so an approval that outlives the plan it
-answered would silence the review of every revised plan after it.
+answered would silence the review of every revised plan after it. You can also
+step out without a plan at any time with `/plan off`, which restores the
+permission preset you entered plan from.
 
 Approving the plan ends that turn — and CodeSmith continues on its own: the
 session is returned to the mode you came from and the implementation kickoff is
@@ -282,8 +298,9 @@ YOLO mode is for trusted workspaces where you intentionally want the model to
 act without stopping for approvals. Do not use it in a repository you do not
 trust.
 
-Modes are separate from model routing. `/mode` switches the visible mode,
-while `/model auto` controls model and thinking selection for turns.
+Modes are separate from model routing and from the permission preset. `/mode`
+switches the visible mode, `/permission` switches the sandbox + approval
+bundle, while `/model auto` controls model and thinking selection for turns.
 
 You can also change approval behavior from `/config` by editing the approval
 mode. Use this only when you understand how it changes tool execution.
@@ -301,7 +318,8 @@ Common commands for first-time users:
 
 | Command | Use |
 | --- | --- |
-| `/mode` | Switch between agent, plan, yolo, and coordinator modes (`/plan`, `/agent`, `/yolo` are shortcuts) |
+| `/mode` | Switch between agent, plan, yolo, and coordinator modes (`/agent`, `/yolo` are shortcuts) |
+| `/permission` | Show or switch the sandbox + approval preset (`workspace-write`, `danger-full-access`); `/plan` toggles plan mode, `/plan off` leaves it |
 | `/preset` | Show, switch, export, or drop the preset tier (`/preset simple`, `/preset list`, `/preset export <name>`, `/preset off`) |
 | `/model` | Select a model or use `/model auto` |
 | `/models` | List live models from the active endpoint |

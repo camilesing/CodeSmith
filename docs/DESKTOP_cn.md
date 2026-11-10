@@ -171,11 +171,14 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   接受了压缩——压缩本身作为异步 turn 运行，由转写节点携带结果；会话忙
   时把运行时的冲突文案作为命令错误通知呈现）与逐会话的模式开关：
   `/mode <agent|plan|yolo|coordinator>`（必须带参数，拼错时以合法取值
-  响亮失败）及 `/plan`、`/yolo` 快捷方式，各自 `PATCH
-  /v1/threads/{id}` 的 `mode` 字段，下一 turn 起生效该模式的工具面与沙
-  箱策略。`/model` 走 vendored 客户端自己的贡献（经
-  session/selectModel 的弹窗，已桥接）。REPL 的其余斜杠命令是
-  REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通 prompt 提交。
+  响亮失败）、`/plan [off]` 与 `/yolo` 快捷方式，以及 `/permission
+  <workspace-write|danger-full-access>`（同样必须带参数）——各自
+  `PATCH /v1/threads/{id}` 的 `mode` 字段，下一 turn 起生效该模式的工具
+  面与审批策略。线程处于 `plan` 时 `/permission` 切换会被拒绝并提示先用
+  `/plan off`，因此预设选择器不会悄悄退出计划。`/model` 走 vendored 客
+  户端自己的贡献（经 session/selectModel 的弹窗，已桥接）。REPL 的其余
+  斜杠命令是 REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通
+  prompt 提交。
 - Models 设置页（`client-ui-settings-models`，桥接在 `host::llm` /
   `host::credentials`）：服务一个名为 `llm-pi-ai` 的设置 namespace——
   页面的通用 OpenAI 兼容编辑器正是按这个 namespace 名选布局（其他名字只
@@ -254,18 +257,25 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   chip 切换。不会自动提交实现 kickoff。已知限制：没有“请求修改”评
   审语义——审批卡仍是允许/拒绝；从未写过计划文件的 plan-mode turn 不出卡
   片。
-- 权限面（`client-ui-permission-presets`）把 vendored 预设选择器映射到线
-  程 mode：`agent`、`plan`、`danger-full-access`（即 CodeSmith 的
-  `yolo`，保留选择器的本地化标签与显式风险确认）、`coordinator`。
-  `/permission <value>` 与 `/mode` 并列进入宿主命令目录；选择后 PATCH 线
-  程 mode 并推送 `permissions` 投影。同一个 PATCH 携带 `auto_approve`
-  （`yolo`/`coordinator` 为开，其余为关）：运行时的 prompt 组装要求这一
-  配对，且从完全权限切到计划模式后退出计划仍须询问用户。旧版本遗留的
-  “完全权限但未开 auto_approve”线程在首次 follow 或首次 prompt 时会被修复。选择器自身的行按
-  `locale.preference` 本地化（`zh-*` 得到中文标签，其他语言保留英文），
-  与 catalog 一起取——切换语言在下一次 catalog 拉取/重载时生效。通用设置行的
-  `permission.defaultPreset` 存在 `desktop/settings.json`，
-  `session/create` 会把它应用到新线程（未知或手改的值回落到 `agent`）。
+- 权限面（`client-ui-permission-presets`）按 DSH 的两档预设表把 vendored
+  预设选择器映射到线程 mode：`workspace-write`（线程 mode `agent`）与
+  `danger-full-access`（即 CodeSmith 的 `yolo`，保留选择器的显式风险确
+  认）。plan 不是预设：线程处于 `plan` 时投影为派生值 `read-only`，
+  `coordinator` 投影为 `custom`；两者都不进目录、也不可选择。
+  `/permission <workspace-write|danger-full-access>` 与 `/mode` 并列进入
+  宿主命令目录；一次选择解析成该预设对应的 mode，并落定为同一次线程
+  mode 的 `PATCH`（`permissions` 投影随后跟上），而线程处于 `plan` 时的
+  选择会被拒绝并提示 `/plan off`，而不是悄悄退出计划。同一个 PATCH 携带
+  `auto_approve`（`yolo`/`coordinator` 为开，其余为关）：运行时的 prompt
+  组装要求这一配对，且从完全权限切到计划模式后退出计划仍须询问用户。旧
+  版本遗留的“完全权限但未开 auto_approve”线程在首次 follow 或首次
+  prompt 时会被修复。选择器自行本地化内建预设名（目录里 `name` 等于
+  `value`，内建之外的名字按标题大小写显示），因此不再有
+  `locale.preference` 往返，切换语言在下一次 catalog 拉取/重载时生效。
+  通用设置行的 `permission.defaultPreset` 存在 `desktop/settings.json`，
+  默认 `workspace-write`；`session/create` 会把它应用到新线程（旧版的
+  `agent`/`plan`/`yolo`/`coordinator` 值在读取时归一化，其他未知值回落
+  到 `workspace-write`）。
 - `@` 菜单（`client-ui-reference`）经 `fileReferences/list` 列出工作区文
   件与目录：空 query 列根目录，带路径的 query 列该目录，裸片段在 5 万条上
   限的工作区索引里按上游打分搜索。隐藏项与版本控制/依赖/构建目录被跳过，

@@ -144,9 +144,18 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         // Upstream #1247 kept /plan and /agent as compatibility shorthands
-        // for /mode; the line-REPL port had dropped the first two.
-        Command::Plan | Command::Agent => {
+        // for /mode; /plan now also carries the DSH-style `/plan off` exit so
+        // plan is a state you leave, not a ring stop you toggle past.
+        Command::Plan => {
+            cmd_plan(state, &arg_str);
+            false
+        }
+        Command::Agent => {
             cmd_mode(state, info.name);
+            false
+        }
+        Command::Permission => {
+            cmd_permission(state, &arg_str);
             false
         }
         Command::Yolo => {
@@ -1218,7 +1227,10 @@ async fn cmd_model(state: &mut ReplState, arg: &str) {
 
 fn cmd_mode(state: &mut ReplState, arg: &str) {
     let Some(name) = arg.split_whitespace().next() else {
-        println!("mode: {} (Shift+Tab cycles)", state.mode.label());
+        println!(
+            "mode: {} (Shift+Tab cycles; /permission switches the sandbox + approval preset)",
+            state.mode.label()
+        );
         return;
     };
     let mode = match name.to_ascii_lowercase().as_str() {
@@ -1236,6 +1248,76 @@ fn cmd_mode(state: &mut ReplState, arg: &str) {
     };
     state.set_mode(mode);
     println!("switched to {} mode", state.mode.label());
+}
+
+/// `/plan [off]` — enter the separate plan state, or leave it and restore the
+/// permission mode the session came from (the same stash an approved
+/// `exit_plan_mode` uses), rather than always landing on `agent`.
+fn cmd_plan(state: &mut ReplState, arg: &str) {
+    match arg.trim() {
+        "" => {
+            state.set_mode(AppMode::Plan);
+            println!("plan mode on (read-only; /plan off leaves)");
+        }
+        "off" => {
+            if state.mode != AppMode::Plan {
+                println!("plan mode is not active");
+                return;
+            }
+            let restore = state.plan_restore_mode.unwrap_or(AppMode::Agent);
+            state.set_mode(restore);
+            println!("plan mode off; back to {} mode", state.mode.label());
+        }
+        _ => println!("{} usage: /plan [off]", "✗".red()),
+    }
+}
+
+/// The DSH permission preset a mode currently represents. `plan` and
+/// `coordinator` are derived values outside the selectable table.
+fn permission_preset(mode: AppMode) -> &'static str {
+    match mode {
+        AppMode::Plan => "read-only",
+        AppMode::Yolo => "danger-full-access",
+        AppMode::Coordinator => "custom",
+        AppMode::Agent => "workspace-write",
+    }
+}
+
+/// `/permission [workspace-write|danger-full-access]` — switch the sandbox +
+/// approval bundle without touching plan state. Plan is a separate control;
+/// switching the bundle while it is active would silently leave plan, so this
+/// asks the user to `/plan off` first. Legacy `agent`/`yolo` spellings keep
+/// working.
+fn cmd_permission(state: &mut ReplState, arg: &str) {
+    let name = arg.trim();
+    if name.is_empty() {
+        println!(
+            "permission: {} (workspace-write | danger-full-access; /plan is separate)",
+            permission_preset(state.mode)
+        );
+        return;
+    }
+    if state.mode == AppMode::Plan {
+        println!(
+            "{} plan mode is active; run /plan off before switching permission presets",
+            "✗".red()
+        );
+        return;
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "workspace-write" | "agent" => {
+            state.set_mode(AppMode::Agent);
+            println!("permission set to workspace-write");
+        }
+        "danger-full-access" | "yolo" => {
+            state.set_mode(AppMode::Yolo);
+            println!("permission set to danger-full-access");
+        }
+        other => println!(
+            "{} unknown permission preset {other:?} (workspace-write | danger-full-access)",
+            "✗".red()
+        ),
+    }
 }
 
 fn cmd_preset(state: &mut ReplState, arg: &str) {
@@ -1517,6 +1599,27 @@ mod tests {
         assert!(err.contains("nope"), "{err}");
     }
 
+    /// A minimal `ReplState` for dispatch tests; the effects asserted on are
+    /// mode state, so every path points at the temp directory.
+    fn test_options() -> crate::app_state::InteractiveOptions {
+        crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        }
+    }
+
     /// Dispatch-level integration for the builtin-disable seam: a disabled
     /// builtin refuses to run (the same seam `/help` and completion filter
     /// on) while an enabled one still dispatches. `/yolo` is the probe
@@ -1524,27 +1627,9 @@ mod tests {
     /// `ReplState`.
     #[tokio::test]
     async fn dispatch_refuses_a_disabled_builtin() {
-        fn options() -> crate::app_state::InteractiveOptions {
-            crate::app_state::InteractiveOptions {
-                model: "test-model".to_string(),
-                workspace: std::env::temp_dir(),
-                config_path: None,
-                config_profile: None,
-                allow_shell: false,
-                max_subagents: 2,
-                skills_dir: std::env::temp_dir(),
-                memory_path: std::env::temp_dir().join("memory.md"),
-                mcp_config_path: std::env::temp_dir().join("mcp.json"),
-                use_memory: false,
-                start_in_agent_mode: true,
-                yolo: false,
-                resume_session_id: None,
-                initial_input: None,
-            }
-        }
         let config = crate::config::Config::default();
 
-        let mut state = ReplState::new(options(), &config);
+        let mut state = ReplState::new(test_options(), &config);
         state.disabled_commands = vec!["yolo".to_string()];
         let before = state.mode;
         dispatch(&mut state, "/yolo").await;
@@ -1555,12 +1640,46 @@ mod tests {
         );
         assert_eq!(state.mode, before, "nothing else ran either");
 
-        let mut state = ReplState::new(options(), &config);
+        let mut state = ReplState::new(test_options(), &config);
         dispatch(&mut state, "/yolo").await;
         assert_eq!(
             state.mode,
             AppMode::Yolo,
             "control: the enabled builtin still dispatches"
         );
+    }
+
+    /// Plan is a separate state from the permission preset: entering plan
+    /// reports the derived read-only preset, `/plan off` restores the mode it
+    /// came from, and a permission switch during plan is refused instead of
+    /// silently leaving plan.
+    #[tokio::test]
+    async fn permission_presets_stay_separate_from_plan() {
+        let config = crate::config::Config::default();
+        let mut state = ReplState::new(test_options(), &config);
+
+        state.set_mode(AppMode::Yolo);
+        dispatch(&mut state, "/plan").await;
+        assert_eq!(state.mode, AppMode::Plan);
+        assert_eq!(permission_preset(state.mode), "read-only");
+        assert_eq!(state.plan_restore_mode, Some(AppMode::Yolo));
+
+        dispatch(&mut state, "/permission workspace-write").await;
+        assert_eq!(state.mode, AppMode::Plan, "plan is not a permission");
+
+        dispatch(&mut state, "/plan off").await;
+        assert_eq!(
+            state.mode,
+            AppMode::Yolo,
+            "leaving plan restores the permission it came from"
+        );
+
+        dispatch(&mut state, "/permission workspace-write").await;
+        assert_eq!(state.mode, AppMode::Agent);
+        assert_eq!(permission_preset(state.mode), "workspace-write");
+
+        dispatch(&mut state, "/permission danger-full-access").await;
+        assert_eq!(state.mode, AppMode::Yolo);
+        assert_eq!(permission_preset(state.mode), "danger-full-access");
     }
 }

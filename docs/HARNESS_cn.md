@@ -92,10 +92,20 @@ Fixture 包含完整的模型 I/O —— 绝不要提交含密钥的 fixture。
 
 ## 模式与沙箱
 
-三种模式控制动作空间。Plan 只读。Agent 把破坏性操作挡在审批之后。
-YOLO 在受信任工作区中自动批准。操作系统级沙箱在 macOS（Seatbelt）
-强制执行，在 Linux 上经 bubblewrap（已安装时）强制执行；Landlock
-规则集代码未接入子进程强制执行，Windows 无沙箱。参见
+三种模式控制动作空间：plan 只读，agent 把破坏性操作挡在审批之后，yolo 在受信任
+工作区中自动批准。但对用户呈现的控制面按 DSH 的拆分来：**权限预设**给会话运行的
+沙箱 + 审批组合命名，而 **plan** 是独立的协作状态，不是第三种预设。可选预设只有
+两个 —— `workspace-write`（agent 模式）与 `danger-full-access`（yolo，保留其
+信任 + 自动批准姿态）—— `/permission` 通过切换会话模式来切换它们，模式仍是决定
+工具集与审批策略的机制。Plan 的强制方式不变（只读工具、不写入），投影为
+`read-only` —— 一个不在可选表中的派生值；计划态下切换权限会被拒绝，而不是悄悄
+退出计划，`/plan off`（或批准 `exit_plan_mode`）恢复进入前的模式。`coordinator`
+仍是实验性、仅编排的模式，位于 `coordinator_mode` 功能之后，投影为 `custom` ——
+它也不是权限。旧版本持久化的预设值（`agent`/`plan`/`yolo`/`coordinator`）在读取
+时归一化为这两个预设。
+
+OS 级沙箱在 macOS（Seatbelt）强制执行，在 Linux 上经 bubblewrap（已安装时）
+强制执行；Landlock 规则集代码未接入子进程强制执行，Windows 无沙箱。参见
 [PRESETS.md](PRESETS.md) 和 [SANDBOX.md](SANDBOX.md)。
 
 模型自动路由（`--model auto`，默认值）是每个回合运行一次的分类器，

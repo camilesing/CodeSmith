@@ -1,113 +1,108 @@
 //! The permission-preset surface — the vendored `client-ui-permission-presets`
-//! plugin's host half over CodeSmith's per-thread mode.
+//! plugin's host half.
 //!
-//! Upstream models permissions as a process-level preset catalog plus a
-//! per-session `permissions` projection. CodeSmith already has the matching
-//! product concept in `thread.mode` (`agent` / `plan` / `yolo` /
-//! `coordinator`), so the bridge maps the two rather than inventing a second
-//! permission system:
+//! Upstream (DSH) models permissions as one sandbox + approval bundle chosen
+//! per session; plan is a separate collaboration state and coordinator is not
+//! a permission at all. CodeSmith still carries a single `thread.mode` ring
+//! (`agent` / `plan` / `yolo` / `coordinator`), so the bridge projects that
+//! mode onto the upstream vocabulary instead of inventing a second permission
+//! system:
 //!
-//! * catalog values are the upstream spellings; `danger-full-access` is
-//!   CodeSmith's `yolo` (full access, no approvals), which also gives the
-//!   picker its localized "Full access" label and risk confirmation;
-//! * a pick submits `/permission <value>` (or the composer chip does), and
-//!   `commands` PATCHes the thread mode;
-//! * `permissions.currentValue` projects the reverse mapping, so the active
-//!   mark and the settings row agree with the thread record.
+//! * selectable presets are `workspace-write` (agent: workspace-write sandbox,
+//!   approval ask) and `danger-full-access` (yolo: no sandbox, no approvals);
+//! * plan is a separate collaboration state (its own composer chip). CodeSmith
+//!   enforces read-only planning, so while plan is active the effective
+//!   permission reads as the derived `read-only` value — never a selectable
+//!   preset;
+//! * coordinator is an experimental orchestrator-only tool surface. Its
+//!   read-only + auto-approve knobs match no preset, so it reads as the
+//!   derived `custom` value and stays out of the catalog.
 //!
-//! The new-session default lives in the desktop settings document
-//! (`permission.defaultPreset`) and is applied by `session/create`; an
-//! unknown stored value falls back to `agent` rather than failing creation.
+//! The vendored presentation layer localizes the three conventional values
+//! (`read-only`, `workspace-write`, `danger-full-access`) by value when the
+//! host passes the value as its name, so the bridge supplies no labels of its
+//! own. The new-session default lives in the desktop settings document
+//! (`permission.defaultPreset`); legacy values (`agent`, `yolo`, `plan`,
+//! `coordinator`) normalize on read so a stored document cannot break the
+//! settings row.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-/// The default preset (also the runtime's default thread mode).
-pub const DEFAULT_PRESET: &str = "agent";
+/// The default preset: workspace-write sandbox + approval ask.
+pub const DEFAULT_PRESET: &str = "workspace-write";
 
 /// The catalog value that maps onto CodeSmith's `yolo` mode. The vendored
 /// picker keys its localized label and explicit risk gate on this exact
 /// string.
 pub const FULL_ACCESS_PRESET: &str = "danger-full-access";
 
-/// Every catalog option, in display order.
-pub const PRESETS: [&str; 4] = ["agent", "plan", FULL_ACCESS_PRESET, "coordinator"];
+/// The derived read-only value shown while plan mode is active. It is not a
+/// selectable preset: switching to it would mean entering plan mode, which is
+/// the plan chip's job.
+pub const READ_ONLY_PRESET: &str = "read-only";
 
-/// The catalog value for one thread mode. Unknown modes read as the default,
-/// keeping `permissions.currentValue` inside the catalog the client holds.
-pub fn preset_of_mode(mode: &str) -> &'static str {
-    match mode {
-        "plan" => "plan",
-        "yolo" => FULL_ACCESS_PRESET,
-        "coordinator" => "coordinator",
+/// The derived value for a session whose sandbox/approval knobs match no
+/// configured preset (`coordinator`: read-only + auto-approve).
+pub const CUSTOM_PRESET: &str = "custom";
+
+/// Every selectable catalog option, in display order.
+pub const PRESETS: [&str; 2] = [DEFAULT_PRESET, FULL_ACCESS_PRESET];
+
+/// Normalize a stored or requested preset name. Legacy CodeSmith spellings
+/// (`agent`, `yolo`) and the retired mode-shaped values (`plan`,
+/// `coordinator`) collapse onto a selectable preset so the settings row always
+/// advertises its current default.
+pub fn normalize_preset(preset: &str) -> &'static str {
+    match preset.trim().to_ascii_lowercase().as_str() {
+        "danger-full-access" | "yolo" => FULL_ACCESS_PRESET,
         _ => DEFAULT_PRESET,
     }
 }
 
-/// The thread mode for one catalog value (also accepts the raw mode names a
-/// hand-typed `/permission yolo` may carry). `None` for anything else, which
-/// the command catalog reports as a usage error.
+/// The catalog value for one thread mode. `plan`/`coordinator` are derived
+/// values outside the catalog; unknown modes read as the default, keeping
+/// `permissions.currentValue` a value the client can render.
+pub fn preset_of_mode(mode: &str) -> &'static str {
+    match mode {
+        "plan" => READ_ONLY_PRESET,
+        "yolo" => FULL_ACCESS_PRESET,
+        "coordinator" => CUSTOM_PRESET,
+        _ => DEFAULT_PRESET,
+    }
+}
+
+/// The thread mode for one selectable catalog value. Legacy `agent`/`yolo`
+/// spellings are accepted too, so a hand-typed `/permission yolo` keeps
+/// working. `None` for anything else, including the derived values.
 pub fn mode_of_preset(preset: &str) -> Option<&'static str> {
-    match preset {
-        "agent" => Some("agent"),
-        "plan" => Some("plan"),
-        FULL_ACCESS_PRESET | "yolo" => Some("yolo"),
-        "coordinator" => Some("coordinator"),
+    match preset.trim().to_ascii_lowercase().as_str() {
+        "workspace-write" | "agent" => Some("agent"),
+        "danger-full-access" | "yolo" => Some("yolo"),
         _ => None,
     }
 }
 
 /// `permissionPresets/catalog` — the process catalog the picker and the
-/// General settings row read. `defaultPreset` is validated against the
-/// advertised options so the settings row's "current default" lookup cannot
-/// throw on a hand-edited document.
-///
-/// The vendored presentation layer localizes `danger-full-access` by value
-/// when it receives the English default label; `agent`/`plan`/`coordinator`
-/// have no built-in dictionary entry, so the bridge supplies their
-/// CodeSmith-specific labels. `locale` is the user's explicit language
-/// preference; an unsupported language keeps the English labels. A language
-/// switch reaches the labels on the next catalog fetch (a reload).
-pub fn catalog(default_preset: &str, locale: Option<&str>) -> Value {
-    let default = if PRESETS.contains(&default_preset) {
-        default_preset
-    } else {
-        DEFAULT_PRESET
-    };
+/// General settings row read. `defaultPreset` is normalized so the settings
+/// row's "current default" lookup cannot throw on a hand-edited document.
+pub fn catalog(default_preset: &str) -> Value {
+    let default = normalize_preset(default_preset);
     let options: Vec<Value> = PRESETS
         .iter()
         .map(|preset| {
             json!({
                 "value": preset,
-                "name": display_name(preset, locale),
+                // The value doubles as the name so the vendored locale
+                // dictionaries localize the three conventional rows.
+                "name": preset,
             })
         })
         .collect();
     json!({
-        "options": options,
+        "options": options.clone(),
         "defaultOptions": options,
         "defaultPreset": default,
     })
-}
-
-/// The host-supplied label. The English names match the vendored full-access
-/// dictionary's default so that one row still localizes itself.
-fn display_name(preset: &str, locale: Option<&str>) -> &'static str {
-    if locale.is_some_and(|locale| locale.to_ascii_lowercase().starts_with("zh")) {
-        return match preset {
-            "agent" => "智能体",
-            "plan" => "计划",
-            FULL_ACCESS_PRESET => "完全权限",
-            "coordinator" => "协调者",
-            _ => "智能体",
-        };
-    }
-    match preset {
-        "agent" => "Agent",
-        "plan" => "Plan",
-        FULL_ACCESS_PRESET => "Full access",
-        "coordinator" => "Coordinator",
-        _ => "Agent",
-    }
 }
 
 #[cfg(test)]
@@ -116,23 +111,44 @@ mod tests {
 
     #[test]
     fn mode_and_preset_round_trip() {
-        assert_eq!(preset_of_mode("agent"), "agent");
-        assert_eq!(preset_of_mode("plan"), "plan");
+        assert_eq!(preset_of_mode("agent"), DEFAULT_PRESET);
         assert_eq!(preset_of_mode("yolo"), FULL_ACCESS_PRESET);
-        assert_eq!(preset_of_mode("coordinator"), "coordinator");
+        assert_eq!(preset_of_mode("plan"), READ_ONLY_PRESET);
+        assert_eq!(preset_of_mode("coordinator"), CUSTOM_PRESET);
         assert_eq!(preset_of_mode("unknown"), DEFAULT_PRESET);
         for preset in PRESETS {
             let mode = mode_of_preset(preset).expect("catalog value maps to a mode");
             assert_eq!(preset_of_mode(mode), preset);
         }
-        assert_eq!(mode_of_preset("yolo"), Some("yolo"));
+        // The retired mode-shaped spellings are not permissions.
+        assert_eq!(mode_of_preset("plan"), None);
+        assert_eq!(mode_of_preset("coordinator"), None);
         assert_eq!(mode_of_preset("read-only"), None);
+        // Legacy spellings still switch, so an old muscle memory keeps working.
+        assert_eq!(mode_of_preset("agent"), Some("agent"));
+        assert_eq!(mode_of_preset("yolo"), Some("yolo"));
+    }
+
+    #[test]
+    fn legacy_defaults_normalize() {
+        assert_eq!(normalize_preset("agent"), DEFAULT_PRESET);
+        assert_eq!(normalize_preset("yolo"), FULL_ACCESS_PRESET);
+        assert_eq!(normalize_preset("plan"), DEFAULT_PRESET);
+        assert_eq!(normalize_preset("coordinator"), DEFAULT_PRESET);
+        assert_eq!(normalize_preset("danger-full-access"), FULL_ACCESS_PRESET);
+        assert_eq!(normalize_preset("stale"), DEFAULT_PRESET);
     }
 
     #[test]
     fn catalog_default_is_always_advertised() {
-        for default in ["agent", "plan", FULL_ACCESS_PRESET, "coordinator", "stale"] {
-            let value = catalog(default, None);
+        for default in [
+            "workspace-write",
+            FULL_ACCESS_PRESET,
+            "agent",
+            "plan",
+            "stale",
+        ] {
+            let value = catalog(default);
             let options = value["defaultOptions"].as_array().unwrap();
             let advertised = options
                 .iter()
@@ -140,22 +156,24 @@ mod tests {
             assert!(advertised, "default {default:?} must be advertised");
             assert_eq!(value["options"], value["defaultOptions"]);
         }
-        assert_eq!(catalog("stale", None)["defaultPreset"], DEFAULT_PRESET);
-        // The picker's full-access row keys its risk confirmation and
-        // localized label on this value.
-        let full = catalog("agent", None)["options"]
+        assert_eq!(catalog("agent")["defaultPreset"], DEFAULT_PRESET);
+        assert_eq!(catalog("yolo")["defaultPreset"], FULL_ACCESS_PRESET);
+        let catalog_value = catalog("workspace-write");
+        let values: Vec<&str> = catalog_value["options"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|option| option["value"] == FULL_ACCESS_PRESET)
-            .cloned()
-            .expect("full-access option");
-        assert_eq!(full["name"], "Full access");
-        // The language preference localizes the CodeSmith-specific rows; an
-        // unsupported language keeps the English labels.
-        let zh = catalog("agent", Some("zh-CN"));
-        assert_eq!(zh["options"][0]["name"], "智能体");
-        assert_eq!(zh["options"][2]["name"], "完全权限");
-        assert_eq!(catalog("agent", Some("fr"))["options"][0]["name"], "Agent");
+            .map(|option| option["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, vec!["workspace-write", "danger-full-access"]);
+        // The vendored client localizes `name == value` from its own
+        // dictionaries; the host must not ship its own labels.
+        let names: Vec<&str> = catalog_value["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, values);
     }
 }

@@ -26,6 +26,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::llm;
+use super::permissions;
 use super::HostState;
 
 /// One namespace's static schema envelope + its section of the document.
@@ -117,7 +118,7 @@ fn specs() -> Vec<NamespaceSpec> {
         NamespaceSpec {
             ns: "permission",
             schema: serde_json::from_str(PERMISSION_SCHEMA).expect("permission schema envelope"),
-            defaults: json!({ "defaultPreset": "agent" }),
+            defaults: json!({ "defaultPreset": permissions::DEFAULT_PRESET }),
         },
     ]
 }
@@ -189,11 +190,25 @@ impl Document {
 
     fn view(&self, spec: &NamespaceSpec) -> Value {
         let user = self.sections.get(spec.ns).cloned();
+        let mut value = self.resolved(spec);
+        // The permission row requires its current default to be one of the
+        // catalog's selectable presets. Legacy documents stored mode-shaped
+        // values (`agent`/`plan`/`coordinator`); normalize on read so the
+        // page never throws on a document written by an older build.
+        if spec.ns == "permission" {
+            let default = value
+                .get("defaultPreset")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if let Some(default) = default {
+                value["defaultPreset"] = json!(permissions::normalize_preset(&default));
+            }
+        }
         let mut view = json!({
             "autoGenerate": true,
             "ns": spec.ns,
             "schema": spec.schema,
-            "value": self.resolved(spec),
+            "value": value,
             "applies": "live",
             "secrets": [],
             "revision": self.revision_of(spec.ns),
@@ -224,7 +239,10 @@ impl WriteError {
     }
 
     fn rejected(message: String) -> Self {
-        Self { code: "settings/rejected", message }
+        Self {
+            code: "settings/rejected",
+            message,
+        }
     }
 }
 
@@ -238,33 +256,19 @@ pub fn describe(home: &std::path::Path) -> Result<Value> {
 }
 
 /// The new-session permission default (`permission.defaultPreset`), read from
-/// the same document. `session/create` applies it to the thread it creates;
-/// an unknown stored value falls back to `agent` (a hand-edited document must
-/// not make session creation fail).
+/// the same document. `session/create` applies it to the thread it creates.
+/// Legacy mode-shaped values normalize onto a selectable preset, and an
+/// unknown stored value falls back to the workspace-write default (a
+/// hand-edited document must not make session creation fail).
 pub fn default_permission_preset(home: &std::path::Path) -> String {
     let document = load_document(home);
-    document
+    let stored = document
         .sections
         .get("permission")
         .and_then(|section| section.get("defaultPreset"))
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| "agent".to_string())
-}
-
-/// The explicit UI-language preference (`locale.preference`), if the user
-/// picked one. The permission catalog localizes its CodeSmith-specific
-/// preset labels from it; absent leaves the page on the browser locale,
-/// which the bridge cannot know.
-pub fn locale_preference(home: &std::path::Path) -> Option<String> {
-    let document = load_document(home);
-    document
-        .sections
-        .get("locale")
-        .and_then(|section| section.get("preference"))
-        .and_then(Value::as_str)
-        .filter(|preference| !preference.is_empty())
-        .map(str::to_string)
+        .unwrap_or(permissions::DEFAULT_PRESET);
+    permissions::normalize_preset(stored).to_string()
 }
 
 fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
@@ -334,7 +338,10 @@ fn write_view(
 /// plain refusal.
 fn fold_write_error(message: &str) -> WriteError {
     if message.starts_with("settings revision ") {
-        WriteError { code: "settings/conflict", message: message.to_string() }
+        WriteError {
+            code: "settings/conflict",
+            message: message.to_string(),
+        }
     } else {
         WriteError::rejected(message.to_string())
     }
@@ -367,7 +374,9 @@ fn provider_fold(
     }
     llm::apply_ops(&ops).map_err(WriteError::rejected)?;
     let next_revision = document.revision_of(llm::NS) + 1;
-    document.revisions.insert(llm::NS.to_string(), json!(next_revision));
+    document
+        .revisions
+        .insert(llm::NS.to_string(), json!(next_revision));
     document
         .save()
         .map_err(|err| WriteError::rejected(format!("{err:#}")))?;
@@ -472,7 +481,11 @@ mod tests {
         // The provider namespace reads config.toml; point it at a scratch
         // file so the test does not depend on (or touch) the real one.
         let config = home.join("scratch-config.toml");
-        std::fs::write(&config, "[providers.openai]\nbase_url = \"https://g.example/v1\"\n").unwrap();
+        std::fs::write(
+            &config,
+            "[providers.openai]\nbase_url = \"https://g.example/v1\"\n",
+        )
+        .unwrap();
         std::env::set_var("CODESMITH_CONFIG_PATH", &config);
         let value = describe_with(&home, &|_| false).expect("describe");
         std::env::remove_var("CODESMITH_CONFIG_PATH");
@@ -504,15 +517,21 @@ mod tests {
         assert!(root["dict"]["preference"].is_u64(), "field refs resolve");
         // The welcome notice reads its namespace as already acknowledged.
         let general = &namespaces[3];
-        assert_eq!(general["value"]["welcomeNoticeVersion"], WELCOME_NOTICE_VERSION);
+        assert_eq!(
+            general["value"]["welcomeNoticeVersion"],
+            WELCOME_NOTICE_VERSION
+        );
         // The language row starts unset (browser locale) and the developer
-        // tools default on; the permission row starts at the agent mode.
+        // tools default on; the permission row starts at workspace-write.
         assert_eq!(namespaces[4]["ns"], "locale");
         assert!(namespaces[4]["value"].get("preference").is_none());
         assert_eq!(namespaces[5]["ns"], "ui-settings");
         assert_eq!(namespaces[5]["value"]["enabled"], true);
         assert_eq!(namespaces[6]["ns"], "permission");
-        assert_eq!(namespaces[6]["value"]["defaultPreset"], "agent");
+        assert_eq!(
+            namespaces[6]["value"]["defaultPreset"],
+            permissions::DEFAULT_PRESET
+        );
         // The provider namespace rides along with the live config.
         let providers = &namespaces[7];
         assert_eq!(
@@ -576,6 +595,22 @@ mod tests {
         )
         .expect("ui-settings mutate");
         assert_eq!(tools["value"]["enabled"], false);
+        // A document written by an older build stores the retired mode-shaped
+        // value; the view normalizes it onto a selectable preset.
+        let legacy = fold(
+            &home,
+            "settings/mutate",
+            &json!({ "ns": "permission", "ops": [ { "op": "set", "path": ["defaultPreset"], "value": "agent" } ] }),
+        )
+        .expect("legacy permission mutate");
+        assert_eq!(
+            legacy["value"]["defaultPreset"],
+            permissions::DEFAULT_PRESET
+        );
+        assert_eq!(
+            default_permission_preset(&home),
+            permissions::DEFAULT_PRESET
+        );
         fold(
             &home,
             "settings/mutate",

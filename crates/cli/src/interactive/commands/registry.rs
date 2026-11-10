@@ -56,7 +56,7 @@ macro_rules! command_table {
 }
 
 command_table! {
-    Help, Exit, Clear, Status, Expand, Model, Mode, Plan,
+    Help, Exit, Clear, Status, Expand, Model, Mode, Permission, Plan,
     Agent, Yolo, Preset, Provider, Sessions, Resume, Save, Fork,
     Load, Compact, Purge, New, Export, Rename, Agents, Logout,
     Tokens, Cost, Tools, System, Context, Cache, Diff, Edit,
@@ -246,13 +246,22 @@ impl Command {
             help: "show or switch the mode",
         },
         CommandInfo {
-            command: Command::Plan,
-            name: "plan",
-            usage: "",
-            args: &[],
+            command: Command::Permission,
+            name: "permission",
+            usage: "[workspace-write|danger-full-access]",
+            args: &["workspace-write", "danger-full-access"],
             aliases: &[],
             group: Group::Model,
-            help: "shortcut for /mode plan",
+            help: "show or switch the sandbox + approval permission preset",
+        },
+        CommandInfo {
+            command: Command::Plan,
+            name: "plan",
+            usage: "[off]",
+            args: &["off"],
+            aliases: &[],
+            group: Group::Model,
+            help: "enter plan mode, or leave with /plan off",
         },
         CommandInfo {
             command: Command::Agent,

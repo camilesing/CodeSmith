@@ -220,7 +220,8 @@ pub(super) async fn workspace_view_live(host: &HostState) -> Value {
         .await
     {
         let live: Vec<String> = threads.into_iter().map(|t| t.id).collect();
-        view["sessionIds"] = json!(workspace::ordered_live_parked(&host.settings_home(), live).await);
+        view["sessionIds"] =
+            json!(workspace::ordered_live_parked(&host.settings_home(), live).await);
     }
     view
 }
@@ -443,15 +444,10 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         // document.
         "permissionPresets/catalog" => {
             let home = host.settings_home();
-            match tokio::task::spawn_blocking(move || {
-                (
-                    settings::default_permission_preset(&home),
-                    settings::locale_preference(&home),
-                )
-            })
-            .await
+            match tokio::task::spawn_blocking(move || settings::default_permission_preset(&home))
+                .await
             {
-                Ok((default, locale)) => rpc_ok(permissions::catalog(&default, locale.as_deref())),
+                Ok(default) => rpc_ok(permissions::catalog(&default)),
                 Err(err) => rpc_error(
                     "gateway/internal",
                     format!("permissionPresets/catalog: {err}"),
@@ -733,13 +729,13 @@ async fn session_create(host: &HostState) -> Value {
                 .to_string();
             // The permission row's new-session default (desktop settings
             // state). Apply it after creation; a runtime refusal is logged,
-            // not fatal — the session exists and `agent` is the fallback.
+            // not fatal — the session exists and the runtime's default
+            // (workspace-write / agent) is the fallback.
             let home = host.settings_home();
-            let preset = tokio::task::spawn_blocking(move || {
-                settings::default_permission_preset(&home)
-            })
-            .await
-            .unwrap_or_else(|_| permissions::DEFAULT_PRESET.to_string());
+            let preset =
+                tokio::task::spawn_blocking(move || settings::default_permission_preset(&home))
+                    .await
+                    .unwrap_or_else(|_| permissions::DEFAULT_PRESET.to_string());
             if let Some(mode) = permissions::mode_of_preset(&preset) {
                 if mode != "agent" {
                     match sessions::set_mode(host, &session_id, mode).await {
@@ -946,7 +942,10 @@ async fn unary_handler(
 fn multipart_response(value: &mut Value, bytes: Vec<u8>) -> Response {
     let part = "bytes-0";
     if let Some(object) = value.as_object_mut() {
-        object.insert("attachments".into(), json!([{ "codec": "bytes", "part": part, "path": ["data"] }]));
+        object.insert(
+            "attachments".into(),
+            json!([{ "codec": "bytes", "part": part, "path": ["data"] }]),
+        );
     }
     let envelope = json!({ "ok": true, "value": value });
     let boundary = format!("cds-{}", uuid::Uuid::new_v4());
@@ -1026,10 +1025,7 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         // The changes-review routes (host::changes): plain authenticated
         // GET/POSTs the page's fetch hook carries here, ahead of the unary
         // wildcard.
-        .route(
-            "/api/changes.summary",
-            get(changes::route::summary),
-        )
+        .route("/api/changes.summary", get(changes::route::summary))
         .route("/api/changes.diff", get(changes::route::diff))
         .route(
             "/api/changes.open",

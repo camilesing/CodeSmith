@@ -111,9 +111,25 @@ secrets.
 
 ## Modes and sandboxing
 
-Three modes control the action space. Plan is read-only. Agent gates
-destructive operations behind approval. YOLO auto-approves in trusted
-workspaces. OS-level sandboxing is enforced on macOS (Seatbelt) and on
+Three modes control the action space: plan is read-only, agent gates
+destructive operations behind approval, and yolo auto-approves in trusted
+workspaces. The user-facing control surface follows DSH's split: a
+**permission preset** names the sandbox + approval bundle a session runs
+under, and **plan** is a separate collaboration state rather than a third
+preset. Two presets are selectable — `workspace-write` (agent mode) and
+`danger-full-access` (yolo, keeping its trust + auto-approve posture) — and
+`/permission` switches them by switching the session mode, which stays the
+mechanism that picks the toolset and approval policy. Plan is enforced as
+before (read-only tools, no writes) and projects as `read-only`, a derived
+value outside the selectable table; a permission switch while plan is active
+is refused rather than silently leaving it, and `/plan off` (or an approved
+`exit_plan_mode`) restores the mode the session came from. `coordinator`
+remains an experimental orchestrator-only mode behind the `coordinator_mode`
+feature and projects as `custom` — it is not a permission either. A persisted
+preset value from an older build (`agent`/`plan`/`yolo`/`coordinator`)
+normalizes to the two presets on read.
+
+OS-level sandboxing is enforced on macOS (Seatbelt) and on
 Linux via bubblewrap when installed; the Landlock ruleset code is not
 wired for child-process enforcement, and no Windows sandbox exists. See
 [PRESETS.md](PRESETS.md) and [SANDBOX.md](SANDBOX.md).

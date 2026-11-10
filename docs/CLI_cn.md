@@ -60,7 +60,7 @@ prompt 的入口有两个：
 
 在 REPL 内，`/help` 是斜杠命令的实时清单——输入 `/` 会显示命令数量，
 `Tab` 补全命令名（多个匹配时连按两次列出候选），光标后的暗色文字预览匹配命令
-的作用。`/plan`、`/agent`、`/yolo` 分别是对应 `/mode` 取值的快捷方式，也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。命令按
+的作用。`/mode` 切换运行模式，`/permission` 切换沙箱 + 审批预设（`workspace-write` 或 `danger-full-access`）；`/plan` 是独立状态，`/plan off` 退出并恢复进入前的预设。计划态下预设投影为 `read-only`，此时 `/permission` 会要求先执行 `/plan off`，而不是悄悄退出计划。`/agent`、`/yolo` 仍是对应 `/mode` 取值的快捷方式；也可以在提示符下按 `Shift+Tab` 循环这些模式（`agent → plan → yolo`，实验性 `coordinator_mode` 功能开启时再加 `coordinator`）。命令按
 用户自定义（`.codesmith/commands/*.md`）> mod 注册 > 内建的层序分派；
 内建命令可以不删实现地关掉：config.toml 的 `[commands] disabled = [...]`
 会让这些名字从分派、`/help` 与补全中消失（未知名称令启动大声失败），
