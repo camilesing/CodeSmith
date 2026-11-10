@@ -796,7 +796,7 @@ async fn unary_handler(
     // carry — the envelope holds `data: null` and an attachments manifest,
     // and the bytes ride as a binary part the page's carrier plants.
     if endpoint == "workspaceFiles/readBytes" {
-        return match files::read_bytes(&host, &payload).await {
+        return match files::read_bytes(&host, args_of(&payload)).await {
             Ok((mut value, bytes)) => multipart_response(&mut value, bytes),
             Err(error) => Json(error).into_response(),
         };

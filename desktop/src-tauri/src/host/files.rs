@@ -56,30 +56,19 @@ impl FileError {
     }
 }
 
-/// The `position 0` argument every method carries: the session id (the
-/// client resolves the scope lookup itself; the wire carries the id).
+/// The session id every method addresses: the generated client packs each
+/// method's args as one object keyed by parameter wire names
+/// (`{workspaceFileScopeId, path, range}`), where `workspaceFileScopeId` is
+/// the typert lookup parameter's wire name carrying the Session identity.
 fn session_arg(args: &Value) -> Option<String> {
-    match args {
-        Value::Array(items) => items.first().and_then(Value::as_str).map(str::to_string),
-        Value::Object(fields) => fields
-            .get("sessionId")
-            .or_else(|| fields.get("session_id"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        Value::String(id) => Some(id.clone()),
-        _ => None,
-    }
-}
-
-/// The positional string argument at `index`.
-fn str_arg(args: &Value, index: usize) -> Option<String> {
-    let Value::Array(items) = args else {
-        return None;
-    };
-    items
-        .get(index)
+    args.get("workspaceFileScopeId")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// The `path` every method names the file or directory by.
+fn path_arg(args: &Value) -> Option<String> {
+    args.get("path").and_then(Value::as_str).map(str::to_string)
 }
 
 /// The session's workspace root, from the runtime thread record.
@@ -180,7 +169,7 @@ pub async fn list(host: &HostState, args: &Value) -> Value {
 async fn list_inner(host: &HostState, args: &Value) -> Result<Value, FileError> {
     let session_id = session_arg(args)
         .ok_or_else(|| FileError::new("gateway/arguments-invalid", "list without session"))?;
-    let path = str_arg(args, 1)
+    let path = path_arg(args)
         .ok_or_else(|| FileError::new("gateway/arguments-invalid", "list without path"))?;
     let root = workspace_root(host, &session_id).await?;
     let root = Path::new(&root);
@@ -240,7 +229,7 @@ pub async fn read(host: &HostState, args: &Value) -> Value {
 async fn read_inner(host: &HostState, args: &Value) -> Result<Value, FileError> {
     let session_id = session_arg(args)
         .ok_or_else(|| FileError::new("gateway/arguments-invalid", "read without session"))?;
-    let path = str_arg(args, 1)
+    let path = path_arg(args)
         .ok_or_else(|| FileError::new("gateway/arguments-invalid", "read without path"))?;
     let (target, metadata) = locate(host, &session_id, &path).await?;
     if !metadata.is_file() {
@@ -250,12 +239,12 @@ async fn read_inner(host: &HostState, args: &Value) -> Result<Value, FileError> 
         ));
     }
     let offset = args
-        .pointer("/2/offset")
+        .pointer("/range/offset")
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1) as usize;
     let limit = args
-        .pointer("/2/limit")
+        .pointer("/range/limit")
         .and_then(Value::as_u64)
         .map(|limit| (limit as usize).min(MAX_PAGE_LINES))
         .unwrap_or(MAX_PAGE_LINES);
@@ -310,7 +299,7 @@ pub async fn stat(host: &HostState, args: &Value) -> Value {
     let result = async {
         let session_id = session_arg(args)
             .ok_or_else(|| FileError::new("gateway/arguments-invalid", "stat without session"))?;
-        let path = str_arg(args, 1)
+        let path = path_arg(args)
             .ok_or_else(|| FileError::new("gateway/arguments-invalid", "stat without path"))?;
         let (target, metadata) = locate(host, &session_id, &path).await?;
         Ok::<_, FileError>(stat_fields(&target, &metadata))
@@ -329,7 +318,7 @@ pub async fn read_bytes(host: &HostState, args: &Value) -> Result<(Value, Vec<u8
         let session_id = session_arg(args).ok_or_else(|| {
             FileError::new("gateway/arguments-invalid", "readBytes without session")
         })?;
-        let path = str_arg(args, 1)
+        let path = path_arg(args)
             .ok_or_else(|| FileError::new("gateway/arguments-invalid", "readBytes without path"))?;
         let (target, metadata) = locate(host, &session_id, &path).await?;
         if !metadata.is_file() {
@@ -338,7 +327,7 @@ pub async fn read_bytes(host: &HostState, args: &Value) -> Result<(Value, Vec<u8
                 format!("{path} is not a file"),
             ));
         }
-        let window = args.pointer("/2/range");
+        let window = args.pointer("/options/range");
         let (offset, length) = match window {
             Some(range) => (
                 range.get("offset").and_then(Value::as_u64).unwrap_or(0),
@@ -425,7 +414,7 @@ pub async fn changes(
     let session_id = session_arg(args).ok_or_else(|| {
         super::stream_failure("gateway/arguments-invalid", "changes without session")
     })?;
-    let path = str_arg(args, 1)
+    let path = path_arg(args)
         .ok_or_else(|| super::stream_failure("gateway/arguments-invalid", "changes without path"))?;
     let root = workspace_root(host, &session_id)
         .await
@@ -475,6 +464,38 @@ fn stat_version(target: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_read_the_generated_clients_object_keyed_shape() {
+        // The gateway packs each Remote call's args as one object keyed by
+        // parameter wire names (`typert.remote-client.js`): the scope lookup
+        // rides `workspaceFileScopeId`, the target `path`, and the page/window
+        // under `range` / `options.range` — never a positional array.
+        let args = json!({
+            "workspaceFileScopeId": "thr_1",
+            "path": "src/a.rs",
+            "range": { "offset": 2, "limit": 10 },
+        });
+        assert_eq!(session_arg(&args).as_deref(), Some("thr_1"));
+        assert_eq!(path_arg(&args).as_deref(), Some("src/a.rs"));
+        assert_eq!(args.pointer("/range/offset").and_then(Value::as_u64), Some(2));
+        assert_eq!(args.pointer("/range/limit").and_then(Value::as_u64), Some(10));
+
+        let args = json!({
+            "workspaceFileScopeId": "thr_1",
+            "path": "bin/blob.bin",
+            "options": { "range": { "offset": 4, "length": 16 } },
+        });
+        let window = args.pointer("/options/range").unwrap();
+        assert_eq!(window.get("offset").and_then(Value::as_u64), Some(4));
+        assert_eq!(window.get("length").and_then(Value::as_u64), Some(16));
+
+        // The shapes the old reader accepted (bare session id, positional
+        // array) are not what the wire sends; they must not parse.
+        assert!(session_arg(&json!("thr_1")).is_none());
+        assert!(session_arg(&json!(["thr_1", "src/a.rs"])).is_none());
+        assert!(path_arg(&json!(["thr_1", "src/a.rs"])).is_none());
+    }
 
     #[test]
     fn targets_resolve_inside_the_workspace_only() {
