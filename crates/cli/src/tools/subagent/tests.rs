@@ -4893,6 +4893,35 @@ async fn coordinator_spawn_defaults_to_coordinator_worker() {
             .map(|agent| agent.agent_type.clone())
             .collect::<Vec<_>>()
     );
+
+    // A worker's own spawn (depth 1) is a grandchild: no ticket and no
+    // ticket_report on its surface, so it must NOT be relabelled
+    // coordinator_worker (whose intro would tell it to call that tool).
+    let mut runtime_worker = stub_runtime();
+    runtime_worker.spawn_depth = 1;
+    runtime_worker.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager_worker = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+    let tool = AgentSpawnTool::new(manager_worker.clone(), runtime_worker);
+    let _ = tool
+        .execute(
+            serde_json::json!({"prompt": "probe from a worker"}),
+            &coordinator_context,
+        )
+        .await;
+    let spawned = manager_worker.read().await.list();
+    assert!(
+        spawned
+            .iter()
+            .all(|agent| agent.agent_type == SubAgentType::General),
+        "a worker's child stays general: {:?}",
+        spawned
+            .iter()
+            .map(|agent| agent.agent_type.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A child request carries the provider-derived `max_tokens` — the same

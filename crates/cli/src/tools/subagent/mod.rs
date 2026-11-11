@@ -2686,13 +2686,20 @@ impl ToolSpec for AgentSpawnTool {
         let mut spawn_request =
             parse_spawn_request_with_workspace(&input, &self.runtime.context.cwd)?;
 
-        // Coordinator lineage fixes the default worker type: a spawn from
-        // coordinator mode without an explicit type (or a plain `general`)
-        // becomes a `CoordinatorWorker`, so `WORKER_EXCLUDED_TOOLS` and the
-        // worker intro actually apply instead of silently never matching.
-        // Explicit role picks (explore / implementer / verifier / ...) are
-        // the coordinator's to make and stay untouched.
+        // Coordinator lineage fixes the default worker type: a DIRECT spawn
+        // from coordinator mode without an explicit type (or a plain
+        // `general`) becomes a `CoordinatorWorker`, so
+        // `WORKER_EXCLUDED_TOOLS` and the worker intro actually apply instead
+        // of silently never matching. Explicit role picks (explore /
+        // implementer / verifier / ...) are the coordinator's to make and
+        // stay untouched.
+        //
+        // `spawn_depth == 0` is the same boundary ticket creation uses: a
+        // worker's own child is a grandchild — it gets no ticket and no
+        // `ticket_report` tool, so labelling it `CoordinatorWorker` would
+        // instruct it to call a tool its surface does not carry.
         if context.mode == AppMode::Coordinator
+            && self.runtime.spawn_depth == 0
             && matches!(spawn_request.agent_type, SubAgentType::General)
         {
             spawn_request.agent_type = SubAgentType::CoordinatorWorker;
