@@ -43,10 +43,16 @@
 //! it does not survive an engine eviction at all (there is nothing to
 //! re-apply) — only journaled goals do. A queued turn started by the runtime
 //! after an eviction, without an intervening desktop prompt, is the one path
-//! that can still outrun a pause for a single turn. The projection's
-//! id/revision are synthesized from the journal item identity (the runtime
-//! snapshot has no id), so they stay stable for one goal but are not a
-//! durable compare-and-set across a bridge restart.
+//! that can still outrun a pause for a single turn.
+//!
+//! The projection's id/revision are synthesized from the journal item
+//! identity (the runtime snapshot has no id). Mutations carry the client's
+//! `ref {id, revision}` and the bridge refuses a stale one
+//! (`goal/stale-revision`, upstream's GOAL_STALE_REVISION guard): the
+//! revision is the journal item count plus the persisted overlay counter,
+//! so it is durable and monotone across a bridge restart — a ref held
+//! before the restart still passes the compare-and-set, and a second
+//! client's edit loses the race.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -632,6 +638,35 @@ pub async fn action(host: &HostState, endpoint: &str, args: &Value) -> Value {
         .get("revision")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    // The client's compare-and-set (upstream's GOAL_STALE_REVISION guard):
+    // the ref names the exact revision the bar issued the mutation against —
+    // a second client's edit, or a bar left open across one, refuses here.
+    // The synthesized revision is durable (journal item count + the
+    // persisted overlay counter), so the guard also survives a bridge
+    // restart.
+    let given_ref = args.get("ref");
+    let (Some(ref_id), ref_revision) = (
+        given_ref
+            .and_then(|given| given.get("id"))
+            .and_then(Value::as_str),
+        given_ref
+            .and_then(|given| given.get("revision"))
+            .and_then(Value::as_u64),
+    ) else {
+        return rpc_error(
+            "gateway/arguments-invalid",
+            format!("{endpoint} without a goal ref"),
+        );
+    };
+    if ref_id != previous_id || ref_revision != Some(previous_revision) {
+        return rpc_error(
+            "goal/stale-revision",
+            format!(
+                "stale goal ref {ref_id:?} revision {:?}; current is {previous_id:?} revision {previous_revision}",
+                ref_revision,
+            ),
+        );
+    }
     match host
         .backend
         .post_with_error_message::<Value>(&format!("/v1/threads/{session_id}/goal"), &body)

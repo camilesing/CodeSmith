@@ -460,11 +460,14 @@ Known limitations of the current implementation:
   exists, keeps an unchanged objective's progress, and adopts the optional
   token budget parsed from the `budget: N` suffix — the same suffix the REPL
   accepts; it refuses to create a goal literally named pause/resume/clear,
-  pointing at the bar instead). Known limitations: a goal created through
+  pointing at the bar instead). Mutations enforce the client's compare-and-set
+  (`ref {id, revision}`): a stale or absent ref answers `goal/stale-revision`
+  or `gateway/arguments-invalid` — upstream's GOAL_STALE_REVISION guard — and
+  because the synthesized revision is the journal item count plus the
+  persisted overlay counter, the ref also survives a bridge restart. Known
+  limitations: a goal created through
   `/goal` has no journal item, so it does not survive an engine eviction at
-  all; the persisted identity is the creating tool item, so desktop overlay
-  revisions are stable for one goal but not a durable CAS across a bridge
-  restart; a queued turn the runtime starts after an eviction without an
+  all; a queued turn the runtime starts after an eviction without an
   intervening desktop prompt can outrun a pause for one turn. The client's
   optional `maxGoalRounds` edit is accepted only at the runtime's fixed cap
   (25); any other value is refused with `goal/rejected` rather than silently
@@ -759,7 +762,8 @@ lives in the bullets above.
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |
 | Office document preview | bridged over a local `soffice` | — | landed |
 | open-in-app icons | macOS icns → PNG served | Linux/Windows keep the glyph | landed |
-| goal durable CAS · pixel-parity baseline · upload progress | Known-limitations bullets above | clear per bullet | queued |
+| goal durable CAS | landed (the mutation ref guard) | — | landed |
+| pixel-parity baseline · upload progress | Known-limitations bullets above | clear per bullet | queued |
 | Auto-update · welcome · tray | none | desktop-shell slices (Tauri updater and friends) | later, optional |
 | Account / platform · sidebar browser tabs | not simulated | — | will not bridge (upstream brand infrastructure; Electron's nested webview has no wry equivalent) |
 | Vendor refresh | pinned `8bd07339`, level with the local checkout | re-run the vendor pipeline after upstream moves and repair wire drift | standing mechanism |

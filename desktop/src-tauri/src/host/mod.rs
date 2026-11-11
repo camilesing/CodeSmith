@@ -1772,21 +1772,45 @@ mod tests {
         // A read never loads an engine and never posts a goal action.
         let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
         assert_eq!(read["value"]["phase"], "active", "{read}");
+        assert_eq!(read["value"]["revision"], json!(1), "{read}");
         assert!(
             actions.lock().unwrap().is_empty(),
             "reading a session must not load or mutate the engine"
         );
 
-        let paused = goals::action(&host, "goals/pause", &json!({ "agentId": "thr_a" })).await;
+        // The mutation's compare-and-set: a stale or absent ref is refused
+        // (upstream's GOAL_STALE_REVISION guard), the exact current one
+        // passes.
+        let stale = goals::action(
+            &host,
+            "goals/pause",
+            &json!({ "agentId": "thr_a", "ref": { "id": "goal_item_create", "revision": 99 } }),
+        )
+        .await;
+        assert_eq!(stale["error"]["code"], "goal/stale-revision", "{stale}");
+        let missing = goals::action(&host, "goals/pause", &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(
+            missing["error"]["code"], "gateway/arguments-invalid",
+            "{missing}"
+        );
+        let paused = goals::action(
+            &host,
+            "goals/pause",
+            &json!({ "agentId": "thr_a", "ref": { "id": "goal_item_create", "revision": 1 } }),
+        )
+        .await;
         assert_eq!(paused["value"]["phase"], "paused", "{paused}");
+        assert_eq!(paused["value"]["revision"], json!(2), "{paused}");
         assert_eq!(actions.lock().unwrap().last().unwrap()["action"], "pause");
 
         // A new Host with the same home is the bridge-restart / engine-reload
-        // shape: the overlay is hydrated from `desktop/goals.json`.
+        // shape: the overlay is hydrated from `desktop/goals.json`, and the
+        // revision survived — the restart-stable ref still passes the CAS.
         let (url2, actions2) = fake_runtime_with_actions(cwd.clone(), items).await;
         let reloaded = test_host(url2, cwd);
         let after = goals::get(&reloaded, &json!({ "agentId": "thr_a" })).await;
         assert_eq!(after["value"]["phase"], "paused", "{after}");
+        assert_eq!(after["value"]["revision"], json!(2), "{after}");
         assert!(
             actions2.lock().unwrap().is_empty(),
             "the hydrated read must not load an engine"
@@ -1801,19 +1825,35 @@ mod tests {
         );
 
         // An edit supersedes the persisted stop; a later reconcile is inert.
+        // The ref the reloaded host reports (revision 2 — the paused
+        // mutation's bump) is the one that passes.
         let edited = goals::action(
             &reloaded,
             "goals/edit",
-            &json!({ "agentId": "thr_a", "request": { "objective": "ship it" } }),
+            &json!({
+                "agentId": "thr_a",
+                "ref": { "id": "goal_item_create", "revision": 2 },
+                "request": { "objective": "ship it" },
+            }),
         )
         .await;
         assert_eq!(edited["value"]["phase"], "active", "{edited}");
+        assert_eq!(edited["value"]["revision"], json!(3), "{edited}");
         actions2.lock().unwrap().clear();
         goals::reconcile(&reloaded, "thr_a").await;
         assert!(
             actions2.lock().unwrap().is_empty(),
             "an edit must clear the persisted pause"
         );
+
+        // A second client holding the pre-edit ref loses the race.
+        let raced = goals::action(
+            &reloaded,
+            "goals/pause",
+            &json!({ "agentId": "thr_a", "ref": { "id": "goal_item_create", "revision": 2 } }),
+        )
+        .await;
+        assert_eq!(raced["error"]["code"], "goal/stale-revision", "{raced}");
     }
 
     /// The vendored Workspace remote's value shapes, through dispatch: a

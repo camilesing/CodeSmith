@@ -365,9 +365,12 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `/goal <objective> [budget: N]` 命令会创建（直接 POST 运行时的 `edit`
   动作：没有目标时创建，目标不变时保留进度，并从 `budget: N` 后缀采纳
   可选 token 预算——与 REPL 相同的后缀；输入字面为 pause/resume/clear 时
-  拒绝创建并指向目标条）。已知限制：经 `/goal` 创建的目标没有日志条目，
-  引擎逐出后完全无法恢复；持久化身份是创建工具条目，overlay 版本对同一
-  目标是稳定的，但跨桥重启不是持久 CAS；引擎逐出后由运行时自行启动的排队
+  拒绝创建并指向目标条）。变更强制客户端的比较交换（`ref {id, revision}`）：
+  过期或缺失的 ref 答 `goal/stale-revision` 或 `gateway/arguments-invalid`
+  ——即上游 GOAL_STALE_REVISION 防线——且合成的 revision 是日志条目计数加
+  持久化 overlay 计数，ref 跨桥重启依然有效。已知限制：经 `/goal` 创建的
+  目标没有日志条目，
+  引擎逐出后完全无法恢复；引擎逐出后由运行时自行启动的排队
   turn 若中间没有桌面 prompt，可能抢在 pause 重放前多跑一轮。客户端可选的
   `maxGoalRounds` 编辑只接受运行时固定上限（25），其他值以
   `goal/rejected` 拒绝，不会静默忽略。
@@ -595,7 +598,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
 | Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |
 | open-in-app 图标 | macOS icns → PNG 已服务 | Linux/Windows 保持字形 | 已落地 |
-| goal 持久 CAS · 像素基线 · 上传进度 | 上文已知限制各条 | 逐条清偿 | 排队 |
+| goal 持久 CAS | 已落地（变更 ref 防线） | — | 已落地 |
+| 像素基线 · 上传进度 | 上文已知限制各条 | 逐条清偿 | 排队 |
 | 自动更新 · 欢迎页 · 托盘 | 无 | 桌面壳切片（Tauri updater 等） | 后续可选 |
 | 账号 / 平台 · 侧栏浏览器标签 | 不模拟 | — | 不跟进（上游品牌基建；Electron 嵌套 webview 无 wry 对等） |
 | vendor 刷新 | pin `8bd07339`，与本地 checkout 持平 | 上游演进后重跑 vendor 管线并修复 wire 漂移 | 常设机制 |
