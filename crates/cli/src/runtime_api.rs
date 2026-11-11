@@ -38,9 +38,10 @@ use crate::automation_manager::{
 use crate::config::{Config, DEFAULT_TEXT_MODEL};
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, EditQueuedRequest, EnqueueRequest, EnqueueResponse,
-    ExternalApprovalDecision, QueuedItemRecord, RuntimeThreadManager, RuntimeThreadManagerConfig,
-    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadListFilter,
-    ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest, UsageGroupBy,
+    ExternalApprovalDecision, GoalAction, QueuedItemRecord, RuntimeThreadManager,
+    RuntimeThreadManagerConfig, SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest,
+    ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest,
+    UsageGroupBy,
 };
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
@@ -560,6 +561,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads", get(list_threads).post(create_thread))
         .route("/v1/threads/summary", get(list_threads_summary))
         .route("/v1/threads/{id}", get(get_thread).patch(update_thread))
+        .route(
+            "/v1/threads/{id}/goal",
+            get(get_thread_goal).post(set_thread_goal),
+        )
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/turns", post(start_thread_turn))
@@ -1566,6 +1571,59 @@ async fn update_thread(
         .await
         .map_err(map_thread_err)?;
     Ok(Json(thread))
+}
+
+/// `GET /v1/threads/{id}/goal` — the live goal of one thread, plus whether
+/// its engine is loaded. A `loaded: false` answer means the durable journal
+/// is the client's fallback; reading a session must not spawn an engine.
+async fn get_thread_goal(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (loaded, goal) = state
+        .runtime_threads
+        .goal_peek(&id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(json!({ "loaded": loaded, "goal": goal })))
+}
+
+/// The one desktop GoalBar mutation body.
+#[derive(Debug, Deserialize)]
+struct ThreadGoalActionRequest {
+    /// `edit` | `pause` | `resume` | `clear`.
+    action: String,
+    /// Replacement objective for `edit`.
+    #[serde(default)]
+    objective: Option<String>,
+}
+
+/// `POST /v1/threads/{id}/goal` — edit, pause, resume or clear the live
+/// goal. The engine reads the same shared state on its next turn.
+async fn set_thread_goal(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<ThreadGoalActionRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let action = match req.action.trim().to_ascii_lowercase().as_str() {
+        "edit" => GoalAction::Edit {
+            objective: req.objective.unwrap_or_default(),
+        },
+        "pause" => GoalAction::Pause,
+        "resume" => GoalAction::Resume,
+        "clear" => GoalAction::Clear,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "unsupported goal action {other:?} (edit|pause|resume|clear)"
+            )));
+        }
+    };
+    let goal = state
+        .runtime_threads
+        .apply_goal_action(&id, action)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(json!({ "goal": goal })))
 }
 
 async fn resume_thread(
@@ -2899,6 +2957,92 @@ mod tests {
             .error_for_status()?
             .json()
             .await?;
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_goal_route_creates_pauses_and_clears_a_goal() -> Result<()> {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+        let created: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads"))
+            .json(&json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let id = created["id"].as_str().expect("thread id").to_string();
+        let goal_url = format!("http://{addr}/v1/threads/{id}/goal");
+
+        // Peeking must not load an engine: an unfollowed thread answers
+        // `loaded:false` and lets the client fall back to its journal.
+        let peek: serde_json::Value = client
+            .get(&goal_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(peek["loaded"], false);
+        assert!(peek["goal"].is_null());
+
+        // An explicit edit loads the engine (journal seed first) and creates
+        // the goal through the same shared state the round driver reads.
+        let edited: serde_json::Value = client
+            .post(&goal_url)
+            .json(&json!({ "action": "edit", "objective": "ship it" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(edited["goal"]["objective"], "ship it");
+        assert_eq!(edited["goal"]["status"], "active");
+
+        let peek: serde_json::Value = client
+            .get(&goal_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(peek["loaded"], true);
+        assert_eq!(peek["goal"]["objective"], "ship it");
+
+        let paused: serde_json::Value = client
+            .post(&goal_url)
+            .json(&json!({ "action": "pause" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(paused["goal"]["status"], "paused");
+
+        let resumed: serde_json::Value = client
+            .post(&goal_url)
+            .json(&json!({ "action": "resume" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(resumed["goal"]["status"], "active");
+
+        let cleared: serde_json::Value = client
+            .post(&goal_url)
+            .json(&json!({ "action": "clear" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert!(cleared["goal"].is_null());
 
         handle.abort();
         Ok(())

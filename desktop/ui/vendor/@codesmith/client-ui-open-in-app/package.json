@@ -1,0 +1,82 @@
+{
+  "name": "@codesmith/client-ui-open-in-app",
+  "description": "Web \"Open In...\" controls: the Session-header split button opening the workspace directory in an installed application, and the document preview's default-application controls for one file",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-gateway",
+        "@codesmith/api-remotes",
+        "@codesmith/api-session-controller",
+        "@codesmith/client-locale",
+        "@codesmith/client-shortcuts",
+        "@codesmith/client-ui-conversation",
+        "@codesmith/client-ui-layout",
+        "@codesmith/client-ui-renderer",
+        "@codesmith/client-ui-session",
+        "@codesmith/client-ui-sidebar-documentpreview",
+        "@codesmith/client-ui-context-menu",
+        "@codesmith/client-ui-sidebar-right",
+        "@codesmith/api-workspace-files",
+        "@codesmith/client-ui-workspace"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-gateway": "workspace:*",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-conversation": "workspace:*",
+    "@codesmith/client-ui-layout": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/client-ui-sidebar-documentpreview": "workspace:*",
+    "@codesmith/client-ui-sidebar-files": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "react": "^18.2.0",
+    "@codesmith/client-ui-deliverables": "workspace:*",
+    "@codesmith/native-command": "workspace:*",
+    "@codesmith/client-shortcuts": "workspace:*",
+    "@codesmith/client-ui-context-menu": "workspace:*",
+    "@codesmith/client-ui-file-actions": "workspace:*",
+    "@codesmith/util-workspace-path": "workspace:*",
+    "@codesmith/client-ui-sidebar-right": "workspace:*",
+    "@codesmith/api-workspace-files": "workspace:*",
+    "@codesmith/client-ui-workspace": "workspace:*"
+  }
+}

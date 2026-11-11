@@ -10,7 +10,7 @@ terminal REPL (see [CLI.md](CLI.md) → "Desktop UI (preset `all`)").
 
 ```
 Tauri App (desktop/)
-├─ WebView (vendored client UI, 69-package closure)
+├─ WebView (vendored client UI, 73-package closure)
 │   ├─ our boot: the __CODESMITH_BOOT__ plugin graph + first-party brand row
 │   └─ our connection carrier: unary rpc.call over HTTP; every stream rides
 │        the vendored WebSocket mux (one socket per client)
@@ -128,8 +128,13 @@ Known limitations of the current implementation:
   developer tools, the new-session permission default), schedules over
   `/v1/automations`, the control projections, the plan page
   (`session/events` + the plan body injected into `exit_plan_mode`), the
-  permission surfaces (`permissionPresets/catalog` over the thread mode), and
-  the `@` file source (`fileReferences/list`) ARE bridged.
+  permission surfaces (`permissionPresets/catalog` over the thread mode), the
+  `@` file source (`fileReferences/list`), the Workspace registry +
+  directory picker (`workspace/create|rename|delete|insertBefore`,
+  `directoryPicker/list|createDirectory`), the GoalBar (`goals/*` over
+  `/v1/threads/{id}/goal`), and workspace path open/reveal
+  (`session/openWorkspacePath|canOpenWorkspacePath|workspacePathApplications`)
+  ARE bridged.
 - A prompt sent while a turn runs parks on the runtime thread's queue
   (`POST /v1/threads/{id}/queue`): the queue dock renders it from the
   `inbox` projection (the runtime's `queue.updated` event, pushed live), and
@@ -186,14 +191,16 @@ Known limitations of the current implementation:
   the OS file manager (404 when the file is gone, 204 on success); the
   summary and comparison routes answer `cache-control: no-store`.
   `present.open` (the declared-file opener) answers the client's
-  `nativeUnavailable` — CodeSmith has no declared-file registry. Known
-  limitations: the card/review tab's OS open/reveal control is a slot
-  contributor (`deliverables.file.actions` /
-  `deliverables.review.file.actions`), and upstream fills it from
-  `client-ui-open-in-app`, which is not vendored — it needs an open-in-app
-  host surface plus `session/workspacePathApplications` /
-  `openWorkspacePath`, so the served `changes.open` route has no button on
-  this page yet.
+  `nativeUnavailable` — CodeSmith has no declared-file registry. The
+  card/review tab's open/reveal control is a slot contributor
+  (`deliverables.file.actions` / `deliverables.review.file.actions`) filled
+  by the vendored `client-ui-open-in-app`: `session/canOpenWorkspacePath`
+  answers true and `session/workspacePathApplications` an empty catalogue,
+  so the control falls back to Reveal; `session/openWorkspacePath`
+  canonicalizes the path and only admits a target inside the bridge cwd, a
+  registered workspace, or an imported thread workspace. No host open-in-app
+  application catalogue exists, so the session header's “Open In…” menu does
+  not appear.
 - Sidebar pins and the manual session order are desktop-shell state,
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned
@@ -361,25 +368,87 @@ Known limitations of the current implementation:
   `sessionReferenceResolver/candidates` answers an empty list:
   CodeSmith has no cross-session context-injection feature, so the menu is
   file-only.
+- The Workspace sidebar and the empty-state picker are real registry rows
+  (`client-ui-workspace` + `client-ui-directory-picker-browse`): the vendored
+  in-app browser lists one absolute host directory level
+  (`directoryPicker/list`: directories only, hidden rows included, breadcrumb
+  ancestry, a 2,000-row name-sorted prefix with `truncated`), creates one
+  child directory (`createDirectory`), and adopts the picked path through
+  `workspace/create` (absolute, existing, a directory; an already-registered
+  path is idempotent). Registrations persist at
+  `~/.codesmith/desktop/workspaces.json` (atomic rename; a corrupt file logs
+  and degrades to the default workspace). The bridge cwd is the implicit
+  default workspace (id `codesmith-default`); `rename`, `delete`,
+  `insertBefore`, and the per-workspace session order persist. Sessions group
+  by the runtime thread's own `workspace` path, not by creation order:
+  `session/create` accepts `{workspaceId}` (or `{cwd}`) and posts it to
+  `/v1/threads`; a reused blank is returned only while it has no turns. A
+  deleted workspace keeps its folder and session logs, and its sessions trail
+  under the client's Ungrouped bucket. `directoryPicker/pick` (the native
+  chooser) answers `directory-picker/unavailable` — this shell composes the
+  in-app browser, not a native dialog.
+- The GoalBar (`client-ui-goal`) is fed by the `goal` projection: the live
+  engine state when the thread's engine is resident (`GET
+  /v1/threads/{id}/goal` answers `loaded:true`), else the latest completed
+  `create_goal`/`update_goal` tool record in the thread journal (reading a
+  session never loads an engine). The projection carries
+  `{goal:{id, revision, objective, phase, blockedReason?, maxGoalRounds},
+  roundsStarted, createdAt, updatedAt}`; `complete` renders nothing and
+  `blocked` carries the runtime's blocker text. `goals/get` returns the live
+  `GoalView` plus `activation` (`armed` while active, else `disarmed`);
+  `goals/edit|pause|resume|clear` POST the runtime action (loading the
+  engine, which seeds active/completed goals from the journal) and push the
+  refreshed projection. Known limitations: the runtime snapshot carries no
+  goal id, so the bridge synthesizes a stable id from the creating tool item
+  and counts revisions, plus a bridge-local overlay for desktop mutations;
+  pause/clear are process-local — an engine eviction restores the journaled
+  active/completed goal, not a desktop or round-driver pause; goal creation
+  stays with the model's `create_goal` tool or host `goal` configuration (the
+  bar does not create).
+- The document-preview and changed-file open controls
+  (`client-ui-open-in-app` + `client-ui-file-actions`) are bridged over the
+  existing workspace-files surface: `session/canOpenWorkspacePath` answers
+  true, `session/workspacePathApplications` answers an empty catalog (this
+  desktop registers no per-path application handlers, so the controls fall
+  back to Reveal), and `session/openWorkspacePath` opens or reveals a path
+  after canonicalizing it and requiring it to lie inside the bridge cwd, a
+  registered workspace, or an imported thread's workspace (a symlinked
+  escape reads `workspace-file/outside-workspace`; a missing path reads
+  `workspace-file/not-found`). File Actions' Download and Copy image use
+  `workspaceFiles/readBytes` and the browser clipboard; Save as stays hidden
+  (it needs a native save dialog this shell does not compose), and
+  `present.open` remains `nativeUnavailable`. The session header's
+  “Open In…” application menu stays absent (no host open-in-app catalog);
+  the file/document controls render their reveal action.
 - Control projections also carry `todos` (the latest successful whole-list
   `todo`/`checklist_write` call, pushed live on the tool's `item.started`;
   single-item `todo_add`/`todo_update`/`checklist_add`/`checklist_update`
   calls fold their resulting snapshot from the result metadata),
-  `plan`, `permissions`, `workingDirectory`, and `turnOutline` (every started
+  `plan`, `permissions`, `workingDirectory`, `goal` (the followed session's
+  snapshot and live goal updates; the sidebar's control baseline omits it so
+  it never reads another session's goal), and `turnOutline` (every started
   turn's seq plus bounded prompt/response previews). `contextBreakdown` and
   `userQuestions` stay absent: the runtime records no per-request
   system/tools/message composition, and question requests carry no tool-call
   id or cancel route.
-- Upstream-only concepts (accounts/balance, plugin market, agent presets,
-  sidebar terminal/browser, subagent child-session views, goal bar) are not
-  simulated — their plugins stay out of the boot roster or answer empty
-  states. CodeSmith's goal is REPL-local (`/goal`; runtime threads carry no
-  goal state), its subagents are in-process rather than threads, and the
-  workflow lifecycle rides extension events that are not journaled, so the
-  workflow-run panel is not fed either. (The jobs popover, the attachment
-  presentation, the changes-review tab, the sidebar files/preview tabs, the
-  plan page, the permission surfaces and the `@` file source ARE bridged —
-  see their bullets.)
+- Upstream-only concepts are not simulated: accounts/balance and the account
+  settings section (`account/*` answer the signed-out shape or null), the
+  plugin manager/market and the settings plugin inventory (the Cordis/JS
+  plugin system has no CodeSmith equivalent), per-session agent presets
+  (`agentPresets/list` answers an empty roster; CodeSmith selects
+  configuration presets at launch, not an agent composition per session),
+  sidebar terminal/browser tabs (no user-visible PTY or browser session),
+  subagent child-session views (CodeSmith subagents are in-process, not
+  separate threads with journals), per-message Like/Dislike feedback (the
+  CLI's `/feedback` ledger is transcript-index based, local-only, and has no
+  per-message durable sidecar), and plugin entry customization. Their plugins
+  stay out of the boot roster or answer empty states. The workflow lifecycle
+  rides extension events that are not journaled, so the workflow-run panel is
+  not fed either. (The jobs popover, the attachment presentation, the
+  changes-review tab, the sidebar files/preview tabs, the plan page, the
+  permission surfaces, the `@` file source, the Workspace picker/registry,
+  the GoalBar, and the open/reveal/file actions ARE bridged — see their
+  bullets.)
 - The sidebar files tree and document preview
   (`client-ui-sidebar-files` + `client-ui-sidebar-documentpreview` over the
   `workspaceFiles` remote, `host::files`) read the session's workspace

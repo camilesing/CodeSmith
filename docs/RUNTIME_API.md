@@ -199,6 +199,21 @@ Thread list and summary responses remain flat in v0.8.40, so clients that need
 a graph should reconstruct it from events instead of assuming list order is a
 complete tree.
 
+**Goal** (the live thread goal the desktop GoalBar reads)
+- `GET /v1/threads/{id}/goal` — `{ "loaded": bool, "goal": {…} | null }`.
+  `loaded:false` means the thread's engine is not resident; a client falls
+  back to the durable `create_goal`/`update_goal` tool records. `loaded:true`
+  is authoritative, including "no goal" after a clear. A read never loads an
+  engine.
+- `POST /v1/threads/{id}/goal` — body
+  `{ "action": "edit" | "pause" | "resume" | "clear", "objective"?: "…" }`
+  (`objective` required for `edit`). The mutation applies to the engine's
+  shared goal state, so the next prompt/round reads it; `pause` requires an
+  active goal, `resume` an existing one. The response carries the same
+  `{ "loaded": true, "goal": … }` envelope. Pause/clear are process-local:
+  an engine eviction re-seeds an active/completed goal from the journal, not
+  a desktop pause or clear.
+
 `archived_only=true` returns archived threads only (mutually overrides
 `include_archived`). Default behavior: `include_archived=false`
 and `archived_only=false` returns active threads.
@@ -524,6 +539,7 @@ model is preserved.
 | Resume into thread | `POST /v1/sessions/{id}/resume-thread` |
 | Create thread | `POST /v1/threads` |
 | List threads | `GET /v1/threads` |
+| Read / mutate goal | `GET` / `POST /v1/threads/{id}/goal` |
 | Attach to events | `GET /v1/threads/{id}/events?since_seq=0` |
 | Send message | `POST /v1/threads/{id}/turns` |
 | Queue message | `POST /v1/threads/{id}/queue` |

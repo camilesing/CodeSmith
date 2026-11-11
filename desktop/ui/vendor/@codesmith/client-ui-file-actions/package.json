@@ -1,0 +1,63 @@
+{
+  "name": "@codesmith/client-ui-file-actions",
+  "description": "Original-file saving and image clipboard actions for Web and Desktop",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./types": {
+      "types": "./lib/types/types.d.ts"
+    }
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/client-locale",
+        "@codesmith/client-ui-context-menu",
+        "@codesmith/api-workspace-files",
+        "@codesmith/api-session-controller"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "react": "^18.2.0",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@codesmith/api-session-controller": "workspace:*",
+    "@codesmith/util-file-drag": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-ui-context-menu": "workspace:*",
+    "@codesmith/api-workspace-files": "workspace:*",
+    "@codesmith/util-workspace-path": "workspace:*",
+    "mime": "^4.1.0",
+    "@codesmith/client-ui-renderer": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ]
+}

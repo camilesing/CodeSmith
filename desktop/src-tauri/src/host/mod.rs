@@ -12,8 +12,10 @@ pub mod changes;
 pub mod codesmith;
 pub mod commands;
 pub mod credentials;
+pub mod directories;
 pub mod events;
 pub mod files;
+pub mod goals;
 pub mod host_drop;
 pub mod jobs;
 pub mod llm;
@@ -103,6 +105,12 @@ pub struct HostState {
     /// current mode, so the bridge stashes the pre-plan mode — the REPL's
     /// `plan_restore_mode` — and the handoff hands the session back to it.
     pub plan_return_modes: Mutex<HashMap<String, String>>,
+    /// Serializes Workspace registry mutations (create/rename/delete/order):
+    /// each is a read-modify-write of `desktop/workspaces.json`.
+    pub workspace_lock: tokio::sync::Mutex<()>,
+    /// Bridge-local GoalBar mutations per session (revision bumps, a desktop
+    /// clear tombstone). See `host::goals`.
+    pub goal_overlays: Mutex<HashMap<String, goals::Overlay>>,
 }
 
 impl HostState {
@@ -191,63 +199,6 @@ pub fn stream_failure(code: &str, message: impl Into<String>) -> Value {
     json!({ "code": code, "message": message.into(), "details": {} })
 }
 
-fn workspace_view(cwd: &std::path::Path) -> Value {
-    let now = chrono::Utc::now().to_rfc3339();
-    let title = cwd
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "CodeSmith".into());
-    json!({
-        "workspaceId": DEFAULT_WORKSPACE_ID,
-        "path": cwd.to_string_lossy(),
-        "title": title,
-        "sessionIds": [],
-        "createdAt": now,
-        "updatedAt": now,
-    })
-}
-
-/// The single implicit workspace with the live session list folded in — the
-/// client associates a selected session with a workspace through this list.
-/// The list order is the sidebar's manual order (desktop-local, see
-/// `host::workspace`); never-dragged sessions follow in runtime recency
-/// order.
-pub(super) async fn workspace_view_live(host: &HostState) -> Value {
-    let mut view = workspace_view(&host.cwd);
-    if let Ok(threads) = host
-        .backend
-        .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200")
-        .await
-    {
-        let live: Vec<String> = threads.into_iter().map(|t| t.id).collect();
-        view["sessionIds"] =
-            json!(workspace::ordered_live_parked(&host.settings_home(), live).await);
-    }
-    view
-}
-
-/// The workspace view plus the live and archived session id lists (the
-/// sidebar's archived filter reads the archived set, the pin baseline the
-/// live one — the merged `sessionIds` carries exactly the live set).
-async fn workspace_view_with_archived(host: &HostState) -> (Value, Vec<String>, Vec<String>) {
-    let view = workspace_view_live(host).await;
-    let live: Vec<String> = view["sessionIds"]
-        .as_array()
-        .map(|ids| {
-            ids.iter()
-                .filter_map(|id| id.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let archived = host
-        .backend
-        .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200&archived_only=true")
-        .await
-        .map(|threads| threads.into_iter().map(|t| t.id).collect())
-        .unwrap_or_default();
-    (view, live, archived)
-}
-
 /// Dispatch a unary client endpoint. `payload` is the raw `{args: …}` body.
 pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Value {
     let host_arc = host;
@@ -255,7 +206,7 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
     let _ = payload.get("args");
     match endpoint {
         "session/list" => session_list(host).await,
-        "session/create" => session_create(host).await,
+        "session/create" => session_create(host, payload.get("args").unwrap_or(&Value::Null)).await,
         "session/modelCatalog" => model_catalog(host).await,
         "session/page" => {
             match sessions::page(host, payload.get("args").unwrap_or(&Value::Null)).await {
@@ -283,6 +234,12 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("session/selectModel: {err:#}")),
         },
+        // The GoalBar (host::goals): the live goal view and its four
+        // mutations over the runtime's `GET|POST /v1/threads/{id}/goal`.
+        "goals/get" => goals::get(host, args_of(payload)).await,
+        "goals/edit" | "goals/pause" | "goals/resume" | "goals/clear" => {
+            goals::action(host, endpoint, args_of(payload)).await
+        }
         "$events/result" => {
             match events_result(host, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),
@@ -333,6 +290,32 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error(err.code, err.message),
             }
         }
+        // The Workspace registry (host::workspace): host-directory
+        // registrations the sidebar groups sessions under. Every mutation
+        // answers the vendored controller's value and re-publishes the
+        // complete follow baseline.
+        "workspace/create" => match workspace::create(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(err.code, err.message),
+        },
+        "workspace/rename" => match workspace::rename(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(err.code, err.message),
+        },
+        "workspace/delete" => match workspace::delete(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(err.code, err.message),
+        },
+        "workspace/insertBefore" => {
+            match workspace::insert_workspace_before(host, args_of(payload)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(err.code, err.message),
+            }
+        }
+        // The workspace picker's directory primitives (host::directories).
+        "directoryPicker/list" => directories::list(args_of(payload)).await,
+        "directoryPicker/createDirectory" => directories::create_directory(args_of(payload)).await,
+        "directoryPicker/pick" => directories::pick(),
         "skills/list" => match sessions::skills(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("skills/list: {err:#}")),
@@ -402,7 +385,10 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error(err.code, err.message),
         },
-        "workspace/initializeDefault" => rpc_ok(workspace_view_live(host).await),
+        "workspace/initializeDefault" => match workspace::initialize_default(host).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(err.code, err.message),
+        },
         // Attachment staging (host::uploads): receipts resolve when the
         // prompt that names them reaches the runtime.
         "fileUploads/upload" => match uploads::upload_rpc(&host.uploads, args_of(payload)).await {
@@ -460,6 +446,12 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "workspaceFiles/list" => files::list(host, args_of(payload)).await,
         "workspaceFiles/read" => files::read(host, args_of(payload)).await,
         "workspaceFiles/stat" => files::stat(host, args_of(payload)).await,
+        // The file/directory open controls (client-ui-open-in-app and
+        // client-ui-file-actions): this desktop opens and reveals inside a
+        // session workspace, and registers no per-path application catalog.
+        "session/canOpenWorkspacePath" => rpc_ok(json!(true)),
+        "session/workspacePathApplications" => files::workspace_path_applications(),
+        "session/openWorkspacePath" => files::open_workspace_path(host, args_of(payload)).await,
         // The `@` menu's file source (host::references); session references
         // are not a CodeSmith capability — the resolver answers an empty
         // list, which the vendored source degrades to file-only rows.
@@ -614,14 +606,10 @@ async fn stream_baseline(host: &HostState, endpoint: &str) -> Result<Vec<Value>>
     match endpoint {
         "session/control" => sessions::control_baseline(host).await,
         "workspace/follow" => {
-            let (view, live, archived) = workspace_view_with_archived(host).await;
+            let baseline = workspace::baseline(host).await;
             Ok(vec![json!({
                 "type": "baseline",
-                "value": {
-                    "items": [view],
-                    "archivedSessionIds": archived,
-                    "pinnedSessionIds": workspace::pinned_live_parked(&host.settings_home(), live).await,
-                }
+                "value": workspace::baseline_value(&baseline),
             })])
         }
         "remoteAccess/follow" => Ok(vec![json!({ "type": "baseline", "owner": true })]),
@@ -719,8 +707,82 @@ async fn session_list(host: &HostState) -> Value {
     }
 }
 
-async fn session_create(host: &HostState) -> Value {
-    match host.backend.post::<Value>("/v1/threads", &json!({})).await {
+/// `session/create` — create (or reuse a blank) runtime thread in the
+/// requested Workspace. The vendored controller packs its single `request`
+/// parameter object-keyed: `{workspaceId?, cwd?, sessionId?, agentPreset?}`.
+/// `agentPreset` has no CodeSmith composition seat and is ignored; the
+/// response omits it (the client reads null as a present value).
+async fn session_create(host: &HostState, payload: &Value) -> Value {
+    let request = payload.get("request").unwrap_or(payload);
+    let requested_workspace = match request.get("workspaceId").and_then(Value::as_str) {
+        Some(workspace_id) => match workspace::path_for_id(host, workspace_id).await {
+            Some(path) => Some(path),
+            None => {
+                return rpc_error(
+                    "workspace/not-found",
+                    format!("workspace {workspace_id} not found"),
+                )
+            }
+        },
+        None => match request.get("cwd").and_then(Value::as_str) {
+            Some(cwd) => {
+                let cwd = cwd.to_string();
+                match tokio::task::spawn_blocking(move || {
+                    let path = PathBuf::from(&cwd);
+                    if !path.is_absolute() {
+                        bail!("cwd is not an absolute path");
+                    }
+                    let canonical = std::fs::canonicalize(&path)?;
+                    if !canonical.is_dir() {
+                        bail!("cwd is not a directory");
+                    }
+                    Ok::<PathBuf, anyhow::Error>(canonical)
+                })
+                .await
+                {
+                    Ok(Ok(path)) => Some(path),
+                    Ok(Err(err)) => return rpc_error("workspace/invalid-path", format!("{err:#}")),
+                    Err(err) => {
+                        return rpc_error(
+                            "gateway/internal",
+                            format!("session/create cwd join failed: {err}"),
+                        )
+                    }
+                }
+            }
+            None => None,
+        },
+    };
+    // A named blank the client still owns is reused instead of creating a
+    // second empty thread (the upstream `connectWorkspace` contract). A
+    // thread that has turns is not blank and is left alone.
+    if let Some(session_id) = request.get("sessionId").and_then(Value::as_str) {
+        if let Ok(detail) = host
+            .backend
+            .get::<Value>(&format!("/v1/threads/{session_id}"))
+            .await
+        {
+            let blank = detail
+                .get("turns")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty);
+            let same_workspace = match requested_workspace.as_ref() {
+                Some(path) => detail
+                    .pointer("/thread/workspace")
+                    .and_then(Value::as_str)
+                    .is_some_and(|workspace| workspace == path.to_string_lossy()),
+                None => true,
+            };
+            if blank && same_workspace {
+                return rpc_ok(json!({ "sessionId": session_id }));
+            }
+        }
+    }
+    let body = match requested_workspace {
+        Some(path) => json!({ "workspace": path }),
+        None => json!({}),
+    };
+    match host.backend.post::<Value>("/v1/threads", &body).await {
         Ok(thread) => {
             let session_id = thread
                 .get("id")
@@ -749,24 +811,9 @@ async fn session_create(host: &HostState) -> Value {
                     }
                 }
             }
-            // The new session must land in the workspace the sidebar groups
-            // by: push an upsert increment to every open workspace follow.
-            let mut view = workspace_view_live(host).await;
-            if let Some(ids) = view.get_mut("sessionIds").and_then(Value::as_array_mut) {
-                if !ids
-                    .iter()
-                    .any(|id| id.as_str() == Some(session_id.as_str()))
-                {
-                    ids.push(json!(session_id));
-                }
-            }
-            host.push_live(
-                "workspace/follow",
-                json!({ "type": "upsert", "workspace": view }),
-            )
-            .await;
-            // `agentPreset` stays absent (not null): the client treats null as
-            // a present preset value and dereferences it.
+            // Re-publish the baseline so the session lands in the Workspace
+            // that groups its directory (or trails under Ungrouped).
+            workspace::push_replace(host).await;
             rpc_ok(json!({ "sessionId": session_id }))
         }
         Err(err) => rpc_error("gateway/internal", format!("session/create: {err:#}")),

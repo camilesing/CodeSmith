@@ -45,6 +45,9 @@ use crate::task_manager::wrap_task_manager;
 use crate::tools::plan::new_shared_plan_state;
 use crate::tools::todo::new_shared_todo_list;
 use codesmith_agent_runtime::ops::Op;
+use codesmith_agent_runtime::tool_state::goal::{
+    GoalSnapshot, SharedGoalState, new_shared_goal_state, new_shared_goal_state_from_host,
+};
 
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
@@ -1017,6 +1020,13 @@ struct ActiveThreadState {
     /// every mutation — both homes change under one `active` lock, so they
     /// cannot disagree); the record is what survives eviction and restart.
     queue: Vec<QueuedItemRecord>,
+    /// The live goal state shared with this thread's engine: the model's
+    /// `create_goal`/`update_goal` tools mutate it, and the HTTP goal route
+    /// reads/pauses/resumes/clears it for the desktop GoalBar. Seeded from
+    /// the thread journal at engine load (the latest durable goal tool
+    /// result), so an engine reload keeps an active/completed goal; the
+    /// pause/blocked/clear controls themselves are process-local.
+    goal_state: SharedGoalState,
 }
 
 #[derive(Default)]
@@ -2687,6 +2697,19 @@ impl RuntimeThreadManager {
             // (IndexManager wiring).
             index_service: None,
         };
+        // Seed the engine's goal from the thread journal: the latest durable goal
+        // tool result survives an engine reload. Only an active or completed
+        // goal is restored — a paused/blocked goal must not be resumed by a
+        // reload (the model or the desktop deliberately stopped it).
+        let goal_state = self
+            .get_thread_detail(&thread.id)
+            .await
+            .ok()
+            .and_then(|detail| goal_seed_from_items(&detail.items))
+            .map(|(objective, budget, completed)| {
+                new_shared_goal_state_from_host(Some(objective), budget, completed)
+            })
+            .unwrap_or_else(new_shared_goal_state);
         let engine_cfg = EngineConfig {
             model: thread.model.clone(),
             context_window_override: self.config.context_window_override(),
@@ -2743,7 +2766,7 @@ impl RuntimeThreadManager {
             plan_state: new_shared_plan_state(),
             plan_mode_state: crate::tools::plan_mode::new_shared_plan_mode_state(),
             task_v2_manager: None,
-            goal_state: codesmith_agent_runtime::tool_state::goal::new_shared_goal_state(),
+            goal_state: goal_state.clone(),
             worktree_state: crate::tools::worktree::new_shared_worktree_session_state(),
             max_spawn_depth: self.config.max_spawn_depth(),
             network_policy,
@@ -2859,6 +2882,7 @@ impl RuntimeThreadManager {
                 // Seed the mirror from the record; a restored queue stays
                 // idle until the next enqueue or turn end (resume-idle).
                 queue: thread.queue.clone(),
+                goal_state: goal_state.clone(),
             },
         );
         touch_lru(&mut active.lru, &thread.id);
@@ -2884,6 +2908,77 @@ impl RuntimeThreadManager {
             );
         }
         Ok(engine)
+    }
+
+    /// The live goal state of one thread, loading its engine when evicted.
+    async fn goal_state_for(&self, thread_id: &str) -> Result<SharedGoalState> {
+        let thread = self.get_thread(thread_id).await?;
+        self.ensure_engine_loaded(&thread).await?;
+        let active = self.active.lock().await;
+        active
+            .engines
+            .get(thread_id)
+            .map(|state| state.goal_state.clone())
+            .ok_or_else(|| anyhow!("thread {thread_id} is no longer loaded"))
+    }
+
+    /// Read the current goal **without** loading an evicted engine. Answers
+    /// `(loaded, goal)`: `loaded: false` means the caller should fall back to
+    /// the durable journal (viewing a session must not spawn an engine);
+    /// `loaded: true, goal: None` means the engine's goal state is empty
+    /// (after a clear, or before the first create).
+    pub async fn goal_peek(&self, thread_id: &str) -> Result<(bool, Option<Value>)> {
+        self.get_thread(thread_id).await?;
+        let active = self.active.lock().await;
+        let Some(state) = active
+            .engines
+            .get(thread_id)
+            .map(|state| state.goal_state.clone())
+        else {
+            return Ok((false, None));
+        };
+        let guard = state
+            .lock()
+            .map_err(|_| anyhow!("goal state lock poisoned"))?;
+        Ok((true, goal_view_json(&guard)))
+    }
+
+    /// Apply one desktop GoalBar mutation to the live goal state. The engine
+    /// reads the same shared state at prompt/round time, so an edit, pause,
+    /// resume or clear takes effect on the next turn without a model call.
+    ///
+    /// Known limitation: this control state is process-local (the journal
+    /// records model-tool changes only); an engine eviction restores the
+    /// latest journaled active/completed goal, not a desktop pause/clear.
+    pub async fn apply_goal_action(
+        &self,
+        thread_id: &str,
+        action: GoalAction,
+    ) -> Result<Option<Value>> {
+        let state = self.goal_state_for(thread_id).await?;
+        let mut guard = state
+            .lock()
+            .map_err(|_| anyhow!("goal state lock poisoned"))?;
+        match action {
+            GoalAction::Clear => guard.clear(),
+            GoalAction::Pause => {
+                if !guard.is_active() {
+                    bail!("no active goal to pause");
+                }
+                guard.pause("paused from the desktop");
+            }
+            GoalAction::Resume => {
+                guard.resume(None).map_err(anyhow::Error::msg)?;
+            }
+            GoalAction::Edit { objective } => {
+                let objective = objective.trim().to_string();
+                if objective.is_empty() {
+                    bail!("a goal objective cannot be empty");
+                }
+                guard.resume(Some(objective)).map_err(anyhow::Error::msg)?;
+            }
+        }
+        Ok(goal_view_json(&guard))
     }
 
     /// Materialize a turn record for an idle-wake synthesized turn (round 10
@@ -4282,6 +4377,7 @@ impl RuntimeThreadManager {
                     engine: engine.clone(),
                     active_turn: None,
                     queue: thread.queue.clone(),
+                    goal_state: new_shared_goal_state(),
                 },
             );
             touch_lru(&mut active.lru, thread_id);
@@ -4459,6 +4555,71 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("Failed to write {}", path.display()))
 }
 
+/// One desktop GoalBar mutation against a thread's live goal state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalAction {
+    /// Replace the objective (an unchanged objective just resumes it).
+    Edit { objective: String },
+    /// Stop the round driver without clearing the goal.
+    Pause,
+    /// Re-arm a paused/blocked/completed goal.
+    Resume,
+    /// Remove the current goal (the projection becomes `null`).
+    Clear,
+}
+
+/// The wire shape the desktop bridge maps onto the client's GoalProjection:
+/// CodeSmith's snapshot fields plus the round counters the client renders.
+fn goal_view_json(state: &codesmith_agent_runtime::tool_state::goal::GoalState) -> Option<Value> {
+    let snapshot: GoalSnapshot = state.snapshot();
+    let objective = snapshot.objective.as_deref()?.trim().to_string();
+    if objective.is_empty() {
+        return None;
+    }
+    Some(json!({
+        "objective": objective,
+        "status": snapshot.status,
+        "token_budget": snapshot.token_budget,
+        "elapsed_seconds": snapshot.elapsed_seconds,
+        "evidence": snapshot.evidence,
+        "blocker": snapshot.blocker,
+        "rounds_started": state.rounds_driven(),
+        "max_goal_rounds": codesmith_agent_runtime::tool_state::goal::MAX_GOAL_ROUNDS,
+    }))
+}
+
+/// Seed an engine's goal from the thread journal: the latest completed
+/// `create_goal`/`update_goal` result. A paused or blocked goal is not
+/// restored (a reload must not resume work the model or the desktop
+/// deliberately stopped); active and completed goals survive an eviction.
+fn goal_seed_from_items(items: &[TurnItemRecord]) -> Option<(String, Option<u32>, bool)> {
+    let item = items.iter().rev().find(|item| {
+        item.status == TurnItemLifecycleStatus::Completed
+            && (item.summary.starts_with("create_goal") || item.summary.starts_with("update_goal"))
+    })?;
+    let snapshot: Value = serde_json::from_str(item.detail.as_deref()?).ok()?;
+    let objective = snapshot
+        .get("objective")
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if objective.is_empty() {
+        return None;
+    }
+    let status = snapshot
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    if status == "paused" || status == "blocked" {
+        return None;
+    }
+    let budget = snapshot
+        .get("token_budget")
+        .and_then(Value::as_u64)
+        .and_then(|budget| u32::try_from(budget).ok());
+    Some((objective, budget, status == "complete"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4626,6 +4787,7 @@ mod tests {
                 engine: harness.handle.clone(),
                 active_turn: None,
                 queue,
+                goal_state: new_shared_goal_state(),
             },
         );
         touch_lru(&mut active.lru, thread_id);
@@ -4819,6 +4981,7 @@ mod tests {
                     trust_mode: false,
                 }),
                 queue: Vec::new(),
+                goal_state: new_shared_goal_state(),
             },
         );
         active.engines.insert(
@@ -4832,6 +4995,7 @@ mod tests {
                     trust_mode: false,
                 }),
                 queue: Vec::new(),
+                goal_state: new_shared_goal_state(),
             },
         );
         active.lru.push_back("thr_a".to_string());
@@ -8149,5 +8313,112 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn goal_actions_mutate_the_live_goal_state() {
+        let dir = test_runtime_dir();
+        let manager = test_manager(dir.clone()).expect("manager");
+        let thread = sample_thread("thr_goal");
+        manager.store.save_thread(&thread).expect("save thread");
+        install_mock_engine(&manager, "thr_goal").await;
+        {
+            let active = manager.active.lock().await;
+            let state = active
+                .engines
+                .get("thr_goal")
+                .expect("engine")
+                .goal_state
+                .clone();
+            state
+                .lock()
+                .expect("goal")
+                .create("ship it".into(), Some(100));
+        }
+        let (loaded, goal) = manager.goal_peek("thr_goal").await.expect("peek");
+        assert!(loaded);
+        assert_eq!(goal.expect("goal")["objective"], "ship it");
+
+        let paused = manager
+            .apply_goal_action("thr_goal", GoalAction::Pause)
+            .await
+            .expect("pause")
+            .expect("goal");
+        assert_eq!(paused["status"], "paused");
+        assert_eq!(paused["blocker"], "paused from the desktop");
+
+        let resumed = manager
+            .apply_goal_action("thr_goal", GoalAction::Resume)
+            .await
+            .expect("resume")
+            .expect("goal");
+        assert_eq!(resumed["status"], "active");
+
+        let edited = manager
+            .apply_goal_action(
+                "thr_goal",
+                GoalAction::Edit {
+                    objective: "ship it well".into(),
+                },
+            )
+            .await
+            .expect("edit")
+            .expect("goal");
+        assert_eq!(edited["objective"], "ship it well");
+
+        assert!(
+            manager
+                .apply_goal_action("thr_goal", GoalAction::Clear)
+                .await
+                .expect("clear")
+                .is_none()
+        );
+        assert_eq!(
+            manager.goal_peek("thr_goal").await.expect("peek"),
+            (true, None)
+        );
+
+        // Pausing with no goal is a business error, not a silent no-op.
+        assert!(
+            manager
+                .apply_goal_action("thr_goal", GoalAction::Pause)
+                .await
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn goal_seed_restores_active_and_completed_but_not_stopped_goals() {
+        let mut active = sample_item("turn_1", "item_goal", TurnItemLifecycleStatus::Completed);
+        active.summary = "create_goal".into();
+        active.detail = Some(
+            json!({ "objective": "ship", "status": "active", "token_budget": 10 }).to_string(),
+        );
+        assert_eq!(
+            goal_seed_from_items(&[active]),
+            Some(("ship".to_string(), Some(10), false))
+        );
+
+        let mut complete = sample_item("turn_1", "item_done", TurnItemLifecycleStatus::Completed);
+        complete.summary = "update_goal".into();
+        complete.detail = Some(
+            json!({ "objective": "ship", "status": "complete", "evidence": "done" }).to_string(),
+        );
+        assert_eq!(
+            goal_seed_from_items(&[complete]),
+            Some(("ship".to_string(), None, true))
+        );
+
+        for status in ["paused", "blocked"] {
+            let mut stopped =
+                sample_item("turn_1", "item_stop", TurnItemLifecycleStatus::Completed);
+            stopped.summary = "update_goal".into();
+            stopped.detail = Some(json!({ "objective": "ship", "status": status }).to_string());
+            assert!(
+                goal_seed_from_items(&[stopped]).is_none(),
+                "a {status} goal must not be restarted by a reload"
+            );
+        }
     }
 }

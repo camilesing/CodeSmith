@@ -477,6 +477,114 @@ async fn stat_version(target: &Path) -> Option<String> {
         .map(|metadata| version_of(&metadata))
 }
 
+/// `session/workspacePathApplications` — the file-open control's application
+/// catalog. CodeSmith registers no per-path application handlers, so the
+/// control falls back to its own file-manager reveal (the one opener the
+/// desktop implements below).
+pub fn workspace_path_applications() -> Value {
+    rpc_ok(json!([]))
+}
+
+/// One open attempt's failure, kept distinct for the wire's error codes.
+enum OpenFailure {
+    Missing(String),
+    Outside(String),
+    Failed(String),
+}
+
+/// Every directory a session may open a path inside: the bridge cwd, the
+/// registered workspaces, and every imported thread's workspace (an
+/// ungrouped session still owns its directory).
+async fn openable_roots(host: &HostState) -> Vec<PathBuf> {
+    #[derive(serde::Deserialize)]
+    struct ThreadWorkspace {
+        workspace: PathBuf,
+    }
+    let mut roots: Vec<PathBuf> = vec![host.cwd.clone()];
+    let baseline = super::workspace::baseline(host).await;
+    for item in baseline.items {
+        if let Some(path) = item.get("path").and_then(Value::as_str) {
+            roots.push(PathBuf::from(path));
+        }
+    }
+    if let Ok(rows) = host
+        .backend
+        .get::<Vec<ThreadWorkspace>>("/v1/threads?limit=200")
+        .await
+    {
+        roots.extend(rows.into_iter().map(|row| row.workspace));
+    }
+    roots
+}
+
+/// `session/openWorkspacePath` — open or reveal one path inside a session
+/// directory. Canonicalizing both sides rejects a symlinked escape and any
+/// path outside the workspaces this desktop serves.
+pub async fn open_workspace_path(host: &HostState, args: &Value) -> Value {
+    let args = args.get("request").unwrap_or(args);
+    let Some(path) = args.get("path").and_then(Value::as_str) else {
+        return rpc_error(
+            "gateway/arguments-invalid",
+            "session/openWorkspacePath without path",
+        );
+    };
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("open")
+        .to_string();
+    if action != "open" && action != "reveal" {
+        return rpc_error(
+            "gateway/arguments-invalid",
+            format!("session/openWorkspacePath action {action:?}"),
+        );
+    }
+    let requested = PathBuf::from(path);
+    if !requested.is_absolute() {
+        return rpc_error(
+            "workspace-file/outside-workspace",
+            format!("{path} is not an absolute path"),
+        );
+    }
+    let roots = openable_roots(host).await;
+    let target = requested.clone();
+    let opened = tokio::task::spawn_blocking(move || {
+        let canonical = std::fs::canonicalize(&target)
+            .map_err(|_| OpenFailure::Missing(target.to_string_lossy().into_owned()))?;
+        let allowed = roots.iter().any(|root| {
+            std::fs::canonicalize(root)
+                .map(|root| canonical.starts_with(root))
+                .unwrap_or(false)
+        });
+        if !allowed {
+            return Err(OpenFailure::Outside(
+                canonical.to_string_lossy().into_owned(),
+            ));
+        }
+        super::changes::open_changed_file(&action, &canonical)
+            .map_err(OpenFailure::Failed)
+    })
+    .await;
+    match opened {
+        Ok(Ok(())) => rpc_ok(json!({ "opened": true })),
+        Ok(Err(OpenFailure::Missing(path))) => {
+            rpc_error("workspace-file/not-found", format!("{path} not found"))
+        }
+        Ok(Err(OpenFailure::Outside(path))) => rpc_error(
+            "workspace-file/outside-workspace",
+            format!("{path} is outside every session workspace"),
+        ),
+        Ok(Err(OpenFailure::Failed(err))) => {
+            eprintln!("codesmith desktop: session/openWorkspacePath failed: {err}");
+            rpc_error("gateway/internal", "the OS opener refused the path")
+        }
+        Err(err) => rpc_error(
+            "gateway/internal",
+            format!("session/openWorkspacePath join failed: {err}"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -202,6 +202,19 @@ URL。传入 `--host 127.0.0.1` 可将移动页限制为仅环回访问。如果
 图结构的客户端应从事件重建它，而不是假设列表顺序是
 一棵完整的树。
 
+**目标**（桌面 GoalBar 读取的线程实时目标）
+- `GET /v1/threads/{id}/goal` —— `{ "loaded": bool, "goal": {…} | null }`。
+  `loaded:false` 表示线程引擎未驻留，客户端回退到持久的
+  `create_goal`/`update_goal` 工具记录；`loaded:true` 为权威值，
+  包括清空后的“无目标”。读取不会加载引擎。
+- `POST /v1/threads/{id}/goal` —— 请求体
+  `{ "action": "edit" | "pause" | "resume" | "clear", "objective"?: "…" }`
+  （`edit` 必须带 `objective`）。变更作用于引擎共享的目标状态，下一次
+  提示/轮次即可读到；`pause` 要求存在活动目标，`resume` 要求存在目标。
+  响应携带同样的 `{ "loaded": true, "goal": … }` 信封。暂停/清空是
+  进程内状态：引擎被逐出后只会从日志恢复 active/completed 目标，
+  不会恢复桌面端发起的暂停或清空。
+
 `archived_only=true` 仅返回已归档线程（与
 `include_archived` 互斥覆盖）。默认行为：`include_archived=false`
 且 `archived_only=false` 返回活动线程。
@@ -496,6 +509,7 @@ steer 的 user item 先发 `item.started` 再发 `item.completed`，与 turn 开
 | 恢复为线程 | `POST /v1/sessions/{id}/resume-thread` |
 | 创建线程 | `POST /v1/threads` |
 | 列出线程 | `GET /v1/threads` |
+| 读取 / 变更目标 | `GET` / `POST /v1/threads/{id}/goal` |
 | 附着到事件 | `GET /v1/threads/{id}/events?since_seq=0` |
 | 发送消息 | `POST /v1/threads/{id}/turns` |
 | 排队消息 | `POST /v1/threads/{id}/queue` |

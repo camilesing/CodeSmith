@@ -885,6 +885,42 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1
 
+  vendor/@codesmith/client-ui-directory-picker-browse:
+    devDependencies:
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-workspace':
+        specifier: workspace:*
+        version: link:../client-ui-workspace
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      clsx:
+        specifier: ^2.0.0
+        version: 2.1.1
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+
   vendor/@codesmith/client-ui-dockkit:
     devDependencies:
       '@codesmith/brand':
@@ -908,6 +944,45 @@ importers:
       react-dom:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
+
+  vendor/@codesmith/client-ui-file-actions:
+    devDependencies:
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/api-workspace-files':
+        specifier: workspace:*
+        version: link:../api-workspace-files
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-ui-context-menu':
+        specifier: workspace:*
+        version: link:../client-ui-context-menu
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/util-file-drag':
+        specifier: workspace:*
+        version: link:../util-file-drag
+      '@codesmith/util-workspace-path':
+        specifier: workspace:*
+        version: link:../util-workspace-path
+      mime:
+        specifier: ^4.1.0
+        version: 4.1.2
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
 
   vendor/@codesmith/client-ui-file-drag:
     devDependencies:
@@ -941,6 +1016,51 @@ importers:
       react:
         specifier: ^18.2.0
         version: 18.3.1
+
+  vendor/@codesmith/client-ui-goal:
+    devDependencies:
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-ui-chat':
+        specifier: workspace:*
+        version: link:../client-ui-chat
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/typert-protocol':
+        specifier: workspace:*
+        version: link:../typert-protocol
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
 
   vendor/@codesmith/client-ui-input-trigger:
     devDependencies:
@@ -1100,6 +1220,81 @@ importers:
       react-dom:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
+
+  vendor/@codesmith/client-ui-open-in-app:
+    devDependencies:
+      '@codesmith/api-gateway':
+        specifier: workspace:*
+        version: link:../api-gateway
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/api-workspace-files':
+        specifier: workspace:*
+        version: link:../api-workspace-files
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-context-menu':
+        specifier: workspace:*
+        version: link:../client-ui-context-menu
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-deliverables':
+        specifier: workspace:*
+        version: link:../client-ui-deliverables
+      '@codesmith/client-ui-file-actions':
+        specifier: workspace:*
+        version: link:../client-ui-file-actions
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-sidebar-documentpreview':
+        specifier: workspace:*
+        version: link:../client-ui-sidebar-documentpreview
+      '@codesmith/client-ui-sidebar-files':
+        specifier: workspace:*
+        version: link:../client-ui-sidebar-files
+      '@codesmith/client-ui-sidebar-right':
+        specifier: workspace:*
+        version: link:../client-ui-sidebar-right
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-workspace':
+        specifier: workspace:*
+        version: link:../client-ui-workspace
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/native-command':
+        specifier: workspace:*
+        version: link:../native-command
+      '@codesmith/util-workspace-path':
+        specifier: workspace:*
+        version: link:../util-workspace-path
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
 
   vendor/@codesmith/client-ui-permission-presets:
     devDependencies:

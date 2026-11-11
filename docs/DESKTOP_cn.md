@@ -10,7 +10,7 @@ CodeSmith 桌面端是一个 Tauri 2 应用：UI 整体 vendor 自一个上游�
 
 ```
 Tauri App (desktop/)
-├─ WebView（vendored 客户端 UI，69 包闭包）
+├─ WebView（vendored 客户端 UI，73 包闭包）
 │   ├─ 我方 boot：__CODESMITH_BOOT__ 插件图 + 第一方品牌行
 │   └─ 我方 connection 载体：一元 rpc.call 走 HTTP；所有流走 vendored
 │        WebSocket mux（每客户端一条 socket）
@@ -116,7 +116,12 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   图、语言、开发者工具、新建会话的权限默认值）、基于
   `/v1/automations` 的任务页、控制流投影、计划页（`session/events` + 注入
   `exit_plan_mode` 的计划正文）、权限面（`permissionPresets/catalog` 映
-  射线程 mode）以及 `@` 文件源（`fileReferences/list`）均已接通。
+  射线程 mode）、`@` 文件源（`fileReferences/list`）、工作区注册表 +
+  目录选择器（`workspace/create|rename|delete|insertBefore`、
+  `directoryPicker/list|createDirectory`）、GoalBar（`goals/*`，经
+  `/v1/threads/{id}/goal`）以及工作区路径打开/定位
+  （`session/openWorkspacePath|canOpenWorkspacePath|workspacePathApplications`）
+  均已接通。
 - turn 运行中发出的 prompt 停到运行时线程的队列上
   （`POST /v1/threads/{id}/queue`）：队列坞从 `inbox` 投影渲染它（运行时的
   `queue.updated` 事件，实时推送），排队的 prompt 在运行中的 turn 一结束就按
@@ -157,12 +162,15 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   会话工作区，再在系统文件管理器中打开/定位（文件已不存在时 404，成功
   204）；summary 与对比路由应答 `cache-control: no-store`。`present.open`
   （声明文件开启器）按客户端的 `nativeUnavailable` 应答——CodeSmith 没有
-  声明文件注册表。已知限制：卡片/审查标签页的系统打开、定位控件是 slot
-  贡献项（`deliverables.file.actions` /
-  `deliverables.review.file.actions`），上游由 `client-ui-open-in-app`
-  填充，而后者未 vendor——它需要一个 open-in-app 宿主面以及
-  `session/workspacePathApplications` / `openWorkspacePath`，所以已服务的
-  `changes.open` 路由在本页还没有按钮。
+  声明文件注册表。卡片/审查标签页的打开、定位控件由 vendored
+  `client-ui-open-in-app` 填充（`deliverables.file.actions` /
+  `deliverables.review.file.actions`）：`session/canOpenWorkspacePath` 为
+  真、`session/workspacePathApplications` 返回空应用目录，因此控件回退到
+  “定位”；`session/openWorkspacePath` 规范化后只放行 bridge cwd、已注册
+  工作区或已导入线程工作区内的路径（符号链接逃逸为
+  `workspace-file/outside-workspace`，文件不存在为
+  `workspace-file/not-found`）。没有宿主 open-in-app 应用目录，会话头的
+  “Open In…” 菜单不出现。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
   前列（最近置顶在前），手动排序保持相对顺序，从未拖动过的会话按运行时
@@ -287,21 +295,65 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   行回落到桥进程所在目录。
   `sessionReferenceResolver/candidates` 返回空列表：CodeSmith 没有跨会话
   上下文注入能力，菜单只列文件。
+- 侧栏工作区与空态选择器是真实的注册表行（`client-ui-workspace` +
+  `client-ui-directory-picker-browse`）：vendored 应用内浏览器列出一个绝对
+  宿主目录层级（`directoryPicker/list`：只列目录、含隐藏行、面包屑祖先、
+  2,000 行按名排序的前缀与 `truncated`），创建单个子目录
+  （`createDirectory`），再经 `workspace/create` 采纳所选路径（绝对路径、
+  存在且为目录；已注册路径幂等）。注册表持久化在
+  `~/.codesmith/desktop/workspaces.json`（原子 rename；损坏文件记录日志并
+  回落到默认工作区）。桥进程 cwd 是隐式默认工作区（id
+  `codesmith-default`）；`rename`、`delete`、`insertBefore` 与逐工作区会话
+  顺序均持久化。会话按运行时线程自身的 `workspace` 路径分组，而非创建
+  顺序：`session/create` 接受 `{workspaceId}`（或 `{cwd}`）并传给
+  `/v1/threads`；被复用的空白会话仅在没有 turn 时返回。删除工作区会保留
+  目录与会话日志，其会话落到客户端的 Ungrouped 桶。`directoryPicker/pick`
+  （原生选择器）应答 `directory-picker/unavailable`——本壳只组合应用内
+  浏览器，不组合原生对话框。
+- GoalBar（`client-ui-goal`）由 `goal` 投影供数：线程引擎驻留时用实时引擎
+  状态（`GET /v1/threads/{id}/goal` 应答 `loaded:true`），否则用线程日志里
+  最近一次完成的 `create_goal`/`update_goal` 工具记录（读取会话不会加载
+  引擎）。投影携带
+  `{goal:{id, revision, objective, phase, blockedReason?, maxGoalRounds},
+  roundsStarted, createdAt, updatedAt}`；`complete` 不渲染，`blocked` 带上
+  运行时的阻塞原因。`goals/get` 返回实时 `GoalView` 加 `activation`
+  （active 时 `armed`，否则 `disarmed`）；`goals/edit|pause|resume|clear`
+  POST 运行时动作（加载引擎，先从日志播种 active/completed 目标）并推送
+  刷新后的投影。已知限制：运行时快照没有 goal id，桥用创建工具条目的 id
+  合成稳定身份并按条目计数版本，桌面端变更另加桥内 overlay；pause/clear
+  是进程内状态——引擎被逐出后只恢复日志里的 active/completed 目标，不恢复
+  桌面端或轮次驱动器发起的暂停；目标创建仍由模型的 `create_goal` 工具或
+  宿主 `goal` 配置负责（目标条不创建）。
+- 文档预览与改动文件的打开控件（`client-ui-open-in-app` +
+  `client-ui-file-actions`）经既有工作区文件面桥接：
+  `session/canOpenWorkspacePath` 为真，`session/workspacePathApplications`
+  返回空应用目录（本桌面不注册逐路径应用处理器，控件回退到“定位”），
+  `session/openWorkspacePath` 规范化路径后要求其位于 bridge cwd、已注册
+  工作区或已导入线程工作区内才打开/定位。File Actions 的 Download 与
+  Copy image 走 `workspaceFiles/readBytes` 与浏览器剪贴板；Save as 保持
+  隐藏（需要本壳未组合的原生保存对话框），`present.open` 仍为
+  `nativeUnavailable`。
 - 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`
   调用，工具 `item.started` 时实时推送；单项的
   `todo_add`/`todo_update`/`checklist_add`/`checklist_update` 从结果
   metadata 折叠其快照）、`plan`、`permissions`、
-  `workingDirectory` 与 `turnOutline`（每个已开始 turn 的 seq 与截断的
-  prompt/response 预览）。`contextBreakdown` 与 `userQuestions` 仍缺
-  席：运行时没有记录逐请求的 system/tools/message 组成，问题请求也没有
-  tool-call id 或取消路由。
-- 上游独有概念（账户/余额、插件市场、agent presets、右侧栏终端/浏览器、
-  子代理子会话视图、目标条）不仿真——对应插件不进 boot roster 或返回空
-  态。CodeSmith 的 goal 是 REPL 本地功能（`/goal`；runtime thread 不携
-  带 goal 状态），其 subagent 是进程内而非 thread，workflow 生命周期走
-  extension event、没有写进会话日志，因此 workflow-run 面板也没有数据
-  源。（Jobs 弹窗、附件呈现、改动审查标签页、右侧栏文件/预览标签页、计划
-  页、权限面与 `@` 文件源**已**桥接——见各条。）
+  `workingDirectory`、`goal`（跟随会话的快照与实时 goal 更新；侧栏控制
+  基线省略它，因此不会读到别的会话的目标）与 `turnOutline`（每个已开始
+  turn 的 seq 与截断的 prompt/response 预览）。`contextBreakdown` 与
+  `userQuestions` 仍缺席：运行时没有记录逐请求的 system/tools/message
+  组成，问题请求也没有 tool-call id 或取消路由。
+- 上游独有概念不仿真：账户/余额与账户设置区（`account/*` 返回未登录形态
+  或 null）、插件管理器/市场与设置里的插件清单（Cordis/JS 插件体系在
+  CodeSmith 没有对应物）、逐会话 agent presets（`agentPresets/list` 返回
+  空名册；CodeSmith 在启动时选择配置 preset，而不是逐会话的 agent 组合）、
+  右侧栏终端/浏览器标签页（没有用户可见的 PTY 或浏览器会话）、子代理子
+  会话视图（CodeSmith 的 subagent 是进程内执行，不是带日志的独立 thread）、
+  逐消息 Like/Dislike 反馈（CLI 的 `/feedback` 账本按转录下标记录、仅本地，
+  没有逐消息的持久 sidecar）以及插件条目定制。对应插件不进 boot roster
+  或返回空态。workflow 生命周期走 extension event、没有写进会话日志，
+  因此 workflow-run 面板也没有数据源。（Jobs 弹窗、附件呈现、改动审查
+  标签页、右侧栏文件/预览标签页、计划页、权限面、`@` 文件源、工作区
+  选择器/注册表、GoalBar 与打开/定位/文件动作**已**桥接——见各条。）
 - 右侧栏文件树与文档预览（`client-ui-sidebar-files` +
   `client-ui-sidebar-documentpreview`，经 `workspaceFiles` remote，
   `host::files`）直接读会话工作区：`workspaceFileScope` 从线程记录解析

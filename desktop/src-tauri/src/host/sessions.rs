@@ -257,6 +257,21 @@ pub async fn follow(
                     Some("turn.started") => ensure_waterfall_watcher(host, &session_id).await,
                     // The todo dock updates as the model writes its list.
                     Some("item.started") => push_live_todos(host, &session_id, &envelope).await,
+                    // The GoalBar follows the model's own goal-tool calls:
+                    // create/update mutate the engine state the projection
+                    // reads.
+                    Some("item.completed") => {
+                        if envelope
+                            .pointer("/payload/item/summary")
+                            .and_then(Value::as_str)
+                            .is_some_and(|summary| {
+                                summary.starts_with("create_goal")
+                                    || summary.starts_with("update_goal")
+                            })
+                        {
+                            super::goals::push(host, &session_id).await;
+                        }
+                    }
                     Some("queue.updated") => {
                         push_inbox_projection(host, &session_id, &envelope["payload"]["items"])
                             .await;
@@ -1104,14 +1119,9 @@ pub async fn fork(host: &HostState, request: &Value) -> Result<Value> {
         .and_then(Value::as_str)
         .context("fork response without id")?
         .to_string();
-    // The fork lands in the same implicit workspace: fold it into every open
-    // workspace follow stream, the same way session/create publishes.
-    let view = super::workspace_view_live(host).await;
-    host.push_live(
-        "workspace/follow",
-        json!({ "type": "upsert", "workspace": view }),
-    )
-    .await;
+    // The fork lands in the same workspace: re-publish the complete follow
+    // baseline, the same way session/create does.
+    super::workspace::push_replace(host).await;
     Ok(json!({ "sessionId": child_id }))
 }
 
@@ -1177,28 +1187,10 @@ pub async fn set_archived(host: &HostState, request: &Value, archived: bool) -> 
         .iter()
         .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
         .collect();
-    // Fold the new list into every open workspace follow stream. The pin set
-    // in the baseline is the live one (the follow stream's own baseline
-    // serves it); an empty set would read as "no pins" and drop every
-    // client's pin display until its next reload.
-    let view = super::workspace_view_live(host).await;
-    let live: Vec<String> = view["sessionIds"]
-        .as_array()
-        .map(|ids| {
-            ids.iter()
-                .filter_map(|id| id.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let pinned = super::workspace::pinned_live_parked(&host.settings_home(), live).await;
-    host.push_live(
-        "workspace/follow",
-        json!({
-            "type": "baseline",
-            "value": { "items": [view], "archivedSessionIds": archived_ids, "pinnedSessionIds": pinned }
-        }),
-    )
-    .await;
+    // Re-publish the complete baseline: membership, the archived set, and
+    // the live pin set all move together (an empty pin set would read as
+    // "no pins" and drop every client's pin display until its next reload).
+    super::workspace::push_replace(host).await;
     Ok(json!({ "archivedSessionIds": archived_ids }))
 }
 
@@ -1651,6 +1643,13 @@ async fn projection_values(
     values.insert("plan".into(), plan_projection(&mode));
     values.insert("permissions".into(), permissions_projection(&mode));
     values.insert("todos".into(), todos_projection(detail));
+    // The GoalBar dock (host::goals): the live engine state when loaded,
+    // else the durable goal-tool journal; `null` before a create/after a
+    // clear. Reading this never loads an engine.
+    values.insert(
+        "goal".into(),
+        super::goals::projection(host, session_id, detail).await,
+    );
     values.insert("turnOutline".into(), turn_outline_projection(detail));
     values.insert(
         "workingDirectory".into(),
@@ -1723,7 +1722,13 @@ pub async fn control_baseline(host: &HostState) -> Result<Vec<Value>> {
             .await
         {
             Ok(detail) => {
-                let values = projection_values(host, &summary.id, &detail, &models).await;
+                let mut values = projection_values(host, &summary.id, &detail, &models).await;
+                // The sidebar baseline carries no goal: a followed session's
+                // own snapshot does, and the control baseline would otherwise
+                // read (and display) the goal of every listed session.
+                if let Some(map) = values.as_object_mut() {
+                    map.remove("goal");
+                }
                 projections.insert(summary.id, json!({ "asOfSeq": seq, "values": values }));
             }
             Err(err) => {
@@ -1780,7 +1785,7 @@ async fn push_inbox_projection(host: &HostState, session_id: &str, items: &Value
 /// A `session/control` projection frame (SessionProjectionUpdate): one
 /// `{key, val}` entry per carried key. The client iterates `changes`; an
 /// object there throws inside its control stream and ends it for good.
-fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
+pub(super) fn projection_update(session_id: &str, seq: u64, values: &Value) -> Value {
     let changes: Vec<Value> = values
         .as_object()
         .into_iter()

@@ -77,11 +77,14 @@ REQUIRED_ENTRIES = [
 # file-tool diffs, the sidebar files tree + document preview over the
 # session workspace, the Models settings page over config.toml
 # providers + the keyring, the plan chip/cards/preview over the runtime's
-# plan-mode tools, the permission surfaces over the thread mode, and the
-# `@` file reference source over the session workspace). Upstream pages with
-# no CodeSmith equivalent (plugins, account, goal, agent presets, sidebar
-# terminal/browser, subagent child sessions) stay unvendored so they never
-# appear.
+# plan-mode tools, the permission surfaces over the thread mode, the `@` file
+# reference source over the session workspace, the goal strip over the
+# runtime's durable goal tool calls + live goal control, the workspace
+# directory browser over the host filesystem + per-thread workspace, and the
+# file open/reveal/save actions over the session workspace). Upstream pages
+# with no CodeSmith equivalent (plugins, account, agent presets, sidebar
+# terminal/browser, subagent child sessions, per-message feedback) stay
+# unvendored so they never appear.
 EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-approval",
     "@deepseek-ai/dsh-client-ui-user-questions",
@@ -105,6 +108,10 @@ EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-plan",
     "@deepseek-ai/dsh-client-ui-permission-presets",
     "@deepseek-ai/dsh-client-ui-reference",
+    "@deepseek-ai/dsh-client-ui-goal",
+    "@deepseek-ai/dsh-client-ui-directory-picker-browse",
+    "@deepseek-ai/dsh-client-ui-file-actions",
+    "@deepseek-ai/dsh-client-ui-open-in-app",
 ]
 
 # Scan roots for scoped packages inside the upstream checkout.
