@@ -1705,8 +1705,17 @@ async fn submit_with_images(
     // every submit so a mid-session /model or /mode change is picked up.
     {
         let mut template = op.clone();
-        if let Op::SendMessage { content, .. } = &mut template {
-            *content = String::new();
+        // Injected turns (the trigger poller) are text-only: clearing the
+        // content AND the attachments keeps a later card from re-sending the
+        // last human message's images into an unrelated turn.
+        if let Op::SendMessage {
+            content,
+            image_paths,
+            ..
+        } = &mut template
+        {
+            content.clear();
+            image_paths.clear();
         }
         *state
             .last_turn_template
