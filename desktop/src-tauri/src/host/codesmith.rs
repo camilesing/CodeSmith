@@ -45,6 +45,18 @@ fn resolve_binary(configured: Option<&PathBuf>) -> Result<PathBuf> {
 }
 
 impl CodesmithProcess {
+    /// Point a process handle at an already-running runtime (tests only): the
+    /// bridge's dispatch contract tests need a loopback fake, not a child.
+    #[cfg(test)]
+    pub fn for_test(base_url: String, token: String) -> Self {
+        Self {
+            base_url,
+            token,
+            client: reqwest::Client::new(),
+            child: None,
+        }
+    }
+
     /// Spawn `codesmith serve --http` on a fresh loopback port with a fresh
     /// bearer token, and wait for `/health`.
     pub async fn spawn(codesmith_path: Option<&PathBuf>) -> Result<Self> {

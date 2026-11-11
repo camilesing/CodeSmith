@@ -265,7 +265,7 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             match sessions::set_archived(
                 host,
                 args_of(payload),
-                endpoint.ends_with("archiveSession"),
+                endpoint == "workspace/archiveSession",
             )
             .await
             {
@@ -277,8 +277,12 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         // (see `host::workspace`); the mutations echo `workspace/follow`
         // increments the same way the Host registry does.
         "workspace/pinSession" | "workspace/unpinSession" => {
-            match workspace::pin_or_unpin(host, endpoint.ends_with("pinSession"), args_of(payload))
-                .await
+            match workspace::pin_or_unpin(
+                host,
+                endpoint == "workspace/pinSession",
+                args_of(payload),
+            )
+            .await
             {
                 Ok(value) => rpc_ok(value),
                 Err(err) => rpc_error(err.code, err.message),
@@ -659,18 +663,20 @@ fn session_row(t: ThreadSummary, cwd: &std::path::Path) -> Value {
     // `cwd`; serve the thread's own workspace, which may not be this bridge
     // process's working directory (a session left by an earlier run in
     // another directory).
-    let mut row = json!({
+    //
+    // `formatStatus` is the persistence-format vocabulary (`current` |
+    // `migration-required`), never a turn marker: the client's strict codec
+    // rejects an unknown value and drops the whole page. CodeSmith threads
+    // are written in the current format, so every row reports `current`.
+    let row = json!({
         "sessionId": t.id,
         "updatedAt": updated_ms,
         "running": running,
         "blank": t.latest_turn_id.is_none(),
         "agentAvailable": true,
+        "formatStatus": "current",
         "cwd": cwd.to_string_lossy(),
     });
-    let obj = row.as_object_mut().unwrap();
-    if let Some(turn) = t.latest_turn_id {
-        obj.insert("formatStatus".into(), json!(format!("turn:{turn}")));
-    }
     row
 }
 
@@ -988,18 +994,24 @@ async fn unary_handler(
 /// envelope is the plain rpc shape, not the connection's server-response.
 fn multipart_response(value: &mut Value, bytes: Vec<u8>) -> Response {
     let part = "bytes-0";
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "attachments".into(),
-            json!([{ "codec": "bytes", "part": part, "path": ["data"] }]),
-        );
-    }
-    let envelope = json!({ "ok": true, "value": value });
+    // The manifest rides the ENVELOPE, not the value: the page's carrier
+    // reads `envelope.attachments` and plants each part at its manifest path.
+    // A manifest nested inside `value` is never seen, leaving `data: null`
+    // for the strict codec.
+    let envelope = json!({
+        "ok": true,
+        "value": value,
+        "attachments": [{ "codec": "bytes", "part": part, "path": ["data"] }],
+    });
     let boundary = format!("cds-{}", uuid::Uuid::new_v4());
     let mut body: Vec<u8> = Vec::new();
     let metadata = envelope.to_string();
     body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"metadata\"\r\ncontent-type: application/json\r\n\r\n{metadata}\r\n").as_bytes());
-    body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"{part}\"\r\ncontent-type: application/octet-stream\r\n\r\n").as_bytes());
+    // The binary part MUST carry a filename: without one the Fetch
+    // `multipart/form-data` parser treats the part as UTF-8 text and rejects
+    // arbitrary bytes (PNG and friends) as a failed fetch. A filename makes
+    // it a File, which the page's carrier reads back as a Blob.
+    body.extend_from_slice(format!("--{boundary}\r\ncontent-disposition: form-data; name=\"{part}\"; filename=\"{part}.bin\"\r\ncontent-type: application/octet-stream\r\n\r\n").as_bytes());
     body.extend_from_slice(&bytes);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     (
@@ -1101,6 +1113,47 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn binary_answers_name_the_part_as_a_file() {
+        // A part without a filename is decoded as UTF-8 text by the Fetch
+        // multipart parser; arbitrary bytes (a PNG) then fail the whole
+        // response. The binary part must be a File.
+        let mut value = json!({ "data": Value::Null });
+        let response = multipart_response(&mut value, vec![0x89, b'P', b'N', b'G', 0x00, 0xff]);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("multipart/form-data; boundary=")),
+            Some(true)
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("name=\"bytes-0\"; filename=\"bytes-0.bin\""),
+            "binary part must be a file: {body}"
+        );
+        // The manifest rides the envelope; the page carrier never looks
+        // inside `value` for it.
+        let metadata = body
+            .split("\r\n--")
+            .next()
+            .expect("metadata part")
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("metadata body");
+        let metadata: Value = serde_json::from_str(metadata).expect("metadata json");
+        assert_eq!(metadata["attachments"][0]["path"], json!(["data"]));
+        assert_eq!(metadata["attachments"][0]["part"], "bytes-0");
+        assert!(
+            metadata["value"].get("attachments").is_none(),
+            "attachments must not nest inside value"
+        );
+    }
+
     #[test]
     fn session_rows_carry_the_threads_workspace_and_status_fields() {
         let active = session_row(
@@ -1117,7 +1170,10 @@ mod tests {
         assert_eq!(active["cwd"], "/w/other");
         assert_eq!(active["running"], true);
         assert_eq!(active["blank"], false);
-        assert_eq!(active["formatStatus"], "turn:turn_1");
+        assert_eq!(
+            active["formatStatus"], "current",
+            "formatStatus is the persistence-format enum, not a turn marker"
+        );
         assert!(active["updatedAt"].as_i64().unwrap() > 0);
 
         let blank = session_row(
@@ -1131,9 +1187,312 @@ mod tests {
         );
         assert_eq!(blank["blank"], true);
         assert_eq!(blank["running"], false);
-        assert!(
-            blank.get("formatStatus").is_none(),
-            "optional fields stay absent"
+        assert_eq!(blank["formatStatus"], "current");
+    }
+
+    // === Dispatch contract tests (fake runtime) ===
+
+    #[derive(Clone)]
+    struct FakeRuntime {
+        workspace: std::path::PathBuf,
+        archived: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    }
+
+    async fn fake_threads(
+        axum::extract::State(fake): axum::extract::State<FakeRuntime>,
+    ) -> Json<Value> {
+        let archived = fake
+            .archived
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        Json(json!([
+            { "id": "thr_a", "workspace": fake.workspace, "archived": archived.contains("thr_a") },
+            { "id": "thr_b", "workspace": fake.workspace, "archived": archived.contains("thr_b") },
+        ]))
+    }
+
+    async fn fake_summary(
+        axum::extract::State(fake): axum::extract::State<FakeRuntime>,
+        uri: axum::http::Uri,
+    ) -> Json<Value> {
+        let archived = fake
+            .archived
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        let archived_only = uri.query().unwrap_or("").contains("archived_only=true");
+        let rows: Vec<Value> = ["thr_a", "thr_b"]
+            .into_iter()
+            .filter(|id| archived.contains(*id) == archived_only)
+            .map(|id| json!({ "id": id, "updated_at": "2026-11-11T00:00:00Z" }))
+            .collect();
+        Json(Value::Array(rows))
+    }
+
+    async fn fake_thread(axum::extract::Path(id): axum::extract::Path<String>) -> Json<Value> {
+        Json(json!({
+            "thread": { "id": id, "workspace": "" },
+            "turns": [],
+            "items": [],
+        }))
+    }
+
+    async fn fake_patch_thread(
+        axum::extract::State(fake): axum::extract::State<FakeRuntime>,
+        axum::extract::Path(id): axum::extract::Path<String>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
+            let mut set = fake.archived.lock().unwrap_or_else(|err| err.into_inner());
+            if archived {
+                set.insert(id);
+            } else {
+                set.remove(&id);
+            }
+        }
+        Json(json!({}))
+    }
+
+    async fn fake_create_thread() -> Json<Value> {
+        Json(json!({ "id": "thr_new" }))
+    }
+
+    async fn fake_ok() -> Json<Value> {
+        Json(json!({}))
+    }
+
+    async fn fake_goal(axum::extract::Path(_id): axum::extract::Path<String>) -> Json<Value> {
+        Json(json!({ "loaded": false, "goal": null }))
+    }
+
+    async fn fake_runtime(workspace: std::path::PathBuf) -> String {
+        let app = Router::new()
+            .route("/v1/threads", get(fake_threads).post(fake_create_thread))
+            .route("/v1/threads/summary", get(fake_summary))
+            .route(
+                "/v1/threads/{id}",
+                get(fake_thread).patch(fake_patch_thread),
+            )
+            .route("/v1/threads/{id}/goal", get(fake_goal).post(fake_ok))
+            .with_state(FakeRuntime {
+                workspace,
+                archived: Default::default(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake runtime bind");
+        let addr = listener.local_addr().expect("fake runtime addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// An isolated `CODESMITH_HOME` for one dispatch test. The env var is
+    /// process-global, so the guard also serializes the tests that set it.
+    struct TestHome {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        path: std::path::PathBuf,
+        previous: Option<String>,
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("CODESMITH_HOME", value),
+                None => std::env::remove_var("CODESMITH_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn test_home(tag: &str) -> TestHome {
+        let guard = TEST_HOME_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let path = std::env::temp_dir().join(format!(
+            "cds-dispatch-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).expect("test home");
+        let previous = std::env::var("CODESMITH_HOME").ok();
+        std::env::set_var("CODESMITH_HOME", &path);
+        TestHome {
+            _guard: guard,
+            path,
+            previous,
+        }
+    }
+
+    fn test_host(base_url: String, cwd: std::path::PathBuf) -> SharedHost {
+        Arc::new(HostState {
+            backend: codesmith::CodesmithProcess::for_test(base_url, "test-token".into()),
+            cwd,
+            event_sinks: Default::default(),
+            live_sinks: Default::default(),
+            pending_inputs: Default::default(),
+            projection_clock: Default::default(),
+            model_choices: Default::default(),
+            waterfall_watchers: Default::default(),
+            uploads: Default::default(),
+            drop_bytes: Default::default(),
+            reference_index: Default::default(),
+            plan_handoffs: Default::default(),
+            plan_return_modes: Default::default(),
+            workspace_lock: Default::default(),
+            goal_overlays: Default::default(),
+        })
+    }
+
+    /// The vendored Workspace remote's value shapes, through dispatch: a
+    /// bare row or a null-wrapped value is a client-side TypeError, not a
+    /// graceful error state.
+    #[tokio::test]
+    async fn workspace_dispatch_answers_the_vendored_value_shapes() {
+        let home = test_home("workspace");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let workspace = home.path.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = std::fs::canonicalize(&workspace).expect("canonical workspace");
+        let host = test_host(fake_runtime(workspace.clone()).await, cwd);
+
+        let init = dispatch(&host, "workspace/initializeDefault", &json!({})).await;
+        assert_eq!(init["ok"], true, "{init}");
+        assert_eq!(
+            init["value"]["workspace"]["workspaceId"],
+            DEFAULT_WORKSPACE_ID
+        );
+        assert!(init["value"].get("workspace").is_some(), "{init}");
+
+        let created = dispatch(
+            &host,
+            "workspace/create",
+            &json!({ "args": { "request": { "path": workspace } } }),
+        )
+        .await;
+        assert_eq!(created["value"]["created"], true, "{created}");
+        let workspace_id = created["value"]["workspace"]["workspaceId"]
+            .as_str()
+            .expect("workspace id")
+            .to_string();
+        assert_eq!(
+            created["value"]["workspace"]["sessionIds"],
+            json!(["thr_a", "thr_b"])
+        );
+
+        let moved = dispatch(
+            &host,
+            "workspace/insertSessionBefore",
+            &json!({ "args": { "request": {
+                "workspaceId": workspace_id,
+                "sessionId": "thr_b",
+                "beforeSessionId": "thr_a",
+            } } }),
+        )
+        .await;
+        assert_eq!(moved["ok"], true, "{moved}");
+        assert_eq!(
+            moved["value"]["workspace"]["sessionIds"],
+            json!(["thr_b", "thr_a"]),
+            "insertSessionBefore answers the updated WorkspaceValue"
+        );
+
+        let order = dispatch(
+            &host,
+            "workspace/insertBefore",
+            &json!({ "args": { "request": {
+                "workspaceId": workspace_id,
+                "beforeWorkspaceId": DEFAULT_WORKSPACE_ID,
+            } } }),
+        )
+        .await;
+        assert_eq!(order["value"]["workspaceIds"][0], workspace_id, "{order}");
+
+        let renamed = dispatch(
+            &host,
+            "workspace/rename",
+            &json!({ "args": { "request": {
+                "workspaceId": workspace_id,
+                "title": "Renamed",
+            } } }),
+        )
+        .await;
+        assert_eq!(
+            renamed["value"]["workspace"]["title"], "Renamed",
+            "{renamed}"
+        );
+
+        let pinned = dispatch(
+            &host,
+            "workspace/pinSession",
+            &json!({ "args": { "request": { "sessionId": "thr_a" } } }),
+        )
+        .await;
+        assert_eq!(
+            pinned["value"]["pinnedSessionIds"],
+            json!(["thr_a"]),
+            "{pinned}"
+        );
+        let unpinned = dispatch(
+            &host,
+            "workspace/unpinSession",
+            &json!({ "args": { "request": { "sessionId": "thr_a" } } }),
+        )
+        .await;
+        assert_eq!(
+            unpinned["value"]["pinnedSessionIds"],
+            json!([]),
+            "{unpinned}"
+        );
+
+        let deleted = dispatch(
+            &host,
+            "workspace/delete",
+            &json!({ "args": { "request": { "workspaceId": workspace_id } } }),
+        )
+        .await;
+        assert_eq!(deleted["value"]["deleted"], true, "{deleted}");
+
+        let list = dispatch(&host, "session/list", &json!({})).await;
+        let row = &list["value"]["items"][0];
+        assert_eq!(row["formatStatus"], "current", "{list}");
+        assert_eq!(row["cwd"], workspace.to_string_lossy().as_ref(), "{list}");
+        assert_eq!(row["blank"], true, "{list}");
+
+        let session = dispatch(
+            &host,
+            "session/create",
+            &json!({ "args": { "request": { "workspaceId": DEFAULT_WORKSPACE_ID } } }),
+        )
+        .await;
+        assert_eq!(session["value"]["sessionId"], "thr_new", "{session}");
+
+        let archived = dispatch(
+            &host,
+            "workspace/archiveSession",
+            &json!({ "args": { "request": { "sessionId": "thr_a" } } }),
+        )
+        .await;
+        assert_eq!(
+            archived["value"]["archivedSessionIds"],
+            json!(["thr_a"]),
+            "{archived}"
+        );
+        // `unarchiveSession` ends with `archiveSession`; an exact-match
+        // dispatch must not archive it again.
+        let unarchived = dispatch(
+            &host,
+            "workspace/unarchiveSession",
+            &json!({ "args": { "request": { "sessionId": "thr_a" } } }),
+        )
+        .await;
+        assert_eq!(
+            unarchived["value"]["archivedSessionIds"],
+            json!([]),
+            "{unarchived}"
         );
     }
 }

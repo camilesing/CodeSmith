@@ -419,7 +419,9 @@ Known limitations of the current implementation:
   (it needs a native save dialog this shell does not compose), and
   `present.open` remains `nativeUnavailable`. The session header's
   “Open In…” application menu stays absent (no host open-in-app catalog);
-  the file/document controls render their reveal action.
+  the file/document controls render their reveal action, while the
+  Workspace row's own “Show in folder” stays disabled — it is gated on the
+  same host application catalog.
 - Control projections also carry `todos` (the latest successful whole-list
   `todo`/`checklist_write` call, pushed live on the tool's `item.started`;
   single-item `todo_add`/`todo_update`/`checklist_add`/`checklist_update`
@@ -457,11 +459,13 @@ Known limitations of the current implementation:
   lexically confined to the root), `read` serves line pages of text files,
   `stat` the freshness token (`mtime:size`), and `changes` is a 1s stat
   poll pushing upstream's `ready`/`change` frames. `readBytes` answers
-  multipart/form-data — the value envelope carries `data: null` plus an
-  attachments manifest and the bytes ride as a binary part, which the
-  page's carrier plants (the client's strict codec only accepts a real
-  `Uint8Array`). Renderers are the vendored pure-web ones (markdown, code,
-  text, image, PDF, Excel/CSV); the OFFICE renderer's host conversion RPC
+  multipart/form-data — the envelope carries a top-level attachments
+  manifest while its value holds `data: null`, and the bytes ride as a
+  binary file part (a `filename` is required so the Fetch parser keeps
+  them as bytes rather than UTF-8 text), which the page's carrier plants
+  (the client's strict codec only accepts a real `Uint8Array`). Renderers
+  are the vendored pure-web ones (markdown, code, text, image, PDF,
+  Excel/CSV); the OFFICE renderer's host conversion RPC
   (`officeToPdf/render`, upstream needs LibreOffice in the host process)
   stays unimplemented and answers `method-unavailable`, so office files
   preview as their unavailable state. Reads refuse a final-component

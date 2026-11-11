@@ -332,7 +332,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   工作区或已导入线程工作区内才打开/定位。File Actions 的 Download 与
   Copy image 走 `workspaceFiles/readBytes` 与浏览器剪贴板；Save as 保持
   隐藏（需要本壳未组合的原生保存对话框），`present.open` 仍为
-  `nativeUnavailable`。
+  `nativeUnavailable`。文件/文档控件渲染其“定位”动作；工作区行自身的
+  “在文件夹显示”保持禁用——它依赖同一份宿主应用目录，而本壳不提供。
 - 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`
   调用，工具 `item.started` 时实时推送；单项的
   `todo_add`/`todo_update`/`checklist_add`/`checklist_update` 从结果
@@ -360,10 +361,12 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   根，`list` 服务单层目录（工作区路径词汇、词法上锁死在根内），`read`
   分页读文本，`stat` 给新鲜度令牌（`mtime:size`），`changes` 是 1 秒
   stat 轮询、推上游的 `ready`/`change` 帧。`readBytes` 以
-  multipart/form-data 应答——值信封带 `data: null` 与附件清单，字节作为
-  二进制 part 随行，由页面 carrier 植回（客户端的严格 codec 只接受真
-  `Uint8Array`）。渲染器为 vendored 纯 web 集合（markdown、代码、文
-  本、图片、PDF、Excel/CSV）；OFFICE 渲染器的宿主转换 RPC
+  multipart/form-data 应答——envelope 顶层带附件清单，其 value 里
+  `data: null`，字节作为带 `filename` 的二进制文件 part 随行（没有
+  filename 时 Fetch 解析器会按 UTF-8 文本处理而失败），由页面 carrier
+  植回（客户端的严格 codec 只接受真 `Uint8Array`）。渲染器为 vendored
+  纯 web 集合（markdown、代码、文本、图片、PDF、Excel/CSV）；OFFICE
+  渲染器的宿主转换 RPC
   （`officeToPdf/render`，上游需宿主进程内的 LibreOffice）未实现、按
   `method-unavailable` 应答，office 文件预览为其不可用态。读取拒绝末段
   符号链接（上游自身的门），`baseFile` 相对解析未实现（预览按绝对路径
