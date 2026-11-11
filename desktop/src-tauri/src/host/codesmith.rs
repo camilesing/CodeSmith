@@ -141,6 +141,27 @@ impl CodesmithProcess {
             .with_context(|| format!("GET {path} body"))
     }
 
+    /// GET where a 404 is a definite "no such resource" rather than an
+    /// error; every other non-success stays loud.
+    pub async fn get_optional<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
+        let resp = self
+            .auth(self.client.get(format!("{}{path}", self.base_url)))
+            .send()
+            .await
+            .with_context(|| format!("GET {path}"))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            bail!("GET {path}: {}", resp.status());
+        }
+        Ok(Some(
+            resp.json()
+                .await
+                .with_context(|| format!("GET {path} body"))?,
+        ))
+    }
+
     pub async fn post<T: DeserializeOwned>(
         &self,
         path: &str,

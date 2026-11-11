@@ -96,8 +96,18 @@ pub fn catalog() -> Value {
             "input": { "hint": "workspace-write | danger-full-access" },
         },
         {
+            "name": "goal",
+            "description": "Create or replace this session's goal",
+            "input": { "hint": "<objective>" },
+        },
+        {
             "name": "yolo",
             "description": "YOLO mode — full tool access, no approvals",
+        },
+        {
+            "name": "feedback",
+            "description": "Record feedback for this session",
+            "input": { "hint": "<text>" },
         },
     ])
 }
@@ -143,6 +153,10 @@ enum Admitted {
     PlanOff,
     /// A permission-preset switch; the value is the thread mode it writes.
     Permission(&'static str),
+    /// `/goal <objective>`: create or replace the runtime goal.
+    Goal(String),
+    /// `/feedback <text>`: record one session-level remark.
+    Feedback(String),
 }
 
 /// The upstream registry's admission decision for a line, before any
@@ -162,7 +176,12 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
     let Some((name, raw_input)) = parse_command(line) else {
         return Admission::Miss;
     };
-    if attachment_count > 0 && matches!(name, "compact" | "mode" | "plan" | "permission" | "yolo") {
+    if attachment_count > 0
+        && matches!(
+            name,
+            "compact" | "mode" | "plan" | "permission" | "yolo" | "goal" | "feedback"
+        )
+    {
         return Admission::Error(format!("/{name} does not accept attachments"));
     }
     match name {
@@ -201,6 +220,30 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
                 return Admission::Error("Usage: /yolo (no arguments)".into());
             }
             Admission::Admitted(Admitted::Mode("yolo"))
+        }
+        "goal" => {
+            let objective = raw_input.trim();
+            if objective.is_empty() {
+                return Admission::Error("Usage: /goal <objective>".into());
+            }
+            // The GoalBar owns pause/resume/clear; a goal literally named
+            // "pause" would be a surprise, so point at the bar instead.
+            if matches!(objective, "pause" | "resume" | "clear") {
+                return Admission::Error(
+                    "Use the GoalBar to pause, resume, or clear a goal.".into(),
+                );
+            }
+            Admission::Admitted(Admitted::Goal(objective.to_string()))
+        }
+        "feedback" => {
+            let text = raw_input.trim();
+            if text.is_empty() {
+                return Admission::Error(
+                    "Usage: /feedback <text> (or open the feedback dialog from the / menu)"
+                        .into(),
+                );
+            }
+            Admission::Admitted(Admitted::Feedback(text.to_string()))
         }
         _ => Admission::Miss,
     }
@@ -330,6 +373,35 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                     }
                 }
             }
+            Admitted::Goal(objective) => {
+                // The runtime's goal route creates a goal when none exists
+                // (`GoalState::resume(Some(objective))` calls `create`), loads
+                // an evicted engine from the journal first, and shares the
+                // state the round driver reads. A refusal (blank objective)
+                // settles as the command's error result.
+                let path = format!("/v1/threads/{session_id}/goal");
+                let body = json!({ "action": "edit", "objective": objective });
+                match host
+                    .backend
+                    .post_with_error_message::<Value>(&path, &body)
+                    .await
+                    .map_err(internal)?
+                {
+                    Ok(_) => {
+                        super::goals::push(host, &session_id).await;
+                        Ok(Outcome::Executed(command_success("Goal set.")))
+                    }
+                    Err(runtime_message) => {
+                        Ok(Outcome::Executed(command_error(&runtime_message)))
+                    }
+                }
+            }
+            Admitted::Feedback(text) => {
+                match super::feedback::record_text(host, &session_id, &text).await {
+                    Ok(()) => Ok(Outcome::Executed(command_success("Feedback recorded."))),
+                    Err(message) => Ok(Outcome::Executed(command_error(&message))),
+                }
+            }
         },
     }
 }
@@ -400,7 +472,18 @@ mod tests {
             .iter()
             .map(|entry| entry["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["compact", "mode", "plan", "permission", "yolo"]);
+        assert_eq!(
+            names,
+            vec![
+                "compact",
+                "mode",
+                "plan",
+                "permission",
+                "goal",
+                "yolo",
+                "feedback"
+            ]
+        );
         let compact = &list[0];
         assert_eq!(compact["definitionId"], "@codesmith/command-compact");
         // `name` and `description` are the descriptor's required wire
@@ -420,6 +503,35 @@ mod tests {
             "workspace-write | danger-full-access"
         );
         assert_eq!(list[2]["input"]["hint"], "[off]");
+        assert_eq!(list[4]["input"]["hint"], "<objective>");
+        assert_eq!(list[6]["input"]["hint"], "<text>");
+    }
+
+    #[test]
+    fn goal_admission_requires_an_objective_and_leaves_bar_verbs_alone() {
+        assert!(matches!(
+            admit("/goal ship the desktop bridge", 0),
+            Admission::Admitted(Admitted::Goal(objective)) if objective == "ship the desktop bridge"
+        ));
+        assert!(matches!(admit("/goal", 0), Admission::Error(_)));
+        for verb in ["pause", "resume", "clear"] {
+            assert!(
+                matches!(admit(&format!("/goal {verb}"), 0), Admission::Error(_)),
+                "/goal {verb} must point at the GoalBar, not create a goal"
+            );
+        }
+        assert!(matches!(admit("/goal ship it", 1), Admission::Error(_)));
+    }
+
+    #[test]
+    fn feedback_admission_requires_text() {
+        assert!(matches!(
+            admit("/feedback the tool row was unclear", 0),
+            Admission::Admitted(Admitted::Feedback(text)) if text == "the tool row was unclear"
+        ));
+        assert!(matches!(admit("/feedback", 0), Admission::Error(_)));
+        assert!(matches!(admit("/feedback  ", 0), Admission::Error(_)));
+        assert!(matches!(admit("/feedback note", 1), Admission::Error(_)));
     }
 
     #[test]

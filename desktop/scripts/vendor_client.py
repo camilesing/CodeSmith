@@ -80,11 +80,14 @@ REQUIRED_ENTRIES = [
 # plan-mode tools, the permission surfaces over the thread mode, the `@` file
 # reference source over the session workspace, the goal strip over the
 # runtime's durable goal tool calls + live goal control, the workspace
-# directory browser over the host filesystem + per-thread workspace, and the
-# file open/reveal/save actions over the session workspace). Upstream pages
-# with no CodeSmith equivalent (plugins, account, agent presets, sidebar
-# terminal/browser, subagent child sessions, per-message feedback) stay
-# unvendored so they never appear.
+# directory browser over the host filesystem + per-thread workspace (the
+# in-app browser package remains vendored for its list/create primitives,
+# while the composed flow is the native OS chooser), the file
+# open/reveal/save actions over the session workspace, and the
+# per-message Like/Dislike + `/feedback` dialog over the bridge's
+# desktop-local feedback sidecar). Upstream pages with no CodeSmith
+# equivalent (plugins, account, agent presets, sidebar terminal/browser,
+# subagent child sessions) stay unvendored so they never appear.
 EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-approval",
     "@deepseek-ai/dsh-client-ui-user-questions",
@@ -112,6 +115,8 @@ EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-directory-picker-browse",
     "@deepseek-ai/dsh-client-ui-file-actions",
     "@deepseek-ai/dsh-client-ui-open-in-app",
+    "@deepseek-ai/dsh-client-ui-message-feedback",
+    "@deepseek-ai/dsh-client-ui-directory-picker-native",
 ]
 
 # Scan roots for scoped packages inside the upstream checkout.
@@ -180,6 +185,53 @@ VENDOR_PATCHES: list[dict[str, str]] = [
         "replace": 'css.wordmark, "CodeSmith"',
     },
 ]
+
+# The upstream feedback dialog tells the human the submission includes the
+# session log. CodeSmith stores feedback in a local sidecar and uploads
+# nothing, so every locale's hint says so instead.
+_FEEDBACK_HINTS = [
+    (
+        "填写详情以帮助我们改进体验，提交内容会包括当前对话的日志",
+        "填写详情以帮助我们改进体验；反馈只保存在本机，不会上传。",
+    ),
+    (
+        "Add details to help us improve. Your submission will include the current conversation log.",
+        "Add details to help us improve. Feedback is stored locally and is not uploaded.",
+    ),
+    (
+        "改善のため詳細を追加してください。現在の会話ログが送信内容に含まれます。",
+        "改善のため詳細を追加してください。フィードバックはローカルに保存され、送信されません。",
+    ),
+    (
+        "Añade detalles para ayudarnos a mejorar. Su envío incluirá el registro de conversación actual.",
+        "Añade detalles para ayudarnos a mejorar. Los comentarios se guardan localmente y no se envían.",
+    ),
+    (
+        "Ajoutez des détails pour nous aider à nous améliorer. Votre soumission inclura le journal de conversation actuel.",
+        "Ajoutez des détails pour nous aider à nous améliorer. Les commentaires sont enregistrés localement et ne sont pas envoyés.",
+    ),
+    (
+        "Fügen Sie Details hinzu, um uns bei der Verbesserung zu helfen. Ihre Einreichung enthält das aktuelle Gesprächsprotokoll.",
+        "Fügen Sie Details hinzu, um uns bei der Verbesserung zu helfen. Feedback wird lokal gespeichert und nicht hochgeladen.",
+    ),
+    (
+        "Добавьте детали, чтобы помочь нам стать лучше. Ваше сообщение будет включать текущий журнал разговоров.",
+        "Добавьте детали, чтобы помочь нам стать лучше. Отзыв сохраняется локально и не передаётся.",
+    ),
+    (
+        "Adicione detalhes para nos ajudar a melhorar. Seu envio incluirá o registro da conversa atual.",
+        "Adicione detalhes para nos ajudar a melhorar. O feedback é armazenado localmente e não é enviado.",
+    ),
+]
+VENDOR_PATCHES.extend(
+    {
+        "package": "@deepseek-ai/dsh-client-ui-message-feedback",
+        "files": ["src/client/locales.ts", "lib/client.js"],
+        "find": find,
+        "replace": replace,
+    }
+    for find, replace in _FEEDBACK_HINTS
+)
 
 
 def build_rewrites(checkout: Path) -> list[tuple[str, str]]:

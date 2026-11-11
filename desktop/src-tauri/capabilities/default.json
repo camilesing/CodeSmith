@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for the main window: core permissions only; the client bridge is loopback HTTP, not Tauri commands.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }

@@ -1,21 +1,23 @@
-//! The `directoryPicker` remote — the vendored workspace picker's in-app
-//! directory browser (`client-ui-directory-picker-browse`).
+//! The `directoryPicker` remote — the workspace picker's directory
+//! primitives.
 //!
-//! The vendor package renders the dialog and owns the flow; the bridge only
-//! answers its two primitives: `list` (one absolute directory level plus its
-//! breadcrumb ancestry) and `createDirectory` (one child of an existing
-//! directory). Paths cross the wire absolute — the client never joins
-//! segments itself — and every level lists child *directories* only, hidden
-//! rows included for the dialog's own show-hidden toggle.
-//!
-//! `pick` is the native-picker half (`client-ui-directory-picker-native`),
-//! which this desktop does not compose: it answers
-//! `directory-picker/unavailable` instead of pretending a chooser opened.
+//! The vendored native flow (`client-ui-directory-picker-native`) owns the
+//! workspace pick and calls `pick`; the bridge opens the Tauri dialog
+//! plugin's native folder chooser and answers the absolute path (or `null`
+//! when dismissed). The in-app browser package
+//! (`client-ui-directory-picker-browse`) is vendored but not composed; its
+//! two primitives remain served for any client that does compose it: `list`
+//! (one absolute directory level plus its breadcrumb ancestry) and
+//! `createDirectory` (one child of an existing directory). Paths cross the
+//! wire absolute — the client never joins segments itself — and every level
+//! lists child *directories* only, hidden rows included for the dialog's own
+//! show-hidden toggle.
 //!
 //! Known limitations: the listing is a point-in-time snapshot (no watch);
 //! `hidden` follows the POSIX dot convention on every platform; a level
 //! larger than [`MAX_ENTRIES`] renders its name-sorted prefix with
-//! `truncated: true`.
+//! `truncated: true`; `pick` needs a Tauri app handle, so a bridge-only host
+//! answers `directory-picker/unavailable`.
 
 use std::path::{Path, PathBuf};
 
@@ -232,12 +234,38 @@ pub async fn create_directory(args: &Value) -> Value {
     }
 }
 
-/// `directoryPicker/pick` — the native chooser is not composed in this shell.
-pub fn pick() -> Value {
-    rpc_error(
-        "directory-picker/unavailable",
-        "this desktop composes the in-app directory browser, not a native chooser",
-    )
+/// `directoryPicker/pick` — the shell's native folder chooser. Absent when
+/// the bridge runs without a Tauri handle (tests, a bridge-only host), which
+/// answers the client's unavailable state instead of pretending a chooser
+/// opened.
+pub async fn pick(host: &super::HostState) -> Value {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(app) = host.app_handle.clone() else {
+        return rpc_error(
+            "directory-picker/unavailable",
+            "this host has no native directory chooser",
+        );
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |folder| {
+        let _ = tx.send(folder);
+    });
+    match rx.await {
+        Ok(Some(folder)) => match folder.into_path() {
+            Ok(path) => rpc_ok(json!(path.to_string_lossy())),
+            Err(err) => rpc_error(
+                "directory-picker/unreadable",
+                format!("the chooser returned an unusable path: {err}"),
+            ),
+        },
+        // Cancellation is a value, not an error: the client's native flow
+        // treats `null` as "the human dismissed the chooser".
+        Ok(None) => rpc_ok(Value::Null),
+        Err(_) => rpc_error(
+            "directory-picker/unavailable",
+            "the folder dialog closed without an answer",
+        ),
+    }
 }
 
 #[cfg(test)]

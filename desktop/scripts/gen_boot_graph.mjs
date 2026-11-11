@@ -30,11 +30,19 @@ const BUILTIN_ROWS = [
   { id: '@codesmith/desktop-brand', entry: 'client.js', inject: [], immediately: false },
 ]
 
+/**
+ * Vendored packages that stay out of the boot roster. The in-app directory
+ * browser is kept for its list/createDirectory primitives and as a future
+ * fallback; the composed workspace flow is the native OS chooser, and two
+ * occupants of the same directoryFlow holes would open both dialogs.
+ */
+const SKIP_ROWS = new Set(['@codesmith/client-ui-directory-picker-browse'])
+
 const manifest = JSON.parse(readFileSync(join(vendorDir, 'VENDOR.json'), 'utf8'))
 const rev = manifest.source_commit
 const rows = []
 for (const [name, record] of Object.entries(manifest.packages)) {
-  if (!record.plugin) continue
+  if (!record.plugin || SKIP_ROWS.has(name)) continue
   const pkg = JSON.parse(readFileSync(join(vendorDir, name, 'package.json'), 'utf8'))
   const client = pkg.codesmith?.client
   if (client === undefined) throw new Error(`boot graph: ${name} is a plugin row without a codesmith.client manifest`)

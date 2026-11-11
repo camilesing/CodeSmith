@@ -23,6 +23,9 @@ const BRIDGE_PORT: u16 = 1421;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // The native directory picker (`directoryPicker/pick`) uses the
+        // dialog plugin's folder chooser; the bridge holds the AppHandle.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let codesmith_path = std::env::var_os("CODESMITH_DESKTOP_CODESMITH").map(PathBuf::from);
             let port = std::env::var("CODESMITH_DESKTOP_BRIDGE_PORT")
@@ -70,11 +73,13 @@ pub fn run() {
                     }
                 });
             }
+            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match host::codesmith::CodesmithProcess::spawn(codesmith_path.as_ref()).await {
                     Ok(backend) => {
                         let host = Arc::new(HostState {
                             backend,
+                            app_handle: Some(app_handle),
                             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                             event_sinks: Default::default(),
                             live_sinks: Default::default(),

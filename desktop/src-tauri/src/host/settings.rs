@@ -17,8 +17,9 @@
 //! `settings/document-updated` event frame follows on `$events` so other
 //! surfaces re-read.
 //!
-//! Known limitation: `settings/openSettingsDocument` answers
-//! `{opened:false}` — there is no external document editor to hand off to.
+//! `settings/openSettingsDocument` hands `~/.codesmith/desktop/settings.json`
+//! to the OS default application (creating an empty document first when it
+//! does not exist); it is the settings header's local-document action.
 
 use std::path::PathBuf;
 
@@ -246,6 +247,29 @@ impl WriteError {
     }
 }
 
+/// `settings/openSettingsDocument` — hand the desktop preference document to
+/// the OS default application. A missing document is created empty first; an
+/// existing one is never rewritten (a corrupt document stays exactly as the
+/// user left it, for inspection).
+pub async fn open_document(host: &HostState) -> Result<Value> {
+    let home = host.settings_home();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let path = document_path(&home);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
+            }
+            std::fs::write(&path, "{\n  \"revisions\": {},\n  \"sections\": {}\n}\n")
+                .with_context(|| format!("write {}", path.display()))?;
+        }
+        super::changes::open_changed_file("open", &path).map_err(anyhow::Error::msg)
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("settings document open join failed: {err}"))??;
+    Ok(json!({ "opened": true }))
+}
+
 /// `settings/describe` — every desktop-owned namespace view, plus the
 /// provider namespace over config.toml. A config.toml that does not parse
 /// fails the whole read, naming the file. The provider view probes the
@@ -280,7 +304,7 @@ fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> R
     );
     Ok(json!({
         "writable": true,
-        "hasDocument": false,
+        "hasDocument": true,
         "namespaces": namespaces,
     }))
 }

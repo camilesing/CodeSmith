@@ -495,7 +495,7 @@ enum OpenFailure {
 /// Every directory a session may open a path inside: the bridge cwd, the
 /// registered workspaces, and every imported thread's workspace (an
 /// ungrouped session still owns its directory).
-async fn openable_roots(host: &HostState) -> Vec<PathBuf> {
+pub(super) async fn openable_roots(host: &HostState) -> Vec<PathBuf> {
     #[derive(serde::Deserialize)]
     struct ThreadWorkspace {
         workspace: PathBuf,

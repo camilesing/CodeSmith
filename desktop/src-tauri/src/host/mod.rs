@@ -14,6 +14,7 @@ pub mod commands;
 pub mod credentials;
 pub mod directories;
 pub mod events;
+pub mod feedback;
 pub mod files;
 pub mod goals;
 pub mod host_drop;
@@ -21,6 +22,7 @@ pub mod jobs;
 pub mod llm;
 pub mod mapper;
 pub mod mux;
+pub mod open_in_app;
 pub mod permissions;
 pub mod references;
 pub mod schedule;
@@ -62,6 +64,10 @@ const DEFAULT_WORKSPACE_ID: &str = "codesmith-default";
 
 pub struct HostState {
     pub backend: CodesmithProcess,
+    /// The shell's Tauri handle, used only by the native directory picker's
+    /// dialog plugin. Tests and bridge-only hosts leave it absent; `pick`
+    /// then answers `directory-picker/unavailable` rather than lying.
+    pub app_handle: Option<tauri::AppHandle>,
     pub cwd: PathBuf,
     /// Open `$events` sinks: sink id -> frame sender (the approval and
     /// user-question waterfalls push here; a still-pending waterfall is
@@ -240,6 +246,13 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "goals/edit" | "goals/pause" | "goals/resume" | "goals/clear" => {
             goals::action(host, endpoint, args_of(payload)).await
         }
+        // Per-message and session feedback (host::feedback): a desktop-local
+        // compare-and-set sidecar. The vendored surface reads the list once
+        // per session and updates from each mutation's reply.
+        "messageFeedback/list" => feedback::message_list(host, args_of(payload)).await,
+        "messageFeedback/put" => feedback::message_put(host, args_of(payload)).await,
+        "messageFeedback/delete" => feedback::message_delete(host, args_of(payload)).await,
+        "sessionFeedback/record" => feedback::session_record(host, args_of(payload)).await,
         "$events/result" => {
             match events_result(host, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),
@@ -319,7 +332,7 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         // The workspace picker's directory primitives (host::directories).
         "directoryPicker/list" => directories::list(args_of(payload)).await,
         "directoryPicker/createDirectory" => directories::create_directory(args_of(payload)).await,
-        "directoryPicker/pick" => directories::pick(),
+        "directoryPicker/pick" => directories::pick(host).await,
         "skills/list" => match sessions::skills(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("skills/list: {err:#}")),
@@ -345,7 +358,13 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error(err.code, format!("{endpoint}: {}", err.message)),
             }
         }
-        "settings/openSettingsDocument" => rpc_ok(json!({ "opened": false })),
+        "settings/openSettingsDocument" => match settings::open_document(host).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error(
+                "gateway/internal",
+                format!("settings/openSettingsDocument: {err:#}"),
+            ),
+        },
         "userQuestions/answer" => rpc_ok(json!(false)),
         "schedule/catalog" => match schedule::catalog(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
@@ -1095,6 +1114,11 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
             "/api/present.open",
             get(changes::route::present_open).post(changes::route::present_open),
         )
+        // The application-open catalog and launch (host::open_in_app). These
+        // are host-origin routes upstream serves beside the document, not
+        // `/api/…` unary RPCs; the page carrier redirects them here.
+        .route("/open-in-app/apps", get(open_in_app::apps))
+        .route("/open-in-app/open", post(open_in_app::open))
         .route("/api/{*endpoint}", post(unary_handler))
         .layer(cors)
         // The runtime's per-file attachment cap is 10MB; the same bytes as
@@ -1329,6 +1353,7 @@ mod tests {
     fn test_host(base_url: String, cwd: std::path::PathBuf) -> SharedHost {
         Arc::new(HostState {
             backend: codesmith::CodesmithProcess::for_test(base_url, "test-token".into()),
+            app_handle: None,
             cwd,
             event_sinks: Default::default(),
             live_sinks: Default::default(),
@@ -1469,6 +1494,11 @@ mod tests {
         )
         .await;
         assert_eq!(session["value"]["sessionId"], "thr_new", "{session}");
+
+        // A bridge-only host has no native chooser; it must say so rather
+        // than claim a picker opened.
+        let pick = dispatch(&host, "directoryPicker/pick", &json!({})).await;
+        assert_eq!(pick["error"]["code"], "directory-picker/unavailable", "{pick}");
 
         let archived = dispatch(
             &host,
