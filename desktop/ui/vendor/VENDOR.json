@@ -218,7 +218,7 @@
     "locale/pt.json": "f7a14e87b2335e901b215a8274faaab3b182c675073e493ac2c84adc79316b03",
     "locale/ru.json": "b2dc14cbd8b0e058eb1fea8ab6357f369724ca382b296b24be8e3574126e3732",
     "locale/zh.json": "89d18073b9173ae82919bc36ec9b81f0312ddadd35a803ce4f8266a19a7bd9e6",
-    "package.json": "759fe753cfd831d335e42a030ff6199a829ebf2f9afca93e77eb22544595cb04",
+    "package.json": "33cd9a3b4b00c9a900225a42713a788a61edc7baba0621c045f8df021ff4f53f",
     "src/client/index.ts": "ceab81858fdce4130672e18a09782cd5f2f88a1fd24acd95ae00b4fbb47517dc",
     "src/index.ts": "d6b3b44d0861e3d31ab6ab9a1aa557d8a280237e0aac93fcb47ac01256bb24ca",
     "src/remote-events.ts": "f72d82f501444e4a0cc2f2477f9b65237945d9b2e72044f688e8acc42be35008",
@@ -232,7 +232,6 @@
     "devDependencies:@deepseek-ai/dsh-agent-team",
     "devDependencies:@deepseek-ai/dsh-api-account-controller",
     "devDependencies:@deepseek-ai/dsh-api-settings-controller",
-    "devDependencies:@deepseek-ai/dsh-api-terminal-controller",
     "devDependencies:@deepseek-ai/dsh-client-product-analytics",
     "devDependencies:@deepseek-ai/dsh-client-ui-plugin-manager",
     "devDependencies:@deepseek-ai/dsh-command-feedback",
@@ -261,7 +260,7 @@
     "devDependencies:@deepseek-ai/dsh-web",
     "peerDependencies:@deepseek-ai/dsh-scope"
    ],
-   "rewritten": 3253,
+   "rewritten": 3254,
    "upstream": "@deepseek-ai/dsh-api-remotes"
   },
   "@codesmith/api-session-controller": {
@@ -497,6 +496,93 @@
    ],
    "rewritten": 1264,
    "upstream": "@deepseek-ai/dsh-api-session-controller"
+  },
+  "@codesmith/api-terminal-controller": {
+   "deps": [
+    "@codesmith/cordis",
+    "@codesmith/api-gateway",
+    "@codesmith/deque",
+    "@codesmith/lazy-require",
+    "@codesmith/subprocess",
+    "@codesmith/typert-protocol",
+    "@codesmith/util-values",
+    "@codesmith/schemastery"
+   ],
+   "dir": "packages/api/terminal-controller",
+   "entry": "client.js",
+   "files": {
+    "lib/client.js": "05bfbe0e8a198bed8b2062d47a8a4bce564fea6fe945a9ea4480ed1279d7d9d4",
+    "lib/index.js": "59ef5cc811d74c97e77c22c558a6f1760af4e86dfe68bb982f5179e7adbde5bc",
+    "lib/typert.host.d.ts": "c7a95a338cfdcfaaf2af6a5f25af7cb03115b28cb8367ee87e51c6667fcbe4b0",
+    "lib/typert.host.js": "5565b760f12e36a4be8eda80f11363662e4d31436e664044a1604dcad91f9727",
+    "lib/typert.remote-client.d.ts": "ff5cab96eac6264cb1e4b6d4493f793b4f51cce29177e3837548ad372811e045",
+    "lib/typert.remote-client.js": "0df790ac4d0bfd478b1e45eaef20d0d16586c695c055fcb62bdb4a80fe8c9a07",
+    "lib/types/client/bindings.d.ts": "6451fbcfe31a230275853fa23f6566b3477e8ad49e6329130a21255e86613598",
+    "lib/types/client/bindings.js": "c72bf47a0810cf8db9b30b3d61ed8f67c6c29d3b671bcc4d2c004a7b1b34c569",
+    "lib/types/client/close-requests.d.ts": "29ed717c8b0f1859c6e66eb3b7dcc70e4686b78c01ab0b0fa1c46060e8265a29",
+    "lib/types/client/close-requests.js": "7224cbff3fd91c3ccd28a7e375d1c8a2af70330cb12d8163c0693d7f82e5e03e",
+    "lib/types/client/index.d.ts": "34ae0ac37c18b4881ceed3d93902669c0cdc2f32e8550015d29fe2a3e9c3b9b6",
+    "lib/types/client/index.js": "087b15c280d9f8b93f8facb1c314a287fd4b5a881797b517e3c9cbbe233701c8",
+    "lib/types/client/inventory.d.ts": "b87bfae2797dcba3bca7dbc38df9982034bd0d7d37dca8f4922b531ff4667a55",
+    "lib/types/client/inventory.js": "1c80dc1b36befaf31df53a63a0d242c104e3817538d5aee5e972ccf372bbadcb",
+    "lib/types/client/model.d.ts": "1020001262dd7aba620cdc87784c9fdc13028855fabd178ce4378d68f01c3bff",
+    "lib/types/client/model.js": "48d419309d0ecbbf42c9092c4d8f06d398a7457badb7374fa18df5ef39f50456",
+    "lib/types/client/retention.d.ts": "44c9aac8e85ecf2ae45eada19fd608ae74b33664e293bb084e016adc234874f1",
+    "lib/types/client/retention.js": "822192b742680d171592097e5522492f533962d25066a87d04223cf8efdd3a6d",
+    "lib/types/client/shell-preference.d.ts": "53ef1104dbf822fb132018ee80fc5129bc9ef7418cd37b31f2220276d9a8074f",
+    "lib/types/client/shell-preference.js": "b25abf661fbdc300b7830a8abcfbba953c2a293059cd96ac4d01e056419f2cdc",
+    "lib/types/index.d.ts": "707b9c9175fd3aa0529f07e09bb49e672e1168c7baaf46ff9b0b56b60a0e30bc",
+    "lib/types/index.js": "dab08a1f0b2a7a0de1a87d7a1eb0513b286c4cf176bd9e48f6d8c88dfeb89110",
+    "lib/types/retention.d.ts": "ae1e1b89cc68a8380782ad63bd102c649fab32d55572e7be11611c42fd77e84c",
+    "lib/types/retention.js": "d696e05d3ca0d9e4e1462cc79d3fadcb28ac022bf7828a846f9114f51f3d7702",
+    "lib/types/shells.d.ts": "b49a7ffc34395bc02e4d5717ad2a2f7a0c4b258ec8ffa3780c3515c99340533f",
+    "lib/types/shells.js": "417dfbe4f606111e5795bb9b216436b68ee9f0001b7464f19eb9d8c10694e552",
+    "lib/types/stream.d.ts": "2fa16621a3a73786b925e9dc52d4d396a2af74c63e16b744a0676e3dc1667632",
+    "lib/types/stream.js": "9d3fcdb18b97d067663279087ae78db2a4660586fed143362767ed010ec7c0c2",
+    "lib/types/terminal.d.ts": "da539b752f63c8f62363abda726da07bd3f80cf6103b5476a2d1d2e5c98bc9af",
+    "lib/types/terminal.js": "f9abec762f1b2dcd8dfdfda1d0a2d931a916b3fef965a59a8944d1e7fe84aff3",
+    "lib/types/types.d.ts": "457c3247d0e4155bd1068d2c867d0a5bdd9219d9fdf7ee7967021244635b6595",
+    "lib/types/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2",
+    "locale/de.json": "f568731888429d45aa98fbe50df6f328ffc8635991633d4a08c85b52202d1b75",
+    "locale/en.json": "6decb58e1533903d82ffaad28c41fca03092a01612b9c3af508e406adaf86b9b",
+    "locale/es.json": "0a789b7f55177912bc7d8e3709323ee88ab8d73e19d2523b56c35cf6158c4107",
+    "locale/fr.json": "a3d4d3d03e3dc28fd8413a7199d8455449f69936d0c39d642d582e8f01bc72be",
+    "locale/ja.json": "a0e88f0f64c7451c312fb70e7fb26bad82072de530aa27f3c8df8855dab81ed2",
+    "locale/pt.json": "8672af71e7d12123ac823c0bf6955bb36a2ce5c203f77ef023b3c72b53df1068",
+    "locale/ru.json": "85d69e6fd0e1290227c91bcba31bc37148008dc9de61e4c3b3320fa206c1c4d1",
+    "locale/zh.json": "971a87a950d0cfdafc34bf7127b601da26b9c0ce1693a46a0cb941a059c02eb5",
+    "package.json": "7eac0a83c777faacb9228d3d5f4710b34e7874907d5b4d1936c52ffb0389bbbd",
+    "src/client/bindings.ts": "1afe1e6b1d7f91284cacdff4a7060289d156cf54f4c0086259218aadd1f1af7b",
+    "src/client/close-requests.ts": "af7eb6181f88cc3fb175ac0d622cba0ab90d7c920fa5b712b04bdc45bde54abc",
+    "src/client/index.ts": "3cd7f68572ffb933a9a360e9a78f474104d3107731bed02ec42fb9580db9af50",
+    "src/client/inventory.ts": "5193885b452b8b6fa3703f1681c970579fd72b20fef4fac290d01a74b902f40c",
+    "src/client/model.ts": "61d6e5eca16de887eb4ad661a9610d8c072a42bd8b03160a8f6c8ae385861fcf",
+    "src/client/retention.ts": "368d3a19de16c69cf14dbe347daa098d13d360a14d9bc7f01372939cde0646ae",
+    "src/client/shell-preference.ts": "8b89c96a2493fdf9df6cd2807c8aeba5b05a110d2b3b6f38f217ca54c1a1f82c",
+    "src/index.ts": "fffd314d1df56e92d6883dc2bfd58e324a1afa3d83f5a9a45a104f360a496f54",
+    "src/retention.ts": "feb12e5aa615862e7ee8e6b3a290f4e7bebf750afcedaae8ac7ff8014f59fe45",
+    "src/shells.ts": "64a0a4b1298681b6cb3d39af2e6d3478b2ff412b0cc4d25c447f0267731438f9",
+    "src/stream.ts": "8930bc49b79c8520a656c34c6c09cb57d25a8fcbe1a18adf500a4f4c43fd3a64",
+    "src/terminal.ts": "57e0c8a1918642b0142db21f160d225811ccb28790fe36c8ad57b3b893d3032d",
+    "src/types.ts": "ca3daf8b8566ad50ee3ad3b5884073cb98a36fedb6b7674f356f88b51a8f729c"
+   },
+   "patched_files": [],
+   "plugin": true,
+   "pruned_deps": [
+    "devDependencies:@deepseek-ai/dsh-agent",
+    "devDependencies:@deepseek-ai/dsh-fs",
+    "devDependencies:@deepseek-ai/dsh-remote-mock",
+    "devDependencies:@deepseek-ai/dsh-sandbox",
+    "devDependencies:@deepseek-ai/dsh-sandbox-policy",
+    "devDependencies:@deepseek-ai/dsh-session",
+    "devDependencies:@deepseek-ai/dsh-session-projection",
+    "devDependencies:@deepseek-ai/dsh-subprocess",
+    "devDependencies:@deepseek-ai/dsh-subprocess-local",
+    "devDependencies:@deepseek-ai/dsh-working-directory",
+    "peerDependencies:@deepseek-ai/dsh-subprocess"
+   ],
+   "rewritten": 516,
+   "upstream": "@deepseek-ai/dsh-api-terminal-controller"
   },
   "@codesmith/api-workspace-controller": {
    "deps": [
@@ -822,7 +908,7 @@
    "dir": "packages/client/locale",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "86d05c6a2a5f5e50bbf83342278c0b643d86846d995b40b5e095587868344822",
+    "lib/client.js": "4c89ea439cc4aced5af100b4a06b090c2f3ad374cdf2162bfb5c917054244453",
     "lib/index.js": "9e19a2639c0f231a0c19e728e0da6c8ca841684d28bba5a9fb0c00b012ccf961",
     "lib/types/client/LanguageRow.d.ts": "a2b0cdf8c0ac255394502806f29d8ebfda651ddddb8f1d4d23eef0a6dc51f878",
     "lib/types/client/LanguageRow.js": "2cf2970442acdb0e1364c1622a4e0d21c8f40c467a68c5e2b4129a95b634c181",
@@ -907,7 +993,7 @@
    "entry": "client.js",
    "files": {
     "lib/client.js": "b821ca60d160df50de2cb04ccbffa9f7acdf93580eba1e9f291929860516fcb0",
-    "lib/index.js": "5b4e33f7e92d202b17b0623bcb19df878ed97788d962b49bcff700dddf97df90",
+    "lib/index.js": "928486eb53ff1d3f9fe1de87b3d4df46c2255bd4b18c5f3e77f4c3f31ea198e6",
     "lib/types/assets.d.ts": "52e1cf7f24b5b95c0ca8b1cbdb44edcd96151f976ff295421ad1ffad88e5078b",
     "lib/types/assets.js": "0f9150c890f723730eba077bc908cf344c33f8dd8c2b4e0f58c2a2c1f26df7cf",
     "lib/types/client/entries.d.ts": "c699fe6051dd47ab3c2397abe1317fe376c59c17000234ef677120a6683a3bb9",
@@ -951,7 +1037,7 @@
     "devDependencies:@deepseek-ai/dsh-host-webserver",
     "devDependencies:@deepseek-ai/dsh-package-manifest"
    ],
-   "rewritten": 177,
+   "rewritten": 176,
    "upstream": "@deepseek-ai/dsh-client-modules"
   },
   "@codesmith/client-resources": {
@@ -1101,7 +1187,7 @@
    "dir": "packages/client/ui-approval",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "778ff263d33a485617d45217d69ebe68e8e61f6e6abb40e28106fe9473c9a85a",
+    "lib/client.js": "abcf3112b5b9f5c4b0f4f1fb253724800005b2584095a6ba639f42f9ec37444e",
     "lib/index.js": "2bc049c333f5f4ace43ce8a7556f67202cb264a7bffb64d9c3d592af9fef656f",
     "lib/types/client/ApprovalCard.d.ts": "754577f2d2ce9b9c6631d6a792c8407161ad48e3b02dd5ef87f33edeac374659",
     "lib/types/client/ApprovalCard.js": "99159c576e269895e78b94212656abeec0d1e40028dec8f60ed66f1fc8308710",
@@ -1157,7 +1243,7 @@
    "dir": "packages/client/ui-attachment",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "eda408277068424daf5bdd3b37604585d4d34a506c218edbdcdfc00169dfec48",
+    "lib/client.js": "c84c7d400cb68d03b9fa675a2efaf95047722d698425278eb58691d81ed4c5a8",
     "lib/index.js": "ef16c813d42ad74dfd707e162af400f65ddd0f8cb1fd3b22e91bbd1f751fc80f",
     "lib/types/AttachmentRail.d.ts": "b2557bc5dedbe58cc8d7070eb0d65ec23b6aa5837ce94f5cf95a254c15151c12",
     "lib/types/AttachmentRail.js": "531a18afb28dd2a879ab6dac120d30ec04ec2076e8555d0ed536c0a352cc44c5",
@@ -1236,7 +1322,7 @@
    "entry": "client.js",
    "files": {
     "lib/assets/running-whale@2x-06738fa29b2f.png": "0fd990d118113d19af7af4480f2b55d610b103451a08be6f7bf5a146823f8bd3",
-    "lib/client.js": "f0892b8dae72feb7aea0b9f09a126ce0a3e7d5f231ab97e314be23dee4f0851d",
+    "lib/client.js": "d93eafc0748b47b8250ca9eb1d125bd67db852f1c8c7d3d6991b5b574fa9bf42",
     "lib/index.js": "1f3da3c0a7f9cb4772e607c378c7f548ec09a60404275e3c30574543f0b1d645",
     "lib/types/chat-settings.d.ts": "5de4af10d09143c927b4994decab2e2091ec671ba2f9bfef59696fff40e6e4bc",
     "lib/types/chat-settings.js": "8810fb90f991816dfe09c7efb9169ba11858c96d418ee4fec786570d58d27cfd",
@@ -1607,7 +1693,7 @@
    "dir": "packages/client/ui-commands",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "41894b8e7a37cb1fc22201d000f9c05eab1f632693b0b82a8a862665025ef61e",
+    "lib/client.js": "93e52a95511a4cb5c5b9f5b0a49d259ff0ab9298ac0b76ca5e0c9550a2935618",
     "lib/index.js": "c1260e6e17c2740dfb669f72af9a26d1bbfcac21f20f7723a548b7a87a4ee6e3",
     "lib/types/client/PopupSelectView.d.ts": "115c8f1fef944c74de8c70b4462aea260683e983db86e27fc208d6954ad9c379",
     "lib/types/client/PopupSelectView.js": "5deec6cece3dcb7c3226c97b642d963b2328d6988517b6732593797254bed502",
@@ -1739,7 +1825,7 @@
    "dir": "packages/client/ui-conversation",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "5ee62f539c6b140857d9b0d98f771ef141bd807aa7140cba338d4e97bb356cfc",
+    "lib/client.js": "0a23cf9c7b5df5bd803e2cc377587fcfb8783372b5efcedfc252fa4f090fc8e6",
     "lib/index.js": "623169b91535ce69a9ca8dca188db719c687bb6cb76916ce972f34af2dd17c91",
     "lib/types/client/apply.d.ts": "c94571d74a916fe5883f840d4db3bc3ce439dedade1a4c1cb113868ef497939c",
     "lib/types/client/apply.js": "6e046fd5e2a45c56c1453c99cf9faa0b9e0c31d2d29d599de3f986eec412f4b8",
@@ -2062,7 +2148,7 @@
    "dir": "packages/client/ui-deliverables",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "7fc8be2c64123f10015a6880828b9bdba4516995f3749841a38c1645bc8c75af",
+    "lib/client.js": "50007f2640af81ea5b0b5abfafbb519126cfd9ae3ac81f420a09ef5c2ed5ee38",
     "lib/index.js": "7cb5f8cb6e5028562b7b2ce28d79ddad1e502ff2f56d691ee0f48c7537954305",
     "lib/types/changes.d.ts": "460cea4ec142136d471647632b5ace3f34b8e3aa3639fa3f7439a2b524d62249",
     "lib/types/changes.js": "82bbe3267ddbd856a9b6973a3fc5a2feb063bde3f48aed8c2719c4b55423438b",
@@ -2169,7 +2255,7 @@
    "dir": "packages/client/ui-directory-picker-browse",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "5b0c0cbfebd38a438ebb22366a516b93c29fd302598f391e31e8a78f0b519502",
+    "lib/client.js": "6d89885edd79afaccc640b1e533c3dfc9cc38570a26c9605461dcff0136d7c02",
     "lib/index.js": "90f87261c5e73fa70f21929f16787916fbd69105c9dcd15873eae0f0de00597a",
     "lib/types/client/DirectoryBrowser.d.ts": "fa6251c6f79299fb86fb78d2e6f7a83a440471dd7bc9e99dd46e1fa3359c5ba5",
     "lib/types/client/DirectoryBrowser.js": "0e293149d4f39f190f8094e0bd2513f0969dc272f1402c532cc03ab3f1b45d4e",
@@ -2438,7 +2524,7 @@
    "dir": "packages/client/ui-goal",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "508cc81e812dd8837a060b5bcbb81392aaf69a1cebcac145d879790893cb1f19",
+    "lib/client.js": "718520464202a45ac1c461bb0ed1c0485258e77e9bae988d209ed0ec17fe44a8",
     "lib/index.js": "c0c5de4e3bfad8921330cff717ec01f4c5314c54a0f8e7916de894ea176d45dc",
     "lib/types/client/GoalBar.d.ts": "07530069c0c3483d04d30fa1a4e0c00b15376c23630788587d59544e18b507d5",
     "lib/types/client/GoalBar.js": "d2b5d93bea2a102e1e2bbca0464141641a379df456113811fdba3e4a9cb4c49e",
@@ -2505,7 +2591,7 @@
    "dir": "packages/client/ui-input-trigger",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "6ea916a0156ef25b977e7f83eb58393b817abd3fb0e83c11ff5f784fd2c8e330",
+    "lib/client.js": "19cfe1f30f407e7f803636a6da76e385a3996fbc1cb2e4a7ffbe2a142db62594",
     "lib/index.js": "f9b3f19ba69ffcd71c7f672e6a68482c4dd18965e7aabfb8742e19638163874f",
     "lib/types/client/MenuView.d.ts": "adfca840e099bca807034da09f679fac8cd535358651dcf424e48d2155f9f696",
     "lib/types/client/MenuView.js": "afcc3179b8a4dd54a7cff07888c424759f44a403ab9fe5f4ce5a3a07ae797a3f",
@@ -2576,7 +2662,7 @@
    "dir": "packages/client/ui-jobs",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "ebd5db805050d8c7b4476f26613deb714d623e6d57db806bf49e3614bcbc1f55",
+    "lib/client.js": "34159bbe1d12fedeb47846d6e1a9f4f4ac9c280a98601e029aa71079cf9c695a",
     "lib/index.js": "c8f2f548f66be247fab0ae2ab67626d23ec44c7f11bb8498025d6c09614241c9",
     "lib/types/client/JobListAction.d.ts": "02e6eaf6ec23decf18109082223d5fb9dc5145c1871ee3b319a95026edfb629e",
     "lib/types/client/JobListAction.js": "9b21ea5a1551d4606503fcd44a9bae7d27ae21af73322028b0d7b734e0a87c4d",
@@ -2624,7 +2710,7 @@
    "dir": "packages/client/ui-layout",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "b52335eeba453d33c7344098e763a70d27696e8e0f1f61deb2766dbaf06f160f",
+    "lib/client.js": "a24914abb98211521ab96091be8febd86cd90d25758909d92180883b58356e80",
     "lib/index.js": "c62669c2bcf72075724aa3d4c90bb6064f8b5952322c7950640cc8ca95389859",
     "lib/types/client/AppFrame.d.ts": "d14fc3dcfe86ab926b3930d30f11587eb19dd4c3f1719642f6084e6eaddb62be",
     "lib/types/client/AppFrame.js": "ce3160ab64af57e20bad4191f03a412a90da7fab757dbb7161b23e09a6a72144",
@@ -2683,7 +2769,7 @@
    "dir": "packages/client/ui-message-feedback",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "936e30013db6b20c4191812867551871e20ee349e0d16d46eca0f791507d39fb",
+    "lib/client.js": "475749666bd249bfa288f64d0a5b9a13605bc1e010e8f664b02d6ae16fe9c3e8",
     "lib/index.js": "67e53f49763f70b6fb310ce281b7fad92368a1de7b2470f248e82593bc7f34b2",
     "lib/types/client/FeedbackDialog.d.ts": "54f92a520ac293fd894fc0fd019cfcb30d252443df8fa968f09869fd18422d2e",
     "lib/types/client/FeedbackDialog.js": "4cd42566ee1b7b56273aee0bb182e965127b04e8d44560ab09606a7946502670",
@@ -2765,7 +2851,7 @@
    "dir": "packages/client/ui-model-selection",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "57f5515b113c2d42a2352d88acd4e349db18140acceea8e0305dad4c0de6baba",
+    "lib/client.js": "89dc38f2d10429662a5165d5cbe70f71cedb9d5767b7c7c656a395cc5ad678a5",
     "lib/index.js": "4b6cb1b029b037117e82293a20111428c220fcaaea7c3b39ebcbde376d122318",
     "lib/types/client/ModelSelect.d.ts": "27200989a5fc05ca3e5e355b0abc900995db580edb5ceeff7d0e0c4cbeb5bc1e",
     "lib/types/client/ModelSelect.js": "abdaf67b5feea645c6181ec95e2123ef6ddcf14d304fb37c624468649b0b769c",
@@ -2838,7 +2924,7 @@
    "dir": "packages/client/ui-open-in-app",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "818e0e4be309f7b9a20496ec2ed9749d36e70091d4c2684ca19547ea39f10afc",
+    "lib/client.js": "db8f78bc86c76235129e7946a4fd2beb8d8a69ed939ea641121b6207f6bc0f2a",
     "lib/index.js": "405220bc5b51770174dd78bf3d53b585e2300e86fb7cd54686f9d15cdf74e853",
     "lib/types/client/FileRouteAction.d.ts": "8f87c57c7b7977ec5cfb98f6ebeb73b06fbde5b5e4a1f32f508b2d4603ef403e",
     "lib/types/client/FileRouteAction.js": "dae5650d98c532255148631cfe626590fc84aa08ac79dfb125c135549df1c3fd",
@@ -2925,7 +3011,7 @@
    "dir": "packages/client/ui-permission-presets",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "63cd95495d30e147fed0e3765d4b97b71aca593979b0dbf6279bd3b5d808ddbc",
+    "lib/client.js": "d0b4c0544621961310dcbac4159d5fe84e9c64d02adeaa189ee71c21f236070c",
     "lib/index.js": "117b32b5b6d121fa85b0bdc249c21fb03bbcadf99649cf1ad8d0ba6897f35282",
     "lib/types/client/PermissionRow.d.ts": "a024aecd019816459adb6f1d778aad14779eaa8c1acaf19513b357b000b8e9cf",
     "lib/types/client/PermissionRow.js": "eb24046655dc52ba3c129e957394efa60d8e4ed2370121b51c8b30f1fb08feae",
@@ -2989,7 +3075,7 @@
    "dir": "packages/client/ui-plan",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "bd95e68b11cf77bdd7292dd7652ff47ff2da7098288c0506dd84b110a1076813",
+    "lib/client.js": "8147b285670af17adaed58013b28da4d2bfd6cbceaab79f7bae82948eb3c9507",
     "lib/index.js": "d229b9708275e5928c1018f0a42429c8a06412e8169a7d1e71606ea27735fd1a",
     "lib/types/client/PlanCard.d.ts": "f68c5efb219d2b98c86129542262550070f10a39582d41cc4b3bd11362b3572c",
     "lib/types/client/PlanCard.js": "75d489aa432cf2dc21b716eae3eb39ae6e390c1ca19f89b425ec27c16b8a0cfc",
@@ -3603,7 +3689,7 @@
    "dir": "packages/client/ui-schedule",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "a09c6189f6f1c3b1239c6092bd67954833f70a53b8d56cf6b74c4a6732236485",
+    "lib/client.js": "9ffd2aa36972bb1538f718b6e47e44f6094566b7695333a5b1a7c7eeb024a53b",
     "lib/index.js": "8d7e16c808ad23aa5519881c29746977ecd510926fe5fcb3739cfa566f8f7a5f",
     "lib/types/client/CalendarIcon.d.ts": "820b12aceb9313efb9df68602a39bec155b1e7220aeafc51698e094d6e1d7cbc",
     "lib/types/client/CalendarIcon.js": "b4f5489cac097602c646e20a959911cd1489920554f4696cf3d64e98a0f54b87",
@@ -3777,7 +3863,7 @@
    "dir": "packages/client/ui-secret-mask",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "322a8754e2355d72061eb426b9634096098e12cd462d12271cb7436f27b1d10d",
+    "lib/client.js": "1f728555310d20b202ca9772239d478771b2dc11bd02a946cd427b4db9b485de",
     "lib/index.js": "321c232611d538c6f904a8d8e856a88f6c592cf28bf7f5480eef2559536b386b",
     "lib/types/client/SecretText.d.ts": "ade13cd671909e6fc6e4f434fbc57cd7caad89674fed7784c99c9fba267ff43f",
     "lib/types/client/SecretText.js": "2a8b4b9cca075c6078ffd2f6a0a4a79124e49a3613fe4ec01146b6b94581c349",
@@ -3942,7 +4028,7 @@
    "dir": "packages/client/ui-settings-general",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "f372478248ad84a1124da09353741c9663d2cb270302db714b4b9fa560ea5927",
+    "lib/client.js": "2c27fb54dc63efb208df71fd7343eb83b12fd8f8cb4c95a36f7c50a8a907556d",
     "lib/index.js": "6256186605bfd2996f804685439a4f47f0b49c8ede127fe6e54d5dd6c6a7ac23",
     "lib/types/client/CurrentVersionRow.d.ts": "60a47291c3fceb5b0eb2f1704feca04b51bc2cbceec9859f7df260dec2d7eb65",
     "lib/types/client/CurrentVersionRow.js": "1f8e93974d1b576017a2a22a82525c65854b2e1fd9a575e0d4e62976f8bd9197",
@@ -4026,7 +4112,7 @@
     "devDependencies:@deepseek-ai/dsh-remote-mock",
     "devDependencies:@deepseek-ai/dsh-settings"
    ],
-   "rewritten": 212,
+   "rewritten": 211,
    "upstream": "@deepseek-ai/dsh-client-ui-settings-general"
   },
   "@codesmith/client-ui-settings-models": {
@@ -4040,7 +4126,7 @@
    "dir": "packages/client/ui-settings-models",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "7075dc55dc032c477f77aa8396d3fac841153e663523c9dbb1b2a0c69abf5192",
+    "lib/client.js": "3a41a6984fb6b7358dc636180766af36e50504aa0c7f2cba79b5214e1870dafe",
     "lib/index.js": "14d8dea88018c6ceeb168cecd94d6bc1b2b00ee6f271654521ea10f262607947",
     "lib/types/client/ApiKeyInput.d.ts": "22a3bb3f032433838e7a2db9bb337b70b4013eea63ca227ca61543ab55b287eb",
     "lib/types/client/ApiKeyInput.js": "e7bac7138228569edb352528f6c4fb352b3a4cf9e1c4a74aacffde1dea703a54",
@@ -4157,7 +4243,7 @@
    "dir": "packages/client/ui-shortcuts",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "e23425f8ed293e070935a01959ea13f17fb0a3f030219dce9358799332f3ccd1",
+    "lib/client.js": "1c4c732655b564709ec21c8e8befda09a77d3ccc78ca36ed6de2f2d4a7b91053",
     "lib/index.js": "b318feebd25539303fa7d410aed71d33eef3789dc0d08144c96d49b61c2181ff",
     "lib/types/client/Editor.d.ts": "1967365d1e76b26c6125ee960d5b985ed003ea46017a01ec1bbbb0b4a4b0740d",
     "lib/types/client/Editor.js": "3bee3d0a263bf7aabf8e24c67ccc89de73a4c543f92b5ada7c3986d57b8bcf75",
@@ -4220,7 +4306,7 @@
    "dir": "packages/client/ui-sidebar",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "69678420e995049a42312b3bd64e5e6870d937f1e706d8c66a3530126d9d852e",
+    "lib/client.js": "0b1ceef9244b49527e795c5d1a8e7b7e09d56339624fbbeb3d105de4e2202a71",
     "lib/index.js": "be323c589cda4dbb7714df563ebb66f581a3d37ed2ab6859fed85fcebf970aea",
     "lib/types/client/HeaderLeadingControls.d.ts": "c6ad60839d5f7b54167e8da8e4f5ae41e031439135ca3aef80080b7ebb228b4a",
     "lib/types/client/HeaderLeadingControls.js": "0ebbf99d0de880736e5a96401b1408d3dbb0901fa9c1610870609a4a2c541be9",
@@ -4268,7 +4354,7 @@
     "devDependencies:@deepseek-ai/dsh-client-product-analytics",
     "devDependencies:@deepseek-ai/dsh-client-test-runtime"
    ],
-   "rewritten": 158,
+   "rewritten": 156,
    "upstream": "@deepseek-ai/dsh-client-ui-sidebar"
   },
   "@codesmith/client-ui-sidebar-documentpreview": {
@@ -4289,10 +4375,10 @@
    "dir": "packages/client/ui-sidebar-documentpreview",
    "entry": "client.js",
    "files": {
-    "lib/client.excel.js": "668238cc36a00b5d36951f06e36372a4baa07c336674ba99136d9b3768e05302",
-    "lib/client.frontmatter-fields.js": "6a47a18b81252e6368c2aa5efb3a424c840178ebca1bbe7cb8d441ee5fb13758",
-    "lib/client.js": "964c4d522668214a27d1eb9ae66774d8a8a7d81ab7bc1c149c3aa093aaf73d7e",
-    "lib/client.pdf.js": "4e608858b7c9b9aceb325a45487d55fba6e2d1ac3a97fd04985974b4ad959a1d",
+    "lib/client.excel.js": "70f1a6450566e19b826b021afde2e5be670b2d8c86816b3b552803495ed2ff58",
+    "lib/client.frontmatter-fields.js": "9fe16a019e0a0efc7849de58a95f00822d311809bf11dd3a5aadb9f9fd7d1e1e",
+    "lib/client.js": "f8a6d3eb777900e6acd1109b0071fd9539d54b830a400ae40cf60664ccaf0966",
+    "lib/client.pdf.js": "5114d4cc9efb60566c410b0429606fa397ecc1a179a42ffa26962b6eb886dc9f",
     "lib/index.js": "1c7a70d27cdd25af843b74bfe46ab24f057f74d0c0dfe112097ecdac4023fb6f",
     "lib/types/client/LoadingIndicator.d.ts": "52198ccac3277ea8b5fa2ee0f9408b7217b7b7380c2649ef5de1c6d079598e48",
     "lib/types/client/LoadingIndicator.js": "5765fa2867b01d0cff3335003d4230d8f2f97e45799307ca42219aec863b0cf0",
@@ -4580,7 +4666,7 @@
    "dir": "packages/client/ui-sidebar-files",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "01dbbaf929f037ae5dd881124dd3b9b9f585c8211dc12114674e06c1ee048899",
+    "lib/client.js": "27caf236f9f95a57f178535f3dbce051dafc8912912f73c933abac20f6c9ad51",
     "lib/index.js": "806a8f69ff8402dd310d141baff27bb38fa16a40cd51195061425fc5744d733a",
     "lib/types/client/FileNavigator.d.ts": "a8e6cb16e6ab659e1dc707b76844646dc3a156778c58b4c4e924587a026a7e4d",
     "lib/types/client/FileNavigator.js": "8709135683f19d6aff08a8f79a18ed90bf01d227346400faa56f9692caf62ad3",
@@ -4660,7 +4746,7 @@
    "dir": "packages/client/ui-sidebar-right",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "16e97e91ba5b2fa3878dc5246df5e100c3b7dfdf7f28abca7091069c14ed5983",
+    "lib/client.js": "79e139602727c9666d058c3258214a42a94c4d29843f2ad1977e30b52f98342b",
     "lib/index.js": "c6edb0b0d3fd64404d353b7ac6502e82ed54919e2a2f5d59fd0f5fedd287bfce",
     "lib/types/client/contract/params.d.ts": "13b3589ea1898c04c0a58c28f6bf5479bf03ab65853f23a4a7e78b5fcb5ce274",
     "lib/types/client/contract/params.js": "528d0d1b3f73d57d15f580b9ff7890b30f0668dfaec0b9d6353ac1f9a56b3f9e",
@@ -4772,6 +4858,84 @@
    "rewritten": 378,
    "upstream": "@deepseek-ai/dsh-client-ui-sidebar-right"
   },
+  "@codesmith/client-ui-sidebar-terminal": {
+   "deps": [
+    "@codesmith/cordis",
+    "@codesmith/api-remotes",
+    "@codesmith/api-terminal-controller",
+    "@codesmith/client-shortcuts",
+    "@codesmith/client-ui-sidebar-right",
+    "@codesmith/client-ui-theme"
+   ],
+   "dir": "packages/client/ui-sidebar-terminal",
+   "entry": "client.js",
+   "files": {
+    "lib/client.js": "b22fbc7166adf33f5ede1deec7037966b219a6f28bb98f11e48378c8c37c8454",
+    "lib/client.terminal.js": "b531b617cc59c45a4dc96e0b1a6f7841dd57a68a079338e2ee08cdeaaa207336",
+    "lib/index.js": "816de42ccab6e02df23cc8a40f6daba171bca0c861b860c7539e7a3adeeb1147",
+    "lib/types/client/LazyTerminalBody.d.ts": "c6ebd53332b36956fd4efcee327d2ea03d1c24be6731b25fc084fdcefb91ae5c",
+    "lib/types/client/LazyTerminalBody.js": "bb42e25f303059e041524aeed0f3b26129879ae43b721bc8f5ce84009bdc4c9b",
+    "lib/types/client/TerminalCleanup.d.ts": "2c2ce96b79ed2a2d0bad6e282905558c6a4a963e5fe7c75d216a24c41face3b2",
+    "lib/types/client/TerminalCleanup.js": "2c69b60dc35b581f5c3b9679c4024119c7b7990b2109ca39f8546c1c80d2cdcd",
+    "lib/types/client/TerminalGuide.d.ts": "c432f6884858996796cf1084eaf99469333fe63970c11ec2b8d9fd7a454a4ac4",
+    "lib/types/client/TerminalGuide.js": "08a162c8a0cee7a107399fb023f8232211111d53ffd59b546015ac4fb644efa8",
+    "lib/types/client/TerminalIcon.d.ts": "339fd19eaf5b010fbeea30afc42da633ef4d983465e304fb48836fcebc34bfc2",
+    "lib/types/client/TerminalIcon.js": "7198d0dc78070d908c8cdd40f450a6c883c5d8c688af9aecf47511bb8d17206a",
+    "lib/types/client/TerminalRecovery.d.ts": "8ef195b352c5d3c1247694bbd643f9b5345e3ca1f37a4a920427d121eda49809",
+    "lib/types/client/TerminalRecovery.js": "55e6e52b8a53fcdae3a33624208063d763bac0692017a1bca9224427f29bb54e",
+    "lib/types/client/TerminalTitle.d.ts": "f509bfc7c6bfb86593d6117efe42c9b4c7e06b8bc5a9ee3ed3a89ab0d7551fe2",
+    "lib/types/client/TerminalTitle.js": "ea7fe409b1bf5d981c60931225fb3f01b8acf5817d45d97a2b37c957e3c43cfd",
+    "lib/types/client/face.d.ts": "3eedb1d4b6966f969d63305d9bb7ea364dd835be2ce327d5f2da553db5af58be",
+    "lib/types/client/face.js": "92b85d1225273a52856540637e7829fd9b564d17cdfb9688ce4739c9a54d7b02",
+    "lib/types/client/index.d.ts": "5230a5f11a9fecaa399678dcdcedc33ccbf9f2ffe4c9aac64377e10aa5d6fa2b",
+    "lib/types/client/index.js": "3025a874a840233fe4f1034959da1396d1c443ab9457dd979f06172d81e23a60",
+    "lib/types/client/locales.d.ts": "19aeab3a78cc306e712f1451adfe5c22769f9207e70670c3593424be1241c21f",
+    "lib/types/client/locales.js": "3e272ff0ad3e6b9f6cbde8c79295919e33ac2f729f15ee359d2a28c452d19117",
+    "lib/types/client/terminal-cursor.d.ts": "4d540eabafb86b94da745c8cc21a114aca83445430ccdf401a33a9c388eb5f25",
+    "lib/types/client/terminal-cursor.js": "9a50dbe79a3547ff2e0c4fb706fd6488966450401c214a6cf1a8ad7b4abcbd4d",
+    "lib/types/client/terminal-theme.d.ts": "e29431cdc9b069cf7d0d55f44a8d91b9ab58d3995842079fe099e4a6ab3e942f",
+    "lib/types/client/terminal-theme.js": "7389c557393de810ec727c50b40b56557e0897becd14f62219de4d150bb0b24d",
+    "lib/types/client/terminal.d.ts": "8cabe1b40f4b4f91b26a40b0e61f4a24fb5a5ffca6ff5e6b8449c3389ac32582",
+    "lib/types/client/terminal.js": "01363490dad07d99eacb6adc9cefc25f9549e64e473c1164288c68666cfbd4e4",
+    "lib/types/index.d.ts": "4535a2128009f5b8852f65440a4e1be121a70fdb0080f02d927ab9cf6eb22996",
+    "lib/types/index.js": "73b4ebd650cf12a7bdf665388db0bd88cb208cbfc83d720ee8d11d1ce3473a44",
+    "locale/de.json": "8ad587967d92c11655da9b9cecc29995c09ba96c8e92257fb8f270e3f6d995ca",
+    "locale/en.json": "9c64c05e7d558c87fecda1ef1a813560da21cfafc926bbdd13641dc8cf0bf2f4",
+    "locale/es.json": "d98144a75ac5e4e1ef65c5b0800999edd0529559066a1f1dea31ebeab4d84211",
+    "locale/fr.json": "6de7e9140e3703a6844c20b597e6699753dacab3fca6ba0ef806a628efe36271",
+    "locale/ja.json": "c654a45400f223ee7f3597f3422f2891b4f1defdc315da7c3dcfb01089c6dab9",
+    "locale/pt.json": "2d67dfaf127ee5fff80d2f37f877a15bbd6d46e4974b10918d6623a079e84149",
+    "locale/ru.json": "23fedb5d2ac891233751d83de8824fe55c8efcf83e65eaabe8c6187c9f17d29c",
+    "locale/zh.json": "104a3df8003db2fb3c976294445c46fc17a640fa5f5c3c4c0da3c6a3f1317719",
+    "package.json": "6dda6a5f558863917a9774ef3cc5029cb6faeae7ac9950d8978040571a98ead0",
+    "src/client/LazyTerminalBody.tsx": "e35d1ebc280a764da59dc4270e61a3ec0fd749ffc63cf1b865e1f2e4171be921",
+    "src/client/TerminalCleanup.module.css": "7eb175d509f2dece61d182e1889d577751cf623fe3e8a4e9adf1492427b1744a",
+    "src/client/TerminalCleanup.tsx": "3fecb0309aa58a27c0ac1ed4a81ad869a4839581312f44cc8b426d0b207d74a9",
+    "src/client/TerminalGuide.module.css": "e0ff5cacf9fc313fb32811891ba25edbb7422a5495f9df27c9187d56c250d6f0",
+    "src/client/TerminalGuide.tsx": "06a46f3cc2e1315b96ff3c69a2948bf2f6a34a586eb8f86d3512b932ca5529cb",
+    "src/client/TerminalIcon.tsx": "62e47b45856a202c4b99cb2e3af7c19e650dc8d30eca4d498edaf083ef391ea3",
+    "src/client/TerminalRecovery.tsx": "0bdd2212dbb4259736ae03647909e6c2bd2c8171b6a83719c2f8907978b0d7c6",
+    "src/client/TerminalTitle.module.css": "a2a9fca62a8595c39b3e175e6ba2cfff35c7e90a00f6e04d25b70bc83ded8b17",
+    "src/client/TerminalTitle.tsx": "f0b1df4187572b885f6460cdbb53c119da9578a89cc80198b178e92dfd7dc90a",
+    "src/client/face.ts": "6db537def0a75e2283dcdebda53fe00405bacc1db41e47b9b7c8c20d1cc123ac",
+    "src/client/index.ts": "00dc1d319c5554b0886994674b7e996af29ed03d90c92d1a0b1e4ef457279b0a",
+    "src/client/locales.ts": "bed272876a9d358259c22c74fdab77bce08e71b79649f111791861666a17ff47",
+    "src/client/terminal-cursor.ts": "dd0781d60b7c8a3243c242c308570a5294c3a4e3a25c50e0a0f7d1b236d9c0be",
+    "src/client/terminal-theme.ts": "6b20458bb29f859efba9c386b0da221ffa763c8801b16b8ca0512450ca813162",
+    "src/client/terminal.module.css": "1609e7dad23ba726a53c3ba61f57e849ceddff36daae73fbe95b795c66f12964",
+    "src/client/terminal.tsx": "4a098a98a5e46c8940832e08b6c8ba184c6bbf23d27c1c9685baa119fb747767",
+    "src/css-modules.d.ts": "e28410d74a0d763364c04fa690c2ca2202ad3019c74f8f5205e8dc6cba69c02f",
+    "src/index.ts": "92eec52c4802ed6981d185f12d59125f34a5033ceddfb781f454cce101f12c30"
+   },
+   "patched_files": [],
+   "plugin": true,
+   "pruned_deps": [
+    "devDependencies:@deepseek-ai/dsh-client-test-runtime",
+    "devDependencies:@deepseek-ai/dsh-session"
+   ],
+   "rewritten": 144,
+   "upstream": "@deepseek-ai/dsh-client-ui-sidebar-terminal"
+  },
   "@codesmith/client-ui-skill": {
    "deps": [
     "@codesmith/cordis",
@@ -4787,7 +4951,7 @@
    "dir": "packages/client/ui-skill",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "273f0caa0955f15d6f4e058d34b5ae3ca3b3f1c27b3b62a2abeaf9aa1ce8c39a",
+    "lib/client.js": "cc0dc6a39051a68cd470edba9be6a4008969c944b781893c1238745001340617",
     "lib/index.js": "de0f4a8bf21f2e602a5fa55f50b368d3a9aefa24d4629c0b164eb7bded5fb66c",
     "lib/types/client/SkillReference.d.ts": "2834eb2d6a7d22d1b9a57a5cefa3120b848124b9f4d20dfc1caa5c7196f5dd4a",
     "lib/types/client/SkillReference.js": "3cc1d07412ae04c35899c9e1ef324579559543922cdd6cd3f8331e919e562513",
@@ -4869,7 +5033,7 @@
    "dir": "packages/client/ui-theme",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "f2488f6246043b20d1fcfd0b0243600c525cfcb9a3f69bd2cfadc871e24f3cfc",
+    "lib/client.js": "ad96bebf15e2df7333ac94528db1f9d5b23491637684395a8dba2e6da43a3e04",
     "lib/index.js": "a0ba5e702cd3cf29e67892a039225cbbbbd1a120a1098876b930e07405451874",
     "lib/styles/Montserrat-OFL.txt": "861d64229728cd65a98d119612c12769582574d1a092f0b63c8b0fd474e7065f",
     "lib/styles/brand-font.css": "d0733ee69620e686561800ac788e54fc0bb9e02af5294c8b6f74c109132210cf",
@@ -4962,7 +5126,7 @@
    "dir": "packages/client/ui-tool",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "c480770758d833d4f6649d5b2751a40150b661a2126cdf49eb9b4cad0b966f15",
+    "lib/client.js": "82c6b7573f8d35fba7cd9c32547399c318ae787e224e778ab382826a2008ba3b",
     "lib/index.js": "d7b6b290ac874f8c1874ee33d2b1054e2b1a577cfbd1a572fd2e34ca0276ed03",
     "lib/types/client/apply.d.ts": "2de27918bd8fcfdd892fc28387b62af9f4bac901b5e6e70168c946b5ae795e13",
     "lib/types/client/apply.js": "bd7bffea71807486888331d98742a7c3f3e25267487268fdbe4ae4f1f4ec3a23",
@@ -5147,7 +5311,7 @@
    "dir": "packages/client/ui-trajectory",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "d548fb4e44d1f30561be09e7540a5567a94d7f440d586230ca877b1d86f43676",
+    "lib/client.js": "f0cb1e1f0bfed082217a0cbda0de9bd2481300ed8aa894790a7936374923351e",
     "lib/index.js": "0f8c4346ba2f831ad6465f0143f466827d0d038e1b55dadf38d7b06c66c742bf",
     "lib/typert.host.d.ts": "c7a95a338cfdcfaaf2af6a5f25af7cb03115b28cb8367ee87e51c6667fcbe4b0",
     "lib/typert.host.js": "7a2b8ba6d50e4a1af860cfe16552f1489e60beef2f73b8354e0d8a13fe238c3a",
@@ -5297,7 +5461,7 @@
    "dir": "packages/client/ui-user-questions",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "c5818671a44cf8907aff17d6c32a2cd7a11e59950f716365f91b876d1c16cdec",
+    "lib/client.js": "df3c605c0c273b0bd44ba3fcf5c7dadc6039a5aa8c6a10712d00f12d478423df",
     "lib/index.js": "eba01a822b8d16b7e6d5982602dfbc4897f31660cd0bb8d0594ba56eca1ecfdc",
     "lib/types/client/PlanReviewPanel.d.ts": "fda8ec0bc3a0a12325f774dd305df9707c275e37033965f0cf7c1639e54cefb2",
     "lib/types/client/PlanReviewPanel.js": "8ed2d72ca5de6428704e055ac3b30235de55f97f922e943f8f12b9f7a9ef3c5b",
@@ -5369,7 +5533,7 @@
    "dir": "packages/client/ui-workflow-run",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "652ce4128e2b39a6717c206487904b784ab11f35ef479f7c0015011c7301e287",
+    "lib/client.js": "0a3ef80184b3f91ae6e5ea0e4b95f5f405fef287ec5a322947f110752579a444",
     "lib/index.js": "bf98a375d42680907401b909d83fc89f85533a9dc1e66683b020628309b5b496",
     "lib/types/client/WorkflowRunPanel.d.ts": "e9550481ab144ad5e9a867eabafe60584c67dfcc6829152a2ac417218bdb2741",
     "lib/types/client/WorkflowRunPanel.js": "baabe4689761025949d54b00c9b230bba2fca7e8958b4659fdeddd316998c05c",
@@ -5429,7 +5593,7 @@
    "dir": "packages/client/ui-workspace",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "71dded10296bd442bc5580cf15b0b6c5c38b79b0d507632b896081af96ed0631",
+    "lib/client.js": "d75e3c97ad0258f7e55e6e2b9ce89e0c9f349b41a6e80373ee6d7d21b883aea9",
     "lib/index.js": "cc8a43e1e69ca43e5849dc9223bc6e0c7f2d967fe5bb05e59aa1b0e6a3f33117",
     "lib/types/client/WorkspacePicker.d.ts": "3fd4237f9b7c643333961e7cc96ec0f0ec0cd1a68c99e34134277fd5dfc5983f",
     "lib/types/client/WorkspacePicker.js": "91b1fc27740a7a0abeba33c59f9bceee7155b370dce9b24ee95c2b4db686da9e",
@@ -5775,6 +5939,25 @@
    "rewritten": 7,
    "upstream": "@deepseek-ai/dsh-deque"
   },
+  "@codesmith/lazy-require": {
+   "deps": [
+    "@codesmith/cordis"
+   ],
+   "dir": "packages/util/lazy-require",
+   "entry": "client.js",
+   "files": {
+    "lib/index.js": "eab2f914e4b5f54b2a1af5998eecd52f1b737146db44881ef51fb5e501e1faeb",
+    "lib/types/index.d.ts": "ab37594439dc1ce484f3426f4738baced594d5c5af02a1ddaeec8404df11a71b",
+    "lib/types/index.js": "3c8abeafb4a30d0d11c370a957987bca0d5f7b0c22e598e809e47c9e476ea0a0",
+    "package.json": "27cdff004d53e4a06f84427f14fbeb7a7dc89901d212449fc3739bb5ab025df4",
+    "src/index.ts": "3453ea694b03c110b366c4d6c18ff6f2d32004ded38cd43ceb89c3ed7aa11fdf"
+   },
+   "patched_files": [],
+   "plugin": false,
+   "pruned_deps": [],
+   "rewritten": 3,
+   "upstream": "@deepseek-ai/dsh-lazy-require"
+  },
   "@codesmith/native-command": {
    "deps": [
     "@codesmith/cordis"
@@ -6073,7 +6256,7 @@
  },
  "rewrites": [
   [
-   "/Users/xinyiqi/Dev/TypeScript/deepseek\\-harness\\-vendor\\-pin",
+   "/Users/camile/Work/TypeScript/deepseek\\-harness",
    "/upstream"
   ],
   [
@@ -6145,6 +6328,6 @@
    "codesmith"
   ]
  ],
- "source": "/Users/xinyiqi/Dev/TypeScript/deepseek-harness-vendor-pin",
+ "source": "/Users/camile/Work/TypeScript/deepseek-harness",
  "source_commit": "8bd073392eef6f54e921a093b95076248eb08cbb"
 }

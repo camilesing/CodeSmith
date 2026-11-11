@@ -61,6 +61,7 @@
     "@codesmith/typert-protocol": "workspace:*",
     "@codesmith/cordis": "workspace:~",
     "zod": "4.4.3",
+    "@codesmith/api-terminal-controller": "workspace:*",
     "@codesmith/client-ui-trajectory": "workspace:*"
   }
 }

@@ -1,0 +1,71 @@
+{
+  "name": "@codesmith/client-ui-sidebar-terminal",
+  "description": "Interactive shell tabs for the right Sidebar",
+  "version": "0.2.2-alpha.3",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "codesmith": {
+    "client": {
+      "inject": [
+        "@codesmith/api-terminal-controller",
+        "@codesmith/client-ui-sidebar-right",
+        "@codesmith/api-remotes",
+        "@codesmith/client-ui-theme",
+        "@codesmith/client-shortcuts"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@codesmith/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@codesmith/cordis": "workspace:~",
+    "@codesmith/api-remotes": "workspace:*",
+    "@codesmith/client-locale": "workspace:*",
+    "@codesmith/client-store": "workspace:*",
+    "@codesmith/client-ui-dockkit": "workspace:*",
+    "@codesmith/client-ui-primitives": "workspace:*",
+    "@codesmith/client-ui-renderer": "workspace:*",
+    "@codesmith/client-ui-session": "workspace:*",
+    "@codesmith/client-ui-sidebar-right": "workspace:*",
+    "@codesmith/client-ui-slots": "workspace:*",
+    "@testing-library/react": "^16.3.3",
+    "react": "^18.2.0",
+    "clsx": "^2.0.0",
+    "react-dom": "^18.2.0",
+    "@codesmith/api-terminal-controller": "workspace:*",
+    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@codesmith/client-ui-layout": "workspace:*",
+    "@codesmith/client-ui-conversation": "workspace:*",
+    "@codesmith/client-ui-theme": "workspace:*",
+    "@codesmith/client-shortcuts": "workspace:*"
+  },
+  "files": [
+    "locale/*.json",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/client.*.js",
+    "lib/types/**/*.d.ts"
+  ]
+}

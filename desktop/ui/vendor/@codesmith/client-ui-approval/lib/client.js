@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 		let _codesmith_client_ui_primitives = require("@codesmith/client-ui-primitives");
 		//#region \0cds-css:/upstream/packages/client/ui-approval/src/client/ApprovalPanel.module.css.mjs
-		const css = "._6IXe-q_root{padding:8px calc(var(--cds-composer-side-clearance) + 16px) 12px;flex-direction:column;align-items:center;display:flex}._6IXe-q_card{width:100%;max-width:var(--cds-chat-content-width);border:1px solid var(--dsw-alias-state-warn-secondary);border-radius:var(--dsw-radius-xl);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--cds-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--cds-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);overflow:hidden}._6IXe-q_strip{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-primary);align-items:center;gap:8px;padding:10px 16px;font-size:13px;line-height:18px;display:flex}._6IXe-q_body{box-sizing:border-box;max-height:var(--cds-composer-text-max-height);flex-direction:column;gap:6px;padding:12px 16px 0;display:flex;overflow-y:auto}._6IXe-q_headline{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:500;line-height:24px}._6IXe-q_command{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);word-break:break-all;font-size:13px;line-height:20px}._6IXe-q_actionRow{justify-content:flex-end;gap:8px;padding:14px 16px;display:flex}@media (hover:hover){._6IXe-q_reject:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);--cds-button-outline-color:transparent}}._6IXe-q_subject{color:var(--dsw-alias-label-primary);align-items:center;gap:12px;font-size:16px;display:flex}._6IXe-q_subject img{object-fit:contain;flex-shrink:0}._6IXe-q_description{color:var(--dsw-alias-label-secondary);margin:0;font-size:13px;line-height:20px}._6IXe-q_withSubject ._6IXe-q_body{text-align:left}._6IXe-q_withSubject ._6IXe-q_actionRow{flex-wrap:wrap}";
+		const css = ".hvg5sa_root{padding:8px calc(var(--cds-composer-side-clearance) + 16px) 12px;flex-direction:column;align-items:center;display:flex}.hvg5sa_card{width:100%;max-width:var(--cds-chat-content-width);border:1px solid var(--dsw-alias-state-warn-secondary);border-radius:var(--dsw-radius-xl);background:var(--dsw-specific-input-major);box-shadow:var(--dsw-shadow-lv2);--cds-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--cds-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);overflow:hidden}.hvg5sa_strip{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-primary);align-items:center;gap:8px;padding:10px 16px;font-size:13px;line-height:18px;display:flex}.hvg5sa_body{box-sizing:border-box;max-height:var(--cds-composer-text-max-height);flex-direction:column;gap:6px;padding:12px 16px 0;display:flex;overflow-y:auto}.hvg5sa_headline{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:500;line-height:24px}.hvg5sa_command{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);word-break:break-all;font-size:13px;line-height:20px}.hvg5sa_actionRow{justify-content:flex-end;gap:8px;padding:14px 16px;display:flex}@media (hover:hover){.hvg5sa_reject:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary);--cds-button-outline-color:transparent}}.hvg5sa_subject{color:var(--dsw-alias-label-primary);align-items:center;gap:12px;font-size:16px;display:flex}.hvg5sa_subject img{object-fit:contain;flex-shrink:0}.hvg5sa_description{color:var(--dsw-alias-label-secondary);margin:0;font-size:13px;line-height:20px}.hvg5sa_withSubject .hvg5sa_body{text-align:left}.hvg5sa_withSubject .hvg5sa_actionRow{flex-wrap:wrap}";
 		const tagId = "@codesmith/client-ui-approval/ApprovalPanel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -18,17 +18,17 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ApprovalPanel_module_css_default = {
-			"actionRow": "_6IXe-q_actionRow",
-			"body": "_6IXe-q_body",
-			"card": "_6IXe-q_card",
-			"command": "_6IXe-q_command",
-			"description": "_6IXe-q_description",
-			"headline": "_6IXe-q_headline",
-			"reject": "_6IXe-q_reject",
-			"root": "_6IXe-q_root",
-			"strip": "_6IXe-q_strip",
-			"subject": "_6IXe-q_subject",
-			"withSubject": "_6IXe-q_withSubject"
+			"actionRow": "hvg5sa_actionRow",
+			"body": "hvg5sa_body",
+			"card": "hvg5sa_card",
+			"command": "hvg5sa_command",
+			"description": "hvg5sa_description",
+			"headline": "hvg5sa_headline",
+			"reject": "hvg5sa_reject",
+			"root": "hvg5sa_root",
+			"strip": "hvg5sa_strip",
+			"subject": "hvg5sa_subject",
+			"withSubject": "hvg5sa_withSubject"
 		};
 		//#endregion
 		//#region lib/types/client/ApprovalCard.js

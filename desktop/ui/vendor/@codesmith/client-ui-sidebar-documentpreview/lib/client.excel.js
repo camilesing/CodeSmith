@@ -133668,7 +133668,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-sidebar-documentpreview/src/client/excel/ExcelBody.module.css.mjs
-		const css = ".m0M5ZG_body{white-space:normal;height:100%;min-height:0;font-family:var(--dsw-font,sans-serif);flex-direction:column;display:flex;overflow:hidden}.m0M5ZG_workbook{color-scheme:light;color:canvastext;flex:1;min-width:0;min-height:0;position:relative}.m0M5ZG_workbook .fortune-stat-area,.m0M5ZG_workbook .luckysheet-sheets-item-function,.m0M5ZG_workbook .fortune-cols-freeze-handle,.m0M5ZG_workbook .fortune-rows-freeze-handle{display:none}.m0M5ZG_workbook .luckysheet-sheet-area div.luckysheet-sheets-item{padding-right:5px}.m0M5ZG_workbook .luckysheet-sheet-area{padding:0}.m0M5ZG_workbook #luckysheet-sheet-content{flex:1;min-width:0}.m0M5ZG_workbook .fortune-sheettab-container{flex:1;min-width:0;max-width:100%}.m0M5ZG_workbook .fortune-sheettab-container .fortune-sheettab-container-c{overscroll-behavior-x:contain;scrollbar-width:none;overflow:auto hidden}.m0M5ZG_workbook .fortune-sheettab-scroll,.m0M5ZG_workbook .fortune-sheet-area-right{flex:none}.m0M5ZG_workbook .fortune-fx-input-container{min-width:0}.m0M5ZG_workbook .fortune-fx-input{white-space:nowrap;scrollbar-width:none;min-width:0;overflow:auto hidden}.m0M5ZG_notice{color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);font-size:var(--cds-content-font-size-secondary,13px);overflow-wrap:anywhere;flex:none;align-items:flex-start;gap:8px;padding:8px 12px;line-height:1.5;display:flex}.m0M5ZG_notice>svg{flex:none;margin-top:2px}.m0M5ZG_formulaWarning{z-index:3;width:20px;height:20px;color:var(--dsw-alias-state-warn-label);border-radius:var(--dsw-radius-sm);background:0 0;border:0;padding:3px;display:flex;position:absolute;top:4px;left:142px}.m0M5ZG_formulaWarning:focus-visible{background:var(--dsw-alias-state-warn-tertiary);outline:none}@media (hover:hover){.m0M5ZG_formulaWarning:hover{background:var(--dsw-alias-state-warn-tertiary);outline:none}}.m0M5ZG_withFormulaWarning .fortune-fx-input{padding-left:24px}.m0M5ZG_status{height:100%;color:var(--dsw-alias-label-secondary);justify-content:center;align-items:center;gap:8px;padding:16px;display:flex}";
+		const css = ".eGDe9a_body{white-space:normal;height:100%;min-height:0;font-family:var(--dsw-font,sans-serif);flex-direction:column;display:flex;overflow:hidden}.eGDe9a_workbook{color-scheme:light;color:canvastext;flex:1;min-width:0;min-height:0;position:relative}.eGDe9a_workbook .fortune-stat-area,.eGDe9a_workbook .luckysheet-sheets-item-function,.eGDe9a_workbook .fortune-cols-freeze-handle,.eGDe9a_workbook .fortune-rows-freeze-handle{display:none}.eGDe9a_workbook .luckysheet-sheet-area div.luckysheet-sheets-item{padding-right:5px}.eGDe9a_workbook .luckysheet-sheet-area{padding:0}.eGDe9a_workbook #luckysheet-sheet-content{flex:1;min-width:0}.eGDe9a_workbook .fortune-sheettab-container{flex:1;min-width:0;max-width:100%}.eGDe9a_workbook .fortune-sheettab-container .fortune-sheettab-container-c{overscroll-behavior-x:contain;scrollbar-width:none;overflow:auto hidden}.eGDe9a_workbook .fortune-sheettab-scroll,.eGDe9a_workbook .fortune-sheet-area-right{flex:none}.eGDe9a_workbook .fortune-fx-input-container{min-width:0}.eGDe9a_workbook .fortune-fx-input{white-space:nowrap;scrollbar-width:none;min-width:0;overflow:auto hidden}.eGDe9a_notice{color:var(--dsw-alias-state-warn-label);background:var(--dsw-alias-state-warn-tertiary);font-size:var(--cds-content-font-size-secondary,13px);overflow-wrap:anywhere;flex:none;align-items:flex-start;gap:8px;padding:8px 12px;line-height:1.5;display:flex}.eGDe9a_notice>svg{flex:none;margin-top:2px}.eGDe9a_formulaWarning{z-index:3;width:20px;height:20px;color:var(--dsw-alias-state-warn-label);border-radius:var(--dsw-radius-sm);background:0 0;border:0;padding:3px;display:flex;position:absolute;top:4px;left:142px}.eGDe9a_formulaWarning:focus-visible{background:var(--dsw-alias-state-warn-tertiary);outline:none}@media (hover:hover){.eGDe9a_formulaWarning:hover{background:var(--dsw-alias-state-warn-tertiary);outline:none}}.eGDe9a_withFormulaWarning .fortune-fx-input{padding-left:24px}.eGDe9a_status{height:100%;color:var(--dsw-alias-label-secondary);justify-content:center;align-items:center;gap:8px;padding:16px;display:flex}";
 		const tagId = "@codesmith/client-ui-sidebar-documentpreview/ExcelBody.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -133678,12 +133678,12 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var ExcelBody_module_css_default = {
-			"body": "m0M5ZG_body",
-			"formulaWarning": "m0M5ZG_formulaWarning",
-			"notice": "m0M5ZG_notice",
-			"status": "m0M5ZG_status",
-			"withFormulaWarning": "m0M5ZG_withFormulaWarning",
-			"workbook": "m0M5ZG_workbook"
+			"body": "eGDe9a_body",
+			"formulaWarning": "eGDe9a_formulaWarning",
+			"notice": "eGDe9a_notice",
+			"status": "eGDe9a_status",
+			"withFormulaWarning": "eGDe9a_withFormulaWarning",
+			"workbook": "eGDe9a_workbook"
 		};
 		//#endregion
 		//#region lib/types/client/excel/excel.js

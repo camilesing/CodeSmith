@@ -32376,7 +32376,7 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-sidebar-documentpreview/src/client/pdf/PdfBody.module.css.mjs
-		const css = ".eQmjQW_body{box-sizing:border-box;background:var(--dsw-alias-bg-document-preview);width:100%;min-width:100%;min-height:100%;font-family:var(--dsw-font,sans-serif);white-space:normal;flex-direction:column;gap:12px;padding:12px;display:flex;overflow:visible}[data-document-zoom-mode=fixed] .eQmjQW_body{width:max-content}.eQmjQW_page{box-sizing:border-box;width:100%;min-width:0;overflow-x:visible}.eQmjQW_placeholder{aspect-ratio:3/4;background:var(--dsw-alias-bg-skeleton);width:100%}.eQmjQW_canvas{width:100%;max-width:none;height:auto;margin-inline:auto;display:block}.eQmjQW_surface{max-width:none;box-shadow:var(--dsw-elevation-prominent);margin-inline:auto;position:relative}.eQmjQW_surface[hidden]{display:none}.eQmjQW_text{position:absolute;inset:0;overflow:clip}.eQmjQW_text .textLayer{text-align:initial;letter-spacing:normal;word-spacing:normal;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;caret-color:canvastext;z-index:0;--text-scale-factor:calc(var(--total-scale-factor) * var(--min-font-size));--min-font-size-inv:calc(1 / var(--min-font-size));line-height:1;position:absolute;inset:0;overflow:clip}.eQmjQW_text .textLayer[data-main-rotation=\"90\"]{transform:rotate(90deg)translateY(-100%)}.eQmjQW_text .textLayer[data-main-rotation=\"180\"]{transform:rotate(180deg)translate(-100%,-100%)}.eQmjQW_text .textLayer[data-main-rotation=\"270\"]{transform:rotate(270deg)translate(-100%)}.eQmjQW_text :is(span,br){color:#0000;white-space:pre;cursor:text;transform-origin:0 0;user-select:text;position:absolute}.eQmjQW_text .textLayer>:not(.markedContent),.eQmjQW_text .markedContent span:not(.markedContent){z-index:1;--font-height:0;--scale-x:1;--rotate:0deg;font-size:calc(var(--text-scale-factor) * var(--font-height));transform:rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv))}.eQmjQW_text .markedContent{display:contents}.eQmjQW_text ::selection{background:var(--dsw-alias-bg-document-selection);color:#0000}.eQmjQW_text br::selection{background:0 0}.eQmjQW_text .textLayer .endOfContent{z-index:0;cursor:default;user-select:none;display:block;position:absolute;inset:100% 0 0}.eQmjQW_text .selecting .endOfContent{top:0}.eQmjQW_status{color:var(--dsw-alias-label-secondary);align-items:center;gap:8px;padding:10px;font-size:13px;line-height:1.5;display:flex}.eQmjQW_body .eQmjQW_status{color:var(--dsw-alias-label-document-preview)}";
+		const css = ".LmFl1q_body{box-sizing:border-box;background:var(--dsw-alias-bg-document-preview);width:100%;min-width:100%;min-height:100%;font-family:var(--dsw-font,sans-serif);white-space:normal;flex-direction:column;gap:12px;padding:12px;display:flex;overflow:visible}[data-document-zoom-mode=fixed] .LmFl1q_body{width:max-content}.LmFl1q_page{box-sizing:border-box;width:100%;min-width:0;overflow-x:visible}.LmFl1q_placeholder{aspect-ratio:3/4;background:var(--dsw-alias-bg-skeleton);width:100%}.LmFl1q_canvas{width:100%;max-width:none;height:auto;margin-inline:auto;display:block}.LmFl1q_surface{max-width:none;box-shadow:var(--dsw-elevation-prominent);margin-inline:auto;position:relative}.LmFl1q_surface[hidden]{display:none}.LmFl1q_text{position:absolute;inset:0;overflow:clip}.LmFl1q_text .textLayer{text-align:initial;letter-spacing:normal;word-spacing:normal;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;caret-color:canvastext;z-index:0;--text-scale-factor:calc(var(--total-scale-factor) * var(--min-font-size));--min-font-size-inv:calc(1 / var(--min-font-size));line-height:1;position:absolute;inset:0;overflow:clip}.LmFl1q_text .textLayer[data-main-rotation=\"90\"]{transform:rotate(90deg)translateY(-100%)}.LmFl1q_text .textLayer[data-main-rotation=\"180\"]{transform:rotate(180deg)translate(-100%,-100%)}.LmFl1q_text .textLayer[data-main-rotation=\"270\"]{transform:rotate(270deg)translate(-100%)}.LmFl1q_text :is(span,br){color:#0000;white-space:pre;cursor:text;transform-origin:0 0;user-select:text;position:absolute}.LmFl1q_text .textLayer>:not(.markedContent),.LmFl1q_text .markedContent span:not(.markedContent){z-index:1;--font-height:0;--scale-x:1;--rotate:0deg;font-size:calc(var(--text-scale-factor) * var(--font-height));transform:rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv))}.LmFl1q_text .markedContent{display:contents}.LmFl1q_text ::selection{background:var(--dsw-alias-bg-document-selection);color:#0000}.LmFl1q_text br::selection{background:0 0}.LmFl1q_text .textLayer .endOfContent{z-index:0;cursor:default;user-select:none;display:block;position:absolute;inset:100% 0 0}.LmFl1q_text .selecting .endOfContent{top:0}.LmFl1q_status{color:var(--dsw-alias-label-secondary);align-items:center;gap:8px;padding:10px;font-size:13px;line-height:1.5;display:flex}.LmFl1q_body .LmFl1q_status{color:var(--dsw-alias-label-document-preview)}";
 		const tagId = "@codesmith/client-ui-sidebar-documentpreview/PdfBody.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -32386,13 +32386,13 @@ fn fs_main(in : VertexOutput) -> @location(0) vec4<f32> {
 			document.head.appendChild(tag);
 		}
 		var PdfBody_module_css_default = {
-			"body": "eQmjQW_body",
-			"canvas": "eQmjQW_canvas",
-			"page": "eQmjQW_page",
-			"placeholder": "eQmjQW_placeholder",
-			"status": "eQmjQW_status",
-			"surface": "eQmjQW_surface",
-			"text": "eQmjQW_text"
+			"body": "LmFl1q_body",
+			"canvas": "LmFl1q_canvas",
+			"page": "LmFl1q_page",
+			"placeholder": "LmFl1q_placeholder",
+			"status": "LmFl1q_status",
+			"surface": "LmFl1q_surface",
+			"text": "LmFl1q_text"
 		};
 		//#endregion
 		//#region lib/types/client/pdf/pdf.js

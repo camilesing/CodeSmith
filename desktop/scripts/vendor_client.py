@@ -83,11 +83,12 @@ REQUIRED_ENTRIES = [
 # directory browser over the host filesystem + per-thread workspace (the
 # in-app browser package remains vendored for its list/create primitives,
 # while the composed flow is the native OS chooser), the file
-# open/reveal/save actions over the session workspace, and the
-# per-message Like/Dislike + `/feedback` dialog over the bridge's
-# desktop-local feedback sidecar). Upstream pages with no CodeSmith
-# equivalent (plugins, account, agent presets, sidebar terminal/browser,
-# subagent child sessions) stay unvendored so they never appear.
+# open/reveal/save actions over the session workspace, the per-message
+# Like/Dislike + `/feedback` dialog over the bridge's desktop-local feedback
+# sidecar, and the sidebar terminal tabs over the bridge's own PTYs).
+# Upstream pages with no CodeSmith equivalent (plugins, account, agent
+# presets, sidebar browser tabs, subagent child sessions) stay unvendored so
+# they never appear.
 EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-approval",
     "@deepseek-ai/dsh-client-ui-user-questions",
@@ -117,6 +118,7 @@ EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-open-in-app",
     "@deepseek-ai/dsh-client-ui-message-feedback",
     "@deepseek-ai/dsh-client-ui-directory-picker-native",
+    "@deepseek-ai/dsh-client-ui-sidebar-terminal",
 ]
 
 # Scan roots for scoped packages inside the upstream checkout.

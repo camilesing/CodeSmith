@@ -5689,7 +5689,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-sidebar-documentpreview/src/client/markdown/frontmatter-fields.module.css.mjs
-		const css = ".kRrnTq_fields{grid-template-columns:max-content minmax(0,1fr);gap:4px 16px;margin:0;display:grid}.kRrnTq_field{display:contents}.kRrnTq_key{color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code)}.kRrnTq_value,.kRrnTq_block{margin:0}.kRrnTq_block{font-family:var(--ds-font-family-code)}";
+		const css = ".UpEfJW_fields{grid-template-columns:max-content minmax(0,1fr);gap:4px 16px;margin:0;display:grid}.UpEfJW_field{display:contents}.UpEfJW_key{color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code)}.UpEfJW_value,.UpEfJW_block{margin:0}.UpEfJW_block{font-family:var(--ds-font-family-code)}";
 		const tagId = "@codesmith/client-ui-sidebar-documentpreview/frontmatter-fields.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -5699,11 +5699,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var frontmatter_fields_module_css_default = {
-			"block": "kRrnTq_block",
-			"field": "kRrnTq_field",
-			"fields": "kRrnTq_fields",
-			"key": "kRrnTq_key",
-			"value": "kRrnTq_value"
+			"block": "UpEfJW_block",
+			"field": "UpEfJW_field",
+			"fields": "UpEfJW_fields",
+			"key": "UpEfJW_key",
+			"value": "UpEfJW_value"
 		};
 		//#endregion
 		//#region lib/types/client/markdown/frontmatter-fields.js

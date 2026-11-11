@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
 		let react_dom = require("react-dom");
 		let _codesmith_client_ui_primitives = require("@codesmith/client-ui-primitives");
 		//#region \0cds-css:/upstream/packages/client/ui-jobs/src/client/JobListAction.module.css.mjs
-		const css = ".bbq_Dq_trigger{border-radius:var(--dsw-radius-sm);min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;align-items:center;gap:4px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.bbq_Dq_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}@media (hover:hover){.bbq_Dq_trigger:hover{color:var(--dsw-alias-label-secondary)}}.bbq_Dq_activitySlot{flex:none;justify-content:center;align-items:center;width:14px;height:14px;display:inline-flex}.bbq_Dq_trigger .bbq_Dq_compactIcon{display:none}@container (width<=460px){.bbq_Dq_trigger .bbq_Dq_compactIcon{display:block}.bbq_Dq_trigger .bbq_Dq_textModeActivity,.bbq_Dq_trigger .bbq_Dq_count{display:none}.bbq_Dq_trigger{box-sizing:border-box;width:28px;height:28px;color:var(--dsw-alias-label-secondary);justify-content:center;padding:0}.bbq_Dq_trigger .bbq_Dq_activitySlot,.bbq_Dq_trigger .bbq_Dq_activitySlot>svg{width:15px;height:15px}.bbq_Dq_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.bbq_Dq_trigger:active{background:var(--dsw-alias-interactive-bg-active)}@media (hover:hover){.bbq_Dq_trigger:hover{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}}}.bbq_Dq_menu{z-index:100;box-sizing:border-box;width:500px;max-width:min(560px, calc(100vw - 32px), var(--cds-anchored-max-width,100vw));max-height:min(480px, calc(100vh - 140px), var(--cds-anchored-max-height,100vh));--cds-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--cds-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);flex-direction:column;display:flex;position:fixed;overflow:hidden}.bbq_Dq_menuBody{flex-direction:column;gap:1px;min-height:0;margin:0;padding:4px;list-style:none;display:flex;overflow:auto}.bbq_Dq_sectionHeader{border-top:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);justify-content:space-between;align-items:center;margin:4px 4px 1px;padding:4px 0 3px;font-size:11px;line-height:16px;display:flex}.bbq_Dq_sectionHeader:first-child{border-top:0;margin-top:0}.bbq_Dq_sectionToggle,.bbq_Dq_sectionClear{border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;align-items:center;gap:3px;padding:2px 4px;font-size:11px;line-height:16px;display:inline-flex}.bbq_Dq_sectionToggle:focus-visible,.bbq_Dq_sectionClear:focus-visible{background:var(--dsw-alias-fill-l1);color:var(--dsw-alias-label-secondary)}@media (hover:hover){.bbq_Dq_sectionToggle:hover,.bbq_Dq_sectionClear:hover{background:var(--dsw-alias-fill-l1);color:var(--dsw-alias-label-secondary)}}.bbq_Dq_sectionChevron{transition:transform .12s;transform:rotate(-90deg)}.bbq_Dq_sectionChevronOpen{transform:none}.bbq_Dq_item{flex-direction:column;display:flex}.bbq_Dq_rowLine{align-items:stretch;gap:6px;display:flex}.bbq_Dq_rowLineLive{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-fill-l2);padding:4px 8px 4px 2px}@media (hover:hover){.bbq_Dq_rowLineLive:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent)}}.bbq_Dq_rowLineLive .bbq_Dq_kind{background:var(--dsw-specific-menu)}.bbq_Dq_rowLine .bbq_Dq_row{flex:1;min-width:0}@media (hover:hover){.bbq_Dq_rowLineLive .bbq_Dq_row:hover{background:0 0}}.bbq_Dq_rowLineLive .bbq_Dq_row{border-radius:var(--dsw-radius-sm)}.bbq_Dq_rowLineLive .bbq_Dq_row:focus-visible{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}.bbq_Dq_chevronBox{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-specific-menu);flex:none;justify-content:center;align-self:center;align-items:center;width:20px;height:20px;display:inline-flex}.bbq_Dq_stop{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-specific-menu);width:20px;height:20px;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none;justify-content:center;align-self:center;align-items:center;padding:0;display:inline-flex}.bbq_Dq_stop:focus-visible{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);color:var(--dsw-alias-state-error-primary)}@media (hover:hover){.bbq_Dq_stop:hover{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);color:var(--dsw-alias-state-error-primary)}}.bbq_Dq_stopArmed,.bbq_Dq_stopArmed:focus-visible{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);width:auto;color:var(--dsw-alias-state-error-primary);gap:4px;padding:0 7px}@media (hover:hover){.bbq_Dq_stopArmed:hover{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);width:auto;color:var(--dsw-alias-state-error-primary);gap:4px;padding:0 7px}}.bbq_Dq_stopLabel{white-space:nowrap;font-size:11px;line-height:18px}.bbq_Dq_stopFailed{color:var(--dsw-alias-state-error-primary)}.bbq_Dq_row{box-sizing:border-box;border-radius:var(--dsw-radius-md);width:100%;min-height:28px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:0;align-items:center;gap:6px;padding:4px 7px;font-size:12px;line-height:17px;display:flex}.bbq_Dq_row:focus-visible{background:var(--dsw-alias-fill-l1)}@media (hover:hover){.bbq_Dq_row:hover{background:var(--dsw-alias-fill-l1)}}.bbq_Dq_rowStatic{cursor:default}@media (hover:hover){.bbq_Dq_rowStatic:hover{background:0 0}}.bbq_Dq_rowSettled{color:var(--dsw-alias-label-tertiary)}.bbq_Dq_row .bbq_Dq_rowDot{flex:none}.bbq_Dq_main{flex-direction:column;flex:1;gap:2px;min-width:0;display:flex}.bbq_Dq_primary{align-items:baseline;gap:8px;min-width:0;display:flex}.bbq_Dq_secondary{align-items:center;gap:6px;min-width:0;display:flex}.bbq_Dq_kind{border-radius:var(--dsw-radius-xs);background:var(--dsw-alias-fill-l2);color:var(--dsw-alias-label-secondary);flex:none;padding:0 5px;font-size:10px;line-height:16px}.bbq_Dq_label{min-width:0;font-family:var(--dsw-font-mono);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}.bbq_Dq_status{max-width:60%;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;flex:none;font-size:10px;line-height:16px;overflow:hidden}.bbq_Dq_duration{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none;font-size:11px;line-height:18px}.bbq_Dq_chevron{color:var(--dsw-alias-label-tertiary);flex:none}.bbq_Dq_chevronOpen{transform:rotate(180deg)}.bbq_Dq_panel{--dsl-terminal-command-whitespace:pre-wrap;--dsl-terminal-line-whitespace:pre-wrap;--dsl-terminal-output-max-height:288px;margin:0 8px 8px}.bbq_Dq_panel [data-terminal]{--dsl-terminal-gutter:12px}.bbq_Dq_notice{color:var(--dsw-alias-label-tertiary);margin:0 8px 6px;font-size:11px;line-height:16px}.bbq_Dq_noticeError{color:var(--dsw-alias-state-error-primary)}";
+		const css = ".O9A6bW_trigger{border-radius:var(--dsw-radius-sm);min-height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;align-items:center;gap:4px;padding:3px 2px;font-size:12px;line-height:18px;display:inline-flex}.O9A6bW_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}@media (hover:hover){.O9A6bW_trigger:hover{color:var(--dsw-alias-label-secondary)}}.O9A6bW_activitySlot{flex:none;justify-content:center;align-items:center;width:14px;height:14px;display:inline-flex}.O9A6bW_trigger .O9A6bW_compactIcon{display:none}@container (width<=460px){.O9A6bW_trigger .O9A6bW_compactIcon{display:block}.O9A6bW_trigger .O9A6bW_textModeActivity,.O9A6bW_trigger .O9A6bW_count{display:none}.O9A6bW_trigger{box-sizing:border-box;width:28px;height:28px;color:var(--dsw-alias-label-secondary);justify-content:center;padding:0}.O9A6bW_trigger .O9A6bW_activitySlot,.O9A6bW_trigger .O9A6bW_activitySlot>svg{width:15px;height:15px}.O9A6bW_trigger:focus-visible{color:var(--dsw-alias-label-secondary)}.O9A6bW_trigger:active{background:var(--dsw-alias-interactive-bg-active)}@media (hover:hover){.O9A6bW_trigger:hover{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}}}.O9A6bW_menu{z-index:100;box-sizing:border-box;width:500px;max-width:min(560px, calc(100vw - 32px), var(--cds-anchored-max-width,100vw));max-height:min(480px, calc(100vh - 140px), var(--cds-anchored-max-height,100vh));--cds-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--cds-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent);flex-direction:column;display:flex;position:fixed;overflow:hidden}.O9A6bW_menuBody{flex-direction:column;gap:1px;min-height:0;margin:0;padding:4px;list-style:none;display:flex;overflow:auto}.O9A6bW_sectionHeader{border-top:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);justify-content:space-between;align-items:center;margin:4px 4px 1px;padding:4px 0 3px;font-size:11px;line-height:16px;display:flex}.O9A6bW_sectionHeader:first-child{border-top:0;margin-top:0}.O9A6bW_sectionToggle,.O9A6bW_sectionClear{border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;align-items:center;gap:3px;padding:2px 4px;font-size:11px;line-height:16px;display:inline-flex}.O9A6bW_sectionToggle:focus-visible,.O9A6bW_sectionClear:focus-visible{background:var(--dsw-alias-fill-l1);color:var(--dsw-alias-label-secondary)}@media (hover:hover){.O9A6bW_sectionToggle:hover,.O9A6bW_sectionClear:hover{background:var(--dsw-alias-fill-l1);color:var(--dsw-alias-label-secondary)}}.O9A6bW_sectionChevron{transition:transform .12s;transform:rotate(-90deg)}.O9A6bW_sectionChevronOpen{transform:none}.O9A6bW_item{flex-direction:column;display:flex}.O9A6bW_rowLine{align-items:stretch;gap:6px;display:flex}.O9A6bW_rowLineLive{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-fill-l2);padding:4px 8px 4px 2px}@media (hover:hover){.O9A6bW_rowLineLive:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent)}}.O9A6bW_rowLineLive .O9A6bW_kind{background:var(--dsw-specific-menu)}.O9A6bW_rowLine .O9A6bW_row{flex:1;min-width:0}@media (hover:hover){.O9A6bW_rowLineLive .O9A6bW_row:hover{background:0 0}}.O9A6bW_rowLineLive .O9A6bW_row{border-radius:var(--dsw-radius-sm)}.O9A6bW_rowLineLive .O9A6bW_row:focus-visible{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}.O9A6bW_chevronBox{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-specific-menu);flex:none;justify-content:center;align-self:center;align-items:center;width:20px;height:20px;display:inline-flex}.O9A6bW_stop{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-specific-menu);width:20px;height:20px;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none;justify-content:center;align-self:center;align-items:center;padding:0;display:inline-flex}.O9A6bW_stop:focus-visible{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);color:var(--dsw-alias-state-error-primary)}@media (hover:hover){.O9A6bW_stop:hover{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);color:var(--dsw-alias-state-error-primary)}}.O9A6bW_stopArmed,.O9A6bW_stopArmed:focus-visible{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);width:auto;color:var(--dsw-alias-state-error-primary);gap:4px;padding:0 7px}@media (hover:hover){.O9A6bW_stopArmed:hover{border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);width:auto;color:var(--dsw-alias-state-error-primary);gap:4px;padding:0 7px}}.O9A6bW_stopLabel{white-space:nowrap;font-size:11px;line-height:18px}.O9A6bW_stopFailed{color:var(--dsw-alias-state-error-primary)}.O9A6bW_row{box-sizing:border-box;border-radius:var(--dsw-radius-md);width:100%;min-height:28px;color:var(--dsw-alias-label-primary);text-align:left;cursor:pointer;background:0 0;border:0;align-items:center;gap:6px;padding:4px 7px;font-size:12px;line-height:17px;display:flex}.O9A6bW_row:focus-visible{background:var(--dsw-alias-fill-l1)}@media (hover:hover){.O9A6bW_row:hover{background:var(--dsw-alias-fill-l1)}}.O9A6bW_rowStatic{cursor:default}@media (hover:hover){.O9A6bW_rowStatic:hover{background:0 0}}.O9A6bW_rowSettled{color:var(--dsw-alias-label-tertiary)}.O9A6bW_row .O9A6bW_rowDot{flex:none}.O9A6bW_main{flex-direction:column;flex:1;gap:2px;min-width:0;display:flex}.O9A6bW_primary{align-items:baseline;gap:8px;min-width:0;display:flex}.O9A6bW_secondary{align-items:center;gap:6px;min-width:0;display:flex}.O9A6bW_kind{border-radius:var(--dsw-radius-xs);background:var(--dsw-alias-fill-l2);color:var(--dsw-alias-label-secondary);flex:none;padding:0 5px;font-size:10px;line-height:16px}.O9A6bW_label{min-width:0;font-family:var(--dsw-font-mono);white-space:nowrap;text-overflow:ellipsis;flex:1;overflow:hidden}.O9A6bW_status{max-width:60%;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;flex:none;font-size:10px;line-height:16px;overflow:hidden}.O9A6bW_duration{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none;font-size:11px;line-height:18px}.O9A6bW_chevron{color:var(--dsw-alias-label-tertiary);flex:none}.O9A6bW_chevronOpen{transform:rotate(180deg)}.O9A6bW_panel{--dsl-terminal-command-whitespace:pre-wrap;--dsl-terminal-line-whitespace:pre-wrap;--dsl-terminal-output-max-height:288px;margin:0 8px 8px}.O9A6bW_panel [data-terminal]{--dsl-terminal-gutter:12px}.O9A6bW_notice{color:var(--dsw-alias-label-tertiary);margin:0 8px 6px;font-size:11px;line-height:16px}.O9A6bW_noticeError{color:var(--dsw-alias-state-error-primary)}";
 		const tagId = "@codesmith/client-ui-jobs/JobListAction.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -19,42 +19,42 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var JobListAction_module_css_default = {
-			"activitySlot": "bbq_Dq_activitySlot",
-			"chevron": "bbq_Dq_chevron",
-			"chevronBox": "bbq_Dq_chevronBox",
-			"chevronOpen": "bbq_Dq_chevronOpen",
-			"compactIcon": "bbq_Dq_compactIcon",
-			"count": "bbq_Dq_count",
-			"duration": "bbq_Dq_duration",
-			"item": "bbq_Dq_item",
-			"kind": "bbq_Dq_kind",
-			"label": "bbq_Dq_label",
-			"main": "bbq_Dq_main",
-			"menu": "bbq_Dq_menu",
-			"menuBody": "bbq_Dq_menuBody",
-			"notice": "bbq_Dq_notice",
-			"noticeError": "bbq_Dq_noticeError",
-			"panel": "bbq_Dq_panel",
-			"primary": "bbq_Dq_primary",
-			"row": "bbq_Dq_row",
-			"rowDot": "bbq_Dq_rowDot",
-			"rowLine": "bbq_Dq_rowLine",
-			"rowLineLive": "bbq_Dq_rowLineLive",
-			"rowSettled": "bbq_Dq_rowSettled",
-			"rowStatic": "bbq_Dq_rowStatic",
-			"secondary": "bbq_Dq_secondary",
-			"sectionChevron": "bbq_Dq_sectionChevron",
-			"sectionChevronOpen": "bbq_Dq_sectionChevronOpen",
-			"sectionClear": "bbq_Dq_sectionClear",
-			"sectionHeader": "bbq_Dq_sectionHeader",
-			"sectionToggle": "bbq_Dq_sectionToggle",
-			"status": "bbq_Dq_status",
-			"stop": "bbq_Dq_stop",
-			"stopArmed": "bbq_Dq_stopArmed",
-			"stopFailed": "bbq_Dq_stopFailed",
-			"stopLabel": "bbq_Dq_stopLabel",
-			"textModeActivity": "bbq_Dq_textModeActivity",
-			"trigger": "bbq_Dq_trigger"
+			"activitySlot": "O9A6bW_activitySlot",
+			"chevron": "O9A6bW_chevron",
+			"chevronBox": "O9A6bW_chevronBox",
+			"chevronOpen": "O9A6bW_chevronOpen",
+			"compactIcon": "O9A6bW_compactIcon",
+			"count": "O9A6bW_count",
+			"duration": "O9A6bW_duration",
+			"item": "O9A6bW_item",
+			"kind": "O9A6bW_kind",
+			"label": "O9A6bW_label",
+			"main": "O9A6bW_main",
+			"menu": "O9A6bW_menu",
+			"menuBody": "O9A6bW_menuBody",
+			"notice": "O9A6bW_notice",
+			"noticeError": "O9A6bW_noticeError",
+			"panel": "O9A6bW_panel",
+			"primary": "O9A6bW_primary",
+			"row": "O9A6bW_row",
+			"rowDot": "O9A6bW_rowDot",
+			"rowLine": "O9A6bW_rowLine",
+			"rowLineLive": "O9A6bW_rowLineLive",
+			"rowSettled": "O9A6bW_rowSettled",
+			"rowStatic": "O9A6bW_rowStatic",
+			"secondary": "O9A6bW_secondary",
+			"sectionChevron": "O9A6bW_sectionChevron",
+			"sectionChevronOpen": "O9A6bW_sectionChevronOpen",
+			"sectionClear": "O9A6bW_sectionClear",
+			"sectionHeader": "O9A6bW_sectionHeader",
+			"sectionToggle": "O9A6bW_sectionToggle",
+			"status": "O9A6bW_status",
+			"stop": "O9A6bW_stop",
+			"stopArmed": "O9A6bW_stopArmed",
+			"stopFailed": "O9A6bW_stopFailed",
+			"stopLabel": "O9A6bW_stopLabel",
+			"textModeActivity": "O9A6bW_textModeActivity",
+			"trigger": "O9A6bW_trigger"
 		};
 		//#endregion
 		//#region lib/types/client/JobListAction.js

@@ -594,8 +594,8 @@ var ClientModuleRegistry = class extends Service {
 	constructor(ctx) {
 		super(ctx, "clientModules");
 		const { version } = createRequire(import.meta.url)("../package.json");
-		const commit = process.env.CODESMITH_CLIENT_COMMIT_HASH;
-		this.release = commit === void 0 ? { version } : {
+		const commit = "8bd0733";
+		this.release = {
 			version,
 			commit
 		};

@@ -474,7 +474,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-permission-presets/src/client/PermissionSelect.module.css.mjs
-		const css$1 = ".Ymx7ka_trigger{border-radius:var(--dsw-radius-sm);min-width:0;max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex}@media (hover:hover){.Ymx7ka_trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}}.Ymx7ka_trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}.Ymx7ka_trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.Ymx7ka_triggerIcon{flex:none;display:inline-flex}.Ymx7ka_triggerIcon svg{width:14px;height:14px}.Ymx7ka_triggerLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.Ymx7ka_optionLabel{align-items:center;gap:4px;min-width:0;max-width:100%;display:inline-flex}.Ymx7ka_optionLabelText{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.Ymx7ka_badge{color:var(--dsw-alias-label-tertiary);letter-spacing:.2px;flex:none;font-size:8px;font-weight:500;line-height:10px}.Ymx7ka_chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s;display:inline-flex}@container (width<=460px){.Ymx7ka_trigger:has(.Ymx7ka_triggerIcon) .Ymx7ka_triggerLabel{display:none}}.Ymx7ka_chevronOpen{transform:rotate(180deg)}";
+		const css$1 = ".fNuc1G_trigger{border-radius:var(--dsw-radius-sm);min-width:0;max-width:220px;height:28px;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;outline:none;align-items:center;gap:4px;padding:0 4px 0 8px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex}@media (hover:hover){.fNuc1G_trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}}.fNuc1G_trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}.fNuc1G_trigger:disabled{color:var(--dsw-alias-label-dimmed);cursor:default}.fNuc1G_triggerIcon{flex:none;display:inline-flex}.fNuc1G_triggerIcon svg{width:14px;height:14px}.fNuc1G_triggerLabel{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.fNuc1G_optionLabel{align-items:center;gap:4px;min-width:0;max-width:100%;display:inline-flex}.fNuc1G_optionLabelText{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}.fNuc1G_badge{color:var(--dsw-alias-label-tertiary);letter-spacing:.2px;flex:none;font-size:8px;font-weight:500;line-height:10px}.fNuc1G_chevron{color:var(--dsw-alias-label-caption);flex:none;transition:transform .12s;display:inline-flex}@container (width<=460px){.fNuc1G_trigger:has(.fNuc1G_triggerIcon) .fNuc1G_triggerLabel{display:none}}.fNuc1G_chevronOpen{transform:rotate(180deg)}";
 		const tagId$1 = "@codesmith/client-ui-permission-presets/PermissionSelect.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -484,14 +484,14 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var PermissionSelect_module_css_default = {
-			"badge": "Ymx7ka_badge",
-			"chevron": "Ymx7ka_chevron",
-			"chevronOpen": "Ymx7ka_chevronOpen",
-			"optionLabel": "Ymx7ka_optionLabel",
-			"optionLabelText": "Ymx7ka_optionLabelText",
-			"trigger": "Ymx7ka_trigger",
-			"triggerIcon": "Ymx7ka_triggerIcon",
-			"triggerLabel": "Ymx7ka_triggerLabel"
+			"badge": "fNuc1G_badge",
+			"chevron": "fNuc1G_chevron",
+			"chevronOpen": "fNuc1G_chevronOpen",
+			"optionLabel": "fNuc1G_optionLabel",
+			"optionLabelText": "fNuc1G_optionLabelText",
+			"trigger": "fNuc1G_trigger",
+			"triggerIcon": "fNuc1G_triggerIcon",
+			"triggerLabel": "fNuc1G_triggerLabel"
 		};
 		//#endregion
 		//#region lib/types/client/PermissionSelect.js
@@ -642,7 +642,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region \0cds-css:/upstream/packages/client/ui-permission-presets/src/client/PermissionRow.module.css.mjs
-		const css = ".kaKRGa_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.kaKRGa_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .kaKRGa_rowText{padding-right:16px}}.kaKRGa_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.kaKRGa_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.kaKRGa_selector{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}@media (hover:hover){.kaKRGa_selector:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}}.kaKRGa_selector:disabled{cursor:default}.kaKRGa_chevron{flex:none}";
+		const css = ".YWY94W_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.YWY94W_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}@media (width<=767px){html:not([data-windows-titlebar]):not([data-platform=darwin]) .YWY94W_rowText{padding-right:16px}}.YWY94W_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.YWY94W_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.YWY94W_selector{border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}@media (hover:hover){.YWY94W_selector:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}}.YWY94W_selector:disabled{cursor:default}.YWY94W_chevron{flex:none}";
 		const tagId = "@codesmith/client-ui-permission-presets/PermissionRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -652,12 +652,12 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var PermissionRow_module_css_default = {
-			"chevron": "kaKRGa_chevron",
-			"desc": "kaKRGa_desc",
-			"row": "kaKRGa_row",
-			"rowText": "kaKRGa_rowText",
-			"selector": "kaKRGa_selector",
-			"title": "kaKRGa_title"
+			"chevron": "YWY94W_chevron",
+			"desc": "YWY94W_desc",
+			"row": "YWY94W_row",
+			"rowText": "YWY94W_rowText",
+			"selector": "YWY94W_selector",
+			"title": "YWY94W_title"
 		};
 		//#endregion
 		//#region lib/types/client/PermissionRow.js
