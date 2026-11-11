@@ -411,7 +411,13 @@ impl ToolSpec for TicketCloseTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::ReadOnly]
+        // Session management, not a workspace write — the same declaration
+        // the sibling `agent_close` carries. It is NOT `ReadOnly`: closing a
+        // ticket ends its mandate and may cancel a running worker.
+        vec![
+            ToolCapability::ExecutesCode,
+            ToolCapability::AllowedInPlanMode,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
