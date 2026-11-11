@@ -605,7 +605,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |
 | open-in-app 图标 | macOS icns → PNG 已服务 | Linux/Windows 保持字形 | 已落地 |
 | goal 持久 CAS | 已落地（变更 ref 防线） | — | 已落地 |
-| 像素基线 · 上传进度 | 上文已知限制各条 | 逐条清偿 | 排队 |
+| 上传进度 | 不做（结构性） | vendored 上传运行时的 transport 钩子按契约丢弃进度回调，且环回上传毫秒级落定——进度条永不会动（见附件条目） | 不做 |
+| 像素基线 | 我方四张已捕获（`desktop/screenshots/baseline/`）；上游对照延期 | 解锁：经上游构建版 web 脚手架驱动一个逐像素对齐的 fixture 场景（headless CDP——2026-11-07 的 Electron 与窗口截图两项阻塞对该路线不适用） | 延期 |
 | 自动更新 · 欢迎页 · 托盘 | 无 | 桌面壳切片（Tauri updater 等） | 后续可选 |
 | 账号 / 平台 · 侧栏浏览器标签 | 不模拟 | — | 不跟进（上游品牌基建；Electron 嵌套 webview 无 wry 对等） |
 | vendor 刷新 | pin `8bd07339`，与本地 checkout 持平 | 上游演进后重跑 vendor 管线并修复 wire 漂移 | 常设机制 |

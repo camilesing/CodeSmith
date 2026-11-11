@@ -771,7 +771,8 @@ lives in the bullets above.
 | Office document preview | bridged over a local `soffice` | — | landed |
 | open-in-app icons | macOS icns → PNG served | Linux/Windows keep the glyph | landed |
 | goal durable CAS | landed (the mutation ref guard) | — | landed |
-| pixel-parity baseline · upload progress | Known-limitations bullets above | clear per bullet | queued |
+| upload progress | won't fix (structural) | the vendored upload runtime's transport hook drops the progress callback by contract, and loopback uploads settle in milliseconds — the bar would never visibly move (see the attachment bullet) | won't fix |
+| pixel-parity baseline | our four shots captured (`desktop/screenshots/baseline/`); the upstream comparison is deferred | unblock: drive one matching fixture scenario through the upstream built-dist web scaffold (headless CDP — the 2026-11-07 Electron and window-capture blockers do not apply to that path) | deferred |
 | Auto-update · welcome · tray | none | desktop-shell slices (Tauri updater and friends) | later, optional |
 | Account / platform · sidebar browser tabs | not simulated | — | will not bridge (upstream brand infrastructure; Electron's nested webview has no wry equivalent) |
 | Vendor refresh | pinned `8bd07339`, level with the local checkout | re-run the vendor pipeline after upstream moves and repair wire drift | standing mechanism |
