@@ -181,8 +181,14 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `--working-directory={path}`），以脱离方式运行并清除名字像密钥的环境
   变量，短暂观察启动是否立即失败，并要求目标为同一工作区栅栏内已存在的
   绝对目录。会话头的“Open In…”控件与工作区行的“在文件夹显示”由此启用。
-  图标不服务：vendored 控件生成页内相对的 `/open-in-app/icon/<id>` URL，
-  webview 会把它解析到自己的资源服务器，因此控件渲染自带回退字形；重命名
+  macOS 上图标已服务：vendored 控件的图标前缀经 vendor 补丁改为指向桥的
+  绝对 URL（`<img>` 加载绕过 transport 的 fetch 钩子，页内相对图标 URL
+  会在资源 origin 上 404），`GET /open-in-app/icon/<id>` 回答 bundle icns
+  里最大的 PNG 条目——优先主图标 `AppIcon.icns`——按 `image/png` 带
+  一天缓存与 mtime:size ETag（`If-None-Match` 命中答 304；`<img>` 加载
+  不带 Origin 头，路由与其它宿主路由一样放行无 Origin 请求）。Finder
+  （无 bundle）、Linux/Windows 全部条目、以及只含 raw-ARGB 条目的 icns
+  答 404，控件渲染自带回退字形；重命名
   或移出常规根的应用不会被发现。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
@@ -588,7 +594,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
 | Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |
-| open-in-app 图标 | 兜底字形 | 提取已安装应用的图标 | 小切片排队 |
+| open-in-app 图标 | macOS icns → PNG 已服务 | Linux/Windows 保持字形 | 已落地 |
 | goal 持久 CAS · 像素基线 · 上传进度 | 上文已知限制各条 | 逐条清偿 | 排队 |
 | 自动更新 · 欢迎页 · 托盘 | 无 | 桌面壳切片（Tauri updater 等） | 后续可选 |
 | 账号 / 平台 · 侧栏浏览器标签 | 不模拟 | — | 不跟进（上游品牌基建；Electron 嵌套 webview 无 wry 对等） |

@@ -186,6 +186,19 @@ VENDOR_PATCHES: list[dict[str, str]] = [
         "find": 'css.wordmark, "HARNESS"',
         "replace": 'css.wordmark, "CodeSmith"',
     },
+    # The open-in-app control renders the application icon as an `<img>`,
+    # whose load bypasses the transport's fetch hook — a page-relative icon
+    # URL 404s against the asset origin. Point it at the bridge (loopback is
+    # mixed-content-exempt; a refused load still falls back to the glyph).
+    {
+        "package": "@deepseek-ai/dsh-client-ui-open-in-app",
+        "files": ["lib/client.js", "lib/client.browser.js"],
+        "find": '"/open-in-app/icon".slice(1)',
+        "replace": (
+            "`http://127.0.0.1:${globalThis.__CODESMITH_BRIDGE_PORT__ ?? 1421}"
+            "/open-in-app/icon`"
+        ),
+    },
 ]
 
 # The upstream feedback dialog tells the human the submission includes the

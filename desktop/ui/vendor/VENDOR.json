@@ -2924,7 +2924,7 @@
    "dir": "packages/client/ui-open-in-app",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "db8f78bc86c76235129e7946a4fd2beb8d8a69ed939ea641121b6207f6bc0f2a",
+    "lib/client.js": "9c7708842119c707a8885bfc0fa2d77a11e16417210dffcee3364bbe51435295",
     "lib/index.js": "405220bc5b51770174dd78bf3d53b585e2300e86fb7cd54686f9d15cdf74e853",
     "lib/types/client/FileRouteAction.d.ts": "8f87c57c7b7977ec5cfb98f6ebeb73b06fbde5b5e4a1f32f508b2d4603ef403e",
     "lib/types/client/FileRouteAction.js": "dae5650d98c532255148631cfe626590fc84aa08ac79dfb125c135549df1c3fd",
@@ -2986,7 +2986,9 @@
     "src/css-modules.d.ts": "e28410d74a0d763364c04fa690c2ca2202ad3019c74f8f5205e8dc6cba69c02f",
     "src/index.ts": "2edc1b39b5fe23a727e1af3b89d34e09c30e67e0d1299dd8d2a11f8577aaccc3"
    },
-   "patched_files": [],
+   "patched_files": [
+    "lib/client.js"
+   ],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-test-runtime",

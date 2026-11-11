@@ -287,7 +287,7 @@ window.__ModuleLoader__.load({
 		/** Browser-relative form of {@link OPEN_IN_APP_APPS_PATH}. */
 		const OPEN_IN_APP_APPS_ROUTE = "/open-in-app/apps".slice(1);
 		/** Browser-relative form of {@link OPEN_IN_APP_ICON_PREFIX_PATH}. */
-		const OPEN_IN_APP_ICON_PREFIX_ROUTE = "/open-in-app/icon".slice(1);
+		const OPEN_IN_APP_ICON_PREFIX_ROUTE = `http://127.0.0.1:${globalThis.__CODESMITH_BRIDGE_PORT__ ?? 1421}/open-in-app/icon`;
 		/** Browser-relative form of {@link OPEN_IN_APP_OPEN_PATH}. */
 		const OPEN_IN_APP_OPEN_ROUTE = "/open-in-app/open".slice(1);
 		//#endregion

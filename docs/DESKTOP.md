@@ -215,11 +215,17 @@ Known limitations of the current implementation:
   watches the first moments for an immediate failure, and requires an
   existing absolute directory inside the same workspace fence. That is what
   enables the session header's “Open In…” control and the Workspace row's
-  “Show in folder”. Icons are not served: the vendored control builds a
-  page-relative `/open-in-app/icon/<id>` URL, which the webview resolves
-  against its own asset server, so the control renders its built-in fallback
-  glyph; a bundle renamed or moved outside the conventional roots is not
-  offered.
+  “Show in folder”. Icons ARE served on macOS: the vendored control's icon
+  prefix is vendored as an absolute bridge URL (`<img>` loads bypass the
+  transport's fetch hook, so a page-relative icon URL would 404 against the
+  asset origin), and `GET /open-in-app/icon/<id>` answers the largest PNG
+  entry of the bundle's icns — the principal `AppIcon.icns` first — as
+  `image/png` with a day of cache and an mtime:size ETag (`If-None-Match`
+  → 304; the route admits originless requests because an `<img>` load
+  carries no Origin). Finder (no bundle), every Linux/Windows entry, and an
+  icns holding only raw-ARGB entries answer 404, and the control renders
+  its built-in fallback glyph; a bundle renamed or moved outside the
+  conventional roots is not offered.
 - Sidebar pins and the manual session order are desktop-shell state,
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned
@@ -752,7 +758,7 @@ lives in the bullets above.
 | Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |
 | Office document preview | bridged over a local `soffice` | — | landed |
-| open-in-app icons | fallback glyph | extract installed-bundle icons | queued small slice |
+| open-in-app icons | macOS icns → PNG served | Linux/Windows keep the glyph | landed |
 | goal durable CAS · pixel-parity baseline · upload progress | Known-limitations bullets above | clear per bullet | queued |
 | Auto-update · welcome · tray | none | desktop-shell slices (Tauri updater and friends) | later, optional |
 | Account / platform · sidebar browser tabs | not simulated | — | will not bridge (upstream brand infrastructure; Electron's nested webview has no wry equivalent) |

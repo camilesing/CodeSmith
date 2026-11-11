@@ -27,21 +27,26 @@
 //!
 //! Known limitations: discovery checks the conventional install locations
 //! (the two `Applications` directories on macOS, PATH on Linux/Windows) — an
-//! application renamed or moved elsewhere is not offered. Icons are not
-//! served: the vendored control addresses a page-relative `/open-in-app/icon`
-//! URL, which this shell's webview would resolve against its own asset
-//! server, so the control renders its built-in fallback glyph.
+//! application renamed or moved elsewhere is not offered. Icons
+//! (`GET /open-in-app/icon/<id>`, the prefix vendored as an absolute bridge
+//! URL because `<img>` loads bypass the fetch hook) are macOS-only: the
+//! largest PNG entry of the bundle's icns, served without a decoder. Finder
+//! (no bundle) and every Linux/Windows entry keep the control's built-in
+//! fallback glyph; an icns holding only raw-ARGB entries (rare, pre-PNG
+//! apps) does too.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use axum::extract::Path as AxumPath;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
+use super::mux;
 use super::SharedHost;
 
 /// Launch-argument token carrying the workspace directory.
@@ -445,6 +450,133 @@ pub async fn apps() -> Json<Value> {
     Json(json!({ "apps": ids }))
 }
 
+/// `GET /open-in-app/icon/<id>` — the application's real icon when this
+/// host can extract one, else 404 (the control renders its built-in
+/// fallback glyph). An `<img>` load carries no Origin header, so the route
+/// admits originless requests like the other host routes and rejects
+/// foreign origins; the ETag is the icon file's mtime:size, and a matching
+/// `If-None-Match` answers 304.
+pub async fn icon(AxumPath(id): AxumPath<String>, headers: HeaderMap) -> Response {
+    if !mux::origin_allowed(headers.get(header::ORIGIN)) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let icon = tokio::task::spawn_blocking(move || icon_payload(&id))
+        .await
+        .unwrap_or(None);
+    let Some((png, etag)) = icon else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .is_some_and(|tag| tag.as_bytes() == etag.as_bytes())
+    {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+            (header::ETAG, etag.as_str()),
+        ],
+        png,
+    )
+        .into_response()
+}
+
+/// The icon bytes for one catalog id, when this host holds an extractable
+/// icon (macOS bundles only — see the module limitations).
+fn icon_payload(id: &str) -> Option<(Vec<u8>, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        match resolve_app(id)? {
+            Launch::MacBundle(bundle) => bundle_icon(&bundle),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = id;
+        None
+    }
+}
+
+/// The bundle's icon: the principal `AppIcon.icns` if present, else the
+/// largest icns in `Contents/Resources`, reduced to its largest PNG entry.
+#[cfg(target_os = "macos")]
+fn bundle_icon(bundle: &Path) -> Option<(Vec<u8>, String)> {
+    let resources = bundle.join("Contents/Resources");
+    let mut candidates: Vec<(bool, u64, PathBuf)> = std::fs::read_dir(&resources)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("icns"))
+        })
+        .map(|path| {
+            let principal = path
+                .file_stem()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("AppIcon"));
+            let size = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            (principal, size, path)
+        })
+        .collect();
+    // The principal icon wins; among equals, the largest file.
+    candidates.sort_by_key(|(principal, size, path)| {
+        (
+            !*principal,
+            std::cmp::Reverse(*size),
+            std::cmp::Reverse(path.to_string_lossy().into_owned()),
+        )
+    });
+    let (_, _, icns) = candidates.into_iter().next()?;
+    let data = std::fs::read(&icns).ok()?;
+    let png = largest_png_entry(&data)?.to_vec();
+    let version = std::fs::metadata(&icns)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    Some((png, format!("\"{version}:{}\"", data.len())))
+}
+
+/// The largest PNG-encoded entry of an Apple icon container (`ic07`…`ic13`
+/// hold PNG payloads; the raw-ARGB entry types are skipped). Serving the
+/// bytes as `image/png` needs no decoder.
+fn largest_png_entry(icns: &[u8]) -> Option<&[u8]> {
+    if icns.len() < 8 || &icns[..4] != b"icns" {
+        return None;
+    }
+    let mut offset = 8;
+    let mut best: &[u8] = &[];
+    while icns.len() >= offset + 8 {
+        let length = u32::from_be_bytes(
+            icns[offset + 4..offset + 8]
+                .try_into()
+                .expect("four entry-length bytes"),
+        ) as usize;
+        let end = offset.saturating_add(length);
+        // A truncated entry ends the walk — a partial PNG body would only
+        // render as a broken image.
+        let Some(body) = icns.get(offset + 8..end) else {
+            break;
+        };
+        if body.starts_with(b"\x89PNG") && body.len() > best.len() {
+            best = body;
+        }
+        if length < 8 {
+            break;
+        }
+        offset += length;
+    }
+    if best.is_empty() {
+        None
+    } else {
+        Some(best)
+    }
+}
+
 #[derive(Debug)]
 enum LaunchFailure {
     NotFound,
@@ -452,7 +584,6 @@ enum LaunchFailure {
     UnknownApp(String),
     Failed(String),
 }
-
 fn failure(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
     (
         status,
@@ -823,5 +954,74 @@ mod tests {
                 "the client filters unknown ids out of the menu: {id}"
             );
         }
+    }
+
+    /// One icns entry: type tag, length (header included), payload.
+    fn icns_entry(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut entry = Vec::new();
+        entry.extend_from_slice(kind);
+        entry.extend_from_slice(&((body.len() + 8) as u32).to_be_bytes());
+        entry.extend_from_slice(body);
+        entry
+    }
+
+    fn icns_of(entries: &[Vec<u8>]) -> Vec<u8> {
+        let total = 8 + entries.iter().map(Vec::len).sum::<usize>();
+        let mut file = Vec::new();
+        file.extend_from_slice(b"icns");
+        file.extend_from_slice(&(total as u32).to_be_bytes());
+        for entry in entries {
+            file.extend_from_slice(entry);
+        }
+        file
+    }
+
+    #[test]
+    fn icon_extraction_picks_the_largest_png_entry() {
+        let small = b"\x89PNG\x0d\x0a\x1a\x0asmall".as_slice();
+        let raw_argb = [0u8; 32];
+        let large = b"\x89PNG\x0d\x0a\x1a\x0alarger-png-payload".as_slice();
+        let file = icns_of(&[
+            icns_entry(b"is32", &raw_argb),
+            icns_entry(b"ic07", small),
+            icns_entry(b"ic09", large),
+        ]);
+        assert_eq!(largest_png_entry(&file), Some(large));
+        // Not an icns at all, or only raw entries: nothing to serve.
+        assert_eq!(largest_png_entry(b"not an icns"), None);
+        assert_eq!(
+            largest_png_entry(&icns_of(&[icns_entry(b"is32", &raw_argb)])),
+            None
+        );
+        // A truncated entry ends the walk without panicking.
+        let mut truncated = icns_of(&[icns_entry(b"ic07", small)]);
+        truncated.truncate(truncated.len() - 4);
+        assert_eq!(largest_png_entry(&truncated), None);
+        // Unknown catalog ids never reach an extractor.
+        assert!(icon_payload("no-such-app").is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_icon_prefers_the_principal_icns_png() {
+        let root = std::env::temp_dir().join(format!("cds-icon-{}", uuid::Uuid::new_v4()));
+        let resources = root.join("Fake.app/Contents/Resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        let payload = b"\x89PNG\x0d\x0a\x1a\x0aprincipal".as_slice();
+        let stray = b"\x89PNG\x0d\x0a\x1a\x0astray-but-longer-than-principal".as_slice();
+        std::fs::write(
+            resources.join("AppIcon.icns"),
+            icns_of(&[icns_entry(b"ic09", payload)]),
+        )
+        .unwrap();
+        std::fs::write(
+            resources.join("Other.icns"),
+            icns_of(&[icns_entry(b"ic11", stray)]),
+        )
+        .unwrap();
+        let (png, etag) = bundle_icon(&root.join("Fake.app")).expect("the principal icon wins");
+        assert_eq!(png, payload);
+        assert!(etag.starts_with('"'), "{etag}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

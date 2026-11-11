@@ -82,8 +82,10 @@ enum ClientMessage {
 
 /// WebSockets bypass CORS, so the upgrade checks the page origin itself —
 /// otherwise any web page could open the mux and drive the bridge. An absent
-/// Origin is a non-browser local client, which reaches the HTTP routes too.
-fn origin_allowed(origin: Option<&HeaderValue>) -> bool {
+/// Origin is a non-browser local client, which reaches the HTTP routes too
+/// (and an `<img>` load carries no Origin header at all — the icon route
+/// shares this gate).
+pub(super) fn origin_allowed(origin: Option<&HeaderValue>) -> bool {
     origin.is_none_or(|origin| {
         PAGE_ORIGINS
             .iter()

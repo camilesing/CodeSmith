@@ -1155,6 +1155,7 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         // are host-origin routes upstream serves beside the document, not
         // `/api/…` unary RPCs; the page carrier redirects them here.
         .route("/open-in-app/apps", get(open_in_app::apps))
+        .route("/open-in-app/icon/{id}", get(open_in_app::icon))
         .route("/open-in-app/open", post(open_in_app::open))
         .route("/api/{*endpoint}", post(unary_handler))
         .layer(cors)
