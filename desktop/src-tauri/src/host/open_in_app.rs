@@ -498,7 +498,8 @@ fn launch_args(args: &[String], path: &str) -> Vec<String> {
 
 /// Environment names that smell like credentials. The launched application
 /// is a desktop tool, not the agent; it has no use for the harness's keys.
-fn is_secret_env(name: &str) -> bool {
+/// The terminal host scrubs the same names from its shells.
+pub(super) fn is_secret_env(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper.ends_with("_KEY")
         || upper.contains("_API_KEY")

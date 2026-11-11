@@ -28,6 +28,7 @@ pub mod references;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
+pub mod terminal;
 pub mod uploads;
 pub mod workspace;
 
@@ -121,6 +122,10 @@ pub struct HostState {
     /// Whether `goal_overlays` was hydrated from disk (the first projection
     /// or mutation loads it once).
     pub goal_overlays_loaded: AtomicBool,
+    /// The sidebar terminal tabs (see `host::terminal`): session-owned user
+    /// shells on bridge-spawned PTYs. In-memory only — terminals die with
+    /// the bridge process.
+    pub terminals: terminal::Registry,
 }
 
 impl HostState {
@@ -437,6 +442,15 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error(err.code, err.message),
             }
         }
+        // The sidebar terminal tabs (host::terminal): user shells the bridge
+        // itself spawns. They are the user's terminals, not the model's —
+        // `allow_shell` does not gate them.
+        "terminal/environment" => terminal::environment(host, args_of(payload)).await,
+        "terminal/shells" => terminal::shells(host, args_of(payload)).await,
+        "terminal/list" => terminal::list(host, args_of(payload)).await,
+        "terminal/create" => terminal::create(host, args_of(payload)).await,
+        "terminal/rename" => terminal::rename(host, args_of(payload)).await,
+        "terminal/close" => terminal::close(host, args_of(payload)).await,
         // The '/' catalog: compaction plus the per-thread mode switches
         // (host::commands). The REPL's OTHER slash commands are REPL-local
         // and stay out of the catalog, so their "/"-prefixed lines fall
@@ -520,12 +534,15 @@ fn args_of(payload: &Value) -> &Value {
 /// `item`). `Ok` ends the stream (`end`), `Err` fails it with the
 /// client-visible failure. A consumer that goes away (cancel, socket close)
 /// aborts the task mid-await, so every registration made here must survive
-/// being dropped unremoved — the sink registries prune closed senders.
+/// being dropped unremoved — the sink registries prune closed senders. The
+/// `uplink` receiver carries the stream's client-to-host items; a handler
+/// that never reads it leaves it dropped (the mux swallows such items).
 pub async fn open_stream(
     host: &SharedHost,
     endpoint: &str,
     payload: &Value,
     tx: mpsc::Sender<Value>,
+    uplink: mpsc::Receiver<mux::UplinkFrame>,
 ) -> Result<(), Value> {
     match endpoint {
         "session/follow" => sessions::follow(host, args_of(payload), &tx)
@@ -554,6 +571,10 @@ pub async fn open_stream(
         // continued question) has no answerable wait here and ends with no
         // frames, exactly like a Host whose wait already ended.
         "userQuestions/attachWait" => Ok(()),
+        // The sidebar terminal's duplex screen stream and its window hold
+        // (host::terminal).
+        "terminal/attach" => terminal::attach(host, args_of(payload), &tx, uplink).await,
+        "terminal/retain" => terminal::retain(host, args_of(payload), &tx).await,
         _ => {
             let frames = stream_baseline(host, endpoint)
                 .await
@@ -1406,6 +1427,7 @@ mod tests {
             workspace_lock: Default::default(),
             goal_overlays: Default::default(),
             goal_overlays_loaded: Default::default(),
+            terminals: Default::default(),
         })
     }
 
@@ -1936,6 +1958,353 @@ mod tests {
             unarchived["value"]["archivedSessionIds"],
             json!([]),
             "{unarchived}"
+        );
+    }
+
+    // === Terminal host tests (host::terminal over a real PTY) ===
+
+    /// The first frame matching `pred` within 10s, keeping every other frame
+    /// (they are still asserted by the callers that care).
+    async fn terminal_frame_matching(
+        rx: &mut mpsc::Receiver<Value>,
+        mut pred: impl FnMut(&Value) -> bool,
+    ) -> Option<Value> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let frame = tokio::time::timeout_at(deadline, rx.recv()).await.ok()??;
+            if pred(&frame) {
+                return Some(frame);
+            }
+        }
+    }
+
+    async fn terminal_create(host: &SharedHost, session: &str, id: &str) -> Value {
+        dispatch(
+            host,
+            "terminal/create",
+            &json!({ "args": { "agentId": session, "request": {
+                "id": id, "cols": 80, "rows": 24, "shellPath": "/bin/sh",
+            } } }),
+        )
+        .await
+    }
+
+    fn spawn_attach(
+        host: &SharedHost,
+        session: &str,
+        id: &str,
+    ) -> (
+        mpsc::Receiver<Value>,
+        mpsc::Sender<mux::UplinkFrame>,
+        tokio::task::JoinHandle<Result<(), Value>>,
+    ) {
+        let (tx, rx) = mpsc::channel(64);
+        let (up_tx, up_rx) = mpsc::channel(16);
+        let host = host.clone();
+        let payload = json!({ "args": { "agentId": session, "id": id } });
+        let task = tokio::spawn(async move {
+            open_stream(&host, "terminal/attach", &payload, tx, up_rx).await
+        });
+        (rx, up_tx, task)
+    }
+
+    /// The full lifecycle over a real shell: create spawns, the attachment's
+    /// first frame is the snapshot with input control, a written command
+    /// echoes back as ordered output, close ends the attachment, and a
+    /// closed identity can never be recreated.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_create_streams_output_and_close_is_final() {
+        let home = test_home("terminal-lifecycle");
+        let workspace = home.path.clone();
+        let base = fake_runtime(workspace.clone()).await;
+        let host = test_host(base, workspace);
+
+        let environment = dispatch(
+            &host,
+            "terminal/environment",
+            &json!({ "args": { "agentId": "thr_a" } }),
+        )
+        .await;
+        assert_eq!(environment["value"]["maxCols"], json!(500), "{environment}");
+        assert_eq!(
+            environment["value"]["scrollback"],
+            json!(1000),
+            "{environment}"
+        );
+
+        let created = terminal_create(&host, "thr_a", "t1").await;
+        assert_eq!(created["ok"], json!(true), "{created}");
+        assert_eq!(created["value"]["state"], json!("running"), "{created}");
+        assert_eq!(created["value"]["title"], json!("sh"), "{created}");
+        assert_eq!(created["value"]["exitCode"], Value::Null, "{created}");
+
+        // Idempotent create: the same identity returns the same terminal.
+        let again = terminal_create(&host, "thr_a", "t1").await;
+        assert_eq!(again["ok"], json!(true), "{again}");
+
+        let (mut rx, up_tx, attach) = spawn_attach(&host, "thr_a", "t1");
+        let snapshot = rx.recv().await.expect("snapshot frame");
+        assert_eq!(snapshot["type"], json!("snapshot"), "{snapshot}");
+        assert_eq!(snapshot["sequence"], json!(0), "{snapshot}");
+        assert_eq!(snapshot["info"]["id"], json!("t1"), "{snapshot}");
+        assert_eq!(snapshot["writable"], json!(true), "{snapshot}");
+
+        up_tx
+            .send(mux::UplinkFrame::Item(json!({
+                "type": "write", "sequence": 1, "data": "echo cds_term_probe\r",
+            })))
+            .await
+            .unwrap();
+        let ack = terminal_frame_matching(&mut rx, |frame| frame["type"] == "ack").await;
+        let ack = ack.expect("ack for the write");
+        assert_eq!(ack["sequence"], json!(1), "{ack}");
+        assert!(ack.get("refusal").is_none(), "{ack}");
+        let output = terminal_frame_matching(&mut rx, |frame| {
+            frame["type"] == "output"
+                && frame["data"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("cds_term_probe"))
+        })
+        .await;
+        assert!(output.is_some(), "the echoed command never came back");
+
+        let listed = dispatch(
+            &host,
+            "terminal/list",
+            &json!({ "args": { "sessionId": "thr_a" } }),
+        )
+        .await;
+        assert_eq!(
+            listed["value"].as_array().map(Vec::len),
+            Some(1),
+            "{listed}"
+        );
+
+        // Close ends the attachment (a delivered `end`, not a failure)…
+        let closed = dispatch(
+            &host,
+            "terminal/close",
+            &json!({ "args": { "agentId": "thr_a", "id": "t1" } }),
+        )
+        .await;
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), attach)
+            .await
+            .expect("the attachment ends after close")
+            .expect("attach task joinable");
+        assert_eq!(outcome, Ok(()));
+
+        // …repeated closes succeed, the registry is empty, and the identity
+        // is closed for good.
+        let closed_again = dispatch(
+            &host,
+            "terminal/close",
+            &json!({ "args": { "agentId": "thr_a", "id": "t1" } }),
+        )
+        .await;
+        assert_eq!(closed_again["ok"], json!(true), "{closed_again}");
+        let listed = dispatch(
+            &host,
+            "terminal/list",
+            &json!({ "args": { "sessionId": "thr_a" } }),
+        )
+        .await;
+        assert_eq!(listed["value"], json!([]), "{listed}");
+        let recreated = terminal_create(&host, "thr_a", "t1").await;
+        assert_eq!(
+            recreated["error"]["code"], "terminal/unavailable",
+            "{recreated}"
+        );
+    }
+
+    /// Input control is exclusive to the newest attachment (older ones ack
+    /// `read-only`), and a sequence gap fails the attachment without
+    /// stopping the shell.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_attach_controller_and_sequence_discipline() {
+        let home = test_home("terminal-discipline");
+        let workspace = home.path.clone();
+        let base = fake_runtime(workspace.clone()).await;
+        let host = test_host(base, workspace);
+        assert_eq!(
+            terminal_create(&host, "thr_a", "t1").await["ok"],
+            json!(true)
+        );
+
+        // The first attachment starts writable…
+        let (mut ra, up_a, attach_a) = spawn_attach(&host, "thr_a", "t1");
+        let snapshot = ra.recv().await.expect("snapshot a");
+        assert_eq!(snapshot["writable"], json!(true), "{snapshot}");
+
+        // …the second takes control, demoting the first with a state frame.
+        let (mut rb, up_b, attach_b) = spawn_attach(&host, "thr_a", "t1");
+        let demoted = terminal_frame_matching(&mut ra, |frame| {
+            frame["type"] == "state" && frame["writable"] == json!(false)
+        })
+        .await;
+        assert!(demoted.is_some(), "the first attachment was never demoted");
+
+        // The demoted attachment's write is refused read-only…
+        up_a.send(mux::UplinkFrame::Item(json!({
+            "type": "write", "sequence": 1, "data": "true\r",
+        })))
+        .await
+        .unwrap();
+        let refusal = terminal_frame_matching(&mut ra, |frame| frame["type"] == "ack").await;
+        let refusal = refusal.expect("ack for the demoted write");
+        assert_eq!(refusal["sequence"], json!(1), "{refusal}");
+        assert_eq!(refusal["refusal"], json!("read-only"), "{refusal}");
+
+        // …the controller's write acks cleanly…
+        up_b.send(mux::UplinkFrame::Item(json!({
+            "type": "write", "sequence": 1, "data": "true\r",
+        })))
+        .await
+        .unwrap();
+        let ack = terminal_frame_matching(&mut rb, |frame| frame["type"] == "ack").await;
+        let ack = ack.expect("ack for the controller write");
+        assert_eq!(ack["sequence"], json!(1), "{ack}");
+        assert!(ack.get("refusal").is_none(), "{ack}");
+
+        // …and a sequence gap fails only that attachment. A failed
+        // controller is not promoted back (upstream's rule), so the demoted
+        // attachment stays read-only…
+        up_b.send(mux::UplinkFrame::Item(json!({
+            "type": "write", "sequence": 3, "data": "true\r",
+        })))
+        .await
+        .unwrap();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), attach_b)
+            .await
+            .expect("the gap ends the attachment")
+            .expect("attach task joinable");
+        assert_eq!(outcome.unwrap_err()["code"], "gateway/internal");
+        up_a.send(mux::UplinkFrame::Item(json!({
+            "type": "write", "sequence": 2, "data": "true\r",
+        })))
+        .await
+        .unwrap();
+        let refusal = terminal_frame_matching(&mut ra, |frame| {
+            frame["type"] == "ack" && frame["sequence"] == json!(2)
+        })
+        .await;
+        let refusal = refusal.expect("ack for the demoted write");
+        assert_eq!(refusal["refusal"], json!("read-only"), "{refusal}");
+
+        // …while the shell itself is unharmed: a fresh attachment takes
+        // control, writes, and sees the output.
+        let (mut rc, up_c, attach_c) = spawn_attach(&host, "thr_a", "t1");
+        let snapshot = rc.recv().await.expect("snapshot c");
+        assert_eq!(snapshot["writable"], json!(true), "{snapshot}");
+        up_c.send(mux::UplinkFrame::Item(json!({
+            "type": "write", "sequence": 1, "data": "echo cds_term_alive\r",
+        })))
+        .await
+        .unwrap();
+        let alive = terminal_frame_matching(&mut rc, |frame| {
+            frame["type"] == "output"
+                && frame["data"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("cds_term_alive"))
+        })
+        .await;
+        assert!(alive.is_some(), "the shell died with the failed attachment");
+        attach_a.abort();
+        attach_c.abort();
+    }
+
+    /// Identity rules and the per-session quota: malformed ids never spawn,
+    /// the ninth terminal is refused with the limit, and closing frees the
+    /// slot's identity forever.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_limit_and_identity_rules() {
+        let home = test_home("terminal-limits");
+        let workspace = home.path.clone();
+        let base = fake_runtime(workspace.clone()).await;
+        let host = test_host(base, workspace);
+
+        let bad_id = dispatch(
+            &host,
+            "terminal/create",
+            &json!({ "args": { "agentId": "thr_a", "request": {
+                "id": "not allowed", "cols": 80, "rows": 24,
+            } } }),
+        )
+        .await;
+        assert_eq!(
+            bad_id["error"]["code"], "gateway/arguments-invalid",
+            "{bad_id}"
+        );
+
+        let bad_dims = dispatch(
+            &host,
+            "terminal/create",
+            &json!({ "args": { "agentId": "thr_a", "request": {
+                "id": "t0", "cols": 1, "rows": 24,
+            } } }),
+        )
+        .await;
+        assert_eq!(
+            bad_dims["error"]["code"], "gateway/arguments-invalid",
+            "{bad_dims}"
+        );
+
+        for index in 0..8 {
+            let created = terminal_create(&host, "thr_a", &format!("t{index}")).await;
+            assert_eq!(created["ok"], json!(true), "terminal {index}: {created}");
+        }
+        let ninth = terminal_create(&host, "thr_a", "t8").await;
+        assert_eq!(ninth["error"]["code"], "terminal/limit-reached", "{ninth}");
+
+        // The quota is per session.
+        let other = terminal_create(&host, "thr_b", "t8").await;
+        assert_eq!(other["ok"], json!(true), "{other}");
+
+        // A rename publishes a valid title; an empty one is refused.
+        let renamed = dispatch(
+            &host,
+            "terminal/rename",
+            &json!({ "args": { "agentId": "thr_a", "id": "t0", "title": "  build  " } }),
+        )
+        .await;
+        assert_eq!(renamed["ok"], json!(true), "{renamed}");
+        let listed = dispatch(
+            &host,
+            "terminal/list",
+            &json!({ "args": { "sessionId": "thr_a" } }),
+        )
+        .await;
+        let title = listed["value"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == json!("t0"))
+            .map(|row| row["title"].clone());
+        assert_eq!(title, Some(json!("build")), "{listed}");
+        let bad_title = dispatch(
+            &host,
+            "terminal/rename",
+            &json!({ "args": { "agentId": "thr_a", "id": "t0", "title": "   " } }),
+        )
+        .await;
+        assert_eq!(
+            bad_title["error"]["code"], "gateway/arguments-invalid",
+            "{bad_title}"
+        );
+
+        // Unknown terminals answer the unavailable error on every route.
+        let missing = dispatch(
+            &host,
+            "terminal/rename",
+            &json!({ "args": { "agentId": "thr_a", "id": "nope", "title": "x" } }),
+        )
+        .await;
+        assert_eq!(
+            missing["error"]["code"], "terminal/unavailable",
+            "{missing}"
         );
     }
 }

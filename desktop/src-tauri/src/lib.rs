@@ -95,6 +95,7 @@ pub fn run() {
                             workspace_lock: Default::default(),
                             goal_overlays: Default::default(),
                             goal_overlays_loaded: Default::default(),
+                            terminals: Default::default(),
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");

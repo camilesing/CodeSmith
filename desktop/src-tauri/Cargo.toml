@@ -29,12 +29,21 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "sync", "time", "io-util", "fs"] }
 axum = { version = "0.8", features = ["ws"] }
+# The sidebar terminal panel (host::terminal): a host-owned PTY per shell tab
+# and a headless VT emulator that mirrors it for reconnect snapshots.
+portable-pty = "0.8"
+vt100 = "0.15"
 tower-http = { version = "0.6", features = ["cors"] }
 # The provider-settings bridge reads config.toml and the keyring directly —
 # the same crates and file formats `codesmith serve` uses.
 codesmith-config = { path = "../../crates/config" }
 codesmith-secrets = { path = "../../crates/secrets" }
 toml_edit = { version = "0.23", features = ["serde"] }
+
+# The terminal host's close path signals the shell's process group with TERM
+# before escalating to KILL (portable-pty's killer only kills).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 codegen-units = 1

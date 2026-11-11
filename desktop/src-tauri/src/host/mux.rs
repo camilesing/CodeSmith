@@ -13,9 +13,19 @@
 //! upstream does); a malformed frame, a binary frame, or a duplicate stream
 //! id closes the socket.
 //!
+//! Uplink: `item`/`end` frames route to the open stream's uplink channel.
+//! Only `terminal/attach` reads them today (the sidebar terminal's
+//! keystrokes and resizes); every other stream drops its uplink receiver,
+//! and items for such a stream are swallowed — upstream's gateway parks them
+//! in an unread per-stream inbox the same way. An uplink channel that fills
+//! (a reading handler that stopped consuming) fails its stream with
+//! `gateway/uplink-overflow`, the upstream inbox-overflow outcome.
+//!
 //! Known limitations:
-//! - no uplink: no bridged endpoint reads client items (upstream's only one,
-//!   the sidebar terminal, is not simulated), so `item`/`end` are dropped;
+//! - the uplink inbox is frame-counted (16), not byte-counted like
+//!   upstream's 256 KiB inbox, so `terminal/attach` carries no
+//!   `inputWindow` (the wire types omit it when the carrier sets no
+//!   encoded-frame byte budget);
 //! - no ping heartbeat: the bridge is loopback-only, where a vanished page
 //!   closes its TCP socket and that ends every stream the socket carried;
 //! - unary calls stay HTTP POSTs on `/api/<endpoint>`, as upstream's do.
@@ -34,6 +44,14 @@ use tokio::task::JoinHandle;
 
 use super::{SharedHost, PAGE_ORIGINS};
 
+/// One uplink item an open stream's handler may read (`item` value or the
+/// `end` half-close).
+#[derive(Debug)]
+pub enum UplinkFrame {
+    Item(Value),
+    End,
+}
+
 /// One browser-to-bridge frame (`RemoteStreamClientMessage`).
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -48,9 +66,18 @@ enum ClientMessage {
         #[serde(rename = "streamId")]
         stream_id: String,
     },
-    /// Uplink item and half-close: no bridged endpoint reads uplink.
-    Item {},
-    End {},
+    /// Uplink item and half-close, routed to the open stream's uplink
+    /// channel (`UplinkFrame`).
+    Item {
+        #[serde(rename = "streamId")]
+        stream_id: String,
+        #[serde(default)]
+        value: Value,
+    },
+    End {
+        #[serde(rename = "streamId")]
+        stream_id: String,
+    },
 }
 
 /// WebSockets bypass CORS, so the upgrade checks the page origin itself —
@@ -101,6 +128,9 @@ async fn serve(host: SharedHost, socket: WebSocket) {
         }
     });
     let mut streams: HashMap<String, JoinHandle<()>> = HashMap::new();
+    // Uplink senders of open streams. An entry outliving its stream (the
+    // handler returned) fails on the next send and is dropped then.
+    let mut uplinks: HashMap<String, mpsc::Sender<UplinkFrame>> = HashMap::new();
     while let Some(Ok(message)) = source.next().await {
         let text = match message {
             Message::Text(text) => text,
@@ -119,25 +149,42 @@ async fn serve(host: SharedHost, socket: WebSocket) {
                 payload,
             }) if !stream_id.is_empty() && !endpoint.is_empty() => {
                 streams.retain(|_, task| !task.is_finished());
+                uplinks.retain(|_, tx| !tx.is_closed());
                 if streams.contains_key(&stream_id) {
                     let _ = out_tx.send(close(1008, "duplicate Remote stream id")).await;
                     break;
                 }
+                let (up_tx, up_rx) = mpsc::channel(16);
                 let task = tokio::spawn(pump(
                     host.clone(),
                     stream_id.clone(),
                     endpoint,
                     payload,
                     out_tx.clone(),
+                    up_rx,
                 ));
-                streams.insert(stream_id, task);
+                streams.insert(stream_id.clone(), task);
+                uplinks.insert(stream_id, up_tx);
             }
             Ok(ClientMessage::Cancel { stream_id }) => {
+                uplinks.remove(&stream_id);
                 if let Some(task) = streams.remove(&stream_id) {
                     task.abort();
                 }
             }
-            Ok(ClientMessage::Item {} | ClientMessage::End {}) => {}
+            Ok(ClientMessage::Item { stream_id, value }) => {
+                if let Some(tx) = uplinks.get(&stream_id) {
+                    route_uplink(&out_tx, &streams, &stream_id, tx, UplinkFrame::Item(value)).await;
+                }
+            }
+            Ok(ClientMessage::End { stream_id }) => {
+                // Half-close: the handler reads End once; a later item finds
+                // no sender and is dropped (upstream fails it as a protocol
+                // error, which no bridged endpoint can hit).
+                if let Some(tx) = uplinks.remove(&stream_id) {
+                    route_uplink(&out_tx, &streams, &stream_id, &tx, UplinkFrame::End).await;
+                }
+            }
             Ok(ClientMessage::Open { .. }) | Err(_) => {
                 let _ = out_tx
                     .send(close(1008, "invalid Remote stream request"))
@@ -155,14 +202,45 @@ async fn serve(host: SharedHost, socket: WebSocket) {
     let _ = writer.await;
 }
 
+/// Deliver one uplink frame to an open stream. A channel whose handler
+/// dropped the receiver (a downlink-only stream) swallows the frame; a full
+/// channel is the carrier's inbox overflow and fails the stream.
+async fn route_uplink(
+    out: &mpsc::Sender<Message>,
+    streams: &HashMap<String, JoinHandle<()>>,
+    stream_id: &str,
+    tx: &mpsc::Sender<UplinkFrame>,
+    frame: UplinkFrame,
+) {
+    match tx.try_send(frame) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            let _ = out
+                .send(text(json!({
+                    "type": "error",
+                    "streamId": stream_id,
+                    "error": { "code": "gateway/uplink-overflow", "message": "stream uplink inbox is full", "details": {} }
+                })))
+                .await;
+            if let Some(task) = streams.get(stream_id) {
+                task.abort();
+            }
+        }
+    }
+}
+
 /// Run one logical stream: each value its producer yields goes out as an
-/// `item`; the producer's outcome becomes the `end` or `error` frame.
+/// `item`; the producer's outcome becomes the `end` or `error` frame. The
+/// uplink receiver is handed to the handler; a handler that never reads it
+/// (every downlink-only endpoint) leaves it dropped.
 async fn pump(
     host: SharedHost,
     stream_id: String,
     endpoint: String,
     payload: Value,
     out: mpsc::Sender<Message>,
+    uplink: mpsc::Receiver<UplinkFrame>,
 ) {
     let (tx, mut rx) = mpsc::channel::<Value>(16);
     let forward = {
@@ -178,7 +256,10 @@ async fn pump(
             true
         }
     };
-    let (outcome, open) = tokio::join!(super::open_stream(&host, &endpoint, &payload, tx), forward);
+    let (outcome, open) = tokio::join!(
+        super::open_stream(&host, &endpoint, &payload, tx, uplink),
+        forward
+    );
     if !open {
         return;
     }
@@ -237,11 +318,44 @@ mod tests {
             serde_json::from_str(r#"{"type":"cancel","streamId":"a"}"#).unwrap();
         assert!(matches!(cancel, ClientMessage::Cancel { ref stream_id } if stream_id == "a"));
         let item: ClientMessage =
-            serde_json::from_str(r#"{"type":"item","streamId":"a","value":1}"#).unwrap();
-        assert!(matches!(item, ClientMessage::Item {}));
+            serde_json::from_str(r#"{"type":"item","streamId":"a","value":{"type":"write"}}"#)
+                .unwrap();
+        assert!(
+            matches!(item, ClientMessage::Item { ref stream_id, ref value } if stream_id == "a"
+                && value == &json!({"type": "write"}))
+        );
+        let end: ClientMessage = serde_json::from_str(r#"{"type":"end","streamId":"a"}"#).unwrap();
+        assert!(matches!(end, ClientMessage::End { ref stream_id } if stream_id == "a"));
         assert!(
             serde_json::from_str::<ClientMessage>(r#"{"type":"open","streamId":"a"}"#).is_err()
         );
         assert!(serde_json::from_str::<ClientMessage>(r#"{"type":"bogus"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn uplink_routes_items_and_swallows_dropped_receivers() {
+        let (out_tx, mut out_rx) = mpsc::channel::<Message>(4);
+        let (up_tx, mut up_rx) = mpsc::channel::<UplinkFrame>(16);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let mut streams = HashMap::from([("s1".to_string(), task)]);
+        // A live stream takes the item.
+        route_uplink(
+            &out_tx,
+            &streams,
+            "s1",
+            &up_tx,
+            UplinkFrame::Item(json!({"type": "write", "sequence": 1, "data": "hi"})),
+        )
+        .await;
+        assert!(out_rx.try_recv().is_err());
+        assert!(matches!(
+            up_rx.recv().await,
+            Some(UplinkFrame::Item(value)) if value["data"] == "hi"
+        ));
+        // A stream whose handler dropped the receiver swallows the frame.
+        drop(up_rx);
+        route_uplink(&out_tx, &streams, "s1", &up_tx, UplinkFrame::End).await;
+        assert!(out_rx.try_recv().is_err());
+        streams.remove("s1").unwrap().abort();
     }
 }
