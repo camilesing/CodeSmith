@@ -97,7 +97,9 @@ fn store_path(host: &HostState) -> PathBuf {
 
 fn load_store(path: &Path) -> Result<Store> {
     match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).with_context(|| format!("parse {}", path.display())),
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
         Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
     }
@@ -209,10 +211,7 @@ pub async fn message_list(host: &HostState, args: &Value) -> Value {
     .await;
     match loaded {
         Ok(Ok(items)) => accepted(json!({ "items": items })),
-        Ok(Err(err)) => rpc_error(
-            "gateway/internal",
-            format!("messageFeedback/list: {err:#}"),
-        ),
+        Ok(Err(err)) => rpc_error("gateway/internal", format!("messageFeedback/list: {err:#}")),
         Err(err) => rpc_error(
             "gateway/internal",
             format!("messageFeedback/list join: {err}"),
@@ -310,10 +309,7 @@ pub async fn message_put(host: &HostState, args: &Value) -> Value {
             return Ok::<Value, anyhow::Error>(version_conflict(current.as_ref()));
         }
         if let Some(existing) = current.as_ref() {
-            if existing.rating == rating
-                && existing.note == note
-                && existing.category == category
-            {
+            if existing.rating == rating && existing.note == note && existing.category == category {
                 return Ok::<Value, anyhow::Error>(accepted(json!(existing)));
             }
         }
@@ -335,7 +331,10 @@ pub async fn message_put(host: &HostState, args: &Value) -> Value {
     match written {
         Ok(Ok(result)) => result,
         Ok(Err(err)) => rpc_error("gateway/internal", format!("messageFeedback/put: {err:#}")),
-        Err(err) => rpc_error("gateway/internal", format!("messageFeedback/put join: {err}")),
+        Err(err) => rpc_error(
+            "gateway/internal",
+            format!("messageFeedback/put join: {err}"),
+        ),
     }
 }
 
@@ -385,9 +384,10 @@ pub async fn message_delete(host: &HostState, args: &Value) -> Value {
     .await;
     match written {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => {
-            rpc_error("gateway/internal", format!("messageFeedback/delete: {err:#}"))
-        }
+        Ok(Err(err)) => rpc_error(
+            "gateway/internal",
+            format!("messageFeedback/delete: {err:#}"),
+        ),
         Err(err) => rpc_error(
             "gateway/internal",
             format!("messageFeedback/delete join: {err}"),

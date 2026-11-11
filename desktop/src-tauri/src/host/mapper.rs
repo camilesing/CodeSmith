@@ -489,9 +489,8 @@ impl SessionMapper {
                         // card: remember its latest body so the following
                         // exit_plan_mode call can carry it as arguments.plan.
                         if raw_name == "write_plan_file" {
-                            if let Some(content) = tool
-                                .pointer("/input/content")
-                                .and_then(Value::as_str)
+                            if let Some(content) =
+                                tool.pointer("/input/content").and_then(Value::as_str)
                             {
                                 self.plan_content = Some(content.to_string());
                             }
@@ -995,7 +994,11 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                     if status == "in_progress" {
                         continue;
                     }
-                    let block_type = if kind == "agent_message" { "text" } else { "reasoning" };
+                    let block_type = if kind == "agent_message" {
+                        "text"
+                    } else {
+                        "reasoning"
+                    };
                     step += 1;
                     events.push(seq.event(
                         "step/start",
@@ -1790,7 +1793,10 @@ mod tests {
         let types: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
         assert!(types.contains(&"workspace/changes"));
         assert_eq!(
-            events.iter().find(|e| e["type"] == "workspace/changes").unwrap()["data"]["turn"],
+            events
+                .iter()
+                .find(|e| e["type"] == "workspace/changes")
+                .unwrap()["data"]["turn"],
             1
         );
         // And its seq resolves through the replay — the changes routes
@@ -1988,9 +1994,7 @@ mod tests {
         let events = replay_events(&detail);
         let exit = events
             .iter()
-            .find(|event| {
-                event["type"] == "tool/call" && event["data"]["name"] == "exit_plan_mode"
-            })
+            .find(|event| event["type"] == "tool/call" && event["data"]["name"] == "exit_plan_mode")
             .expect("exit_plan_mode call");
         let args: Value =
             serde_json::from_str(exit["data"]["arguments"].as_str().unwrap()).unwrap();

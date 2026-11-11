@@ -32,10 +32,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::files;
-use super::{HostState, rpc_error, rpc_ok};
+use super::{rpc_error, rpc_ok, HostState};
 
 /// Largest candidate list one query serves (upstream default).
 const MAX_RESULTS: usize = 20;
@@ -381,7 +381,11 @@ fn subsequence_score(target: &str, query: &str) -> Option<i64> {
 }
 
 fn kind_rank(candidate: &Candidate) -> u8 {
-    if candidate.kind == "directory" { 0 } else { 1 }
+    if candidate.kind == "directory" {
+        0
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -488,11 +492,9 @@ mod tests {
         // A path query lists live and never builds the index.
         let (candidates, built) = discover(&root, "src/", None).expect("listing");
         assert!(built.is_none());
-        assert!(
-            candidates
-                .iter()
-                .any(|candidate| candidate.path == "src/main.rs")
-        );
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.path == "src/main.rs"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

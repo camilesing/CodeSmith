@@ -56,7 +56,9 @@ use super::{rpc_error, rpc_ok, HostState};
 /// upstream's own `credentialRefSchema`).
 fn ref_is_well_formed(r: &str) -> bool {
     !r.is_empty()
-        && r.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && r.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -178,7 +180,10 @@ pub async fn set(host: &HostState, args: &Value) -> Value {
     let (r, value) = match read_ref_and_value(args) {
         Ok(pair) => pair,
         Err(err) => {
-            return rpc_error("gateway/arguments-invalid", format!("credentials/set: {err}"))
+            return rpc_error(
+                "gateway/arguments-invalid",
+                format!("credentials/set: {err}"),
+            )
         }
     };
     let slot = slot_of_ref(&r);
@@ -211,7 +216,10 @@ pub async fn unset(host: &HostState, args: &Value) -> Value {
             push_record_updated(host, &r).await;
             rpc_ok(Value::Null)
         }
-        Err(message) => rpc_error("credential/rejected", format!("credentials/unset: {message}")),
+        Err(message) => rpc_error(
+            "credential/rejected",
+            format!("credentials/unset: {message}"),
+        ),
     }
 }
 
@@ -242,7 +250,10 @@ async fn run_keyring_write(slot: String, value: Option<String>) -> std::result::
     tokio::task::spawn_blocking(move || {
         let secrets = Secrets::auto_detect();
         match value {
-            Some(value) => secrets.set(&slot, &value).map(|_| ()).map_err(|e| e.to_string()),
+            Some(value) => secrets
+                .set(&slot, &value)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
             None => secrets
                 .delete(&slot)
                 .or_else(|err| {

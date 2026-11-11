@@ -72,7 +72,10 @@ fn path_arg(args: &Value) -> Option<String> {
 }
 
 /// The session's workspace root, from the runtime thread record.
-pub(super) async fn workspace_root(host: &HostState, session_id: &str) -> Result<String, FileError> {
+pub(super) async fn workspace_root(
+    host: &HostState,
+    session_id: &str,
+) -> Result<String, FileError> {
     let detail: Value = host
         .backend
         .get(&format!("/v1/threads/{session_id}"))
@@ -180,8 +183,9 @@ async fn list_inner(host: &HostState, args: &Value) -> Result<Value, FileError> 
     let root_cl = root.to_path_buf();
     let path_cl = path.clone();
     let (entries, truncated, display) = tokio::task::spawn_blocking(move || {
-        let metadata = std::fs::metadata(&target)
-            .map_err(|_| FileError::new("workspace-file/not-found", format!("{path_cl} not found")))?;
+        let metadata = std::fs::metadata(&target).map_err(|_| {
+            FileError::new("workspace-file/not-found", format!("{path_cl} not found"))
+        })?;
         if !metadata.is_dir() {
             return Err(FileError::new(
                 "workspace-file/not-directory",
@@ -353,7 +357,11 @@ pub async fn read_bytes(host: &HostState, args: &Value) -> Result<(Value, Vec<u8
                 if metadata.len() > MAX_FILE_BYTES {
                     return Err(FileError::new(
                         "workspace-file/oversized",
-                        format!("{path} is {} bytes over the {} cap", metadata.len(), MAX_FILE_BYTES),
+                        format!(
+                            "{path} is {} bytes over the {} cap",
+                            metadata.len(),
+                            MAX_FILE_BYTES
+                        ),
                     ));
                 }
                 (0, metadata.len())
@@ -426,8 +434,9 @@ pub async fn changes(
     let session_id = session_arg(args).ok_or_else(|| {
         super::stream_failure("gateway/arguments-invalid", "changes without session")
     })?;
-    let path = path_arg(args)
-        .ok_or_else(|| super::stream_failure("gateway/arguments-invalid", "changes without path"))?;
+    let path = path_arg(args).ok_or_else(|| {
+        super::stream_failure("gateway/arguments-invalid", "changes without path")
+    })?;
     let root = workspace_root(host, &session_id)
         .await
         .map_err(|err| super::stream_failure(err.code, err.message))?;
@@ -561,8 +570,7 @@ pub async fn open_workspace_path(host: &HostState, args: &Value) -> Value {
                 canonical.to_string_lossy().into_owned(),
             ));
         }
-        super::changes::open_changed_file(&action, &canonical)
-            .map_err(OpenFailure::Failed)
+        super::changes::open_changed_file(&action, &canonical).map_err(OpenFailure::Failed)
     })
     .await;
     match opened {
@@ -602,8 +610,14 @@ mod tests {
         });
         assert_eq!(session_arg(&args).as_deref(), Some("thr_1"));
         assert_eq!(path_arg(&args).as_deref(), Some("src/a.rs"));
-        assert_eq!(args.pointer("/range/offset").and_then(Value::as_u64), Some(2));
-        assert_eq!(args.pointer("/range/limit").and_then(Value::as_u64), Some(10));
+        assert_eq!(
+            args.pointer("/range/offset").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            args.pointer("/range/limit").and_then(Value::as_u64),
+            Some(10)
+        );
 
         let args = json!({
             "workspaceFileScopeId": "thr_1",

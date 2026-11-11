@@ -71,7 +71,10 @@ const CUSTOM_PROTOCOL: &str = "openai-completions";
 /// The builtin route a slug names, if any (exact slugs only — the runtime's
 /// alias spellings are not settings keys).
 fn builtin_kind(slug: &str) -> Option<ProviderKind> {
-    ProviderKind::ALL.iter().find(|k| k.as_str() == slug).copied()
+    ProviderKind::ALL
+        .iter()
+        .find(|k| k.as_str() == slug)
+        .copied()
 }
 
 /// The `[providers.<key>]` table name for one builtin — the serde field
@@ -130,7 +133,8 @@ fn read_config(path: &Path) -> Result<DocumentMut> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    text.parse().with_context(|| format!("parse {}", path.display()))
+    text.parse()
+        .with_context(|| format!("parse {}", path.display()))
 }
 
 /// The typed `[providers]` view (unknown keys inside it ignored — the
@@ -264,7 +268,10 @@ fn insert_model_row(profile: &mut Map<String, Value>, table: Option<&Table>) {
         row.insert("name".into(), json!(name));
     }
     if let Some(window) = table.get("context_window").and_then(|v| v.as_integer()) {
-        row.insert("contextWindow".into(), json!(u64::try_from(window).unwrap_or(0)));
+        row.insert(
+            "contextWindow".into(),
+            json!(u64::try_from(window).unwrap_or(0)),
+        );
     }
     match table.get("vision").and_then(|v| v.as_bool()) {
         Some(true) => {
@@ -436,7 +443,10 @@ fn write_models(table: &mut Table, models: &Value) -> Result<(), String> {
                         .into(),
                 );
             }
-            let Some(id) = row.get("id").and_then(Value::as_str).filter(|id| !id.trim().is_empty())
+            let Some(id) = row
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
             else {
                 return Err("a model row without an id cannot be saved".into());
             };
@@ -490,9 +500,9 @@ fn set_optional_integer(table: &mut Table, key: &str, value: Option<&Value>) {
 /// `["providers", route] = profile` — the create card's whole-profile write
 /// and the editor's native-profile materialization (`{}`).
 fn set_whole_profile(doc: &mut DocumentMut, route: &str, value: &Value) -> Result<(), String> {
-    let profile = value
-        .as_object()
-        .ok_or_else(|| format!("providers.{route} must be set to a profile object, not a scalar"))?;
+    let profile = value.as_object().ok_or_else(|| {
+        format!("providers.{route} must be set to a profile object, not a scalar")
+    })?;
     if let Some(kind) = builtin_kind(route) {
         let key = toml_key(kind);
         let providers = providers_table(doc);
@@ -576,7 +586,9 @@ fn write_profile_fields(
                 // Derived on read; never stored.
             }
             other => {
-                return Err(format!("providers.{route}.{other} has no config.toml mapping"));
+                return Err(format!(
+                    "providers.{route}.{other} has no config.toml mapping"
+                ));
             }
         }
     }
@@ -610,7 +622,9 @@ fn set_profile_field(
             single.insert("displayName".into(), Value::String(String::new()));
         }
         (other, None) => {
-            return Err(format!("providers.{route}.{other} has no config.toml mapping"));
+            return Err(format!(
+                "providers.{route}.{other} has no config.toml mapping"
+            ));
         }
     }
     if let Some(kind) = builtin_kind(route) {
@@ -695,9 +709,10 @@ fn custom_ids(doc: &DocumentMut) -> Vec<String> {
 pub async fn list_configurable_providers() -> Value {
     match tokio::task::spawn_blocking(directory_entries).await {
         Ok(Ok(entries)) => rpc_ok(entries),
-        Ok(Err(err)) => {
-            rpc_error("gateway/internal", format!("llm/listConfigurableProviders: {err:#}"))
-        }
+        Ok(Err(err)) => rpc_error(
+            "gateway/internal",
+            format!("llm/listConfigurableProviders: {err:#}"),
+        ),
         Err(err) => rpc_error(
             "gateway/internal",
             format!("llm/listConfigurableProviders join failed: {err}"),
@@ -774,13 +789,17 @@ pub async fn list_providers(host: &HostState) -> Value {
 /// top level always finds an empty draft.
 fn discovery_draft(args: &Value) -> (Option<&str>, Option<&str>, Option<&str>) {
     let request = args.get("request");
-    let provider = request.and_then(|r| r.get("provider")).and_then(Value::as_str);
+    let provider = request
+        .and_then(|r| r.get("provider"))
+        .and_then(Value::as_str);
     let base_url = request
         .and_then(|r| r.get("baseURL"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|url| !url.is_empty());
-    let api_key = request.and_then(|r| r.get("apiKey")).and_then(Value::as_str);
+    let api_key = request
+        .and_then(|r| r.get("apiKey"))
+        .and_then(Value::as_str);
     (provider, base_url, api_key)
 }
 
@@ -790,7 +809,10 @@ fn discovery_draft(args: &Value) -> (Option<&str>, Option<&str>, Option<&str>) {
 /// catalog, exactly the registry answer the page expects a known route to
 /// give.
 pub async fn discover_models(host: &HostState, args: &Value) -> Value {
-    let ns = args.get("settingsNs").and_then(Value::as_str).unwrap_or_default();
+    let ns = args
+        .get("settingsNs")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if ns != NS {
         return rpc_error(
             "gateway/arguments-invalid",
@@ -992,7 +1014,10 @@ mod tests {
         assert_eq!(choices, vec!["openai-completions"]);
         // The reasoning-efforts probe finds no node, so the page hides the
         // per-model reasoning column (CodeSmith configures none).
-        let levels = node_at(&envelope, &["providers", "probe", "models", "0", "reasoningEfforts"]);
+        let levels = node_at(
+            &envelope,
+            &["providers", "probe", "models", "0", "reasoningEfforts"],
+        );
         assert!(levels.is_none());
     }
 
@@ -1085,8 +1110,14 @@ base_url = "https://stored.example/v1"
             providers["keyless"].get("apiKeyEnv").is_none(),
             "a keyless gateway keeps its provider-native auth posture"
         );
-        assert_eq!(providers["inline-keyed"]["apiKeyEnv"], "INLINE_KEYED_API_KEY");
-        assert_eq!(providers["stored-keyed"]["apiKeyEnv"], "STORED_KEYED_API_KEY");
+        assert_eq!(
+            providers["inline-keyed"]["apiKeyEnv"],
+            "INLINE_KEYED_API_KEY"
+        );
+        assert_eq!(
+            providers["stored-keyed"]["apiKeyEnv"],
+            "STORED_KEYED_API_KEY"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1127,7 +1158,10 @@ api_key = "sk-custom"
             .find(|kind| provider_accepts_root_api_key(*kind))
             .expect("a root-key provider exists")
             .as_str();
-        assert!(inline_key_configured(&doc, "openai"), "a builtin table's key");
+        assert!(
+            inline_key_configured(&doc, "openai"),
+            "a builtin table's key"
+        );
         assert!(
             inline_key_configured(&doc, root_route),
             "the legacy root key serves its provider"
@@ -1140,12 +1174,18 @@ api_key = "sk-custom"
             !inline_key_configured(&doc, "unselected"),
             "the root key does not serve an unselected custom route"
         );
-        assert!(inline_key_configured(&doc, "own-key"), "a custom entry's own key");
+        assert!(
+            inline_key_configured(&doc, "own-key"),
+            "a custom entry's own key"
+        );
         assert!(
             !inline_key_configured(&doc, "moonshot"),
             "the keyring sentinel is not an inline key"
         );
-        assert!(!inline_key_configured(&doc, "ollama"), "no table, no root claim");
+        assert!(
+            !inline_key_configured(&doc, "ollama"),
+            "no table, no root claim"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1169,7 +1209,10 @@ display_name = "Acme"
         let first = ProviderKind::ALL[0];
         assert_eq!(rows[0]["provider"], first.as_str());
         assert_eq!(rows[0]["settingsNs"], NS);
-        assert_eq!(rows[0]["settingsPath"], json!(["providers", first.as_str()]));
+        assert_eq!(
+            rows[0]["settingsPath"],
+            json!(["providers", first.as_str()])
+        );
         assert_eq!(rows[0]["declared"], false);
         let openai = rows.iter().find(|row| row["provider"] == "openai").unwrap();
         assert_eq!(openai["defaultBaseURL"], "https://api.openai.com/v1");
@@ -1212,8 +1255,14 @@ display_name = "Acme"
         );
         assert_eq!(acme.get("display_name").unwrap().as_str(), Some("Acme"));
         assert_eq!(acme.get("model").unwrap().as_str(), Some("acme-1"));
-        assert_eq!(acme.get("display_model").unwrap().as_str(), Some("Acme One"));
-        assert_eq!(acme.get("context_window").unwrap().as_integer(), Some(131072));
+        assert_eq!(
+            acme.get("display_model").unwrap().as_str(),
+            Some("Acme One")
+        );
+        assert_eq!(
+            acme.get("context_window").unwrap().as_integer(),
+            Some(131072)
+        );
         assert_eq!(acme.get("vision").unwrap().as_bool(), Some(true));
 
         // The editor's per-field ops: retitle, clear the model override, and
@@ -1241,7 +1290,10 @@ display_name = "Acme"
         let doc: DocumentMut = text.parse().unwrap();
         assert!(custom_table(&doc, "acme-gateway").is_none());
         assert!(doc.get("providers").and_then(|p| p.get("vllm")).is_none());
-        assert!(text.contains("sk-keep"), "the untouched provider still stands");
+        assert!(
+            text.contains("sk-keep"),
+            "the untouched provider still stands"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

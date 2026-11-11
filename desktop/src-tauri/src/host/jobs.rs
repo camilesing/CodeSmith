@@ -80,7 +80,10 @@ pub fn render_output(task: &Value) -> String {
         .into_iter()
         .flatten()
     {
-        let kind = entry.get("kind").and_then(Value::as_str).unwrap_or_default();
+        let kind = entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let summary = entry
             .get("summary")
             .and_then(Value::as_str)
@@ -241,7 +244,11 @@ pub async fn follow(
         .await
         .map_err(|err| super::stream_failure("job/not-found", format!("{err:#}")))?;
     let mut served = resume_offset(&render_output(&current), from);
-    if tx.send(json!({ "type": "opened", "job": job_view(&current), "from": served })).await.is_err() {
+    if tx
+        .send(json!({ "type": "opened", "job": job_view(&current), "from": served }))
+        .await
+        .is_err()
+    {
         return Ok(());
     }
     loop {
