@@ -61,6 +61,18 @@ use state::ReplState;
 /// any file — text or binary — can be attached explicitly with `/attach`.
 const IMAGE_EXTENSIONS: &[&str] = codesmith_agent::models::WIRE_IMAGE_EXTENSIONS;
 
+/// Whether a submitted op is a coordinator-mode turn — the trigger poller's
+/// gate (both before polling and again before delivery).
+fn is_coordinator_op(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::SendMessage {
+            mode: crate::app_state::AppMode::Coordinator,
+            ..
+        }
+    )
+}
+
 pub async fn run_repl(
     config: &Config,
     options: InteractiveOptions,
@@ -187,17 +199,7 @@ pub async fn run_repl(
                 Box::new(move || {
                     deliver_template
                         .lock()
-                        .map(|slot| {
-                            slot.as_ref().is_some_and(|op| {
-                                matches!(
-                                    op,
-                                    Op::SendMessage {
-                                        mode: crate::app_state::AppMode::Coordinator,
-                                        ..
-                                    }
-                                )
-                            })
-                        })
+                        .map(|slot| slot.as_ref().is_some_and(is_coordinator_op))
                         .unwrap_or(false)
                 }),
                 Box::new(move |card| {
@@ -205,6 +207,13 @@ pub async fn run_repl(
                     else {
                         return;
                     };
+                    // The poll awaits a network call after its mode check, so
+                    // re-check here: a session that left coordinator mode
+                    // meanwhile must not receive the card under another
+                    // mode's posture.
+                    if !is_coordinator_op(&op) {
+                        return;
+                    }
                     if let Op::SendMessage { content, .. } = &mut op {
                         *content = card;
                     }
