@@ -131,7 +131,7 @@ Known limitations of the current implementation:
   permission surfaces (`permissionPresets/catalog` over the thread mode), the
   `@` file source (`fileReferences/list`), the Workspace registry +
   directory picker (`workspace/create|rename|delete|insertBefore`,
-  `directoryPicker/list|createDirectory|pick`), the open-in-app file-manager
+  `directoryPicker/list|createDirectory|pick`), the open-in-app application
   catalog (`open-in-app/apps|open`), per-message and session feedback
   (`messageFeedback/list|put|delete`, `sessionFeedback/record`), the GoalBar
   (`goals/*` over `/v1/threads/{id}/goal`), workspace path open/reveal
@@ -203,11 +203,23 @@ Known limitations of the current implementation:
   canonicalizes the path and only admits a target inside the bridge cwd, a
   registered workspace, or an imported thread workspace. The host also
   serves the open-in-app catalog and launch routes
-  (`GET /open-in-app/apps`, `POST /open-in-app/open`): the only catalog entry
-  is the OS file manager (`finder` / `explorer` / `filemanager`), and launch
-  requires an existing absolute directory inside the same workspace fence.
-  That is what enables the session header's “Open In…” control and the
-  Workspace row's “Show in folder”.
+  (`GET /open-in-app/apps`, `POST /open-in-app/open`): the catalog is the
+  application ids the vendored control can label — the OS file manager
+  (`finder` / `explorer` / `filemanager`) plus editors, IDEs, Git GUIs and
+  terminals installed in their conventional locations (macOS the two
+  `Applications` roots and the system Terminal; Linux/Windows PATH
+  executables). Discovery resolves only launchers this host actually holds;
+  launch appends the directory to the argv unless an argument carries the
+  `{path}` token (`--cd={path}`, `--working-directory={path}`), runs the
+  application detached with secret-looking environment variables scrubbed,
+  watches the first moments for an immediate failure, and requires an
+  existing absolute directory inside the same workspace fence. That is what
+  enables the session header's “Open In…” control and the Workspace row's
+  “Show in folder”. Icons are not served: the vendored control builds a
+  page-relative `/open-in-app/icon/<id>` URL, which the webview resolves
+  against its own asset server, so the control renders its built-in fallback
+  glyph; a bundle renamed or moved outside the conventional roots is not
+  offered.
 - Sidebar pins and the manual session order are desktop-shell state,
   persisted at `~/.codesmith/desktop/workspace.json` and never sent to the
   runtime: pinned sessions lead their section (most recently pinned
@@ -226,8 +238,13 @@ Known limitations of the current implementation:
   `PATCH /v1/threads/{id}` of the `mode` field whose next turn applies the
   mode's toolset and approval policy. A `/permission` switch while the
   thread is in `plan` is refused with text pointing at `/plan off`, so the
-  preset picker cannot silently drop plan. `/model` rides the vendored
-  client's own contribution (a popup
+  preset picker cannot silently drop plan. The catalog also carries `/goal
+  <objective> [budget: N]` and `/feedback <text>`, and the `/goal`, `/plan`,
+  `/permission` and `/feedback` rows carry the vendored client's builtin
+  definition ids (`@codesmith/command-goal`, `@codesmith/plan-mode`,
+  `@codesmith/permission-presets`, `@codesmith/command-feedback`), so the
+  client's localized spellings (`/目标`, `/计划`, `/权限`, `/反馈`) resolve
+  to them. `/model` rides the vendored client's own contribution (a popup
   over `session/selectModel`, already bridged). The REPL's other slash
   commands are REPL-local and stay out of the catalog, so their
   "/"-prefixed lines fall through and submit as ordinary prompts.
@@ -318,7 +335,10 @@ Known limitations of the current implementation:
   preference document when absent and opens `~/.codesmith/desktop/settings.json`
   in the OS default application (the settings header's document action). The
   upstream plugin/account settings sections remain absent: CodeSmith has no
-  plugin system or hosted account, so those pages would have no backend.
+  plugin system or hosted account, so those pages would have no backend. That
+  is the final shape of this settings document — General, Models, shortcuts
+  and the font/theme overrides are the whole scope; adding plugin or account
+  pages needs an explicit product decision to also add those backends.
 - Plan mode is a full desktop surface (`client-ui-plan`): the composer plan
   chip reads the `plan` projection (`active` = thread mode `plan`), `/plan
   off` leaves the mode, and a submitted plan renders as a turn-tail card plus
@@ -391,7 +411,10 @@ Known limitations of the current implementation:
   primitives — one absolute host directory level (`directoryPicker/list`:
   directories only, hidden rows included, breadcrumb ancestry, a 2,000-row
   name-sorted prefix with `truncated`) and one child directory
-  (`createDirectory`) — but it is not composed. Registrations persist at
+  (`createDirectory`) — but it is not composed, and that is final for this
+  shell: booting it alongside the native picker would register a second
+  occupant of the same directory-flow holes and open both dialogs.
+  Registrations persist at
   `~/.codesmith/desktop/workspaces.json` (atomic rename; a corrupt file logs
   and degrades to the default workspace). The bridge cwd is the implicit
   default workspace (id `codesmith-default`); `rename`, `delete`,
@@ -402,10 +425,12 @@ Known limitations of the current implementation:
   deleted workspace keeps its folder and session logs, and its sessions trail
   under the client's Ungrouped bucket. `directoryPicker/pick` opens the
   native OS folder chooser through Tauri's dialog plugin (cancellation is
-  `null`; a bridge-only host answers `directory-picker/unavailable`). The
+  `null`; a bridge-only host answers `directory-picker/unavailable`). A
+  cancelled chooser changes nothing; a picked directory is one
+  `workspace/create` whose `replace` baseline reaches every open
+  `workspace/follow` stream, which is the row the sidebar renders. The
   in-app browser package stays vendored for its `list`/`createDirectory`
-  primitives but is not composed: two directory-flow occupants would open
-  both dialogs.
+  primitives but is not booted (see above).
 - The GoalBar (`client-ui-goal`) is fed by the `goal` projection: the live
   engine state when the thread's engine is resident (`GET
   /v1/threads/{id}/goal` answers `loaded:true`), else the latest completed
@@ -417,15 +442,27 @@ Known limitations of the current implementation:
   `GoalView` plus `activation` (`armed` while active, else `disarmed`);
   `goals/edit|pause|resume|clear` POST the runtime action (loading the
   engine, which seeds active/completed goals from the journal) and push the
-  refreshed projection. Known limitations: the runtime snapshot carries no
-  goal id, so the bridge synthesizes a stable id from the creating tool item
-  and counts revisions, plus a bridge-local overlay for desktop mutations;
-  pause/clear are process-local — an engine eviction restores the journaled
-  active/completed goal, not a desktop or round-driver pause; the bar itself
-  does not create, but the host `/goal <objective>` command does (it POSTs the
-  runtime's `edit` action directly, which creates a goal when none exists and
-  resumes/replaces an existing one; it refuses to create a goal literally
-  named pause/resume/clear, pointing at the bar instead).
+  refreshed projection. The runtime snapshot carries no goal id, so the
+  bridge synthesizes a stable id from the creating tool item and counts
+  revisions. Desktop pause/clear persist in `~/.codesmith/desktop/goals.json`
+  (keyed by that identity): a read presents the persisted stop over the
+  journal fallback without loading an engine and re-applies it to an engine
+  that is already loaded, and a pre-prompt reconcile re-applies it before a
+  freshly loaded engine can drive continuation rounds. The bar itself does
+  not create, but the host `/goal <objective> [budget: N]` command does (it
+  POSTs the runtime's `edit` action directly, which creates a goal when none
+  exists, keeps an unchanged objective's progress, and adopts the optional
+  token budget parsed from the `budget: N` suffix — the same suffix the REPL
+  accepts; it refuses to create a goal literally named pause/resume/clear,
+  pointing at the bar instead). Known limitations: a goal created through
+  `/goal` has no journal item, so it does not survive an engine eviction at
+  all; the persisted identity is the creating tool item, so desktop overlay
+  revisions are stable for one goal but not a durable CAS across a bridge
+  restart; a queued turn the runtime starts after an eviction without an
+  intervening desktop prompt can outrun a pause for one turn. The client's
+  optional `maxGoalRounds` edit is accepted only at the runtime's fixed cap
+  (25); any other value is refused with `goal/rejected` rather than silently
+  ignored.
 - The document-preview and changed-file open controls
   (`client-ui-open-in-app` + `client-ui-file-actions`) are bridged over the
   existing workspace-files surface: `session/canOpenWorkspacePath` answers
@@ -439,10 +476,11 @@ Known limitations of the current implementation:
   `workspaceFiles/readBytes` and the browser clipboard; Save as stays hidden
   (it needs a native save dialog this shell does not compose), and
   `present.open` remains `nativeUnavailable`. The session header's
-  “Open In…” control and the Workspace row's “Show in folder” launch the OS
-  file manager through the host open-in-app catalog; the per-path
-  `workspacePathApplications` catalogue is still empty, so the file/document
-  controls render their reveal action rather than an application menu.
+  “Open In…” control and the Workspace row's “Show in folder” launch an
+  installed application (the file manager first) through the host
+  open-in-app catalog; the per-path `workspacePathApplications` catalogue is
+  still empty, so the file/document controls render their reveal action
+  rather than an application menu.
 - Per-message feedback and the `/feedback` dialog
   (`client-ui-message-feedback`) are backed by a desktop-local
   compare-and-set sidecar at `~/.codesmith/desktop/feedback.json`.
@@ -451,11 +489,17 @@ Known limitations of the current implementation:
   check, the 1,024-byte note cap, and the fixed category vocabulary;
   `sessionFeedback/record` appends a session-level remark. The Like/Dislike
   controls and the dialog update from each mutation's reply, and `/feedback
-  <text>` joins the host command catalog. The dialog copy says feedback is
-  stored locally (the upstream text claimed the conversation log was
-  uploaded; this shell uploads nothing). Known limitations: there are no
-  live cross-client feedback events (a reload re-reads the sidecar), and
-  removing a session log leaves its feedback rows behind.
+  <text>` joins the host command catalog with the `@codesmith/command-feedback`
+  definition id (so the client's localized `/反馈` alias resolves); the
+  vendored plugin decorates that one host row's bare invocation with its
+  dialog — it does not register a second menu contribution. The dialog copy
+  says feedback is stored locally (the upstream text claimed the conversation
+  log was uploaded; this shell uploads nothing). Known limitations: the
+  vendored surface has no live event hook, so there are no cross-client
+  feedback pushes (the CAS reply reconciles a client that lost a race, and a
+  reload re-reads the sidecar); removing a session log leaves its feedback
+  rows behind. The CAS list/put/delete contract is covered end to end against
+  a fake runtime (`host::tests::feedback_dispatch_enforces_the_sidecar_contract`).
 - Control projections also carry `todos` (the latest successful whole-list
   `todo`/`checklist_write` call, pushed live on the tool's `item.started`;
   single-item `todo_add`/`todo_update`/`checklist_add`/`checklist_update`

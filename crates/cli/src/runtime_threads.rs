@@ -2949,7 +2949,10 @@ impl RuntimeThreadManager {
     ///
     /// Known limitation: this control state is process-local (the journal
     /// records model-tool changes only); an engine eviction restores the
-    /// latest journaled active/completed goal, not a desktop pause/clear.
+    /// latest journaled active/completed goal. The desktop bridge persists
+    /// its pause/clear overlay and re-applies it before a prompt, so that
+    /// host survives the eviction; a client that does not carry the overlay
+    /// (the CLI, a foreign HTTP caller) still loses the stop.
     pub async fn apply_goal_action(
         &self,
         thread_id: &str,
@@ -2970,12 +2973,15 @@ impl RuntimeThreadManager {
             GoalAction::Resume => {
                 guard.resume(None).map_err(anyhow::Error::msg)?;
             }
-            GoalAction::Edit { objective } => {
+            GoalAction::Edit {
+                objective,
+                token_budget,
+            } => {
                 let objective = objective.trim().to_string();
                 if objective.is_empty() {
                     bail!("a goal objective cannot be empty");
                 }
-                guard.resume(Some(objective)).map_err(anyhow::Error::msg)?;
+                guard.edit(objective, token_budget);
             }
         }
         Ok(goal_view_json(&guard))
@@ -4558,8 +4564,12 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 /// One desktop GoalBar mutation against a thread's live goal state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalAction {
-    /// Replace the objective (an unchanged objective just resumes it).
-    Edit { objective: String },
+    /// Replace the objective and/or token budget (an unchanged objective
+    /// keeps its progress; a changed one starts a fresh goal).
+    Edit {
+        objective: String,
+        token_budget: Option<u32>,
+    },
     /// Stop the round driver without clearing the goal.
     Pause,
     /// Re-arm a paused/blocked/completed goal.
@@ -8359,12 +8369,32 @@ mod tests {
                 "thr_goal",
                 GoalAction::Edit {
                     objective: "ship it well".into(),
+                    token_budget: Some(250),
                 },
             )
             .await
             .expect("edit")
             .expect("goal");
         assert_eq!(edited["objective"], "ship it well");
+        assert_eq!(
+            edited["token_budget"], 250,
+            "a host edit adopts the supplied budget"
+        );
+
+        // An objective-only edit keeps that budget rather than erasing it.
+        let renamed = manager
+            .apply_goal_action(
+                "thr_goal",
+                GoalAction::Edit {
+                    objective: "ship it well".into(),
+                    token_budget: None,
+                },
+            )
+            .await
+            .expect("edit")
+            .expect("goal");
+        assert_eq!(renamed["token_budget"], 250);
+        assert_eq!(renamed["status"], "active");
 
         assert!(
             manager

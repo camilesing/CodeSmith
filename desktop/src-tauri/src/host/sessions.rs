@@ -847,6 +847,9 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
         .to_string();
     let mode = inner.get("mode").and_then(Value::as_str).unwrap_or("queue");
     repair_before_prompt(host, &session_id).await;
+    // A persisted desktop pause/clear must reach a freshly loaded engine
+    // before this prompt's turn can let the goal round driver continue.
+    super::goals::reconcile(host, &session_id).await;
     let rpc_id = prompt_request_id(inner);
     let content: Vec<PromptPart> = serde_json::from_value(
         inner

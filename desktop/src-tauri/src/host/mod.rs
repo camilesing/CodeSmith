@@ -34,7 +34,7 @@ pub mod workspace;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -115,8 +115,12 @@ pub struct HostState {
     /// each is a read-modify-write of `desktop/workspaces.json`.
     pub workspace_lock: tokio::sync::Mutex<()>,
     /// Bridge-local GoalBar mutations per session (revision bumps, a desktop
-    /// clear tombstone). See `host::goals`.
+    /// pause/clear tombstone). Hydrated from `desktop/goals.json` on first
+    /// use so the mutations outlive a bridge restart; see `host::goals`.
     pub goal_overlays: Mutex<HashMap<String, goals::Overlay>>,
+    /// Whether `goal_overlays` was hydrated from disk (the first projection
+    /// or mutation loads it once).
+    pub goal_overlays_loaded: AtomicBool,
 }
 
 impl HostState {
@@ -1220,7 +1224,13 @@ mod tests {
     struct FakeRuntime {
         workspace: std::path::PathBuf,
         archived: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+        /// The thread detail's item list (feedback targets, goal tools).
+        items: Value,
+        /// Every `POST /v1/threads/{id}/goal` body, in order.
+        goal_actions: GoalActions,
     }
+
+    type GoalActions = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
 
     async fn fake_threads(
         axum::extract::State(fake): axum::extract::State<FakeRuntime>,
@@ -1254,12 +1264,18 @@ mod tests {
         Json(Value::Array(rows))
     }
 
-    async fn fake_thread(axum::extract::Path(id): axum::extract::Path<String>) -> Json<Value> {
-        Json(json!({
+    async fn fake_thread(
+        axum::extract::State(fake): axum::extract::State<FakeRuntime>,
+        axum::extract::Path(id): axum::extract::Path<String>,
+    ) -> Result<Json<Value>, axum::http::StatusCode> {
+        if id == "thr_missing" {
+            return Err(axum::http::StatusCode::NOT_FOUND);
+        }
+        Ok(Json(json!({
             "thread": { "id": id, "workspace": "" },
             "turns": [],
-            "items": [],
-        }))
+            "items": fake.items,
+        })))
     }
 
     async fn fake_patch_thread(
@@ -1282,15 +1298,34 @@ mod tests {
         Json(json!({ "id": "thr_new" }))
     }
 
-    async fn fake_ok() -> Json<Value> {
-        Json(json!({}))
-    }
-
     async fn fake_goal(axum::extract::Path(_id): axum::extract::Path<String>) -> Json<Value> {
         Json(json!({ "loaded": false, "goal": null }))
     }
 
+    async fn fake_goal_post(
+        axum::extract::State(fake): axum::extract::State<FakeRuntime>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        fake.goal_actions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(body);
+        Json(json!({ "goal": null }))
+    }
+
     async fn fake_runtime(workspace: std::path::PathBuf) -> String {
+        fake_runtime_with_items(workspace, json!([])).await
+    }
+
+    async fn fake_runtime_with_items(workspace: std::path::PathBuf, items: Value) -> String {
+        fake_runtime_with_actions(workspace, items).await.0
+    }
+
+    async fn fake_runtime_with_actions(
+        workspace: std::path::PathBuf,
+        items: Value,
+    ) -> (String, GoalActions) {
+        let goal_actions: GoalActions = Default::default();
         let app = Router::new()
             .route("/v1/threads", get(fake_threads).post(fake_create_thread))
             .route("/v1/threads/summary", get(fake_summary))
@@ -1298,10 +1333,12 @@ mod tests {
                 "/v1/threads/{id}",
                 get(fake_thread).patch(fake_patch_thread),
             )
-            .route("/v1/threads/{id}/goal", get(fake_goal).post(fake_ok))
+            .route("/v1/threads/{id}/goal", get(fake_goal).post(fake_goal_post))
             .with_state(FakeRuntime {
                 workspace,
                 archived: Default::default(),
+                items,
+                goal_actions: goal_actions.clone(),
             });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1310,7 +1347,7 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), goal_actions)
     }
 
     static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1368,7 +1405,380 @@ mod tests {
             plan_return_modes: Default::default(),
             workspace_lock: Default::default(),
             goal_overlays: Default::default(),
+            goal_overlays_loaded: Default::default(),
         })
+    }
+
+    /// The picker's E2E shape at the bridge: a failed/cancelled native pick
+    /// registers nothing, one successful pick adopts exactly one directory,
+    /// and the adoption reaches every open `workspace/follow` stream as the
+    /// complete baseline the sidebar renders. A second adoption of the same
+    /// path is idempotent (one row, `created:false`, no duplicate push).
+    #[tokio::test]
+    async fn native_picker_adoption_publishes_one_workspace_and_cancel_adds_nothing() {
+        let home = test_home("picker-e2e");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let picked = home.path.join("picked");
+        std::fs::create_dir_all(&picked).expect("picked");
+        let picked = std::fs::canonicalize(&picked).expect("canonical picked");
+        let host = test_host(fake_runtime(cwd.clone()).await, cwd.clone());
+
+        // A cancelled chooser (or a bridge-only host) creates nothing: the
+        // only row is the implicit default workspace.
+        let pick = dispatch(&host, "directoryPicker/pick", &json!({})).await;
+        assert_eq!(
+            pick["error"]["code"], "directory-picker/unavailable",
+            "{pick}"
+        );
+        let baseline = workspace::baseline(&host).await;
+        let rows = json!(baseline.items);
+        assert_eq!(
+            rows.as_array().map(Vec::len),
+            Some(1),
+            "cancel must add no row: {rows}"
+        );
+        assert!(
+            rows[0]["path"] != picked.to_string_lossy().as_ref(),
+            "cancel must not register the un-picked path"
+        );
+
+        // A real pick arrives as an absolute path; the client's adoption is
+        // one `workspace/create`, whose reply is the row it inserts.
+        let (tx, mut rx) = mpsc::channel(8);
+        host.live_sinks
+            .lock()
+            .await
+            .insert("picker-follow".into(), ("workspace/follow".into(), tx));
+        let adopted = dispatch(
+            &host,
+            "workspace/create",
+            &json!({ "args": { "request": { "path": picked } } }),
+        )
+        .await;
+        assert_eq!(adopted["value"]["created"], true, "{adopted}");
+        assert_eq!(
+            adopted["value"]["workspace"]["path"],
+            picked.to_string_lossy().as_ref(),
+            "{adopted}"
+        );
+        assert_eq!(
+            adopted["value"]["workspace"]["sessionIds"],
+            json!([]),
+            "the new workspace starts empty"
+        );
+
+        // The follow stream gets the full replacement baseline the sidebar
+        // renders, and the new row is in it exactly once.
+        let frame = rx.recv().await.expect("a workspace/follow replace frame");
+        assert_eq!(frame["type"], "replace", "{frame}");
+        let rows = frame["value"]["items"].as_array().expect("items");
+        let matching: Vec<&Value> = rows
+            .iter()
+            .filter(|row| row["path"] == picked.to_string_lossy().as_ref())
+            .collect();
+        assert_eq!(matching.len(), 1, "one row per registered path: {frame}");
+
+        // Re-picking an already registered directory is idempotent.
+        let again = dispatch(
+            &host,
+            "workspace/create",
+            &json!({ "args": { "request": { "path": picked } } }),
+        )
+        .await;
+        assert_eq!(again["value"]["created"], false, "{again}");
+        assert_eq!(
+            again["value"]["workspace"]["workspaceId"],
+            adopted["value"]["workspace"]["workspaceId"]
+        );
+        // The idempotent branch answers the existing row without a second
+        // baseline push (nothing changed), so the stream holds no frame.
+        assert!(
+            rx.try_recv().is_err(),
+            "an idempotent adoption must not re-publish the same baseline"
+        );
+    }
+
+    /// The feedback sidecar's full compare-and-set contract over a fake runtime:
+    /// session/target validation, the UUID version fence, idempotent matching
+    /// puts, the note/category vocabulary, delete's absent-success, and the
+    /// session-level record. These are the paths a second client or a reload
+    /// reconciles through, so they are exercised through `dispatch`, not the
+    /// store alone.
+    #[tokio::test]
+    async fn feedback_dispatch_enforces_the_sidecar_contract() {
+        let home = test_home("feedback");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let items = json!([
+            { "id": "item_msg", "kind": "agent_message", "status": "completed" },
+            { "id": "item_tool", "kind": "tool", "status": "completed" },
+        ]);
+        let host = test_host(fake_runtime_with_items(cwd.clone(), items).await, cwd);
+
+        let request = |value: Value| json!({ "args": { "request": value } });
+
+        // A session the runtime does not know is a business rejection, not
+        // an empty list (the client would otherwise stamp nothing).
+        let missing = dispatch(
+            &host,
+            "messageFeedback/list",
+            &request(json!({ "sessionId": "thr_missing" })),
+        )
+        .await;
+        assert_eq!(missing["value"]["ok"], false, "{missing}");
+        assert_eq!(missing["value"]["error"]["code"], "session-not-found");
+
+        let empty = dispatch(
+            &host,
+            "messageFeedback/list",
+            &request(json!({ "sessionId": "thr_a" })),
+        )
+        .await;
+        assert_eq!(empty["value"]["ok"], true, "{empty}");
+        assert_eq!(empty["value"]["value"]["items"], json!([]));
+
+        // A create carries `ifVersion: null`; the reply is the durable item.
+        let created = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "positive",
+                "note": "clear answer", "category": "task-result", "ifVersion": null,
+            })),
+        )
+        .await;
+        assert_eq!(created["value"]["ok"], true, "{created}");
+        let item = created["value"]["value"].clone();
+        let version = item["version"].as_str().expect("version").to_string();
+        assert_eq!(item["messageId"], "item_msg");
+        assert_eq!(item["note"], "clear answer");
+        assert_eq!(item["createdAt"], item["updatedAt"]);
+
+        // A second create against the same (now existing) target with a
+        // stale null version loses the race and gets the authoritative item.
+        let conflict = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "negative",
+                "ifVersion": null,
+            })),
+        )
+        .await;
+        assert_eq!(conflict["value"]["ok"], false, "{conflict}");
+        assert_eq!(conflict["value"]["error"]["code"], "version-conflict");
+        assert_eq!(conflict["value"]["error"]["current"]["version"], version);
+
+        // A matching no-op keeps the version (the client's CAS survives).
+        let noop = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "positive",
+                "note": "clear answer", "category": "task-result", "ifVersion": version,
+            })),
+        )
+        .await;
+        assert_eq!(noop["value"]["ok"], true, "{noop}");
+        assert_eq!(noop["value"]["value"]["version"], version);
+
+        // A real change mints a new version.
+        let changed = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "negative",
+                "note": "missed the constraint", "ifVersion": version,
+            })),
+        )
+        .await;
+        assert_eq!(changed["value"]["ok"], true, "{changed}");
+        let changed_version = changed["value"]["value"]["version"]
+            .as_str()
+            .expect("changed version")
+            .to_string();
+        assert_ne!(changed_version, version);
+        assert_eq!(changed["value"]["value"]["createdAt"], item["createdAt"]);
+
+        // Only finalized assistant messages are targets.
+        let tool_target = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_tool", "rating": "positive",
+                "ifVersion": null,
+            })),
+        )
+        .await;
+        assert_eq!(tool_target["value"]["error"]["code"], "target-not-found");
+
+        // Vocabulary and size refusals are business failures.
+        let blank = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "positive",
+                "note": "   ", "ifVersion": changed_version,
+            })),
+        )
+        .await;
+        assert_eq!(blank["value"]["error"]["code"], "note-blank");
+        let huge = "x".repeat(1025);
+        let too_large = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "positive",
+                "note": huge, "ifVersion": changed_version,
+            })),
+        )
+        .await;
+        assert_eq!(too_large["value"]["error"]["code"], "note-too-large");
+        assert_eq!(too_large["value"]["error"]["maxBytes"], 1024);
+        let category = dispatch(
+            &host,
+            "messageFeedback/put",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "rating": "positive",
+                "category": "bogus", "ifVersion": changed_version,
+            })),
+        )
+        .await;
+        assert_eq!(
+            category["error"]["code"], "gateway/arguments-invalid",
+            "{category}"
+        );
+
+        // Delete's version fence, then its idempotent absent success.
+        let stale_delete = dispatch(
+            &host,
+            "messageFeedback/delete",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "ifVersion": version,
+            })),
+        )
+        .await;
+        assert_eq!(
+            stale_delete["value"]["error"]["code"], "version-conflict",
+            "{stale_delete}"
+        );
+        let deleted = dispatch(
+            &host,
+            "messageFeedback/delete",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "ifVersion": changed_version,
+            })),
+        )
+        .await;
+        assert_eq!(deleted["value"]["value"]["absent"], true, "{deleted}");
+        let again = dispatch(
+            &host,
+            "messageFeedback/delete",
+            &request(json!({
+                "sessionId": "thr_a", "messageId": "item_msg", "ifVersion": changed_version,
+            })),
+        )
+        .await;
+        assert_eq!(again["value"]["value"]["absent"], true, "{again}");
+        let empty = dispatch(
+            &host,
+            "messageFeedback/list",
+            &request(json!({ "sessionId": "thr_a" })),
+        )
+        .await;
+        assert_eq!(empty["value"]["value"]["items"], json!([]));
+
+        // The dialog's session-level remark appends to the sidecar.
+        let recorded = dispatch(
+            &host,
+            "sessionFeedback/record",
+            &request(json!({
+                "sessionId": "thr_a", "text": "  the queue dock helped  ",
+                "category": "product-interaction",
+            })),
+        )
+        .await;
+        assert_eq!(recorded["value"]["value"]["recorded"], true, "{recorded}");
+        let sidecar =
+            std::fs::read_to_string(host.settings_home().join("desktop").join("feedback.json"))
+                .expect("feedback sidecar");
+        let sidecar: Value = serde_json::from_str(&sidecar).expect("sidecar json");
+        assert_eq!(
+            sidecar["sessions"]["thr_a"]["records"][0]["text"], "the queue dock helped",
+            "records trim their text"
+        );
+    }
+
+    /// A desktop pause outlives the Host process (the engine-eviction case): the
+    /// overlay is persisted, a fresh Host hydrates it, a read never loads or
+    /// mutates the engine, and the pre-prompt reconcile re-applies the stop to
+    /// the freshly loaded goal. An edit supersedes the persisted stop.
+    #[tokio::test]
+    async fn desktop_goal_pause_survives_a_reload_and_reconciles_before_prompt() {
+        let home = test_home("goals-persist");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let snapshot = json!({
+            "objective": "ship it", "status": "active", "token_budget": 100,
+            "elapsed_seconds": 1, "evidence": null, "blocker": null,
+        });
+        let items = json!([{
+            "id": "item_create",
+            "status": "completed",
+            "summary": "create_goal",
+            "detail": snapshot.to_string(),
+            "started_at": "2026-11-11T10:00:00Z",
+            "ended_at": "2026-11-11T10:00:05Z",
+        }]);
+        let (url, actions) = fake_runtime_with_actions(cwd.clone(), items.clone()).await;
+        let host = test_host(url, cwd.clone());
+
+        // A read never loads an engine and never posts a goal action.
+        let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(read["value"]["phase"], "active", "{read}");
+        assert!(
+            actions.lock().unwrap().is_empty(),
+            "reading a session must not load or mutate the engine"
+        );
+
+        let paused = goals::action(&host, "goals/pause", &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(paused["value"]["phase"], "paused", "{paused}");
+        assert_eq!(actions.lock().unwrap().last().unwrap()["action"], "pause");
+
+        // A new Host with the same home is the bridge-restart / engine-reload
+        // shape: the overlay is hydrated from `desktop/goals.json`.
+        let (url2, actions2) = fake_runtime_with_actions(cwd.clone(), items).await;
+        let reloaded = test_host(url2, cwd);
+        let after = goals::get(&reloaded, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(after["value"]["phase"], "paused", "{after}");
+        assert!(
+            actions2.lock().unwrap().is_empty(),
+            "the hydrated read must not load an engine"
+        );
+
+        // The pre-prompt reconcile re-applies the pause to the loaded engine.
+        goals::reconcile(&reloaded, "thr_a").await;
+        assert_eq!(
+            actions2.lock().unwrap().last().unwrap()["action"],
+            "pause",
+            "reconcile must post the persisted pause"
+        );
+
+        // An edit supersedes the persisted stop; a later reconcile is inert.
+        let edited = goals::action(
+            &reloaded,
+            "goals/edit",
+            &json!({ "agentId": "thr_a", "request": { "objective": "ship it" } }),
+        )
+        .await;
+        assert_eq!(edited["value"]["phase"], "active", "{edited}");
+        actions2.lock().unwrap().clear();
+        goals::reconcile(&reloaded, "thr_a").await;
+        assert!(
+            actions2.lock().unwrap().is_empty(),
+            "an edit must clear the persisted pause"
+        );
     }
 
     /// The vendored Workspace remote's value shapes, through dispatch: a
@@ -1498,7 +1908,10 @@ mod tests {
         // A bridge-only host has no native chooser; it must say so rather
         // than claim a picker opened.
         let pick = dispatch(&host, "directoryPicker/pick", &json!({})).await;
-        assert_eq!(pick["error"]["code"], "directory-picker/unavailable", "{pick}");
+        assert_eq!(
+            pick["error"]["code"], "directory-picker/unavailable",
+            "{pick}"
+        );
 
         let archived = dispatch(
             &host,

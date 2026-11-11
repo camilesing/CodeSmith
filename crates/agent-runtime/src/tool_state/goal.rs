@@ -177,6 +177,29 @@ impl GoalState {
         self.tokens_spent = 0;
     }
 
+    /// Edit the objective and/or token budget from a host control. A
+    /// changed objective starts a fresh goal (counters reset); an unchanged
+    /// objective keeps its progress, re-arms it, and adopts a supplied
+    /// budget. A `None` budget leaves the current budget untouched, so an
+    /// objective-only edit cannot erase a budget set earlier.
+    pub fn edit(&mut self, objective: String, token_budget: Option<u32>) {
+        let objective = objective.trim();
+        if objective.is_empty() {
+            return;
+        }
+        if self.objective.as_deref() == Some(objective) {
+            if token_budget.is_some() {
+                self.token_budget = token_budget;
+            }
+            self.status = Some(GoalStatus::Active);
+            self.finished_at = None;
+            self.evidence = None;
+            self.blocker = None;
+            return;
+        }
+        self.create(objective.to_string(), token_budget);
+    }
+
     pub fn resume(&mut self, objective: Option<String>) -> Result<(), &'static str> {
         if let Some(objective) = objective {
             if self.objective.as_deref() == Some(objective.trim()) {
@@ -389,6 +412,34 @@ mod tests {
         state.create("second".to_string(), Some(10_000));
         assert_eq!(state.rounds_driven(), 0);
         assert_eq!(state.next_round(0, 0), RoundDecision::Drive(1));
+    }
+
+    /// A host edit (desktop `/goal [budget: N]`): a new objective starts
+    /// fresh with the supplied budget, the same objective re-arms and adopts
+    /// a budget, and an objective-only edit keeps an earlier budget.
+    #[test]
+    fn edit_replaces_the_objective_and_budget() {
+        let mut state = GoalState::default();
+        state.edit("first".to_string(), Some(500));
+        assert!(state.is_active());
+        assert_eq!(state.snapshot().token_budget, Some(500));
+        // A no-budget re-edit of the same objective keeps the budget.
+        state.pause("paused");
+        state.edit("first".to_string(), None);
+        assert!(state.is_active());
+        assert_eq!(state.snapshot().token_budget, Some(500));
+        // A raised budget on the same objective is adopted.
+        state.edit("first".to_string(), Some(900));
+        assert_eq!(state.snapshot().token_budget, Some(900));
+        // A changed objective is a fresh goal: counters reset, new budget.
+        let _ = state.next_round(10, 10);
+        state.edit("second".to_string(), Some(100));
+        assert_eq!(state.rounds_driven(), 0);
+        assert_eq!(state.snapshot().token_budget, Some(100));
+        // A blank objective changes nothing.
+        state.edit("   ".to_string(), Some(1));
+        assert_eq!(state.snapshot().objective.as_deref(), Some("second"));
+        assert_eq!(state.snapshot().token_budget, Some(100));
     }
 
     #[test]

@@ -86,25 +86,29 @@ pub fn catalog() -> Value {
             "input": { "hint": "agent | plan | yolo | coordinator" },
         },
         {
+            "definitionId": "@codesmith/plan-mode",
             "name": "plan",
             "description": "Enter or leave plan mode",
             "input": { "hint": "[off]" },
         },
         {
+            "definitionId": "@codesmith/permission-presets",
             "name": "permission",
             "description": "Switch this session's permission preset (sandbox + approval)",
             "input": { "hint": "workspace-write | danger-full-access" },
         },
         {
+            "definitionId": "@codesmith/command-goal",
             "name": "goal",
             "description": "Create or replace this session's goal",
-            "input": { "hint": "<objective>" },
+            "input": { "hint": "<objective> [budget: N]" },
         },
         {
             "name": "yolo",
             "description": "YOLO mode — full tool access, no approvals",
         },
         {
+            "definitionId": "@codesmith/command-feedback",
             "name": "feedback",
             "description": "Record feedback for this session",
             "input": { "hint": "<text>" },
@@ -143,6 +147,28 @@ fn parse_command(line: &str) -> Option<(&str, &str)> {
     Some((&rest[..end], after))
 }
 
+/// The REPL's `[budget: N]` suffix parser (port of `parse_hunt_budget`): the
+/// marker only matches at a word boundary, and a marker whose number fails to
+/// parse denies the whole invocation (an empty objective) rather than sending
+/// `budget: ten` to the runtime as part of the objective.
+fn parse_goal_budget(text: &str) -> (String, Option<u32>) {
+    const MARKER: &str = "budget:";
+    if let Some(index) = text
+        .to_ascii_lowercase()
+        .rfind(MARKER)
+        .filter(|index| *index == 0 || text[..*index].ends_with(char::is_whitespace))
+    {
+        let head = text[..index].trim_end();
+        let tail = text[index + MARKER.len()..].trim_start();
+        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(budget) = digits.parse::<u32>() {
+            return (head.trim().to_string(), Some(budget));
+        }
+        return (String::new(), None);
+    }
+    (text.trim().to_string(), None)
+}
+
 /// One admitted invocation: the resolved command and its settled argument.
 #[derive(Debug)]
 enum Admitted {
@@ -153,8 +179,11 @@ enum Admitted {
     PlanOff,
     /// A permission-preset switch; the value is the thread mode it writes.
     Permission(&'static str),
-    /// `/goal <objective>`: create or replace the runtime goal.
-    Goal(String),
+    /// `/goal <objective> [budget: N]`: create or replace the runtime goal.
+    Goal {
+        objective: String,
+        token_budget: Option<u32>,
+    },
     /// `/feedback <text>`: record one session-level remark.
     Feedback(String),
 }
@@ -222,25 +251,27 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
             Admission::Admitted(Admitted::Mode("yolo"))
         }
         "goal" => {
-            let objective = raw_input.trim();
+            let (objective, token_budget) = parse_goal_budget(raw_input);
             if objective.is_empty() {
-                return Admission::Error("Usage: /goal <objective>".into());
+                return Admission::Error("Usage: /goal <objective> [budget: N]".into());
             }
             // The GoalBar owns pause/resume/clear; a goal literally named
             // "pause" would be a surprise, so point at the bar instead.
-            if matches!(objective, "pause" | "resume" | "clear") {
+            if matches!(objective.as_str(), "pause" | "resume" | "clear") {
                 return Admission::Error(
                     "Use the GoalBar to pause, resume, or clear a goal.".into(),
                 );
             }
-            Admission::Admitted(Admitted::Goal(objective.to_string()))
+            Admission::Admitted(Admitted::Goal {
+                objective,
+                token_budget,
+            })
         }
         "feedback" => {
             let text = raw_input.trim();
             if text.is_empty() {
                 return Admission::Error(
-                    "Usage: /feedback <text> (or open the feedback dialog from the / menu)"
-                        .into(),
+                    "Usage: /feedback <text> (or open the feedback dialog from the / menu)".into(),
                 );
             }
             Admission::Admitted(Admitted::Feedback(text.to_string()))
@@ -373,14 +404,20 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                     }
                 }
             }
-            Admitted::Goal(objective) => {
+            Admitted::Goal {
+                objective,
+                token_budget,
+            } => {
                 // The runtime's goal route creates a goal when none exists
-                // (`GoalState::resume(Some(objective))` calls `create`), loads
-                // an evicted engine from the journal first, and shares the
-                // state the round driver reads. A refusal (blank objective)
-                // settles as the command's error result.
+                // (`GoalState::edit` calls `create` for a new objective),
+                // loads an evicted engine from the journal first, and shares
+                // the state the round driver reads. A refusal (blank
+                // objective) settles as the command's error result.
                 let path = format!("/v1/threads/{session_id}/goal");
-                let body = json!({ "action": "edit", "objective": objective });
+                let mut body = json!({ "action": "edit", "objective": objective });
+                if let Some(budget) = token_budget {
+                    body["token_budget"] = json!(budget);
+                }
                 match host
                     .backend
                     .post_with_error_message::<Value>(&path, &body)
@@ -388,12 +425,12 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                     .map_err(internal)?
                 {
                     Ok(_) => {
+                        // A successful edit supersedes a desktop pause/clear.
+                        super::goals::note_edit(host, &session_id).await;
                         super::goals::push(host, &session_id).await;
                         Ok(Outcome::Executed(command_success("Goal set.")))
                     }
-                    Err(runtime_message) => {
-                        Ok(Outcome::Executed(command_error(&runtime_message)))
-                    }
+                    Err(runtime_message) => Ok(Outcome::Executed(command_error(&runtime_message))),
                 }
             }
             Admitted::Feedback(text) => {
@@ -503,15 +540,27 @@ mod tests {
             "workspace-write | danger-full-access"
         );
         assert_eq!(list[2]["input"]["hint"], "[off]");
-        assert_eq!(list[4]["input"]["hint"], "<objective>");
+        assert_eq!(list[4]["input"]["hint"], "<objective> [budget: N]");
         assert_eq!(list[6]["input"]["hint"], "<text>");
+        // The builtin definition ids the vendored command input maps to its
+        // localized spellings (`/计划`, `/权限`, `/目标`, `/反馈`). A missing
+        // id silently disables those aliases.
+        assert_eq!(list[2]["definitionId"], "@codesmith/plan-mode");
+        assert_eq!(list[3]["definitionId"], "@codesmith/permission-presets");
+        assert_eq!(list[4]["definitionId"], "@codesmith/command-goal");
+        assert_eq!(list[6]["definitionId"], "@codesmith/command-feedback");
+        // `/feedback` exists exactly once: the vendored message-feedback
+        // plugin decorates this host row's bare invocation with its dialog,
+        // it does not register a second contribution.
+        assert_eq!(names.iter().filter(|name| **name == "feedback").count(), 1);
     }
 
     #[test]
     fn goal_admission_requires_an_objective_and_leaves_bar_verbs_alone() {
         assert!(matches!(
             admit("/goal ship the desktop bridge", 0),
-            Admission::Admitted(Admitted::Goal(objective)) if objective == "ship the desktop bridge"
+            Admission::Admitted(Admitted::Goal { objective, token_budget: None })
+                if objective == "ship the desktop bridge"
         ));
         assert!(matches!(admit("/goal", 0), Admission::Error(_)));
         for verb in ["pause", "resume", "clear"] {
@@ -521,6 +570,38 @@ mod tests {
             );
         }
         assert!(matches!(admit("/goal ship it", 1), Admission::Error(_)));
+    }
+
+    #[test]
+    fn goal_budget_suffix_parses_at_a_word_boundary() {
+        assert_eq!(
+            parse_goal_budget("ship the bridge budget: 400"),
+            ("ship the bridge".to_string(), Some(400))
+        );
+        assert_eq!(
+            parse_goal_budget("ship budget:1200"),
+            ("ship".to_string(), Some(1200))
+        );
+        // A marker inside a word is objective text, not a budget.
+        assert_eq!(
+            parse_goal_budget("overbudget: 5"),
+            ("overbudget: 5".to_string(), None)
+        );
+        // A present but unparseable marker denies the invocation instead of
+        // sending "budget: ten" to the runtime as the objective.
+        assert_eq!(
+            parse_goal_budget("ship it budget: ten"),
+            (String::new(), None)
+        );
+        assert!(matches!(
+            admit("/goal ship it budget: ten", 0),
+            Admission::Error(text) if text.contains("budget: N")
+        ));
+        assert!(matches!(
+            admit("/goal ship it budget: 250", 0),
+            Admission::Admitted(Admitted::Goal { objective, token_budget: Some(250) })
+                if objective == "ship it"
+        ));
     }
 
     #[test]

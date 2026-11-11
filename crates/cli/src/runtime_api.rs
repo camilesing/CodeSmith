@@ -1596,6 +1596,9 @@ struct ThreadGoalActionRequest {
     /// Replacement objective for `edit`.
     #[serde(default)]
     objective: Option<String>,
+    /// Replacement token budget for `edit` (absent keeps the current one).
+    #[serde(default)]
+    token_budget: Option<u32>,
 }
 
 /// `POST /v1/threads/{id}/goal` — edit, pause, resume or clear the live
@@ -1608,6 +1611,7 @@ async fn set_thread_goal(
     let action = match req.action.trim().to_ascii_lowercase().as_str() {
         "edit" => GoalAction::Edit {
             objective: req.objective.unwrap_or_default(),
+            token_budget: req.token_budget,
         },
         "pause" => GoalAction::Pause,
         "resume" => GoalAction::Resume,
@@ -2995,7 +2999,7 @@ mod tests {
         // the goal through the same shared state the round driver reads.
         let edited: serde_json::Value = client
             .post(&goal_url)
-            .json(&json!({ "action": "edit", "objective": "ship it" }))
+            .json(&json!({ "action": "edit", "objective": "ship it", "token_budget": 300 }))
             .send()
             .await?
             .error_for_status()?
@@ -3003,6 +3007,8 @@ mod tests {
             .await?;
         assert_eq!(edited["goal"]["objective"], "ship it");
         assert_eq!(edited["goal"]["status"], "active");
+        assert_eq!(edited["goal"]["token_budget"], 300);
+        assert_eq!(edited["goal"]["max_goal_rounds"], 25);
 
         let peek: serde_json::Value = client
             .get(&goal_url)

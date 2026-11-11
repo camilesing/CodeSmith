@@ -118,7 +118,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `exit_plan_mode` 的计划正文）、权限面（`permissionPresets/catalog` 映
   射线程 mode）、`@` 文件源（`fileReferences/list`）、工作区注册表 +
   目录选择器（`workspace/create|rename|delete|insertBefore`、
-  `directoryPicker/list|createDirectory|pick`）、open-in-app 文件管理器目录
+  `directoryPicker/list|createDirectory|pick`）、open-in-app 应用目录
   （`open-in-app/apps|open`）、逐消息与会话反馈
   （`messageFeedback/list|put|delete`、`sessionFeedback/record`）、GoalBar
   （`goals/*`，经 `/v1/threads/{id}/goal`）、工作区路径打开/定位
@@ -172,10 +172,18 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   工作区或已导入线程工作区内的路径（符号链接逃逸为
   `workspace-file/outside-workspace`，文件不存在为
   `workspace-file/not-found`）。宿主还服务 open-in-app 目录与启动路由
-  （`GET /open-in-app/apps`、`POST /open-in-app/open`）：目录里只有操作系统
-  文件管理器（`finder` / `explorer` / `filemanager`），启动要求目标为同一
-  工作区栅栏内已存在的绝对目录。会话头的“Open In…”控件与工作区行的
-  “在文件夹显示”由此启用。
+  （`GET /open-in-app/apps`、`POST /open-in-app/open`）：目录即 vendored
+  控件能标注的应用 id——操作系统文件管理器（`finder` / `explorer` /
+  `filemanager`）加上按常规位置发现的编辑器、IDE、Git GUI 与终端
+  （macOS 的两个 `Applications` 根与系统 Terminal；Linux/Windows 走 PATH
+  可执行文件）。发现只解析本机真正持有的启动器；启动时把目录追加到 argv
+  （除非某个参数带 `{path}` token，如 `--cd={path}`、
+  `--working-directory={path}`），以脱离方式运行并清除名字像密钥的环境
+  变量，短暂观察启动是否立即失败，并要求目标为同一工作区栅栏内已存在的
+  绝对目录。会话头的“Open In…”控件与工作区行的“在文件夹显示”由此启用。
+  图标不服务：vendored 控件生成页内相对的 `/open-in-app/icon/<id>` URL，
+  webview 会把它解析到自己的资源服务器，因此控件渲染自带回退字形；重命名
+  或移出常规根的应用不会被发现。
 - 侧栏置顶与手动排序是桌面壳自有状态，持久化在
   `~/.codesmith/desktop/workspace.json`，不写回运行时：置顶会话排在分组
   前列（最近置顶在前），手动排序保持相对顺序，从未拖动过的会话按运行时
@@ -188,10 +196,15 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   <workspace-write|danger-full-access>`（同样必须带参数）——各自
   `PATCH /v1/threads/{id}` 的 `mode` 字段，下一 turn 起生效该模式的工具
   面与审批策略。线程处于 `plan` 时 `/permission` 切换会被拒绝并提示先用
-  `/plan off`，因此预设选择器不会悄悄退出计划。`/model` 走 vendored 客
-  户端自己的贡献（经 session/selectModel 的弹窗，已桥接）。REPL 的其余
-  斜杠命令是 REPL 本地的，不进目录，对应 "/" 开头的行照常作为普通
-  prompt 提交。
+  `/plan off`，因此预设选择器不会悄悄退出计划。目录还收 `/goal
+  <objective> [budget: N]` 与 `/feedback <text>`，且 `/goal`、`/plan`、
+  `/permission`、`/feedback` 行携带 vendored 客户端的内建 definition id
+  （`@codesmith/command-goal`、`@codesmith/plan-mode`、
+  `@codesmith/permission-presets`、`@codesmith/command-feedback`），因此
+  客户端的本地化拼写（`/目标`、`/计划`、`/权限`、`/反馈`）能解析到它们。
+  `/model` 走 vendored 客户端自己的贡献（经 session/selectModel 的弹窗，
+  已桥接）。REPL 的其余斜杠命令是 REPL 本地的，不进目录，对应 "/" 开头
+  的行照常作为普通 prompt 提交。
 - Models 设置页（`client-ui-settings-models`，桥接在 `host::llm` /
   `host::credentials`）：服务一个名为 `llm-pi-ai` 的设置 namespace——
   页面的通用 OpenAI 兼容编辑器正是按这个 namespace 名选布局（其他名字只
@@ -258,7 +271,9 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `settings/openSettingsDocument` 在文档不存在时创建它，并用系统默认应用
   打开 `~/.codesmith/desktop/settings.json`（设置头的文档动作）。上游的
   插件/账户设置区仍缺席：CodeSmith 没有插件系统或托管账户，这些页面没有
-  后端可接。
+  后端可接；这也是本设置文档的最终形态——General、Models、快捷键与
+  字体/主题覆盖即是全部范围，新增插件/账户页需要先明确决定同时补上对应
+  后端。
 - 计划模式是完整的桌面面（`client-ui-plan`）：composer 的计划 chip 读
   `plan` 投影（`active` = 线程 mode 为 `plan`），`/plan off` 退出，提交的
   计划渲染为 turn 尾部卡片与右侧栏计划标签页。运行时的 `exit_plan_mode`
@@ -312,7 +327,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   vendored 应用内浏览器包仍保留其原语——列出一个绝对宿主目录层级
   （`directoryPicker/list`：只列目录、含隐藏行、面包屑祖先、2,000 行按名
   排序的前缀与 `truncated`）与创建单个子目录（`createDirectory`）——但不再
-  组合。注册表持久化在
+  组合，且这是本壳的最终方案：与原生选择器一起 boot 会让两个占用者注册到
+  同一组目录流槽位、同时打开两套对话框。注册表持久化在
   `~/.codesmith/desktop/workspaces.json`（原子 rename；损坏文件记录日志并
   回落到默认工作区）。桥进程 cwd 是隐式默认工作区（id
   `codesmith-default`）；`rename`、`delete`、`insertBefore` 与逐工作区会话
@@ -321,9 +337,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `/v1/threads`；被复用的空白会话仅在没有 turn 时返回。删除工作区会保留
   目录与会话日志，其会话落到客户端的 Ungrouped 桶。`directoryPicker/pick`
   经 Tauri dialog 插件打开原生系统目录选择器（取消为 `null`；无 Tauri
-  句柄的纯桥宿主应答 `directory-picker/unavailable`）。应用内浏览器包仍
-  保留 vendored 的 `list`/`createDirectory` 原语，但不再组合：两个目录流
-  占用者会同时打开两套对话框。
+  句柄的纯桥宿主应答 `directory-picker/unavailable`）。取消不改变任何
+  状态；选中的目录经一次 `workspace/create` 采纳，其 `replace` 基线推给
+  每个打开的 `workspace/follow` 流，也就是侧栏渲染的那一行。应用内浏览器
+  包仍保留 vendored 的 `list`/`createDirectory` 原语，但不 boot（见上）。
 - GoalBar（`client-ui-goal`）由 `goal` 投影供数：线程引擎驻留时用实时引擎
   状态（`GET /v1/threads/{id}/goal` 应答 `loaded:true`），否则用线程日志里
   最近一次完成的 `create_goal`/`update_goal` 工具记录（读取会话不会加载
@@ -333,12 +350,21 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   运行时的阻塞原因。`goals/get` 返回实时 `GoalView` 加 `activation`
   （active 时 `armed`，否则 `disarmed`）；`goals/edit|pause|resume|clear`
   POST 运行时动作（加载引擎，先从日志播种 active/completed 目标）并推送
-  刷新后的投影。已知限制：运行时快照没有 goal id，桥用创建工具条目的 id
-  合成稳定身份并按条目计数版本，桌面端变更另加桥内 overlay；pause/clear
-  是进程内状态——引擎被逐出后只恢复日志里的 active/completed 目标，不恢复
-  桌面端或轮次驱动器发起的暂停；目标条本身不创建，但宿主 `/goal <objective>`
-  命令会创建（直接 POST 运行时的 `edit` 动作：没有目标时创建，已有目标时
-  恢复/替换；输入字面为 pause/resume/clear 时拒绝创建并指向目标条）。
+  刷新后的投影。运行时快照没有 goal id，桥用创建工具条目的 id 合成稳定
+  身份并按条目计数版本。桌面 pause/clear 持久化在
+  `~/.codesmith/desktop/goals.json`（按该身份索引）：读取路径不会加载
+  引擎，但对日志回退会呈现持久化的停止状态，对已加载的引擎则就地重新
+  应用；prompt 前的 reconcile 会先重放该动作，使刚加载（并从日志播种
+  active 目标）的引擎不能在轮次收尾时继续驱动。目标条本身不创建，但宿主
+  `/goal <objective> [budget: N]` 命令会创建（直接 POST 运行时的 `edit`
+  动作：没有目标时创建，目标不变时保留进度，并从 `budget: N` 后缀采纳
+  可选 token 预算——与 REPL 相同的后缀；输入字面为 pause/resume/clear 时
+  拒绝创建并指向目标条）。已知限制：经 `/goal` 创建的目标没有日志条目，
+  引擎逐出后完全无法恢复；持久化身份是创建工具条目，overlay 版本对同一
+  目标是稳定的，但跨桥重启不是持久 CAS；引擎逐出后由运行时自行启动的排队
+  turn 若中间没有桌面 prompt，可能抢在 pause 重放前多跑一轮。客户端可选的
+  `maxGoalRounds` 编辑只接受运行时固定上限（25），其他值以
+  `goal/rejected` 拒绝，不会静默忽略。
 - 文档预览与改动文件的打开控件（`client-ui-open-in-app` +
   `client-ui-file-actions`）经既有工作区文件面桥接：
   `session/canOpenWorkspacePath` 为真，`session/workspacePathApplications`
@@ -348,7 +374,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   Copy image 走 `workspaceFiles/readBytes` 与浏览器剪贴板；Save as 保持
   隐藏（需要本壳未组合的原生保存对话框），`present.open` 仍为
   `nativeUnavailable`。会话头的“Open In…”控件与工作区行的“在文件夹显示”
-  经宿主 open-in-app 目录启动系统文件管理器；逐路径的
+  经宿主 open-in-app 目录启动已安装应用（文件管理器排第一）；逐路径的
   `workspacePathApplications` 目录仍为空，因此文件/文档控件渲染“定位”
   动作而非应用菜单。
 - 逐消息反馈与 `/feedback` 对话框（`client-ui-message-feedback`）由
@@ -356,10 +382,15 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   支撑。`messageFeedback/list|put|delete` 校验会话存在、目标为已完成的
   assistant item，并执行 UUID `ifVersion` 比较、1,024 字节 note 上限与固定
   分类词表；`sessionFeedback/record` 追加会话级记录。Like/Dislike 控件与
-  对话框从每次变更的回复更新，`/feedback <text>` 进入宿主命令目录。对话框
-  文案改为“反馈只保存在本机”（上游原文声称会上传当前对话日志；本壳不上传
-  任何内容）。已知限制：没有跨客户端实时反馈事件（重载后重读 sidecar）；
-  删除会话日志会在 sidecar 留下孤儿行。
+  对话框从每次变更的回复更新，`/feedback <text>` 进入宿主命令目录并携带
+  `@codesmith/command-feedback` definition id（客户端本地化的 `/反馈`
+  别名因此可解析）；vendored 插件只给这一条宿主行的裸调用挂上对话框
+  装饰，不会注册第二个菜单贡献。对话框文案改为“反馈只保存在本机”（上游
+  原文声称会上传当前对话日志；本壳不上传任何内容）。已知限制：vendored
+  面没有实时事件钩子，因此没有跨客户端反馈推送（CAS 回复会让输掉竞争的
+  客户端自行对齐，重载后重读 sidecar）；删除会话日志会在 sidecar 留下
+  孤儿行。CAS list/put/delete 契约已用 fake runtime 端到端覆盖
+  （`host::tests::feedback_dispatch_enforces_the_sidecar_contract`）。
 - 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`
   调用，工具 `item.started` 时实时推送；单项的
   `todo_add`/`todo_update`/`checklist_add`/`checklist_update` 从结果
