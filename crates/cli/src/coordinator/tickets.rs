@@ -288,14 +288,11 @@ impl TicketStore {
             schema_version: TICKETS_SCHEMA_VERSION,
             tickets: self.tickets.clone(),
         };
-        let write = || -> std::io::Result<()> {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(path, serde_json::to_string_pretty(&state)?)
-        };
-        if let Err(err) = write() {
-            tracing::warn!("failed to persist ticket state: {err}");
+        // Same atomic tmp+rename the sub-agent state uses: a crash mid-write
+        // must not truncate the board (load treats a parse error as empty,
+        // which would drop every ticket).
+        if let Err(err) = crate::tools::subagent::write_json_atomic(path, &state) {
+            tracing::warn!("failed to persist ticket state: {err:#}");
         }
     }
 
