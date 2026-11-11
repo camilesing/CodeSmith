@@ -511,22 +511,58 @@ Known limitations of the current implementation:
   `userQuestions` stay absent: the runtime records no per-request
   system/tools/message composition, and question requests carry no tool-call
   id or cancel route.
+- The sidebar terminal tabs (`client-ui-sidebar-terminal` over the
+  `terminal/*` remote, `host::terminal`) are real user shells the bridge
+  itself spawns: `terminal/create` opens a PTY (`portable-pty`) in the
+  session's workspace with the scrubbed environment (`TERM=xterm-256color`,
+  `CODESMITH_SESSION_ID`; secret-looking variables dropped) — up to 8
+  terminals per session, closed identities never come back, and repeated
+  closes succeed. `terminal/shells` probes upstream's candidate list with
+  the environment default first; `terminal/environment` reports the session
+  directory plus the mirrored limits (500×200, 64 KiB per input command,
+  2 MiB per follower queue, 1000 rows of history). `terminal/attach` is the
+  one duplex stream: input rides the mux uplink (write/resize commands
+  numbered from 1 per attachment, acked in order), input control belongs to
+  the newest attachment alone (a demoted attachment acks `read-only`, a
+  post-exit one `not-running`), and every attachment opens with a
+  whole-screen snapshot — a vt100 emulator mirrors the PTY and serializes
+  the visible screen as replayable escape codes (upstream's headless-xterm
+  role), with the host's own stripped-text line ring above it for the
+  history vt100's viewport cannot walk. Output sequences are contiguous
+  from the snapshot; a follower whose queue passes 2 MiB fails its stream
+  and reconnecting re-snapshots (upstream's recovery model).
+  `terminal/retain` acknowledges the window hold (this host reclaims
+  nothing unattended). `terminal/close` TERMs the shell's process group,
+  escalates to KILL after the grace, waits the drain, and finishes the
+  followers' streams. These are the user's terminals, not the model's —
+  `allow_shell` (the model's shell tool) does not gate them. Known
+  limitations: terminals die with the bridge process (upstream's host
+  process dies the same way); the history ring is stripped text (no colors
+  past the visible screen, and it may duplicate lines still visible);
+  `attach` carries no `inputWindow` (the mux uplink inbox is frame-counted,
+  not byte-counted — the wire types omit the field for such carriers);
+  `shellPath` accepts any existing executable, not only discovered shells
+  (this host has no sandboxed subprocess provider; the page-origin gate is
+  the boundary); a grandchild holding the PTY open past the shell's death
+  loses its output stream at the drain timeout, not its life.
 - Upstream-only concepts are not simulated: accounts/balance and the account
   settings section (`account/*` answer the signed-out shape or null), the
   plugin manager/market and the settings plugin inventory (the Cordis/JS
   plugin system has no CodeSmith equivalent), per-session agent presets
   (`agentPresets/list` answers an empty roster; CodeSmith selects
   configuration presets at launch, not an agent composition per session),
-  sidebar terminal/browser tabs (no user-visible PTY or browser session),
-  subagent child-session views (CodeSmith subagents are in-process, not
-  separate threads with journals), and plugin entry customization. Their
-  plugins stay out of the boot roster or answer empty states. The workflow
+  sidebar browser tabs (no user-visible browser session; the terminal tabs
+  ARE bridged — see their bullet), subagent child-session views (CodeSmith
+  subagents are in-process, not separate threads with journals), and plugin
+  entry customization. Their plugins stay out of the boot roster or answer
+  empty states. The workflow
   lifecycle rides extension events that are not journaled, so the
   workflow-run panel is not fed either. (The jobs popover, the attachment
   presentation, the changes-review tab, the sidebar files/preview tabs, the
-  plan page, the permission surfaces, the `@` file source, the Workspace
-  picker/registry, the GoalBar, the open/reveal/file actions, and the
-  per-message feedback surface ARE bridged — see their bullets.)
+  sidebar terminal tabs, the plan page, the permission surfaces, the `@`
+  file source, the Workspace picker/registry, the GoalBar, the
+  open/reveal/file actions, and the per-message feedback surface ARE
+  bridged — see their bullets.)
 - The sidebar files tree and document preview
   (`client-ui-sidebar-files` + `client-ui-sidebar-documentpreview` over the
   `workspaceFiles` remote, `host::files`) read the session's workspace
@@ -642,9 +678,11 @@ Known limitations of the current implementation:
   former fetch+NDJSON carrier pinned a connection per stream, filled
   Chromium's six-per-host pool, and stalled reloads. WebSockets bypass CORS,
   so the upgrade admits only the page origins (an originless local client is
-  admitted, like the HTTP routes). The mux reads no uplink (no bridged
-  endpoint takes client items; upstream's only one, the sidebar terminal, is
-  not simulated) and sends no ping heartbeat (loopback: a vanished page
+  admitted, like the HTTP routes). Uplink items route to the open stream
+  (the sidebar terminal's attach is the one reader; a stream whose handler
+  drops its uplink receiver swallows the items, upstream's unread inbox) and
+  a full uplink inbox fails its stream (`gateway/uplink-overflow`). The mux
+  sends no ping heartbeat (loopback: a vanished page
   closes its socket, which aborts every stream it carried).
 - The composer's optimistic copy retires on the echoed `source.rpcId` (the
   client sends `requestId`). The runtime records the id on the queued item
@@ -690,3 +728,25 @@ Known limitations of the current implementation:
   run is pending — the 2026-11-07 attempt was blocked by the Electron binary
   download, the unbuilt upstream host CLI, and this machine's redacted window
   capture (evidence in `desktop/screenshots/baseline/README.md`).
+
+## Parity roadmap
+
+The desktop converges on the upstream client's design: shared features are
+upstream's, rebranded mechanically (the logo and product naming stay
+CodeSmith). This table is the durable tracking surface for that convergence —
+update it with every vendor bump and every landed slice; per-feature detail
+lives in the bullets above.
+
+| Surface | State | Next | Decision |
+| --- | --- | --- | --- |
+| Sidebar terminal tabs | bridged | — | landed |
+| workflow-run panel | vendored, unfed | journal workflow lifecycle events runtime-side | candidate slice |
+| Subagent / team board | not vendored | in-process subagents are not threads; needs runtime-side design | needs design |
+| Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
+| Agent presets | not simulated | map onto launch presets | **needs product decision** |
+| Office document preview | `officeToPdf/render` unavailable | shell out to LibreOffice; keep the unavailable state when absent | queued small slice |
+| open-in-app icons | fallback glyph | extract installed-bundle icons | queued small slice |
+| goal durable CAS · pixel-parity baseline · upload progress | Known-limitations bullets above | clear per bullet | queued |
+| Auto-update · welcome · tray | none | desktop-shell slices (Tauri updater and friends) | later, optional |
+| Account / platform · sidebar browser tabs | not simulated | — | will not bridge (upstream brand infrastructure; Electron's nested webview has no wry equivalent) |
+| Vendor refresh | pinned `8bd07339`, level with the local checkout | re-run the vendor pipeline after upstream moves and repair wire drift | standing mechanism |

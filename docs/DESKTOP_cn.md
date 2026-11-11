@@ -400,16 +400,44 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   turn 的 seq 与截断的 prompt/response 预览）。`contextBreakdown` 与
   `userQuestions` 仍缺席：运行时没有记录逐请求的 system/tools/message
   组成，问题请求也没有 tool-call id 或取消路由。
+- 右侧栏终端标签页（`client-ui-sidebar-terminal`，经 `terminal/*`
+  remote，`host::terminal`）是桥自己 spawn 的真实用户 shell：
+  `terminal/create` 在会话工作区开一个 PTY（`portable-pty`），环境经
+  清洗（`TERM=xterm-256color`、`CODESMITH_SESSION_ID`，疑似凭据的变量
+  剔除）——每会话上限 8 个，关闭过的身份不可重建，重复 close 幂等。
+  `terminal/shells` 以环境默认 shell 打头探测上游候选清单；
+  `terminal/environment` 报会话目录与镜像的上游限额（500×200、单条
+  输入 64 KiB、每 follower 队列 2 MiB、历史 1000 行）。
+  `terminal/attach` 是唯一的双工流：输入走 mux 上行（write/resize 按
+  每次附着从 1 连续编号、按序 ack），输入控制权只属于最新附着（被
+  降级的附着 ack `read-only`，退出后 `not-running`），每个附着以整屏
+  snapshot 开场——一个 vt100 仿真器镜像 PTY，把可见屏序列化为可回放
+  的转义序列（即上游 headless xterm 的角色），其上方是宿主自维护的
+  剥离转义后的纯文本行环，补上 vt100 视口走不了的滚动历史。输出
+  sequence 自 snapshot 起严格连续；follower 队列超过 2 MiB 时该流
+  失败，重连重新 snapshot 恢复（上游的恢复模型）。`terminal/retain`
+  确认窗口持有（本宿主不做无人值守回收）。`terminal/close` 先向 shell
+  进程组发 TERM、宽限期后升级 KILL、等输出排空，然后结束各 follower
+  的流。这些是用户的终端，不是模型的——`allow_shell`（模型的 shell
+  工具开关）不约束它们。已知限制：终端随桥进程生死（上游 host 进程
+  同样如此）；历史行环是剥离文本（可见屏以上没有颜色，且可能重复仍
+  可见的行）；`attach` 不携带 `inputWindow`（mux 上行 inbox 按帧数计
+  而非字节计——wire 类型对这类载体省略该字段）；`shellPath` 接受任意
+  存在的可执行文件而非仅发现清单（本宿主没有沙箱化 subprocess
+  provider，页面源门就是边界）；shell 死后仍握着 PTY 的孙进程在排空
+  超时后失去的是输出流，不是生命。
 - 上游独有概念不仿真：账户/余额与账户设置区（`account/*` 返回未登录形态
   或 null）、插件管理器/市场与设置里的插件清单（Cordis/JS 插件体系在
   CodeSmith 没有对应物）、逐会话 agent presets（`agentPresets/list` 返回
   空名册；CodeSmith 在启动时选择配置 preset，而不是逐会话的 agent 组合）、
-  右侧栏终端/浏览器标签页（没有用户可见的 PTY 或浏览器会话）、子代理子
+  右侧栏浏览器标签页（没有用户可见的浏览器会话；终端标签页**已**桥接
+  ——见其条目）、子代理子
   会话视图（CodeSmith 的 subagent 是进程内执行，不是带日志的独立 thread）
   以及插件条目定制。对应插件不进 boot roster
   或返回空态。workflow 生命周期走 extension event、没有写进会话日志，
   因此 workflow-run 面板也没有数据源。（Jobs 弹窗、附件呈现、改动审查
-  标签页、右侧栏文件/预览标签页、计划页、权限面、`@` 文件源、工作区
+  标签页、右侧栏文件/预览标签页、右侧栏终端标签页、计划页、权限面、
+  `@` 文件源、工作区
   选择器/注册表、GoalBar、打开/定位/文件动作与逐消息反馈面**已**桥接
   ——见各条。）
 - 右侧栏文件树与文档预览（`client-ui-sidebar-files` +
@@ -501,8 +529,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   流，一个客户端只占一条桥连接——原 fetch+NDJSON 载体每条流占一个连接，
   会占满 Chromium 单 host 6 连接的池并拖慢刷新。WebSocket 不受 CORS
   约束，故升级握手只放行页面源（无 Origin 的本地客户端与 HTTP 路由一样
-  放行）。mux 不读上行（没有桥接端点接收客户端 item；上游唯一的上行端点
-  ——侧栏终端——不仿真），也不发 ping 心跳（环回：页面消失即关闭其
+  放行）。上行 item 路由到对应的流（侧栏终端的 attach 是唯一的读取方；
+  handler 丢弃上行接收端的流照上游未读 inbox 的方式把 item 吞掉），上行
+  inbox 打满时该流以 `gateway/uplink-overflow` 失败。mux 不发 ping 心跳
+  （环回：页面消失即关闭其
   socket，进而中止其承载的全部流）。
 - 输入框的乐观副本靠回显的 `source.rpcId`（客户端发的是 `requestId`）
   退役。运行时把该 id 记在排队条目和落定的 user item 上
@@ -537,3 +567,24 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   fixture × 明暗，1200×800）已捕获；上游对照待人工——2026-11-07 的尝试
   被 Electron 二进制下载失败、上游 host CLI 未构建、本机窗口捕获被系统
   涂黑三重阻断（证据见 `desktop/screenshots/baseline/README.md`）。
+
+## 对齐路线图
+
+桌面端持续向上游客户端的设计收敛：共有功能沿用上游设计、机械换牌
+（Logo 与产品命名保持 CodeSmith）。本表是这一收敛的持久跟踪面——
+每次 vendor 升级与每个落地的切片都要同步更新；各功能的细节见上文
+各条。
+
+| 面板/能力 | 现状 | 下一步 | 决策 |
+| --- | --- | --- | --- |
+| 侧栏终端标签 | 已桥接 | — | 已落地 |
+| workflow 运行面板 | 已 vendor、无数据 | 运行时侧把 workflow 生命周期事件写入 journal | 候选切片 |
+| 子代理 / 团队看板 | 未 vendor | in-process 子代理不是线程，需运行时侧设计 | 待设计 |
+| 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
+| Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
+| Office 文档预览 | `officeToPdf/render` 不可用 | 外呼 LibreOffice；缺失时保持不可用态 | 小切片排队 |
+| open-in-app 图标 | 兜底字形 | 提取已安装应用的图标 | 小切片排队 |
+| goal 持久 CAS · 像素基线 · 上传进度 | 上文已知限制各条 | 逐条清偿 | 排队 |
+| 自动更新 · 欢迎页 · 托盘 | 无 | 桌面壳切片（Tauri updater 等） | 后续可选 |
+| 账号 / 平台 · 侧栏浏览器标签 | 不模拟 | — | 不跟进（上游品牌基建；Electron 嵌套 webview 无 wry 对等） |
+| vendor 刷新 | pin `8bd07339`，与本地 checkout 持平 | 上游演进后重跑 vendor 管线并修复 wire 漂移 | 常设机制 |
