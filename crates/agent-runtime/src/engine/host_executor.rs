@@ -626,7 +626,7 @@ use crate::config_types::ApiProvider;
 use crate::engine::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::events::Event;
-use crate::host_services::LspManagerApi;
+use crate::host_services::{LspManagerApi, OpenTicketsNote};
 use crate::lsp_diagnostics::DiagnosticBlock;
 use crate::mode::AppMode;
 use crate::subagent::SubAgentCompletion;
@@ -1212,7 +1212,7 @@ pub struct HostAgentExecutor {
     /// When `Some`, the turn's FIRST request (step 0) asks for the digest
     /// and pushes it as a `<codesmith:runtime_event kind="ticket_board">`
     /// user message — append-only history, never the frozen prefix.
-    pub(crate) open_tickets_note: Option<Arc<dyn crate::host_services::OpenTicketsNote>>,
+    pub(crate) open_tickets_note: Option<Arc<dyn OpenTicketsNote>>,
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
@@ -1734,10 +1734,7 @@ impl HostAgentExecutor {
     /// seam inert. `pub(crate)`: the trait lives in this crate's
     /// `host_services` and only the engine wire-in constructs this.
     #[must_use]
-    pub(crate) fn with_open_tickets_note(
-        mut self,
-        note: Option<Arc<dyn crate::host_services::OpenTicketsNote>>,
-    ) -> Self {
+    pub(crate) fn with_open_tickets_note(mut self, note: Option<Arc<dyn OpenTicketsNote>>) -> Self {
         self.open_tickets_note = note;
         self
     }

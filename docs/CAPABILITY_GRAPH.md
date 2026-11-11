@@ -31,6 +31,7 @@ construct it, consumers take it by value).
 | `IndexServiceApi` | `tools` | `index`, `tool-impls` | `cli`, `index` |
 | `KeyringStore` | `secrets` | `cli`, `secrets` | `secrets` |
 | `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers`, `tool-impls` | `agent`, `agent-runtime` |
+| `OpenTicketsNote` | `agent-runtime` | `cli` | `agent-runtime` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
 | `SandboxBackend` | `sandbox` | `cli` | `agent-runtime`, `cli` |
 | `SessionJournal` | `session` | `session` | `agent-runtime`, `cli` |

@@ -50,6 +50,7 @@ SEAMS = [
     "IndexServiceApi",
     "KeyringStore",
     "LlmClient",
+    "OpenTicketsNote",
     "ProviderFactory",
     "SandboxBackend",
     "SessionJournal",

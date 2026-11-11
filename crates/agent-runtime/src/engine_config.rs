@@ -20,6 +20,7 @@ use crate::config_types::{
     AutoRouteContext, DEFAULT_MAX_SUBAGENTS, DEFAULT_SUBAGENT_API_TIMEOUT_SECS, ToolsConfig,
     VisionModelConfig, WorkshopConfig,
 };
+use crate::host_services::OpenTicketsNote;
 use crate::web_service::WebService;
 
 /// Default step budget for the engine's tool loop, consumed by the headless
@@ -167,7 +168,7 @@ pub struct EngineConfig {
     /// request of a turn (the Router's board). `None` outside hosts that
     /// run coordinator sessions with a ticket store (the REPL and runtime
     /// threads; embeds/tests). See `host_services::OpenTicketsNote`.
-    pub open_tickets_note: Option<std::sync::Arc<dyn crate::host_services::OpenTicketsNote>>,
+    pub open_tickets_note: Option<std::sync::Arc<dyn OpenTicketsNote>>,
     /// Shared worktree isolation state for enter_worktree/exit_worktree tools.
     pub worktree_state: SharedWorktreeSessionState,
     /// Maximum sub-agent recursion depth (default 3). See

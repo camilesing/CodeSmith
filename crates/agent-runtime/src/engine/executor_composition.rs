@@ -77,7 +77,7 @@ use crate::engine::host_executor::{
 use crate::engine::result_verifier::VerdictBlock;
 use crate::engine::{CapacityDecision, ReplayOutcome, SteerInput, TargetedRefreshOutcome};
 use crate::events::Event;
-use crate::host_services::SubAgentApi;
+use crate::host_services::{OpenTicketsNote, SubAgentApi};
 use crate::mode::AppMode;
 use crate::prefix_cache::PrefixStabilityManager;
 use crate::subagent::SubAgentCompletion;
@@ -183,7 +183,7 @@ pub(crate) struct TurnDeps {
     /// Host-provided open-ticket digest (coordinator mode's board). `None`
     /// for child turns — the board is the Router's, and a worker never sees
     /// its siblings' tickets.
-    pub open_tickets_note: Option<std::sync::Arc<dyn crate::host_services::OpenTicketsNote>>,
+    pub open_tickets_note: Option<std::sync::Arc<dyn OpenTicketsNote>>,
     /// `[rhai_loop]` settings for the script-driven executor (`None` in
     /// embeds/tests that never select it; the factory applies defaults).
     pub rhai_loop: Option<crate::engine::rhai_executor::RhaiLoopSettings>,
