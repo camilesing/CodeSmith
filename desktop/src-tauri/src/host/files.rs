@@ -128,7 +128,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// The opaque freshness token: mtime nanos plus size.
-fn version_of(metadata: &std::fs::Metadata) -> String {
+pub(super) fn version_of(metadata: &std::fs::Metadata) -> String {
     let mtime = metadata
         .modified()
         .ok()
@@ -401,8 +401,9 @@ pub async fn read_bytes(host: &HostState, args: &Value) -> Result<(Value, Vec<u8
     inner.map_err(|err| rpc_error(err.code, err.message))
 }
 
-/// Resolve and stat one file target (shared by read/stat/readBytes).
-async fn locate(
+/// Resolve and stat one file target (shared by read/stat/readBytes, and the
+/// office conversion's fence).
+pub(super) async fn locate(
     host: &HostState,
     session_id: &str,
     path: &str,

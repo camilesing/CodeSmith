@@ -577,10 +577,17 @@ Known limitations of the current implementation:
   them as bytes rather than UTF-8 text), which the page's carrier plants
   (the client's strict codec only accepts a real `Uint8Array`). Renderers
   are the vendored pure-web ones (markdown, code, text, image, PDF,
-  Excel/CSV); the OFFICE renderer's host conversion RPC
-  (`officeToPdf/render`, upstream needs LibreOffice in the host process)
-  stays unimplemented and answers `method-unavailable`, so office files
-  preview as their unavailable state. Reads refuse a final-component
+  Excel/CSV); the OFFICE renderer's conversion RPC (`officeToPdf/render`)
+  shells out to a local LibreOffice `soffice` (PATH, the macOS bundle, or
+  `CODESMITH_DESKTOP_SOFFICE`) under an isolated per-conversion profile —
+  the source stages through the workspace fence with version re-checks
+  (`source-changed`), the PDF is validated (`%PDF-`/`%%EOF`, size caps) and
+  answers through the same multipart bytes attachment `readBytes` uses, and
+  an absent engine answers the wire's `unavailable` reason so the panel
+  renders its localized unavailable state instead of pretending
+  (`officeToPdf/generation` is a per-process UUID; no bridge-side result
+  cache — the client caches by generation+version). Reads refuse a
+  final-component
   symlink (upstream's own gate) and `baseFile`-relative resolution is not
   implemented (the preview addresses files by absolute path).
 - Attachment upload IS bridged, end to end. The composer's uploads stage in
@@ -744,7 +751,7 @@ lives in the bullets above.
 | Subagent / team board | not vendored | in-process subagents are not threads; needs runtime-side design | needs design |
 | Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |
-| Office document preview | `officeToPdf/render` unavailable | shell out to LibreOffice; keep the unavailable state when absent | queued small slice |
+| Office document preview | bridged over a local `soffice` | — | landed |
 | open-in-app icons | fallback glyph | extract installed-bundle icons | queued small slice |
 | goal durable CAS · pixel-parity baseline · upload progress | Known-limitations bullets above | clear per bullet | queued |
 | Auto-update · welcome · tray | none | desktop-shell slices (Tauri updater and friends) | later, optional |

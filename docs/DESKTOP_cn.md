@@ -451,9 +451,14 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   filename 时 Fetch 解析器会按 UTF-8 文本处理而失败），由页面 carrier
   植回（客户端的严格 codec 只接受真 `Uint8Array`）。渲染器为 vendored
   纯 web 集合（markdown、代码、文本、图片、PDF、Excel/CSV）；OFFICE
-  渲染器的宿主转换 RPC
-  （`officeToPdf/render`，上游需宿主进程内的 LibreOffice）未实现、按
-  `method-unavailable` 应答，office 文件预览为其不可用态。读取拒绝末段
+  渲染器的转换 RPC（`officeToPdf/render`）外呼本机 LibreOffice
+  `soffice`（PATH、macOS bundle 或 `CODESMITH_DESKTOP_SOFFICE`），每次
+  转换用隔离的 soffice profile——源文件经工作区围栏暂存并复核版本
+  令牌（变更答 `source-changed`），PDF 经校验（`%PDF-`/`%%EOF`、大小
+  上限）后走 `readBytes` 同款的 multipart 字节附件应答；引擎缺失时答
+  线上的 `unavailable` reason，面板渲染本地化的不可用态而非假装成功
+  （`officeToPdf/generation` 为进程级 UUID；桥侧无结果缓存——客户端按
+  generation+version 缓存）。读取拒绝末段
   符号链接（上游自身的门），`baseFile` 相对解析未实现（预览按绝对路径
   寻址文件）。
 - 附件上传已端到端桥接。输入框的上传先暂存在桥里（`fileUploads/upload`
@@ -582,7 +587,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | 子代理 / 团队看板 | 未 vendor | in-process 子代理不是线程，需运行时侧设计 | 待设计 |
 | 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
-| Office 文档预览 | `officeToPdf/render` 不可用 | 外呼 LibreOffice；缺失时保持不可用态 | 小切片排队 |
+| Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |
 | open-in-app 图标 | 兜底字形 | 提取已安装应用的图标 | 小切片排队 |
 | goal 持久 CAS · 像素基线 · 上传进度 | 上文已知限制各条 | 逐条清偿 | 排队 |
 | 自动更新 · 欢迎页 · 托盘 | 无 | 桌面壳切片（Tauri updater 等） | 后续可选 |

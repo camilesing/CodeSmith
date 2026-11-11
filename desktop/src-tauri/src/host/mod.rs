@@ -22,6 +22,7 @@ pub mod jobs;
 pub mod llm;
 pub mod mapper;
 pub mod mux;
+pub mod office;
 pub mod open_in_app;
 pub mod permissions;
 pub mod references;
@@ -487,6 +488,9 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "workspaceFiles/list" => files::list(host, args_of(payload)).await,
         "workspaceFiles/read" => files::read(host, args_of(payload)).await,
         "workspaceFiles/stat" => files::stat(host, args_of(payload)).await,
+        // The office preview conversion's provider generation (the render
+        // half answers multipart in `unary_handler`).
+        "officeToPdf/generation" => rpc_ok(json!(office::generation_value())),
         // The file/directory open controls (client-ui-open-in-app and
         // client-ui-file-actions): this desktop opens and reveals inside a
         // session workspace, and registers no per-path application catalog.
@@ -1024,6 +1028,14 @@ async fn unary_handler(
     // and the bytes ride as a binary part the page's carrier plants.
     if endpoint == "workspaceFiles/readBytes" {
         return match files::read_bytes(&host, args_of(&payload)).await {
+            Ok((mut value, bytes)) => multipart_response(&mut value, bytes),
+            Err(error) => Json(error).into_response(),
+        };
+    }
+    // The office preview conversion answers the same binary shape (the PDF
+    // rides the bytes attachment; the value carries `data: null`).
+    if endpoint == "officeToPdf/render" {
+        return match office::render(&host, args_of(&payload)).await {
             Ok((mut value, bytes)) => multipart_response(&mut value, bytes),
             Err(error) => Json(error).into_response(),
         };
@@ -2305,6 +2317,94 @@ mod tests {
         assert_eq!(
             missing["error"]["code"], "terminal/unavailable",
             "{missing}"
+        );
+    }
+
+    // === Office preview conversion tests (host::office) ===
+
+    /// `officeToPdf/render` answers the workspace fence + the wire value
+    /// shape, and an absent engine answers the unavailable reason (the
+    /// panel's localized unavailable state) instead of pretending.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn office_render_converts_and_reports_an_absent_engine() {
+        static SOFFICE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let home = test_home("office-render");
+        let workspace = home.path.clone();
+        let base = fake_runtime(workspace.clone()).await;
+        let host = test_host(base, workspace.clone());
+
+        let soffice = workspace.join("soffice-fake");
+        std::fs::write(
+            &soffice,
+            "#!/bin/sh\nout=\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"--outdir\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\nprintf '%%PDF-1.4\\nbody\\n%%%%EOF\\n' > \"$out/source.pdf\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&soffice, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(workspace.join("doc.docx"), b"pretend docx").unwrap();
+
+        let _guard = SOFFICE_LOCK.lock().await;
+        std::env::set_var("CODESMITH_DESKTOP_SOFFICE", &soffice);
+        let rendered = office::render(
+            &host,
+            &json!({ "workspaceFileScopeId": "thr_a", "path": "doc.docx", "priority": "foreground" }),
+        )
+        .await;
+        std::env::set_var("CODESMITH_DESKTOP_SOFFICE", workspace.join("missing"));
+        let unavailable = office::render(
+            &host,
+            &json!({ "workspaceFileScopeId": "thr_a", "path": "doc.docx", "priority": "background" }),
+        )
+        .await;
+        std::env::remove_var("CODESMITH_DESKTOP_SOFFICE");
+        drop(_guard);
+
+        let (value, bytes) = rendered.expect("render succeeds");
+        assert!(bytes.starts_with(b"%PDF-"), "{bytes:?}");
+        assert_eq!(value["offset"], json!(0), "{value}");
+        assert_eq!(value["eof"], json!(true), "{value}");
+        assert_eq!(value["bytes"], json!(bytes.len()), "{value}");
+        assert_eq!(value["missingFonts"], json!([]), "{value}");
+        assert_eq!(value["generation"], json!(office::generation_value()));
+        assert!(
+            value["absolutePath"]
+                .as_str()
+                .unwrap()
+                .ends_with("doc.docx"),
+            "{value}"
+        );
+
+        let error = unavailable.expect_err("a missing engine is unavailable");
+        assert_eq!(error["error"]["code"], "document-render/failed", "{error}");
+        assert_eq!(
+            error["error"]["details"]["reason"],
+            json!("unavailable"),
+            "{error}"
+        );
+
+        // A non-office extension is refused before any engine is consulted.
+        std::fs::write(workspace.join("note.txt"), b"text").unwrap();
+        let refused = office::render(
+            &host,
+            &json!({ "workspaceFileScopeId": "thr_a", "path": "note.txt" }),
+        )
+        .await
+        .expect_err("non-office extensions are refused");
+        assert_eq!(
+            refused["error"]["details"]["reason"],
+            json!("unsupported-format"),
+            "{refused}"
+        );
+
+        // The generation RPC is a stable per-process value.
+        let generation = dispatch(&host, "officeToPdf/generation", &json!({ "args": {} })).await;
+        assert_eq!(
+            generation["value"],
+            json!(office::generation_value()),
+            "{generation}"
         );
     }
 }
