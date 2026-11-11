@@ -3,8 +3,8 @@
 //! One ticket per background worker spawned from coordinator mode; the
 //! ticket id IS the worker's agent id, so every board row doubles as the
 //! session ref `agent_eval` / `agent_close` accept (chain of recall). Stage
-//! is *derived*, never stored — the DSH prototype's rule: state that follows
-//! facts survives restarts and cannot drift from them.
+//! is *derived*, never stored — the reference prototype's rule: state that
+//! follows facts survives restarts and cannot drift from them.
 //!
 //! Persistence mirrors the sub-agent state file (`subagents.v1.json`):
 //! best-effort JSON under `<workspace>/.codesmith/state/`, loaded lazily on

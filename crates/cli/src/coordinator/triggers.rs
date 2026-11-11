@@ -1,9 +1,9 @@
 //! Minimal trigger source — GitHub notifications (fast path in code, slow
 //! path is the coordinator itself).
 //!
-//! The DSH super-agent pipeline adapted to what CodeSmith has: no inbound
-//! webhooks (outbound only) and MCP is pull-only, so the source **polls**.
-//! Two-level filtering, the prototype's split:
+//! The reference model's super-agent pipeline adapted to what CodeSmith has:
+//! no inbound webhooks (outbound only) and MCP is pull-only, so the source
+//! **polls**. Two-level filtering, the prototype's split:
 //!
 //! - **Fast path** ([`admit_notifications`]) — pure code, no model: reason
 //!   allow-list, optional repo allow-list, dedup by notification id against

@@ -156,7 +156,7 @@ pub trait BgRegistryApi: Send + Sync {
 }
 
 /// Host-provided open-ticket digest for coordinator mode (the Router's
-/// board, DSH super-agent concept).
+/// board — the reference model's super-agent concept).
 ///
 /// At the first request of a coordinator-mode turn the executor asks the
 /// host for a one-line-per-open-ticket digest and pushes it as a

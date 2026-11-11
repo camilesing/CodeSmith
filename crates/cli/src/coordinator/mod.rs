@@ -1,5 +1,5 @@
-//! Coordinator mode's Router/Worker skeleton (DSH super-agent concepts,
-//! adapted to CodeSmith's interactive architecture).
+//! Coordinator mode's Router/Worker skeleton (the reference model's
+//! super-agent concepts, adapted to CodeSmith's interactive architecture).
 //!
 //! The coordinator session routes; worker sub-agent sessions execute. This
 //! module owns the **ticket** layer that gives delegated work a durable
@@ -26,8 +26,8 @@
 //! # Known limitations
 //!
 //! - Ticket-per-worker: several workers spawned for one user request are N
-//!   tickets, not one task with N assignments (the DSH prototype's model).
-//!   The coordinator groups them in its reply; the board does not.
+//!   tickets, not one task with N assignments (the reference prototype's
+//!   model). The coordinator groups them in its reply; the board does not.
 //! - Workers are not resumable across restarts (replacement semantics, the
 //!   sub-agent contract). A restart leaves old tickets open at stage `idle`;
 //!   the coordinator closes or re-dispatches them manually.
