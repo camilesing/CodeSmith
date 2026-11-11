@@ -290,12 +290,15 @@ impl ToolSpec for TicketReadTool {
         let requested = optional_str(&input, "id")
             .or_else(|| optional_str(&input, "agent_id"))
             .ok_or_else(|| ToolError::missing_field("id"))?;
-        // Resolve session names through the manager, like agent_eval.
+        // Resolve session names through the manager, like agent_eval. A ticket
+        // id with no manager entry (a restart left the ticket open; workers
+        // are not resumable) still names a persisted ticket — fall back to
+        // the raw id instead of failing, matching ticket_close.
         let agent_id = {
             let manager = self.manager.read().await;
             manager
                 .resolve_agent_ref(requested)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?
+                .unwrap_or_else(|_| requested.to_string())
         };
         let mut store = self
             .store
@@ -520,5 +523,23 @@ mod tests {
         .expect("execute");
         let completion = rx.try_recv().expect("wake sent");
         assert!(completion.payload.contains("which tenant?"));
+    }
+
+    #[tokio::test]
+    async fn read_falls_back_to_the_persisted_ticket_id() {
+        // A restart leaves tickets open while the manager has no live worker
+        // to resolve the id through; the persisted row must still read.
+        use crate::tools::subagent::SubAgentManager;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager: SharedSubAgentManager = std::sync::Arc::new(tokio::sync::RwLock::new(
+            SubAgentManager::new(dir.path().to_path_buf(), 2),
+        ));
+        let tool = TicketReadTool::new(shared_store(), manager);
+        let result = tool
+            .execute(json!({ "id": "agent_w" }), &ToolContext::new(dir.path()))
+            .await
+            .expect("persisted ticket reads");
+        assert!(format!("{result:?}").contains("Fix the flaky login test"));
     }
 }
