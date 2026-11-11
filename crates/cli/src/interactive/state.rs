@@ -31,6 +31,7 @@ use crate::tools::subagent::{SubAgentResult, SubAgentStatus};
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use codesmith_agent_runtime::mcp;
 use codesmith_agent_runtime::mode::ApprovalMode;
+use codesmith_agent_runtime::ops::Op;
 use codesmith_config::presets::PresetCatalog;
 use codesmith_session::store::FileSessionStore;
 
@@ -170,6 +171,13 @@ pub struct ReplState {
     /// tool calls finish; whatever is left when the turn ends is sent by the
     /// REPL loop as the next turn, in the order typed.
     pub queued_messages: Vec<String>,
+    /// The most recent submitted turn's op, content cleared — the live
+    /// session parameters (mode, model, approval posture) for injected
+    /// input. The coordinator trigger poller clones it to deliver trigger
+    /// cards under the session's CURRENT posture (the engine's own idle
+    /// wake uses the same clone-last-op trick). `None` until the first
+    /// submit.
+    pub last_turn_template: Arc<std::sync::Mutex<Option<Op>>>,
     /// What was in the mid-turn composer when the turn ended. The REPL loop
     /// takes it as the next prompt's text, so a turn that ends first never
     /// swallows half-typed input.
@@ -358,13 +366,18 @@ impl ReplState {
             })
         };
 
-        let allow_shell = allow_shell || initial_mode == AppMode::Yolo;
+        // Coordinator entry mirrors the Yolo coercion `set_mode` applies:
+        // workers need shell and run auto-approved, and a session that
+        // STARTS in coordinator (env var / default_mode / preset) must not
+        // bypass that — `approval_prompt_for_mode` asserts the invariant.
+        let allow_shell =
+            allow_shell || matches!(initial_mode, AppMode::Yolo | AppMode::Coordinator);
         let shell_manager = new_shared_shell_manager(workspace.clone());
         let hooks = HookExecutor::new(config.hooks_config(), workspace.clone());
         let plan_state = new_shared_plan_state();
         let plan_mode_state = crate::tools::plan_mode::new_shared_plan_mode_state();
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
-        let approval_mode = if matches!(initial_mode, AppMode::Yolo) {
+        let approval_mode = if matches!(initial_mode, AppMode::Yolo | AppMode::Coordinator) {
             ApprovalMode::Auto
         } else {
             config
@@ -421,6 +434,7 @@ impl ReplState {
             tool_detail: false,
             show_tasks: false,
             queued_messages: Vec::new(),
+            last_turn_template: Arc::new(std::sync::Mutex::new(None)),
             turn_end_draft: None,
             next_input: None,
             skill_baseline: None,
@@ -524,7 +538,17 @@ impl ReplState {
             self.approval_mode = ApprovalMode::Auto;
             self.allow_shell = true;
         } else if leaving_coordinator {
-            self.approval_mode = ApprovalMode::Suggest;
+            // Restore the config-derived approval posture rather than
+            // hardcoding Suggest — a user with `approval_policy = "auto"`
+            // kept losing it on every hop through coordinator mode.
+            // `allow_shell` returns to its opted-out default, matching the
+            // leaving_yolo convention.
+            self.approval_mode = self
+                .config
+                .approval_policy
+                .as_deref()
+                .and_then(ApprovalMode::from_config_value)
+                .unwrap_or_default();
             self.allow_shell = false;
         }
 
@@ -901,6 +925,9 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
         file_freshness_tracker:
             codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
         telemetry_sink: state.telemetry_sink.clone(),
+        // The board digest provider installs in `build_engine` (it owns the
+        // host's store + manager).
+        open_tickets_note: None,
     })
 }
 

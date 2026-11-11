@@ -54,6 +54,9 @@ pub(crate) enum RuntimeEventKind {
     /// An idle-wake synthesized turn; the parked completions follow as
     /// their own frames.
     IdleWake,
+    /// The coordinator-mode Router board digest: open tickets, once per
+    /// turn's first request.
+    TicketBoard,
 }
 
 impl RuntimeEventKind {
@@ -67,6 +70,7 @@ impl RuntimeEventKind {
             Self::PlanModeExit => "plan_mode_exit",
             Self::DeliverablesCheck => "deliverables_check",
             Self::IdleWake => "idle_wake",
+            Self::TicketBoard => "ticket_board",
         }
     }
 }
@@ -105,6 +109,7 @@ mod tests {
                 RuntimeEventKind::PlanModeExit => "plan_mode_exit",
                 RuntimeEventKind::DeliverablesCheck => "deliverables_check",
                 RuntimeEventKind::IdleWake => "idle_wake",
+                RuntimeEventKind::TicketBoard => "ticket_board",
             }
         }
         let all = [
@@ -115,6 +120,7 @@ mod tests {
             RuntimeEventKind::PlanModeExit,
             RuntimeEventKind::DeliverablesCheck,
             RuntimeEventKind::IdleWake,
+            RuntimeEventKind::TicketBoard,
         ];
         for kind in all {
             let frame = runtime_event_frame(kind, " Prose.\n\nPayload");

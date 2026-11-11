@@ -32,8 +32,8 @@ one inbox, the seam triple, prefix-cache discipline.
 | Thread | runtime-API threads + the session journal |
 | Eval | intake decisions, in three places by design |
 | Policy | the rulers those decisions consult |
-| Ticket | named child sessions + team task entries |
-| Mandate | the delegation trust envelope riding the child's tool surface |
+| Ticket | coordinator ticket store + board (`crates/cli/src/coordinator/`); named child sessions + team task entries elsewhere |
+| Mandate | the delegation trust envelope riding the child's tool surface; in coordinator mode, the ended-ticket tool guard (`DelegationPolicy::admit`) |
 | Subscription | partial: child→parent context patches; cross-session recall is open ground |
 | Assignment | the sub-agent runtime and the team task flow |
 | Executor | the turn-executor registry (strongest overlap) |
@@ -54,6 +54,10 @@ decision. Each ingress path already names itself:
   dispatching through `Op::TeamInboxDispatch`
   (`crates/agent-runtime/src/engine/team_inbox.rs`).
 - MCP: the client pool (`crates/mcp-client`) surfaces as tools, not events.
+- Coordinator triggers: the GitHub-notification poller
+  (`crates/cli/src/coordinator/triggers.rs`) — deterministic fast-path filter
+  in code, admitted candidates delivered as user-role `[github trigger]`
+  cards; the coordinator model itself is the slow path.
 
 What was missing — and is now closed — is the catalog of what an injected
 *internal* input looks like: every engine-injected sentinel user message rides
@@ -61,7 +65,7 @@ the `<codesmith:runtime_event>` envelope, and the closed kind set plus the one
 frame builder live in
 `crates/agent-runtime/src/engine/runtime_event.rs` (`subagent_completion`,
 `shell_job_completion`, `result_verification`, `plan_mode`,
-`plan_mode_exit`, `deliverables_check`, `idle_wake`). `<teammate-message>` and
+`plan_mode_exit`, `deliverables_check`, `idle_wake`, `ticket_board`). `<teammate-message>` and
 `<turn_meta>` are separate envelopes on purpose (see that module's known
 limitations).
 

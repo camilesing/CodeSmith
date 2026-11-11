@@ -241,6 +241,12 @@ See `agent.txt` for the delegation protocol and
 (`general` / `explore` / `plan` / `review` / `implementer` /
 `verifier` / `tool_agent` / `team` / `coordinator_worker` / `custom`).
 
+In coordinator mode the session's own surface is the Router's: the spawn
+family plus `ticket_list` / `ticket_read` / `ticket_close` (the board),
+`tool_agent`, `workflow`, and `task_stop`; a coordinator worker's surface
+additionally carries `ticket_report` (structured status; see
+[`SUBAGENTS.md`](SUBAGENTS.md) "Coordinator mode").
+
 `agent_open` defaults to a fresh child conversation. Pass
 `fork_context: true` for continuation-style work or multi-perspective reviews
 that should inherit the parent's context. In fork mode, the runtime preserves

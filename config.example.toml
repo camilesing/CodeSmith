@@ -1114,3 +1114,18 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #
 # [automations]
 # max_steps = 100  # step cap per turn for scheduled runs (default 100)
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Coordinator mode triggers (optional, experimental)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Router/Worker coordinator mode (enter with /mode coordinator) tracks each
+# delegated worker as a ticket; this table adds the minimal GitHub trigger
+# source. Requires the gh CLI. Polling runs in interactive sessions only,
+# and enabling it authorizes the coordinator to act on triggers (no
+# observe-only tier).
+#
+# [coordinator.trigger]
+# enabled = true                       # default false
+# interval_minutes = 15                # clamp 1..=1440
+# reasons = ["mention", "review_requested"]  # fast-path admission filter
+# # repos = ["owner/name"]             # optional allow-list; empty = all repos

@@ -1735,6 +1735,7 @@ impl Engine {
             turn_meta: Some(turn_meta_probe),
             reinject: Some(reinject_probe),
             deliverables: self.deliverables_probe.clone(),
+            open_tickets_note: self.config.open_tickets_note.clone(),
             context: Some(executor_composition::TurnContextSources {
                 compaction: self.config.compaction.clone(),
                 workspace: self.session.workspace.clone(),

@@ -1502,6 +1502,35 @@ You can also override features for a single run:
 
 Use `codesmith features list` to inspect known flags and their effective state.
 
+## Coordinator Mode (Router/Worker)
+
+`coordinator_mode` (default off; on in the `experiment` preset) adds the
+coordinator mode to the Shift+Tab ring. Sessions still start in Agent —
+enter the Router stance explicitly with `/mode coordinator`. The mode's
+ticket board is always available once inside it; see
+[`SUBAGENTS.md`](SUBAGENTS.md) "Coordinator mode" for the workflow.
+
+The `[coordinator.trigger]` table (default off) enables the experimental
+GitHub-notification trigger source for interactive sessions:
+
+```toml
+[coordinator.trigger]
+enabled = true            # default false — enabling authorizes action
+interval_minutes = 15     # clamp 1..=1440
+reasons = ["mention", "review_requested"]  # fast-path admission
+# repos = ["owner/name"]  # optional allow-list; empty = every repository
+```
+
+Polls `gh api notifications` (the `gh` CLI must be installed) on the
+interval while the session is in coordinator mode, admits notifications
+through the deterministic filter (reason allow-list, optional repo
+allow-list, dedup by notification id — persisted in
+`.codesmith/state/triggers.v1.json`), and delivers the admitted candidates
+to the session as `[github trigger]` user-role cards. There is no
+observe-only tier: enabling polling authorizes the coordinator to act on
+triggers. Known limitation: interactive sessions only — runtime-API and
+desktop threads run no poller.
+
 ## Web Search Provider
 
 `web_search` uses DuckDuckGo by default and does not require an API key. The

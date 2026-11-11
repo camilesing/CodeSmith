@@ -29,8 +29,8 @@ harness 描述为围绕同一条事件流做的层次切分，各概念各司其
 | Thread | runtime-API 线程 + 会话日志 |
 | Eval | 接单判断，刻意分布在三处 |
 | Policy | 这些判断所依据的尺子 |
-| Ticket | 命名子会话 + 团队任务项 |
-| Mandate | 骑在子代理工具面上的委托信任包络 |
+| Ticket | coordinator 票务 store + 看板（`crates/cli/src/coordinator/`）；其余为命名子会话 + 团队任务项 |
+| Mandate | 骑在子代理工具面上的委托信任包络；coordinator 模式下由关单工具守卫强制（`DelegationPolicy::admit`） |
 | Subscription | 部分：子→父上下文补丁；跨会话 recall 是空地 |
 | Assignment | 子代理运行时与团队任务流 |
 | Executor | turn-executor 注册表（重叠最强） |
@@ -58,7 +58,7 @@ harness 描述为围绕同一条事件流做的层次切分，各概念各司其
 合与唯一的帧构建器在
 `crates/agent-runtime/src/engine/runtime_event.rs`（`subagent_completion`、
 `shell_job_completion`、`result_verification`、`plan_mode`、
-`plan_mode_exit`、`deliverables_check`、`idle_wake`）。
+`plan_mode_exit`、`deliverables_check`、`idle_wake`、`ticket_board`）。
 `<teammate-message>` 与 `<turn_meta>` 刻意保持独立信封（见该模块的已知限
 制）。
 

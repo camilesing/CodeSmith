@@ -63,6 +63,53 @@ read-only investigation) and marks **every** child read-only whatever its type:
 the mode can neither write nor execute, so its investigators cannot either.
 Plan-mode children are leaves for the same reason.
 
+## Coordinator mode (Router/Worker)
+
+Coordinator mode (`/mode coordinator`; the `coordinator_mode` feature flag —
+on in the `experiment` preset — adds it to the Shift+Tab ring) turns the
+session into a Router: it spawns and synthesizes but holds no direct action
+tools, and every background worker it opens gets a **ticket** — the durable
+identity for that piece of delegated work, keyed by the worker's agent id.
+The design follows the DSH super-agent prototype's split: routing is a
+structural constraint, not a prompt suggestion.
+
+- **Default worker type**: a spawn from coordinator mode without an explicit
+  type becomes `coordinator_worker` (team/messaging tools excluded, worker
+  intro emphasizing the mandate). Explicit role picks stay as given.
+- **Worker sandbox**: workers get the Agent-mode sandbox policy
+  (workspace-write + network) — the coordinator's own read-only stance
+  applies to the Router only, never to its workers.
+- **Structured reporting**: a coordinator worker's surface carries
+  `ticket_report` (`progress | waiting | ready | blocked | failed | dropped`
+  plus an optional `question`). A `blocked` report or a question wakes the
+  coordinator immediately (work continues); other states ride the worker's
+  natural completion card.
+- **The board**: the coordinator reads `ticket_list` (person-first:
+  awaiting-answer → awaiting-review → blocked → failed → working → idle) and
+  `ticket_read` (full scope, reports, attention, inputs); the first request
+  of each turn also carries a one-line digest of open tickets as a
+  `ticket_board` runtime event. Stages derive from reports — never from free
+  text.
+- **Attention**: a worker's question is relayed verbatim; the user's answer
+  goes back through `agent_eval`'s `message` parameter, which records it as
+  the ticket's input and resolves the attention.
+- **Mandate guard**: `ticket_close` ends the ticket and the worker's further
+  tool calls are refused ("Ticket ended; new work needs a new ticket").
+  Failed runs auto-end the ticket; `agent_close`/cancellations end it as
+  stopped; a `dropped` report ends it silently. A `ready` report waits for
+  review — the coordinator synthesizes for the user, then closes.
+- **Triggers** (experimental, off by default): `[coordinator.trigger]` polls
+  GitHub notifications on an interval, filters them in code (reason
+  allow-list, optional repo allow-list, dedup), and delivers admitted
+  candidates to the coordinator session as `[github trigger]` cards. The
+  coordinator itself is the slow path: attach, open work, or ignore.
+
+Known limitations: one ticket per worker (no grouping of several workers
+under one request); workers are not resumable across restarts, so tickets
+from a previous session show `idle` until closed or re-dispatched; the
+ticket scope is prompt-enforced, not machine-checked (code enforces only the
+ended-ticket tool guard); trigger polling runs in interactive sessions only.
+
 ### Working across repositories
 
 An `agent_open` `cwd` may be inside the parent workspace **or** under a

@@ -860,6 +860,10 @@ impl ToolRegistryBuilder {
         let open_runner = extension_runner.clone();
         let run_runner = extension_runner.clone();
         let workflow_runner = extension_runner;
+        // Router/Worker: on a coordinator surface the shared ticket store
+        // rides the eval/close tools (follow-up inputs recorded, close ends
+        // the ticket). Non-coordinator surfaces pass `None` through.
+        let ticket_store = runtime.ticket_store.clone();
         let mut open = AgentOpenTool::new(manager.clone(), runtime.clone());
         if let Some(r) = open_runner {
             open = open.with_extension_runner(r);
@@ -870,7 +874,9 @@ impl ToolRegistryBuilder {
         }
         self.with_tool(std::sync::Arc::new(open))
             .with_tool(std::sync::Arc::new(spawn))
-            .with_tool(std::sync::Arc::new(AgentEvalTool::new(manager.clone())))
+            .with_tool(std::sync::Arc::new(
+                AgentEvalTool::new(manager.clone()).with_ticket_store(ticket_store.clone()),
+            ))
             .with_tool(std::sync::Arc::new(ToolAgentTool::new(
                 manager.clone(),
                 runtime.clone(),
@@ -882,7 +888,9 @@ impl ToolRegistryBuilder {
                 }
                 run
             }))
-            .with_tool(std::sync::Arc::new(AgentCloseTool::new(manager.clone())))
+            .with_tool(std::sync::Arc::new(
+                AgentCloseTool::new(manager.clone()).with_ticket_store(ticket_store),
+            ))
             // The model-writable orchestration tool rides the same family:
             // its children are one-shot runs on this runtime, so caps,
             // depth budget, approval ceiling, and the SessionBeforeFork
@@ -955,6 +963,28 @@ impl ToolRegistryBuilder {
     pub fn with_send_message_tool(self, team_context: super::team::SharedTeamContext) -> Self {
         use super::team::SendMessageTool;
         self.with_tool(Arc::new(SendMessageTool::new(team_context)))
+    }
+
+    /// Include the coordinator's ticket board tools (`ticket_list`,
+    /// `ticket_read`, `ticket_close`). Registered only in coordinator mode;
+    /// the worker-side `ticket_report` rides the sub-agent registry build
+    /// instead (it belongs to the worker's own surface).
+    #[must_use]
+    pub fn with_coordinator_ticket_tools(
+        self,
+        store: crate::coordinator::SharedTicketStore,
+        manager: super::subagent::SharedSubAgentManager,
+    ) -> Self {
+        use crate::coordinator::tools::{TicketCloseTool, TicketListTool, TicketReadTool};
+        self.with_tool(Arc::new(TicketListTool::new(
+            store.clone(),
+            manager.clone(),
+        )))
+        .with_tool(Arc::new(TicketReadTool::new(
+            store.clone(),
+            manager.clone(),
+        )))
+        .with_tool(Arc::new(TicketCloseTool::new(store, manager)))
     }
 
     /// Build the registry with the given context.

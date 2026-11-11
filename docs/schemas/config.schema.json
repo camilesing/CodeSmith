@@ -452,6 +452,18 @@
       ],
       "default": null
     },
+    "desktop": {
+      "description": "`[desktop]` — desktop-UI launch controls. When the resolved preset is\n`all` and the REPL would start, the CLI launches the desktop app\ninstead (see `crate::desktop`).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DesktopConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "edit": {
       "description": "File-editing behavior (P0-1 parse gate). Defaults to enabled when\nthe table is absent.",
       "anyOf": [
@@ -616,6 +628,18 @@
       "anyOf": [
         {
           "$ref": "#/$defs/UtilityModelConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "coordinator": {
+      "description": "Coordinator mode (Router/Worker) tunables (`[coordinator]` table).\nWhen absent, the ticket board is always available in coordinator\nmode and trigger polling stays off.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoordinatorConfig"
         },
         {
           "type": "null"
@@ -1962,6 +1986,33 @@
         }
       }
     },
+    "DesktopConfig": {
+      "description": "On-disk `[desktop]` table: desktop-UI launch controls for the `all`\npreset. Absent fields default through [`crate::desktop::resolve_desktop_launch`].",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Explicitly opt out of the desktop UI (`enabled = false`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "app_path": {
+          "description": "Explicit path to the desktop app bundle/binary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codesmith_path": {
+          "description": "Explicit path to the `codesmith` binary the desktop app spawns\n(defaults to this binary's own path).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "EditConfig": {
       "description": "File-editing configuration (P0-1 parse gate).",
       "type": "object",
@@ -2755,6 +2806,70 @@
         "anthropic"
       ]
     },
+    "CoordinatorConfig": {
+      "description": "`[coordinator]` table — coordinator-mode (Router/Worker) tunables.",
+      "type": "object",
+      "properties": {
+        "trigger": {
+          "description": "`[coordinator.trigger]` — inbound trigger polling (experimental\nGitHub notification source).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoordinatorTriggerConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "CoordinatorTriggerConfig": {
+      "description": "`[coordinator.trigger]` — the minimal trigger source: poll GitHub\nnotifications on an interval, admit them through a deterministic\nfast-path filter (reason + repo + dedup), and deliver admitted\ncandidates to the coordinator session as user-role trigger cards.\n\nDefault `enabled = false`: enabling it authorizes the coordinator to act\non triggers (there is no observe-only tier — the volume does not warrant\none yet; see `crates/cli/src/coordinator/triggers.rs`).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable polling. Default false.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "interval_minutes": {
+          "description": "Poll interval in minutes, clamped to 1..=1440. Default 15.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "reasons": {
+          "description": "Notification reasons the fast path admits. Default\n`[\"mention\", \"review_requested\"]`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "repos": {
+          "description": "Optional `owner/name` repository allow-list (lowercased). Empty or\nabsent = every repository.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      }
+    },
     "Config": {
       "description": "Resolved CLI configuration, including defaults and environment overrides.",
       "type": "object",
@@ -3207,6 +3322,18 @@
           ],
           "default": null
         },
+        "desktop": {
+          "description": "`[desktop]` — desktop-UI launch controls. When the resolved preset is\n`all` and the REPL would start, the CLI launches the desktop app\ninstead (see `crate::desktop`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DesktopConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "edit": {
           "description": "File-editing behavior (P0-1 parse gate). Defaults to enabled when\nthe table is absent.",
           "anyOf": [
@@ -3371,6 +3498,18 @@
           "anyOf": [
             {
               "$ref": "#/$defs/UtilityModelConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "coordinator": {
+          "description": "Coordinator mode (Router/Worker) tunables (`[coordinator]` table).\nWhen absent, the ticket board is always available in coordinator\nmode and trigger polling stays off.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoordinatorConfig"
             },
             {
               "type": "null"

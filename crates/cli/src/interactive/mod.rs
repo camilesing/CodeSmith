@@ -51,6 +51,7 @@ use crate::core::engine::{EngineHost, spawn_engine};
 use crate::hooks::{HookEvent, MessageSubmitOutcome};
 use bindings::{Action, Bind, Bindings, KeyHandler, Shared as SharedBindings};
 use codesmith_agent_runtime::ops::Op;
+use codesmith_agent_runtime::utils::spawn_supervised;
 use completion::ReplHelper;
 use state::ReplState;
 
@@ -149,8 +150,84 @@ pub async fn run_repl(
     state.tool_catalog = Some(engine_handle.tool_catalog.clone());
     state.fact_ledger = Some(engine_handle.fact_ledger.clone());
     state.recent_read_files = Some(engine_handle.recent_read_files.clone());
-    state.engine = Some(engine_handle);
+    state.engine = Some(engine_handle.clone());
     state.task_manager = Some(task_manager.clone());
+
+    // Coordinator trigger source (`[coordinator.trigger]`): poll GitHub
+    // notifications on an interval, fast-path filter in code, deliver
+    // admitted candidates to this session as trigger cards. Only the
+    // interactive host runs it — a poller without a live session to
+    // deliver into is pointless (see the module's known limitations).
+    let trigger_config = config
+        .coordinator
+        .as_ref()
+        .and_then(|coordinator| coordinator.trigger.as_ref());
+    if trigger_config
+        .map(|trigger| trigger.enabled.unwrap_or(false))
+        .unwrap_or(false)
+    {
+        let settings = trigger_config
+            .map(|trigger| trigger.to_trigger_settings())
+            .unwrap_or_default();
+        let template = state.last_turn_template.clone();
+        let trigger_engine = engine_handle.clone();
+        let trigger_workspace = state.workspace.clone();
+        let trigger_cancel = automation_cancel.clone();
+        let deliver_template = state.last_turn_template.clone();
+        spawn_supervised(
+            "coordinator-trigger-poller",
+            std::panic::Location::caller(),
+            crate::coordinator::triggers::run_trigger_poller(
+                trigger_workspace,
+                settings.clone(),
+                // Mode gate off the live template: it carries the mode of
+                // the most recent submit, and no template yet means no
+                // baseline — don't poll (notifications stay unseen and a
+                // later poll re-admits them).
+                Box::new(move || {
+                    deliver_template
+                        .lock()
+                        .map(|slot| {
+                            slot.as_ref().is_some_and(|op| {
+                                matches!(
+                                    op,
+                                    Op::SendMessage {
+                                        mode: crate::app_state::AppMode::Coordinator,
+                                        ..
+                                    }
+                                )
+                            })
+                        })
+                        .unwrap_or(false)
+                }),
+                Box::new(move |card| {
+                    let Some(mut op) = template.lock().ok().and_then(|slot| slot.as_ref().cloned())
+                    else {
+                        return;
+                    };
+                    if let Op::SendMessage { content, .. } = &mut op {
+                        *content = card;
+                    }
+                    let engine = trigger_engine.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = engine.send(op).await {
+                            tracing::warn!("coordinator trigger delivery failed: {err:#}");
+                        }
+                    });
+                }),
+                trigger_cancel,
+            ),
+        );
+        println!(
+            "{}",
+            format!(
+                "◎ coordinator trigger polling on: GitHub notifications every {} min (fast-path reasons: {})",
+                settings.interval_minutes,
+                settings.reasons.join(", ")
+            )
+            .dimmed()
+        );
+    }
 
     // Passive first-run notice for discovered-but-unactivated mods (the
     // consent gate), mirroring the retired startup path.
@@ -1604,27 +1681,39 @@ async fn submit_with_images(
     // command callers swallow this error and the session keeps running, so
     // the next successful message would take the same index and the
     // references would be misattributed to it.
-    let send_result = engine
-        .send(Op::SendMessage {
-            content,
-            image_paths,
-            mode: state.mode,
-            model: effective_model,
-            goal_objective: state.hunt.quarry.clone(),
-            allowed_tools: state.active_allowed_tools.clone(),
-            blocked_tools: state.active_blocked_tools.clone().unwrap_or_default(),
-            reasoning_effort: effective_reasoning_effort,
-            reasoning_effort_auto: state.auto_model,
-            auto_model: state.auto_model,
-            allow_shell: state.allow_shell,
-            trust_mode: state.trust_mode,
-            auto_approve: state.approval_mode == codesmith_agent_runtime::mode::ApprovalMode::Auto,
-            translation_enabled: state.translation_enabled,
-            show_thinking: state.show_thinking,
-            is_simple: state.is_simple,
-            approval_mode: state.approval_mode,
-        })
-        .await;
+    let op = Op::SendMessage {
+        content,
+        image_paths,
+        mode: state.mode,
+        model: effective_model,
+        goal_objective: state.hunt.quarry.clone(),
+        allowed_tools: state.active_allowed_tools.clone(),
+        blocked_tools: state.active_blocked_tools.clone().unwrap_or_default(),
+        reasoning_effort: effective_reasoning_effort,
+        reasoning_effort_auto: state.auto_model,
+        auto_model: state.auto_model,
+        allow_shell: state.allow_shell,
+        trust_mode: state.trust_mode,
+        auto_approve: state.approval_mode == codesmith_agent_runtime::mode::ApprovalMode::Auto,
+        translation_enabled: state.translation_enabled,
+        show_thinking: state.show_thinking,
+        is_simple: state.is_simple,
+        approval_mode: state.approval_mode,
+    };
+    // Live session parameters for injected input (the trigger poller's
+    // delivery template): a clone with the content cleared, refreshed on
+    // every submit so a mid-session /model or /mode change is picked up.
+    {
+        let mut template = op.clone();
+        if let Op::SendMessage { content, .. } = &mut template {
+            *content = String::new();
+        }
+        *state
+            .last_turn_template
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(template);
+    }
+    let send_result = engine.send(op).await;
     if send_result.is_ok() {
         state.context_references.extend(intake.references);
     }

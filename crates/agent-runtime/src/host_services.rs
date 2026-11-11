@@ -155,6 +155,29 @@ pub trait BgRegistryApi: Send + Sync {
     async fn poll_once(&self) -> Vec<BackgroundTaskNotification>;
 }
 
+/// Host-provided open-ticket digest for coordinator mode (the Router's
+/// board, DSH super-agent concept).
+///
+/// At the first request of a coordinator-mode turn the executor asks the
+/// host for a one-line-per-open-ticket digest and pushes it as a
+/// `ticket_board` runtime event — structural routing context so a follow-up
+/// about an open ticket reaches its worker instead of a duplicate spawn.
+/// The trait exists because the digest reads host-owned state (the ticket
+/// store plus the sub-agent manager's live running set) that the engine
+/// core must not name; the CLI's coordinator module provides it. Pushed at
+/// the pre-request seam onto the append-only transcript (never the frozen
+/// prefix), so the session journal records what the model saw.
+///
+/// Known limitation: one digest per turn's first step only — mid-turn
+/// changes arrive through ticket report cards (subagent_completion events)
+/// and `ticket_list`.
+#[async_trait::async_trait]
+pub trait OpenTicketsNote: Send + Sync {
+    /// The digest block for this turn, or `None` when the board is clear
+    /// (nothing pushed — a quiet board costs no tokens).
+    async fn open_tickets_digest(&self) -> Option<String>;
+}
+
 /// Terminal-agnostic seam (layered-context) manager surface.
 ///
 /// The engine core queries the Flash seam manager through this trait so it

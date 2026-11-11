@@ -48,6 +48,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::app_state::AppMode;
 use crate::config::MAX_SUBAGENTS;
 use crate::core::engine::{ApprovalDecision, SteerInput};
 use crate::core::events::Event;
@@ -699,6 +700,13 @@ pub struct SubAgentRuntime {
     /// (`[workflow] max_agents`; `None` = the engine's built-in default).
     /// Propagated like `workflow_timeout`.
     pub workflow_max_agents: Option<u32>,
+    /// Coordinator mode's ticket store (the Router/Worker board). Set only
+    /// on the coordinator session's runtime; propagated to descendants via
+    /// `child_runtime()` so the spawn path, the worker's report tool, and
+    /// the completion card all reach the same store. Presence of the store
+    /// is how the spawn path recognizes coordinator lineage — `None` is
+    /// every non-coordinator runtime (tests, embeds, agent-mode sessions).
+    pub ticket_store: Option<crate::coordinator::SharedTicketStore>,
 }
 
 impl SubAgentRuntime {
@@ -751,6 +759,7 @@ impl SubAgentRuntime {
                 codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
             ),
             workflow_max_agents: None,
+            ticket_store: None,
         }
     }
 
@@ -826,6 +835,19 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_inherit_full_registry(mut self, inherit: bool) -> Self {
         self.inherit_full_registry = inherit;
+        self
+    }
+
+    /// Attach the coordinator ticket store (Router/Worker mode). Set on the
+    /// coordinator session's runtime; its presence marks coordinator
+    /// lineage for the spawn path (ticket creation, the worker's
+    /// `ticket_report` tool, the mandate guard).
+    #[must_use]
+    pub fn with_ticket_store(
+        mut self,
+        store: Option<crate::coordinator::SharedTicketStore>,
+    ) -> Self {
+        self.ticket_store = store;
         self
     }
 
@@ -1025,6 +1047,7 @@ impl SubAgentRuntime {
             external_provider: self.external_provider.clone(),
             workflow_timeout: self.workflow_timeout,
             workflow_max_agents: self.workflow_max_agents,
+            ticket_store: self.ticket_store.clone(),
         }
     }
 
@@ -1516,6 +1539,25 @@ impl SubAgentManager {
         let started_at = agent.started_at;
         let max_steps = self.max_steps;
 
+        // Router/Worker ticket: a DIRECT background child of a coordinator
+        // session gets a ticket keyed by its agent id (creation is the
+        // spawn's, never the model's — no ticket_create tool). Grandchildren
+        // (spawn_depth > 1) and non-coordinator lineage get none.
+        if runtime.spawn_depth == 1
+            && let Some(store) = runtime.ticket_store.clone()
+        {
+            let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+            store.create(
+                &agent_id,
+                agent.session_name.as_str(),
+                if assignment.objective.trim().is_empty() {
+                    prompt.as_str()
+                } else {
+                    assignment.objective.as_str()
+                },
+            );
+        }
+
         if let Some(event_tx) = runtime.event_tx.clone() {
             let _ = event_tx.try_send(Event::AgentSpawned {
                 id: agent_id.clone(),
@@ -1577,7 +1619,9 @@ impl SubAgentManager {
     }
 
     /// Resolve either a durable agent id or a model-facing session name.
-    fn resolve_agent_ref(&self, agent_ref: &str) -> Result<String> {
+    /// `pub(crate)`: the coordinator ticket tools resolve board ids through
+    /// the same path (ticket id == agent id, board rows may carry names).
+    pub(crate) fn resolve_agent_ref(&self, agent_ref: &str) -> Result<String> {
         let agent_ref = agent_ref.trim();
         if self.agents.contains_key(agent_ref) {
             return Ok(agent_ref.to_string());
@@ -2639,7 +2683,20 @@ impl ToolSpec for AgentSpawnTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let spawn_request = parse_spawn_request_with_workspace(&input, &self.runtime.context.cwd)?;
+        let mut spawn_request =
+            parse_spawn_request_with_workspace(&input, &self.runtime.context.cwd)?;
+
+        // Coordinator lineage fixes the default worker type: a spawn from
+        // coordinator mode without an explicit type (or a plain `general`)
+        // becomes a `CoordinatorWorker`, so `WORKER_EXCLUDED_TOOLS` and the
+        // worker intro actually apply instead of silently never matching.
+        // Explicit role picks (explore / implementer / verifier / ...) are
+        // the coordinator's to make and stay untouched.
+        if context.mode == AppMode::Coordinator
+            && matches!(spawn_request.agent_type, SubAgentType::General)
+        {
+            spawn_request.agent_type = SubAgentType::CoordinatorWorker;
+        }
 
         // Depth cap: reject before locking the manager so we don't introduce
         // unnecessary contention. Mirrors codex's pattern (allow-equal at the
@@ -4096,13 +4153,31 @@ impl ToolSpec for SubagentRunTool {
 #[allow(dead_code)] // Registered by the adjacent v0.8.33 registry surface update.
 pub struct AgentEvalTool {
     manager: SharedSubAgentManager,
+    /// Coordinator ticket store, when the tool sits on a coordinator
+    /// surface: a delivered follow-up message is recorded as the target
+    /// ticket's input (and resolves an open attention question). `None` on
+    /// worker registries and tests.
+    ticket_store: Option<crate::coordinator::SharedTicketStore>,
 }
 
 impl AgentEvalTool {
     #[allow(dead_code)] // Registered by the adjacent v0.8.33 registry surface update.
     #[must_use]
     pub fn new(manager: SharedSubAgentManager) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            ticket_store: None,
+        }
+    }
+
+    /// Record delivered follow-ups against coordinator tickets.
+    #[must_use]
+    pub fn with_ticket_store(
+        mut self,
+        store: Option<crate::coordinator::SharedTicketStore>,
+    ) -> Self {
+        self.ticket_store = store;
+        self
     }
 }
 
@@ -4213,9 +4288,15 @@ impl ToolSpec for AgentEvalTool {
             } else {
                 let mut manager = self.manager.write().await;
                 manager
-                    .send_input(&agent_id, message)
+                    .send_input(&agent_id, message.clone())
                     .map_err(|e| ToolError::execution_failed(e.to_string()))?;
                 message_delivery = Some(json!({ "delivered": true }));
+                // Router/Worker: a follow-up routed to a ticketed worker is
+                // the ticket's input (and delivers the attention answer).
+                if let Some(store) = &self.ticket_store {
+                    let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+                    store.add_input(&agent_id, &message);
+                }
             }
         }
 
@@ -4409,13 +4490,31 @@ pub struct AgentListTool {
 /// Tool to close a running sub-agent (alias for cancel).
 pub struct AgentCloseTool {
     manager: SharedSubAgentManager,
+    /// Coordinator ticket store, when the tool sits on a coordinator
+    /// surface: closing a ticketed worker ends its ticket (stopped). A
+    /// cancelled worker never reaches the completion epilogue, so this is
+    /// the auto-end path for cancellations.
+    ticket_store: Option<crate::coordinator::SharedTicketStore>,
 }
 
 impl AgentCloseTool {
     /// Create a new close tool.
     #[must_use]
     pub fn new(manager: SharedSubAgentManager) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            ticket_store: None,
+        }
+    }
+
+    /// End tickets for closed coordinator workers.
+    #[must_use]
+    pub fn with_ticket_store(
+        mut self,
+        store: Option<crate::coordinator::SharedTicketStore>,
+    ) -> Self {
+        self.ticket_store = store;
+        self
     }
 }
 
@@ -4490,6 +4589,16 @@ impl ToolSpec for AgentCloseTool {
         let result = manager
             .cancel(&agent_id)
             .map_err(|e| ToolError::execution_failed(format!("Failed to close sub-agent: {e}")))?;
+        // Router/Worker: a cancelled worker's mandate is withdrawn (the
+        // completion epilogue never runs for cancellations).
+        if let Some(store) = &self.ticket_store {
+            let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+            store.end(
+                &agent_id,
+                crate::coordinator::tickets::TicketOutcome::Stopped,
+                "cancel",
+            );
+        }
         let projection = subagent_session_projection(result, false, context).await;
         ToolResult::json(&projection).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
@@ -5337,6 +5446,35 @@ async fn run_subagent_task(task: SubAgentTask) {
         ),
     };
 
+    // Router/Worker (coordinator lineage): the settled worker's completion
+    // carries a ticket card — derived stage, last report (capped), open
+    // attention, and the no-report flag — and terminal failures auto-end
+    // the ticket (stopped). `ready` deliberately does NOT auto-end: the
+    // stage is awaiting-review until the coordinator synthesizes for the
+    // user and calls ticket_close.
+    let terminal_status_name = match &result {
+        Ok(res) => subagent_status_name(&res.status).to_string(),
+        Err(_) => "failed".to_string(),
+    };
+    let payload = {
+        let card = task.runtime.ticket_store.as_ref().and_then(|store| {
+            let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+            if result.is_err() {
+                // Failed runs end the mandate (retry = a new ticket).
+                store.end(
+                    &task.agent_id,
+                    crate::coordinator::tickets::TicketOutcome::Failed,
+                    "worker",
+                );
+            }
+            store.card_for(&task.agent_id, &terminal_status_name)
+        });
+        match card {
+            Some(card) => format!("{summary}\n{card}\n{sentinel}"),
+            None => format!("{summary}\n{sentinel}"),
+        }
+    };
+
     if let Some(mb) = task.runtime.mailbox.as_ref() {
         let envelope = match &result {
             Ok(_) => MailboxMessage::Completed {
@@ -5351,7 +5489,6 @@ async fn run_subagent_task(task: SubAgentTask) {
         let _ = mb.send(envelope);
     }
 
-    let payload = format!("{summary}\n{sentinel}");
     let agent_id = task.agent_id.clone();
 
     // Wake the engine's parent turn loop if this is one of its direct
@@ -6961,6 +7098,10 @@ struct SubAgentToolRegistry {
     /// [`PathAsk`]). `None` ⇒ the child cannot ask and out-of-workspace calls
     /// keep failing on their own path check.
     path_ask: Option<PathAsk>,
+    /// The worker's own ticket, when this registry belongs to a direct
+    /// coordinator child: `(store, agent_id)`. Drives the mandate guard —
+    /// a closed ticket's worker has every tool call refused.
+    ticket: Option<(crate::coordinator::SharedTicketStore, String)>,
 }
 
 /// The child's end of the parent's path-access channel: the parent's event
@@ -7190,6 +7331,26 @@ impl SubAgentToolRegistry {
             });
         }
 
+        // Router/Worker (coordinator lineage): a direct coordinator child
+        // carries its ticket on the registry — `ticket_report` registers on
+        // its surface, and the delegation policy refuses tool calls once
+        // the ticket is closed (the mandate guard). `run_subagent` set
+        // `runtime.parent_agent_id` to THIS child's id just before this
+        // call; spawn_depth 1 means the coordinator's main turn spawned it.
+        // Grandchildren and non-coordinator children carry `None`.
+        let ticket = match (&runtime.ticket_store, runtime.parent_agent_id.clone()) {
+            (Some(store), Some(own_id)) if runtime.spawn_depth == 1 => {
+                let store = Arc::clone(store);
+                registry.register(Arc::new(crate::coordinator::tools::TicketReportTool::new(
+                    Arc::clone(&store),
+                    own_id.clone(),
+                    runtime.parent_completion_tx.clone(),
+                )));
+                Some((store, own_id))
+            }
+            _ => None,
+        };
+
         Self {
             allowed_tools: explicit_allowed_tools,
             auto_approve: runtime.context.auto_approve,
@@ -7203,6 +7364,7 @@ impl SubAgentToolRegistry {
                 cancel_token: runtime.cancel_token.clone(),
                 context: ask_context,
             }),
+            ticket,
         }
     }
 
@@ -7288,6 +7450,7 @@ impl SubAgentToolRegistry {
             auto_approve: self.auto_approve,
             path_ask: self.path_ask,
             asks: std::sync::atomic::AtomicU64::new(0),
+            ticket: self.ticket,
         });
         let mut delegated = ToolRegistry::new(self.registry.context().clone());
         for inner in self.registry.all() {
@@ -7322,6 +7485,10 @@ struct DelegationPolicy {
     /// Distinguishes one ask from the next, so a repeated call for the same
     /// path is a fresh question with a fresh id.
     asks: std::sync::atomic::AtomicU64,
+    /// The coordinator mandate guard: when this worker's ticket is closed,
+    /// every tool call is refused ("ended ticket; new work needs a new
+    /// ticket"). `None` for non-coordinator children.
+    ticket: Option<(crate::coordinator::SharedTicketStore, String)>,
 }
 
 impl DelegationPolicy {
@@ -7361,6 +7528,21 @@ impl DelegationPolicy {
         context: &ToolContext,
     ) -> Result<(), ToolError> {
         let name = spec.name();
+        // Mandate guard (Router/Worker): a closed ticket withdraws the
+        // worker's authorization — the check runs before the allowlist so
+        // it governs every tool, `ticket_report` included.
+        if let Some((store, ticket_id)) = &self.ticket
+            && let Some(ended) = store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_ended(ticket_id)
+            && ended
+        {
+            return Err(ToolError::permission_denied(
+                "Ticket ended; new work needs a new ticket. The coordinator closed this \
+                 ticket's mandate — finish your reply and stop; do not retry tool calls.",
+            ));
+        }
         if !self.is_tool_allowed(name) {
             return Err(ToolError::permission_denied(format!(
                 "Tool {name} not allowed for this sub-agent"
@@ -7676,20 +7858,6 @@ fn truncate_preview(text: &str) -> String {
         format!("{}...", text.chars().take(MAX_LEN).collect::<String>())
     }
 }
-
-/// Tools available to the coordinator agent (orchestrator-only role).
-/// The coordinator cannot read/write files or run shell commands —
-/// it can only spawn workers and send messages.
-pub const COORDINATOR_ALLOWED_TOOLS: &[&str] = &[
-    "agent_spawn",
-    "agent_open",
-    "agent_run",
-    "agent_eval",
-    "agent_close",
-    "tool_agent",
-    "send_message",
-    "task_stop",
-];
 
 /// Tools excluded from worker sub-agents spawned by the coordinator.
 /// Workers get full tool access except team management and

@@ -2979,6 +2979,7 @@ fn stub_runtime() -> SubAgentRuntime {
             codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
         ),
         workflow_max_agents: None,
+        ticket_store: None,
     }
 }
 
@@ -4758,6 +4759,7 @@ async fn a_delegated_call_older_than_30s_runs_to_completion() {
             auto_approve: true,
             path_ask: None,
             asks: std::sync::atomic::AtomicU64::new(0),
+            ticket: None,
         }),
     };
     let result = tool
@@ -4766,6 +4768,131 @@ async fn a_delegated_call_older_than_30s_runs_to_completion() {
         .expect("the delegated call completes");
     assert!(result.success);
     assert_eq!(result.content, "finally done");
+}
+
+/// Router/Worker mandate guard: once the coordinator closes a ticket, the
+/// worker's every tool call is refused with the ended-ticket error. The
+/// same policy with an OPEN ticket (or no ticket at all — the pre-guard
+/// behavior) still runs the tool; that half is the regression pin: without
+/// the guard this refusal did not exist.
+#[tokio::test(start_paused = true)]
+async fn ended_ticket_refuses_worker_tool_calls() {
+    use crate::coordinator::tickets::{TicketOutcome, TicketStore};
+
+    let workspace = std::env::temp_dir().join("codesmith-test-ticket-guard");
+    let context = ToolContext::new(workspace);
+
+    let mut ended = TicketStore::in_memory();
+    ended.create("agent_guard", "", "guard objective");
+    ended.end("agent_guard", TicketOutcome::Stopped, "coordinator");
+    let ended_store = std::sync::Arc::new(std::sync::Mutex::new(ended));
+
+    let tool = DelegatedTool {
+        inner: std::sync::Arc::new(SlowProbeTool),
+        policy: std::sync::Arc::new(DelegationPolicy {
+            agent_id: "agent_guard".to_string(),
+            agent_type: SubAgentType::CoordinatorWorker,
+            allowed_tools: None,
+            auto_approve: true,
+            path_ask: None,
+            asks: std::sync::atomic::AtomicU64::new(0),
+            ticket: Some((ended_store, "agent_guard".to_string())),
+        }),
+    };
+    let err = tool
+        .execute(serde_json::json!({}), &context)
+        .await
+        .expect_err("a closed ticket must refuse the call");
+    assert!(
+        err.to_string().contains("Ticket ended"),
+        "refusal names the mandate: {err}"
+    );
+
+    // Open ticket: the same call runs.
+    let mut open = TicketStore::in_memory();
+    open.create("agent_guard", "", "guard objective");
+    let open_store = std::sync::Arc::new(std::sync::Mutex::new(open));
+    let tool = DelegatedTool {
+        inner: std::sync::Arc::new(SlowProbeTool),
+        policy: std::sync::Arc::new(DelegationPolicy {
+            agent_id: "agent_guard".to_string(),
+            agent_type: SubAgentType::CoordinatorWorker,
+            allowed_tools: None,
+            auto_approve: true,
+            path_ask: None,
+            asks: std::sync::atomic::AtomicU64::new(0),
+            ticket: Some((open_store, "agent_guard".to_string())),
+        }),
+    };
+    let result = tool
+        .execute(serde_json::json!({}), &context)
+        .await
+        .expect("an open ticket's call runs");
+    assert!(result.success);
+}
+
+/// Router/Worker default type: a spawn from a coordinator-mode context
+/// without an explicit type becomes `coordinator_worker` (so
+/// `WORKER_EXCLUDED_TOOLS` and the worker intro apply); an Agent-mode
+/// context keeps the plain `general` default, and an explicit type is the
+/// coordinator's to keep.
+#[tokio::test]
+async fn coordinator_spawn_defaults_to_coordinator_worker() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+
+    // Coordinator context, no explicit type → coordinator_worker.
+    let coordinator_context = ToolContext::new(tmp.path().to_path_buf())
+        .with_mode(crate::app_state::AppMode::Coordinator);
+    let tool = AgentSpawnTool::new(manager.clone(), runtime.clone());
+    let _ = tool
+        .execute(
+            serde_json::json!({"prompt": "probe the repo"}),
+            &coordinator_context,
+        )
+        .await;
+    let spawned = manager.read().await.list();
+    assert!(
+        spawned
+            .iter()
+            .any(|agent| agent.agent_type == SubAgentType::CoordinatorWorker),
+        "coordinator default type applied: {:?}",
+        spawned
+            .iter()
+            .map(|agent| agent.agent_type.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // Agent context, no explicit type → stays general.
+    let mut runtime_agent = stub_runtime();
+    runtime_agent.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager_agent = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+    let tool = AgentSpawnTool::new(manager_agent.clone(), runtime_agent);
+    let _ = tool
+        .execute(
+            serde_json::json!({"prompt": "probe the repo"}),
+            &ToolContext::new(tmp.path().to_path_buf()),
+        )
+        .await;
+    let spawned = manager_agent.read().await.list();
+    assert!(
+        spawned
+            .iter()
+            .any(|agent| agent.agent_type == SubAgentType::General),
+        "agent-mode default stays general: {:?}",
+        spawned
+            .iter()
+            .map(|agent| agent.agent_type.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A child request carries the provider-derived `max_tokens` — the same

@@ -1022,6 +1022,61 @@ pub struct Config {
     /// Flash seams). When absent, all assists use the main model.
     #[serde(default)]
     pub utility_model: Option<UtilityModelConfig>,
+
+    /// Coordinator mode (Router/Worker) tunables (`[coordinator]` table).
+    /// When absent, the ticket board is always available in coordinator
+    /// mode and trigger polling stays off.
+    #[serde(default)]
+    pub coordinator: Option<CoordinatorConfig>,
+}
+
+/// `[coordinator]` table — coordinator-mode (Router/Worker) tunables.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, schemars::JsonSchema)]
+pub struct CoordinatorConfig {
+    /// `[coordinator.trigger]` — inbound trigger polling (experimental
+    /// GitHub notification source).
+    #[serde(default)]
+    pub trigger: Option<CoordinatorTriggerConfig>,
+}
+
+/// `[coordinator.trigger]` — the minimal trigger source: poll GitHub
+/// notifications on an interval, admit them through a deterministic
+/// fast-path filter (reason + repo + dedup), and deliver admitted
+/// candidates to the coordinator session as user-role trigger cards.
+///
+/// Default `enabled = false`: enabling it authorizes the coordinator to act
+/// on triggers (there is no observe-only tier — the volume does not warrant
+/// one yet; see `crates/cli/src/coordinator/triggers.rs`).
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, schemars::JsonSchema)]
+pub struct CoordinatorTriggerConfig {
+    /// Enable polling. Default false.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Poll interval in minutes, clamped to 1..=1440. Default 15.
+    #[serde(default)]
+    pub interval_minutes: Option<u64>,
+    /// Notification reasons the fast path admits. Default
+    /// `["mention", "review_requested"]`.
+    #[serde(default)]
+    pub reasons: Option<Vec<String>>,
+    /// Optional `owner/name` repository allow-list (lowercased). Empty or
+    /// absent = every repository.
+    #[serde(default)]
+    pub repos: Option<Vec<String>>,
+}
+
+impl CoordinatorTriggerConfig {
+    /// Resolve into runtime settings, applying documented defaults.
+    #[must_use]
+    pub fn to_trigger_settings(&self) -> crate::coordinator::triggers::TriggerSettings {
+        let defaults = crate::coordinator::triggers::TriggerSettings::default();
+        crate::coordinator::triggers::TriggerSettings {
+            interval_minutes: self.interval_minutes.unwrap_or(defaults.interval_minutes),
+            reasons: self.reasons.clone().unwrap_or(defaults.reasons),
+            repos: self.repos.clone().unwrap_or_default(),
+        }
+        .normalized()
+    }
 }
 
 /// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
@@ -4478,6 +4533,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         memory_path: override_cfg.memory_path.or(base.memory_path),
         vision_model: override_cfg.vision_model.or(base.vision_model),
         utility_model: override_cfg.utility_model.or(base.utility_model),
+        coordinator: override_cfg.coordinator.or(base.coordinator),
         // #454: project's instructions array replaces user's array
         // wholesale. The typical "merge" pattern is for users who want
         // both — they list `~/global.md` inside the project array.

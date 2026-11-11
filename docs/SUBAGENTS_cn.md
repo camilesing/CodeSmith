@@ -54,6 +54,44 @@ Plan 模式注册同一套子代理工具（该模式的提示词本身就要求
 都标记为只读，不论类型：该模式既不能写也不能执行，它派出的调查者同理。Plan 模式的子代理
 同样因此成为叶子节点。
 
+## Coordinator 模式（Router/Worker）
+
+Coordinator 模式（`/mode coordinator`；`coordinator_mode` feature flag——`experiment`
+预设默认开启——会把它加进 Shift+Tab 环）把会话变成 Router：只负责派发与综合，
+不持有任何直接执行工具；它打开的每个后台 worker 都会自动获得一张 **ticket**——
+这块被委派工作的持久身份，以其 worker 的 agent id 为键。设计沿用 DSH super-agent
+原型的拆分：路由是结构约束，不是提示词建议。
+
+- **默认 worker 类型**：coordinator 模式下不指定类型的 spawn 会成为
+  `coordinator_worker`（排除团队/消息工具，worker 提示词强调 mandate）。显式指定的
+  角色保持不变。
+- **worker 沙箱**：worker 使用 Agent 模式的沙箱策略（工作区可写 + 网络）——
+  coordinator 自身的只读姿态只约束 Router，绝不传导给 worker。
+- **结构化汇报**：coordinator worker 的工具面带 `ticket_report`
+  （`progress | waiting | ready | blocked | failed | dropped`，可选 `question`）。
+  `blocked` 或带提问会立即唤醒 coordinator（工作继续）；其余状态随 worker 自然
+  结束的 completion 卡交付。
+- **看板**：coordinator 读 `ticket_list`（人优先排序：awaiting-answer →
+  awaiting-review → blocked → failed → working → idle）与 `ticket_read`
+  （完整 scope、汇报、attention、inputs）；每个 turn 的首个请求还会以
+  `ticket_board` runtime event 附带一行 open-ticket 摘要。stage 由汇报派生——
+  从不从自由文本猜。
+- **attention**：worker 的提问原样转述；用户的回答经 `agent_eval` 的 `message`
+  参数回流，同时记为 ticket 的 input 并解除 attention。
+- **mandate 守卫**：`ticket_close` 关单后，worker 的后续工具调用全部被拒
+  （"Ticket ended; new work needs a new ticket"）。失败运行自动关单；
+  `agent_close`/取消按 stopped 关单；`dropped` 汇报静默关单。`ready` 汇报
+  等待审查——coordinator 综合答复用户后再关单。
+- **Trigger**（实验性，默认关）：`[coordinator.trigger]` 按间隔轮询 GitHub
+  通知，代码层过滤（reason 白名单、可选 repo 白名单、去重），命中的候选以
+  `[github trigger]` 卡片送入 coordinator 会话。coordinator 自身即 slow path：
+  attach、开新工作，或忽略。
+
+已知限制：一个 worker 一张 ticket（不按用户请求分组）；worker 不可跨重启续跑，
+上一会话的 ticket 显示 `idle`，需手动关闭或重新派发；ticket 的 scope 由提示词
+约束而非机器校验（代码只强制关单后的工具拒绝）；trigger 轮询仅在交互式会话中
+运行。
+
 ### 跨仓库协作
 
 `agent_open` 的 `cwd` 可以位于父代理工作区内，**或者**位于你用 `/trust add <path>` 授权过

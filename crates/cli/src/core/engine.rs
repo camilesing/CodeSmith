@@ -294,6 +294,11 @@ pub struct EngineHost {
     /// outside `build_engine` (embeds/tests) — their children fall back to
     /// the provider-blind heuristic.
     pub api_provider: Option<crate::config::ApiProvider>,
+    /// Coordinator mode's ticket store (the Router/Worker board). Always
+    /// present; `build_engine` swaps the Default's in-memory handle for the
+    /// workspace-persisted one. Non-coordinator sessions never touch it —
+    /// the store loads lazily and costs nothing until a ticket exists.
+    pub ticket_store: crate::coordinator::SharedTicketStore,
 }
 
 // Manual `Debug` (mirroring `RuntimeToolServices`): `subagent_api` /
@@ -319,6 +324,7 @@ impl std::fmt::Debug for EngineHost {
             .field("approval_router", &self.approval_router)
             .field("policy_store", &self.policy_store)
             .field("api_provider", &self.api_provider)
+            .field("ticket_store", &true)
             .finish()
     }
 }
@@ -365,6 +371,9 @@ impl Default for EngineHost {
             approval_router: None,
             policy_store: None,
             api_provider: None,
+            ticket_store: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::coordinator::TicketStore::in_memory(),
+            )),
         }
     }
 }
@@ -1461,6 +1470,19 @@ pub fn build_engine(
         });
     }
 
+    // Router/Worker: the coordinator's ticket store — workspace-persisted,
+    // lazily loaded, shared by the spawn path, the worker report tool, the
+    // board tools, and the turn's board digest seam. Installing the digest
+    // provider is unconditional: outside coordinator mode the executor
+    // never asks (mode-gated at the pre-request seam).
+    host.ticket_store = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::coordinator::TicketStore::for_workspace(&config.workspace),
+    ));
+    config.open_tickets_note = Some(std::sync::Arc::new(crate::coordinator::OpenTicketsBoard {
+        store: std::sync::Arc::clone(&host.ticket_store),
+        subagent_manager: Arc::clone(&host.subagent_manager),
+    }));
+
     if config.features.enabled(Feature::AgentTeams) {
         let team_context = config
             .team_context
@@ -2083,6 +2105,10 @@ pub(crate) fn headless_engine_config(
         file_freshness_tracker:
             codesmith_agent_runtime::tools::freshness::FileFreshnessTracker::new(),
         telemetry_sink: None,
+        // The board digest provider installs in `build_engine` (it owns the
+        // host's store + manager); `None` here is just the literal's
+        // completeness.
+        open_tickets_note: None,
     })
 }
 

@@ -1336,6 +1336,31 @@ exec_policy = true
 
 使用 `codesmith features list` 查看已知开关及其生效状态。
 
+## Coordinator 模式（Router/Worker）
+
+`coordinator_mode`（默认关闭；`experiment` 预设开启）把 coordinator 模式
+加入 Shift+Tab 环。会话仍从 Agent 启动——用 `/mode coordinator` 显式进入
+Router 姿态。进入后 ticket 看板始终可用；工作流见
+[`SUBAGENTS_cn.md`](SUBAGENTS_cn.md) 的 "Coordinator 模式" 一节。
+
+`[coordinator.trigger]` 表（默认关闭）为交互式会话启用实验性的 GitHub
+通知 trigger 源：
+
+```toml
+[coordinator.trigger]
+enabled = true            # 默认 false —— 开启即授权行动
+interval_minutes = 15     # 限幅 1..=1440
+reasons = ["mention", "review_requested"]  # fast-path 准入
+# repos = ["owner/name"]  # 可选白名单；留空 = 所有仓库
+```
+
+会话处于 coordinator 模式时按间隔轮询 `gh api notifications`（需安装
+`gh` CLI），经确定性过滤（reason 白名单、可选 repo 白名单、按通知 id
+去重——持久化于 `.codesmith/state/triggers.v1.json`）后，把命中候选以
+`[github trigger]` 用户角色卡片送入会话。没有"仅观察"档：开启轮询即
+授权 coordinator 对 trigger 采取行动。已知限制：仅交互式会话——
+runtime-API 与桌面线程不运行轮询。
+
 ## 网页搜索 Provider
 
 `web_search` 默认使用 DuckDuckGo，不需要 API 密钥。DuckDuckGo 路径

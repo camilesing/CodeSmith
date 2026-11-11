@@ -30,7 +30,9 @@ use codesmith_agent_runtime::tool_dispatch::ToolDispatcher;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::tool_setup::{build_tool_context_for, build_turn_tool_registry_builder_for};
+use super::tool_setup::{
+    build_tool_context_for, build_turn_tool_registry_builder_for, sandbox_policy_for_mode,
+};
 use super::{
     Event, Op, TOOL_SEARCH_NAME, apply_tool_selection, build_model_tool_catalog,
     configure_plugin_tools, progressive_disclosure_active, tool_search_control_tool,
@@ -47,6 +49,7 @@ use crate::tools::subagent::{
 use crate::tools::team::run_leader_inbox_poller;
 use codesmith_agent_runtime::features::Feature;
 use codesmith_agent_runtime::utils::spawn_supervised;
+use codesmith_sandbox::runtime::SandboxPolicy;
 
 /// Zero-sized runtime-UI bridge: resolves the clipboard-image directory the
 /// sandbox trusts. Constructed where the engine needs `Arc<dyn RuntimeUi>`.
@@ -283,7 +286,9 @@ impl HostServices for super::EngineHost {
         // turn's Global scope (dylib handlers included), so a child's tool
         // progress must not ride it — children report none (known
         // limitation).
-        let subagent_context = tool_context.clone();
+        let subagent_context = tool_context
+            .clone()
+            .with_elevated_sandbox_policy(subagent_sandbox_policy(mode, &session.workspace));
         let tool_context = tool_context.with_progress_sink(Some(Arc::new(
             codesmith_agent_runtime::callback_bridge::RunnerProgressSink::new(
                 self.extension_runner.clone(),
@@ -496,6 +501,10 @@ impl HostServices for super::EngineHost {
                         Some(req.tx_event.clone()),
                         Arc::clone(&self.subagent_manager),
                     )
+                    // Router/Worker: the ticket store marks coordinator
+                    // lineage — spawns create tickets, workers get
+                    // ticket_report, and the board tools register below.
+                    .with_ticket_store(Some(Arc::clone(&self.ticket_store)))
                     .with_role_models(config.subagent_model_overrides.clone())
                     .with_auto_route(config.auto_route.clone())
                     .with_api_provider(self.api_provider)
@@ -530,6 +539,13 @@ impl HostServices for super::EngineHost {
                         rt,
                         self.extension_runner.clone(),
                     );
+                    // The Router's board: ticket_list / ticket_read /
+                    // ticket_close (the worker-side ticket_report rides the
+                    // sub-agent registry build instead).
+                    builder = builder.with_coordinator_ticket_tools(
+                        Arc::clone(&self.ticket_store),
+                        Arc::clone(&self.subagent_manager),
+                    );
                 } else {
                     // Mirror the Agent-mode branch's diagnostics above: a
                     // Coordinator turn without agent-spawn tools is quietly
@@ -550,9 +566,13 @@ impl HostServices for super::EngineHost {
                     }
                 }
                 // send_message — coordinator needs messaging but NOT
-                // team_create/team_delete.
+                // team_create/team_delete. Registered only when a team is
+                // actually active (the shared context's inner `Option` is
+                // `Some` only then) — a coordinator without a team would
+                // otherwise carry a tool whose every call errors.
                 if config.features.enabled(Feature::AgentTeams)
                     && let Some(tc) = config.team_context.clone()
+                    && tc.lock().await.is_some()
                 {
                     builder = builder.with_send_message_tool(tc);
                 }
@@ -817,6 +837,21 @@ impl HostServices for super::EngineHost {
 /// surface.
 pub(super) fn children_are_read_only_in(mode: AppMode) -> bool {
     matches!(mode, AppMode::Plan)
+}
+
+/// The elevated sandbox policy a mode's sub-agent contexts carry.
+///
+/// Every mode inherits its own stance — except Coordinator: its ReadOnly is
+/// the ROUTER's ("executes nothing"), and riding the clone into workers
+/// made their shells read-only while the mode's contract promises builds
+/// and tests. Coordinator workers therefore get the Agent-mode policy
+/// (workspace-write + network); the coordinator's own context keeps
+/// ReadOnly (it is built separately in `build_tool_context_for`).
+pub(super) fn subagent_sandbox_policy(mode: AppMode, workspace: &Path) -> SandboxPolicy {
+    match mode {
+        AppMode::Coordinator => sandbox_policy_for_mode(AppMode::Agent, workspace),
+        other => sandbox_policy_for_mode(other, workspace),
+    }
 }
 
 /// Bridge the CLI's concrete [`SeamManager`] onto the engine-core trait

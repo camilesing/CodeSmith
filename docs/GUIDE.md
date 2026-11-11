@@ -225,6 +225,7 @@ and separately has three visible modes:
 | Plan | Exploration, design, and review before changes | Read-only investigation |
 | Agent | Normal multi-step coding work | Tool use with approval gates |
 | YOLO | Trusted repos where you want automatic execution | Auto-approval and trust |
+| Coordinator | Routing multi-worker work: you orchestrate, workers execute | Auto-approval for workers; a ticket board tracks each delegation (see [SUBAGENTS.md](SUBAGENTS.md)) |
 
 Only agent and yolo are permission presets (`workspace-write` and
 `danger-full-access`); plan is its own state, and coordinator an experimental

@@ -34,7 +34,7 @@ use codesmith_agent_runtime::turn::{TurnContext, TurnToolCall};
 
 use super::*;
 
-use super::runtime_traits::children_are_read_only_in;
+use super::runtime_traits::{children_are_read_only_in, subagent_sandbox_policy};
 use super::{
     TURN_MAX_OUTPUT_TOKENS, context_input_budget, context_input_budget_for_provider,
     effective_max_output_tokens,
@@ -1940,6 +1940,40 @@ fn plan_mode_children_are_read_only_and_agent_mode_children_are_not() {
             "{mode:?} children keep their type's surface"
         );
     }
+}
+
+/// Router/Worker regression: the coordinator's own ReadOnly stance (the
+/// router executes nothing) must not ride the cloned context into its
+/// workers — they run builds and tests, so their shells carry the
+/// Agent-mode policy (workspace-write + network). Without the mapping a
+/// coordinator worker's `command_would_be_sandboxed` consulted a ReadOnly
+/// policy and every write/network command failed under the OS sandbox.
+#[test]
+fn coordinator_workers_get_agent_sandbox_not_the_router_readonly() {
+    let workspace = std::path::Path::new("/repo");
+    for mode in [AppMode::Agent, AppMode::Yolo] {
+        // Non-coordinator modes keep inheriting their own stance.
+        assert_eq!(
+            subagent_sandbox_policy(mode, workspace),
+            crate::core::engine::tool_setup::sandbox_policy_for_mode(mode, workspace),
+            "{mode:?} children inherit the mode's own policy"
+        );
+    }
+    // Plan keeps its read-only inheritance; the coordinator maps to Agent.
+    assert!(matches!(
+        subagent_sandbox_policy(AppMode::Plan, workspace),
+        codesmith_sandbox::runtime::SandboxPolicy::ReadOnly
+    ));
+    assert!(matches!(
+        subagent_sandbox_policy(AppMode::Coordinator, workspace),
+        codesmith_sandbox::runtime::SandboxPolicy::WorkspaceWrite { .. }
+    ));
+    // The mapping is the ONLY divergence: the coordinator's own context is
+    // built separately and keeps ReadOnly (sandbox_mode_policy's contract).
+    assert!(matches!(
+        crate::core::engine::tool_setup::sandbox_policy_for_mode(AppMode::Coordinator, workspace),
+        codesmith_sandbox::runtime::SandboxPolicy::ReadOnly
+    ));
 }
 
 #[test]

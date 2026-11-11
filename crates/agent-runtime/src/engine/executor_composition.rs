@@ -180,6 +180,10 @@ pub(crate) struct TurnDeps {
     pub turn_meta: Option<TurnMetaProbe>,
     pub reinject: Option<ReinjectProbe>,
     pub deliverables: Option<DeliverablesProbe>,
+    /// Host-provided open-ticket digest (coordinator mode's board). `None`
+    /// for child turns — the board is the Router's, and a worker never sees
+    /// its siblings' tickets.
+    pub open_tickets_note: Option<std::sync::Arc<dyn crate::host_services::OpenTicketsNote>>,
     /// `[rhai_loop]` settings for the script-driven executor (`None` in
     /// embeds/tests that never select it; the factory applies defaults).
     pub rhai_loop: Option<crate::engine::rhai_executor::RhaiLoopSettings>,
@@ -580,7 +584,8 @@ pub(crate) fn build_host_executor(deps: TurnDeps) -> Arc<HostAgentExecutor> {
         .with_result_verifications(deps.pending_result_verifications)
         .with_tool_durations(deps.tool_durations)
         .with_session_id(deps.session_id)
-        .with_deliverables(deps.deliverables),
+        .with_deliverables(deps.deliverables)
+        .with_open_tickets_note(deps.open_tickets_note),
     )
 }
 

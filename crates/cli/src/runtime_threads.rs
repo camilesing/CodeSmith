@@ -2808,6 +2808,10 @@ impl RuntimeThreadManager {
             // (Plan 06 / 6.1 wires the interactive path only); capacity
             // events from these engines are dropped — the safe opt-in default.
             telemetry_sink: None,
+            // The board digest provider installs in `build_engine` (it owns
+            // the host's store + manager); `None` here is just the literal's
+            // completeness.
+            open_tickets_note: None,
         };
 
         let engine = spawn_engine(

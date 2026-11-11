@@ -163,6 +163,11 @@ pub struct EngineConfig {
     /// event channel's intentional backpressure. The REPL and the runtime
     /// API threads turn it on.
     pub idle_wake: bool,
+    /// Host-provided open-ticket digest for coordinator mode's first
+    /// request of a turn (the Router's board). `None` outside hosts that
+    /// run coordinator sessions with a ticket store (the REPL and runtime
+    /// threads; embeds/tests). See `host_services::OpenTicketsNote`.
+    pub open_tickets_note: Option<std::sync::Arc<dyn crate::host_services::OpenTicketsNote>>,
     /// Shared worktree isolation state for enter_worktree/exit_worktree tools.
     pub worktree_state: SharedWorktreeSessionState,
     /// Maximum sub-agent recursion depth (default 3). See
@@ -470,6 +475,7 @@ impl Default for EngineConfig {
             team_context: None,
             file_freshness_tracker: crate::tools::freshness::FileFreshnessTracker::new(),
             telemetry_sink: None,
+            open_tickets_note: None,
         }
     }
 }

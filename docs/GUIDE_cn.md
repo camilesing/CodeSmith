@@ -187,6 +187,7 @@ CodeSmith 在一个**权限预设**（沙箱 + 审批组合）下运行，另外
 | Plan | 变更前的探索、设计和审查 | 只读调查 |
 | Agent | 常规多步骤编码工作 | 带审批门控的工具使用 |
 | YOLO | 你希望自动执行的受信任仓库 | 自动审批与信任 |
+| Coordinator | 多 worker 路由：会话编排、worker 执行 | worker 自动审批；ticket 看板跟踪每次委派（见 [SUBAGENTS_cn.md](SUBAGENTS_cn.md)） |
 
 只有 agent 与 yolo 是权限预设（`workspace-write` 与 `danger-full-access`）；
 plan 是独立状态，coordinator 是实验性的第四种模式。在 REPL 中直接切换模式：

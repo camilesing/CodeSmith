@@ -623,6 +623,7 @@ use crate::compaction::{
     should_compact,
 };
 use crate::config_types::ApiProvider;
+use crate::engine::runtime_event::{RuntimeEventKind, runtime_event_frame};
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::events::Event;
 use crate::host_services::LspManagerApi;
@@ -1206,6 +1207,12 @@ pub struct HostAgentExecutor {
     /// kind="deliverables_check">` user message when one is missing, so a
     /// gap surfaces mid-run instead of at grading.
     pub(crate) deliverables: Option<super::deliverables::DeliverablesProbe>,
+    /// Host-provided open-ticket digest (coordinator mode's Router board).
+    /// `None` (default; embeds/tests/non-coordinator hosts) ⇒ no board note.
+    /// When `Some`, the turn's FIRST request (step 0) asks for the digest
+    /// and pushes it as a `<codesmith:runtime_event kind="ticket_board">`
+    /// user message — append-only history, never the frozen prefix.
+    pub(crate) open_tickets_note: Option<Arc<dyn crate::host_services::OpenTicketsNote>>,
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
@@ -1643,6 +1650,7 @@ impl HostAgentExecutor {
             request_catalog: None,
             progressive_disclosure: false,
             deliverables: None,
+            open_tickets_note: None,
         }
     }
 
@@ -1716,6 +1724,21 @@ impl HostAgentExecutor {
     #[must_use]
     pub(crate) fn with_deliverables(mut self, deliverables: Option<DeliverablesProbe>) -> Self {
         self.deliverables = deliverables;
+        self
+    }
+
+    /// Bind the host's open-ticket digest (coordinator mode's Router
+    /// board). At a coordinator turn's first request the loop asks it for
+    /// the one-shot board digest and pushes it as a `ticket_board` runtime
+    /// event. `None` (embeds / tests / non-coordinator hosts) keeps the
+    /// seam inert. `pub(crate)`: the trait lives in this crate's
+    /// `host_services` and only the engine wire-in constructs this.
+    #[must_use]
+    pub(crate) fn with_open_tickets_note(
+        mut self,
+        note: Option<Arc<dyn crate::host_services::OpenTicketsNote>>,
+    ) -> Self {
+        self.open_tickets_note = note;
         self
     }
 
@@ -3796,6 +3819,32 @@ impl HostAgentExecutor {
                 plan_active,
                 plan_subagent_cap,
             );
+            // Coordinator mode's Router board (open-ticket digest): one shot
+            // at the turn's first request, so a follow-up about an open
+            // ticket routes to its worker instead of a duplicate spawn.
+            // Pushed as a runtime event on the append-only transcript —
+            // never the frozen prefix — so the session journal records what
+            // the model saw ("model-visible means logged").
+            if step == 0
+                && self.turn_mode == AppMode::Coordinator
+                && let Some(note) = &self.open_tickets_note
+                && let Some(digest) = note.open_tickets_digest().await
+            {
+                history.push(Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: runtime_event_frame(
+                            RuntimeEventKind::TicketBoard,
+                            &format!(
+                                " Open coordinator tickets (ticket_list for detail; route \
+                                 follow-ups for an open ticket to its worker via agent_eval's \
+                                 message parameter):\n\n{digest}"
+                            ),
+                        ),
+                        cache_control: None,
+                    }],
+                });
+            }
 
             // The host's catalog is the request's tool surface when it wired one
             // in (user/preset selection already applied); the dispatch

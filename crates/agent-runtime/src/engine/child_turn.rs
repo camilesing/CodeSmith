@@ -276,6 +276,9 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         turn_meta: None,
         reinject: None,
         deliverables: None,
+        // The Router's board is the coordinator's; a worker never sees its
+        // siblings' tickets.
+        open_tickets_note: None,
         context: None,
         mode: AppMode::Agent,
         max_subagents: 0,

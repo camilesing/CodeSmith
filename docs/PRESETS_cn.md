@@ -144,6 +144,7 @@ REPL 中最近一次选择的预设（持久化在 settings.toml）> 出厂默�
 - **Plan**：设计优先的提示模式。只读调查工具保持可用；shell 与补丁执行保持关闭。当你想边思考边表达、产出一份交给真人（未来的自己或评审者）的计划时使用它。
 - **Agent**：多步工具使用。Shell 执行（`exec_shell`、`task_shell_start`、`task_shell_wait`）要求配置中 `allow_shell = true`；每次调用都由审批提示把关。文件写入无需提示即可进行。
 - **YOLO**：启用 shell + 信任模式并自动批准所有工具。仅在受信任的仓库中使用。
+- **Coordinator**（实验性）：Router/Worker 姿态——会话负责路由与综合，后台 worker 负责执行；每个 worker 自动获得带状态看板的 ticket（见 `docs/SUBAGENTS_cn.md`）。进入该模式需 `coordinator_mode` feature（`experiment` 预设开启该 flag 并把模式加进 Shift+Tab 环，但会话仍从 Agent 启动——用 `/mode coordinator` 进入）。
 
 所有具备执行能力的模式都可以通过 `rlm_open`、`rlm_eval`、`rlm_configure` 和 `rlm_close` 访问持久的 RLM 会话。在 RLM Python REPL 中，`sub_query_batch` 可以并发发出 1-16 个固定使用 `deepseek-v4-flash` 的廉价并行子调用。当工作对于父对话来说过于庞大或重复时，模型会主动使用它。
 

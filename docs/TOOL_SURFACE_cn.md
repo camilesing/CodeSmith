@@ -228,6 +228,12 @@ v0.8.33 开始将大型工具输出迁移到符号句柄：工具返回小型 `v
 `coordinator_worker` / `custom`）见
 [`SUBAGENTS.md`](SUBAGENTS.md)。
 
+Coordinator 模式下会话自身的工具面是 Router 的：spawn 家族加上
+`ticket_list` / `ticket_read` / `ticket_close`（看板）、`tool_agent`、
+`workflow` 与 `task_stop`；coordinator worker 的工具面额外携带
+`ticket_report`（结构化汇报；见 [`SUBAGENTS_cn.md`](SUBAGENTS_cn.md)
+的 "Coordinator 模式" 一节）。
+
 `agent_open` 默认开启一个全新的子会话。对于延续式工作或需要继承父级
 上下文的多视角评审，传入 `fork_context: true`。在 fork 模式下，运行时
 会尽可能逐字节保留父级 prefill/提示前缀，以便复用 DeepSeek 的前缀

@@ -18,6 +18,7 @@ mod capabilities;
 pub mod clipboard;
 mod compaction;
 mod config;
+mod coordinator;
 mod core;
 mod cycle_manager;
 mod desktop;
