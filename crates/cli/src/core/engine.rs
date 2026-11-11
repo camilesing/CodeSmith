@@ -2067,6 +2067,9 @@ pub(crate) fn headless_engine_config(
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         workflow_timeout: std::time::Duration::from_secs(config.workflow_timeout_secs()),
         workflow_max_agents: config.workflow_max_agents(),
+        // The main engine has no thread journal — workflow runs still
+        // accumulate their durable record in the tool item metadata.
+        workflow_recorder: None,
         stream_idle_timeout: std::time::Duration::from_secs(config.stream_idle_timeout_secs()),
         stream_idle_retry_increment: std::time::Duration::from_secs(
             config.stream_idle_retry_increment_secs(),

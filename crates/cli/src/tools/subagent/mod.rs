@@ -700,6 +700,13 @@ pub struct SubAgentRuntime {
     /// (`[workflow] max_agents`; `None` = the engine's built-in default).
     /// Propagated like `workflow_timeout`.
     pub workflow_max_agents: Option<u32>,
+    /// Records workflow-run lifecycle steps into the owning thread's event
+    /// stream (the runtime-thread store; the desktop's workflow-run panel
+    /// folds them). Set only on runtime-thread engines. Deliberately NOT
+    /// propagated to descendants — nested runs record nothing, upstream's
+    /// root-only gating (a child run's activity lives in its parent's
+    /// tool items).
+    pub workflow_recorder: Option<Arc<dyn codesmith_agent_runtime::workflow::WorkflowRunRecorder>>,
     /// Coordinator mode's ticket store (the Router/Worker board). Set only
     /// on the coordinator session's runtime; propagated to descendants via
     /// `child_runtime()` so the spawn path, the worker's report tool, and
@@ -759,6 +766,7 @@ impl SubAgentRuntime {
                 codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
             ),
             workflow_max_agents: None,
+            workflow_recorder: None,
             ticket_store: None,
         }
     }
@@ -954,6 +962,16 @@ impl SubAgentRuntime {
     /// agent cap) from the engine config so the `workflow` tool sees the
     /// same bounds at every spawn depth.
     #[must_use]
+    /// Set the workflow-run recorder (the runtime-thread store's journaling
+    /// seam). Not propagated to children.
+    pub fn with_workflow_recorder(
+        mut self,
+        recorder: Option<Arc<dyn codesmith_agent_runtime::workflow::WorkflowRunRecorder>>,
+    ) -> Self {
+        self.workflow_recorder = recorder;
+        self
+    }
+
     pub fn with_workflow_limits(mut self, timeout: Duration, max_agents: Option<u32>) -> Self {
         self.workflow_timeout = timeout;
         self.workflow_max_agents = max_agents;
@@ -1047,6 +1065,8 @@ impl SubAgentRuntime {
             external_provider: self.external_provider.clone(),
             workflow_timeout: self.workflow_timeout,
             workflow_max_agents: self.workflow_max_agents,
+            // Nested runs record nothing (upstream's root-only gating).
+            workflow_recorder: None,
             ticket_store: self.ticket_store.clone(),
         }
     }

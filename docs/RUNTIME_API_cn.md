@@ -451,10 +451,25 @@ flush 也有同样的窗口。
 `turn.completed`、`item.started`、`item.delta`、`item.completed`、
 `item.failed`、`item.interrupted`、`approval.required`、`approval.decided`、
 `approval.timeout`、`sandbox.denied`、`coherence.state`、
-`background.agent_completed`、`background.status`、`queue.updated`。
+`background.agent_completed`、`background.status`、`queue.updated`、
+`workflow.run_started`、`workflow.agent_started`、`workflow.agent_ended`、
+`workflow.run_ended`。
 
 steer 的 user item 先发 `item.started` 再发 `item.completed`，与 turn 开场消息的
 生命周期一致，在线客户端一落地就能显示被 steer 的文本。
+
+workflow 运行事件在运行时线程上为 `workflow` 工具记录生命周期（线程级、无
+item 关联；字段名即桌面客户端 workflow-run 节点的词汇）：`workflow.run_started`
+`{runId, name}`；`workflow.agent_started` `{runId, seq, label, phase?,
+childId}`（每个实际 spawn 的成员一个 `seq`，按发起顺序分配；运行无 phase 时
+省略该字段；`childId` 为合成值——进程内子代理不是会话）；
+`workflow.agent_ended` `{runId, seq, outcome: completed|cancelled|failed}`；
+`workflow.run_ended` `{runId, stopReason: completed|error}`。预算拒绝不发声；
+被中断的运行没有 `run_ended`。成功运行的持久记录同时落在其工具条目的
+`metadata.workflow_run`（`{runId, name, agents:
+[{seq,label,childId,outcome?}…], stopReason}`）——失败运行的记录仅在线
+（其工具条目以错误落定、不带 metadata），嵌套运行（子代理自己的 workflow）
+不记录。
 
 ### 空闲唤醒 turn（第十轮）
 

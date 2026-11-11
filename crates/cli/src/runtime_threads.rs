@@ -1055,7 +1055,9 @@ pub type SharedRuntimeThreadManager = Arc<RuntimeThreadManager>;
 pub struct RuntimeThreadManager {
     config: Config,
     workspace: PathBuf,
-    store: RuntimeThreadStore,
+    /// Shared so the workflow-run recorder's consumer task can append
+    /// `workflow.*` events without borrowing the manager.
+    store: Arc<RuntimeThreadStore>,
     active: Arc<Mutex<ActiveThreads>>,
     event_tx: broadcast::Sender<RuntimeEventRecord>,
     manager_cfg: RuntimeThreadManagerConfig,
@@ -1084,7 +1086,7 @@ impl RuntimeThreadManager {
         workspace: PathBuf,
         manager_cfg: RuntimeThreadManagerConfig,
     ) -> Result<Self> {
-        let store = RuntimeThreadStore::open(manager_cfg.data_dir.clone())?;
+        let store = Arc::new(RuntimeThreadStore::open(manager_cfg.data_dir.clone())?);
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let manager = Self {
             config,
@@ -1108,6 +1110,80 @@ impl RuntimeThreadManager {
         if let Ok(mut slot) = self.task_manager.lock() {
             *slot = Some(task_manager);
         }
+    }
+
+    /// The `WorkflowRunRecorder` seam's provider side: one ordered consumer
+    /// task appending the run's lifecycle as `workflow.*` thread events (the
+    /// payload field names are the desktop client's wire vocabulary, so the
+    /// bridge's mapper is a passthrough). A full channel drops further
+    /// records for that run — advisory UI state, never worth failing the
+    /// run; the consumer ends with the engine that owns its sender.
+    fn workflow_run_recorder(
+        store: Arc<RuntimeThreadStore>,
+        thread_id: String,
+    ) -> Arc<dyn codesmith_agent_runtime::workflow::WorkflowRunRecorder> {
+        struct ThreadWorkflowRecorder {
+            tx: std::sync::mpsc::SyncSender<codesmith_agent_runtime::workflow::WorkflowRunEvent>,
+        }
+        impl codesmith_agent_runtime::workflow::WorkflowRunRecorder for ThreadWorkflowRecorder {
+            fn record(&self, event: codesmith_agent_runtime::workflow::WorkflowRunEvent) {
+                let _ = self.tx.try_send(event);
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel::<
+            codesmith_agent_runtime::workflow::WorkflowRunEvent,
+        >(256);
+        tokio::spawn(async move {
+            use codesmith_agent_runtime::workflow::WorkflowRunEvent;
+            while let Ok(event) = rx.recv() {
+                let (name, payload) = match event {
+                    WorkflowRunEvent::RunStart { run_id, name } => (
+                        "workflow.run_started",
+                        serde_json::json!({ "runId": run_id, "name": name }),
+                    ),
+                    WorkflowRunEvent::AgentStart {
+                        run_id,
+                        seq,
+                        label,
+                        phase,
+                        child_id,
+                    } => {
+                        // `phase` is optional on the wire — omit it when the
+                        // run has none (a JSON null would fail the client's
+                        // strict codec).
+                        let mut payload = serde_json::json!({
+                            "runId": run_id, "seq": seq, "label": label, "childId": child_id,
+                        });
+                        if let Some(phase) = phase {
+                            payload["phase"] = serde_json::json!(phase);
+                        }
+                        ("workflow.agent_started", payload)
+                    }
+                    WorkflowRunEvent::AgentEnd {
+                        run_id,
+                        seq,
+                        outcome,
+                    } => (
+                        "workflow.agent_ended",
+                        serde_json::json!({ "runId": run_id, "seq": seq, "outcome": outcome }),
+                    ),
+                    WorkflowRunEvent::RunEnd {
+                        run_id,
+                        stop_reason,
+                    } => (
+                        "workflow.run_ended",
+                        serde_json::json!({ "runId": run_id, "stopReason": stop_reason }),
+                    ),
+                };
+                if let Err(err) = store
+                    .append_event(&thread_id, None, None, name, payload)
+                    .await
+                {
+                    tracing::warn!(target: "codesmith_runtime_threads", "workflow event append failed: {err:#}");
+                }
+            }
+        });
+        Arc::new(ThreadWorkflowRecorder { tx })
     }
 
     /// Attach the automation manager for model-visible scheduling tools.
@@ -2784,6 +2860,13 @@ impl RuntimeThreadManager {
             ),
             workflow_timeout: std::time::Duration::from_secs(self.config.workflow_timeout_secs()),
             workflow_max_agents: self.config.workflow_max_agents(),
+            // The thread's workflow-run recorder: the engine's runs append
+            // `workflow.*` events to this thread's stream (the desktop's
+            // workflow-run panel folds them).
+            workflow_recorder: Some(Self::workflow_run_recorder(
+                Arc::clone(&self.store),
+                thread.id.clone(),
+            )),
             stream_idle_timeout: std::time::Duration::from_secs(
                 self.config.stream_idle_timeout_secs(),
             ),

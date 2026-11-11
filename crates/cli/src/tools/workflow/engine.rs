@@ -43,7 +43,7 @@ use codesmith_agent_runtime::repl::runtime::{
 };
 use codesmith_agent_runtime::workflow::{
     MAX_WORKFLOW_AGENTS, SubAgentObjective, SubAgentRunResult, SubAgentSpawner, WorkflowEngine,
-    WorkflowError, WorkflowOutcome, WorkflowScript,
+    WorkflowError, WorkflowOutcome, WorkflowRunEvent, WorkflowRunRecorder, WorkflowScript,
 };
 
 /// Per-run default agent cap: the engine's existing default sub-agent
@@ -159,6 +159,9 @@ pub(crate) struct WorkflowRpcBridge {
     extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
     /// The caller's dispatch scope for those emissions.
     dispatch_scope: Scope,
+    /// The run's recorded lifecycle (live `workflow.*` thread events + the
+    /// durable record) — `None` ⇒ no recording.
+    run: Option<Arc<RunRecord>>,
     /// Monotonic reservation ledger: every slot asked for, consumed via
     /// `fetch_add` BEFORE the cap check (reserve-before-spawn ordering).
     /// A rejection consumes its slots too, so every later attempt in the
@@ -177,12 +180,14 @@ impl WorkflowRpcBridge {
         max_agents: u32,
         extension_runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
         dispatch_scope: Scope,
+        run: Option<Arc<RunRecord>>,
     ) -> Self {
         Self {
             spawner,
             max_agents,
             extension_runner,
             dispatch_scope,
+            run,
             reserved: AtomicU32::new(0),
             issued: AtomicU32::new(0),
             logs: StdMutex::new(Vec::new()),
@@ -224,8 +229,9 @@ impl WorkflowRpcBridge {
     }
 
     /// Spawn one child with the `WorkflowAgentStart` / `WorkflowAgentEnd`
-    /// emissions around it. Budget-rejected attempts never reach here — a
-    /// child that never began emits nothing.
+    /// emissions around it, the run record's member start/end beside them.
+    /// Budget-rejected attempts never reach here — a child that never began
+    /// emits and records nothing.
     async fn spawn_with_events(&self, objective: SubAgentObjective) -> SubAgentRunResult {
         emit_workflow_event(
             &self.extension_runner,
@@ -235,7 +241,14 @@ impl WorkflowRpcBridge {
             }),
         )
         .await;
+        let member = self
+            .run
+            .as_ref()
+            .map(|run| run.agent_start(&objective.objective));
         let result = self.spawner.spawn_and_run(objective).await;
+        if let (Some(run), Some(seq)) = (&self.run, member) {
+            run.agent_end(seq, &result.status);
+        }
         emit_workflow_event(
             &self.extension_runner,
             &self.dispatch_scope,
@@ -265,6 +278,115 @@ fn previous_char_boundary(s: &str, mut idx: usize) -> usize {
         idx -= 1;
     }
     idx
+}
+
+/// One run's recorded lifecycle: each step goes to the recorder (the live
+/// UI's `workflow.*` thread events) and accumulates into the durable
+/// `workflow_run` value the tool attaches to its item metadata (history
+/// replay). Field names are the desktop client's wire vocabulary.
+pub(crate) struct RunRecord {
+    run_id: String,
+    recorder: Option<Arc<dyn WorkflowRunRecorder>>,
+    /// Member sequence, drawn in spawn-issuance order (concurrency-safe —
+    /// a batch fan-out draws under the reservation).
+    next_seq: std::sync::atomic::AtomicU64,
+    /// `{runId, name, agents: [{seq, label, childId, outcome?}…],
+    /// stopReason?}`.
+    value: StdMutex<Value>,
+}
+
+/// Display cap for a member's label (the objective text).
+const MEMBER_LABEL_CAP: usize = 160;
+
+impl RunRecord {
+    /// Mint one run identity and record its start.
+    fn start(recorder: Option<Arc<dyn WorkflowRunRecorder>>, name: &str) -> Arc<Self> {
+        let run_id = format!("wf_{}", uuid::Uuid::new_v4().simple());
+        let this = Arc::new(Self {
+            run_id: run_id.clone(),
+            recorder: recorder.clone(),
+            next_seq: std::sync::atomic::AtomicU64::new(0),
+            value: StdMutex::new(serde_json::json!({
+                "runId": run_id,
+                "name": name,
+                "agents": [],
+            })),
+        });
+        if let Some(recorder) = &recorder {
+            recorder.record(WorkflowRunEvent::RunStart {
+                run_id,
+                name: name.to_string(),
+            });
+        }
+        this
+    }
+
+    /// Record one member's start; returns its sequence.
+    fn agent_start(&self, objective: &str) -> u64 {
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
+        let cut = previous_char_boundary(objective, MEMBER_LABEL_CAP);
+        let label = if cut < objective.len() {
+            format!("{}[…]", &objective[..cut])
+        } else {
+            objective.to_string()
+        };
+        // In-process children are not sessions: a synthetic id renders the
+        // panel's member row inert (upstream resolves real child sessions).
+        let child_id = format!("{}-{seq}", self.run_id);
+        if let Some(recorder) = &self.recorder {
+            recorder.record(WorkflowRunEvent::AgentStart {
+                run_id: self.run_id.clone(),
+                seq,
+                label: label.clone(),
+                phase: None,
+                child_id: child_id.clone(),
+            });
+        }
+        let mut value = self.value.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(agents) = value["agents"].as_array_mut() {
+            agents.push(serde_json::json!({
+                "seq": seq, "label": label, "childId": child_id,
+            }));
+        }
+        seq
+    }
+
+    /// Record one member's outcome (the sub-agent run path's status mapped
+    /// onto the wire's completed|cancelled|failed).
+    fn agent_end(&self, seq: u64, status: &str) {
+        let outcome = match status {
+            "completed" => "completed",
+            "cancelled" | "interrupted" => "cancelled",
+            _ => "failed",
+        };
+        if let Some(recorder) = &self.recorder {
+            recorder.record(WorkflowRunEvent::AgentEnd {
+                run_id: self.run_id.clone(),
+                seq,
+                outcome,
+            });
+        }
+        let mut value = self.value.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(agent) = value["agents"]
+            .as_array_mut()
+            .and_then(|agents| agents.iter_mut().find(|agent| agent["seq"] == seq))
+        {
+            agent["outcome"] = serde_json::json!(outcome);
+        }
+    }
+
+    /// Record the run's terminal state and return the durable record.
+    fn end(&self, stop_reason: &'static str) -> Value {
+        if let Some(recorder) = &self.recorder {
+            recorder.record(WorkflowRunEvent::RunEnd {
+                run_id: self.run_id.clone(),
+                stop_reason,
+            });
+        }
+        let mut value = self.value.lock().unwrap_or_else(|p| p.into_inner());
+        value["stopReason"] = serde_json::json!(stop_reason);
+        value.clone()
+    }
 }
 
 fn encode_agent_result(result: &SubAgentRunResult) -> String {
@@ -385,11 +507,19 @@ pub struct PythonWorkflowEngine {
     /// The caller's dispatch scope for those emissions: `Global` from the
     /// main turn, the calling sub-agent's `AgentType` from a child.
     dispatch_scope: Scope,
+    /// Records the run lifecycle into the owning thread's event stream
+    /// (the runtime-thread store; the desktop's workflow-run panel). `None`
+    /// (REPL, embeds, tests) ⇒ recording still accumulates for the tool's
+    /// item metadata, but nothing streams live.
+    run_recorder: Option<Arc<dyn WorkflowRunRecorder>>,
     /// Receipt of the most recent run — recorded even on failure so the
     /// tool can tell the model how far a failed run got. The tool builds
     /// one engine per call, so "last" is "the" run.
     last_agent_calls: AtomicU32,
     last_logs: StdMutex<Vec<String>>,
+    /// The most recent run's durable `workflow_run` record (identity,
+    /// members, stop reason) for the tool's item metadata.
+    last_run_record: StdMutex<Option<Value>>,
 }
 
 impl PythonWorkflowEngine {
@@ -403,8 +533,10 @@ impl PythonWorkflowEngine {
             default_max_agents: DEFAULT_MAX_AGENTS,
             extension_runner: None,
             dispatch_scope: Scope::Global,
+            run_recorder: None,
             last_agent_calls: AtomicU32::new(0),
             last_logs: StdMutex::new(Vec::new()),
+            last_run_record: StdMutex::new(None),
         }
     }
 
@@ -425,6 +557,24 @@ impl PythonWorkflowEngine {
     pub fn with_dispatch_scope(mut self, scope: Scope) -> Self {
         self.dispatch_scope = scope;
         self
+    }
+
+    /// Attach the run recorder (the runtime-thread store's journaling seam).
+    #[must_use]
+    pub fn with_run_recorder(mut self, recorder: Option<Arc<dyn WorkflowRunRecorder>>) -> Self {
+        self.run_recorder = recorder;
+        self
+    }
+
+    /// The most recent run's durable `workflow_run` record (for the tool's
+    /// item metadata). Recorded even on failure — the record is UI state,
+    /// not the model-facing receipt.
+    #[must_use]
+    pub fn run_record_of_last_run(&self) -> Option<Value> {
+        self.last_run_record
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Wall-clock bound for the whole run (kernel spawn to shutdown).
@@ -501,6 +651,9 @@ impl PythonWorkflowEngine {
             });
         }
         let timeout = script.timeout;
+        // The run's recorded lifecycle (live thread events + the durable
+        // record), minted with the run begin.
+        let run = RunRecord::start(self.run_recorder.clone(), "workflow");
         // Run begin — before the kernel spawns.
         emit_workflow_event(
             &self.extension_runner,
@@ -512,6 +665,7 @@ impl PythonWorkflowEngine {
             Ok(kernel) => kernel,
             Err(err) => {
                 let error = WorkflowError::KernelSpawn(err);
+                self.finish_run(&run, "error").await;
                 self.emit_end_failure(0, &error).await;
                 return Err(error);
             }
@@ -521,6 +675,7 @@ impl PythonWorkflowEngine {
             max_agents,
             self.extension_runner.clone(),
             self.dispatch_scope.clone(),
+            Some(Arc::clone(&run)),
         );
         let started = Instant::now();
         let code = format!("{WORKFLOW_PRELUDE}\n{}", script.source);
@@ -538,6 +693,7 @@ impl PythonWorkflowEngine {
         match executed {
             Err(_elapsed) => {
                 let error = WorkflowError::Timeout(timeout);
+                self.finish_run(&run, "error").await;
                 self.emit_end_failure(agent_calls, &error).await;
                 Err(error)
             }
@@ -545,6 +701,7 @@ impl PythonWorkflowEngine {
                 let error = WorkflowError::ScriptError(format!(
                     "workflow kernel round failed: {protocol_error}"
                 ));
+                self.finish_run(&run, "error").await;
                 self.emit_end_failure(agent_calls, &error).await;
                 Err(error)
             }
@@ -560,9 +717,11 @@ impl PythonWorkflowEngine {
                             format!("\nstderr:\n{stderr}")
                         }
                     ));
+                    self.finish_run(&run, "error").await;
                     self.emit_end_failure(agent_calls, &error).await;
                     return Err(error);
                 }
+                self.finish_run(&run, "completed").await;
                 self.emit_end_success(agent_calls).await;
                 Ok(WorkflowOutcome {
                     return_value: round.final_json.unwrap_or(Value::Null),
@@ -572,6 +731,15 @@ impl PythonWorkflowEngine {
                 })
             }
         }
+    }
+
+    /// Record the run's terminal state (the durable record the tool
+    /// attaches to its item metadata).
+    async fn finish_run(&self, run: &RunRecord, stop_reason: &'static str) {
+        *self
+            .last_run_record
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(run.end(stop_reason));
     }
 }
 
@@ -881,5 +1049,126 @@ mod tests {
         }
         assert!(!WORKFLOW_PRELUDE.contains("def finalize"));
         assert!(!WORKFLOW_PRELUDE.contains("def _rpc"));
+    }
+
+    /// A run recorder capturing the lifecycle as display lines.
+    struct RecordingRecorder(StdMutex<Vec<String>>);
+
+    impl WorkflowRunRecorder for RecordingRecorder {
+        fn record(&self, event: WorkflowRunEvent) {
+            let line = match event {
+                WorkflowRunEvent::RunStart { run_id, name } => format!("{run_id}|start|{name}"),
+                WorkflowRunEvent::AgentStart { run_id, seq, .. } => {
+                    format!("{run_id}|agent-start|{seq}")
+                }
+                WorkflowRunEvent::AgentEnd {
+                    run_id,
+                    seq,
+                    outcome,
+                } => format!("{run_id}|agent-end|{seq}|{outcome}"),
+                WorkflowRunEvent::RunEnd {
+                    run_id,
+                    stop_reason,
+                } => format!("{run_id}|end|{stop_reason}"),
+            };
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).push(line);
+        }
+    }
+
+    /// The run's recorded lifecycle: the recorder sees run-start, one
+    /// agent-start before its own agent-end per member (a concurrent batch
+    /// interleaves members), and run-end last — and the durable record
+    /// carries the same membership with outcomes and the stop reason, for
+    /// the tool's item metadata.
+    #[tokio::test]
+    async fn run_records_the_lifecycle_for_the_workflow_run_panel() {
+        let recorder = Arc::new(RecordingRecorder(StdMutex::new(Vec::new())));
+        let spawner = Arc::new(MockSpawner::new().failing("broken"));
+        let engine = PythonWorkflowEngine::new(Arc::clone(&spawner) as Arc<dyn SubAgentSpawner>)
+            .with_run_recorder(Some(Arc::clone(&recorder) as Arc<dyn WorkflowRunRecorder>));
+        let outcome = engine
+            .run(script(
+                "out = agents([{'objective': 'fine'}, {'objective': 'broken one'}])\n\
+                 finalize('done')",
+            ))
+            .await
+            .expect("run succeeds");
+        assert_eq!(outcome.agent_calls, 2);
+
+        let lines = recorder.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let run_id = lines[0].split('|').next().expect("run id").to_string();
+        assert_eq!(lines[0], format!("{run_id}|start|workflow"));
+        assert_eq!(
+            lines.last().unwrap(),
+            &format!("{run_id}|end|completed"),
+            "{lines:?}"
+        );
+        // Each member's start precedes its own end; seqs are unique.
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        for line in &lines[1..lines.len() - 1] {
+            if let Some(seq) = line.strip_prefix(&format!("{run_id}|agent-start|")) {
+                starts.push(seq.to_string());
+            } else if let Some(rest) = line.strip_prefix(&format!("{run_id}|agent-end|")) {
+                let (seq, outcome) = rest.split_once('|').expect("seq|outcome");
+                assert!(
+                    starts.contains(&seq.to_string()),
+                    "an end precedes its start: {line}"
+                );
+                ends.push((seq.to_string(), outcome.to_string()));
+            } else {
+                panic!("unexpected lifecycle line {line}");
+            }
+        }
+        let mut sorted = starts.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(starts, sorted, "member seqs are unique: {starts:?}");
+        let mut outcomes: Vec<&str> = ends.iter().map(|(_, o)| o.as_str()).collect();
+        outcomes.sort_unstable();
+        assert_eq!(outcomes, ["completed", "failed"], "{ends:?}");
+
+        // The durable record the tool attaches mirrors the same run.
+        let record = engine.run_record_of_last_run().expect("record present");
+        assert_eq!(record["runId"], serde_json::json!(run_id));
+        assert_eq!(record["name"], serde_json::json!("workflow"));
+        assert_eq!(record["stopReason"], serde_json::json!("completed"));
+        let agents = record["agents"].as_array().expect("agents");
+        assert_eq!(agents.len(), 2);
+        assert!(
+            agents
+                .iter()
+                .any(|agent| agent["outcome"] == serde_json::json!("failed"))
+        );
+        assert!(agents.iter().all(|agent| {
+            agent["childId"]
+                .as_str()
+                .is_some_and(|id| id.starts_with(&run_id))
+        }));
+    }
+
+    /// A failed run still records its lifecycle (stop reason `error`) — the
+    /// durable record exists even though the tool error carries no metadata.
+    #[tokio::test]
+    async fn a_failed_run_records_its_terminal_state() {
+        let recorder = Arc::new(RecordingRecorder(StdMutex::new(Vec::new())));
+        let spawner = Arc::new(MockSpawner::new());
+        let engine = PythonWorkflowEngine::new(Arc::clone(&spawner) as Arc<dyn SubAgentSpawner>)
+            .with_run_recorder(Some(Arc::clone(&recorder) as Arc<dyn WorkflowRunRecorder>));
+        let error = engine
+            .run(script("raise RuntimeError('boom')"))
+            .await
+            .expect_err("the script raises");
+        assert!(matches!(error, WorkflowError::ScriptError(_)));
+        let lines = recorder.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].ends_with("|end|error"), "{lines:?}");
+        let record = engine.run_record_of_last_run().expect("record present");
+        assert_eq!(record["stopReason"], serde_json::json!("error"));
+        assert_eq!(
+            record["agents"].as_array().map(Vec::len),
+            Some(0),
+            "no member spawned"
+        );
     }
 }

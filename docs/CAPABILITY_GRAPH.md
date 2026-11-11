@@ -43,3 +43,4 @@ construct it, consumers take it by value).
 | `TurnExecutorFactory` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `TurnHarvest` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `WorkflowEngine` | `agent-runtime` | `cli` | `cli` |
+| `WorkflowRunRecorder` | `agent-runtime` | `cli` | `cli` |

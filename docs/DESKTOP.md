@@ -564,9 +564,17 @@ Known limitations of the current implementation:
   ARE bridged — see their bullet), subagent child-session views (CodeSmith
   subagents are in-process, not separate threads with journals), and plugin
   entry customization. Their plugins stay out of the boot roster or answer
-  empty states. The workflow
-  lifecycle rides extension events that are not journaled, so the
-  workflow-run panel is not fed either. (The jobs popover, the attachment
+  empty states. The workflow-run panel IS fed: the runtime journals the
+  `workflow` tool's lifecycle as `workflow.*` thread events (the
+  `WorkflowRunRecorder` seam — live, every outcome) and the successful
+  run's durable record on the tool item's `metadata.workflow_run` (replay);
+  the mapper folds both onto the vendored client's `tool-workflow/*` node
+  family (run header, per-member rows with synthetic inert child ids, stop
+  reason). Known limitations: a FAILED run's node is live-only (its error
+  item settles without metadata, so a reload drops it); a reconnect
+  mid-run shows the node only after the run settles (events before the
+  detail's cursor are not replayed); nested runs (a sub-agent's own
+  workflow) record nothing. (The jobs popover, the attachment
   presentation, the changes-review tab, the sidebar files/preview tabs, the
   sidebar terminal tabs, the plan page, the permission surfaces, the `@`
   file source, the Workspace picker/registry, the GoalBar, the
@@ -756,7 +764,7 @@ lives in the bullets above.
 | Surface | State | Next | Decision |
 | --- | --- | --- | --- |
 | Sidebar terminal tabs | bridged | — | landed |
-| workflow-run panel | vendored, unfed | journal workflow lifecycle events runtime-side | candidate slice |
+| workflow-run panel | fed (runtime journal + mapper) | — | landed |
 | Subagent / team board | not vendored | in-process subagents are not threads; needs runtime-side design | needs design |
 | Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |

@@ -443,8 +443,14 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   ——见其条目）、子代理子
   会话视图（CodeSmith 的 subagent 是进程内执行，不是带日志的独立 thread）
   以及插件条目定制。对应插件不进 boot roster
-  或返回空态。workflow 生命周期走 extension event、没有写进会话日志，
-  因此 workflow-run 面板也没有数据源。（Jobs 弹窗、附件呈现、改动审查
+  或返回空态。workflow-run 面板**已**有数据源：运行时把 `workflow` 工具的
+  生命周期写为 `workflow.*` 线程事件（`WorkflowRunRecorder` 接缝——在线、
+  全部结局），成功运行的持久记录落在工具条目的
+  `metadata.workflow_run`（回放）；映射层把两者折叠为 vendored 客户端的
+  `tool-workflow/*` 节点族（运行头、逐成员行——child id 为合成惰性行、
+  停止原因）。已知限制：失败运行的节点仅在线（其错误条目落定时不带
+  metadata，重载即失）；运行中途重连要等运行落定才见节点（详情光标之前的
+  事件不重放）；嵌套运行（子代理自己的 workflow）不记录。（Jobs 弹窗、附件呈现、改动审查
   标签页、右侧栏文件/预览标签页、右侧栏终端标签页、计划页、权限面、
   `@` 文件源、工作区
   选择器/注册表、GoalBar、打开/定位/文件动作与逐消息反馈面**已**桥接
@@ -592,7 +598,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | 面板/能力 | 现状 | 下一步 | 决策 |
 | --- | --- | --- | --- |
 | 侧栏终端标签 | 已桥接 | — | 已落地 |
-| workflow 运行面板 | 已 vendor、无数据 | 运行时侧把 workflow 生命周期事件写入 journal | 候选切片 |
+| workflow 运行面板 | 已喂给（运行时 journal + 映射） | — | 已落地 |
 | 子代理 / 团队看板 | 未 vendor | in-process 子代理不是线程，需运行时侧设计 | 待设计 |
 | 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |

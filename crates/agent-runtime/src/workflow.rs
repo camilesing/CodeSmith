@@ -151,6 +151,55 @@ pub trait WorkflowEngine: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowOutcome, WorkflowError>> + Send + '_>>;
 }
 
+/// One step of a workflow run's lifecycle, in the vocabulary the desktop
+/// client's workflow-run panel folds (`tool-workflow/*` session events: the
+/// field names are the wire's). Recorded by the engine beside the observe
+/// -only extension events, for hosts that journal runs.
+///
+/// Known limitations — what this design does **not** do:
+/// - the records are UI state, not model input: nothing here reaches a
+///   model request, and the durable record of a *successful* run rides the
+///   tool item's metadata (a failed run's record is live-only);
+/// - member identity (`child_id`) is synthetic — in-process children are
+///   not sessions, so the panel renders them as inert rows;
+/// - there is no `cancelled` stop reason today (the engine either completes
+///   or errors; an interrupted turn leaves the run without a `run-end`, and
+///   the client's interrupted heuristic applies).
+#[derive(Debug, Clone)]
+pub enum WorkflowRunEvent {
+    RunStart {
+        run_id: String,
+        name: String,
+    },
+    AgentStart {
+        run_id: String,
+        seq: u64,
+        label: String,
+        phase: Option<String>,
+        child_id: String,
+    },
+    AgentEnd {
+        run_id: String,
+        seq: u64,
+        outcome: &'static str,
+    },
+    RunEnd {
+        run_id: String,
+        stop_reason: &'static str,
+    },
+}
+
+/// Records a workflow run's lifecycle steps for a host that journals them
+/// (the CLI runtime-thread store; the desktop bridge folds the records into
+/// the vendored client's workflow-run panel). Advisory by design: a
+/// recording failure never fails the run. `None` (embeds, tests, the REPL)
+/// keeps the extension-event-only behavior.
+pub trait WorkflowRunRecorder: Send + Sync {
+    /// Record one lifecycle step. Implementations must preserve order
+    /// across calls.
+    fn record(&self, event: WorkflowRunEvent);
+}
+
 /// Everything a workflow run can fail with. Carried out of the engine and
 /// mapped to a tool error by the provider.
 #[derive(Debug, thiserror::Error)]

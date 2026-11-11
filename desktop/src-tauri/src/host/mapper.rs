@@ -752,6 +752,23 @@ impl SessionMapper {
                     })));
                 }
             }
+            // The workflow tool's journaled lifecycle (the runtime's
+            // `workflow.*` thread events): the payload already carries the
+            // client's field names — pass it through onto the wire's
+            // workflow-run node family (history replays from the item's
+            // `workflow_run` metadata instead; see `replay_events`).
+            "workflow.run_started"
+            | "workflow.agent_started"
+            | "workflow.agent_ended"
+            | "workflow.run_ended" => {
+                let wire = match event_name {
+                    "workflow.run_started" => "tool-workflow/run-start",
+                    "workflow.agent_started" => "tool-workflow/agent-start",
+                    "workflow.agent_ended" => "tool-workflow/agent-end",
+                    _ => "tool-workflow/run-end",
+                };
+                frames.push(Frame::Event(self.seq.event(wire, payload, false, time)));
+            }
             // thread.* / turn.steered / turn.interrupt_requested: the
             // transcript settles from the durable events above.
             _ => {}
@@ -904,6 +921,54 @@ pub fn replay_events(detail: &Value) -> Vec<Value> {
 /// [`replay_events`] with the (provider, model) settled assistant messages
 /// carry as their `source` — the caller resolves it from the thread record
 /// and the model catalog the way the live path does.
+/// Replay one workflow item's durable run record
+/// (`item.metadata.workflow_run`, written by the runtime's workflow tool)
+/// as the client's workflow-run node family. The member order is the
+/// record's own (spawn-issuance order); a member without an outcome stays
+/// running, a record without a stop reason leaves the run running — the
+/// same folds the client applies live.
+fn replay_workflow_run(events: &mut Vec<Value>, seq: &mut WireSeq, run: &Value, time: i64) {
+    let run_id = run.get("runId").cloned().unwrap_or(Value::Null);
+    let name = run.get("name").cloned().unwrap_or(Value::Null);
+    events.push(seq.event(
+        "tool-workflow/run-start",
+        json!({ "runId": run_id.clone(), "name": name }),
+        false,
+        time,
+    ));
+    if let Some(agents) = run.get("agents").and_then(Value::as_array) {
+        for agent in agents {
+            let agent_seq = agent.get("seq").cloned().unwrap_or(Value::Null);
+            let mut start = json!({
+                "runId": run_id.clone(),
+                "seq": agent_seq.clone(),
+                "label": agent.get("label").cloned().unwrap_or(Value::Null),
+                "childId": agent.get("childId").cloned().unwrap_or(Value::Null),
+            });
+            if let Some(phase) = agent.get("phase").filter(|phase| !phase.is_null()) {
+                start["phase"] = phase.clone();
+            }
+            events.push(seq.event("tool-workflow/agent-start", start, false, time));
+            if let Some(outcome) = agent.get("outcome").and_then(Value::as_str) {
+                events.push(seq.event(
+                    "tool-workflow/agent-end",
+                    json!({ "runId": run_id.clone(), "seq": agent_seq, "outcome": outcome }),
+                    false,
+                    time,
+                ));
+            }
+        }
+    }
+    if let Some(stop_reason) = run.get("stopReason").and_then(Value::as_str) {
+        events.push(seq.event(
+            "tool-workflow/run-end",
+            json!({ "runId": run_id, "stopReason": stop_reason }),
+            false,
+            time,
+        ));
+    }
+}
+
 pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec<Value> {
     let mut seq = WireSeq::default();
     let mut events = Vec::new();
@@ -1069,6 +1134,15 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                         false,
                         started,
                     ));
+                    // A workflow item replays its durable run record into
+                    // the client's workflow-run node (run-start, one
+                    // agent-start/-end pair per member, run-end) — the same
+                    // family the live mapper folds from `workflow.*`
+                    // events. A failed run carries no record (its tool item
+                    // never settles with metadata); its node was live-only.
+                    if let Some(run) = item.pointer("/metadata/workflow_run") {
+                        replay_workflow_run(&mut events, &mut seq, run, started);
+                    }
                     if status != "in_progress" {
                         events.push(seq.event(
                             "tool/result",
@@ -2245,5 +2319,127 @@ mod tests {
             })
             .expect("the delta streams");
         assert_eq!(delta["time"], ms("2026-11-06T10:00:02Z"));
+    }
+
+    /// The workflow tool's journaled lifecycle passes through onto the
+    /// client's workflow-run node family (payload field names already wire
+    /// vocabulary), with contiguous wire seqs.
+    #[test]
+    fn workflow_envelopes_pass_through_to_the_node_family() {
+        let mut mapper = SessionMapper::default();
+        let envelopes = [
+            (
+                "workflow.run_started",
+                json!({ "runId": "wf_1", "name": "workflow" }),
+                "tool-workflow/run-start",
+            ),
+            (
+                "workflow.agent_started",
+                json!({ "runId": "wf_1", "seq": 0, "label": "alpha", "childId": "wf_1-0" }),
+                "tool-workflow/agent-start",
+            ),
+            (
+                "workflow.agent_ended",
+                json!({ "runId": "wf_1", "seq": 0, "outcome": "completed" }),
+                "tool-workflow/agent-end",
+            ),
+            (
+                "workflow.run_ended",
+                json!({ "runId": "wf_1", "stopReason": "completed" }),
+                "tool-workflow/run-end",
+            ),
+        ];
+        // The wire journal is 0-based (an empty one opens at cursor -1).
+        let mut last_seq = -1;
+        for (runtime_event, payload, wire) in envelopes {
+            let frames = mapper.map_envelope(&json!({
+                "event": runtime_event, "timestamp": "2026-11-11T10:00:00Z",
+                "payload": payload,
+            }));
+            assert_eq!(frames.len(), 1, "{runtime_event}");
+            match &frames[0] {
+                Frame::Event(event) => {
+                    assert_eq!(event["type"], wire, "{runtime_event}");
+                    assert_eq!(event["data"], payload, "{runtime_event}");
+                    let seq = event["seq"].as_i64().expect("wire seq");
+                    assert!(seq > last_seq, "seqs advance: {seq} <= {last_seq}");
+                    last_seq = seq;
+                }
+                other => panic!("{runtime_event} produced {other:?}"),
+            }
+        }
+    }
+
+    /// A workflow item's durable run record replays into the same node
+    /// family, between its tool/call and tool/result (a member without an
+    /// outcome stays running; a record without a stop reason leaves the run
+    /// running).
+    #[test]
+    fn replay_synthesizes_the_workflow_run_node_from_item_metadata() {
+        let detail = json!({
+            "turns": [{ "id": "turn_1", "status": "completed",
+                "created_at": "2026-11-11T10:00:00Z", "started_at": "2026-11-11T10:00:00Z",
+                "ended_at": "2026-11-11T10:00:09Z" }],
+            "items": [
+                { "id": "item_wf", "turn_id": "turn_1", "kind": "tool_call",
+                  "status": "completed", "detail": "receipt", "summary": "workflow: ok",
+                  "metadata": {
+                    "arguments": { "script": "finalize(1)" },
+                    "workflow_run": {
+                        "runId": "wf_replay", "name": "workflow",
+                        "agents": [
+                            { "seq": 0, "label": "alpha", "childId": "wf_replay-0", "outcome": "completed" },
+                            { "seq": 1, "label": "beta", "childId": "wf_replay-1" },
+                        ],
+                        "stopReason": "completed",
+                    },
+                  },
+                  "started_at": "2026-11-11T10:00:05Z", "ended_at": "2026-11-11T10:00:08Z" },
+            ],
+        });
+        let events = replay_events(&detail);
+        let types: Vec<&str> = events
+            .iter()
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect();
+        let call = types
+            .iter()
+            .position(|t| *t == "tool/call")
+            .expect("tool/call");
+        let result = types
+            .iter()
+            .position(|t| *t == "tool/result")
+            .expect("tool/result");
+        let family: Vec<&str> = types
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index > call && *index < result)
+            .map(|(_, t)| *t)
+            .collect();
+        assert_eq!(
+            family,
+            [
+                "tool-workflow/run-start",
+                "tool-workflow/agent-start",
+                "tool-workflow/agent-end",
+                "tool-workflow/agent-start",
+                "tool-workflow/run-end",
+            ],
+            "{types:?}"
+        );
+        let start = &events[call + 1];
+        assert_eq!(start["data"]["runId"], "wf_replay");
+        assert_eq!(start["data"]["name"], "workflow");
+        // The second member has no outcome — no agent-end for it; the run
+        // still completed (its own stop reason, upstream's fold).
+        let second_start = &events[call + 4];
+        assert_eq!(second_start["data"]["seq"], 1);
+        assert!(
+            second_start["data"].get("phase").is_none(),
+            "an absent phase is omitted, not null: {}",
+            second_start["data"]
+        );
+        let end = &events[call + 5];
+        assert_eq!(end["data"]["stopReason"], "completed");
     }
 }

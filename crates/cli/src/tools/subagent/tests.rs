@@ -2979,6 +2979,7 @@ fn stub_runtime() -> SubAgentRuntime {
             codesmith_agent_runtime::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS,
         ),
         workflow_max_agents: None,
+        workflow_recorder: None,
         ticket_store: None,
     }
 }

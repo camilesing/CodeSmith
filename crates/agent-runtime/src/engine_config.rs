@@ -276,6 +276,12 @@ pub struct EngineConfig {
     /// Resolved from `[workflow] max_agents`; `None` lets the engine use
     /// its built-in default (`DEFAULT_MAX_SUBAGENTS` in the CLI layer).
     pub workflow_max_agents: Option<u32>,
+    /// Records workflow-run lifecycle steps for hosts that journal them
+    /// (the CLI runtime-thread store — the `WorkflowRunRecorder` seam's
+    /// provider side). `None` on engines without a journal (the REPL,
+    /// embeds, tests): the run still accumulates its durable record for the
+    /// tool item metadata, but nothing streams live.
+    pub workflow_recorder: Option<std::sync::Arc<dyn crate::workflow::WorkflowRunRecorder>>,
     /// Idle watchdog for streaming responses (P0-1): the maximum silence
     /// between two consecutive stream events before the stream is declared
     /// silently stalled (connection open, data flow stopped) and aborted into
@@ -457,6 +463,7 @@ impl Default for EngineConfig {
             subagent_api_timeout: Duration::from_secs(DEFAULT_SUBAGENT_API_TIMEOUT_SECS),
             workflow_timeout: Duration::from_secs(crate::workflow::DEFAULT_WORKFLOW_TIMEOUT_SECS),
             workflow_max_agents: None,
+            workflow_recorder: None,
             stream_idle_timeout: Duration::from_secs(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
             stream_idle_retry_increment: Duration::from_secs(
                 DEFAULT_STREAM_IDLE_RETRY_INCREMENT_SECS,

@@ -107,6 +107,11 @@ impl WorkflowTool {
                 // calling sub-agent's type from a child — 5b).
                 .with_extension_runner(self.extension_runner.clone())
                 .with_dispatch_scope(self.runtime.dispatch_scope.clone())
+                // The run's durable record (thread events live + the
+                // `workflow_run` metadata below) — runtime-thread engines
+                // only; nested runs record nothing (`child_runtime` strips
+                // the recorder).
+                .with_run_recorder(self.runtime.workflow_recorder.clone())
                 .with_default_max_agents(
                     self.runtime
                         .workflow_max_agents
@@ -240,10 +245,18 @@ impl ToolSpec for WorkflowTool {
                 let mut content = serde_json::to_string(&receipt)
                     .map_err(|e| ToolError::execution_failed(format!("workflow receipt: {e}")))?;
                 truncate_inline(&mut content);
-                Ok(ToolResult::success(content).with_metadata(json!({
+                // The run's lifecycle record rides the item metadata: the
+                // desktop bridge replays it into the client's workflow-run
+                // panel (a failed run has no result item to carry it — its
+                // record is live-only).
+                let mut metadata = json!({
                     "agent_calls": outcome.agent_calls,
                     "elapsed_ms": outcome.elapsed.as_millis() as u64,
-                })))
+                });
+                if let Some(record) = engine.run_record_of_last_run() {
+                    metadata["workflow_run"] = record;
+                }
+                Ok(ToolResult::success(content).with_metadata(metadata))
             }
             Err(err) => {
                 let agent_calls = engine.agent_calls_of_last_run();

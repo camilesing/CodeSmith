@@ -427,7 +427,8 @@ impl HostServices for super::EngineHost {
                         .with_mcp_pool(mcp_pool.clone())
                         .with_extension_runner(self.extension_runner.clone())
                         .with_parent_completion_tx(req.tx_subagent_completion.clone())
-                        .with_workflow_limits(config.workflow_timeout, config.workflow_max_agents);
+                        .with_workflow_limits(config.workflow_timeout, config.workflow_max_agents)
+                        .with_workflow_recorder(config.workflow_recorder.clone());
                         if let Some(context) = fork_context_for_runtime.clone() {
                             rt = rt.with_fork_context(context);
                         }
@@ -525,7 +526,8 @@ impl HostServices for super::EngineHost {
                     .with_mcp_pool(mcp_pool.clone())
                     .with_extension_runner(self.extension_runner.clone())
                     .with_parent_completion_tx(req.tx_subagent_completion.clone())
-                    .with_workflow_limits(config.workflow_timeout, config.workflow_max_agents);
+                    .with_workflow_limits(config.workflow_timeout, config.workflow_max_agents)
+                    .with_workflow_recorder(config.workflow_recorder.clone());
                     if let Some(context) = fork_context_for_runtime.clone() {
                         rt = rt.with_fork_context(context);
                     }

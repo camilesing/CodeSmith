@@ -464,11 +464,28 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
 `item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
 `approval.timeout`, `sandbox.denied`, `coherence.state`,
-`background.agent_completed`, `background.status`, `queue.updated`.
+`background.agent_completed`, `background.status`, `queue.updated`,
+`workflow.run_started`, `workflow.agent_started`, `workflow.agent_ended`,
+`workflow.run_ended`.
 
 A steer's user item emits `item.started` and then `item.completed`, the same
 lifecycle as a turn's opening message, so a live client can show the steered
 text as soon as it lands.
+
+Workflow-run events journal the `workflow` tool's lifecycle on runtime
+threads (thread-scoped, no item linkage; the field names are the desktop
+client's workflow-run node vocabulary): `workflow.run_started`
+`{runId, name}`; `workflow.agent_started` `{runId, seq, label, phase?,
+childId}` (one `seq` per spawned member, drawn in issuance order; `phase`
+omitted when the run has none; `childId` is synthetic — in-process children
+are not sessions); `workflow.agent_ended` `{runId, seq, outcome:
+completed|cancelled|failed}`; `workflow.run_ended` `{runId, stopReason:
+completed|error}`. A rejected budget emits nothing; an interrupted run
+emits no `run_ended`. A successful run's durable record also lands on its
+tool item's `metadata.workflow_run` (`{runId, name, agents:
+[{seq,label,childId,outcome?}…], stopReason}`) — a failed run's record is
+live-only (its tool item settles as an error without metadata), and nested
+runs (a sub-agent's own workflow) record nothing.
 
 ### Idle-wake turns (round 10)
 

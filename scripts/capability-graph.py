@@ -62,6 +62,7 @@ SEAMS = [
     "TurnExecutorFactory",
     "TurnHarvest",
     "WorkflowEngine",
+    "WorkflowRunRecorder",
 ]
 
 # Data seams — plain structs handed across the framework boundary (see the
