@@ -226,6 +226,7 @@ impl HostServices for super::EngineHost {
         // own approval gate waits on.
         .with_approval_router(self.approval_router.clone())
         .with_extension_runner(self.extension_runner.clone())
+        .with_child_journal_factory(req.config.child_session_journal.clone())
         .background_runtime();
         let route =
             resolve_subagent_assignment_route(&runtime, None, req.prompt, &SubAgentType::General)
@@ -428,7 +429,8 @@ impl HostServices for super::EngineHost {
                         .with_extension_runner(self.extension_runner.clone())
                         .with_parent_completion_tx(req.tx_subagent_completion.clone())
                         .with_workflow_limits(config.workflow_timeout, config.workflow_max_agents)
-                        .with_workflow_recorder(config.workflow_recorder.clone());
+                        .with_workflow_recorder(config.workflow_recorder.clone())
+                        .with_child_journal_factory(config.child_session_journal.clone());
                         if let Some(context) = fork_context_for_runtime.clone() {
                             rt = rt.with_fork_context(context);
                         }
@@ -527,7 +529,8 @@ impl HostServices for super::EngineHost {
                     .with_extension_runner(self.extension_runner.clone())
                     .with_parent_completion_tx(req.tx_subagent_completion.clone())
                     .with_workflow_limits(config.workflow_timeout, config.workflow_max_agents)
-                    .with_workflow_recorder(config.workflow_recorder.clone());
+                    .with_workflow_recorder(config.workflow_recorder.clone())
+                    .with_child_journal_factory(config.child_session_journal.clone());
                     if let Some(context) = fork_context_for_runtime.clone() {
                         rt = rt.with_fork_context(context);
                     }
@@ -1087,5 +1090,20 @@ impl SubAgentApi for SubAgentManagerHost {
     async fn live_running_snapshots(&self) -> Vec<SubAgentResult> {
         let g = self.0.read().await;
         SubAgentManager::live_running_snapshots(&g)
+    }
+
+    async fn owns(&self, agent_id: &str) -> bool {
+        let g = self.0.read().await;
+        SubAgentManager::get_result(&g, agent_id).is_ok()
+    }
+
+    async fn send_input(&self, agent_id: &str, text: String) -> anyhow::Result<()> {
+        let mut g = self.0.write().await;
+        SubAgentManager::send_input(&mut g, agent_id, text)
+    }
+
+    async fn cancel(&self, agent_id: &str) -> anyhow::Result<()> {
+        let mut g = self.0.write().await;
+        SubAgentManager::cancel(&mut g, agent_id).map(|_| ())
     }
 }

@@ -319,6 +319,27 @@ REPL's flush have the same window.
   Response: `{ "ok": true, "input_id": "...", "delivered": true }`.
   An unknown thread or input id surfaces as an API error.
 
+**Sub-agent child sessions** (in-process children of a runtime thread)
+- `GET /v1/threads/{id}/subagents` — the direct-child catalog
+  (`SubagentSummary[]`: id, parent, name, agent type, depth, mode, status,
+  model, timestamps, aggregated usage, open-turn activity).
+- `POST /v1/subagents/{id}/input` — body `{ "text": "…" }`; maps to the
+  child's `agent_send_input` steer seam. Only a running `continuable`
+  child accepts it.
+- `POST /v1/subagents/{id}/cancel` — stop a running `continuable` child;
+  absent or terminal children are accepted no-ops
+  (`{ "accepted": true }`). A running one-shot child is refused: its
+  lifetime belongs to the parent turn, not the child-session API.
+
+A child is a normal thread/turn/item record with `origin = "subagent"`,
+`parent_id`, `agent_type`, `spawn_depth`, `subagent_mode` and
+`subagent_status`. It is filtered from `GET /v1/threads` and reached
+through its parent's catalog; `GET /v1/threads/{child}` and its event
+stream serve the transcript. Replacement semantics: one run is one turn,
+a restart marks a running child `interrupted` and keeps the transcript,
+and there is no resume route. Child content is UI/replay only — it never
+enters the parent model request.
+
 **Events** (SSE replay + live stream)
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
 

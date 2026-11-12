@@ -904,6 +904,9 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
                 std::sync::Arc::new(FileSessionJournal::new(manager.sessions_dir()))
                     as std::sync::Arc<dyn SessionJournal>
             }),
+        // The REPL has no runtime thread store; children keep the in-memory
+        // transcript handle rather than a child-session catalog record.
+        child_session_journal: None,
         session_id: None,
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),

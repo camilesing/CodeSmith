@@ -831,6 +831,9 @@ impl RhaiTurnExecutor {
             stream_idle_retry_increment: s.stream_idle_retry_increment,
             extension_runner: s.extension.clone(),
             subagents: Arc::clone(&s.subagents),
+            // Script-authored children have no manager-spawned child
+            // identity, so the catalog deliberately does not present them.
+            journal: None,
         };
         let handle = *next_handle;
         *next_handle += 1;

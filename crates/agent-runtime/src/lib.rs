@@ -46,6 +46,7 @@ pub mod callback_bridge;
 pub mod capacity;
 
 pub mod capacity_memory;
+pub mod child_journal;
 pub use codesmith_context::claudemd;
 pub mod coherence;
 pub use codesmith_sandbox::command_safety;

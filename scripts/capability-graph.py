@@ -40,6 +40,8 @@ SEAMS = [
     "AroundToolHandler",
     "AroundTurnHandler",
     "ChatHistory",
+    "ChildSessionJournal",
+    "ChildSessionJournalFactory",
     "CommandDefinition",
     "Extension",
     "ExternalSubagentProvider",

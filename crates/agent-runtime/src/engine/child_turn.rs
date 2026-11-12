@@ -51,6 +51,7 @@ use codesmith_extensions::ExtensionRunner;
 
 use super::SteerInput;
 use super::executor_composition::{TurnDeps, TurnShape, resolve_turn_executor};
+use crate::child_journal::{ChildSessionEvent, ChildSessionJournal, ChildSessionStatus};
 use crate::events::Event;
 use crate::host_services::SubAgentApi;
 use crate::mailbox::{Mailbox, MailboxMessage};
@@ -98,6 +99,10 @@ pub struct ChildTurnSpec {
     /// The session's sub-agent view — the manager the child's own spawn
     /// tools register grandchildren in.
     pub subagents: Arc<dyn SubAgentApi>,
+    /// Durable child-session journal, when the host exposes child
+    /// conversations. Events go to the child's own record only; the parent
+    /// transcript still receives just the completion card.
+    pub journal: Option<Arc<dyn ChildSessionJournal>>,
 }
 
 /// A child's tool surface, already narrowed by the host's delegation
@@ -189,12 +194,23 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         stream_idle_retry_increment,
         extension_runner,
         subagents,
+        journal,
     } = spec;
     // Misconfiguration fails loud: the same resolution, and the same
     // remedy text, as the main turn's assembly.
     let factory = match resolve_turn_executor(&executor_id) {
         Ok(factory) => factory,
         Err(message) => {
+            if let Some(journal) = journal.as_ref() {
+                journal.record(ChildSessionEvent::Started).await;
+                journal
+                    .record(ChildSessionEvent::Finished {
+                        status: ChildSessionStatus::Failed(message.clone()),
+                        final_text: None,
+                        usage: Usage::default(),
+                    })
+                    .await;
+            }
             return ChildTurnOutcome {
                 status: ChildTurnStatus::Failed(message),
                 final_text: None,
@@ -228,12 +244,51 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         agent_type: agent_type.as_str().to_string(),
     });
     events.progress(&agent_id, format!("started ({})", agent_type.as_str()));
+    if let Some(journal) = journal.as_ref() {
+        journal.record(ChildSessionEvent::Started).await;
+    }
+    // Record follow-up input on the child's own journal before handing it to
+    // the loop. The forwarder is not a second turn loop: it applies the same
+    // steer seam and forwards every message unchanged.
+    let (rx_steer, forward_task, forward_cancel) = match journal.clone() {
+        Some(journal) => {
+            let (forward_tx, forward_rx) = mpsc::channel(4);
+            let forward_cancel = CancellationToken::new();
+            let task_cancel = forward_cancel.clone();
+            let task = tokio::spawn(async move {
+                let mut input = input;
+                loop {
+                    tokio::select! {
+                        _ = task_cancel.cancelled() => break,
+                        message = input.recv() => match message {
+                            Some(steer) => {
+                                if !steer.text.trim().is_empty() {
+                                    journal
+                                        .record(ChildSessionEvent::UserMessage {
+                                            text: steer.text.clone(),
+                                        })
+                                        .await;
+                                }
+                                if forward_tx.send(steer).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        },
+                    }
+                }
+            });
+            (forward_rx, Some(task), Some(forward_cancel))
+        }
+        None => (input, None, None),
+    };
 
     let callback = Arc::new(ChildTurnCallback {
         agent_id: agent_id.clone(),
         max_steps,
         steps: AtomicU32::new(0),
         events: events.clone(),
+        journal: journal.clone(),
         stream_observer: extension_runner.clone().map(|runner| StreamObserver {
             runner,
             scope: child_scope.clone(),
@@ -267,7 +322,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         request_model: Some(model.clone()).filter(|m| !m.trim().is_empty()),
         reasoning_effort,
         tx_event: None,
-        rx_steer: Arc::new(AsyncMutex::new(input)),
+        rx_steer: Arc::new(AsyncMutex::new(rx_steer)),
         rx_approval: None,
         rx_user_input: None,
         rx_subagent_completion: None,
@@ -331,9 +386,6 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     if let Some(reason) = lease.cancel_reason() {
         events.progress(&agent_id, format!("cancelled: {reason}"));
     }
-    drop(built);
-    drop(lease);
-
     let status = match stop {
         Ok(StopReason::NoToolCalls | StopReason::MaxSteps | StopReason::PlanApproved) => {
             ChildTurnStatus::Completed
@@ -346,6 +398,35 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     let final_text = (status == ChildTurnStatus::Completed)
         .then(|| last_assistant_text(&messages[opening.min(messages.len())..]))
         .flatten();
+    // The child's terminal record lands before the lease is released: a
+    // reload/eviction drain that waits for the lease to drop can then rely
+    // on the journal already naming a terminal status.
+    if let Some(journal) = journal.as_ref() {
+        journal
+            .record(ChildSessionEvent::Usage(usage.clone()))
+            .await;
+        let session_status = match &status {
+            ChildTurnStatus::Completed => ChildSessionStatus::Completed,
+            ChildTurnStatus::Cancelled => ChildSessionStatus::Cancelled,
+            ChildTurnStatus::Failed(message) => ChildSessionStatus::Failed(message.clone()),
+        };
+        journal
+            .record(ChildSessionEvent::Finished {
+                status: session_status,
+                final_text: final_text.clone(),
+                usage: usage.clone(),
+            })
+            .await;
+    }
+    if let Some(cancel) = forward_cancel {
+        cancel.cancel();
+    }
+    if let Some(task) = forward_task {
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
+    drop(built);
+    drop(lease);
+
     ChildTurnOutcome {
         status,
         final_text,
@@ -377,6 +458,8 @@ struct ChildTurnCallback {
     max_steps: u32,
     steps: AtomicU32,
     events: ChildEventSink,
+    /// The child's own durable journal; `None` when the host keeps none.
+    journal: Option<Arc<dyn ChildSessionJournal>>,
     /// `assistant-stream` observation at the child's scope; `None` without
     /// an extension runtime.
     stream_observer: Option<StreamObserver>,
@@ -423,14 +506,22 @@ impl Callback for ChildTurnCallback {
         if calls > 0 {
             self.step_progress(format!("executing {calls} tool call(s)"));
         }
-        Box::pin(async {})
+        let journal = self.journal.clone();
+        let content = content.to_vec();
+        Box::pin(async move {
+            if let Some(journal) = journal {
+                journal
+                    .record(ChildSessionEvent::AssistantMessage { content })
+                    .await;
+            }
+        })
     }
 
     fn on_tool_start<'a>(
         &'a self,
-        _id: &'a str,
+        id: &'a str,
         name: &'a str,
-        _input: &'a serde_json::Value,
+        input: &'a serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         self.step_progress(format!("running tool '{name}'"));
         self.events.mailbox(MailboxMessage::ToolCallStarted {
@@ -438,7 +529,17 @@ impl Callback for ChildTurnCallback {
             tool_name: name.to_string(),
             step: self.steps.load(Ordering::SeqCst),
         });
-        Box::pin(async {})
+        let journal = self.journal.clone();
+        let id = id.to_string();
+        let name = name.to_string();
+        let input = input.clone();
+        Box::pin(async move {
+            if let Some(journal) = journal {
+                journal
+                    .record(ChildSessionEvent::ToolStarted { id, name, input })
+                    .await;
+            }
+        })
     }
 
     fn on_tool_end<'a>(
@@ -453,7 +554,19 @@ impl Callback for ChildTurnCallback {
             step: self.steps.load(Ordering::SeqCst),
             ok: matches!(result, Ok(r) if r.success),
         });
-        Box::pin(async {})
+        let journal = self.journal.clone();
+        let name = name.to_string();
+        let (ok, content) = match result {
+            Ok(result) => (result.success, result.content.clone()),
+            Err(err) => (false, err.to_string()),
+        };
+        Box::pin(async move {
+            if let Some(journal) = journal {
+                journal
+                    .record(ChildSessionEvent::ToolFinished { name, ok, content })
+                    .await;
+            }
+        })
     }
 
     fn on_stream_delta<'a>(
@@ -596,6 +709,7 @@ mod tests {
             stream_idle_retry_increment: Duration::ZERO,
             extension_runner: None,
             subagents: Arc::new(NoSubAgents),
+            journal: None,
         }
     }
 
@@ -643,6 +757,120 @@ mod tests {
             "the routed model rides the request"
         );
         assert_eq!(requests[0].reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingJournal {
+        events: Arc<tokio::sync::Mutex<Vec<ChildSessionEvent>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ChildSessionJournal for RecordingJournal {
+        async fn record(&self, event: ChildSessionEvent) {
+            self.events.lock().await.push(event);
+        }
+    }
+
+    /// The child turn journals its own settled events — user/assistant/tool/
+    /// usage/completion — and still leaves the parent's event sink to the
+    /// progress feed only.
+    #[tokio::test]
+    async fn child_turn_records_its_own_session_journal() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut registry = ToolRegistry::new(ToolContext::new(workspace.path().to_path_buf()));
+        registry.register(Arc::new(EchoSpec));
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("call_echo", "echo", r#"{"text":"hi"}"#),
+            canned::simple_text_turn("all done"),
+        ]));
+        let journal = Arc::new(RecordingJournal::default());
+        let mut child = spec(
+            mock.clone(),
+            crate::engine::BUILTIN_TURN_EXECUTOR_ID,
+            workspace.path(),
+        );
+        child.tools = ChildToolSurface {
+            tool_set: Arc::new(registry.to_framework_tool_set()),
+            catalog: registry.to_api_tools(),
+            dispatcher: Arc::new(registry),
+        };
+        child.journal = Some(journal.clone());
+
+        let outcome = run_child_turn(child).await;
+
+        assert_eq!(outcome.status, ChildTurnStatus::Completed, "{outcome:?}");
+        let events = journal.events.lock().await;
+        assert!(
+            matches!(events.first(), Some(ChildSessionEvent::Started)),
+            "the run opens its own child session: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ChildSessionEvent::AssistantMessage { .. })),
+            "assistant content is journaled: {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ChildSessionEvent::ToolStarted { name, .. } if name == "echo"
+            )),
+            "tool starts are journaled: {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ChildSessionEvent::ToolFinished { name, ok: true, .. } if name == "echo"
+            )),
+            "tool results are journaled: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ChildSessionEvent::Usage(_))),
+            "usage is journaled: {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(ChildSessionEvent::Finished {
+                    status: ChildSessionStatus::Completed,
+                    ..
+                })
+            ),
+            "the terminal record is last: {events:?}"
+        );
+    }
+
+    /// A cancelled child closes its journal with a terminal status before the
+    /// turn lease is released.
+    #[tokio::test]
+    async fn cancelled_child_turn_closes_its_session_journal() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mock = Arc::new(MockLlmClient::new(Vec::new()));
+        let journal = Arc::new(RecordingJournal::default());
+        let mut child = spec(
+            mock,
+            crate::engine::BUILTIN_TURN_EXECUTOR_ID,
+            workspace.path(),
+        );
+        child.cancel.cancel();
+        child.journal = Some(journal.clone());
+
+        let outcome = run_child_turn(child).await;
+
+        assert_eq!(outcome.status, ChildTurnStatus::Cancelled, "{outcome:?}");
+        let events = journal.events.lock().await;
+        assert!(
+            matches!(
+                events.last(),
+                Some(ChildSessionEvent::Finished {
+                    status: ChildSessionStatus::Cancelled,
+                    ..
+                })
+            ),
+            "the journal is terminal before the lease drops: {events:?}"
+        );
     }
 
     /// An unregistered executor id fails the child loudly, naming the id

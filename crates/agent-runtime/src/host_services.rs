@@ -260,6 +260,24 @@ pub trait SubAgentApi: Send + Sync {
     /// the compaction reinject path to resume active sub-agents into the
     /// cycle briefing.
     async fn live_running_snapshots(&self) -> Vec<SubAgentResult>;
+    /// Whether this host's manager owns `agent_id`. The runtime-thread API
+    /// uses it to route a child-session prompt to the right engine without
+    /// probing every manager. Default `false` for hosts without sub-agents.
+    async fn owns(&self, agent_id: &str) -> bool {
+        let _ = agent_id;
+        false
+    }
+    /// Deliver follow-up text to a running child (`agent_send_input`).
+    /// Default: unsupported.
+    async fn send_input(&self, agent_id: &str, text: String) -> anyhow::Result<()> {
+        let _ = (agent_id, text);
+        anyhow::bail!("this host does not accept sub-agent follow-up input")
+    }
+    /// Cancel a running child through its manager. Default: unsupported.
+    async fn cancel(&self, agent_id: &str) -> anyhow::Result<()> {
+        let _ = agent_id;
+        anyhow::bail!("this host cannot cancel sub-agents")
+    }
 }
 
 /// Terminal-agnostic shell-manager surface for tool implementations.

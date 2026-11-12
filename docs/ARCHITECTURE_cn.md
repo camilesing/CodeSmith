@@ -65,8 +65,20 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   提示与工具目录仅在变化时记录，消息仅在不等于转写前缀时记录），失败的
   轮次记为 attempt 条目，因此 `session_journal::reconstruct_requests` 仅凭
   日志即可还原每个请求——这是"模型可见即被记录"在会话日志层的形态。
-  exec 运行、runtime API 线程与子代理不记日志；共用客户端的工具性调用
-  （压缩摘要）不入日志。
+  exec 运行与交互式/ACP 子代理不记会话日志；runtime API 线程改用自身的
+  事件流（桌面桥），其进程内子会话写下面的子会话记录。共用客户端的
+  工具性调用（压缩摘要）不入日志。
+  **子会话日志**（`agent-runtime/src/child_journal.rs`，接缝
+  `ChildSessionJournal` + `ChildSessionJournalFactory`）是子代理侧的
+  对应物：`run_child_turn` 在 turn 租约释放前把子会话的
+  user/assistant/tool/approval/usage/completion 事件写入其中，绝不写入
+  父转写（父会话仍只收到 completion card）。runtime-thread 提供者
+  （`cli/src/runtime_threads/subagent_journal.rs`）把每个子代理落成
+  `origin = "subagent"` 的 `ThreadRecord`，带自己的 turn、items 与
+  只追加 JSONL 流，因此桌面桥可用与顶层线程相同的 `session/follow`
+  路径打开子对话。替换语义：一次运行就是一个 turn；重启把仍在运行的
+  子会话标为 `interrupted` 并保留转写，不存在续跑路径。该记录只服务
+  UI/回放——子会话内容永不进入父模型请求。
 - **插件分层（已声明）。** 可插拔性统一走 `Extension` 契约
   （`crates/agent/src/extension.rs`）+ `ExtensionRunner`——共四层：用户
   Rhai mod（`~/.codesmith/mods/`，consent 门控）、内建 Rhai 层（内嵌脚本

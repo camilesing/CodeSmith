@@ -52,9 +52,14 @@ fn address_session_id(request: &Value) -> Result<String> {
     let id = address
         .get("sessionId")
         .or_else(|| address.get("session_id"))
+        .or_else(|| {
+            (address.get("kind").and_then(Value::as_str) == Some("subagent"))
+                .then(|| address.get("childSessionId"))
+                .flatten()
+        })
         .and_then(Value::as_str)
         .map(str::to_string);
-    id.with_context(|| "session address without sessionId".to_string())
+    id.with_context(|| "session address without sessionId or childSessionId".to_string())
 }
 
 /// The turn-lifecycle events that flip a client session's `running` flag.
@@ -87,6 +92,10 @@ fn session_status_frame(session_id: &str, running: bool) -> Value {
 /// The repair runs when the session is first followed or prompted; a failed
 /// PATCH is logged and the turn surfaces its own error.
 async fn repair_auto_approve_pairing(host: &HostState, session_id: &str, detail: &Value) {
+    // A child session is a replacement record with no engine/turn pairing.
+    if detail.pointer("/thread/origin").and_then(Value::as_str) == Some("subagent") {
+        return;
+    }
     let mode = detail
         .pointer("/thread/mode")
         .and_then(Value::as_str)
@@ -202,7 +211,11 @@ pub async fn follow(
     // even when a report never wakes the coordinator. The ticker and the SSE
     // stream share this task; a tick that wins drops only the `next()`
     // future, which the stream owns cancel-safely.
-    let ticket_workspace = cwd.map(std::path::PathBuf::from);
+    let child_session =
+        detail.pointer("/thread/origin").and_then(Value::as_str) == Some("subagent");
+    let ticket_workspace = (!child_session)
+        .then(|| cwd.map(std::path::PathBuf::from))
+        .flatten();
     let mut tickets_tick = tokio::time::interval(super::tickets::POLL_INTERVAL);
     tickets_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tickets_tick.tick().await;
@@ -921,6 +934,84 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
         .filter_map(|p| p.receipt_id.clone())
         .collect();
     super::uploads::retire_receipts(&host.uploads, &receipt_ids).await;
+    Ok(json!({ "accepted": true }))
+}
+
+/// `subagents/prompt` — one browser-authored message to a continuable child.
+/// CodeSmith's child input seam is text-only (`agent_send_input`); both
+/// upstream delivery modes (`queue` / `steer`) land at the child's next step
+/// boundary. Returns the receipt identity the client expects.
+pub async fn subagent_prompt(host: &HostState, request: &Value) -> Result<Value> {
+    let inner = request.get("request").unwrap_or(request);
+    let child_session_id = inner
+        .get("childSessionId")
+        .or_else(|| inner.get("child_session_id"))
+        .and_then(Value::as_str)
+        .context("subagents/prompt without childSessionId")?;
+    let content = inner
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut texts = Vec::new();
+    for part in content {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    texts.push(text.to_string());
+                }
+            }
+            // The child loop's steer seam is text-only. The client maps this
+            // code to "drop the unsupported attachment", matching upstream.
+            Some("file") | Some("image") => {
+                bail!("subagent/attachment-invalid: child continuation does not accept files")
+            }
+            _ => {}
+        }
+    }
+    let text = texts.join("\n");
+    if text.trim().is_empty() {
+        bail!("subagents/prompt without a text part");
+    }
+    let body = json!({ "text": text });
+    host.backend
+        .post::<Value>(&format!("/v1/subagents/{child_session_id}/input"), &body)
+        .await
+        .with_context(|| format!("sub-agent input for {child_session_id}"))?;
+    let message_id = inner
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("msg_{}", &uuid::Uuid::new_v4().to_string()[..8]));
+    Ok(json!({ "messageId": message_id }))
+}
+
+/// `subagents/interruptByUser` — stop a running child. Absent/idle targets
+/// are accepted no-ops, matching upstream's receipt contract.
+pub async fn subagent_interrupt(host: &HostState, request: &Value) -> Result<Value> {
+    let inner = request.get("request").unwrap_or(request);
+    // A direct invocation passes a bare string; the generated client wraps it
+    // under `request`.
+    let child_session_id = inner
+        .get("childSessionId")
+        .or_else(|| inner.get("child_session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            inner
+                .get("request")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| inner.as_str().map(str::to_string))
+        .context("subagents/interruptByUser without childSessionId")?;
+    host.backend
+        .post::<Value>(
+            &format!("/v1/subagents/{child_session_id}/cancel"),
+            &json!({}),
+        )
+        .await
+        .with_context(|| format!("sub-agent cancel for {child_session_id}"))?;
     Ok(json!({ "accepted": true }))
 }
 
@@ -1700,6 +1791,104 @@ fn turn_outline_projection(detail: &Value) -> Value {
     Value::Array(outline)
 }
 
+/// `subagentTiming` for a child session: closed-turn milliseconds plus the
+/// current open turn's same-cut bounds. `None` for a session with no turns.
+fn subagent_timing(detail: &Value) -> Option<Value> {
+    let turns = detail.get("turns").and_then(Value::as_array)?;
+    if turns.is_empty() {
+        return None;
+    }
+    let mut settled_ms = 0u64;
+    let mut active = None;
+    let mut last_completed = None;
+    for turn in turns {
+        let status = turn
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Some(duration) = turn.get("duration_ms").and_then(Value::as_u64) {
+            settled_ms = settled_ms.saturating_add(duration);
+        }
+        if status == "in_progress" {
+            if let Some(since) = turn
+                .get("started_at")
+                .and_then(Value::as_str)
+                .and_then(rfc3339_millis)
+            {
+                active = Some(json!({
+                    "since": since,
+                    "through": turn
+                        .get("ended_at")
+                        .and_then(Value::as_str)
+                        .and_then(rfc3339_millis)
+                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis()),
+                }));
+            }
+        }
+        if !matches!(status, "queued" | "in_progress") {
+            last_completed = Some(status == "completed");
+        }
+    }
+    let mut timing = json!({ "settledMs": settled_ms });
+    if let Some(active) = active {
+        timing["active"] = active;
+    } else if let Some(completed) = last_completed {
+        timing["lastTurnCompleted"] = json!(completed);
+    }
+    Some(timing)
+}
+
+fn rfc3339_millis(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|time| time.timestamp_millis())
+}
+
+/// The vendor's `subagentCatalog` entries for `session_id`'s direct
+/// children. Read from the runtime's durable child records, so the catalog
+/// survives engine eviction and bridge restart.
+async fn subagent_catalog_projection(host: &HostState, session_id: &str) -> Option<Value> {
+    let children = host
+        .backend
+        .get::<Vec<Value>>(&format!("/v1/threads/{session_id}/subagents"))
+        .await
+        .map_err(|err| eprintln!("codesmith desktop: subagent catalog {session_id}: {err:#}"))
+        .ok()?;
+    Some(catalog_entries(children))
+}
+
+fn catalog_entries(children: Vec<Value>) -> Value {
+    let entries: Vec<Value> = children
+        .into_iter()
+        .map(|child| {
+            let id = child.get("id").cloned().unwrap_or(Value::Null);
+            let mode = match child.get("mode").and_then(Value::as_str) {
+                Some("one-shot") => "one-shot",
+                Some("continuable") => "continuable",
+                Some("external") => "external",
+                _ => "unknown",
+            };
+            let label = child
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|label| !label.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| id.as_str().unwrap_or_default().to_string());
+            json!({
+                "id": id,
+                "createdAt": child
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .and_then(rfc3339_millis)
+                    .unwrap_or_default(),
+                "mode": mode,
+                "label": label,
+            })
+        })
+        .collect();
+    Value::Array(entries)
+}
+
 /// One session's projection values the bridge can compute from the runtime:
 /// title, context pressure (with the model's context window), model
 /// selection, the queue (`inbox`), whole-log token usage and activity stats.
@@ -1714,28 +1903,69 @@ async fn projection_values(
 ) -> Value {
     let mut values = serde_json::Map::new();
     values.insert("title".into(), session_title(detail));
+    let is_subagent = detail.pointer("/thread/origin").and_then(Value::as_str) == Some("subagent");
     let mode = thread_mode(detail).to_string();
     // Composer docks/controls: the plan chip, the permission chip, the todo
     // dock, the turn navigator's history rail, and the workspace an `@` file
-    // chip resolves against.
-    values.insert("plan".into(), plan_projection(&mode));
-    values.insert("permissions".into(), permissions_projection(&mode));
+    // chip resolves against. A child session has no engine or mutable mode,
+    // so plan/permissions/goal/model controls are absent rather than dead.
+    if !is_subagent {
+        values.insert("plan".into(), plan_projection(&mode));
+        values.insert("permissions".into(), permissions_projection(&mode));
+    }
     values.insert("todos".into(), todos_projection(detail));
     // The GoalBar dock (host::goals): the live engine state when loaded,
     // else the durable goal-tool journal; `null` before a create/after a
     // clear. Reading this never loads an engine.
-    values.insert(
-        "goal".into(),
-        super::goals::projection(host, session_id, detail).await,
-    );
+    if !is_subagent {
+        values.insert(
+            "goal".into(),
+            super::goals::projection(host, session_id, detail).await,
+        );
+    }
     values.insert("turnOutline".into(), turn_outline_projection(detail));
     let workspace = detail.pointer("/thread/workspace").and_then(Value::as_str);
     values.insert("workingDirectory".into(), json!(workspace));
     // The coordinator ticket board (host::tickets): a durable ticket file is
-    // read without loading an engine, so the board survives an eviction.
-    if let Some(workspace) = workspace.filter(|path| !path.is_empty()) {
-        if let Some(team) = super::tickets::projection(std::path::Path::new(workspace)).await {
-            values.insert("agentTeam".into(), team);
+    // read without loading an engine, so the board survives an eviction. A
+    // child session never shows the parent's board (a worker sees no
+    // siblings' tickets).
+    if !is_subagent {
+        if let Some(workspace) = workspace.filter(|path| !path.is_empty()) {
+            if let Some(team) = super::tickets::projection(std::path::Path::new(workspace)).await {
+                values.insert("agentTeam".into(), team);
+            }
+        }
+    }
+    // The vendored subagent catalog/timing projections. A parent session
+    // lists its direct children; a child carries its own identity and turn
+    // timing (and may list grandchildren of its own).
+    if let Some(catalog) = subagent_catalog_projection(host, session_id).await {
+        values.insert("subagentCatalog".into(), catalog);
+    }
+    if is_subagent {
+        let mode = detail
+            .pointer("/thread/subagent_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let label = detail
+            .pointer("/thread/title")
+            .and_then(Value::as_str)
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or(session_id);
+        values.insert(
+            "subagent".into(),
+            json!({
+                "mode": mode,
+                "label": label,
+                "seq": detail
+                    .pointer("/thread/subagent_descriptor_seq")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+            }),
+        );
+        if let Some(timing) = subagent_timing(detail) {
+            values.insert("subagentTiming".into(), timing);
         }
     }
     let queue = detail
@@ -1767,14 +1997,16 @@ async fn projection_values(
         values.insert("tokenUsage".into(), usage);
     }
     values.insert("sessionStats".into(), session_stats_projection(detail));
-    let choice = host.model_choices.lock().await.get(session_id).cloned();
-    if let Some((provider, model)) = model_selection(thread_model, choice.as_ref(), models) {
-        // ModelSelectionProjection: `next` feeds the next model step;
-        // `lastUsed` is unknown from the thread record alone.
-        values.insert(
-            "modelSelection".into(),
-            json!({ "lastUsed": null, "next": { "provider": provider, "model": model } }),
-        );
+    if !is_subagent {
+        let choice = host.model_choices.lock().await.get(session_id).cloned();
+        if let Some((provider, model)) = model_selection(thread_model, choice.as_ref(), models) {
+            // ModelSelectionProjection: `next` feeds the next model step;
+            // `lastUsed` is unknown from the thread record alone.
+            values.insert(
+                "modelSelection".into(),
+                json!({ "lastUsed": null, "next": { "provider": provider, "model": model } }),
+            );
+        }
     }
     Value::Object(values)
 }
@@ -2257,5 +2489,71 @@ mod tests {
             session_title(&json!({ "thread": { "title": " Mine " }, "turns": turns })),
             json!("Mine")
         );
+    }
+
+    #[test]
+    fn subagent_address_resolves_the_child_session() {
+        assert_eq!(
+            address_session_id(&json!({
+                "address": {
+                    "kind": "subagent",
+                    "parentSessionId": "thr_parent",
+                    "childSessionId": "agent_child",
+                    "mode": "one-shot"
+                }
+            }))
+            .expect("child address"),
+            "agent_child"
+        );
+        assert_eq!(
+            address_session_id(&json!({
+                "request": { "address": { "kind": "subagent", "childSessionId": "agent_nested" } }
+            }))
+            .expect("wrapped child address"),
+            "agent_nested"
+        );
+        assert!(address_session_id(&json!({ "address": {} })).is_err());
+    }
+
+    #[test]
+    fn subagent_catalog_entries_carry_the_vendor_shape() {
+        let entries = catalog_entries(vec![json!({
+            "id": "agent_child",
+            "name": "explore-auth",
+            "mode": "continuable",
+            "created_at": "2026-11-12T10:00:00Z",
+        })]);
+        assert_eq!(
+            entries,
+            json!([{
+                "id": "agent_child",
+                "createdAt": 1_794_477_600_000i64,
+                "mode": "continuable",
+                "label": "explore-auth",
+            }])
+        );
+    }
+
+    #[test]
+    fn subagent_timing_reports_active_and_closed_turns() {
+        let timing = subagent_timing(&json!({
+            "turns": [
+                { "status": "completed", "duration_ms": 120 },
+                {
+                    "status": "in_progress",
+                    "started_at": "2026-11-12T10:00:00Z",
+                    "duration_ms": null,
+                }
+            ]
+        }))
+        .expect("timing");
+        assert_eq!(timing["settledMs"], json!(120));
+        assert_eq!(
+            timing["active"]["since"],
+            json!(1_794_477_600_000i64),
+            "the open turn's start is projected"
+        );
+        assert!(timing["active"]["through"].as_i64().is_some());
+        assert!(timing.get("lastTurnCompleted").is_none());
     }
 }

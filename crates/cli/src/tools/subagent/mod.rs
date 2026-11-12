@@ -71,6 +71,10 @@ use codesmith_agent_runtime::agent_memory::{
     AgentMemoryMetadata, AgentMemoryRequest, AgentMemoryScope, AgentMemorySnapshotMode,
     ResolvedAgentMemory,
 };
+use codesmith_agent_runtime::child_journal::{
+    ChildSessionDescriptor, ChildSessionEvent, ChildSessionJournal, ChildSessionJournalFactory,
+    ChildSessionMode, ChildSessionStatus,
+};
 use codesmith_agent_runtime::engine::child_turn::{
     ChildEventSink, ChildToolSurface, ChildTurnSpec, ChildTurnStatus, run_child_turn,
 };
@@ -707,6 +711,16 @@ pub struct SubAgentRuntime {
     /// root-only gating (a child run's activity lives in its parent's
     /// tool items).
     pub workflow_recorder: Option<Arc<dyn codesmith_agent_runtime::workflow::WorkflowRunRecorder>>,
+    /// Durable child-session journal provider (the runtime thread store
+    /// behind the desktop bridge). `None` keeps today's in-memory transcript
+    /// handle only. Propagated to descendants so every in-process
+    /// generation opens its own child session.
+    pub child_journal_factory: Option<Arc<dyn ChildSessionJournalFactory>>,
+    /// This spawn's opened child journal, set in `run_subagent` before the
+    /// child's tool registry is built so delegated path approvals land on
+    /// the child's own record. Not inherited: each generation overwrites it
+    /// with its own journal.
+    pub child_journal: Option<Arc<dyn ChildSessionJournal>>,
     /// Coordinator mode's ticket store (the Router/Worker board). Set only
     /// on the coordinator session's runtime; propagated to descendants via
     /// `child_runtime()` so the spawn path, the worker's report tool, and
@@ -767,8 +781,22 @@ impl SubAgentRuntime {
             ),
             workflow_max_agents: None,
             workflow_recorder: None,
+            child_journal_factory: None,
+            child_journal: None,
             ticket_store: None,
         }
+    }
+
+    /// Attach the durable child-session journal provider. Set by the engine
+    /// host from `EngineConfig::child_session_journal`; propagated to every
+    /// descendant runtime.
+    #[must_use]
+    pub fn with_child_journal_factory(
+        mut self,
+        factory: Option<Arc<dyn ChildSessionJournalFactory>>,
+    ) -> Self {
+        self.child_journal_factory = factory;
+        self
     }
 
     /// Dispatch this runtime's children through an out-of-process provider
@@ -1067,6 +1095,11 @@ impl SubAgentRuntime {
             workflow_max_agents: self.workflow_max_agents,
             // Nested runs record nothing (upstream's root-only gating).
             workflow_recorder: None,
+            // Child sessions are per-agent, so every generation keeps the
+            // provider and opens its own identity. The opened journal is not
+            // inherited; `run_subagent` replaces it for each spawn.
+            child_journal_factory: self.child_journal_factory.clone(),
+            child_journal: None,
             ticket_store: self.ticket_store.clone(),
         }
     }
@@ -1108,6 +1141,11 @@ pub struct SubAgent {
     /// read at its next step boundary (the turn loop's steer seam).
     input_tx: Option<mpsc::Sender<SteerInput>>,
     task_handle: Option<JoinHandle<()>>,
+    /// The run's cancellation token (the detached background token for a
+    /// background child). `cancel` fires this and lets the child turn reach
+    /// its own terminal checkpoint, so the child-session journal is closed
+    /// before the task ends.
+    cancel_token: CancellationToken,
 }
 
 impl SubAgent {
@@ -1146,6 +1184,7 @@ impl SubAgent {
             team_name: None,
             input_tx: Some(input_tx),
             task_handle: None,
+            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -1389,6 +1428,7 @@ impl SubAgentManager {
                 team_name: None,
                 input_tx: None,
                 task_handle: None,
+                cancel_token: CancellationToken::new(),
             };
             self.agents.insert(persisted.id, agent);
         }
@@ -1555,6 +1595,9 @@ impl SubAgentManager {
             agent.session_name = name.to_string();
         }
         agent.fork_context = options.fork_context;
+        // The run's detached cancel token; `cancel` fires it so the child
+        // turn can close its journal before the task ends.
+        agent.cancel_token = runtime.cancel_token.clone();
         let agent_id = agent.id.clone();
         let started_at = agent.started_at;
         let max_steps = self.max_steps;
@@ -1604,6 +1647,7 @@ impl SubAgentManager {
             runtime,
             agent_id: agent_id.clone(),
             agent_type,
+            journal_mode: codesmith_agent_runtime::child_journal::ChildSessionMode::Continuable,
             prompt,
             assignment,
             allowed_tools: tools,
@@ -1675,9 +1719,12 @@ impl SubAgentManager {
             if agent.status == SubAgentStatus::Running {
                 agent.status = SubAgentStatus::Cancelled;
                 release_resident_leases_for(&agent.id);
-                if let Some(handle) = agent.task_handle.take() {
-                    handle.abort();
-                }
+                // Graceful stop: fire the run's own token and let the child
+                // turn reach its checkpoint, so its journal is closed with a
+                // terminal status before the task ends. (A tool that ignores
+                // cancellation keeps the task alive; the record then says
+                // cancelled and a restart recovers it as interrupted.)
+                agent.cancel_token.cancel();
                 changed = true;
             }
             (agent.snapshot(), changed)
@@ -1751,11 +1798,13 @@ impl SubAgentManager {
             if !agent.model.trim().is_empty() && agent.model != "unknown" {
                 restart_runtime.model.clone_from(&agent.model);
             }
+            let restart_cancel = restart_runtime.cancel_token.clone();
             let task = SubAgentTask {
                 manager_handle,
                 runtime: restart_runtime,
                 agent_id: agent.id.clone(),
                 agent_type: agent.agent_type.clone(),
+                journal_mode: codesmith_agent_runtime::child_journal::ChildSessionMode::Continuable,
                 prompt: agent.prompt.clone(),
                 assignment: agent.assignment.clone(),
                 allowed_tools: agent.allowed_tools.clone(),
@@ -1777,6 +1826,7 @@ impl SubAgentManager {
             agent.started_at = restarted_at;
             agent.input_tx = Some(input_tx);
             agent.task_handle = Some(handle);
+            agent.cancel_token = restart_cancel;
 
             if let Some(event_tx) = runtime.event_tx {
                 let _ = event_tx.try_send(Event::AgentSpawned {
@@ -3649,6 +3699,7 @@ impl SubagentRunTool {
             &child_runtime,
             agent_id.clone(),
             request.agent_type.clone(),
+            ChildSessionMode::OneShot,
             request.prompt.clone(),
             request.assignment.clone(),
             request.allowed_tools.clone(),
@@ -5400,6 +5451,9 @@ struct SubAgentTask {
     runtime: SubAgentRuntime,
     agent_id: String,
     agent_type: SubAgentType,
+    /// Child-session audience: a background child is continuable; a
+    /// foreground one-shot is read-only.
+    journal_mode: codesmith_agent_runtime::child_journal::ChildSessionMode,
     prompt: String,
     assignment: SubAgentAssignment,
     /// `None` = full registry inheritance. `Some(list)` = explicit narrow.
@@ -5443,6 +5497,7 @@ async fn run_subagent_task(task: SubAgentTask) {
                 &task.runtime,
                 task.agent_id.clone(),
                 task.agent_type,
+                task.journal_mode,
                 task.prompt,
                 task.assignment,
                 task.allowed_tools,
@@ -5743,11 +5798,31 @@ async fn run_external_subagent(
 /// child's agent-type dispatch scope). Spawn-time refusals (unavailable or
 /// refused tools) fail before any model call; the turn's outcome is shaped
 /// into the manager's [`SubAgentResult`] and the full transcript handle.
+/// Close a child session that failed before its turn could start (an
+/// unavailable or refused tool). The spawn still gets a durable identity and
+/// a terminal status, so a catalog reader never sees a dangling child.
+async fn close_child_journal_with_failure(
+    journal: &Option<Arc<dyn ChildSessionJournal>>,
+    message: &str,
+) {
+    if let Some(journal) = journal {
+        journal.record(ChildSessionEvent::Started).await;
+        journal
+            .record(ChildSessionEvent::Finished {
+                status: ChildSessionStatus::Failed(message.to_string()),
+                final_text: None,
+                usage: Default::default(),
+            })
+            .await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_subagent(
     runtime: &SubAgentRuntime,
     agent_id: String,
     agent_type: SubAgentType,
+    journal_mode: ChildSessionMode,
     prompt: String,
     assignment: SubAgentAssignment,
     allowed_tools: Option<Vec<String>>,
@@ -5771,6 +5846,34 @@ async fn run_subagent(
         fork_context,
         agent_memory.as_ref(),
     );
+    // Child-session identity: the immediate parent is the spawning agent for
+    // a grandchild, else the runtime thread the session belongs to. The
+    // journal starts empty; its first `Started` event materializes the child
+    // thread and turn.
+    let journal = runtime.child_journal_factory.as_ref().and_then(|factory| {
+        let parent_id = runtime
+            .parent_agent_id
+            .clone()
+            .or_else(|| runtime.context.runtime.active_thread_id.clone())?;
+        factory.open(ChildSessionDescriptor {
+            agent_id: agent_id.clone(),
+            parent_id,
+            agent_type: agent_type.as_str().to_string(),
+            depth: runtime.spawn_depth,
+            name: {
+                let objective = assignment.objective.trim();
+                if objective.is_empty() {
+                    prompt.lines().next().unwrap_or(&agent_id).to_string()
+                } else {
+                    objective.to_string()
+                }
+            },
+            mode: journal_mode,
+            model: runtime.model.clone(),
+            workspace: runtime.context.workspace.clone(),
+            assignment: build_assignment_prompt(&prompt, &assignment, &agent_type),
+        })
+    });
     let mut runtime_for_tools = runtime.clone().with_fork_context(SubAgentForkContext {
         system: Some(request_system.clone()),
         messages: messages.clone(),
@@ -5779,8 +5882,10 @@ async fn run_subagent(
         current_turn_tool_calls: None,
     });
     // This child's own spawn tools make its children: their turns name it
-    // as their parent.
+    // as their parent. The opened journal rides the same runtime so a
+    // delegated path approval is recorded on this child's own session.
     runtime_for_tools.parent_agent_id = Some(agent_id.clone());
+    runtime_for_tools.child_journal = journal.clone();
     let tool_registry = SubAgentToolRegistry::new(
         runtime_for_tools,
         agent_type.clone(),
@@ -5806,18 +5911,22 @@ async fn run_subagent(
                 }
             })
             .collect();
-        return Err(anyhow!(
+        let message = format!(
             "Sub-agent requested unavailable tools: {}",
             described.join(", ")
-        ));
+        );
+        close_child_journal_with_failure(&journal, &message).await;
+        return Err(anyhow!(message));
     }
     let refused = tool_registry.refused_non_read_only_tools();
     if !refused.is_empty() {
-        return Err(anyhow!(
+        let message = format!(
             "Sub-agent type 'explore' is read-only and cannot use: {}. Drop them from \
              allowed_tools, or spawn a write-capable type instead (general, implementer, custom).",
             refused.join(", ")
-        ));
+        );
+        close_child_journal_with_failure(&journal, &message).await;
+        return Err(anyhow!(message));
     }
 
     let outcome = run_child_turn(ChildTurnSpec {
@@ -5855,6 +5964,7 @@ async fn run_subagent(
         subagents: Arc::new(crate::core::engine::SubAgentManagerHost(
             runtime.manager.clone(),
         )),
+        journal,
     })
     .await;
 
@@ -7142,6 +7252,10 @@ struct PathAsk {
     router: std::sync::Arc<crate::core::engine::ApprovalRouter>,
     cancel_token: CancellationToken,
     context: ToolContext,
+    /// The child's own journal, so the question and decision stay on the
+    /// child session record (the parent's transcript still just gets the
+    /// ordinary approval prompt).
+    journal: Option<Arc<dyn codesmith_agent_runtime::child_journal::ChildSessionJournal>>,
 }
 
 /// How long a child waits for the user to answer a path-access question.
@@ -7390,6 +7504,7 @@ impl SubAgentToolRegistry {
                 router: std::sync::Arc::clone(router),
                 cancel_token: runtime.cancel_token.clone(),
                 context: ask_context,
+                journal: runtime.child_journal.clone(),
             }),
             ticket,
         }
@@ -7623,6 +7738,15 @@ impl DelegationPolicy {
             self.agent_id,
             self.asks.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
+        if let Some(journal) = ask.journal.as_ref() {
+            journal
+                .record(ChildSessionEvent::ApprovalRequested {
+                    id: id.clone(),
+                    tool_name: name.to_string(),
+                    path: path.to_path_buf(),
+                })
+                .await;
+        }
         if let Some(tx) = &ask.event_tx {
             let _ = tx
                 .send(Event::PathAccessRequired {
@@ -7632,7 +7756,7 @@ impl DelegationPolicy {
                 })
                 .await;
         }
-        match ask
+        let decision = match ask
             .router
             .wait_with_timeout(&id, Some(&ask.cancel_token), PATH_ASK_TIMEOUT)
             .await
@@ -7661,7 +7785,16 @@ impl DelegationPolicy {
                 "Path access for '{}' was not decided ({err:?}); the path stays untrusted.",
                 path.display()
             ))),
+        };
+        if let Some(journal) = ask.journal.as_ref() {
+            journal
+                .record(ChildSessionEvent::ApprovalDecided {
+                    id,
+                    allowed: decision.is_ok(),
+                })
+                .await;
         }
+        decision
     }
 }
 

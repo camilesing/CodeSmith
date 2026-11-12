@@ -20,6 +20,8 @@ construct it, consumers take it by value).
 | `AroundToolHandler` | `agent` | `agent`, `agent-runtime` | `agent`, `extensions` |
 | `AroundTurnHandler` | `agent` | `agent`, `agent-runtime`, `extensions` | `agent`, `extensions` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |
+| `ChildSessionJournal` | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime`, `cli` |
+| `ChildSessionJournalFactory` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `ChildTurnSpec` (data) | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |

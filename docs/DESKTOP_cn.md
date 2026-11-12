@@ -405,14 +405,47 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   面板的警告字形（`ready:false`）；其余未结束工单算进行中；已结束且
   `completed` 的保持已完成。读取该文件不会加载引擎，工单板因此能熬过驱逐；
   被跟随的会话每 2s 重读一次并在值变化时推送新的 `agentTeam`，所以不会
-  唤醒 coordinator 的 `progress` 报告也会出现。这里只做团队半边：
-  CodeSmith 的子代理是进程内子 turn，没有自己的 journal，因此 vendored
-  `ui-subagent` 树不进入，header 位置由本看板占用。已知限制：stopped、
+  唤醒 coordinator 的 `progress` 报告也会出现。工单板与子代理 catalog
+  是两个独立 header action：前者是持久化工作看板，不是会话索引，而
+  vendored catalog 词表也没有工单/失败态可承载它。已知限制：stopped、
   failed、dropped 工单不显示（shared-task 词表没有失败态）；看板跟随持久化
   工单而非线程模式，离开 coordinator 后仍会显示该会话已创建的工单；2s 轮询
   就是实时尾巴；工单库原子写入（tmp+rename）但属于 best-effort，写入失败时
   看板停在最后一份持久化记录，直到下一次成功写入；损坏或不可读的工单库不
   渲染看板，而不是伪造错误行。
+- 子代理子会话现在是持久化 runtime 线程（`origin = "subagent"`，id 即
+  agent id），由引擎的 `ChildSessionJournal` 提供者
+  （`crates/agent-runtime/src/child_journal.rs`、
+  `crates/cli/src/runtime_threads/subagent_journal.rs`）写入：一次子运行
+  就是一个 turn，含 user/assistant/tool-call items 与只追加 JSONL 事件流，
+  审批/usage/completion 都记在子会话自己的记录里；父转写仍只收
+  completion card。`GET /v1/threads/{id}/subagents` 提供直接子会话目录，
+  `POST /v1/subagents/{id}/input` 映射既有 `agent_send_input` steer 接缝，
+  `POST /v1/subagents/{id}/cancel` 映射 manager 的 cancel。桥把这些记录投影成
+  `subagentCatalog`/`subagentTiming`（以及子会话自身的 `subagent` 身份），
+  `session/follow`/`session/page` 接受 vendored 客户端的 subagent address，
+  `subagents/prompt`/`subagents/interruptByUser` 分发到上述路由。第一方
+  header catalog（`desktop/ui/src/subagent-catalog-plugin.ts`）经
+  `uiWorkspace.openSession(address)` 打开子对话；vendored 输入门让 one-shot
+  的 composer 保持只读，并拒绝子会话 cancel 路由；continuable 后台子会话经
+  `subagents/prompt` 续写。
+  子会话面包屑带返回直接父会话的控件
+  （`conversation.session.header.lineage`），catalog 不是单向门。它与工单板
+  保持独立（见上），并使用 vendored primitives 与图标——不引入
+  第二份 React，也不复制上游品牌资产。子线程从 `session/list` 过滤，
+  catalog 是唯一顶层入口。替换语义：重启把运行中的子会话标为
+  `interrupted` 并保留转写，不存在续跑。已知限制：assistant 文本按每次
+  落定的模型响应记录，不按流式 delta（mid-step 重连看到的是上一个完成
+  步骤）；fork 子会话的 journal 从 assignment 开始，不重放继承的父前缀；
+  同名工具的并行调用按启动顺序配对结果；`subagents/prompt` 的 `queue`
+  投递按子会话下一步的 steer 接受（子会话是一次连续运行，没有 turn 队列）；
+  续写需要父引擎仍加载（被驱逐时答 delivery-unavailable）；父 turn 的
+  cancel 只到前台/one-shot 子会话，
+  后台子会话按设计持有独立 token，只能经
+  `subagents/interruptByUser`/`agent_close`（或重启恢复）停止；脚本
+  `spawn_child` 子会话没有 manager 身份，不进 catalog；进程外
+  `[subagents] external_provider` 子会话没有本地转写可目录化；子会话事件只服务
+  UI/回放，永不进入父模型请求。
 - 文档预览与改动文件的打开控件（`client-ui-open-in-app` +
   `client-ui-file-actions`）经既有工作区文件面桥接：
   `session/canOpenWorkspacePath` 为真，`session/workspacePathApplications`
@@ -485,9 +518,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   CodeSmith 没有对应物）、逐会话 agent presets（`agentPresets/list` 返回
   空名册；CodeSmith 在启动时选择配置 preset，而不是逐会话的 agent 组合）、
   右侧栏浏览器标签页（没有用户可见的浏览器会话；终端标签页**已**桥接
-  ——见其条目）、子代理子
-  会话视图（CodeSmith 的 subagent 是进程内执行，不是带日志的独立 thread）
-  以及插件条目定制。对应插件不进 boot roster
+  ——见其条目）以及插件条目定制。对应插件不进 boot roster
   或返回空态。workflow-run 面板**已**有数据源：运行时把 `workflow` 工具的
   生命周期写为 `workflow.*` 线程事件（`WorkflowRunRecorder` 接缝——在线、
   全部结局），成功运行的持久记录落在工具条目的
@@ -498,8 +529,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   事件不重放）；嵌套运行（子代理自己的 workflow）不记录。（Jobs 弹窗、附件呈现、改动审查
   标签页、右侧栏文件/预览标签页、右侧栏终端标签页、计划页、权限面、
   `@` 文件源、工作区
-  选择器/注册表、GoalBar、coordinator 工单板、打开/定位/文件动作与逐消息
-  反馈面**已**桥接——见各条。）
+  选择器/注册表、GoalBar、coordinator 工单板、子代理子会话 catalog、
+  打开/定位/文件动作与逐消息反馈面**已**桥接——见各条。）
 - 右侧栏文件树与文档预览（`client-ui-sidebar-files` +
   `client-ui-sidebar-documentpreview`，经 `workspaceFiles` remote，
   `host::files`）直接读会话工作区：`workspaceFileScope` 从线程记录解析
@@ -651,7 +682,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | 消息引用 | 已桥接（纯客户端 `message-quotes` 插件） | — | 已落地 |
 | workflow 运行面板 | 已喂给（运行时 journal + 映射） | — | 已落地 |
 | coordinator 工单板 | 第一方 header action，读持久化工单库（2s 轮询） | — | 已落地 |
-| 子代理子会话视图 | 未 vendor | in-process 子代理不是线程；需要运行时先提供子会话 journal，vendored catalog 才能打开子对话 | 待设计 |
+| 子代理子会话视图 | 已桥接（持久化子线程 + 第一方 header catalog；`ui-subagent` 本身仍不 vendor） | — | 已落地 |
 | 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
 | Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |

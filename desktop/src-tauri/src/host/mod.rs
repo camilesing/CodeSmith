@@ -254,6 +254,29 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 Err(err) => rpc_error("gateway/internal", format!("session/cancel: {err:#}")),
             }
         }
+        // Subagent child sessions (host::sessions): continuation maps to
+        // `agent_send_input`, interrupt to the manager's cancel.
+        "subagents/prompt" => match sessions::subagent_prompt(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => {
+                let message = format!("subagents/prompt: {err:#}");
+                let code = if message.contains("subagent/attachment-invalid") {
+                    "subagent/attachment-invalid"
+                } else {
+                    "subagent/delivery-unavailable"
+                };
+                rpc_error(code, message)
+            }
+        },
+        "subagents/interruptByUser" => {
+            match sessions::subagent_interrupt(host, args_of(payload)).await {
+                Ok(value) => rpc_ok(value),
+                Err(err) => rpc_error(
+                    "subagent/delivery-unavailable",
+                    format!("subagents/interruptByUser: {err:#}"),
+                ),
+            }
+        }
         "session/selectModel" => match sessions::select_model(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("session/selectModel: {err:#}")),

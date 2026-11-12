@@ -8,6 +8,7 @@
 //! binary (the CLI today, via an `EngineHost`-style struct) so that this type
 //! stays free of OS-bridging managers.
 
+use crate::child_journal::ChildSessionJournalFactory;
 use codesmith_session::journal::SessionJournal;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -327,6 +328,11 @@ pub struct EngineConfig {
     /// the engine then journals every transcript append and rebuild before
     /// each `TurnComplete` and after every op. `None` keeps no journal.
     pub session_journal: Option<Arc<dyn SessionJournal>>,
+    /// Durable child-session journal provider. `Some` on hosts that expose
+    /// sub-agent conversations (the runtime-thread store behind the desktop
+    /// bridge); every in-process spawn then opens a child journal through
+    /// this factory. `None` keeps the in-memory transcript handle only.
+    pub child_session_journal: Option<Arc<dyn ChildSessionJournalFactory>>,
     /// Session id to start under, for hosts that choose the persisted
     /// session's id before the engine exists (ACP) — the journal and the
     /// `SessionUpdated` events then name the same session the host saves.
@@ -472,6 +478,7 @@ impl Default for EngineConfig {
             subagent_inherit_full_registry: false,
             subagent_external_provider: None,
             session_journal: None,
+            child_session_journal: None,
             session_id: None,
             tools_always_load: HashSet::new(),
             progressive_disclosure: false,

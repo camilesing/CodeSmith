@@ -40,8 +40,8 @@ use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, EditQueuedRequest, EnqueueRequest, EnqueueResponse,
     ExternalApprovalDecision, GoalAction, QueuedItemRecord, RuntimeThreadManager,
     RuntimeThreadManagerConfig, SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest,
-    ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest,
-    UsageGroupBy,
+    SubagentSummary, ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord,
+    UpdateThreadRequest, UsageGroupBy,
 };
 use crate::skill_state::SkillStateStore;
 use crate::task_manager::{
@@ -587,6 +587,11 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         )
         .route("/v1/threads/{id}/compact", post(compact_thread))
         .route("/v1/threads/{id}/events", get(stream_thread_events))
+        .route("/v1/threads/{id}/subagents", get(list_subagent_catalog))
+        // Child-session continuation/stop: the desktop bridge's
+        // `subagents/prompt` and `subagents/interruptByUser` map here.
+        .route("/v1/subagents/{id}/input", post(send_subagent_input))
+        .route("/v1/subagents/{id}/cancel", post(cancel_subagent))
         .route("/v1/approvals/{approval_id}", post(decide_approval))
         .route(
             "/v1/user-input/{thread_id}/{input_id}",
@@ -1205,6 +1210,71 @@ async fn list_threads_summary(
     }
 
     Ok(Json(summaries))
+}
+
+/// `GET /v1/threads/{id}/subagents` — the parent's direct child catalog,
+/// read from the durable store (no engine load).
+async fn list_subagent_catalog(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<SubagentSummary>>, ApiError> {
+    let children = state
+        .runtime_threads
+        .subagent_catalog(&id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(children))
+}
+
+/// `POST /v1/subagents/{id}/input` — follow-up text for a running
+/// continuable child (`agent_send_input`). The desktop bridge's
+/// `subagents/prompt` maps here; `queue` and `steer` deliveries both land at
+/// the child's next step boundary.
+async fn send_subagent_input(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let text = body
+        .get("text")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("message").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| {
+            body.get("content").and_then(Value::as_array).map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| {
+                        (part.get("type").and_then(Value::as_str) == Some("text"))
+                            .then(|| part.get("text").and_then(Value::as_str))
+                            .flatten()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        })
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("sub-agent input requires text"))?;
+    state
+        .runtime_threads
+        .send_subagent_input(&id, text)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(json!({ "accepted": true })))
+}
+
+/// `POST /v1/subagents/{id}/cancel` — stop a running child. Terminal or
+/// absent children are accepted no-ops.
+async fn cancel_subagent(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .runtime_threads
+        .cancel_subagent(&id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(json!({ "accepted": true })))
 }
 
 async fn workspace_status(

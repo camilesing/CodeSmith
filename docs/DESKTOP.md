@@ -510,10 +510,10 @@ Known limitations of the current implementation:
   is in progress; an ended `completed` ticket stays completed. Reading the
   file never loads an engine, so the board survives eviction; a followed
   session re-reads it every 2s and pushes a changed `agentTeam` value, so a
-  `progress` report that never wakes the coordinator still appears. This is
-  the team half only: CodeSmith sub-agents are in-process children without
-  their own journals, so the vendored `ui-subagent` tree stays out and this
-  board owns the header slot. Known limitations: a stopped, failed or
+  `progress` report that never wakes the coordinator still appears. The
+  board stays a separate header action from the subagent catalog: it is a
+  durable work board, not a conversation index, and the vendored catalog
+  vocabulary has no ticket/failure state to carry it. Known limitations: a stopped, failed or
   dropped ticket is hidden (the shared-task vocabulary has no failure
   state); the board follows the durable tickets rather than the thread
   mode, so leaving coordinator still shows the tickets a session already
@@ -521,6 +521,46 @@ Known limitations of the current implementation:
   (tmp+rename) but best-effort, so a failed write leaves the board at its
   last durable record until the next successful write; a corrupt or
   unreadable store yields no board rather than an error row.
+- Subagent child sessions are durable runtime threads
+  (`origin = "subagent"`, id = agent id) written by the engine's
+  `ChildSessionJournal` provider
+  (`crates/agent-runtime/src/child_journal.rs`,
+  `crates/cli/src/runtime_threads/subagent_journal.rs`): one child run is
+  one turn with user/assistant/tool-call items plus an append-only JSONL
+  stream for approval/usage/completion events. The parent transcript still
+  receives only the completion card. `GET /v1/threads/{id}/subagents` serves
+  the direct-child catalog, `POST /v1/subagents/{id}/input` maps to the
+  existing `agent_send_input` steer seam, and `POST /v1/subagents/{id}/cancel`
+  maps to the manager's cancel. The bridge projects
+  `subagentCatalog`/`subagentTiming` (and the child's own `subagent` identity)
+  from those records, accepts the vendored client's subagent address on
+  `session/follow`/`session/page`, and dispatches `subagents/prompt` /
+  `subagents/interruptByUser` onto those routes. The first-party header
+  catalog (`desktop/ui/src/subagent-catalog-plugin.ts`) opens a child through
+  `uiWorkspace.openSession(address)`; the vendored input gate keeps a
+  one-shot composer read-only and refuses the child-session cancel route,
+  while a continuable background child routes through `subagents/prompt`. The child breadcrumb gets a back control to
+  the immediate parent (`conversation.session.header.lineage`), so the
+  catalog is not a one-way door. It stays a separate header action from the
+  ticket board (see above), and uses the vendored primitives and icons — no
+  second React and no upstream brand assets. Child threads are filtered from
+  `session/list`; the catalog is the only top-level entry point. Replacement
+  semantics: restart marks a running child `interrupted` and keeps its
+  transcript; there is no resume. Known limitations: assistant text is
+  recorded per settled model response, not per stream delta (a mid-step
+  reconnect sees the last completed step); a forked child's journal starts
+  at its assignment, not the inherited parent prefix; parallel calls of the
+  same tool name settle results in start order; `subagents/prompt`'s
+  `queue` delivery is accepted as a steer at the child's next step (a child
+  session is one continuous run, not a turn queue); continuation needs the
+  parent engine loaded (an evicted parent answers delivery-unavailable);
+  a parent turn's cancel reaches foreground/one-shot children, while a
+  background child owns a detached token by design and stops only through
+  `subagents/interruptByUser`/`agent_close` (or restart recovery);
+  script-authored `spawn_child` children carry no manager identity and stay
+  out of the catalog, and out-of-process `[subagents] external_provider`
+  children have no local transcript to catalog; child events are UI/replay only and never enter a
+  parent model request.
 - The document-preview and changed-file open controls
   (`client-ui-open-in-app` + `client-ui-file-actions`) are bridged over the
   existing workspace-files surface: `session/canOpenWorkspacePath` answers
@@ -619,9 +659,8 @@ Known limitations of the current implementation:
   (`agentPresets/list` answers an empty roster; CodeSmith selects
   configuration presets at launch, not an agent composition per session),
   sidebar browser tabs (no user-visible browser session; the terminal tabs
-  ARE bridged — see their bullet), subagent child-session views (CodeSmith
-  subagents are in-process, not separate threads with journals), and plugin
-  entry customization. Their plugins stay out of the boot roster or answer
+  ARE bridged — see their bullet), and plugin entry customization. Their
+  plugins stay out of the boot roster or answer
   empty states. The workflow-run panel IS fed: the runtime journals the
   `workflow` tool's lifecycle as `workflow.*` thread events (the
   `WorkflowRunRecorder` seam — live, every outcome) and the successful
@@ -636,8 +675,9 @@ Known limitations of the current implementation:
   presentation, the changes-review tab, the sidebar files/preview tabs, the
   sidebar terminal tabs, the plan page, the permission surfaces, the `@`
   file source, the Workspace picker/registry, the GoalBar, the coordinator
-  ticket board, the open/reveal/file actions, and the per-message feedback
-  surface ARE bridged — see their bullets.)
+  ticket board, the subagent child-session catalog, the open/reveal/file
+  actions, and the per-message feedback surface ARE bridged — see their
+  bullets.)
 - The sidebar files tree and document preview
   (`client-ui-sidebar-files` + `client-ui-sidebar-documentpreview` over the
   `workspaceFiles` remote, `host::files`) read the session's workspace
@@ -832,7 +872,7 @@ lives in the bullets above.
 | Message quotes | bridged (client-only `message-quotes` plugin) | — | landed |
 | workflow-run panel | fed (runtime journal + mapper) | — | landed |
 | Team board (coordinator tickets) | first-party header action over the durable ticket store (2s poll) | — | landed |
-| Subagent child-session views | not vendored | in-process subagents are not threads; needs a runtime child-session journal before the vendored catalog can open a child conversation | needs design |
+| Subagent child-session views | bridged (durable child threads + first-party header catalog; `ui-subagent` itself stays unvendored) | — | landed |
 | Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |
 | Office document preview | bridged over a local `soffice` | — | landed |

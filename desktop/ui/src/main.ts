@@ -7,6 +7,7 @@ import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
 import { installHostDropBridge } from './host-drop'
+import { create as createSubagentCatalog } from './subagent-catalog-plugin'
 import { create as createTicketBoard } from './ticket-board-plugin'
 import { bridgeUrl, initTransport, installApiRouteRedirect } from './transport'
 
@@ -54,8 +55,9 @@ const g = globalThis as {
 
 // First-party plugin rows ride the module queue: the graph lists them, the
 // factory is our statically imported namespace (never fetched over a URL).
-// The ticket board borrows the client's own React and primitives through the
-// loader's `load` function, so its hooks share the client's React instance.
+// The first-party header actions (ticket board, subagent catalog) borrow the
+// client's own React and primitives through the loader's `load` function, so
+// their hooks share the client's React instance.
 {
   const loader = g as {
     __ModuleLoader__?: {
@@ -67,6 +69,12 @@ const g = globalThis as {
     id: '@codesmith/desktop-ticket-board',
     factory: load => createTicketBoard(load ?? (() => {
       throw new Error('codesmith desktop: ticket board requires the client module table')
+    })),
+  })
+  loader.__ModuleLoader__?.load?.({
+    id: '@codesmith/desktop-subagent-catalog',
+    factory: load => createSubagentCatalog(load ?? (() => {
+      throw new Error('codesmith desktop: subagent catalog requires the client module table')
     })),
   })
 }

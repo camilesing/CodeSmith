@@ -49,6 +49,8 @@ use codesmith_agent_runtime::tool_state::goal::{
     GoalSnapshot, SharedGoalState, new_shared_goal_state, new_shared_goal_state_from_host,
 };
 
+mod subagent_journal;
+
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 const SUMMARY_LIMIT: usize = 280;
@@ -159,6 +161,44 @@ pub struct ThreadRecord {
     /// loadable and older readers ignore the field.
     #[serde(default)]
     pub queue: Vec<QueuedItemRecord>,
+    /// `Some("subagent")` for an in-process child's own session record.
+    /// `None` is an ordinary user-visible thread. Child records are filtered
+    /// from the user-facing thread list and reached through their parent's
+    /// subagent catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Immediate parent: the root thread id for a direct child, else the
+    /// spawning sub-agent's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// The child's agent type (`general`, `explore`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// Spawn depth (1 = a direct child of the main turn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_depth: Option<u32>,
+    /// `one-shot` (foreground, read-only composer) or `continuable`
+    /// (background, accepts `subagents/prompt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_mode: Option<String>,
+    /// `running` | `completed` | `cancelled` | `failed` | `interrupted`.
+    /// Restart recovery flips `running` to `interrupted` and keeps the
+    /// transcript (replacement semantics: a child is not resumable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_status: Option<String>,
+    /// Seq of the child's `subagent.descriptor` event (the projection's
+    /// identity proof, upstream's `subagent.seq`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_descriptor_seq: Option<u64>,
+}
+
+impl ThreadRecord {
+    /// Whether this record is an in-process child session rather than a
+    /// user-visible thread.
+    #[must_use]
+    pub fn is_subagent(&self) -> bool {
+        self.origin.as_deref() == Some("subagent")
+    }
 }
 
 /// One prompt parked on a thread's queue. The queue is the host-side
@@ -585,6 +625,12 @@ impl RuntimeThreadStore {
             payload,
         };
 
+        if path.exists() {
+            // A crash mid-write can leave bytes without the closing newline;
+            // appending after it would fuse the fragment into an unreadable
+            // middle line. Only never-completed bytes are removed.
+            drop_torn_event_tail(&path)?;
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -610,15 +656,38 @@ impl RuntimeThreadStore {
         }
         let file =
             File::open(&path).with_context(|| format!("Failed to open {}", path.display()))?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut out = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
             if line.trim().is_empty() {
                 continue;
             }
-            let event: RuntimeEventRecord = serde_json::from_str(&line)
-                .with_context(|| format!("Failed to parse event line in {}", path.display()))?;
+            // `read_line` returns bytes without the newline only at EOF: a
+            // crash mid-write. Nobody completed that line, so drop it rather
+            // than failing the whole replay; completed lines stay strict.
+            let complete = line.ends_with('\n');
+            let event: RuntimeEventRecord = match serde_json::from_str(line.trim_end()) {
+                Ok(event) => event,
+                Err(err) if !complete => {
+                    tracing::warn!(
+                        target: "codesmith_runtime_threads",
+                        path = %path.display(),
+                        %err,
+                        "dropping a torn final event line"
+                    );
+                    break;
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("Failed to parse event line in {}", path.display())
+                    });
+                }
+            };
             if let Some(since) = since_seq
                 && event.seq <= since
             {
@@ -930,6 +999,38 @@ pub struct EditQueuedRequest {
 pub struct CompactThreadRequest {
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+/// One child session in its parent's catalog. `SubagentSummary` is the
+/// runtime's own richer view (the bridge projects the vendored client's
+/// narrower `subagentCatalog` shape from it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentSummary {
+    pub id: String,
+    pub parent_id: String,
+    pub name: String,
+    pub agent_type: String,
+    pub depth: u32,
+    /// `one-shot` | `continuable`
+    pub mode: String,
+    /// `running` | `completed` | `cancelled` | `failed` | `interrupted`
+    pub status: String,
+    pub model: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<SubagentActivity>,
+    /// Whether the latest closed turn completed normally.
+    pub last_turn_completed: bool,
+}
+
+/// The currently open child turn's same-cut bounds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentActivity {
+    pub since: DateTime<Utc>,
+    pub through: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1369,6 +1470,13 @@ impl RuntimeThreadManager {
             title: None,
             coherence_state: CoherenceState::default(),
             queue: Vec::new(),
+            origin: None,
+            parent_id: None,
+            agent_type: None,
+            spawn_depth: None,
+            subagent_mode: None,
+            subagent_status: None,
+            subagent_descriptor_seq: None,
         };
         self.store.save_thread(&thread)?;
         self.emit_event(
@@ -1388,6 +1496,9 @@ impl RuntimeThreadManager {
         limit: Option<usize>,
     ) -> Result<Vec<ThreadRecord>> {
         let mut threads = self.store.list_threads()?;
+        // Child sessions are reached through their parent's catalog, never
+        // the top-level session list.
+        threads.retain(|thread| !thread.is_subagent());
         match filter {
             ThreadListFilter::ActiveOnly => threads.retain(|t| !t.archived),
             ThreadListFilter::ArchivedOnly => threads.retain(|t| t.archived),
@@ -1620,6 +1731,193 @@ impl RuntimeThreadManager {
         let thread = self.get_thread(id).await?;
         self.ensure_engine_loaded(&thread).await?;
         Ok(thread)
+    }
+
+    /// Direct children of `parent_id` in durable creation order. Reads the
+    /// store directly, so a catalog survives engine eviction and restart.
+    pub async fn subagent_catalog(&self, parent_id: &str) -> Result<Vec<SubagentSummary>> {
+        let now = Utc::now();
+        let mut out = Vec::new();
+        for thread in self.store.list_threads()? {
+            if !thread.is_subagent() || thread.parent_id.as_deref() != Some(parent_id) {
+                continue;
+            }
+            let turns = self.store.list_turns_for_thread(&thread.id)?;
+            let mut usage: Option<Usage> = None;
+            let mut active = None;
+            for turn in &turns {
+                if let Some(sample) = turn.usage.as_ref() {
+                    add_usage(&mut usage, sample);
+                }
+                if matches!(turn.status, RuntimeTurnStatus::InProgress)
+                    && let Some(started_at) = turn.started_at
+                {
+                    active = Some(SubagentActivity {
+                        since: started_at,
+                        through: turn.ended_at.unwrap_or(now),
+                    });
+                }
+            }
+            let last_turn_completed = turns
+                .last()
+                .is_some_and(|turn| matches!(turn.status, RuntimeTurnStatus::Completed));
+            out.push(SubagentSummary {
+                id: thread.id.clone(),
+                parent_id: parent_id.to_string(),
+                name: thread
+                    .title
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| thread.id.clone()),
+                agent_type: thread
+                    .agent_type
+                    .clone()
+                    .unwrap_or_else(|| "general".to_string()),
+                depth: thread.spawn_depth.unwrap_or(1),
+                mode: thread
+                    .subagent_mode
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                status: thread
+                    .subagent_status
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                model: thread.model.clone(),
+                created_at: thread.created_at,
+                updated_at: thread.updated_at,
+                usage,
+                active,
+                last_turn_completed,
+            });
+        }
+        out.sort_by_key(|summary| summary.created_at);
+        Ok(out)
+    }
+
+    /// Deliver follow-up text to a running continuable child through its
+    /// owning engine's `agent_send_input`. Replacement semantics: a terminal
+    /// or one-shot child refuses.
+    pub async fn send_subagent_input(&self, agent_id: &str, text: String) -> Result<()> {
+        if text.trim().is_empty() {
+            bail!("sub-agent input cannot be empty");
+        }
+        let thread = self.get_thread(agent_id).await?;
+        if !thread.is_subagent() {
+            bail!("{agent_id} is not a sub-agent session");
+        }
+        if thread.subagent_mode.as_deref() != Some("continuable") {
+            bail!("child session {agent_id} is one-shot and read-only");
+        }
+        if thread.subagent_status.as_deref() != Some("running") {
+            bail!(
+                "child session {agent_id} is not running ({}); child sessions are not resumable",
+                thread.subagent_status.as_deref().unwrap_or("unknown")
+            );
+        }
+        let apis = self.subagent_apis().await;
+        for api in apis {
+            if api.owns(agent_id).await {
+                return api.send_input(agent_id, text).await;
+            }
+        }
+        bail!(
+            "child session {agent_id} has no loaded parent engine; it cannot accept input \
+             (replacement semantics — start a new child instead)"
+        )
+    }
+
+    /// Cancel a running child through its owning engine. Terminal or absent
+    /// children are accepted no-ops (upstream's interrupt receipt).
+    pub async fn cancel_subagent(&self, agent_id: &str) -> Result<()> {
+        let Ok(thread) = self.get_thread(agent_id).await else {
+            return Ok(());
+        };
+        if !thread.is_subagent() {
+            bail!("{agent_id} is not a sub-agent session");
+        }
+        if thread.subagent_status.as_deref() != Some("running") {
+            return Ok(());
+        }
+        // One-shot / foreground children are read-only child sessions: their
+        // lifetime belongs to the parent turn, not the child-session API.
+        if thread.subagent_mode.as_deref() != Some("continuable") {
+            bail!("child session {agent_id} is one-shot and read-only");
+        }
+        for api in self.subagent_apis().await {
+            if api.owns(agent_id).await {
+                api.cancel(agent_id).await?;
+                return Ok(());
+            }
+        }
+        // The parent engine is gone (restart/eviction): close the durable
+        // record now rather than leaving a child that no loaded manager can
+        // ever cancel. The receipt stays an accepted no-op.
+        self.mark_subagent_interrupted(agent_id).await
+    }
+
+    /// Close a child whose owning engine is no longer loaded: the thread
+    /// status, its open turn and items become interrupted, and the child's
+    /// event stream records why. Idempotent.
+    async fn mark_subagent_interrupted(&self, agent_id: &str) -> Result<()> {
+        let now = Utc::now();
+        let mut thread = self.get_thread(agent_id).await?;
+        if !thread.is_subagent() || thread.subagent_status.as_deref() != Some("running") {
+            return Ok(());
+        }
+        thread.subagent_status = Some("interrupted".to_string());
+        thread.updated_at = now;
+        self.store.save_thread(&thread)?;
+        if let Some(turn_id) = thread.latest_turn_id.clone()
+            && let Ok(mut turn) = self.store.load_turn(&turn_id)
+            && matches!(
+                turn.status,
+                RuntimeTurnStatus::Queued | RuntimeTurnStatus::InProgress
+            )
+        {
+            turn.status = RuntimeTurnStatus::Interrupted;
+            turn.error = Some(RUNTIME_RESTART_REASON.to_string());
+            turn.ended_at = Some(now);
+            if let Some(started_at) = turn.started_at {
+                turn.duration_ms = Some(
+                    now.signed_duration_since(started_at)
+                        .num_milliseconds()
+                        .max(0) as u64,
+                );
+            }
+            self.store.save_turn(&turn)?;
+            for item_id in &turn.item_ids {
+                if let Ok(mut item) = self.store.load_item(item_id)
+                    && matches!(
+                        item.status,
+                        TurnItemLifecycleStatus::Queued | TurnItemLifecycleStatus::InProgress
+                    )
+                {
+                    item.status = TurnItemLifecycleStatus::Interrupted;
+                    item.ended_at = Some(now);
+                    self.store.save_item(&item)?;
+                }
+            }
+            self.emit_event(
+                agent_id,
+                Some(&turn_id),
+                None,
+                "subagent.interrupted",
+                json!({ "reason": RUNTIME_RESTART_REASON }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn subagent_apis(
+        &self,
+    ) -> Vec<Arc<dyn codesmith_agent_runtime::host_services::SubAgentApi>> {
+        let active = self.active.lock().await;
+        active
+            .engines
+            .values()
+            .map(|state| Arc::clone(&state.engine.subagent_api))
+            .collect()
     }
 
     /// Resume a thread and recover the sub-agent rebind hints needed to
@@ -2714,6 +3012,14 @@ impl RuntimeThreadManager {
     }
 
     async fn ensure_engine_loaded(&self, thread: &ThreadRecord) -> Result<EngineHandle> {
+        if thread.is_subagent() {
+            bail!(
+                "Child session {} is a replacement record (not resumable); it has no engine. \
+                 Use /v1/subagents/{}/input for a running continuable child.",
+                thread.id,
+                thread.id
+            );
+        }
         {
             let mut active = self.active.lock().await;
             if let Some(engine) = active
@@ -2881,6 +3187,11 @@ impl RuntimeThreadManager {
             // Runtime API threads: the thread store's event stream is the
             // authoritative record (TODO-20), so no session journal.
             session_journal: None,
+            // Sub-agent conversations live in the same store under
+            // `origin = "subagent"` child threads.
+            child_session_journal: Some(Arc::new(
+                subagent_journal::RuntimeChildJournalFactory::new(Arc::clone(&self.store)),
+            )),
             session_id: None,
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             sandbox_runtime: self.config.sandbox_runtime_config(),
@@ -4442,6 +4753,14 @@ impl RuntimeThreadManager {
                 thread.updated_at = now;
                 thread_changed = true;
             }
+            // Replacement semantics: a child that was running when the
+            // process died is interrupted, never resumed. Its transcript and
+            // the interrupted turn stay readable in the catalog.
+            if thread.is_subagent() && thread.subagent_status.as_deref() == Some("running") {
+                thread.subagent_status = Some("interrupted".to_string());
+                thread.updated_at = now;
+                thread_changed = true;
+            }
 
             if thread_changed {
                 self.store.save_thread(&thread)?;
@@ -4526,6 +4845,69 @@ fn enforce_lru_capacity(
         break;
     }
     evicted
+}
+
+/// Cut a torn final event line before appending, so a crash fragment never
+/// fuses into a middle line. Only bytes that never formed a complete line
+/// are removed.
+fn drop_torn_event_tail(path: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(len - 1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+    let mut bytes = Vec::new();
+    file.seek(SeekFrom::Start(0))?;
+    file.read_to_end(&mut bytes)?;
+    let keep = bytes
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |index| index + 1) as u64;
+    file.set_len(keep)?;
+    tracing::warn!(
+        target: "codesmith_runtime_threads",
+        path = %path.display(),
+        dropped = len - keep,
+        "cut a torn final event line before appending"
+    );
+    Ok(())
+}
+
+/// Accumulate one turn's usage into a catalog total.
+fn add_usage(total: &mut Option<Usage>, sample: &Usage) {
+    let sum = total.get_or_insert_with(Usage::default);
+    sum.input_tokens = sum.input_tokens.saturating_add(sample.input_tokens);
+    sum.output_tokens = sum.output_tokens.saturating_add(sample.output_tokens);
+    add_optional(
+        &mut sum.prompt_cache_hit_tokens,
+        sample.prompt_cache_hit_tokens,
+    );
+    add_optional(
+        &mut sum.prompt_cache_miss_tokens,
+        sample.prompt_cache_miss_tokens,
+    );
+    add_optional(&mut sum.reasoning_tokens, sample.reasoning_tokens);
+    add_optional(
+        &mut sum.reasoning_replay_tokens,
+        sample.reasoning_replay_tokens,
+    );
+}
+
+fn add_optional(total: &mut Option<u32>, sample: Option<u32>) {
+    if let Some(sample) = sample {
+        *total = Some(total.unwrap_or(0).saturating_add(sample));
+    }
 }
 
 fn parse_mode(mode: &str) -> AppMode {
@@ -4819,6 +5201,13 @@ mod tests {
             title: None,
             coherence_state: CoherenceState::default(),
             queue: Vec::new(),
+            origin: None,
+            parent_id: None,
+            agent_type: None,
+            spawn_depth: None,
+            subagent_mode: None,
+            subagent_status: None,
+            subagent_descriptor_seq: None,
         }
     }
 
@@ -7982,6 +8371,13 @@ mod tests {
             title: None,
             coherence_state: CoherenceState::default(),
             queue: Vec::new(),
+            origin: None,
+            parent_id: None,
+            agent_type: None,
+            spawn_depth: None,
+            subagent_mode: None,
+            subagent_status: None,
+            subagent_descriptor_seq: None,
         };
         manager.store.save_thread(&thread)?;
 
@@ -8533,5 +8929,438 @@ mod tests {
                 "a {status} goal must not be restarted by a reload"
             );
         }
+    }
+
+    /// A crash fragment at the event tail is dropped, and the next append lands
+    /// on a clean line (the child transcript stays replayable).
+    #[tokio::test]
+    async fn torn_event_tail_is_dropped_before_the_next_append() {
+        let dir = test_runtime_dir();
+        let store = RuntimeThreadStore::open(dir.clone()).expect("store");
+        store
+            .append_event("thr_child", None, None, "subagent.descriptor", json!({}))
+            .await
+            .expect("first event");
+        let path = dir.join("events").join("thr_child.jsonl");
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open events");
+            file.write_all(b"{\"seq\":2,\"event\":\"torn")
+                .expect("write torn tail");
+        }
+        let events = store
+            .events_since("thr_child", None)
+            .expect("tolerant read");
+        assert_eq!(events.len(), 1);
+        store
+            .append_event("thr_child", None, None, "turn.started", json!({}))
+            .await
+            .expect("append after torn tail");
+        let events = store.events_since("thr_child", None).expect("clean read");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event, "turn.started");
+    }
+
+    // === Child-session journal ===========================================
+
+    use codesmith_agent_runtime::child_journal::{
+        ChildSessionEvent, ChildSessionJournalFactory, ChildSessionMode, ChildSessionStatus,
+    };
+
+    async fn open_child_journal(
+        manager: &RuntimeThreadManager,
+        child_id: &str,
+        parent_id: &str,
+        mode: ChildSessionMode,
+    ) -> Arc<dyn codesmith_agent_runtime::child_journal::ChildSessionJournal> {
+        let factory = subagent_journal::RuntimeChildJournalFactory::new(Arc::clone(&manager.store));
+        factory
+            .open(subagent_journal::descriptor_for_test(
+                child_id,
+                parent_id,
+                mode,
+                "map the auth middleware",
+            ))
+            .expect("child journal")
+    }
+
+    /// A child session is a durable thread/turn/item record: its transcript
+    /// replays through the same store the desktop bridge reads, the parent
+    /// catalog finds it by lineage, and the parent transcript stays empty.
+    #[tokio::test]
+    async fn child_journal_persists_transcript_catalog_and_lineage() {
+        let data_dir = test_runtime_dir();
+        let manager = test_manager(data_dir).expect("manager");
+        manager
+            .store
+            .save_thread(&sample_thread("thr_parent"))
+            .expect("parent thread");
+
+        let journal = open_child_journal(
+            &manager,
+            "agent_child1",
+            "thr_parent",
+            ChildSessionMode::Continuable,
+        )
+        .await;
+        journal.record(ChildSessionEvent::Started).await;
+        journal
+            .record(ChildSessionEvent::UserMessage {
+                text: "also check the docs".to_string(),
+            })
+            .await;
+        journal
+            .record(ChildSessionEvent::AssistantMessage {
+                content: vec![
+                    ContentBlock::Text {
+                        text: "I found the middleware".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({ "path": "src/auth.rs" }),
+                        caller: None,
+                    },
+                ],
+            })
+            .await;
+        journal
+            .record(ChildSessionEvent::ToolStarted {
+                id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                input: json!({ "path": "src/auth.rs" }),
+            })
+            .await;
+        journal
+            .record(ChildSessionEvent::ApprovalRequested {
+                id: "sub:agent_child1:0".to_string(),
+                tool_name: "read_file".to_string(),
+                path: PathBuf::from("/outside/notes.md"),
+            })
+            .await;
+        journal
+            .record(ChildSessionEvent::ApprovalDecided {
+                id: "sub:agent_child1:0".to_string(),
+                allowed: true,
+            })
+            .await;
+        journal
+            .record(ChildSessionEvent::ToolFinished {
+                name: "read_file".to_string(),
+                ok: true,
+                content: "fn auth() {}".to_string(),
+            })
+            .await;
+        journal
+            .record(ChildSessionEvent::Usage(Usage {
+                input_tokens: 11,
+                output_tokens: 7,
+                ..Usage::default()
+            }))
+            .await;
+        journal
+            .record(ChildSessionEvent::Finished {
+                status: ChildSessionStatus::Completed,
+                final_text: Some("I found the middleware".to_string()),
+                usage: Usage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    ..Usage::default()
+                },
+            })
+            .await;
+
+        let detail = manager
+            .get_thread_detail("agent_child1")
+            .await
+            .expect("child detail");
+        assert_eq!(detail.thread.origin.as_deref(), Some("subagent"));
+        assert_eq!(detail.thread.parent_id.as_deref(), Some("thr_parent"));
+        assert_eq!(detail.thread.subagent_mode.as_deref(), Some("continuable"));
+        assert_eq!(detail.thread.subagent_status.as_deref(), Some("completed"));
+        assert_eq!(detail.thread.title.as_deref(), Some("test child"));
+        assert_eq!(detail.turns.len(), 1);
+        assert_eq!(detail.turns[0].status, RuntimeTurnStatus::Completed);
+        assert!(detail.turns[0].usage.is_some());
+        let kinds: Vec<TurnItemKind> = detail.items.iter().map(|item| item.kind).collect();
+        assert!(kinds.contains(&TurnItemKind::UserMessage));
+        assert!(kinds.contains(&TurnItemKind::AgentMessage));
+        assert!(kinds.contains(&TurnItemKind::ToolCall));
+        let tool = detail
+            .items
+            .iter()
+            .find(|item| item.kind == TurnItemKind::ToolCall)
+            .expect("tool item");
+        assert_eq!(tool.status, TurnItemLifecycleStatus::Completed);
+        assert_eq!(tool.detail.as_deref(), Some("fn auth() {}"));
+        assert_eq!(
+            tool.metadata
+                .as_ref()
+                .and_then(|metadata| metadata.pointer("/arguments/path"))
+                .and_then(Value::as_str),
+            Some("src/auth.rs")
+        );
+
+        // The parent's own transcript stays empty: only the child record
+        // carries the conversation.
+        let parent = manager
+            .get_thread_detail("thr_parent")
+            .await
+            .expect("parent detail");
+        assert!(parent.turns.is_empty());
+        assert!(parent.items.is_empty());
+        let listed = manager
+            .list_threads(ThreadListFilter::ActiveOnly, None)
+            .await
+            .expect("thread list");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["thr_parent"],
+            "child sessions are reached through the catalog, not session/list"
+        );
+
+        let catalog = manager
+            .subagent_catalog("thr_parent")
+            .await
+            .expect("catalog");
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].id, "agent_child1");
+        assert_eq!(catalog[0].mode, "continuable");
+        assert_eq!(catalog[0].status, "completed");
+        assert_eq!(catalog[0].usage.as_ref().map(|u| u.input_tokens), Some(11));
+
+        // A grandchild belongs to its own parent's catalog, not the root's.
+        let grandchild = open_child_journal(
+            &manager,
+            "agent_grand1",
+            "agent_child1",
+            ChildSessionMode::OneShot,
+        )
+        .await;
+        grandchild.record(ChildSessionEvent::Started).await;
+        grandchild
+            .record(ChildSessionEvent::Finished {
+                status: ChildSessionStatus::Completed,
+                final_text: None,
+                usage: Usage::default(),
+            })
+            .await;
+        assert_eq!(
+            manager
+                .subagent_catalog("agent_child1")
+                .await
+                .expect("child catalog")
+                .len(),
+            1
+        );
+        assert_eq!(
+            manager
+                .subagent_catalog("thr_parent")
+                .await
+                .expect("root catalog")
+                .len(),
+            1
+        );
+
+        let events = manager
+            .events_since("agent_child1", None)
+            .expect("child events");
+        let names: Vec<&str> = events.iter().map(|event| event.event.as_str()).collect();
+        assert!(names.contains(&"subagent.descriptor"));
+        assert!(names.contains(&"turn.started"));
+        assert!(names.contains(&"item.started"));
+        assert!(names.contains(&"item.completed"));
+        assert!(names.contains(&"subagent.approval_requested"));
+        assert!(names.contains(&"subagent.approval_decided"));
+        assert!(names.contains(&"subagent.finished"));
+        assert!(
+            events.iter().any(|event| event.item_id.is_some()),
+            "item events carry their item id for the follow mapper"
+        );
+        assert!(
+            events.iter().all(|event| event.thread_id == "agent_child1"),
+            "child events never land on the parent's stream"
+        );
+    }
+
+    /// A child running when the process stops is read back mid-turn (items
+    /// present, status running) and reopened as `interrupted` with its
+    /// transcript intact — replacement semantics, never a resume.
+    #[tokio::test]
+    async fn restart_marks_a_running_child_interrupted_and_keeps_its_transcript() {
+        let data_dir = test_runtime_dir();
+        {
+            let manager = test_manager(data_dir.clone()).expect("manager");
+            manager
+                .store
+                .save_thread(&sample_thread("thr_parent"))
+                .expect("parent thread");
+            let journal = open_child_journal(
+                &manager,
+                "agent_running",
+                "thr_parent",
+                ChildSessionMode::Continuable,
+            )
+            .await;
+            journal.record(ChildSessionEvent::Started).await;
+            journal
+                .record(ChildSessionEvent::AssistantMessage {
+                    content: vec![ContentBlock::Text {
+                        text: "halfway there".to_string(),
+                        cache_control: None,
+                    }],
+                })
+                .await;
+
+            // Mid-turn reconnect: the durable record already serves the
+            // running turn and its items.
+            let detail = manager
+                .get_thread_detail("agent_running")
+                .await
+                .expect("mid-turn detail");
+            assert_eq!(detail.turns.len(), 1);
+            assert_eq!(detail.turns[0].status, RuntimeTurnStatus::InProgress);
+            assert!(
+                detail
+                    .items
+                    .iter()
+                    .any(|item| item.detail.as_deref() == Some("halfway there")),
+                "the last settled assistant text is already readable"
+            );
+            let catalog = manager
+                .subagent_catalog("thr_parent")
+                .await
+                .expect("running catalog");
+            assert_eq!(catalog[0].status, "running");
+            assert!(catalog[0].active.is_some());
+        }
+
+        // A fresh process opens the same store: recovery marks the open turn
+        // and the child's status interrupted, keeping every item.
+        let reopened = test_manager(data_dir).expect("reopened manager");
+        let detail = reopened
+            .get_thread_detail("agent_running")
+            .await
+            .expect("recovered detail");
+        assert_eq!(detail.turns[0].status, RuntimeTurnStatus::Interrupted);
+        assert_eq!(
+            detail.thread.subagent_status.as_deref(),
+            Some("interrupted")
+        );
+        assert!(
+            detail
+                .items
+                .iter()
+                .any(|item| item.detail.as_deref() == Some("halfway there")),
+            "the transcript survives the restart"
+        );
+        let catalog = reopened
+            .subagent_catalog("thr_parent")
+            .await
+            .expect("recovered catalog");
+        assert_eq!(catalog[0].status, "interrupted");
+        assert!(catalog[0].active.is_none());
+    }
+
+    /// One-shot children are read-only at the runtime boundary; a terminal
+    /// child refuses continuation, and cancel stays an accepted no-op.
+    #[tokio::test]
+    async fn one_shot_and_terminal_children_refuse_continuation() {
+        let data_dir = test_runtime_dir();
+        let manager = test_manager(data_dir).expect("manager");
+        manager
+            .store
+            .save_thread(&sample_thread("thr_parent"))
+            .expect("parent thread");
+        let one_shot = open_child_journal(
+            &manager,
+            "agent_one",
+            "thr_parent",
+            ChildSessionMode::OneShot,
+        )
+        .await;
+        one_shot.record(ChildSessionEvent::Started).await;
+        one_shot
+            .record(ChildSessionEvent::Finished {
+                status: ChildSessionStatus::Completed,
+                final_text: Some("done".to_string()),
+                usage: Usage::default(),
+            })
+            .await;
+
+        let err = manager
+            .send_subagent_input("agent_one", "keep going".to_string())
+            .await
+            .expect_err("one-shot child is read-only");
+        assert!(err.to_string().contains("one-shot"), "{err}");
+        manager
+            .cancel_subagent("agent_one")
+            .await
+            .expect("terminal cancel is a no-op");
+        let running_one_shot = open_child_journal(
+            &manager,
+            "agent_live_one",
+            "thr_parent",
+            ChildSessionMode::OneShot,
+        )
+        .await;
+        running_one_shot.record(ChildSessionEvent::Started).await;
+        let err = manager
+            .cancel_subagent("agent_live_one")
+            .await
+            .expect_err("a running one-shot child is read-only");
+        assert!(err.to_string().contains("one-shot"), "{err}");
+
+        let continuable = open_child_journal(
+            &manager,
+            "agent_done",
+            "thr_parent",
+            ChildSessionMode::Continuable,
+        )
+        .await;
+        continuable.record(ChildSessionEvent::Started).await;
+        continuable
+            .record(ChildSessionEvent::Finished {
+                status: ChildSessionStatus::Completed,
+                final_text: Some("done".to_string()),
+                usage: Usage::default(),
+            })
+            .await;
+        let err = manager
+            .send_subagent_input("agent_done", "more".to_string())
+            .await
+            .expect_err("a terminal child is not resumable");
+        assert!(err.to_string().contains("not running"), "{err}");
+
+        // A running child with no loaded owner (evicted/restarted parent)
+        // is closed by the cancel route rather than stranded.
+        let running = open_child_journal(
+            &manager,
+            "agent_orphan",
+            "thr_parent",
+            ChildSessionMode::Continuable,
+        )
+        .await;
+        running.record(ChildSessionEvent::Started).await;
+        manager
+            .cancel_subagent("agent_orphan")
+            .await
+            .expect("orphan cancel");
+        let detail = manager
+            .get_thread_detail("agent_orphan")
+            .await
+            .expect("orphan detail");
+        assert_eq!(
+            detail.thread.subagent_status.as_deref(),
+            Some("interrupted")
+        );
+        assert_eq!(detail.turns[0].status, RuntimeTurnStatus::Interrupted);
     }
 }

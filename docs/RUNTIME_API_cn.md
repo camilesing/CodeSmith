@@ -309,6 +309,23 @@ flush 也有同样的窗口。
   响应：`{ "ok": true, "input_id": "...", "delivered": true }`。
   未知的线程或输入 id 会以 API 错误形式返回。
 
+**子代理子会话**（runtime 线程的进程内子代理）
+- `GET /v1/threads/{id}/subagents` —— 直接子会话目录
+  （`SubagentSummary[]`：id、parent、name、agent type、depth、mode、
+  status、model、时间戳、聚合 usage、打开 turn 的活动区间）。
+- `POST /v1/subagents/{id}/input` —— 请求体 `{ "text": "…" }`，映射子代理
+  的 `agent_send_input` steer 接缝；只有运行中的 `continuable` 子会话接受。
+- `POST /v1/subagents/{id}/cancel` —— 停止运行中的 `continuable` 子代理；
+  不存在或已终态的子会话是接受型 no-op（`{ "accepted": true }`）。运行中的
+  one-shot 子会话会被拒绝：它的生命周期属于父 turn，不属于子会话 API。
+
+子会话就是普通 thread/turn/item 记录，带 `origin = "subagent"`、
+`parent_id`、`agent_type`、`spawn_depth`、`subagent_mode` 与
+`subagent_status`。它从 `GET /v1/threads` 过滤，只能经父会话的 catalog
+进入；`GET /v1/threads/{child}` 及其事件流提供转写。替换语义：一次运行
+一个 turn；重启把运行中的子会话标为 `interrupted` 并保留转写，不存在
+续跑路由。子会话内容只服务 UI/回放——永不进入父模型请求。
+
 **事件**（SSE 重放 + 实时流）
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
 

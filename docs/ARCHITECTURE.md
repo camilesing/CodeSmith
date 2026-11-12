@@ -80,8 +80,25 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   failed rounds land as attempt entries, so
   `session_journal::reconstruct_requests` rebuilds each request from the
   journal alone — the session-log form of "model-visible means logged".
-  Exec runs, runtime-API threads, and sub-agents keep no journal; utility
-  calls sharing the client (compaction summaries) are not journaled.
+  Exec runs and interactive/ACP sub-agents keep no session journal;
+  runtime-API threads use their own event stream instead (the desktop
+  bridge), and their in-process children write the child-session record
+  below. Utility calls sharing the client (compaction summaries) are not
+  journaled.
+  The **child-session journal** (`agent-runtime/src/child_journal.rs`,
+  seam `ChildSessionJournal` + `ChildSessionJournalFactory`) is the
+  sub-agent counterpart: `run_child_turn` records the child's
+  user/assistant/tool/approval/usage/completion events there before the
+  turn lease is released, never into the parent transcript (the parent
+  still receives only the completion card). The runtime-thread provider
+  (`cli/src/runtime_threads/subagent_journal.rs`) materializes each child
+  as an `origin = "subagent"` `ThreadRecord` with its own turn, items and
+  append-only JSONL stream, so the desktop bridge opens a child
+  conversation through the same `session/follow` path as a top-level
+  thread. Replacement semantics: one run is one turn; a restart marks a
+  running child `interrupted` and keeps its transcript, and no resume path
+  exists. The record is UI/replay only — child content never enters a
+  parent model request.
 - **Plugin tiers (declared).** Pluggability rides the single `Extension`
   contract (`crates/agent/src/extension.rs`) + `ExtensionRunner` — four
   tiers: user Rhai mods (`~/.codesmith/mods/`, consent-gated), the

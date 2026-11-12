@@ -2080,6 +2080,9 @@ pub(crate) fn headless_engine_config(
         // Headless runs (`exec`) mint their snapshot id apart from the
         // engine session id, so no journal; ACP sets one after this builds.
         session_journal: None,
+        // Only the runtime-thread store exposes child conversations; other
+        // hosts keep the in-memory child transcript handle.
+        child_session_journal: None,
         session_id: None,
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         sandbox_runtime: config.sandbox_runtime_config(),
