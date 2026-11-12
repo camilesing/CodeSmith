@@ -138,6 +138,35 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         source: include_str!("builtin/compact_dsh.rhai"),
         opt_in: true,
     },
+    // --- opt-in builtin tool hardening (CodingTools ports; select the
+    // mod in `[mods] builtin`) ---
+    BuiltinMod {
+        id: "grep-guard",
+        version: "0.1.0",
+        description: "grep input normalization: empty-pattern refusal with \
+                      a corrective action, include-glob comma splitting \
+                      (brace groups preserved)",
+        source: include_str!("builtin/grep_guard.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "edit-input-guard",
+        version: "0.1.0",
+        description: "edit_file input guards: identical search/replace \
+                      refusal, disproportionate-replacement refusal — \
+                      each with the corrective next step",
+        source: include_str!("builtin/edit_input_guard.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "reject-templates",
+        version: "0.1.0",
+        description: "deny-only guard over destructive shell patterns \
+                      (rm -rf /, force-push, reset --hard) with corrective \
+                      rejection templates",
+        source: include_str!("builtin/reject_templates.rhai"),
+        opt_in: true,
+    },
 ];
 
 /// Compile + run the builtin tier against the runner (used by the host's
@@ -290,7 +319,7 @@ mod tests {
     )> {
         let selected: Vec<String> = BUILTIN_MODS
             .iter()
-            .filter(|m| m.opt_in)
+            .filter(|m| m.opt_in && m.id.starts_with("compact-"))
             .map(|m| m.id.to_string())
             .collect();
         let by_id: std::collections::HashMap<
@@ -311,7 +340,7 @@ mod tests {
             .collect();
         BUILTIN_MODS
             .iter()
-            .filter(|m| m.opt_in)
+            .filter(|m| m.opt_in && m.id.starts_with("compact-"))
             .map(|m| (m.id, by_id[m.id].clone()))
             .collect()
     }

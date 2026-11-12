@@ -345,6 +345,15 @@ recompile.
     compaction strategies ported from the five-agent comparison (values
     and provenance in each mod's header comment; select via
     `[compaction] strategy`, see "Writing a compaction strategy").
+  - `grep-guard` — grep input normalization (empty-pattern refusal with
+    a corrective action; include-glob comma splitting, brace groups
+    preserved).
+  - `edit-input-guard` — `edit_file` input guards: identical
+    search/replace and disproportionate replacements refuse with the
+    corrective next step.
+  - `reject-templates` — deny-only guard over destructive shell
+    patterns (`rm -rf /`, force-push, `reset --hard`) with corrective
+    rejection templates.
 
 ### Disabling a built-in slash command
 

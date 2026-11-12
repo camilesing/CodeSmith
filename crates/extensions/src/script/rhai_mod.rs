@@ -3928,8 +3928,6 @@ mod tests {
 
     #[test]
     fn guard_script_error_abstains_fail_open() {
-        use codesmith_agent::extension::HandlerOutcome;
-
         let runner = crate::ExtensionRunner::new();
         let dir = TempDir::new().unwrap();
         let rhai_mod = RhaiMod::load(
@@ -3971,7 +3969,10 @@ mod tests {
             name: "exec_shell".to_string(),
             input: serde_json::json!({ "command": "anything" }),
         })));
-        assert!(matches!(out.outcome, HandlerOutcome::Continue));
+        assert!(matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
     }
 
     struct PolicyCtx;
@@ -4306,5 +4307,182 @@ mod tests {
             kv_for(&dir, "replace-tool").get("calls"),
             Some(serde_json::json!(1))
         );
+    }
+
+    // === opt-in tool hardening (Compare CodingTools ports) ====================
+
+    fn opt_in_mod(id: &str) -> RhaiMod {
+        let source = match id {
+            "grep-guard" => include_str!("builtin/grep_guard.rhai"),
+            "edit-input-guard" => include_str!("builtin/edit_input_guard.rhai"),
+            "reject-templates" => include_str!("builtin/reject_templates.rhai"),
+            _ => panic!("unknown opt-in mod {id}"),
+        };
+        RhaiMod::load_source(
+            id,
+            id,
+            "0.1.0",
+            source.to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("opt-in tool mod compiles")
+    }
+
+    /// grep-guard: an empty pattern is refused with a corrective action;
+    /// comma-separated include globs split (brace groups pass through).
+    #[test]
+    fn grep_guard_normalizes_input_and_refuses_empty_patterns() {
+        let m = opt_in_mod("grep-guard");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+        let repl = runner
+            .bound_replacements()
+            .into_iter()
+            .find(|(n, _)| n == "grep")
+            .expect("grep replacement bound");
+        let ctx: Arc<dyn codesmith_agent::extension::ExtensionContext> = Arc::new(PerModCtx);
+
+        // Empty pattern → err with the corrective template.
+        let out = rt
+            .block_on(repl.1.execute(serde_json::json!({"pattern": "  "}), &*ctx))
+            .expect("executes");
+        match out {
+            codesmith_agent::extension::ReplacementOutcome::Complete(res) => {
+                assert!(!res.success, "empty pattern refused");
+                assert!(
+                    res.content.contains("NEVER retry"),
+                    "denial carries the discipline: {}",
+                    res.content
+                );
+            }
+            other => panic!("expected Complete(err), got {other:?}"),
+        }
+
+        // Comma glob splits; brace groups survive; other fields pass.
+        let out = rt
+            .block_on(repl.1.execute(
+                serde_json::json!({
+                    "pattern": "TODO",
+                    "include": ["src/**/{ts,tsx}", "rs, md"],
+                    "path": ".",
+                }),
+                &*ctx,
+            ))
+            .expect("executes");
+        match out {
+            codesmith_agent::extension::ReplacementOutcome::Delegate(Some(v)) => {
+                assert_eq!(
+                    v["include"],
+                    serde_json::json!(["src/**/{ts,tsx}", "rs", "md"])
+                );
+                assert_eq!(v["pattern"], "TODO");
+            }
+            other => panic!("expected Delegate(Some), got {other:?}"),
+        }
+    }
+
+    /// edit-input-guard: identical search/replace and a disproportionate
+    /// replacement are blocked with corrective templates; a normal edit
+    /// proceeds.
+    #[tokio::test]
+    async fn edit_input_guard_blocks_wrong_edits_with_remedies() {
+        let m = opt_in_mod("edit-input-guard");
+        let runner = Arc::new(crate::ExtensionRunner::new());
+        runner.load(&m).await.expect("configure edit-input-guard");
+        runner.bind_core(Arc::new(PerModCtx));
+        let out = runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t1".into(),
+                name: "edit_file".into(),
+                input: serde_json::json!({
+                    "path": "a.rs", "search": "let x = 1;", "replace": "let x = 1;"
+                }),
+            }))
+            .await;
+        match out.outcome {
+            codesmith_agent::extension::HandlerOutcome::Block { reason, .. } => {
+                assert!(reason.contains("edits nothing"), "{reason}");
+                assert!(reason.contains("NEVER retry"), "{reason}");
+            }
+            other => panic!("identical search/replace blocked, got {other:?}"),
+        }
+
+        let out = runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t2".into(),
+                name: "edit_file".into(),
+                input: serde_json::json!({
+                    "path": "a.rs",
+                    "search": "let x = 1;",
+                    "replace": "let x = 1;\nlet y = 2;\nlet z = 3;\nlet w = 4;\nlet v = 5;\n"
+                }),
+            }))
+            .await;
+        match out.outcome {
+            codesmith_agent::extension::HandlerOutcome::Block { reason, .. } => {
+                assert!(reason.contains("disproportionately"), "{reason}");
+            }
+            other => panic!("disproportionate replacement blocked, got {other:?}"),
+        }
+
+        // A 1:1 replacement proceeds.
+        let out = runner
+            .emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t3".into(),
+                name: "edit_file".into(),
+                input: serde_json::json!({
+                    "path": "a.rs", "search": "let x = 1;", "replace": "let x = 2;"
+                }),
+            }))
+            .await;
+        assert!(matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+    }
+
+    /// reject-templates: the destructive shell patterns deny with the
+    /// corrective template; benign commands abstain.
+    #[test]
+    fn reject_templates_deny_destructive_patterns() {
+        let m = opt_in_mod("reject-templates");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        for command in [
+            "rm -rf /",
+            "git push --force origin main",
+            "git reset --hard HEAD~3",
+        ] {
+            let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t".into(),
+                name: "exec_shell".into(),
+                input: serde_json::json!({"command": command}),
+            })));
+            let codesmith_agent::extension::HandlerOutcome::Block { reason, .. } = out.outcome
+            else {
+                panic!("`{command}` must deny");
+            };
+            assert!(
+                reason.contains("NEVER retry"),
+                "template carries the discipline: {reason}"
+            );
+        }
+
+        // Benign command abstains (deny-only, never allow).
+        let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "t".into(),
+            name: "exec_shell".into(),
+            input: serde_json::json!({"command": "cargo test"}),
+        })));
+        assert!(matches!(
+            out.outcome,
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
     }
 }

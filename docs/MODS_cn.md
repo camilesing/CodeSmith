@@ -311,6 +311,12 @@ register_policy("shell-output", #{
   - `compact-pi`、`compact-omp`、`compact-minimax`、`compact-dsh`——
     自五 agent 对比文章移植的压缩策略（取值与出处见各 mod 头部注释；
     经 `[compaction] strategy` 选择，见"编写压缩策略"）。
+  - `grep-guard`——grep 输入整形（空 pattern 拒绝并附纠正动作；
+    include glob 逗号拆分，花括号组保留）。
+  - `edit-input-guard`——`edit_file` 输入守卫：search/replace 相同与
+    替换比例失衡时拒绝并附纠正下一步。
+  - `reject-templates`——破坏性 shell 模式（`rm -rf /`、force-push、
+    `reset --hard`）的 deny-only 守卫，拒绝附纠正模板。
 
 ### 停用一个内建斜杠命令
 
