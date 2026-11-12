@@ -149,7 +149,9 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   映射到 `POST /v1/tasks/{id}/cancel`（`requested` /
   `already-finished`；未知 id 为 `job/not-found`）。状态映射：
   queued/running → running、completed、failed、canceled → killed。无关联
-  线程的任务不属于任何会话，名册不列出；没有进度行或字节上限可报。
+  线程的任务不属于任何会话，名册不列出。`progress` 取最近的
+  `tool_progress` timeline 条目（shell 检查点）；`outputLimitBytes`
+  没有运行时可报来源，保持缺席。
 - 改动审查标签页与轮尾改动文件卡（`client-ui-deliverables`）由线程的持久
   化工具条目供数：`write_file`、`edit_file` 把 unified diff 作为调用结果
   返回，`apply_patch` 返回 JSON 摘要、请求的 hunks 留在调用自身的 `patch`
@@ -198,11 +200,13 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   接受了压缩——压缩本身作为异步 turn 运行，由转写节点携带结果；会话忙
   时把运行时的冲突文案作为命令错误通知呈现）与逐会话的模式开关：
   `/mode <agent|plan|yolo|coordinator>`（必须带参数，拼错时以合法取值
-  响亮失败）、`/plan [off]` 与 `/yolo` 快捷方式，以及 `/permission
+  响亮失败）、`/plan [off|message]` 与 `/yolo` 快捷方式，以及 `/permission
   <workspace-write|danger-full-access>`（同样必须带参数）——各自
   `PATCH /v1/threads/{id}` 的 `mode` 字段，下一 turn 起生效该模式的工具
-  面与审批策略。线程处于 `plan` 时 `/permission` 切换会被拒绝并提示先用
-  `/plan off`，因此预设选择器不会悄悄退出计划。目录还收 `/goal
+  面与审批策略。`/plan <message>` 进入计划模式，并把消息（连同输入框附件）
+  作为 steer 交给运行中的 turn；会话空闲时则直接开启一个 turn——与上游
+  plan-mode 自己的 handler 一致。线程处于 `plan` 时 `/permission` 切换会被
+  拒绝并提示先用 `/plan off`，因此预设选择器不会悄悄退出计划。目录还收 `/goal
   <objective> [budget: N]` 与 `/feedback <text>`，且 `/goal`、`/plan`、
   `/permission`、`/feedback` 行携带 vendored 客户端的内建 definition id
   （`@codesmith/command-goal`、`@codesmith/plan-mode`、
@@ -347,32 +351,47 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   状态；选中的目录经一次 `workspace/create` 采纳，其 `replace` 基线推给
   每个打开的 `workspace/follow` 流，也就是侧栏渲染的那一行。应用内浏览器
   包仍保留 vendored 的 `list`/`createDirectory` 原语，但不 boot（见上）。
-- GoalBar（`client-ui-goal`）由 `goal` 投影供数：线程引擎驻留时用实时引擎
-  状态（`GET /v1/threads/{id}/goal` 应答 `loaded:true`），否则用线程日志里
-  最近一次完成的 `create_goal`/`update_goal` 工具记录（读取会话不会加载
-  引擎）。投影携带
-  `{goal:{id, revision, objective, phase, blockedReason?, maxGoalRounds},
-  roundsStarted, createdAt, updatedAt}`；`complete` 不渲染，`blocked` 带上
-  运行时的阻塞原因。`goals/get` 返回实时 `GoalView` 加 `activation`
-  （active 时 `armed`，否则 `disarmed`）；`goals/edit|pause|resume|clear`
-  POST 运行时动作（加载引擎，先从日志播种 active/completed 目标）并推送
-  刷新后的投影。运行时快照没有 goal id，桥用创建工具条目的 id 合成稳定
-  身份并按条目计数版本。桌面 pause/clear 持久化在
-  `~/.codesmith/desktop/goals.json`（按该身份索引）：读取路径不会加载
-  引擎，但对日志回退会呈现持久化的停止状态，对已加载的引擎则就地重新
-  应用；prompt 前的 reconcile 会先重放该动作，使刚加载（并从日志播种
-  active 目标）的引擎不能在轮次收尾时继续驱动。目标条本身不创建，但宿主
-  `/goal <objective> [budget: N]` 命令会创建（直接 POST 运行时的 `edit`
-  动作：没有目标时创建，目标不变时保留进度，并从 `budget: N` 后缀采纳
-  可选 token 预算——与 REPL 相同的后缀；输入字面为 pause/resume/clear 时
-  拒绝创建并指向目标条）。变更强制客户端的比较交换（`ref {id, revision}`）：
-  过期或缺失的 ref 答 `goal/stale-revision` 或 `gateway/arguments-invalid`
-  ——即上游 GOAL_STALE_REVISION 防线——且合成的 revision 是日志条目计数加
-  持久化 overlay 计数，ref 跨桥重启依然有效。已知限制：经 `/goal` 创建的
-  目标没有日志条目，
-  引擎逐出后完全无法恢复；引擎逐出后由运行时自行启动的排队
-  turn 若中间没有桌面 prompt，可能抢在 pause 重放前多跑一轮。客户端可选的
-  `maxGoalRounds` 编辑只接受运行时固定上限（25），其他值以
+- GoalBar（`client-ui-goal`）由 `goal` 投影供数，来源按严格优先级分三层：
+  线程引擎驻留时用实时引擎状态（`GET /v1/threads/{id}/goal` 应答
+  `loaded:true`）；否则在线程日志里最近一次完成的
+  `create_goal`/`update_goal` 工具记录严格更新时用它；再否则用桌面
+  `/goal`（或目标条内联编辑）持久化在
+  `~/.codesmith/desktop/goals.json` 的命令快照。读取会话不会加载引擎。
+  投影携带 `{goal:{id, revision, objective, phase, blockedReason?,
+  maxGoalRounds, tokenBudget?}, roundsStarted, createdAt, updatedAt}`；
+  `complete` 不渲染，`blocked` 带上运行时的阻塞原因。`goals/get` 返回实时
+  `GoalView` 加 `activation`（active 时 `armed`，否则 `disarmed`）；
+  `goals/edit|pause|resume|clear` POST 运行时动作（加载引擎，先从日志播种
+  active/completed 目标）并推送刷新后的投影。运行时快照没有 goal id，桥用
+  创建工具条目的 id（没有则用会话）合成稳定身份并按条目计数版本。
+  `goals.json`（按该身份索引；原子改名；坏文件只记日志，绝不静默重置）
+  保存桌面 pause/clear overlay 与命令快照。读取路径不加载引擎，但对两种
+  回退都会呈现持久化的停止状态，对已加载引擎则就地重新应用；prompt 前的
+  reconcile 会先重放该动作，使刚加载（并从日志播种 active 目标）的引擎
+  不能在轮次收尾时继续驱动；在此之前还会用命令快照把被驱逐的引擎重新
+  播种（幂等 `edit`，目标不变时保留已跑轮次）。已加载的读取会把观察到的
+  phase/budget/blocker 回写进快照，因此模型侧的 `complete`/`blocked`
+  能熬过驱逐（objective 不同说明是别的写入者，留给日志）；终态快照与
+  持久化 clear 都不会被重建。对已驱逐的命令目标
+  执行 `pause`/`resume` 时会先重新播种，动作得以生效而不是答“无目标”。
+  目标条本身不创建，但宿主 `/goal <objective> [budget: N]` 命令会创建
+  （直接 POST 运行时的 `edit` 动作：没有目标时创建，目标不变时保留进度，
+  并从 `budget: N` 后缀采纳可选 token 预算——与 REPL 相同的后缀；输入
+  字面为 pause/resume/clear 时拒绝创建并指向目标条）。日志与命令快照的
+  优先级按墙钟 `updated_ms` 比较；完全相同时命令快照获胜（它是在与之
+  同刻的日志条目之后应用到运行时的）。变更强制客户端的比较交换
+  （`ref {id, revision}`）：过期或缺失的 ref 答 `goal/stale-revision` 或
+  `gateway/arguments-invalid`——即上游 GOAL_STALE_REVISION 防线——且合成
+  的 revision 是日志条目计数加持久化 overlay 计数（命令快照就存放在该
+  overlay 里），ref 跨桥重启依然有效。已知限制：最后一次已加载读取之后、
+  驱逐之前发生的 complete/block 观察不到，下一次 prompt 的 reconcile
+  可能把该目标当 active 重新播种；绕过 reconcile 加载引擎的路径（直接
+  `goals/*` 变更、外部 HTTP 调用）对命令目标会先看到空状态，直到下一次
+  prompt 重新播种（快照本身没有丢）；`/goal` 之后模型再记录目标会开启
+  新的日志身份，持有旧 ref 的目标条 CAS 会失败；时钟偏移或日志条目时间
+  戳较粗时，可能把实际更晚的条目判给命令快照；引擎逐出后由运行时自行
+  启动的排队 turn 若中间没有桌面 prompt，可能抢在 pause 重放前多跑一轮。
+  客户端可选的 `maxGoalRounds` 编辑只接受运行时固定上限（25），其他值以
   `goal/rejected` 拒绝，不会静默忽略。
 - 文档预览与改动文件的打开控件（`client-ui-open-in-app` +
   `client-ui-file-actions`）经既有工作区文件面桥接：
@@ -389,7 +408,7 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 - 逐消息反馈与 `/feedback` 对话框（`client-ui-message-feedback`）由
   `~/.codesmith/desktop/feedback.json` 的桌面本地 compare-and-set sidecar
   支撑。`messageFeedback/list|put|delete` 校验会话存在、目标为已完成的
-  assistant item，并执行 UUID `ifVersion` 比较、1,024 字节 note 上限与固定
+  assistant item，并执行 UUID `ifVersion` 比较、上游的 8,192 字节 note 上限与固定
   分类词表；`sessionFeedback/record` 追加会话级记录。Like/Dislike 控件与
   对话框从每次变更的回复更新，`/feedback <text>` 进入宿主命令目录并携带
   `@codesmith/command-feedback` definition id（客户端本地化的 `/反馈`
@@ -400,13 +419,19 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   客户端自行对齐，重载后重读 sidecar）；删除会话日志会在 sidecar 留下
   孤儿行。CAS list/put/delete 契约已用 fake runtime 端到端覆盖
   （`host::tests::feedback_dispatch_enforces_the_sidecar_contract`）。
+- 消息引用是 vendored 的 `message-quotes` 插件：在转写中选中文本会打开
+  引用动作，输入框插入 blockquote 草稿节点，发送后的用户文本把引用行按
+  普通 blockquote 渲染。模型收到的是普通 Markdown——不记录引用元数据或
+  内容索引。该面纯客户端，桥不增加 RPC。
 - 控制流投影还携带 `todos`（最近一次成功的整表 `todo`/`checklist_write`
   调用，工具 `item.started` 时实时推送；单项的
   `todo_add`/`todo_update`/`checklist_add`/`checklist_update` 从结果
   metadata 折叠其快照）、`plan`、`permissions`、
   `workingDirectory`、`goal`（跟随会话的快照与实时 goal 更新；侧栏控制
   基线省略它，因此不会读到别的会话的目标）与 `turnOutline`（每个已开始
-  turn 的 seq 与截断的 prompt/response 预览）。`contextBreakdown` 与
+  turn 的 seq 与截断的 prompt/response 预览）。`session/projections`
+  以一次性基线返回同一组值，供 vendored 控制器的空白会话恢复与重连路径
+  使用；follow 快照与 `session/control` 帧仍是实时载体。`contextBreakdown` 与
   `userQuestions` 仍缺席：运行时没有记录逐请求的 system/tools/message
   组成，问题请求也没有 tool-call id 或取消路由。
 - 右侧栏终端标签页（`client-ui-sidebar-terminal`，经 `terminal/*`
@@ -474,8 +499,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   线上的 `unavailable` reason，面板渲染本地化的不可用态而非假装成功
   （`officeToPdf/generation` 为进程级 UUID；桥侧无结果缓存——客户端按
   generation+version 缓存）。读取拒绝末段
-  符号链接（上游自身的门），`baseFile` 相对解析未实现（预览按绝对路径
-  寻址文件）。
+  符号链接（上游自身的门）。`readBytes` 在定位基准文件（必须位于工作区内）
+  之后，从基准文档所在目录解析 `baseFile` 相对目标（上游先 stat 基准文件；
+  本桥随后对拼接结果施加同一套词法围栏），因此预览中的相对图片与链接能
+  打开目标文件。
 - 附件上传已端到端桥接。输入框的上传先暂存在桥里（`fileUploads/upload`
   与原始字节路由 `api/session/uploadFileBinary`，由页面安装的
   `__CODESMITH_FILE_UPLOAD__` 钩子改道到桥的 origin），`session/prompt`
@@ -500,7 +527,10 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   INTERVAL/BYDAY，`FREQ=WEEKLY` 带 BYDAY/BYHOUR/BYMINUTE，按机器本地
   时区求值）。任务页的每日/每周/整小时间隔/cron 形态会编译过去；一次性
   定时、不足一小时的间隔、异时区、其余 cron 形态在创建/编辑时响亮失败，
-  而不是静默改期。"让模型创建"只打开会话——模型没有注册日程的工具，
+  而不是静默改期。任务页每次保存都带 `expectedUpdatedAt`；桥把它与存储的
+  `updated_at` 比较，不匹配时答 `schedule_conflict`（运行时的 PATCH 不接
+  版本号，因此这是 compare-then-PATCH；两步之间落地的写入仍可能获胜）。
+  "让模型创建"只打开会话——模型没有注册日程的工具，
   请用手动表单。
 - 工具调用的输出增量不流式——vendored 卡片本身也不消费实时输出
   （运行中的卡片显示流光动画，由 `tool/result` 落定），与上游交互一
@@ -598,15 +628,16 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | 面板/能力 | 现状 | 下一步 | 决策 |
 | --- | --- | --- | --- |
 | 侧栏终端标签 | 已桥接 | — | 已落地 |
+| 消息引用 | 已桥接（纯客户端 `message-quotes` 插件） | — | 已落地 |
 | workflow 运行面板 | 已喂给（运行时 journal + 映射） | — | 已落地 |
 | 子代理 / 团队看板 | 未 vendor | in-process 子代理不是线程，需运行时侧设计 | 待设计 |
 | 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
 | Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |
 | open-in-app 图标 | macOS icns → PNG 已服务 | Linux/Windows 保持字形 | 已落地 |
-| goal 持久 CAS | 已落地（变更 ref 防线） | — | 已落地 |
+| goal 持久 CAS | 已落地（变更 ref 防线 + 命令快照跨驱逐/重启） | — | 已落地 |
 | 上传进度 | 不做（结构性） | vendored 上传运行时的 transport 钩子按契约丢弃进度回调，且环回上传毫秒级落定——进度条永不会动（见附件条目） | 不做 |
 | 像素基线 | 我方四张已捕获（`desktop/screenshots/baseline/`）；上游对照延期 | 解锁：经上游构建版 web 脚手架驱动一个逐像素对齐的 fixture 场景（headless CDP——2026-11-07 的 Electron 与窗口截图两项阻塞对该路线不适用） | 延期 |
 | 自动更新 · 欢迎页 · 托盘 | 无 | 桌面壳切片（Tauri updater 等） | 后续可选 |
 | 账号 / 平台 · 侧栏浏览器标签 | 不模拟 | — | 不跟进（上游品牌基建；Electron 嵌套 webview 无 wry 对等） |
-| vendor 刷新 | pin `8bd07339`，与本地 checkout 持平 | 上游演进后重跑 vendor 管线并修复 wire 漂移 | 常设机制 |
+| vendor 刷新 | pin `8bd07339`；本地 checkout 已推进越过该 pin | 从 pin 的 worktree 重跑 vendor 管线并修复 wire 漂移 | 常设机制 |

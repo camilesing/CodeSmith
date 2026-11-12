@@ -863,33 +863,20 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
         bail!("prompt without a text part");
     }
 
-    if mode == "steer" {
-        // A steer rides the active turn through the runtime's steer route —
-        // attachments included (admitted there through the same intake a
-        // turn's opening message uses), upstream `agent.steer` parity.
-        match active_turn_id(host, &session_id).await? {
-            Some(turn_id) => {
-                let path = format!("/v1/threads/{session_id}/turns/{turn_id}/steer");
-                let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
-                if !attachments.is_empty() {
-                    body["attachments"] = json!(attachments);
-                }
-                let _: Value = host.backend.post(&path, &body).await?;
-            }
-            None => bail!("steer with no running turn"),
-        }
+    let delivery = if mode == "steer" {
+        Delivery::Steer
     } else {
-        // Attachments ride only when present — a plain prompt keeps the body
-        // the runtime has always taken.
-        let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
-        if !attachments.is_empty() {
-            body["attachments"] = json!(attachments);
-        }
-        let _: Value = host
-            .backend
-            .post(&format!("/v1/threads/{session_id}/queue"), &body)
-            .await?;
-    }
+        Delivery::Queue
+    };
+    deliver_prompt(
+        host,
+        &session_id,
+        &text,
+        &attachments,
+        rpc_id.as_deref(),
+        delivery,
+    )
+    .await?;
     // The runtime accepted the prompt (parked, started, or steered) and
     // holds its bytes now — retire the staged receipts (a refused POST
     // above leaves them retryable).
@@ -899,8 +886,61 @@ pub async fn prompt(host: &SharedHost, request: &Value) -> Result<Value> {
         .filter_map(|p| p.receipt_id.clone())
         .collect();
     super::uploads::retire_receipts(&host.uploads, &receipt_ids).await;
-    ensure_waterfall_watcher(host, &session_id).await;
     Ok(json!({ "accepted": true }))
+}
+
+/// How one prompt reaches the runtime: a steer rides the active turn, a
+/// queue prompt parks on the thread, and `Auto` is the command plane's
+/// upstream `agent.steer` behavior (steer a running turn, otherwise start
+/// one with the same content).
+#[derive(Clone, Copy)]
+pub(super) enum Delivery {
+    Queue,
+    Steer,
+    Auto,
+}
+
+/// Deliver one prompt (text plus already-resolved runtime attachments) to
+/// the runtime and arm the session's waterfall watcher. The caller owns
+/// staged-receipt retirement: a failed POST leaves them retryable.
+pub(super) async fn deliver_prompt(
+    host: &SharedHost,
+    session_id: &str,
+    text: &str,
+    attachments: &[Value],
+    rpc_id: Option<&str>,
+    delivery: Delivery,
+) -> Result<()> {
+    let steer_target = match delivery {
+        Delivery::Queue => None,
+        Delivery::Steer | Delivery::Auto => active_turn_id(host, session_id).await?,
+    };
+    if matches!(delivery, Delivery::Steer) && steer_target.is_none() {
+        bail!("steer with no running turn");
+    }
+    // Attachments ride only when present — a plain prompt keeps the body the
+    // runtime has always taken.
+    let mut body = json!({ "prompt": text, "rpc_id": rpc_id });
+    if !attachments.is_empty() {
+        body["attachments"] = json!(attachments);
+    }
+    match steer_target {
+        Some(turn_id) => {
+            // A steer rides the active turn through the runtime's steer route
+            // — attachments included (admitted there through the same intake
+            // a turn's opening message uses), upstream `agent.steer` parity.
+            let path = format!("/v1/threads/{session_id}/turns/{turn_id}/steer");
+            let _: Value = host.backend.post(&path, &body).await?;
+        }
+        None => {
+            let _: Value = host
+                .backend
+                .post(&format!("/v1/threads/{session_id}/queue"), &body)
+                .await?;
+        }
+    }
+    ensure_waterfall_watcher(host, session_id).await;
+    Ok(())
 }
 
 /// The client error a failed queue mutation surfaces as. A runtime 404 is
@@ -1697,6 +1737,30 @@ async fn projection_values(
         );
     }
     Value::Object(values)
+}
+
+/// `session/projections` — one session's projection baseline outside a
+/// follow stream. The vendored session controller reads it when restoring a
+/// blank session and when a connection generation is re-established; the
+/// reply is the same sequenced shape a follow snapshot carries, drawn from
+/// the same `projection_values`, so a restored session never sees a different
+/// value set than its stream would seed.
+pub(super) async fn projections(host: &HostState, request: &Value) -> Result<Value> {
+    let session_id = request
+        .get("sessionId")
+        .or_else(|| request.get("session_id"))
+        .or_else(|| request.pointer("/request/sessionId"))
+        .and_then(Value::as_str)
+        .context("session/projections without sessionId")?;
+    // Drawn before the read, so the values are at least as fresh as the seq.
+    let seq = host.next_projection_seq();
+    let detail: Value = host
+        .backend
+        .get(&format!("/v1/threads/{session_id}"))
+        .await?;
+    let models = runtime_models(host).await;
+    let values = projection_values(host, session_id, &detail, &models).await;
+    Ok(json!({ "kind": "sequenced", "asOfSeq": seq, "values": values }))
 }
 
 /// `session/control` baseline: projections for the most recently used

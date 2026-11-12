@@ -173,8 +173,9 @@ Known limitations of the current implementation:
   `POST /v1/tasks/{id}/cancel` (`requested` / `already-finished`;
   `job/not-found` for an unknown id). Status mapping: queued/running →
   running, completed, failed, canceled → killed. A task with no linked
-  thread belongs to no session, so no roster lists it; there is no progress
-  line or byte cap to report.
+  thread belongs to no session, so no roster lists it. `progress` is the
+  latest `tool_progress` timeline entry (a shell checkpoint);
+  `outputLimitBytes` has no runtime source and stays absent.
 - The changes-review tab and changed-files card (`client-ui-deliverables`)
   are served from the thread's durable tool items: `write_file` and
   `edit_file` return a unified diff as the call's result, and `apply_patch`
@@ -239,10 +240,13 @@ Known limitations of the current implementation:
   surfaces the runtime's conflict text as the command's error notice) plus
   the per-thread mode switches: `/mode <agent|plan|yolo|coordinator>`
   (argument demanded, misspellings fail loud with the valid spellings),
-  `/plan [off]` and the `/yolo` shortcut, and `/permission
+  `/plan [off|message]` and the `/yolo` shortcut, and `/permission
   <workspace-write|danger-full-access>` (argument demanded) — each a
   `PATCH /v1/threads/{id}` of the `mode` field whose next turn applies the
-  mode's toolset and approval policy. A `/permission` switch while the
+  mode's toolset and approval policy. `/plan <message>` enters plan and
+  hands the message (and any composer attachments) to the running turn as a
+  steer, or starts a turn when the session is idle — upstream plan-mode's
+  own handler. A `/permission` switch while the
   thread is in `plan` is refused with text pointing at `/plan off`, so the
   preset picker cannot silently drop plan. The catalog also carries `/goal
   <objective> [budget: N]` and `/feedback <text>`, and the `/goal`, `/plan`,
@@ -437,41 +441,61 @@ Known limitations of the current implementation:
   `workspace/follow` stream, which is the row the sidebar renders. The
   in-app browser package stays vendored for its `list`/`createDirectory`
   primitives but is not booted (see above).
-- The GoalBar (`client-ui-goal`) is fed by the `goal` projection: the live
-  engine state when the thread's engine is resident (`GET
-  /v1/threads/{id}/goal` answers `loaded:true`), else the latest completed
-  `create_goal`/`update_goal` tool record in the thread journal (reading a
-  session never loads an engine). The projection carries
-  `{goal:{id, revision, objective, phase, blockedReason?, maxGoalRounds},
-  roundsStarted, createdAt, updatedAt}`; `complete` renders nothing and
-  `blocked` carries the runtime's blocker text. `goals/get` returns the live
-  `GoalView` plus `activation` (`armed` while active, else `disarmed`);
-  `goals/edit|pause|resume|clear` POST the runtime action (loading the
-  engine, which seeds active/completed goals from the journal) and push the
-  refreshed projection. The runtime snapshot carries no goal id, so the
-  bridge synthesizes a stable id from the creating tool item and counts
-  revisions. Desktop pause/clear persist in `~/.codesmith/desktop/goals.json`
-  (keyed by that identity): a read presents the persisted stop over the
-  journal fallback without loading an engine and re-applies it to an engine
-  that is already loaded, and a pre-prompt reconcile re-applies it before a
-  freshly loaded engine can drive continuation rounds. The bar itself does
-  not create, but the host `/goal <objective> [budget: N]` command does (it
-  POSTs the runtime's `edit` action directly, which creates a goal when none
-  exists, keeps an unchanged objective's progress, and adopts the optional
-  token budget parsed from the `budget: N` suffix — the same suffix the REPL
-  accepts; it refuses to create a goal literally named pause/resume/clear,
-  pointing at the bar instead). Mutations enforce the client's compare-and-set
+- The GoalBar (`client-ui-goal`) is fed by the `goal` projection from three
+  sources in strict priority order: the live engine state when the thread's
+  engine is resident (`GET /v1/threads/{id}/goal` answers `loaded:true`);
+  otherwise the latest completed `create_goal`/`update_goal` tool record in
+  the thread journal when it is strictly newer than the command snapshot;
+  otherwise the command snapshot a desktop `/goal` (or the bar's inline edit)
+  persisted in `~/.codesmith/desktop/goals.json`. A read never loads an
+  engine. The projection carries
+  `{goal:{id, revision, objective, phase, blockedReason?, maxGoalRounds,
+  tokenBudget?}, roundsStarted, createdAt, updatedAt}`; `complete` renders
+  nothing and `blocked` carries the runtime's blocker text. `goals/get`
+  returns the live `GoalView` plus `activation` (`armed` while active, else
+  `disarmed`); `goals/edit|pause|resume|clear` POST the runtime action
+  (loading the engine, which seeds active/completed goals from the journal)
+  and push the refreshed projection. The runtime snapshot carries no goal id,
+  so the bridge synthesizes a stable id from the creating tool item (else the
+  session) and counts revisions. `goals.json` (keyed by that identity; atomic
+  rename; a corrupt file logs and is never silently reset) holds the desktop
+  pause/clear overlay and the command snapshot. A read presents the persisted
+  stop over either fallback without loading an engine and re-applies it to an
+  engine that is already loaded; a pre-prompt reconcile re-applies it before
+  a freshly loaded engine can drive continuation rounds, and re-seeds an
+  evicted engine with the command snapshot first (an idempotent `edit`; an
+  unchanged objective keeps its rounds). A loaded read folds the observed
+  phase/budget/blocker back into the snapshot, so a model `complete` or
+  `blocked` survives the eviction (a different objective is another writer's
+  goal and is left to the journal); a terminal snapshot and a persisted clear
+  are never re-seeded. `pause`/`resume` issued against an evicted
+  command-created goal re-seed it first, so the verb lands instead of
+  answering "no goal". The bar itself does not create, but the host
+  `/goal <objective> [budget: N]` command does (it POSTs the runtime's `edit`
+  action directly, which creates a goal when none exists, keeps an unchanged
+  objective's progress, and adopts the optional token budget parsed from the
+  `budget: N` suffix — the same suffix the REPL accepts; it refuses to create
+  a goal literally named pause/resume/clear, pointing at the bar instead).
+  The journal/command precedence compares wall-clock `updated_ms`; an exact
+  tie goes to the command snapshot (it was applied to the runtime after the
+  journal item it ties with). Mutations enforce the client's compare-and-set
   (`ref {id, revision}`): a stale or absent ref answers `goal/stale-revision`
   or `gateway/arguments-invalid` — upstream's GOAL_STALE_REVISION guard — and
   because the synthesized revision is the journal item count plus the
-  persisted overlay counter, the ref also survives a bridge restart. Known
-  limitations: a goal created through
-  `/goal` has no journal item, so it does not survive an engine eviction at
-  all; a queued turn the runtime starts after an eviction without an
-  intervening desktop prompt can outrun a pause for one turn. The client's
-  optional `maxGoalRounds` edit is accepted only at the runtime's fixed cap
-  (25); any other value is refused with `goal/rejected` rather than silently
-  ignored.
+  persisted overlay counter (the command snapshot rides that overlay), the
+  ref also survives a bridge restart. Known limitations: a completion or
+  block after the last loaded read and before the eviction is not observed,
+  so the next prompt's reconcile can re-seed that goal as active; an engine
+  loaded by a path that bypasses reconcile (a direct `goals/*` mutation, an
+  external HTTP caller) starts empty for a command-created goal until the
+  next prompt re-seeds it (the snapshot itself is not lost); a model goal
+  recorded after `/goal` starts a new journal identity, so a bar holding the
+  old ref fails its CAS; clock skew or a coarse journal item timestamp can
+  invert a genuinely later item; a queued turn the runtime starts after an
+  eviction without an intervening desktop prompt can outrun a pause for one
+  turn. The client's optional `maxGoalRounds` edit is accepted only at the
+  runtime's fixed cap (25); any other value is refused with `goal/rejected`
+  rather than silently ignored.
 - The document-preview and changed-file open controls
   (`client-ui-open-in-app` + `client-ui-file-actions`) are bridged over the
   existing workspace-files surface: `session/canOpenWorkspacePath` answers
@@ -495,7 +519,7 @@ Known limitations of the current implementation:
   compare-and-set sidecar at `~/.codesmith/desktop/feedback.json`.
   `messageFeedback/list|put|delete` validate the persisted session and that
   the target is a finalized assistant item, enforce the UUID `ifVersion`
-  check, the 1,024-byte note cap, and the fixed category vocabulary;
+  check, the upstream 8,192-byte note cap, and the fixed category vocabulary;
   `sessionFeedback/record` appends a session-level remark. The Like/Dislike
   controls and the dialog update from each mutation's reply, and `/feedback
   <text>` joins the host command catalog with the `@codesmith/command-feedback`
@@ -509,6 +533,11 @@ Known limitations of the current implementation:
   reload re-reads the sidecar); removing a session log leaves its feedback
   rows behind. The CAS list/put/delete contract is covered end to end against
   a fake runtime (`host::tests::feedback_dispatch_enforces_the_sidecar_contract`).
+- Message quotes are the vendored `message-quotes` plugin: selecting
+  transcript text opens the quote action, the composer inserts a blockquote
+  draft node, and sent user text renders quoted lines as plain blockquotes.
+  The model receives ordinary Markdown — no quote metadata or content index
+  is recorded. The surface is client-only; the bridge serves no extra RPC.
 - Control projections also carry `todos` (the latest successful whole-list
   `todo`/`checklist_write` call, pushed live on the tool's `item.started`;
   single-item `todo_add`/`todo_update`/`checklist_add`/`checklist_update`
@@ -516,7 +545,11 @@ Known limitations of the current implementation:
   `plan`, `permissions`, `workingDirectory`, `goal` (the followed session's
   snapshot and live goal updates; the sidebar's control baseline omits it so
   it never reads another session's goal), and `turnOutline` (every started
-  turn's seq plus bounded prompt/response previews). `contextBreakdown` and
+  turn's seq plus bounded prompt/response previews). `session/projections`
+  serves the same value set as a one-shot baseline for the vendored
+  controller's blank-session restore and reconnect paths; the follow
+  snapshot and `session/control` frames remain the live carriers.
+  `contextBreakdown` and
   `userQuestions` stay absent: the runtime records no per-request
   system/tools/message composition, and question requests carry no tool-call
   id or cancel route.
@@ -605,8 +638,11 @@ Known limitations of the current implementation:
   (`officeToPdf/generation` is a per-process UUID; no bridge-side result
   cache — the client caches by generation+version). Reads refuse a
   final-component
-  symlink (upstream's own gate) and `baseFile`-relative resolution is not
-  implemented (the preview addresses files by absolute path).
+  symlink (upstream's own gate). `readBytes` resolves a `baseFile`-relative
+  target from the base document's directory after locating the base inside
+  the workspace (upstream stats the base first; this bridge then applies the
+  same lexical fence to the joined target), so relative images and links in
+  the preview open the intended file.
 - Attachment upload IS bridged, end to end. The composer's uploads stage in
   the bridge (`fileUploads/upload`, and the raw-bytes
   `api/session/uploadFileBinary` route, carried to the bridge origin by the
@@ -640,7 +676,11 @@ Known limitations of the current implementation:
   machine's local zone). The task page's daily/weekly/whole-hour/cron shapes
   compile into them; one-shot timings, sub-hour intervals, foreign time
   zones, and other cron shapes fail loud at create/edit instead of silently
-  rescheduling. "Ask the model" task creation opens a session, but the model
+  rescheduling. The task page sends `expectedUpdatedAt` with each save; the
+  bridge compares it with the stored `updated_at` and answers
+  `schedule_conflict` on a mismatch (the runtime PATCH takes no revision, so
+  the check is compare-then-PATCH; a write landing between the two can still
+  win). "Ask the model" task creation opens a session, but the model
   has no schedule-registration tool — use the manual form.
 - Tool-call output deltas are not streamed — the vendored cards don't
   consume live output either (a running card shows its shimmer and settles
@@ -764,15 +804,16 @@ lives in the bullets above.
 | Surface | State | Next | Decision |
 | --- | --- | --- | --- |
 | Sidebar terminal tabs | bridged | — | landed |
+| Message quotes | bridged (client-only `message-quotes` plugin) | — | landed |
 | workflow-run panel | fed (runtime journal + mapper) | — | landed |
 | Subagent / team board | not vendored | in-process subagents are not threads; needs runtime-side design | needs design |
 | Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |
 | Office document preview | bridged over a local `soffice` | — | landed |
 | open-in-app icons | macOS icns → PNG served | Linux/Windows keep the glyph | landed |
-| goal durable CAS | landed (the mutation ref guard) | — | landed |
+| goal durable CAS | landed (mutation ref guard + command snapshot across eviction/restart) | — | landed |
 | upload progress | won't fix (structural) | the vendored upload runtime's transport hook drops the progress callback by contract, and loopback uploads settle in milliseconds — the bar would never visibly move (see the attachment bullet) | won't fix |
 | pixel-parity baseline | our four shots captured (`desktop/screenshots/baseline/`); the upstream comparison is deferred | unblock: drive one matching fixture scenario through the upstream built-dist web scaffold (headless CDP — the 2026-11-07 Electron and window-capture blockers do not apply to that path) | deferred |
 | Auto-update · welcome · tray | none | desktop-shell slices (Tauri updater and friends) | later, optional |
 | Account / platform · sidebar browser tabs | not simulated | — | will not bridge (upstream brand infrastructure; Electron's nested webview has no wry equivalent) |
-| Vendor refresh | pinned `8bd07339`, level with the local checkout | re-run the vendor pipeline after upstream moves and repair wire drift | standing mechanism |
+| Vendor refresh | pinned `8bd07339`; the local checkout has moved past it | re-run the vendor pipeline from a worktree at the pin and repair wire drift | standing mechanism |

@@ -16,10 +16,12 @@
 //! serves.
 //!
 //! Known limitations: a task with no linked thread (a foreign HTTP client's
-//! task) belongs to no session, so no roster lists it; `progress` lines and
-//! the byte `outputLimitBytes` cap have no runtime source and stay absent;
-//! kill maps onto the runtime's cancel (a 60s grace interrupt), so a row may
-//! read `running` briefly after its kill was `requested`.
+//! task) belongs to no session, so no roster lists it; the byte
+//! `outputLimitBytes` cap has no runtime source and stays absent; kill maps
+//! onto the runtime's cancel (a 60s grace interrupt), so a row may read
+//! `running` briefly after its kill was `requested`. The optional `progress`
+//! line comes from the latest `tool_progress` timeline entry (a shell
+//! checkpoint), so a task that never emitted one shows none.
 
 use std::time::Duration;
 
@@ -151,6 +153,23 @@ fn job_view(task: &Value) -> Value {
         });
     if let Some(detail) = detail {
         view["detail"] = json!(detail);
+    }
+    // The live progress line: the latest shell checkpoint in the durable
+    // timeline. `JobView.progress` is optional upstream; absent stays absent
+    // for a task that never reported one.
+    let progress =
+        task.get("timeline")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries.iter().rev().find(|entry| {
+                    entry.get("kind").and_then(Value::as_str) == Some("tool_progress")
+                })
+            })
+            .and_then(|entry| entry.get("summary"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty());
+    if let Some(progress) = progress {
+        view["progress"] = json!(progress);
     }
     view
 }
@@ -363,11 +382,12 @@ mod tests {
                 timeline_entry("message", "world"),
                 timeline_entry("tool_started", "exec_shell started (ls)"),
                 timeline_entry("tool_completed", "exec_shell: ok"),
+                timeline_entry("tool_progress", "exec_shell: 42 files"),
             ],
         });
         assert_eq!(
             render_output(&task),
-            "Task started\nhello world\nexec_shell started (ls)\nexec_shell: ok\n"
+            "Task started\nhello world\nexec_shell started (ls)\nexec_shell: ok\nexec_shell: 42 files\n"
         );
         let view = job_view(&task);
         assert_eq!(view["kind"], "codesmith-task");
@@ -375,9 +395,10 @@ mod tests {
         assert_eq!(view["status"], "completed");
         assert_eq!(view["owner"], "thr_1");
         assert_eq!(view["detail"], "did it");
+        assert_eq!(view["progress"], "exec_shell: 42 files");
         assert_eq!(
             view["output"]["total"],
-            json!("Task started\nhello world\nexec_shell started (ls)\nexec_shell: ok\n".len())
+            json!("Task started\nhello world\nexec_shell started (ls)\nexec_shell: ok\nexec_shell: 42 files\n".len())
         );
     }
 

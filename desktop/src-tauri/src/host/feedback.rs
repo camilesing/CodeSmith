@@ -47,8 +47,9 @@ const CATEGORIES: [&str; 7] = [
     "security-privacy-permission",
 ];
 
-/// The vendored host's note cap (bytes of UTF-8).
-const MAX_NOTE_BYTES: usize = 1024;
+/// The vendored host's note cap (bytes of UTF-8) — upstream's web bundle
+/// configures `maxNoteBytes: 8192`.
+const MAX_NOTE_BYTES: usize = 8192;
 
 /// Serializes read-modify-write cycles over the one sidecar file.
 static FEEDBACK_LOCK: Mutex<()> = Mutex::const_new(());
@@ -529,6 +530,6 @@ mod tests {
             assert!(valid_category(Some(category)));
         }
         assert!(!valid_category(Some("bogus")));
-        assert_eq!(MAX_NOTE_BYTES, 1024);
+        assert_eq!(MAX_NOTE_BYTES, 8192);
     }
 }

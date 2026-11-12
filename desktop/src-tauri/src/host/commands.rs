@@ -10,17 +10,21 @@
 //! `{commandId, result:{kind…}}`.
 //!
 //! Admission mirrors the upstream registry's order (the commands registry's
-//! `execute`): parse the line, resolve the name, refuse attachments
-//! (no entry declares `input.attachments`), refuse or demand arguments —
-//! each refusal settles as a command error result, exactly the sentences
-//! the upstream `command-compact` plugin produces.
+//! `execute`): parse the line, resolve the name, refuse attachments unless
+//! the entry declares `input.attachments` (`/plan` is the one that does),
+//! refuse or demand arguments — each refusal settles as a command error
+//! result, exactly the sentences the upstream `command-compact` plugin
+//! produces.
 //!
 //! The mode commands bridge the runtime's per-thread `mode` field
 //! (`PATCH /v1/threads/{id}`, `AppMode::from_setting` spellings): `/mode`
 //! takes the mode name as its argument, `/plan` and `/yolo` are the REPL's
-//! own shortcuts for the two most-used switches. `/model` needs no catalog
-//! row — the vendored client registers it as a client contribution whose
-//! popup drives `session/selectModel` (already bridged).
+//! own shortcuts for the two most-used switches. `/plan <message>` enters
+//! plan and hands the message (with composer attachments) to the runtime
+//! as an upstream `agent.steer`: a running turn takes a steer, an idle
+//! session starts a turn. `/model` needs no catalog row — the vendored
+//! client registers it as a client contribution whose popup drives
+//! `session/selectModel` (already bridged).
 //!
 //! Known limitations:
 //! - the catalog is static for the life of the bridge process (the runtime
@@ -89,7 +93,7 @@ pub fn catalog() -> Value {
             "definitionId": "@codesmith/plan-mode",
             "name": "plan",
             "description": "Enter or leave plan mode",
-            "input": { "hint": "[off]" },
+            "input": { "hint": "[off|message]", "attachments": true },
         },
         {
             "definitionId": "@codesmith/permission-presets",
@@ -177,6 +181,12 @@ enum Admitted {
     Mode(&'static str),
     /// `/plan off`: leave plan and restore the permission mode it came from.
     PlanOff,
+    /// `/plan [message]`: enter plan, optionally steering a message (and its
+    /// attachments) as the next request — upstream plan-mode's own handler.
+    PlanMessage {
+        message: String,
+        attachments: Vec<Value>,
+    },
     /// A permission-preset switch; the value is the thread mode it writes.
     Permission(&'static str),
     /// `/goal <objective> [budget: N]`: create or replace the runtime goal.
@@ -199,16 +209,17 @@ enum Admission {
 }
 
 /// Admit one invocation against the catalog (name resolution, attachment
-/// refusal, argument usage — in the registry's order). `/mode` demands its
-/// argument; `/compact`, `/plan` and `/yolo` refuse one.
-fn admit(line: &str, attachment_count: usize) -> Admission {
+/// admission, argument usage — in the registry's order). `/mode` and
+/// `/permission` demand their argument; `/compact` and `/yolo` refuse one;
+/// `/plan` admits an optional message and composer attachments.
+fn admit(line: &str, attachments: &[Value]) -> Admission {
     let Some((name, raw_input)) = parse_command(line) else {
         return Admission::Miss;
     };
-    if attachment_count > 0
+    if !attachments.is_empty()
         && matches!(
             name,
-            "compact" | "mode" | "plan" | "permission" | "yolo" | "goal" | "feedback"
+            "compact" | "mode" | "permission" | "yolo" | "goal" | "feedback"
         )
     {
         return Admission::Error(format!("/{name} does not accept attachments"));
@@ -229,12 +240,28 @@ fn admit(line: &str, attachment_count: usize) -> Admission {
         }
         "plan" => {
             // `/plan` enters the separate plan state; `/plan off` leaves it
-            // and restores the permission mode the session came from. Any
-            // other argument is a usage error, not a mode switch.
+            // and restores the permission mode the session came from; any
+            // other text enters plan and steers that message (with its
+            // attachments) as the next request — upstream's handler.
             match raw_input.trim() {
-                "" => Admission::Admitted(Admitted::Mode("plan")),
-                "off" => Admission::Admitted(Admitted::PlanOff),
-                _ => Admission::Error("Usage: /plan [off]".into()),
+                "" => Admission::Admitted(if attachments.is_empty() {
+                    Admitted::Mode("plan")
+                } else {
+                    Admitted::PlanMessage {
+                        message: String::new(),
+                        attachments: attachments.to_vec(),
+                    }
+                }),
+                "off" => {
+                    if !attachments.is_empty() {
+                        return Admission::Error("Attachments cannot accompany /plan off.".into());
+                    }
+                    Admission::Admitted(Admitted::PlanOff)
+                }
+                message => Admission::Admitted(Admitted::PlanMessage {
+                    message: message.to_string(),
+                    attachments: attachments.to_vec(),
+                }),
             }
         }
         "permission" => match permissions::mode_of_preset(raw_input.trim()) {
@@ -318,7 +345,7 @@ fn internal(err: anyhow::Error) -> OpError {
 /// `commands/execute` — admit the line, then hand an admitted invocation to
 /// the runtime: compaction to the manual compact route, a mode switch to the
 /// thread PATCH.
-pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError> {
+pub async fn execute(host: &super::SharedHost, args: &Value) -> Result<Outcome, OpError> {
     let session_id = args
         .get("agentId")
         .and_then(Value::as_str)
@@ -330,12 +357,12 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
         .and_then(Value::as_str)
         .context("commands/execute without line")
         .map_err(bad_args)?;
-    let attachment_count = args
+    let submitted_attachments = args
         .get("submittedAttachments")
         .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    match admit(line, attachment_count) {
+        .cloned()
+        .unwrap_or_default();
+    match admit(line, &submitted_attachments) {
         Admission::Miss => Ok(Outcome::Miss),
         Admission::Error(text) => Ok(Outcome::Executed(command_error(&text))),
         Admission::Admitted(admitted) => match admitted {
@@ -366,7 +393,12 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                 // the command's error result, quoting the runtime's text.
                 // `sessions::set_mode` also keeps the plan-return stash, so a
                 // later plan approval hands the session back to this mode.
-                settle_mode_switch(host, &session_id, mode, format!("Mode set to {mode}.")).await
+                let text = if mode == "plan" {
+                    "Plan mode on. Use /plan off to leave.".to_string()
+                } else {
+                    format!("Mode set to {mode}.")
+                };
+                settle_mode_switch(host, &session_id, mode, text).await
             }
             Admitted::Permission(mode) => {
                 // Plan is a separate state, not a permission: switching the
@@ -404,6 +436,65 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                     }
                 }
             }
+            Admitted::PlanMessage {
+                message,
+                attachments,
+            } => {
+                // Resolve the submitted attachments before touching the
+                // thread: a bad receipt or image is an admission failure and
+                // must leave the session in its previous mode. The runtime
+                // registry admits durable blocks before the handler runs for
+                // the same reason.
+                let runtime_attachments =
+                    match command_attachments(host, &session_id, &attachments).await {
+                        Ok(attachments) => attachments,
+                        Err(message) => {
+                            return Ok(Outcome::Executed(command_error(&message)));
+                        }
+                    };
+                // Enter plan, then hand the message to the runtime the way
+                // upstream's command handler calls `agent.steer`: a running
+                // turn takes a steer, an idle session starts a turn.
+                match sessions::set_mode(host, &session_id, "plan")
+                    .await
+                    .map_err(internal)?
+                {
+                    Ok(()) => {}
+                    Err((_status, runtime_message)) => {
+                        return Ok(Outcome::Executed(command_error(&runtime_message)));
+                    }
+                }
+                if !message.is_empty() || !runtime_attachments.is_empty() {
+                    if let Err(err) = sessions::deliver_prompt(
+                        host,
+                        &session_id,
+                        &message,
+                        &runtime_attachments,
+                        None,
+                        sessions::Delivery::Auto,
+                    )
+                    .await
+                    {
+                        return Ok(Outcome::Executed(command_error(&format!(
+                            "Plan message failed: {err:#}"
+                        ))));
+                    }
+                    let receipt_ids: Vec<String> = attachments
+                        .iter()
+                        .filter(|item| item.get("type").and_then(Value::as_str) == Some("file"))
+                        .filter_map(|item| {
+                            item.get("receiptId")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .collect();
+                    super::uploads::retire_receipts(&host.uploads, &receipt_ids).await;
+                }
+                sessions::push_control_projection(host, &session_id).await;
+                Ok(Outcome::Executed(command_success(
+                    "Plan mode on. Use /plan off to leave.",
+                )))
+            }
             Admitted::Goal {
                 objective,
                 token_budget,
@@ -414,7 +505,7 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                 // the state the round driver reads. A refusal (blank
                 // objective) settles as the command's error result.
                 let path = format!("/v1/threads/{session_id}/goal");
-                let mut body = json!({ "action": "edit", "objective": objective });
+                let mut body = json!({ "action": "edit", "objective": &objective });
                 if let Some(budget) = token_budget {
                     body["token_budget"] = json!(budget);
                 }
@@ -425,8 +516,9 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
                     .map_err(internal)?
                 {
                     Ok(_) => {
-                        // A successful edit supersedes a desktop pause/clear.
-                        super::goals::note_edit(host, &session_id).await;
+                        // A successful edit supersedes a desktop pause/clear
+                        // and persists the snapshot an eviction replays.
+                        super::goals::note_edit(host, &session_id, &objective, token_budget).await;
                         super::goals::push(host, &session_id).await;
                         Ok(Outcome::Executed(command_success("Goal set.")))
                     }
@@ -441,6 +533,54 @@ pub async fn execute(host: &HostState, args: &Value) -> Result<Outcome, OpError>
             }
         },
     }
+}
+
+/// Resolve a command invocation's submitted attachments — inline images and
+/// staged file receipts — into runtime turn attachments, preserving
+/// submission order. A bad entry fails the whole invocation with the
+/// helper's own message; the caller owns receipt retirement after the
+/// runtime accepts the prompt.
+async fn command_attachments(
+    host: &HostState,
+    session_id: &str,
+    submitted: &[Value],
+) -> Result<Vec<Value>, String> {
+    let mut resolved = Vec::new();
+    for item in submitted {
+        match item.get("type").and_then(Value::as_str) {
+            Some("image") => {
+                let attachment = super::uploads::inline_image_attachment(
+                    item.get("mediaType").and_then(Value::as_str),
+                    item.get("data").and_then(Value::as_str),
+                    item.get("name").and_then(Value::as_str),
+                )
+                .map_err(|err| err.message)?;
+                resolved.push(attachment);
+            }
+            Some("file") => {
+                let receipt_id =
+                    item.get("receiptId")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            "commands/execute: file attachment without receiptId".to_string()
+                        })?;
+                let mut item = super::uploads::resolve_prompt_attachments(
+                    &host.uploads,
+                    session_id,
+                    &[receipt_id.to_string()],
+                )
+                .await
+                .map_err(|err| err.message)?;
+                resolved.append(&mut item);
+            }
+            other => {
+                return Err(format!(
+                    "commands/execute: unknown attachment type {other:?}"
+                ))
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// A settled `kind:'success'` execution in the upstream shape.
@@ -476,6 +616,12 @@ async fn settle_mode_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One submitted attachment, enough for admission's "carries attachments"
+    /// gate; the runtime resolution path is exercised through dispatch tests.
+    fn attached() -> [Value; 1] {
+        [json!({ "type": "file", "receiptId": "receipt-1" })]
+    }
 
     #[test]
     fn mode_switches_keep_the_auto_approve_pairing() {
@@ -539,7 +685,8 @@ mod tests {
             list[3]["input"]["hint"],
             "workspace-write | danger-full-access"
         );
-        assert_eq!(list[2]["input"]["hint"], "[off]");
+        assert_eq!(list[2]["input"]["hint"], "[off|message]");
+        assert_eq!(list[2]["input"]["attachments"], true);
         assert_eq!(list[4]["input"]["hint"], "<objective> [budget: N]");
         assert_eq!(list[6]["input"]["hint"], "<text>");
         // The builtin definition ids the vendored command input maps to its
@@ -558,18 +705,21 @@ mod tests {
     #[test]
     fn goal_admission_requires_an_objective_and_leaves_bar_verbs_alone() {
         assert!(matches!(
-            admit("/goal ship the desktop bridge", 0),
+            admit("/goal ship the desktop bridge", &[]),
             Admission::Admitted(Admitted::Goal { objective, token_budget: None })
                 if objective == "ship the desktop bridge"
         ));
-        assert!(matches!(admit("/goal", 0), Admission::Error(_)));
+        assert!(matches!(admit("/goal", &[]), Admission::Error(_)));
         for verb in ["pause", "resume", "clear"] {
             assert!(
-                matches!(admit(&format!("/goal {verb}"), 0), Admission::Error(_)),
+                matches!(admit(&format!("/goal {verb}"), &[]), Admission::Error(_)),
                 "/goal {verb} must point at the GoalBar, not create a goal"
             );
         }
-        assert!(matches!(admit("/goal ship it", 1), Admission::Error(_)));
+        assert!(matches!(
+            admit("/goal ship it", &attached()),
+            Admission::Error(_)
+        ));
     }
 
     #[test]
@@ -594,11 +744,11 @@ mod tests {
             (String::new(), None)
         );
         assert!(matches!(
-            admit("/goal ship it budget: ten", 0),
+            admit("/goal ship it budget: ten", &[]),
             Admission::Error(text) if text.contains("budget: N")
         ));
         assert!(matches!(
-            admit("/goal ship it budget: 250", 0),
+            admit("/goal ship it budget: 250", &[]),
             Admission::Admitted(Admitted::Goal { objective, token_budget: Some(250) })
                 if objective == "ship it"
         ));
@@ -607,12 +757,15 @@ mod tests {
     #[test]
     fn feedback_admission_requires_text() {
         assert!(matches!(
-            admit("/feedback the tool row was unclear", 0),
+            admit("/feedback the tool row was unclear", &[]),
             Admission::Admitted(Admitted::Feedback(text)) if text == "the tool row was unclear"
         ));
-        assert!(matches!(admit("/feedback", 0), Admission::Error(_)));
-        assert!(matches!(admit("/feedback  ", 0), Admission::Error(_)));
-        assert!(matches!(admit("/feedback note", 1), Admission::Error(_)));
+        assert!(matches!(admit("/feedback", &[]), Admission::Error(_)));
+        assert!(matches!(admit("/feedback  ", &[]), Admission::Error(_)));
+        assert!(matches!(
+            admit("/feedback note", &attached()),
+            Admission::Error(_)
+        ));
     }
 
     #[test]
@@ -644,22 +797,22 @@ mod tests {
     #[test]
     fn admission_mirrors_the_registry_order() {
         assert!(matches!(
-            admit("/compact", 0),
+            admit("/compact", &[]),
             Admission::Admitted(Admitted::Compact)
         ));
         // An attachment settles as a command error before the usage check.
-        let Admission::Error(text) = admit("/compact", 1) else {
+        let Admission::Error(text) = admit("/compact", &attached()) else {
             panic!("an attachment-carrying invocation must refuse");
         };
         assert_eq!(text, "/compact does not accept attachments");
-        let Admission::Error(text) = admit("/compact keep this", 0) else {
+        let Admission::Error(text) = admit("/compact keep this", &[]) else {
             panic!("an argued invocation must refuse");
         };
         assert_eq!(text, "Usage: /compact (no arguments)");
         // Unknown names and non-command syntax are admission misses.
-        assert!(matches!(admit("/model", 0), Admission::Miss));
-        assert!(matches!(admit("/compact/", 0), Admission::Miss));
-        assert!(matches!(admit("plain text", 0), Admission::Miss));
+        assert!(matches!(admit("/model", &[]), Admission::Miss));
+        assert!(matches!(admit("/compact/", &[]), Admission::Miss));
+        assert!(matches!(admit("plain text", &[]), Admission::Miss));
     }
 
     #[test]
@@ -672,13 +825,13 @@ mod tests {
             ("/plan", "plan"),
             ("/yolo", "yolo"),
         ] {
-            match admit(line, 0) {
+            match admit(line, &[]) {
                 Admission::Admitted(Admitted::Mode(admitted)) => assert_eq!(admitted, mode),
                 other => panic!("{line} must admit mode {mode}, got {other:?}"),
             }
         }
         assert!(matches!(
-            admit("/plan off", 0),
+            admit("/plan off", &[]),
             Admission::Admitted(Admitted::PlanOff)
         ));
         for (line, mode) in [
@@ -689,7 +842,7 @@ mod tests {
             ("/permission agent", "agent"),
             ("/permission yolo", "yolo"),
         ] {
-            match admit(line, 0) {
+            match admit(line, &[]) {
                 Admission::Admitted(Admitted::Permission(admitted)) => {
                     assert_eq!(admitted, mode, "{line}");
                 }
@@ -697,15 +850,15 @@ mod tests {
             }
         }
         // A bare or misspelled /mode fails loud with the valid spellings.
-        let Admission::Error(text) = admit("/mode", 0) else {
+        let Admission::Error(text) = admit("/mode", &[]) else {
             panic!("a bare /mode must refuse");
         };
         assert_eq!(text, "Usage: /mode <agent|plan|yolo|coordinator>");
-        let Admission::Error(text) = admit("/mode full-access", 0) else {
+        let Admission::Error(text) = admit("/mode full-access", &[]) else {
             panic!("a misspelled mode must refuse");
         };
         assert_eq!(text, "Usage: /mode <agent|plan|yolo|coordinator>");
-        let Admission::Error(text) = admit("/permission", 0) else {
+        let Admission::Error(text) = admit("/permission", &[]) else {
             panic!("a bare /permission must refuse");
         };
         assert_eq!(
@@ -718,7 +871,7 @@ mod tests {
             "/permission coordinator",
             "/permission read-only",
         ] {
-            let Admission::Error(text) = admit(line, 0) else {
+            let Admission::Error(text) = admit(line, &[]) else {
                 panic!("{line} must refuse a non-permission state");
             };
             assert_eq!(
@@ -726,20 +879,38 @@ mod tests {
                 "Usage: /permission <workspace-write|danger-full-access>"
             );
         }
-        // The shortcuts refuse arguments and attachments like /compact.
-        for line in ["/plan now", "/yolo now"] {
-            let Admission::Error(text) = admit(line, 0) else {
-                panic!("{line} must refuse its argument");
-            };
-            assert!(text.starts_with("Usage: /"), "{text}");
+        // `/plan <message>` is upstream's steer-into-plan gesture; it admits
+        // an argument. `/yolo` is a plain shortcut and refuses one.
+        let Admission::Error(text) = admit("/yolo now", &[]) else {
+            panic!("/yolo must refuse its argument");
+        };
+        assert!(text.starts_with("Usage: /"), "{text}");
+        match admit("/plan now", &[]) {
+            Admission::Admitted(Admitted::PlanMessage {
+                message,
+                attachments,
+            }) => {
+                assert_eq!(message, "now");
+                assert!(attachments.is_empty());
+            }
+            other => panic!("/plan <message> must admit a plan message, got {other:?}"),
         }
-        for line in [
-            "/plan",
-            "/yolo",
-            "/mode plan",
-            "/permission workspace-write",
-        ] {
-            let Admission::Error(text) = admit(line, 1) else {
+        match admit("/plan", &attached()) {
+            Admission::Admitted(Admitted::PlanMessage {
+                message,
+                attachments,
+            }) => {
+                assert!(message.is_empty());
+                assert_eq!(attachments.len(), 1);
+            }
+            other => panic!("/plan with attachments must admit a plan message, got {other:?}"),
+        }
+        let Admission::Error(text) = admit("/plan off", &attached()) else {
+            panic!("/plan off with an attachment must refuse");
+        };
+        assert_eq!(text, "Attachments cannot accompany /plan off.");
+        for line in ["/yolo", "/mode plan", "/permission workspace-write"] {
+            let Admission::Error(text) = admit(line, &attached()) else {
                 panic!("{line} with an attachment must refuse");
             };
             assert!(text.ends_with("does not accept attachments"), "{text}");

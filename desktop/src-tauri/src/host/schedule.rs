@@ -16,12 +16,16 @@
 //!   and cron shapes outside the two grammars fail loud at create/edit;
 //! - delivery retention is a fixed answer, not a configured limit;
 //! - `schedule/run` triggers the automation immediately and reports success
-//!   from the HTTP route, not from the run's outcome.
+//!   from the HTTP route, not from the run's outcome;
+//! - the `expectedUpdatedAt` check is compare-then-PATCH (the runtime's PATCH
+//!   takes no revision), so a concurrent write between the read and the
+//!   patch can still be lost; the window is one loopback round trip.
 
 use anyhow::{bail, Context, Result};
 use chrono::Offset as _;
 use serde_json::{json, Value};
 
+use super::workspace::OpError;
 use super::HostState;
 
 /// The weekday codes RRULE uses, Monday-first to match the upstream input.
@@ -445,8 +449,40 @@ pub async fn create(host: &HostState, request: &Value) -> Result<Value> {
     Ok(catalog_entry(&automation, &home))
 }
 
+/// A stale `expectedUpdatedAt`: the task changed since the editor read it.
+/// Typed so `edit` can answer the wire's `schedule_conflict` code instead of
+/// a generic arguments error.
+#[derive(Debug)]
+struct StaleRevision;
+
+impl std::fmt::Display for StaleRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the task changed since it was read")
+    }
+}
+
+impl std::error::Error for StaleRevision {}
+
 /// `schedule/edit` — PATCH the mutable fields; a timing edit recompiles.
-pub async fn edit(host: &HostState, request: &Value) -> Result<Value> {
+/// `expectedUpdatedAt` is enforced here (the runtime's PATCH ignores it):
+/// the stored `updated_at` must equal the revision the editor read, and a
+/// mismatch answers `schedule_conflict` so the client can offer to review
+/// its edits instead of overwriting a newer task.
+pub async fn edit(host: &HostState, request: &Value) -> Result<Value, OpError> {
+    match edit_inner(host, request).await {
+        Ok(value) => Ok(value),
+        Err(err) if err.downcast_ref::<StaleRevision>().is_some() => Err(OpError {
+            code: "schedule_conflict",
+            message: format!("schedule/edit: {err}"),
+        }),
+        Err(err) => Err(OpError {
+            code: "gateway/arguments-invalid",
+            message: format!("schedule/edit: {err:#}"),
+        }),
+    }
+}
+
+async fn edit_inner(host: &HostState, request: &Value) -> Result<Value> {
     let request = request.get("request").unwrap_or(request);
     let id = request
         .get("id")
@@ -473,9 +509,21 @@ pub async fn edit(host: &HostState, request: &Value) -> Result<Value> {
     if obj.is_empty() {
         bail!("edit without a change");
     }
-    let expected = request.get("expectedUpdatedAt").cloned();
-    if let Some(expected) = expected {
-        obj.insert("expected_updated_at".into(), expected);
+    if let Some(expected) = request.get("expectedUpdatedAt") {
+        let automations: Vec<Value> = host
+            .backend
+            .get("/v1/automations")
+            .await
+            .context("read automations for the revision check")?;
+        let current = automations
+            .iter()
+            .find(|automation| automation.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|automation| automation.get("updated_at"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if &current != expected {
+            return Err(anyhow::Error::new(StaleRevision));
+        }
     }
     let automation: Value = host
         .backend

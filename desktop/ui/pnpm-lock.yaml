@@ -139,6 +139,9 @@ importers:
       '@codesmith/api-session-controller':
         specifier: workspace:*
         version: link:../api-session-controller
+      '@codesmith/api-terminal-controller':
+        specifier: workspace:*
+        version: link:../api-terminal-controller
       '@codesmith/api-workspace-controller':
         specifier: workspace:*
         version: link:../api-workspace-controller
@@ -227,6 +230,52 @@ importers:
       '@types/mime-types':
         specifier: ^3.0.1
         version: 3.0.1
+
+  vendor/@codesmith/api-terminal-controller:
+    dependencies:
+      '@codesmith/deque':
+        specifier: workspace:*
+        version: link:../deque
+      '@codesmith/lazy-require':
+        specifier: workspace:*
+        version: link:../lazy-require
+      '@codesmith/schemastery':
+        specifier: workspace:~
+        version: link:../schemastery
+      '@codesmith/typert-protocol':
+        specifier: workspace:*
+        version: link:../typert-protocol
+      '@codesmith/util-values':
+        specifier: workspace:*
+        version: link:../util-values
+      '@xterm/addon-serialize':
+        specifier: ^0.14.0
+        version: 0.14.0
+      '@xterm/headless':
+        specifier: ^6.0.0
+        version: 6.0.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@codesmith/api-gateway':
+        specifier: workspace:*
+        version: link:../api-gateway
+      '@codesmith/brand':
+        specifier: workspace:*
+        version: link:../brand
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/util-crypto':
+        specifier: workspace:*
+        version: link:../util-crypto
 
   vendor/@codesmith/api-workspace-controller:
     dependencies:
@@ -921,6 +970,30 @@ importers:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
 
+  vendor/@codesmith/client-ui-directory-picker-native:
+    devDependencies:
+      '@codesmith/api-remote-access':
+        specifier: workspace:*
+        version: link:../api-remote-access
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-workspace':
+        specifier: workspace:*
+        version: link:../client-ui-workspace
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+
   vendor/@codesmith/client-ui-dockkit:
     devDependencies:
       '@codesmith/brand':
@@ -1166,6 +1239,57 @@ importers:
       react:
         specifier: ^18.2.0
         version: 18.3.1
+
+  vendor/@codesmith/client-ui-message-feedback:
+    devDependencies:
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/client-connection':
+        specifier: workspace:*
+        version: link:../client-connection
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-chat':
+        specifier: workspace:*
+        version: link:../client-ui-chat
+      '@codesmith/client-ui-commands':
+        specifier: workspace:*
+        version: link:../client-ui-commands
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@codesmith/typert-protocol':
+        specifier: workspace:*
+        version: link:../typert-protocol
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
 
   vendor/@codesmith/client-ui-model-selection:
     devDependencies:
@@ -2128,6 +2252,72 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  vendor/@codesmith/client-ui-sidebar-terminal:
+    devDependencies:
+      '@codesmith/api-remotes':
+        specifier: workspace:*
+        version: link:../api-remotes
+      '@codesmith/api-terminal-controller':
+        specifier: workspace:*
+        version: link:../api-terminal-controller
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-shortcuts':
+        specifier: workspace:*
+        version: link:../client-shortcuts
+      '@codesmith/client-store':
+        specifier: workspace:*
+        version: link:../client-store
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-dockkit':
+        specifier: workspace:*
+        version: link:../client-ui-dockkit
+      '@codesmith/client-ui-layout':
+        specifier: workspace:*
+        version: link:../client-ui-layout
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-session':
+        specifier: workspace:*
+        version: link:../client-ui-session
+      '@codesmith/client-ui-sidebar-right':
+        specifier: workspace:*
+        version: link:../client-ui-sidebar-right
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/client-ui-theme':
+        specifier: workspace:*
+        version: link:../client-ui-theme
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
+      clsx:
+        specifier: ^2.0.0
+        version: 2.1.1
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+
   vendor/@codesmith/client-ui-skill:
     devDependencies:
       '@codesmith/api-remotes':
@@ -2614,6 +2804,42 @@ importers:
       '@codesmith/cordis':
         specifier: workspace:~
         version: link:../cordis
+
+  vendor/@codesmith/lazy-require:
+    devDependencies:
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+
+  vendor/@codesmith/message-quotes:
+    devDependencies:
+      '@codesmith/api-session-controller':
+        specifier: workspace:*
+        version: link:../api-session-controller
+      '@codesmith/client-locale':
+        specifier: workspace:*
+        version: link:../client-locale
+      '@codesmith/client-ui-chat':
+        specifier: workspace:*
+        version: link:../client-ui-chat
+      '@codesmith/client-ui-conversation':
+        specifier: workspace:*
+        version: link:../client-ui-conversation
+      '@codesmith/client-ui-primitives':
+        specifier: workspace:*
+        version: link:../client-ui-primitives
+      '@codesmith/client-ui-renderer':
+        specifier: workspace:*
+        version: link:../client-ui-renderer
+      '@codesmith/client-ui-slots':
+        specifier: workspace:*
+        version: link:../client-ui-slots
+      '@codesmith/cordis':
+        specifier: workspace:~
+        version: link:../cordis
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
 
   vendor/@codesmith/native-command:
     devDependencies:
@@ -3346,6 +3572,18 @@ packages:
 
   '@ungap/structured-clone@1.4.0':
     resolution: {integrity: sha512-1mEZtMKPM09vDmQt5y7YvmN2+DFTP7Tg0EWXdic8/C6VRnpb33e4ghisCIE3WZjsE2N8mf+QV1Zqh7ZFYLWInQ==}
+
+  '@xterm/addon-fit@0.11.0':
+    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+
+  '@xterm/addon-serialize@0.14.0':
+    resolution: {integrity: sha512-uteyTU1EkrQa2Ux6P/uFl2fzmXI46jy5uoQMKEOM0fKTyiW7cSn0WrFenHm5vO5uEXX/GpwW/FgILvv3r0WbkA==}
+
+  '@xterm/headless@6.0.0':
+    resolution: {integrity: sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   anser@2.3.5:
     resolution: {integrity: sha512-vcZjxvvVoxTeR5XBNJB38oTu/7eDCZlwdz32N1eNgpyPF7j/Z7Idf+CUwQOkKKpJ7RJyjxgLHCM7vdIK0iCNMQ==}
@@ -4765,6 +5003,14 @@ snapshots:
       '@types/node': 26.6.6
 
   '@ungap/structured-clone@1.4.0': {}
+
+  '@xterm/addon-fit@0.11.0': {}
+
+  '@xterm/addon-serialize@0.14.0': {}
+
+  '@xterm/headless@6.0.0': {}
+
+  '@xterm/xterm@6.0.0': {}
 
   anser@2.3.5: {}
 

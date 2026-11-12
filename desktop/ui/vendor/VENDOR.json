@@ -5960,6 +5960,62 @@
    "rewritten": 3,
    "upstream": "@deepseek-ai/dsh-lazy-require"
   },
+  "@codesmith/message-quotes": {
+   "deps": [
+    "@codesmith/cordis",
+    "@codesmith/api-session-controller",
+    "@codesmith/client-locale",
+    "@codesmith/client-ui-chat",
+    "@codesmith/client-ui-conversation",
+    "@codesmith/client-ui-renderer"
+   ],
+   "dir": "packages/session/message-quotes",
+   "entry": "client.js",
+   "files": {
+    "lib/client.js": "88b35f43d14e2f3ed4b62c5bed4d55a24e375ffa5495ad8ec10a3e3bc34d22da",
+    "lib/index.js": "766e608740a20791e7636e0da277c68181b8a8ceb85ef5accdbeec26092f32bf",
+    "lib/types/client/QuoteSelection.d.ts": "0a5c21e478e7bbae9c5fec05a4d8bbaed80d68207a456774cbff477a0d9b241b",
+    "lib/types/client/QuoteSelection.js": "637fe13d4961c4ab8e44de68b41681c27d7813811aa17fba002645edd863221a",
+    "lib/types/client/QuotedUserText.d.ts": "82b014da1e42c4fbef8343835f0982e9c84ca19136b78d405f1b2370a9c8c356",
+    "lib/types/client/QuotedUserText.js": "aa76c8af86cbfcf0eff1e07374094ab9fd46876078585bc17253adcd83fee8bd",
+    "lib/types/client/index.d.ts": "2cf37354007214a203945c79aa23a750aa60d273737f1348c408bf2fe59fcdd9",
+    "lib/types/client/index.js": "da4609e363bcb2c99ba7e130f568eb69fa43b73340dd08596a746246f3e13729",
+    "lib/types/client/locales.d.ts": "40417325ccbeb0baa5382ebc44ee51bb616527ebdb076446f79acf30ee4a79bd",
+    "lib/types/client/locales.js": "796891bcacdedb14ded9eb1bae69e5a6c27d002777851314e6dc843fda0d5e4a",
+    "lib/types/client/quote-rule.d.ts": "fbcdddb9cc0f6b5282a00abad6bdb80b734d12dccc15c53cfbb0647a0c0d70cd",
+    "lib/types/client/quote-rule.js": "461ed330b13aae619adcdfcb98d3af156e78fa3071bf073408043e1c357be17b",
+    "lib/types/client/quote-text.d.ts": "e22370d412062971b8555f7c12b8815b0d35780517fa96724ab3f05255a8fdfc",
+    "lib/types/client/quote-text.js": "bec685b0a371bfbe8a2ab2e33aea7462e1d39feb6fd10e3a22f6e97b0dfb1e82",
+    "lib/types/index.d.ts": "939f688da19c3f03142338b0005d1f903d607aa8ac37f511fe75653cb7ed1a97",
+    "lib/types/index.js": "377b3106fc7e13ce34f5546d8d1c5bba85cfaf10e59963b2970c2291f56e0602",
+    "locale/de.json": "8569ba917fbc6fe23baa91d0f5abbc008de540588758b7ea8f2773d02a7ec786",
+    "locale/en.json": "b7cb68853a814d5ed199b4e51b1c0338e04efb5995dffdee12cb3cc4d3ccc674",
+    "locale/es.json": "d4574f80980e95556c15c342b30a03155aeba8d49e59c72757e50225b95aa4fb",
+    "locale/fr.json": "5da6daa92bc8fedc9cf1f2b4e5315e0e3c821d2f45c434eb448b8dbf693b8095",
+    "locale/ja.json": "7674b48badefbee987cff6c2aed430f7bacb99a473476b551e05484dd1b45f00",
+    "locale/pt.json": "1e37567be7b03127f500f39263eb0c24a4324e7a63bae2d6d0acb9707b4e400b",
+    "locale/ru.json": "c0620896955b0f811129cfe441d1e5f97c3c95843555e8e07dd479d909e9de3a",
+    "locale/zh.json": "974b202a749015f221d782305b92b764073987ce5ca818bf3d9a9292666d6313",
+    "package.json": "37f8c8b362537277cc1a43deeb00d5c0356e8b53f5b1eff70c2c4028eff37b3f",
+    "src/client/QuoteSelection.module.css": "7c9e6e0725c620ee1ccd6dada0d21afcd14a96b6e1cd6f639c14d702cdb83c9a",
+    "src/client/QuoteSelection.tsx": "83559553de7b31fb0412538913d6e1c5b11b7347e44ba8bbf4e1a8433673b205",
+    "src/client/QuotedUserText.tsx": "41decade7ea4466e7a94cff34e2401de72d84e8cb21dc19d3b609b2c81005949",
+    "src/client/index.ts": "f10849ecdcb9c464098b4e632af3a610cfab6395aa2ac9b6dad94d734fa12528",
+    "src/client/locales.ts": "0100ef32e5e2e0ff08fcb51121e24fe7ece3cf3ff479b1f9a35ab8766350ac3b",
+    "src/client/quote-rule.ts": "a9fcf5c1f67ededc774a60eb6c3596fa2b500dbb30aff0b91f5a4a11ccd789f3",
+    "src/client/quote-text.ts": "81dc50d903e5f44eab4f01da8594ec4bcabcb6d49a269268938fd8869e134251",
+    "src/css-modules.d.ts": "e28410d74a0d763364c04fa690c2ca2202ad3019c74f8f5205e8dc6cba69c02f",
+    "src/index.ts": "8389066f0935cf0c63bd0ea29e96a32d1d24bda61e9f5003925523dbec399185"
+   },
+   "patched_files": [],
+   "plugin": true,
+   "pruned_deps": [
+    "devDependencies:@deepseek-ai/dsh-client-test-runtime",
+    "devDependencies:@deepseek-ai/dsh-session"
+   ],
+   "rewritten": 43,
+   "upstream": "@deepseek-ai/dsh-message-quotes"
+  },
   "@codesmith/native-command": {
    "deps": [
     "@codesmith/cordis"

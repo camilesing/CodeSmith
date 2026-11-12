@@ -14,8 +14,12 @@ Usage:
   python3 desktop/scripts/vendor_client.py \
       [--upstream /Users/xinyiqi/Dev/TypeScript/deepseek-harness]
 
-The checkout must already be built (`pnpm run build:lib:client`) — this
-script never builds upstream code, it only copies artifacts.
+The checkout must be at the commit recorded as `source_commit` in
+`ui/vendor/VENDOR.json` (a `git worktree` at the pin) and already built
+(`pnpm run build:lib:host && pnpm run build:lib:client`) — this script never
+builds upstream code, it only copies artifacts. Building from a moved
+checkout silently changes the shared client; check `git -C <checkout>
+rev-parse HEAD` first.
 
 Known limitations: the rewrite is textual. It stays coherent because every
 rule is applied to every vendored text file in one pass (an identifier shared
@@ -119,10 +123,18 @@ EXTRA_UI_ENTRIES = [
     "@deepseek-ai/dsh-client-ui-message-feedback",
     "@deepseek-ai/dsh-client-ui-directory-picker-native",
     "@deepseek-ai/dsh-client-ui-sidebar-terminal",
+    # Selected-text quotation and blockquote rendering: the interaction and
+    # the presentation are client-only (quotes travel as ordinary Markdown).
+    "@deepseek-ai/dsh-message-quotes",
 ]
 
-# Scan roots for scoped packages inside the upstream checkout.
-SCAN_ROOTS = ("packages/client", "packages/api", "packages/typert", "packages/util", "vendor")
+# Scan roots for scoped packages inside the upstream checkout. The
+# message-quotes package lives outside the `packages/client` tree, so its own
+# directory is a root — never all of `packages/session`, whose host-side
+# session-format/persistence packages would otherwise enter the closure the
+# moment a client bundle names one of them.
+SCAN_ROOTS = ("packages/client", "packages/api", "packages/typert", "packages/util",
+              "packages/session/message-quotes", "vendor")
 
 # Per-package payload directories/files copied (tests excluded). READMEs are
 # upstream docs, not runtime or license material, so they are not vendored.
@@ -317,7 +329,11 @@ def scan_packages(checkout: Path) -> dict[str, Path]:
         base = checkout / root
         if not base.is_dir():
             continue
-        for pkg_json in base.glob("*/package.json"):
+        # A root may name one package directory (its package.json is the only
+        # candidate) or a tree of packages.
+        manifests = [base / "package.json"] if (base / "package.json").is_file() \
+            else list(base.glob("*/package.json"))
+        for pkg_json in manifests:
             try:
                 name = json.loads(pkg_json.read_text(encoding="utf-8")).get("name", "")
             except json.JSONDecodeError:

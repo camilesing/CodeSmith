@@ -1,0 +1,31 @@
+import { jsx as _jsx } from "react/jsx-runtime";
+/** Quote action rendered through the Chat text-interaction Slot. */
+import { useEffect } from 'react';
+import css from './QuoteSelection.module.css';
+/**
+ * Render the action for a selection admitted by the Quote plugin.
+ * @param props - area-local text interaction and standard Session/composer seats.
+ * @returns the quote button after a valid selection in a writable conversation.
+ */
+export function QuoteSelectionAction({ dismiss, readText, clearSelection, inputActions, useSession, t }) {
+    const enabled = useSession(s => !s.removed && (s.subagent === null
+        || s.subagent.address.mode === 'continuable'));
+    useEffect(() => {
+        if (!enabled)
+            dismiss();
+    }, [enabled, dismiss]);
+    if (!enabled)
+        return null;
+    return _jsx("button", { type: "button", className: css.action, "aria-label": t('quote.add'), onPointerDown: (event) => { event.preventDefault(); }, onClick: () => {
+            const text = readText();
+            if (text === null) {
+                dismiss();
+                return;
+            }
+            if (!inputActions.insertQuote(text))
+                return;
+            clearSelection();
+            dismiss();
+        }, children: t('quote.add') });
+}
+//# sourceMappingURL=QuoteSelection.js.map

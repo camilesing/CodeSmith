@@ -234,6 +234,13 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
             Ok(value) => rpc_ok(value),
             Err(err) => rpc_error("gateway/internal", format!("session/events: {err:#}")),
         },
+        // One session's projection baseline without a follow stream: the
+        // vendored controller reads it when restoring a blank session and
+        // when a connection generation is re-established.
+        "session/projections" => match sessions::projections(host, args_of(payload)).await {
+            Ok(value) => rpc_ok(value),
+            Err(err) => rpc_error("gateway/internal", format!("session/projections: {err:#}")),
+        },
         "session/prompt" => {
             match sessions::prompt(host_arc, payload.get("args").unwrap_or(&Value::Null)).await {
                 Ok(value) => rpc_ok(value),
@@ -389,10 +396,7 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         },
         "schedule/edit" => match schedule::edit(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
-            Err(err) => rpc_error(
-                "gateway/arguments-invalid",
-                format!("schedule/edit: {err:#}"),
-            ),
+            Err(err) => rpc_error(err.code, err.message),
         },
         "schedule/run" => match schedule::run(host, args_of(payload)).await {
             Ok(value) => rpc_ok(value),
@@ -459,7 +463,7 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         // them. (/model needs no row: the vendored client registers it as a
         // client contribution driving session/selectModel.)
         "commands/list" => rpc_ok(commands::catalog()),
-        "commands/execute" => match commands::execute(host, args_of(payload)).await {
+        "commands/execute" => match commands::execute(host_arc, args_of(payload)).await {
             Ok(commands::Outcome::Executed(value)) => rpc_ok(value),
             // An admission miss is ok-with-no-value: the client reads the
             // absent value as its "unknown or malformed command" outcome.
@@ -1259,12 +1263,48 @@ mod tests {
         workspace: std::path::PathBuf,
         archived: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
         /// The thread detail's item list (feedback targets, goal tools).
-        items: Value,
+        /// Shared so a test can append a newer journal item.
+        items: Items,
         /// Every `POST /v1/threads/{id}/goal` body, in order.
         goal_actions: GoalActions,
+        /// The live goal an engine would report; an evicted engine is
+        /// `loaded:false`.
+        live_goal: LiveGoal,
     }
 
     type GoalActions = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
+    type Items = std::sync::Arc<std::sync::Mutex<Value>>;
+
+    /// The fake runtime's live goal state. Mutations apply only while the
+    /// engine is loaded: an evicted POST is recorded but changes nothing
+    /// (the bridge's own persisted snapshot is what the tests exercise).
+    #[derive(Clone, Default)]
+    struct LiveGoal {
+        goal: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+        loaded: std::sync::Arc<AtomicBool>,
+    }
+
+    impl LiveGoal {
+        fn evicted() -> Self {
+            Self::default()
+        }
+
+        fn loaded(goal: Value) -> Self {
+            let live = Self::default();
+            live.set(Some(goal));
+            live
+        }
+
+        fn set(&self, goal: Option<Value>) {
+            *self.goal.lock().unwrap_or_else(|err| err.into_inner()) = goal;
+            self.loaded.store(true, Ordering::SeqCst);
+        }
+
+        fn evict(&self) {
+            *self.goal.lock().unwrap_or_else(|err| err.into_inner()) = None;
+            self.loaded.store(false, Ordering::SeqCst);
+        }
+    }
 
     async fn fake_threads(
         axum::extract::State(fake): axum::extract::State<FakeRuntime>,
@@ -1305,10 +1345,15 @@ mod tests {
         if id == "thr_missing" {
             return Err(axum::http::StatusCode::NOT_FOUND);
         }
+        let items = fake
+            .items
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
         Ok(Json(json!({
             "thread": { "id": id, "workspace": "" },
             "turns": [],
-            "items": fake.items,
+            "items": items,
         })))
     }
 
@@ -1332,8 +1377,18 @@ mod tests {
         Json(json!({ "id": "thr_new" }))
     }
 
-    async fn fake_goal(axum::extract::Path(_id): axum::extract::Path<String>) -> Json<Value> {
-        Json(json!({ "loaded": false, "goal": null }))
+    async fn fake_goal(
+        axum::extract::State(fake): axum::extract::State<FakeRuntime>,
+        axum::extract::Path(_id): axum::extract::Path<String>,
+    ) -> Json<Value> {
+        let goal = fake
+            .live_goal
+            .goal
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        let loaded = fake.live_goal.loaded.load(Ordering::SeqCst);
+        Json(json!({ "loaded": loaded, "goal": goal }))
     }
 
     async fn fake_goal_post(
@@ -1343,8 +1398,78 @@ mod tests {
         fake.goal_actions
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .push(body);
-        Json(json!({ "goal": null }))
+            .push(body.clone());
+        let mut goal = fake
+            .live_goal
+            .goal
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if fake.live_goal.loaded.load(Ordering::SeqCst) {
+            match body
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "edit" => {
+                    let objective = body
+                        .get("objective")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    let same = goal
+                        .as_ref()
+                        .and_then(|goal| goal.get("objective"))
+                        .and_then(Value::as_str)
+                        == Some(objective.as_str());
+                    // GoalState::edit: an unchanged objective keeps the
+                    // budget unless a new one is supplied; a changed one
+                    // starts fresh.
+                    let budget = match body.get("token_budget").cloned() {
+                        Some(budget) if !budget.is_null() => budget,
+                        _ if same => goal
+                            .as_ref()
+                            .and_then(|goal| goal.get("token_budget"))
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                        _ => Value::Null,
+                    };
+                    let rounds = if same {
+                        goal.as_ref()
+                            .and_then(|goal| goal.get("rounds_started"))
+                            .cloned()
+                            .unwrap_or(json!(0))
+                    } else {
+                        json!(0)
+                    };
+                    *goal = Some(json!({
+                        "objective": objective,
+                        "status": "active",
+                        "token_budget": budget,
+                        "elapsed_seconds": 0,
+                        "evidence": null,
+                        "blocker": null,
+                        "rounds_started": rounds,
+                        "max_goal_rounds": 25,
+                    }));
+                }
+                "pause" => {
+                    if let Some(goal) = goal.as_mut() {
+                        goal["status"] = json!("paused");
+                        goal["blocker"] = json!("paused from the desktop");
+                    }
+                }
+                "resume" => {
+                    if let Some(goal) = goal.as_mut() {
+                        goal["status"] = json!("active");
+                        goal["blocker"] = Value::Null;
+                    }
+                }
+                "clear" => *goal = None,
+                _ => {}
+            }
+        }
+        Json(json!({ "goal": goal.clone() }))
     }
 
     async fn fake_runtime(workspace: std::path::PathBuf) -> String {
@@ -1358,8 +1483,27 @@ mod tests {
     async fn fake_runtime_with_actions(
         workspace: std::path::PathBuf,
         items: Value,
-    ) -> (String, GoalActions) {
+    ) -> (String, GoalActions, Items) {
+        fake_runtime_with_assets(workspace, items, LiveGoal::evicted()).await
+    }
+
+    async fn fake_runtime_with_live_goal(
+        workspace: std::path::PathBuf,
+        items: Value,
+        goal: Value,
+    ) -> (String, GoalActions, Items, LiveGoal) {
+        let live = LiveGoal::loaded(goal);
+        let (url, actions, items) = fake_runtime_with_assets(workspace, items, live.clone()).await;
+        (url, actions, items, live)
+    }
+
+    async fn fake_runtime_with_assets(
+        workspace: std::path::PathBuf,
+        items: Value,
+        live_goal: LiveGoal,
+    ) -> (String, GoalActions, Items) {
         let goal_actions: GoalActions = Default::default();
+        let items: Items = std::sync::Arc::new(std::sync::Mutex::new(items));
         let app = Router::new()
             .route("/v1/threads", get(fake_threads).post(fake_create_thread))
             .route("/v1/threads/summary", get(fake_summary))
@@ -1371,8 +1515,9 @@ mod tests {
             .with_state(FakeRuntime {
                 workspace,
                 archived: Default::default(),
-                items,
+                items: items.clone(),
                 goal_actions: goal_actions.clone(),
+                live_goal,
             });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1381,7 +1526,7 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (format!("http://{addr}"), goal_actions)
+        (format!("http://{addr}"), goal_actions, items)
     }
 
     static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1659,7 +1804,7 @@ mod tests {
         )
         .await;
         assert_eq!(blank["value"]["error"]["code"], "note-blank");
-        let huge = "x".repeat(1025);
+        let huge = "x".repeat(8193);
         let too_large = dispatch(
             &host,
             "messageFeedback/put",
@@ -1670,7 +1815,7 @@ mod tests {
         )
         .await;
         assert_eq!(too_large["value"]["error"]["code"], "note-too-large");
-        assert_eq!(too_large["value"]["error"]["maxBytes"], 1024);
+        assert_eq!(too_large["value"]["error"]["maxBytes"], 8192);
         let category = dispatch(
             &host,
             "messageFeedback/put",
@@ -1766,7 +1911,7 @@ mod tests {
             "started_at": "2026-11-11T10:00:00Z",
             "ended_at": "2026-11-11T10:00:05Z",
         }]);
-        let (url, actions) = fake_runtime_with_actions(cwd.clone(), items.clone()).await;
+        let (url, actions, _) = fake_runtime_with_actions(cwd.clone(), items.clone()).await;
         let host = test_host(url, cwd.clone());
 
         // A read never loads an engine and never posts a goal action.
@@ -1806,7 +1951,7 @@ mod tests {
         // A new Host with the same home is the bridge-restart / engine-reload
         // shape: the overlay is hydrated from `desktop/goals.json`, and the
         // revision survived — the restart-stable ref still passes the CAS.
-        let (url2, actions2) = fake_runtime_with_actions(cwd.clone(), items).await;
+        let (url2, actions2, _) = fake_runtime_with_actions(cwd.clone(), items).await;
         let reloaded = test_host(url2, cwd);
         let after = goals::get(&reloaded, &json!({ "agentId": "thr_a" })).await;
         assert_eq!(after["value"]["phase"], "paused", "{after}");
@@ -1842,8 +1987,13 @@ mod tests {
         actions2.lock().unwrap().clear();
         goals::reconcile(&reloaded, "thr_a").await;
         assert!(
-            actions2.lock().unwrap().is_empty(),
-            "an edit must clear the persisted pause"
+            actions2
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|body| body["action"] != "pause"),
+            "an edit must clear the persisted pause: {:?}",
+            actions2.lock().unwrap()
         );
 
         // A second client holding the pre-edit ref loses the race.
@@ -1854,6 +2004,396 @@ mod tests {
         )
         .await;
         assert_eq!(raced["error"]["code"], "goal/stale-revision", "{raced}");
+    }
+
+    /// A goal created through the desktop `/goal` command has no journal item.
+    /// After an engine eviction the bridge's persisted command snapshot must
+    /// answer the projection from `goals.json`, without loading an engine.
+    #[tokio::test]
+    async fn goal_command_survives_an_engine_eviction_without_loading() {
+        let home = test_home("goals-command-evict");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let (url, actions, _) = fake_runtime_with_actions(cwd.clone(), json!([])).await;
+        let host = test_host(url, cwd);
+
+        let ran = dispatch(
+            &host,
+            "commands/execute",
+            &json!({ "args": {
+                "agentId": "thr_a",
+                "line": "/goal ship it budget: 100",
+            } }),
+        )
+        .await;
+        assert_eq!(ran["value"]["result"]["kind"], "success", "{ran}");
+        let posted = actions.lock().unwrap().clone();
+        assert_eq!(posted.len(), 1, "{posted:?}");
+        assert_eq!(posted[0]["action"], "edit", "{posted:?}");
+        assert_eq!(posted[0]["objective"], "ship it", "{posted:?}");
+        assert_eq!(posted[0]["token_budget"], json!(100), "{posted:?}");
+
+        // The engine stays evicted (the fake's GET answers loaded:false) and
+        // a read never loads it: the snapshot in goals.json supplies the bar.
+        let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(read["value"]["objective"], "ship it", "{read}");
+        assert_eq!(read["value"]["tokenBudget"], json!(100), "{read}");
+        assert_eq!(read["value"]["phase"], "active", "{read}");
+        assert_eq!(read["value"]["id"], "goal_thr_a", "{read}");
+        assert_eq!(read["value"]["revision"], json!(2), "{read}");
+
+        let projections = dispatch(
+            &host,
+            "session/projections",
+            &json!({ "args": { "sessionId": "thr_a" } }),
+        )
+        .await;
+        let goal = &projections["value"]["values"]["goal"];
+        assert_eq!(goal["goal"]["objective"], "ship it", "{projections}");
+        assert_eq!(goal["goal"]["id"], "goal_thr_a", "{projections}");
+        assert!(
+            goal["goal"]["revision"]
+                .as_u64()
+                .is_some_and(|revision| revision > 0),
+            "{projections}"
+        );
+        assert_eq!(
+            actions.lock().unwrap().len(),
+            1,
+            "reading a session must not load an engine"
+        );
+    }
+
+    /// The pre-prompt reconcile re-creates the command goal in the evicted
+    /// engine with an idempotent edit, then re-applies the persisted pause.
+    #[tokio::test]
+    async fn goal_command_reseeds_the_engine_and_reapplies_the_pause() {
+        let home = test_home("goals-command-reseed");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let (url, actions, _) = fake_runtime_with_actions(cwd.clone(), json!([])).await;
+        let host = test_host(url, cwd);
+
+        let ran = dispatch(
+            &host,
+            "commands/execute",
+            &json!({ "args": {
+                "agentId": "thr_a",
+                "line": "/goal ship it budget: 100",
+            } }),
+        )
+        .await;
+        assert_eq!(ran["value"]["result"]["kind"], "success", "{ran}");
+
+        let paused = goals::action(
+            &host,
+            "goals/pause",
+            &json!({ "agentId": "thr_a", "ref": { "id": "goal_thr_a", "revision": 2 } }),
+        )
+        .await;
+        assert_eq!(paused["value"]["phase"], "paused", "{paused}");
+
+        actions.lock().unwrap().clear();
+        goals::reconcile(&host, "thr_a").await;
+        let posted = actions.lock().unwrap().clone();
+        assert!(
+            posted.iter().any(|body| {
+                body["action"] == "edit"
+                    && body["objective"] == "ship it"
+                    && body["token_budget"] == json!(100)
+            }),
+            "reconcile must re-seed the command goal: {posted:?}"
+        );
+        assert!(
+            posted.iter().any(|body| body["action"] == "pause"),
+            "reconcile must re-apply the pause: {posted:?}"
+        );
+        let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(read["value"]["phase"], "paused", "{read}");
+        assert_eq!(read["value"]["objective"], "ship it", "{read}");
+    }
+
+    /// A bridge restart rehydrates `goals.json`: the command goal keeps its
+    /// id and revision, so the ref a bar held before the restart still passes
+    /// the compare-and-set while an older one is refused.
+    #[tokio::test]
+    async fn goal_command_ref_survives_a_bridge_restart() {
+        let home = test_home("goals-command-restart");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let (url, _, _) = fake_runtime_with_actions(cwd.clone(), json!([])).await;
+        let host = test_host(url, cwd.clone());
+        let ran = dispatch(
+            &host,
+            "commands/execute",
+            &json!({ "args": {
+                "agentId": "thr_a",
+                "line": "/goal ship it budget: 100",
+            } }),
+        )
+        .await;
+        assert_eq!(ran["value"]["result"]["kind"], "success", "{ran}");
+        let before = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        let id = before["value"]["id"].as_str().expect("goal id").to_string();
+        let revision = before["value"]["revision"].as_u64().expect("goal revision");
+
+        // A new Host over the same CODESMITH_HOME is the bridge-restart shape.
+        let (url2, actions2, _) = fake_runtime_with_actions(cwd.clone(), json!([])).await;
+        let reloaded = test_host(url2, cwd);
+        let after = goals::get(&reloaded, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(after["value"]["id"], json!(id), "{after}");
+        assert_eq!(after["value"]["revision"], json!(revision), "{after}");
+        assert_eq!(after["value"]["objective"], "ship it", "{after}");
+        assert!(
+            actions2.lock().unwrap().is_empty(),
+            "the hydrated read must not load an engine"
+        );
+
+        let paused = goals::action(
+            &reloaded,
+            "goals/pause",
+            &json!({ "agentId": "thr_a", "ref": { "id": id, "revision": revision } }),
+        )
+        .await;
+        assert_eq!(paused["value"]["phase"], "paused", "{paused}");
+        let stale = goals::action(
+            &reloaded,
+            "goals/pause",
+            &json!({ "agentId": "thr_a", "ref": { "id": "goal_thr_a", "revision": 1 } }),
+        )
+        .await;
+        assert_eq!(stale["error"]["code"], "goal/stale-revision", "{stale}");
+    }
+
+    /// A model goal recorded after `/goal` is newer than the command
+    /// snapshot, so the journal wins (and its own identity).
+    #[tokio::test]
+    async fn a_newer_journal_goal_outranks_the_command_snapshot() {
+        let home = test_home("goals-command-journal-newer");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let (url, _, items) = fake_runtime_with_actions(cwd.clone(), json!([])).await;
+        let host = test_host(url, cwd);
+        let ran = dispatch(
+            &host,
+            "commands/execute",
+            &json!({ "args": { "agentId": "thr_a", "line": "/goal ship it" } }),
+        )
+        .await;
+        assert_eq!(ran["value"]["result"]["kind"], "success", "{ran}");
+        let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(read["value"]["objective"], "ship it", "{read}");
+
+        // The model records a goal after the command; its item is newer.
+        let later = (chrono::Utc::now() + chrono::Duration::minutes(1)).to_rfc3339();
+        items
+            .lock()
+            .unwrap()
+            .as_array_mut()
+            .expect("items")
+            .push(json!({
+                "id": "item_model",
+                "status": "completed",
+                "summary": "create_goal",
+                "detail": json!({
+                    "objective": "model goal", "status": "active",
+                    "token_budget": null, "elapsed_seconds": 0,
+                    "evidence": null, "blocker": null,
+                }).to_string(),
+                "started_at": later,
+                "ended_at": later,
+            }));
+        let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(read["value"]["objective"], "model goal", "{read}");
+        assert_eq!(read["value"]["id"], "goal_item_model", "{read}");
+    }
+
+    /// A `/goal` after the journal goal is newer than it: the command
+    /// snapshot wins, but it keeps the journal's identity so the bar's CAS
+    /// ref survives an edit.
+    #[tokio::test]
+    async fn a_command_newer_than_the_journal_outranks_it() {
+        let home = test_home("goals-command-newer");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let items = json!([{
+            "id": "item_create",
+            "status": "completed",
+            "summary": "create_goal",
+            "detail": json!({
+                "objective": "journal goal", "status": "active",
+                "token_budget": 500, "elapsed_seconds": 0,
+                "evidence": null, "blocker": null,
+            }).to_string(),
+            "started_at": "2026-11-11T10:00:00Z",
+            "ended_at": "2026-11-11T10:00:05Z",
+        }]);
+        let (url, _, _) = fake_runtime_with_actions(cwd.clone(), items).await;
+        let host = test_host(url, cwd);
+        let ran = dispatch(
+            &host,
+            "commands/execute",
+            &json!({ "args": {
+                "agentId": "thr_a",
+                "line": "/goal command goal budget: 100",
+            } }),
+        )
+        .await;
+        assert_eq!(ran["value"]["result"]["kind"], "success", "{ran}");
+        let read = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(read["value"]["objective"], "command goal", "{read}");
+        assert_eq!(read["value"]["tokenBudget"], json!(100), "{read}");
+        // The journal still supplies the identity and the revision base.
+        assert_eq!(read["value"]["id"], "goal_item_create", "{read}");
+        assert_eq!(read["value"]["revision"], json!(2), "{read}");
+    }
+
+    /// A terminal command goal survives an eviction but is never re-seeded as
+    /// active, and a cleared one stays absent.
+    #[tokio::test]
+    async fn terminal_goal_commands_are_not_resurrected() {
+        let home = test_home("goals-command-terminal");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let (url, actions, _, live) = fake_runtime_with_live_goal(
+            cwd.clone(),
+            json!([]),
+            json!({
+                "objective": "ship it", "status": "active", "token_budget": 100,
+                "elapsed_seconds": 0, "evidence": null, "blocker": null,
+                "rounds_started": 0, "max_goal_rounds": 25,
+            }),
+        )
+        .await;
+        let host = test_host(url, cwd);
+        let ran = dispatch(
+            &host,
+            "commands/execute",
+            &json!({ "args": {
+                "agentId": "thr_a",
+                "line": "/goal ship it budget: 100",
+            } }),
+        )
+        .await;
+        assert_eq!(ran["value"]["result"]["kind"], "success", "{ran}");
+        let active = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(active["value"]["phase"], "active", "{active}");
+        assert_eq!(active["value"]["revision"], json!(2), "{active}");
+
+        // The model completes the goal; the loaded read is what makes that
+        // phase durable in the command snapshot.
+        live.set(Some(json!({
+            "objective": "ship it", "status": "complete", "token_budget": 100,
+            "elapsed_seconds": 9, "evidence": "done", "blocker": null,
+            "rounds_started": 3, "max_goal_rounds": 25,
+        })));
+        let completed = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(completed["value"]["phase"], "complete", "{completed}");
+
+        live.evict();
+        let evicted = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(evicted["value"]["phase"], "complete", "{evicted}");
+        actions.lock().unwrap().clear();
+        goals::reconcile(&host, "thr_a").await;
+        assert!(
+            actions
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|body| body["action"] != "edit"),
+            "a complete goal must not be re-seeded: {:?}",
+            actions.lock().unwrap()
+        );
+
+        // Blocked is terminal as well.
+        live.set(Some(json!({
+            "objective": "ship it", "status": "blocked", "token_budget": 100,
+            "elapsed_seconds": 12, "evidence": null,
+            "blocker": "needs input", "rounds_started": 3, "max_goal_rounds": 25,
+        })));
+        let blocked = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(blocked["value"]["phase"], "blocked", "{blocked}");
+        assert_eq!(
+            blocked["value"]["blockedReason"]["message"], "needs input",
+            "{blocked}"
+        );
+        live.evict();
+        let evicted = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert_eq!(evicted["value"]["phase"], "blocked", "{evicted}");
+        assert_eq!(
+            evicted["value"]["blockedReason"]["message"], "needs input",
+            "{evicted}"
+        );
+        actions.lock().unwrap().clear();
+        goals::reconcile(&host, "thr_a").await;
+        assert!(
+            actions
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|body| body["action"] != "edit"),
+            "a blocked goal must not be re-seeded: {:?}",
+            actions.lock().unwrap()
+        );
+
+        // Clear suppresses the projection and the re-seed.
+        let cleared = goals::action(
+            &host,
+            "goals/clear",
+            &json!({ "agentId": "thr_a", "ref": { "id": "goal_thr_a", "revision": 2 } }),
+        )
+        .await;
+        assert_eq!(cleared["ok"], true, "{cleared}");
+        let gone = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert!(gone.get("value").is_none(), "{gone}");
+        actions.lock().unwrap().clear();
+        goals::reconcile(&host, "thr_a").await;
+        let posted = actions.lock().unwrap().clone();
+        assert!(
+            posted.iter().all(|body| body["action"] != "edit"),
+            "a cleared goal must not be re-seeded: {posted:?}"
+        );
+        let gone = goals::get(&host, &json!({ "agentId": "thr_a" })).await;
+        assert!(gone.get("value").is_none(), "{gone}");
+    }
+
+    /// `session/projections` answers the same sequenced envelope a follow
+    /// snapshot carries, so the vendored controller's blank-restore and
+    /// reconnect reads seed the same values the stream would.
+    #[tokio::test]
+    async fn session_projections_matches_the_follow_snapshot_shape() {
+        use serde_json::json;
+        let home = test_home("session-projections");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let host = test_host(fake_runtime(cwd.clone()).await, cwd);
+        let value = dispatch(
+            &host,
+            "session/projections",
+            &json!({ "args": { "sessionId": "thr_a" } }),
+        )
+        .await;
+        assert_eq!(value["value"]["kind"], "sequenced", "{value}");
+        assert!(
+            value["value"]["asOfSeq"]
+                .as_u64()
+                .is_some_and(|seq| seq > 0),
+            "the projection write carries a control seq: {value}"
+        );
+        // The value set is the per-session baseline: title/plan/queue and
+        // the other computed keys, never the sidebar's whole-session map.
+        let values = &value["value"]["values"];
+        assert!(values.get("title").is_some(), "{value}");
+        assert!(values.get("plan").is_some(), "{value}");
+        assert!(values.get("inbox").is_some(), "{value}");
+        // An unknown thread is an RPC failure, not an empty value set.
+        let missing = dispatch(
+            &host,
+            "session/projections",
+            &json!({ "args": { "sessionId": "thr_missing" } }),
+        )
+        .await;
+        assert_eq!(missing["error"]["code"], "gateway/internal", "{missing}");
     }
 
     /// The vendored Workspace remote's value shapes, through dispatch: a

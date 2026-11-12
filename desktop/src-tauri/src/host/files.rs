@@ -21,9 +21,10 @@
 //! Known limitations: no symlink following on the final component of a read
 //! (upstream's own gate; the tree lists a symlink by its destination's
 //! type); the office renderer's host conversion RPC stays unimplemented and
-//! the office preview renders its unavailable state; `baseFile`-relative
-//! resolution is not implemented (the vendored preview addresses files by
-//! absolute path).
+//! the office preview renders its unavailable state. `readBytes` resolves a
+//! `baseFile`-relative target lexically (upstream stats the base file first);
+//! the base still has to lie inside the workspace and the final target is
+//! fenced the same way as every other read.
 
 use std::path::{Path, PathBuf};
 
@@ -110,6 +111,40 @@ pub(super) fn resolve_target(root: &Path, path: &str) -> Result<PathBuf, FileErr
         ));
     }
     Ok(normalized)
+}
+
+/// Resolve one `readBytes` target against its base file's directory
+/// (upstream `WorkspaceByteReadOptions.baseFile`): the target must be a
+/// relative path with no URL scheme and no NUL. The base itself is located
+/// by the caller first, so its fence and existence match every other read.
+fn resolve_base_relative(base: &str, path: &str) -> Result<String, FileError> {
+    let relative = path.replace('\\', "/");
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative.contains('\0')
+        || looks_like_url(&relative)
+    {
+        return Err(FileError::new(
+            "gateway/bad-request",
+            "path must be relative when baseFile is provided",
+        ));
+    }
+    let base = Path::new(base);
+    let directory = base.parent().unwrap_or_else(|| Path::new(""));
+    Ok(directory.join(&relative).to_string_lossy().into_owned())
+}
+
+/// Upstream's scheme test: an ASCII letter followed by letters, digits,
+/// `+`, `.`, or `-`, then `:`.
+fn looks_like_url(path: &str) -> bool {
+    let Some((scheme, _)) = path.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
 }
 
 /// Collapse `.` and `..` lexically (no filesystem access).
@@ -336,7 +371,22 @@ pub async fn read_bytes(host: &HostState, args: &Value) -> Result<(Value, Vec<u8
         })?;
         let path = path_arg(args)
             .ok_or_else(|| FileError::new("gateway/arguments-invalid", "readBytes without path"))?;
-        let (target, metadata) = locate(host, &session_id, &path).await?;
+        // A preview link resolves against the document that carries it
+        // (`options.baseFile`); a plain byte read names its target directly.
+        // The base is located first, so a missing or out-of-fence base fails
+        // before the relative join can read anything.
+        let target_path = match args
+            .pointer("/options/baseFile")
+            .and_then(Value::as_str)
+            .filter(|base| !base.is_empty())
+        {
+            Some(base) => {
+                locate(host, &session_id, base).await?;
+                resolve_base_relative(base, &path)?
+            }
+            None => path.clone(),
+        };
+        let (target, metadata) = locate(host, &session_id, &target_path).await?;
         if !metadata.is_file() {
             return Err(FileError::new(
                 "workspace-file/not-found",
@@ -654,6 +704,27 @@ mod tests {
         );
         assert!(resolve_target(root, "../outside.rs").is_err());
         assert!(resolve_target(root, "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn base_file_relative_targets_join_the_base_directory() {
+        assert_eq!(
+            resolve_base_relative("/w/proj/docs/a.md", "img/pic.png").unwrap(),
+            "/w/proj/docs/img/pic.png"
+        );
+        assert_eq!(
+            resolve_base_relative("docs/a.md", "../pic.png").unwrap(),
+            "docs/../pic.png"
+        );
+        // The fence is applied by `resolve_target` after the join.
+        assert_eq!(resolve_base_relative("a.md", "pic.png").unwrap(), "pic.png");
+        for bad in ["", "/etc/passwd", "https://example.com/x", "a\\b\0c"] {
+            let err = resolve_base_relative("docs/a.md", bad).unwrap_err();
+            assert_eq!(err.code, "gateway/bad-request", "{bad:?}");
+        }
+        // A Windows-style relative target is normalized before the scheme
+        // test, so `C:\x` reads as a scheme, not a relative path.
+        assert!(resolve_base_relative("docs/a.md", "C:\\x").is_err());
     }
 
     #[test]
