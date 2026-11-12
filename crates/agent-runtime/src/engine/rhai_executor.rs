@@ -38,12 +38,13 @@
 //!
 //! ## Known limitations (deliberate, v1)
 //!
-//! - No compaction preflight, LSP flush, capacity gates, steer flush,
+//! - Compaction is **pull, not push**: `compact_now()` runs the host's
+//!   compaction step service on demand, but unlike the builtin loop there
+//!   is no automatic pre-request preflight — the script calls
+//!   `compact_now()` where its shape needs one (typically before each
+//!   `llm_request`). No LSP flush, capacity gates, steer flush,
 //!   sub-agent hold or `TurnStopping` steer seam inside a script loop —
-//!   the builtin loop keeps those; a script loop that needs them calls
-//!   `steers_pending()` itself and stops accordingly.
-//! - `maybe_compact()` is not offered: the compaction trigger stays with
-//!   the builtin loop (algorithm is core by declared contract).
+//!   the builtin loop keeps those.
 //! - Plan-mode reminders and the thinking-only status tail are builtin
 //!   behaviors a script loop does not inherit.
 //! - **Sub-agent fan-out is one level in v1** (`spawn_child`): children
@@ -136,6 +137,7 @@ enum LoopCall {
         field: String,
         default: i64,
     },
+    CompactNow,
 }
 
 /// What the async side answers a [`LoopCall`] with.
@@ -147,6 +149,12 @@ enum LoopReply {
     Spawn(u64),
     Eval(ChildEval),
     PolicyInt(i64),
+    /// `compact_now()` — whether a compaction ran, and the transcript
+    /// length after (the same step service the builtin loop runs).
+    Compact {
+        ran: bool,
+        messages: usize,
+    },
     Err(String),
 }
 
@@ -707,6 +715,21 @@ impl RhaiTurnExecutor {
                     LOOP_POLICY_INT_MAX.unsigned_abs() as usize,
                 ) as i64;
                 let _ = reply.send(LoopReply::PolicyInt(value));
+                None
+            }
+            LoopCall::CompactNow => {
+                // The host's compaction step service (the builtin loop's
+                // preflight), so a script loop can bound its own context:
+                // trigger gate, strategy resolution, breaker, events — the
+                // same chokepoint, not a second compaction path.
+                let before = history.len();
+                self.host
+                    .run_compaction(&self.spawn.client, history, stats.steps)
+                    .await;
+                let _ = reply.send(LoopReply::Compact {
+                    ran: history.len() < before,
+                    messages: history.len(),
+                });
                 None
             }
         }
@@ -1358,6 +1381,25 @@ impl RhaiTurnExecutor {
                             _ => Err(llm_error("loop_policy_int(): unexpected reply".into())),
                         }
                     });
+                    // compact_now() — run the host's compaction step service
+                    // (the builtin loop's pre-request preflight: micro-compact,
+                    // trigger gate, strategy, LLM summary). Returns
+                    // `#{ ran: bool, messages: <transcript len after> }`; a
+                    // no-op (under threshold / disabled / breaker open) is
+                    // `ran == false`, not an error.
+                    let call = make_call();
+                    engine.register_fn("compact_now", move || -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+                        match call(LoopCall::CompactNow)? {
+                            LoopReply::Compact { ran, messages } => {
+                                let mut m = rhai::Map::new();
+                                m.insert("ran".into(), rhai::Dynamic::from(ran));
+                                m.insert("messages".into(), rhai::Dynamic::from(messages as i64));
+                                Ok(rhai::Dynamic::from(m))
+                            }
+                            LoopReply::Err(e) => Err(llm_error(e)),
+                            _ => Err(llm_error("compact_now(): unexpected reply".into())),
+                        }
+                    });
                 });
 
                 let ast = rhai_mod.loop_ast();
@@ -1607,7 +1649,71 @@ mod tests {
         );
     }
 
-    // === capability v2: sub-agent fan-out + loop policy ======================
+    /// `compact_now()` — the loop capability native drives the host's
+    /// compaction step service over the channel. Without a compaction
+    /// probe wired (this executor's host), the call is a clean no-op:
+    /// `ran == false` and the transcript length rides the reply map back
+    /// (recorded into the mod's KV as the round-trip proof).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compact_now_round_trips_the_host_step_service() {
+        let source = r#"
+            register_loop("main");
+            fn main() {
+                let out = compact_now();
+                mod_state_set("ran", out.ran);
+                mod_state_set("messages", out.messages);
+            }
+        "#;
+        let kv =
+            codesmith_extensions::script::kv::ModKvStore::new(std::env::temp_dir().join(format!(
+                "codesmith-rhai-compact-now-test-{}.json",
+                std::process::id()
+            )));
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "compact-probe",
+            "Compact Probe",
+            "0.1.0",
+            source.to_string(),
+            kv.clone(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("load compact-probe");
+        let entry = rhai_mod.loop_entry().expect("declares a loop").to_string();
+
+        let host = Arc::new(HostAgentExecutor::new(
+            Arc::new(MockLlm::new(Vec::new())),
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry,
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(Arc::new(RoutedMockLlm::new(Vec::new())), None, 0),
+        };
+
+        let mut history = VecChatHistory::new();
+        let reason = executor
+            .run(&mut history, "check compaction".to_string())
+            .await
+            .expect("the scripted turn runs");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        // No probe ⇒ ran=false; the reply carried the transcript length
+        // (1: the pushed user message).
+        assert_eq!(kv.get("ran"), Some(serde_json::json!(false)));
+        assert_eq!(kv.get("messages"), Some(serde_json::json!(1)));
+    }
 
     struct NoSubAgents;
 

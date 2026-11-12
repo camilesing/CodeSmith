@@ -222,12 +222,17 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   2026-11-04, "everything is plugin" slice): a Rhai mod may declare
   `register_loop("main")`; with `turn_executor = "rhai"` (+ `[rhai_loop]`
   settings) the turn runs that script on a dedicated thread, and its
-  capability calls (`llm_request` / `run_tools` / `cancelled` / `note`)
-  execute the same `HostAgentExecutor` step services the builtin loop runs
-  (`engine/rhai_executor.rs`). This is one registry entry at the same
-  chokepoint — the single-loop contract holds; a script loop does NOT
-  inherit compaction preflight / LSP flush / capacity gates /
-  `turn-stopping` (documented known limitations in the module).
+  capability calls (`llm_request` / `run_tools` / `cancelled` / `note` /
+  `compact_now` — compaction is pull, not push: no automatic pre-request
+  preflight) execute the same `HostAgentExecutor` step services the
+  builtin loop runs (`engine/rhai_executor.rs`). This is one registry
+  entry at the same chokepoint — the single-loop contract holds; a script
+  loop does NOT inherit LSP flush / capacity gates / `turn-stopping`
+  (documented known limitations in the module). Compaction *strategies*
+  (trigger/plan decisions) are mod-pluggable via
+  `register_compaction_strategy` + `[compaction] strategy` (immune zone:
+  pairing invariant, append-only storage, the summary LLM call, the
+  breaker — host-owned; see `compaction/strategy.rs` and MODS.md).
 - The system prompt + tool catalog are a session-pinned cache prefix
   (`crates/agent-runtime/src/prefix_cache.rs`); the static system prompt
   stays cache-friendly. Any new session-context contributor must state its

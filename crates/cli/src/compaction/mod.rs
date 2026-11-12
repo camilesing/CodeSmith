@@ -350,7 +350,7 @@ mod tests {
             .collect::<Vec<_>>();
         let limits = summary_input_limits_for_model("deepseek-v4-pro");
 
-        let request = build_formatted_summary_request("deepseek-v4-pro", &messages, limits);
+        let request = build_formatted_summary_request("deepseek-v4-pro", &messages, limits, "");
 
         assert_eq!(request.messages.len(), 1);
         let ContentBlock::Text { text, .. } = &request.messages[0].content[0] else {
@@ -367,7 +367,7 @@ mod tests {
             msg("assistant", "I will inspect the file."),
         ];
         let limits = summary_input_limits_for_model("deepseek-v4-pro");
-        let request = build_cache_aligned_summary_request("deepseek-v4-pro", &messages, limits);
+        let request = build_cache_aligned_summary_request("deepseek-v4-pro", &messages, limits, "");
 
         assert_eq!(request.system, None);
         assert_eq!(&request.messages[..messages.len()], &messages[..]);
@@ -1483,6 +1483,7 @@ mod tests {
             context_window: None,
             cache_summary: false,
             auto_floor_tokens: 0,
+            strategy: strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
         }
     }
 
@@ -1520,6 +1521,7 @@ mod tests {
 
         let enhancements = CompactionEnhancements {
             hooks: None,
+            strategy: None,
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A\n- fact B".to_string(),
                 config: SessionMemoryCompactConfig {
@@ -1580,6 +1582,7 @@ mod tests {
         // huge max_retain means nothing is removed → must fall through to LLM.
         let enhancements = CompactionEnhancements {
             hooks: None,
+            strategy: None,
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A".to_string(),
                 config: SessionMemoryCompactConfig {
@@ -1647,6 +1650,7 @@ mod tests {
             hooks: Some((Arc::new(executor), HookContext::new())),
             session_memory: None,
             fact_ledger: None,
+            strategy: None,
         };
 
         let result = compact_messages_safe(
@@ -1687,6 +1691,7 @@ mod tests {
 
         let enhancements = CompactionEnhancements {
             hooks: Some((Arc::new(executor), HookContext::new())),
+            strategy: None,
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A".to_string(),
                 config: SessionMemoryCompactConfig {
@@ -1861,6 +1866,7 @@ mod tests {
             None,
             None,
             "",
+            None,
         )
         .await
         .expect("compaction should succeed");
@@ -1889,6 +1895,7 @@ mod tests {
             None,
             None,
             "",
+            None,
         )
         .await
         .expect("compaction should succeed");
@@ -1910,6 +1917,7 @@ mod tests {
             None,
             None,
             "",
+            None,
         )
         .await
         .expect("compaction should succeed");

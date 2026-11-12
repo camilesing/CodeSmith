@@ -3038,6 +3038,7 @@ impl RuntimeThreadManager {
             enabled: true,
             model: thread.model.clone(),
             token_threshold: self.config.compaction_threshold(&thread.model),
+            strategy: self.config.compaction_strategy(),
             ..Default::default()
         };
         let network_policy = Some(self.config.network_policy_decider());

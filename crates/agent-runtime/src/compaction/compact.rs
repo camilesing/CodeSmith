@@ -707,6 +707,26 @@ pub struct CompactionEnhancements {
     /// drop set of every compaction and the ledger is rendered as a section
     /// of the summary block. `None` disables fact extraction entirely.
     pub fact_ledger: Option<Arc<std::sync::Mutex<codesmith_session::fact_ledger::FactLedger>>>,
+    /// Compaction-strategy directives (the pluggable-strategy seam,
+    /// `compaction::strategy`). Set by the engine when a mod-registered
+    /// strategy's trigger fired; `None` (the default, and every non-engine
+    /// caller) keeps the builtin boundary and summary instruction.
+    pub strategy: Option<Arc<crate::compaction::strategy::StrategyDirectives>>,
+}
+
+/// The `keep_recent` message count for this attempt: the strategy's
+/// interpreted keep spec, or the builtin [`KEEP_RECENT_MESSAGES`] tail.
+fn effective_keep_recent(
+    messages: &[Message],
+    enhancements: Option<&CompactionEnhancements>,
+) -> usize {
+    match enhancements
+        .and_then(|e| e.strategy.as_ref())
+        .map(|d| crate::compaction::strategy::keep_recent_messages_for(messages, &d.keep))
+    {
+        Some(n) => n,
+        None => KEEP_RECENT_MESSAGES,
+    }
 }
 
 impl std::fmt::Debug for CompactionEnhancements {
@@ -718,6 +738,7 @@ impl std::fmt::Debug for CompactionEnhancements {
             .field("hooks", &self.hooks.is_some())
             .field("session_memory", &self.session_memory)
             .field("fact_ledger", &self.fact_ledger.is_some())
+            .field("strategy", &self.strategy)
             .finish()
     }
 }
@@ -840,7 +861,7 @@ pub async fn compact_messages_safe(
         let plan = plan_compaction(
             messages,
             workspace,
-            KEEP_RECENT_MESSAGES,
+            effective_keep_recent(messages, enhancements),
             external_pins,
             external_working_set_paths,
         );
@@ -928,7 +949,7 @@ pub async fn compact_messages_safe(
         let pruned_plan = plan_compaction(
             compaction_input,
             workspace,
-            KEEP_RECENT_MESSAGES,
+            effective_keep_recent(compaction_input, enhancements),
             external_pins,
             external_working_set_paths,
         );
@@ -1012,6 +1033,7 @@ pub async fn compact_messages_safe(
             external_pins,
             external_working_set_paths,
             &fact_ledger_section,
+            enhancements.and_then(|e| e.strategy.as_deref()),
         )
         .await
         {
@@ -1118,6 +1140,9 @@ pub struct SummaryResult {
     pub retries_used: u32,
 }
 
+// The strategy seam adds `directives` to an already-wide free-function
+// signature (the `serve_one` precedent for the allow).
+#[allow(clippy::too_many_arguments)]
 pub async fn compact_messages(
     client: &dyn LlmClient,
     messages: &[Message],
@@ -1126,15 +1151,20 @@ pub async fn compact_messages(
     external_pins: Option<&[usize]>,
     external_working_set_paths: Option<&[String]>,
     fact_ledger_section: &str,
+    directives: Option<&crate::compaction::strategy::StrategyDirectives>,
 ) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>, u32)> {
     if messages.is_empty() {
         return Ok((Vec::new(), None, Vec::new(), 0));
     }
 
+    let keep_recent = match directives {
+        Some(d) => crate::compaction::strategy::keep_recent_messages_for(messages, &d.keep),
+        None => KEEP_RECENT_MESSAGES,
+    };
     let plan = plan_compaction(
         messages,
         workspace,
-        KEEP_RECENT_MESSAGES,
+        keep_recent,
         external_pins,
         external_working_set_paths,
     );
@@ -1155,14 +1185,15 @@ pub async fn compact_messages(
     // deterministic sections (ledger, failed attempts) ride regardless.
     let window = window_tokens_for_config(config);
     let mut summary_result =
-        create_summary_for_window(client, &to_summarize, &config.model, window).await?;
+        create_summary_for_window(client, &to_summarize, &config.model, window, directives).await?;
     if summary_section_count(&summary_result.text) < LAYERED_SUMMARY_HEADERS.len() {
         tracing::warn!(
             target: "compaction",
             "summary missing layered sections; retrying once with a fresh draw"
         );
         if let Ok(second) =
-            create_summary_for_window(client, &to_summarize, &config.model, window).await
+            create_summary_for_window(client, &to_summarize, &config.model, window, directives)
+                .await
             && summary_section_count(&second.text) > summary_section_count(&summary_result.text)
         {
             summary_result = second;
@@ -1229,7 +1260,7 @@ pub async fn create_summary(
 ) -> Result<SummaryResult> {
     let window = context_window_for_model(model)
         .unwrap_or(crate::models::LEGACY_MODEL_CONTEXT_WINDOW_TOKENS);
-    create_summary_for_window(client, messages, model, window).await
+    create_summary_for_window(client, messages, model, window, None).await
 }
 
 /// Summary generation against an already-resolved context window. The
@@ -1240,11 +1271,21 @@ pub async fn create_summary_for_window(
     messages: &[Message],
     model: &str,
     window_tokens: u32,
+    directives: Option<&crate::compaction::strategy::StrategyDirectives>,
 ) -> Result<SummaryResult> {
-    let limits = summary_input_limits_for_window(window_tokens);
+    let mut limits = summary_input_limits_for_window(window_tokens);
+    let extra_instructions = directives
+        .and_then(|d| d.summary_instructions.as_deref())
+        .unwrap_or("");
+    if let Some(cap) = directives.and_then(|d| d.summary_max_tokens) {
+        // A strategy's output cap overrides the window-derived default
+        // outright (both bounded at interpretation: 256..=65,536).
+        limits.max_tokens = cap;
+    }
     let used_cache_aligned = should_use_cache_aligned_summary_for_window(window_tokens, messages);
     if used_cache_aligned {
-        let request = build_cache_aligned_summary_request(model, messages, limits);
+        let request =
+            build_cache_aligned_summary_request(model, messages, limits, extra_instructions);
         match client.create_message(request).await {
             Ok(response) => {
                 crate::cost_status::report(&response.model, &response.usage);
@@ -1272,6 +1313,7 @@ pub async fn create_summary_for_window(
         messages.to_vec(),
         model,
         limits,
+        extra_instructions,
         u32::from(used_cache_aligned),
     )
     .await
@@ -1282,11 +1324,13 @@ pub async fn create_formatted_summary_with_peel_retry(
     mut candidate_messages: Vec<Message>,
     model: &str,
     limits: SummaryInputLimits,
+    extra_instructions: &str,
     initial_retries_used: u32,
 ) -> Result<SummaryResult> {
     let mut retries_used = initial_retries_used;
     loop {
-        let request = build_formatted_summary_request(model, &candidate_messages, limits);
+        let request =
+            build_formatted_summary_request(model, &candidate_messages, limits, extra_instructions);
         match client.create_message(request).await {
             Ok(response) => {
                 crate::cost_status::report(&response.model, &response.usage);
@@ -1608,12 +1652,17 @@ pub fn build_cache_aligned_summary_request(
     model: &str,
     messages: &[Message],
     limits: SummaryInputLimits,
+    extra_instructions: &str,
 ) -> MessageRequest {
+    let mut instruction = summary_instruction(limits.word_limit);
+    if !extra_instructions.is_empty() {
+        let _ = write!(instruction, "\n\n{extra_instructions}");
+    }
     let mut request_messages = messages.to_vec();
     request_messages.push(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: summary_instruction(limits.word_limit),
+            text: instruction,
             cache_control: None,
         }],
     });
@@ -1638,6 +1687,7 @@ pub fn build_formatted_summary_request(
     model: &str,
     messages: &[Message],
     limits: SummaryInputLimits,
+    extra_instructions: &str,
 ) -> MessageRequest {
     // Format messages for summarization
     let mut conversation_text = String::new();
@@ -1688,15 +1738,16 @@ pub fn build_formatted_summary_request(
             format!("{head}\n\n[... {omitted} characters omitted before summary ...]\n\n{tail}");
     }
 
+    let mut instruction = summary_instruction(limits.word_limit);
+    if !extra_instructions.is_empty() {
+        let _ = write!(instruction, "\n\n{extra_instructions}");
+    }
     MessageRequest {
         model: model.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
-                text: format!(
-                    "{}\n\n---\n\n{conversation_text}",
-                    summary_instruction(limits.word_limit)
-                ),
+                text: format!("{}\n\n---\n\n{conversation_text}", instruction),
                 cache_control: None,
             }],
         }],

@@ -36,6 +36,7 @@ construct it, consumers take it by value).
 | `OpenTicketsNote` | `agent-runtime` | `cli` | `agent-runtime` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
 | `SandboxBackend` | `sandbox` | `cli` | `agent-runtime`, `cli` |
+| `ScriptCompactionStrategy` (data) | `extensions` | `extensions` | `agent-runtime`, `extensions` |
 | `SessionJournal` | `session` | `session` | `agent-runtime`, `cli` |
 | `SessionStore` | `session` | `session` | `cli` |
 | `SubAgentSpawner` | `agent-runtime` | `cli` | `cli` |

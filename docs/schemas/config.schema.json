@@ -35,6 +35,18 @@
         }
       ]
     },
+    "compaction": {
+      "description": "`[compaction]` — compaction behavior (strategy selection).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CompactionToml"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "api_key": {
       "type": [
         "string",
@@ -680,6 +692,19 @@
         }
       }
     },
+    "CompactionToml": {
+      "description": "`[compaction]` table — compaction behavior. Documented in\n`config.example.toml` + docs/CONFIGURATION.md.",
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "description": "Which strategy drives auto-compaction decisions: `\"builtin\"` (the\ndefault — the compiled algorithm) or the name a mod registered via\n`register_compaction_strategy` (opt-in builtin strategies ship in\nthe binary; select the mod in `[mods] builtin` too). An unknown\nname is a loud per-attempt error that falls back to builtin — the\nstrategy set is session state (mods), so unlike `turn_executor`\nthis cannot be validated at config-load time.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "ToolsConfig": {
       "description": "Model-visible tool catalog controls (`[tools]` table in config.toml).",
       "type": "object",
@@ -836,6 +861,17 @@
             "boolean",
             "null"
           ]
+        },
+        "builtin": {
+          "description": "Opt-in builtin mods to load, by id (the behavior-changing builtin\ntier — replacement/loop/strategy ports; see docs/MODS.md). An id\nmatching no opt-in builtin fails the startup audit loudly.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": null
         }
       }
     },
@@ -2904,6 +2940,18 @@
               "type": "null"
             }
           ]
+        },
+        "compaction": {
+          "description": "`[compaction]` — compaction behavior (strategy selection).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompactionToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "api_key": {
           "type": [

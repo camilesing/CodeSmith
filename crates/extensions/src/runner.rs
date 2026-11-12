@@ -1500,6 +1500,39 @@ impl ExtensionRunner {
             .map(Arc::clone)
     }
 
+    /// A compaction strategy registered by name
+    /// (`register_compaction_strategy`), resolved for config
+    /// `[compaction] strategy`. **Last-wins by load order** — the builtin
+    /// tier loads before user mods, so a user mod overrides a builtin
+    /// strategy by reusing its name (the same resolution rule as
+    /// policies). `None` when no loaded mod registered the name.
+    pub fn compaction_strategy(
+        &self,
+        name: &str,
+    ) -> Option<crate::script::rhai_mod::ScriptCompactionStrategy> {
+        self.mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .iter()
+            .filter_map(|m| m.compaction_strategy(name))
+            .next_back()
+    }
+
+    /// Every registered compaction-strategy name, sorted (observability —
+    /// `/mods list` and the unknown-strategy diagnostic).
+    pub fn compaction_strategy_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .iter()
+            .flat_map(|m| m.compaction_strategy_names())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Look up a registered command by name (exact match; `:N` conflict
     /// suffixing is §F2 — slice 1 uses first-wins via HashMap insert). Used
     /// by the CLI `extension_commands::try_dispatch` (Task 8).

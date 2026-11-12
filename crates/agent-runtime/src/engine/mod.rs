@@ -2648,10 +2648,14 @@ impl Engine {
 
         // Always present: the session fact ledger rides every host-side
         // compaction, with hooks / session-memory added when available.
+        // Strategy directives stay `None` here: the mod-registered strategy
+        // seam governs the executor's auto-compaction path (run_compaction)
+        // in v1 — see `compaction::strategy` known limitations.
         Some(CompactionEnhancements {
             hooks,
             session_memory,
             fact_ledger: Some(Arc::clone(&self.session.fact_ledger)),
+            strategy: None,
         })
     }
 

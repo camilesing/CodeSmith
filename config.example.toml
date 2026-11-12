@@ -1092,6 +1092,23 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #
 # [mods]
 # enabled = true   # master switch: discovery, manage_mods tool
+# builtin = ["compact-pi"]   # opt-in builtin mods to load, by id — the
+#                            # behavior-changing builtin tier (replacement/
+#                            # loop/strategy ports). Unknown ids fail the
+#                            # startup audit loudly; see docs/MODS.md.
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Compaction strategy (optional)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Which strategy drives auto-compaction decisions: "builtin" (default — the
+# compiled algorithm) or a name a mod registered via register_compaction_strategy.
+# An opt-in builtin strategy ships in the binary — select its mod in [mods]
+# builtin too. Unknown names are loud per-attempt errors that fall back to
+# builtin (the strategy set is session state, so config-load cannot validate
+# it). See docs/MODS.md "Writing a compaction strategy".
+#
+# [compaction]
+# strategy = "builtin"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Built-in slash commands (optional)

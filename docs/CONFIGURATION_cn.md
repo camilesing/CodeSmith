@@ -266,6 +266,28 @@ timeout_secs = 3600 # 单个 turn 脚本执行的墙钟预算
 `register_around_turn`（`docs/EXTENSIONS_cn.md`，主 turn 与每个子代理
 turn 都会被包裹），不是这个键。
 
+#### 压缩策略选择（`[compaction] strategy`）
+
+自动压缩的决策可插拔：`"builtin"`（默认——编译内建算法）或某个 mod
+经 `register_compaction_strategy` 注册的名称（见 MODS_cn.md "编写压缩
+策略"）。mod 拥有纯决策（触发公式、保留多少、摘要指令）；宿主拥有
+效果与免疫区（配对不变量、append-only 存储、摘要 LLM 调用、断路器）。
+
+```toml
+[mods]
+builtin = ["compact-pi"]   # 按 id 装载 opt-in 内置策略 mod
+
+[compaction]
+strategy = "compact-pi"    # 选中它（默认 "builtin"）
+```
+
+名称在压缩时对已装载 mod 解析——策略集是会话状态（mod 围绕配置装载与
+重载），因此不同于 `turn_executor`，无法在配置装载时校验。未知名是
+每次尝试的大声错误并回落内建算法：压缩是安全机制，配置笔误不能卡死
+它。opt-in 内置 mod（改变行为的移植实现：策略、替换、loop）仅在
+`[mods] builtin` 列名时装载——列出的 id 匹配不到 opt-in 内置 mod 会让
+启动审计大声失败。
+
 
 需要额外请求头的第三方 OpenAI 兼容网关，可以在顶层或 provider 表
 （如 `[providers.deepseek]`）下设置
@@ -1134,6 +1156,9 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   [MODS_cn.md](MODS_cn.md)：
   - `[mods].enabled`（布尔，默认 `true`）：控制整个脚本 mod 层
     （发现、`manage_mods` 工具）
+  - `[mods].builtin`（字符串列表，默认为空）——按 id 装载的 opt-in
+    内置 mod（改变行为的内置层：策略、替换、loop）。未知 id 会让启动
+    审计大声失败
 - `commands.*`（可选）：内建斜杠命令控制：
   - `[commands].disabled`（字符串列表，默认为空）——要隐藏的内建
     REPL 命令的规范名（或别名）。分派、`/help` 与 Tab 补全都跳过

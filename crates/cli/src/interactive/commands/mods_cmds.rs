@@ -235,9 +235,17 @@ pub(super) async fn reload_note(state: &ReplState) -> Result<String, String> {
     let workspace = ctx.workspace.clone();
     let token = ctx.shared_cancel_token.clone();
     let mods_enabled = ctx.mods_enabled;
+    let builtin_selected = ctx.builtin_selected.clone();
     let session_mods = ctx.session_mods.clone();
     let note = tokio::task::spawn_blocking(move || {
-        crate::mod_ops::reload_mods(&runner, &workspace, token, mods_enabled, &session_mods)
+        crate::mod_ops::reload_mods(
+            &runner,
+            &workspace,
+            token,
+            mods_enabled,
+            &builtin_selected,
+            &session_mods,
+        )
     })
     .await
     .map_err(|err| format!("reload worker failed: {err}"))?;

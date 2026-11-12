@@ -33,7 +33,8 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
 | turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 通用 Agent `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
-| 压缩算法、`BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建；压缩的*旋钮*是 policy，算法不是） |
+| 压缩策略 | ✓ `register_compaction_strategy`（trigger + plan 纯决策） | ✓（opt-in 移植经 `[compaction] strategy` 选择） | — | mod 拥有*决策*（何时压缩、保留多少、摘要指令）；宿主拥有*效果*与免疫区（配对不变量、系统提示前缀、append-only 存储、摘要 LLM 调用、断路器）。选择：config `[compaction] strategy = "builtin" \| "<name>"`（见"编写压缩策略"） |
+| `BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建） |
 
 经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
 函数"为沙箱）；**异步、文件、网络或完整生态 → Rust 扩展**（dylib 安装 +
@@ -294,6 +295,13 @@ register_policy("shell-output", #{
   门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 的 mod 列表（不是
   可发现 id —— 覆盖方式是注册同种类策略，而非遮蔽 id；其 id 仅作为
   `list` 已解析策略节的来源出现）。
+- **opt-in 内置 mod**：改变行为的内置 mod（工具替换、loop、压缩策略）
+  同样随二进制发布，但仅当 `[mods] builtin = ["<id>", …]` 列名时才装载
+  ——该配置键是一切"不应常驻"的移植实现的统一"按配置加载"入口。opt-in
+  id 不带 `builtin-` 前缀（id 即用户面对的选择键，与选择它的配置键共享
+  ——如 `[compaction] strategy`）。列出的 id 匹配不到任何 opt-in 内置
+  mod 会让启动审计大声失败；未被选中的 opt-in mod 编译进二进制但从不
+  运行。reload 重放同一选择集。
 
 ### 停用一个内建斜杠命令
 
@@ -522,13 +530,14 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 | `eval_child(handle, timeout_ms)` | `#{status, final_text, steps}`——等待一个已 spawn 的子代理（`status` 为 `completed`/`cancelled`/`failed`；未完成时 `final_text` 为 `()`）。超时中止该子代理并报错——被放弃的分支不得滞留。 |
 | `spawn_depth()` | 本 turn 的深度（`0` = 主 turn）——子代理运行同一脚本，搜索/评估的角色切换就靠它。 |
 | `loop_policy_int(field, default)` | 读一个 `lats-policy` 旋钮（`width`/`depth`/`beam`）——按后写者胜解析策略，脚本的编译 `default` 兜底；用户 mod 的 `register_policy("lats-policy", …)` 无需重编译即可调参运行中的 loop。 |
+| `compact_now()` | `#{ran, messages}`——按需运行宿主的压缩步骤服务（micro-compact、触发门——含已选的 `[compaction] strategy`——LLM 摘要）。`ran == false` 是干净的空操作（未过阈值/被禁/断路器开启），不是错误。与 builtin 循环不同，没有自动的请求前预检：脚本在自己的形状需要处调用，典型是每次 `llm_request` 之前。 |
 | `cancelled()` | turn 的取消令牌触发后返回 `true`——长循环里要检查。 |
 | `note(text)` | 把脚本决策记录到会话日志路径（现场呈现与持久记录一致）。 |
 
 错误姿态**响亮失败**（与行为 hook 相反）：脚本错误使 turn 失败。
 config.toml 的 `[rhai_loop]` 固定 mod（`mod = "react-min"`）并限定单个
 turn 的脚本执行时长（`timeout_secs`，默认 3600）。脚本 loop 不继承
-builtin 循环的 compaction 预检、LSP 冲洗、容量门与 `turn-stopping`
+builtin 循环的 LSP 冲洗、容量门与 `turn-stopping`
 steer 接缝——移植需要这些的循环前，先看 `rhai_executor` 模块的已知限制。
 
 ### 教程：LATS——一个搜索型 loop
@@ -555,6 +564,54 @@ steer 接缝——移植需要这些的循环前，先看 `rhai_executor` 模块
 发布缺省，`loop_policy_int("width", 3)` 以脚本的编译兜底读解析值，用户
 mod 的 `register_policy("lats-policy", …)` 即可调参运行中的会话——数据
 而非代码，经 `/mods list` 的已解析策略节自证。
+
+## 编写压缩策略
+
+`register_compaction_strategy(name, spec)` 让 mod 拥有压缩的**决策**；
+config `[compaction] strategy = "<name>"` 选择它（`"builtin"`（默认）
+保持编译内建算法）。接缝切分干净：
+
+- **脚本可拥有**（对宿主构造快照的纯决策）：*何时*压缩（`trigger`
+  闭包）与*保留多少* + 摘要指令（`plan` 闭包）。
+- **宿主拥有**（免疫区，策略不可触碰）：tool-call/tool-result 配对、
+  系统提示前缀、append-only 存储、摘要 LLM 调用及其重试、断路器、
+  快速回填检测、最小可摘要条数下限。
+
+```rhai
+register_compaction_strategy("compact-pi", #{
+    // snapshot: #{ total_tokens, window, threshold, messages,
+    //             rounds: [#{ start, len, tokens, has_tool_use, has_media }] }
+    trigger: |snap| snap.total_tokens > snap.window - 16384,
+    plan: |snap| #{
+        keep_recent_tokens: 20000,        // 或 keep_recent_rounds / keep_recent_messages
+        summary_instructions: "…",        // 可选，追加到摘要提示
+        summary_max_tokens: 16384,        // 可选，覆盖输出上限（256..=65536）
+    },
+});
+```
+
+移植其他 agent 的策略前值得了解的语义：
+
+- **快照形状。** token 数由宿主预计算；round 按 assistant 起始分组
+  （round 边界天然是配对安全切点）。`window` 是解析后的上下文窗口，
+  `threshold` 是配置的 token 阈值。
+- **宿主门仍在。** `enabled`、自动压缩下限、断路器与最小消息数在策略
+  之前/周围检查——策略收紧时机，不能解除安全。
+- **plan 解释有校验。** `keep_recent_rounds` / `keep_recent_tokens` /
+  `keep_recent_messages` 三选一（> 0）；被拒的计划大声记日志并按内建
+  边界执行本次压缩（trigger 已判定需要压缩）。
+- **round 对齐保留。** `keep_recent_tokens` 从尾部按*整 round* 反向累加
+  至预算，随后无论如何都会跑 `enforce_tool_call_pairs`——即便策略给出
+  切开配对的边界，免疫区也成立。
+- **选择与失败姿态。** 名称在压缩时对已装载 mod 解析（策略集是会话
+  状态——mod 围绕配置装载/重载，因此不同于 `turn_executor`，无法在
+  配置装载时校验）。未知名是每次尝试的大声错误并回落内建：压缩是安全
+  机制，配置笔误不能卡死它。解析按装载序后写者胜——用户 mod 复用同名
+  即覆盖内置策略。
+- **范围（v1）。** 策略治理自动压缩路径（`run_compaction`）。容量干预
+  与恢复压缩保持内建阈值；摘要请求*形状*（cache 对齐 vs 格式化）归
+  宿主。已知限制写在接缝旁
+  （`crates/agent-runtime/src/compaction/strategy.rs`）。
 
 ## mod.toml 字段
 

@@ -2591,7 +2591,9 @@ impl HostAgentExecutor {
     /// session-memory-first and working-set `external_pins` /
     /// `external_working_set_paths` remain deferred to the host paths (see
     /// "Known gaps in compaction" in the module docs).
-    async fn run_compaction(
+    /// `pub(crate)` — the `rhai` turn executor's `compact_now()` capability
+    /// native drives the same step service (one compaction chokepoint).
+    pub(crate) async fn run_compaction(
         &self,
         client: &LlmClientHandle,
         history: &mut dyn ChatHistory,
@@ -2656,19 +2658,65 @@ impl HostAgentExecutor {
             }
         }
 
-        // Phase 2 — auto-compaction (LLM summary). Gate on `should_compact`
-        // (mirrors the retired turn handler) BEFORE calling `compact_messages_safe`:
-        // the safe wrapper does NOT early-return when under threshold, so
-        // without this gate it would summarize an in-budget transcript.
-        if !should_compact(
-            &history.messages(),
-            &probe.config,
-            Some(&probe.workspace),
-            None,
-            None,
-        ) {
-            return;
-        }
+        // Phase 2 — auto-compaction (LLM summary). Gate on the configured
+        // strategy: the builtin algorithm asks `should_compact` (mirrors
+        // the retired turn handler) BEFORE calling `compact_messages_safe`
+        // (the safe wrapper does NOT early-return when under threshold, so
+        // without this gate it would summarize an in-budget transcript).
+        // A mod-registered strategy (`[compaction] strategy`, docs/MODS.md)
+        // owns the trigger/plan decisions instead — over a host-built
+        // snapshot, with the host gates (floor, minimum messages) still
+        // applied and every immune-zone invariant enforced downstream. A
+        // strategy resolution error is loud and falls back to builtin
+        // (compaction is a safety mechanism; a config typo must not wedge
+        // it).
+        let strategy =
+            crate::compaction::strategy::resolve_configured(self.extension.as_ref(), &probe.config);
+        let directives = match &strategy {
+            Some(strategy) => {
+                let snapshot =
+                    crate::compaction::strategy::snapshot(&history.messages(), &probe.config);
+                let fired = crate::compaction::strategy::host_trigger_gates(
+                    &history.messages(),
+                    &probe.config,
+                ) && strategy.call_trigger(&snapshot).unwrap_or_else(|err| {
+                    tracing::error!(
+                        target: "compaction",
+                        "strategy {:?} trigger failed: {err} — treating as not-triggered",
+                        strategy.name
+                    );
+                    false
+                });
+                if !fired {
+                    return;
+                }
+                let directives = strategy.call_plan(&snapshot).and_then(|plan| {
+                    crate::compaction::strategy::interpret_plan(plan, &strategy.name)
+                });
+                Some(directives.unwrap_or_else(|err| {
+                    tracing::warn!(
+                        target: "compaction",
+                        "strategy {:?} plan rejected ({err}) — using the builtin boundary",
+                        strategy.name
+                    );
+                    crate::compaction::strategy::StrategyDirectives::builtin_fallback(
+                        &strategy.name,
+                    )
+                }))
+            }
+            None => {
+                if !should_compact(
+                    &history.messages(),
+                    &probe.config,
+                    Some(&probe.workspace),
+                    None,
+                    None,
+                ) {
+                    return;
+                }
+                None
+            }
+        };
         // §F2b T3 — `SessionBeforeCompact` lets an extension veto
         // compaction (Cancel → skip the summary call entirely). The veto
         // runs BEFORE the refill detector records the trigger: a vetoed
@@ -2714,12 +2762,20 @@ impl HostAgentExecutor {
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
         let messages = history.messages().to_vec();
+        let strategy_directives = directives.map(Arc::new);
         let enhancements = probe
             .fact_ledger
             .as_ref()
             .map(|ledger| CompactionEnhancements {
                 fact_ledger: Some(Arc::clone(ledger)),
+                strategy: strategy_directives.clone(),
                 ..CompactionEnhancements::default()
+            })
+            .or_else(|| {
+                strategy_directives.map(|d| CompactionEnhancements {
+                    strategy: Some(d),
+                    ..CompactionEnhancements::default()
+                })
             });
         match compact_messages_safe(
             client.as_ref(),
@@ -2801,8 +2857,13 @@ impl HostAgentExecutor {
                     .lock()
                     .expect("poisoned")
                     .record_compaction(step);
+                let strategy_note = enhancements
+                    .as_ref()
+                    .and_then(|e| e.strategy.as_deref())
+                    .map(|d| format!(", strategy {}", d.name))
+                    .unwrap_or_default();
                 self.emit_status(format!(
-                    "Compaction completed ({} messages after)",
+                    "Compaction completed ({} messages after{strategy_note})",
                     history.len()
                 ))
                 .await;
@@ -9423,6 +9484,7 @@ mod tests {
             context_window: None,
             cache_summary: false,
             auto_floor_tokens: 0,
+            strategy: crate::compaction::strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
         }
     }
 
@@ -9696,6 +9758,137 @@ mod tests {
             mock.requests()[0].len() < 13,
             "stream request used compacted transcript: {} < 13",
             mock.requests()[0].len()
+        );
+    }
+
+    // === pluggable compaction strategy (docs/MODS.md seam) ===================
+
+    /// A runner retaining one strategy mod (no `configure` needed —
+    /// strategy resolution reads the retained mod's registrations).
+    fn strategy_runner(source: &str) -> Arc<codesmith_extensions::ExtensionRunner> {
+        let m = codesmith_extensions::script::RhaiMod::load_source(
+            "strategy-mod",
+            "Strategy",
+            "0.1.0",
+            source.to_string(),
+            codesmith_extensions::script::ModKvStore::ephemeral(),
+            codesmith_agent::extension::MessageProjectionHubArc::new(
+                codesmith_agent::extension::MessageProjectionHub::new(),
+            ),
+        )
+        .expect("strategy mod loads");
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        runner.retain_mod(std::sync::Arc::new(m));
+        std::sync::Arc::new(runner)
+    }
+
+    async fn run_with_strategy(
+        runner: Option<Arc<codesmith_extensions::ExtensionRunner>>,
+        strategy: &str,
+    ) -> (Arc<MockLlm>, usize) {
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock =
+            Arc::new(MockLlm::new(vec![end_call()]).with_compaction_summary("Strategy summary."));
+        let mut config = compaction_config_low_threshold();
+        config.strategy = strategy.to_string();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(CompactionProbe::new(
+                config,
+                PathBuf::from("/tmp/codesmith-test"),
+            )),
+            None,
+            None,
+            None,
+            None,
+        )
+        .with_extension_runner(runner);
+        let reason = executor
+            .run(&mut history, "continue".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        let len = history.len();
+        (mock, len)
+    }
+
+    /// The plan closure owns the boundary: `keep_recent_messages: 100`
+    /// pins the whole transcript as the kept tail, so nothing is
+    /// summarizable — no LLM summary call and no shrink, where the builtin
+    /// (`auto_compact_summarizes_when_over_threshold`) compacts to a short
+    /// tail with exactly one summary call. Same config, same history:
+    /// the only difference is the strategy's plan.
+    #[tokio::test]
+    async fn compaction_strategy_plan_controls_the_kept_boundary() {
+        let runner = strategy_runner(
+            r#"
+                register_compaction_strategy("keep-all", #{
+                    trigger: |snap| true,
+                    plan: |snap| #{ keep_recent_messages: 100 },
+                });
+            "#,
+        );
+        let (mock, len) = run_with_strategy(Some(runner), "keep-all").await;
+        assert_eq!(
+            mock.compaction_calls(),
+            0,
+            "nothing summarizable under a keep-everything boundary"
+        );
+        assert_eq!(
+            len, 14,
+            "transcript untouched (12 + input + reply, no shrink)"
+        );
+    }
+
+    /// The trigger closure can veto what the builtin formula would compact
+    /// (same low-threshold config that fires in the builtin test).
+    #[tokio::test]
+    async fn compaction_strategy_trigger_can_veto_compaction() {
+        let runner = strategy_runner(
+            r#"
+                register_compaction_strategy("never", #{
+                    trigger: |snap| false,
+                    plan: |snap| #{ keep_recent_rounds: 1 },
+                });
+            "#,
+        );
+        let (mock, len) = run_with_strategy(Some(runner), "never").await;
+        assert_eq!(mock.compaction_calls(), 0, "vetoed trigger ⇒ no summary");
+        assert_eq!(len, 14, "vetoed trigger leaves the transcript intact");
+    }
+
+    /// A configured name no loaded mod registered falls back to the builtin
+    /// algorithm (loudly) — compaction still runs; a config typo must not
+    /// wedge the safety mechanism.
+    #[tokio::test]
+    async fn unknown_compaction_strategy_falls_back_to_builtin() {
+        let runner = strategy_runner(
+            r#"
+                register_compaction_strategy("other", #{
+                    trigger: |snap| false,
+                    plan: |snap| #{ keep_recent_rounds: 1 },
+                });
+            "#,
+        );
+        let (mock, len) = run_with_strategy(Some(runner), "ghost-name").await;
+        assert_eq!(
+            mock.compaction_calls(),
+            1,
+            "builtin fallback still compacts over the low threshold"
+        );
+        assert!(
+            len < 13,
+            "builtin fallback shrinks the transcript: {len} < 13"
         );
     }
 

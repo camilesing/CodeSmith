@@ -704,6 +704,7 @@ impl ReplState {
             context_window: self
                 .config
                 .effective_context_window(self.effective_model_for_budget()),
+            strategy: self.config.compaction_strategy(),
             ..Default::default()
         }
     }

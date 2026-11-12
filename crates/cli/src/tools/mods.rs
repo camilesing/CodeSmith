@@ -419,9 +419,17 @@ impl ManageModsTool {
                 let workspace = ctx.workspace.clone();
                 let token = ctx.shared_cancel_token.clone();
                 let mods_enabled = ctx.mods_enabled;
+                let builtin_selected = ctx.builtin_selected.clone();
                 let session_mods = Arc::clone(&ctx.session_mods);
                 tokio::task::spawn_blocking(move || {
-                    mod_ops::reload_mods(&runner, &workspace, token, mods_enabled, &session_mods)
+                    mod_ops::reload_mods(
+                        &runner,
+                        &workspace,
+                        token,
+                        mods_enabled,
+                        &builtin_selected,
+                        &session_mods,
+                    )
                 })
                 .await
                 .unwrap_or_else(|e| format!("mods reload failed: {e}"))

@@ -548,6 +548,12 @@ pub struct ConfigToml {
     /// this shared crate preserves the table through config reads/writes.
     #[serde(default)]
     pub rhai_loop: Option<toml::Table>,
+    /// `[compaction]` — compaction settings. The CLI parses `strategy`
+    /// (`"builtin"` or a mod-registered compaction-strategy name, see
+    /// docs/MODS.md); this shared crate preserves the table through config
+    /// reads/writes.
+    #[serde(default)]
+    pub compaction: Option<toml::Table>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,

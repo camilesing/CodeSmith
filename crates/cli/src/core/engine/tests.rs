@@ -6944,6 +6944,7 @@ async fn f2b_extension_reload_clears_and_rebinds_live() {
         &state,
         &mod_state,
         true,
+        &[],
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
         )),
@@ -7013,6 +7014,7 @@ fn reload_drains_in_flight_child_lease_before_continuing() {
         &state,
         &mod_state,
         true,
+        &[],
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
         )),
@@ -7062,6 +7064,7 @@ fn reload_times_out_drain_and_continues() {
         &state,
         &mod_state,
         true,
+        &[],
         std::sync::Arc::new(std::sync::Mutex::new(
             tokio_util::sync::CancellationToken::new(),
         )),
@@ -7160,6 +7163,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &ext_state,
         &mod_state,
         true,
+        &[],
         cancel.clone(),
     );
     assert_eq!(report.loaded_mods, 0, "unactivated mod must not load");
@@ -7190,6 +7194,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &ext_state,
         &mod_state,
         true,
+        &[],
         cancel.clone(),
         std::time::Duration::from_millis(50),
     );
@@ -7227,6 +7232,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &ext_state,
         &mod_state,
         true,
+        &[],
         cancel.clone(),
         std::time::Duration::from_millis(50),
     );
@@ -7258,6 +7264,7 @@ async fn mods_populate_gates_pending_activation_then_loads_after_activate() {
         &ext_state,
         &mod_state,
         true,
+        &[],
         cancel,
         std::time::Duration::from_millis(50),
     );
@@ -7321,8 +7328,15 @@ fn mods_backfill_does_not_clobber_concurrent_state_writes() {
         tokio_util::sync::CancellationToken::new(),
     ));
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
-    let report =
-        super::populate_extension_runtime(&runner, &workspace, &ext_state, &stale, true, cancel);
+    let report = super::populate_extension_runtime(
+        &runner,
+        &workspace,
+        &ext_state,
+        &stale,
+        true,
+        &[],
+        cancel,
+    );
     assert_eq!(report.loaded_mods, 1, "hash-less legacy activation loads");
 
     let final_state = crate::mod_state::ModStateStore::load_default().expect("final store");
@@ -7380,7 +7394,13 @@ async fn mods_populate_audits_broken_mod_as_failed_with_original_error() {
 
     let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
     let report = super::populate_extension_runtime(
-        &runner, &workspace, &ext_state, &mod_state, true, cancel,
+        &runner,
+        &workspace,
+        &ext_state,
+        &mod_state,
+        true,
+        &[],
+        cancel,
     );
     assert_eq!(report.loaded_mods, 0);
     let entry = report

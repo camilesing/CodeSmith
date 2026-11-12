@@ -34,7 +34,8 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Prompt sections, skills | ✓ `register_prompt_section` / `register_skill` | ✓ (defaults) | ✓ | prefix-cache discipline applies |
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
 | Turn loop (every agent) | ✓ `register_loop` (drive, via the `rhai` executor) | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (`builtin`, or `"rhai"` to run a mod's loop script) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with the general agent's `next()` (every turn — a sub-agent composes the chain at its agent-type scope); a script loop owns only the loop SHAPE — its capability calls (`llm_request`, `run_tools`) execute the host's step services (see "Writing a loop script") |
-| Compaction algorithm, `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries; compaction *knobs* are policy, the algorithm is not) |
+| Compaction strategy | ✓ `register_compaction_strategy` (trigger + plan decisions) | ✓ (opt-in ports select via `[compaction] strategy`) | — | the mod owns the *decisions* (when to compact, how much to keep, summary directives); the host owns the *effects* and the immune zone (pairing invariant, system-prompt prefix, append-only storage, the summary LLM call, the circuit breaker). Selection: config `[compaction] strategy = "builtin" \| "<name>"` (see "Writing a compaction strategy") |
+| `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
 sandboxed by the absence of I/O natives); **async, filesystem, network, or
@@ -321,6 +322,16 @@ recompile.
   override by registering the same policy kind, not by shadowing the id;
   their ids appear only as sources in the resolved-policies section of
   `list`).
+- **Opt-in builtins**: behavior-changing builtin mods (a tool replacement,
+  a loop, a compaction strategy) ship in the binary too, but load only
+  when `[mods] builtin = ["<id>", …]` names them — that config key is the
+  uniform "load by configuration" surface for every port that must not be
+  always-on. Opt-in ids carry no `builtin-` prefix (the id is the
+  user-facing selection key, shared with whatever config selects the
+  behavior — e.g. `[compaction] strategy`). An id matching no opt-in
+  builtin fails the startup audit loudly; an unselected opt-in mod stays
+  compiled into the binary but never runs. A reload replays the same
+  selection.
 
 ### Disabling a built-in slash command
 
@@ -587,6 +598,7 @@ capability surface is a set of global functions the loop engine registers:
 | `eval_child(handle, timeout_ms)` | `#{status, final_text, steps}` — await a spawned child (`status` is `completed`/`cancelled`/`failed`; `final_text` is `()` unless completed). A timeout aborts the child and errors — an abandoned branch must not linger. |
 | `spawn_depth()` | This turn's depth (`0` = the main turn) — the role switch for mods that both search and evaluate, since children run the same script. |
 | `loop_policy_int(field, default)` | Read one `lats-policy` knob (`width`/`depth`/`beam`) — last-wins policy resolution with the script's compiled `default` as fallback, so a user mod's `register_policy("lats-policy", …)` retunes a running loop without a recompile. |
+| `compact_now()` | `#{ran, messages}` — run the host's compaction step service on demand (micro-compact, the trigger gate — including any selected `[compaction] strategy` — the LLM summary). `ran == false` is a clean no-op (under threshold / disabled / breaker open), not an error. Unlike the builtin loop there is no automatic pre-request preflight: the script calls this where its shape needs one, typically before each `llm_request`. |
 | `cancelled()` | `true` once the turn's cancel token fired — check it in long-running loops. |
 | `note(text)` | Records a script decision on the session log path (live presentation and the persisted record agree). |
 
@@ -594,7 +606,7 @@ Error posture is **fail loud** (the opposite of a behavior hook): a script
 error fails the turn. `[rhai_loop]` in `config.toml` pins the mod
 (`mod = "react-min"`) and bounds one turn's script execution
 (`timeout_secs`, default 3600). A script loop does not inherit the builtin
-loop's compaction preflight, LSP flush, capacity gates or the `turn-stopping`
+loop's LSP flush, capacity gates or the `turn-stopping`
 steer seam — see the `rhai_executor` module's known limitations before
 porting a loop that needs them.
 
@@ -628,6 +640,64 @@ kind: the builtin tier ships defaults, `loop_policy_int("width", 3)`
 reads the resolved value with the script's compiled fallback, and a user
 mod's `register_policy("lats-policy", …)` retunes a running session —
 data, not code, verified via `/mods list`'s resolved-policies section.
+
+## Writing a compaction strategy
+
+`register_compaction_strategy(name, spec)` makes a mod own the
+compaction **decisions**; config `[compaction] strategy = "<name>"`
+selects it (`"builtin"` — the default — keeps the compiled algorithm).
+The seam splits cleanly:
+
+- **Script-ownable (pure decisions over a host-built snapshot)**: *when*
+  to compact (the `trigger` closure) and *how much survives* + summary
+  directives (the `plan` closure).
+- **Host-owned (the immune zone, not strategy-reachable)**: tool-call /
+  tool-result pairing, the system-prompt prefix, append-only storage, the
+  summary LLM call and its retries, the circuit breaker, the
+  rapid-refill detector, the minimum-summarizable floor.
+
+```rhai
+register_compaction_strategy("compact-pi", #{
+    // snapshot: #{ total_tokens, window, threshold, messages,
+    //             rounds: [#{ start, len, tokens, has_tool_use, has_media }] }
+    trigger: |snap| snap.total_tokens > snap.window - 16384,
+    plan: |snap| #{
+        keep_recent_tokens: 20000,        // OR keep_recent_rounds / keep_recent_messages
+        summary_instructions: "…",        // optional, appended to the summary prompt
+        summary_max_tokens: 16384,        // optional, overrides the output cap (256..=65536)
+    },
+});
+```
+
+Semantics worth knowing before porting a strategy from another agent:
+
+- **Snapshot shape.** Token counts are host-precomputed; rounds are
+  assistant-start groups (a round boundary is a pairing-safe cut point by
+  construction). `window` is the resolved context window, `threshold`
+  the configured token threshold.
+- **Host gates still run.** `enabled`, the auto-compaction floor, the
+  breaker, and the minimum message count are checked before/around the
+  strategy — a strategy tightens timing, it cannot disable safety.
+- **Plan interpretation is validated.** Exactly one of
+  `keep_recent_rounds` / `keep_recent_tokens` / `keep_recent_messages`
+  (> 0); a rejected plan logs loudly and the attempt uses the builtin
+  boundary (the trigger already decided compaction is needed).
+- **Round-aligned keeps.** `keep_recent_tokens` backward-accumulates
+  *whole rounds* until the budget is met, then `enforce_tool_call_pairs`
+  runs regardless — the immune zone holds even for a strategy that names
+  a boundary splitting a pair.
+- **Selection and failure posture.** The name resolves against loaded
+  mods at compaction time (the strategy set is session state — mods load
+  and reload around config, so unlike `turn_executor` this cannot be
+  validated at config-load time). An unknown name is a loud per-attempt
+  error that falls back to builtin: compaction is a safety mechanism, a
+  config typo must not wedge it. Resolution is last-wins by load order —
+  a user mod overrides a builtin strategy by reusing its name.
+- **Scope (v1).** The strategy governs the auto-compaction path
+  (`run_compaction`). Capacity interventions and recovery compaction keep
+  builtin thresholds; the summary request *shape* (cache-aligned vs
+  formatted) stays the host's. Known limitations are written down beside
+  the seam (`crates/agent-runtime/src/compaction/strategy.rs`).
 
 ## mod.toml Fields
 

@@ -71,6 +71,7 @@ SEAMS = [
 # docstring). Same admission rule as SEAMS.
 DATA_SEAMS = [
     "ChildTurnSpec",
+    "ScriptCompactionStrategy",
 ]
 
 HEADER = """\

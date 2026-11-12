@@ -117,7 +117,11 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   origin tier (5b: script/compiled-in tools mount in children, dylib
   tools stay main-turn-only — a detached background child can outlive a
   reload's two-phase dylib drop). The sole `BASE_PROMPT` and sub-agent tool
-  registries' built-in surface are core by contract, not plugins; one
+  registries' built-in surface are core by contract, not plugins; the
+  compaction *strategy* (trigger/plan decisions) is mod-pluggable
+  (`register_compaction_strategy`, config `[compaction] strategy`,
+  `agent-runtime/src/compaction/strategy.rs` — effects and immune zone
+  stay host-owned); one
   turn loop drives every agent (general-agent kernel-composition model) — the
   engine resolves a config-selected factory (`turn_executor`, default
   `builtin`; `"rhai"` runs a mod's `register_loop` script over the host's

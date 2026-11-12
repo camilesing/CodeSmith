@@ -779,6 +779,9 @@ pub struct Config {
     /// `[rhai_loop]` — settings for the script-driven executor
     /// (`turn_executor = "rhai"`).
     pub rhai_loop: Option<RhaiLoopToml>,
+    /// `[compaction]` — compaction behavior (strategy selection).
+    #[serde(default)]
+    pub compaction: Option<CompactionToml>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     /// Optional extra HTTP headers sent to model API requests.
@@ -1240,6 +1243,31 @@ impl Config {
         self.mods.as_ref().and_then(|m| m.enabled).unwrap_or(true)
     }
 
+    /// Opt-in builtin mods to load (`[mods] builtin`), by id. Empty when
+    /// unset — only the always-on default tier loads.
+    #[must_use]
+    pub fn builtin_mods_selected(&self) -> Vec<String> {
+        self.mods
+            .as_ref()
+            .and_then(|m| m.builtin.clone())
+            .unwrap_or_default()
+    }
+
+    /// The selected compaction strategy (`[compaction] strategy`).
+    /// Defaults to `"builtin"` — the compiled algorithm.
+    #[must_use]
+    pub fn compaction_strategy(&self) -> String {
+        self.compaction
+            .as_ref()
+            .and_then(|c| c.strategy.clone())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                codesmith_agent_runtime::compaction::strategy::BUILTIN_COMPACTION_STRATEGY
+                    .to_string()
+            })
+    }
+
     /// Step cap per turn for scheduled automation runs. `None` when unset —
     /// callers apply [`AUTOMATION_DEFAULT_MAX_STEPS`].
     #[must_use]
@@ -1252,6 +1280,25 @@ impl Config {
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct ModsConfig {
     pub enabled: Option<bool>,
+    /// Opt-in builtin mods to load, by id (the behavior-changing builtin
+    /// tier — replacement/loop/strategy ports; see docs/MODS.md). An id
+    /// matching no opt-in builtin fails the startup audit loudly.
+    #[serde(default)]
+    pub builtin: Option<Vec<String>>,
+}
+
+/// `[compaction]` table — compaction behavior. Documented in
+/// `config.example.toml` + docs/CONFIGURATION.md.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct CompactionToml {
+    /// Which strategy drives auto-compaction decisions: `"builtin"` (the
+    /// default — the compiled algorithm) or the name a mod registered via
+    /// `register_compaction_strategy` (opt-in builtin strategies ship in
+    /// the binary; select the mod in `[mods] builtin` too). An unknown
+    /// name is a loud per-attempt error that falls back to builtin — the
+    /// strategy set is session state (mods), so unlike `turn_executor`
+    /// this cannot be validated at config-load time.
+    pub strategy: Option<String>,
 }
 
 /// The `[rhai_loop]` config table (script-driven executor settings).
@@ -4518,6 +4565,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         custom_provider: override_cfg.custom_provider.or(base.custom_provider),
         turn_executor: override_cfg.turn_executor.or(base.turn_executor),
         rhai_loop: override_cfg.rhai_loop.or_else(|| base.rhai_loop.clone()),
+        compaction: override_cfg.compaction.or(base.compaction),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
         edit: override_cfg.edit.or(base.edit),

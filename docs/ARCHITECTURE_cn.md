@@ -94,7 +94,9 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   解析自己的视图（5b：script/compiled-in 工具可挂载进子代理，dylib 工具
   保持仅主轮——detached 后台子代理可能活得比一次 reload 的两阶段 dylib
   drop 更久）。唯一的 `BASE_PROMPT` 与子代理工具注册表的内建表面是
-  契约声明的核心，不做插件化；一个 turn 循环驱动所有 agent（通用 Agent 内核
+  契约声明的核心，不做插件化；压缩*策略*（trigger/plan 决策）可由 mod
+  插拔（`register_compaction_strategy`、配置 `[compaction] strategy`、
+  `agent-runtime/src/compaction/strategy.rs`——效果与免疫区归宿主）；一个 turn 循环驱动所有 agent（通用 Agent 内核
   组合模型）——引擎从进程共享 `TurnExecutorRegistry`
   （`engine/executor_composition.rs`）解析按配置选择的 factory
   （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目

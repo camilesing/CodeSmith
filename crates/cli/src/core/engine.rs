@@ -749,6 +749,7 @@ pub(crate) fn resolve_seam_model_and_client(
 fn build_extension_runtime(
     workspace: &std::path::Path,
     mods_enabled: bool,
+    builtin_selected: &[String],
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
     policy_store: &codesmith_agent::policy::PolicyStore,
 ) -> (Arc<codesmith_extensions::ExtensionRunner>, PopulateReport) {
@@ -777,6 +778,7 @@ fn build_extension_runtime(
         &state,
         &mod_state,
         mods_enabled,
+        builtin_selected,
         shared_cancel_token,
     );
     (runner, report)
@@ -897,6 +899,7 @@ fn populate_extension_runtime(
     state: &crate::extension_state::ExtensionStateStore,
     mod_state: &crate::mod_state::ModStateStore,
     mods_enabled: bool,
+    builtin_selected: &[String],
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
 ) -> PopulateReport {
     // 1. Discover compiled-in extensions (inventory).
@@ -1084,6 +1087,7 @@ fn populate_extension_runtime(
                 // sub-agent registries; dylib contributions may not).
                 for (id, result) in codesmith_extensions::load_builtin_mods(
                     runner_for_thread.message_projection_hub(),
+                    builtin_selected,
                 ) {
                     match result {
                         Ok(m) => match load_rt.block_on(
@@ -1326,12 +1330,16 @@ pub const RELOAD_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// engine's per-turn `reset_cancel_token` (no handler reads it yet; this is
 /// forward-looking infra). `drain_timeout` bounds the drain wait (production
 /// callers pass [`RELOAD_DRAIN_TIMEOUT`]; tests pass short bounds).
+// The opt-in builtin selection adds a param to an already-wide reload
+// signature (same allow class as `populate_extension_runtime` callers).
+#[allow(clippy::too_many_arguments)]
 pub fn reload_extension_runtime(
     runner: &Arc<codesmith_extensions::ExtensionRunner>,
     workspace: &std::path::Path,
     state: &crate::extension_state::ExtensionStateStore,
     mod_state: &crate::mod_state::ModStateStore,
     mods_enabled: bool,
+    builtin_selected: &[String],
     shared_cancel_token: Arc<StdMutex<tokio_util::sync::CancellationToken>>,
     drain_timeout: std::time::Duration,
 ) -> PopulateReport {
@@ -1390,6 +1398,7 @@ pub fn reload_extension_runtime(
         state,
         mod_state,
         mods_enabled,
+        builtin_selected,
         shared_cancel_token,
     );
     report.drain = Some(drain);
@@ -1452,6 +1461,7 @@ pub fn build_engine(
     let (extension_runner, mods_report) = build_extension_runtime(
         &config.workspace,
         mods_enabled,
+        &api_config.builtin_mods_selected(),
         shared_cancel_token.clone(),
         &policy_store,
     );
@@ -1466,6 +1476,7 @@ pub fn build_engine(
             workspace: config.workspace.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
             mods_enabled,
+            builtin_selected: api_config.builtin_mods_selected(),
             session_mods: Arc::new(crate::mod_ops::SessionMods::default()),
         });
     }
@@ -1995,6 +2006,7 @@ pub(crate) fn headless_engine_config(
         enabled: true,
         model: model.clone(),
         token_threshold: config.compaction_threshold(&model),
+        strategy: config.compaction_strategy(),
         ..Default::default()
     };
     let network_policy = Some(config.network_policy_decider());

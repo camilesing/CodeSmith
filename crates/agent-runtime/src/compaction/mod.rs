@@ -29,6 +29,7 @@ pub mod partial_compact;
 pub mod post_compact_cleanup;
 pub mod responsive_compact;
 pub mod session_memory_compact;
+pub mod strategy;
 
 // Flatten the heavy compaction engine's public surface into the `compaction`
 // namespace so callers (and the CLI re-export shim) can reach
@@ -70,6 +71,14 @@ pub struct CompactionConfig {
     /// (0) so sub-500K providers can compact before provider rejection.
     /// Tests or explicit callers can set this when they need a later floor.
     pub auto_floor_tokens: usize,
+    /// Which compaction *strategy* drives the auto-compaction decisions:
+    /// [`strategy::BUILTIN_COMPACTION_STRATEGY`] (`"builtin"`, the
+    /// default — the compiled algorithm) or the name a mod registered via
+    /// `register_compaction_strategy` (config `[compaction] strategy`).
+    /// The name resolves against the loaded mods at compaction time; an
+    /// unregistered name is a loud error that falls back to builtin (see
+    /// `strategy::resolve_configured`).
+    pub strategy: String,
 }
 
 impl Default for CompactionConfig {
@@ -91,6 +100,7 @@ impl Default for CompactionConfig {
             context_window: None,
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
+            strategy: strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
         }
     }
 }

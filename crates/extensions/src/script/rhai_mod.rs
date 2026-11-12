@@ -87,6 +87,24 @@ pub enum ScriptRegistration {
         /// (`fn main() { ... }` — capability calls are global functions).
         entry: String,
     },
+    /// A compaction strategy captured by the
+    /// `register_compaction_strategy(name, spec)` native. Like [`ScriptRegistration::Loop`],
+    /// consumed directly by the host's compaction engine, never replayed at
+    /// `configure` — resolved off the retained mod through
+    /// [`ExtensionRunner::compaction_strategy`](crate::ExtensionRunner::compaction_strategy).
+    CompactionStrategy {
+        /// Selection key — config `[compaction] strategy = "<name>"`.
+        name: String,
+        /// `|snapshot| -> bool` — the trigger decision (pure; the aggregate
+        /// snapshot is host-built, token counts precomputed).
+        trigger: rhai::FnPtr,
+        /// `|snapshot| -> #{keep_recent_rounds | keep_recent_tokens,
+        /// summary_instructions?, summary_max_tokens?}` — the boundary and
+        /// summary directives (pure data out; interpreted and invariant-
+        /// checked by the host, see `codesmith_agent_runtime::compaction::
+        /// strategy`).
+        plan: rhai::FnPtr,
+    },
     Tool {
         name: String,
         description: String,
@@ -1226,6 +1244,61 @@ fn register_natives(
         },
     );
 
+    // register_compaction_strategy(name, spec_map) — declare this mod a
+    // compaction-strategy host: config `[compaction] strategy = "<name>"`
+    // selects it. The spec's `trigger` / `plan` closures own the *decisions*
+    // (when to compact, how much to keep, summary directives); the host owns
+    // the *effects* and the immune zone (tool-call/result pairing, the
+    // system-prompt prefix, append-only storage, the summary LLM call, the
+    // circuit breaker — see docs/MODS.md). Captured at load; a duplicate
+    // name within this mod fails the load. Not replayed at `configure` —
+    // the compaction engine consumes the registration directly.
+    let cell_strategy = Arc::clone(cell);
+    engine.register_fn(
+        "register_compaction_strategy",
+        move |name: &str, spec: rhai::Map| -> Result<(), Box<rhai::EvalAltResult>> {
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Err(script_error(format!(
+                    "register_compaction_strategy(): name {name:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+                )));
+            }
+            let missing = |field: &str| {
+                script_error(format!(
+                    "register_compaction_strategy(): spec must include a `{field}` closure"
+                ))
+            };
+            let trigger = spec
+                .get("trigger")
+                .cloned()
+                .and_then(|d| d.try_cast::<rhai::FnPtr>())
+                .ok_or_else(|| missing("trigger"))?;
+            let plan = spec
+                .get("plan")
+                .cloned()
+                .and_then(|d| d.try_cast::<rhai::FnPtr>())
+                .ok_or_else(|| missing("plan"))?;
+            let mut cell = cell_strategy.lock().expect("mod registration cell poisoned");
+            if cell.iter().any(|reg| {
+                matches!(reg, ScriptRegistration::CompactionStrategy { name: n, .. } if n == name)
+            }) {
+                return Err(script_error(format!(
+                    "register_compaction_strategy(): name {name:?} already registered in this mod — pick a new name"
+                )));
+            }
+            cell.push(ScriptRegistration::CompactionStrategy {
+                name: name.to_string(),
+                trigger,
+                plan,
+            });
+            Ok(())
+        },
+    );
+
     // register_guard(callback) — route B (1.2 alignment): a deny-only tool
     // guard (the general agent's `ctx.tools.guard()`). The closure takes the tool-call
     // payload (`|e|` — `#{kind, id, name, input}`, same shape as a
@@ -1644,6 +1717,40 @@ impl RhaiMod {
         })
     }
 
+    /// The compaction strategy this mod registered under `name`, if any
+    /// (`register_compaction_strategy`). The host's compaction engine
+    /// resolves its configured strategy through this (via
+    /// [`ExtensionRunner::compaction_strategy`](crate::ExtensionRunner::compaction_strategy)).
+    #[must_use]
+    pub fn compaction_strategy(&self, name: &str) -> Option<ScriptCompactionStrategy> {
+        self.registrations.iter().find_map(|reg| match reg {
+            ScriptRegistration::CompactionStrategy {
+                name: n,
+                trigger,
+                plan,
+            } if n == name => Some(ScriptCompactionStrategy {
+                name: n.clone(),
+                mod_id: self.metadata.id.to_string(),
+                runtime: Arc::clone(&self.runtime),
+                trigger: trigger.clone(),
+                plan: plan.clone(),
+            }),
+            _ => None,
+        })
+    }
+
+    /// Every compaction-strategy name this mod registered (observability —
+    /// `/mods list` and the unknown-strategy diagnostic).
+    pub fn compaction_strategy_names(&self) -> Vec<String> {
+        self.registrations
+            .iter()
+            .filter_map(|reg| match reg {
+                ScriptRegistration::CompactionStrategy { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Build a fresh engine for a loop-execution run: the mod's native
     /// surface (KV, control values, projections) rebuilt on a private
     /// engine — the shared runtime engine is `Arc` and cannot carry the
@@ -1884,9 +1991,73 @@ impl Extension for RhaiMod {
                     // `ExtensionRunner::loop_mod`), never replayed here —
                     // there is no `ExtensionApi` surface for a loop.
                 }
+                ScriptRegistration::CompactionStrategy { .. } => {
+                    // Consumed by the compaction engine (resolved through
+                    // `ExtensionRunner::compaction_strategy`), never replayed
+                    // here — there is no `ExtensionApi` surface for a
+                    // strategy.
+                }
             }
         }
         Ok(())
+    }
+}
+
+/// A host-invocable compaction strategy registered by a mod
+/// (`register_compaction_strategy`). The closures stay resolved through the
+/// mod's shared runtime (engine + AST), exactly like a handler's `FnPtr`;
+/// callers drive the strategy through [`Self::call_trigger`] /
+/// [`Self::call_plan`] with plain JSON in and out, so host code never
+/// touches Rhai types. Both closures are pure decisions — no I/O natives
+/// exist on the mod engine, and the op budget (200k) bounds a runaway
+/// formula. Errors are returned as strings (the host logs and falls back
+/// to the builtin algorithm — a strategy must never wedge compaction).
+#[derive(Clone)]
+pub struct ScriptCompactionStrategy {
+    pub name: String,
+    pub mod_id: String,
+    runtime: Arc<ScriptRuntime>,
+    trigger: rhai::FnPtr,
+    plan: rhai::FnPtr,
+}
+
+impl ScriptCompactionStrategy {
+    /// Invoke the trigger closure against a snapshot (the host-built
+    /// aggregate map — token counts precomputed). `Err` is a script error;
+    /// the host treats it as "did not trigger" after logging loudly.
+    pub fn call_trigger(&self, snapshot: &serde_json::Value) -> Result<bool, String> {
+        let arg = json_to_dynamic(snapshot);
+        let ret = self
+            .trigger
+            .call::<Dynamic>(&self.runtime.engine, &self.runtime.ast, (arg,))
+            .map_err(|e| format!("trigger: {e}"))?;
+        ret.try_cast::<bool>()
+            .ok_or_else(|| "trigger: closure must return a bool".to_string())
+    }
+
+    /// Invoke the plan closure against the same snapshot. Returns the
+    /// strategy's decision map verbatim (JSON); interpretation, validation
+    /// and immune-zone enforcement are the host's
+    /// (`codesmith_agent_runtime::compaction::strategy`).
+    pub fn call_plan(&self, snapshot: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let arg = json_to_dynamic(snapshot);
+        let ret = self
+            .plan
+            .call::<Dynamic>(&self.runtime.engine, &self.runtime.ast, (arg,))
+            .map_err(|e| format!("plan: {e}"))?;
+        let map = ret
+            .try_cast::<rhai::Map>()
+            .ok_or_else(|| "plan: closure must return a map (#{ ... })".to_string())?;
+        dynamic_to_json(&Dynamic::from(map)).map_err(|e| format!("plan: {e}"))
+    }
+}
+
+impl std::fmt::Debug for ScriptCompactionStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptCompactionStrategy")
+            .field("name", &self.name)
+            .field("mod_id", &self.mod_id)
+            .finish()
     }
 }
 
@@ -1963,6 +2134,7 @@ mod tests {
                     ScriptRegistration::Guard { .. } => "g:guard".to_string(),
                     ScriptRegistration::Policy { kind, .. } => format!("y:{:?}", kind),
                     ScriptRegistration::Loop { entry } => format!("l:{entry}"),
+                    ScriptRegistration::CompactionStrategy { name, .. } => format!("z:{name}"),
                     ScriptRegistration::DisableCommand { name } => format!("d:{name}"),
                 })
                 .collect::<Vec<_>>()
@@ -2149,6 +2321,156 @@ mod tests {
         )
         .expect("load lats example");
         assert_eq!(m.loop_entry(), Some("main"));
+    }
+
+    // === register_compaction_strategy (the pluggable compaction seam) ========
+
+    const STRATEGY_SCRIPT: &str = r#"
+        register_compaction_strategy("compact-pi", #{
+            trigger: |snap| snap.total_tokens > snap.window - 16384,
+            plan: |snap| #{
+                keep_recent_tokens: 20000,
+                summary_max_tokens: 16384,
+            },
+        });
+    "#;
+
+    /// Registration is captured at load and resolvable by name off the
+    /// runner; both closures invoke cleanly with plain JSON in/out (the
+    /// pi-style reserve formula drives the trigger).
+    #[test]
+    fn register_compaction_strategy_captures_and_resolves() {
+        let m = RhaiMod::load_source(
+            "strategy-mod",
+            "Strategy",
+            "0.1.0",
+            STRATEGY_SCRIPT.to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load");
+        let runner = crate::ExtensionRunner::new();
+        runner.retain_mod(Arc::new(m));
+        let strategy = runner
+            .compaction_strategy("compact-pi")
+            .expect("strategy resolves by name");
+        assert_eq!(strategy.name, "compact-pi");
+        assert_eq!(strategy.mod_id, "strategy-mod");
+        assert_eq!(
+            runner.compaction_strategy_names(),
+            vec!["compact-pi".to_string()]
+        );
+        assert!(runner.compaction_strategy("nope").is_none());
+
+        let snapshot = serde_json::json!({
+            "total_tokens": 190_000, "window": 200_000,
+            "threshold": 160_000, "messages": 42, "rounds": [],
+        });
+        assert!(strategy.call_trigger(&snapshot).expect("trigger fires"));
+        let calm = serde_json::json!({
+            "total_tokens": 100_000, "window": 200_000,
+            "threshold": 160_000, "messages": 42, "rounds": [],
+        });
+        assert!(!strategy.call_trigger(&calm).expect("trigger holds"));
+
+        let plan = strategy.call_plan(&snapshot).expect("plan returns a map");
+        assert_eq!(plan["keep_recent_tokens"], 20_000);
+        assert_eq!(plan["summary_max_tokens"], 16_384);
+    }
+
+    /// A user mod reusing a builtin's strategy name wins by load order
+    /// (last-wins, the policy resolution rule).
+    #[test]
+    fn compaction_strategy_resolution_is_last_wins() {
+        let first = RhaiMod::load_source(
+            "builtin-tier",
+            "Builtin",
+            "0.1.0",
+            r#"register_compaction_strategy("dup", #{ trigger: |s| false, plan: |s| #{ keep_recent_rounds: 1 } });"#
+                .to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load first");
+        let second = RhaiMod::load_source(
+            "user-mod",
+            "User",
+            "0.1.0",
+            r#"register_compaction_strategy("dup", #{ trigger: |s| true, plan: |s| #{ keep_recent_rounds: 9 } });"#
+                .to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load second");
+        let runner = crate::ExtensionRunner::new();
+        runner.retain_mod(Arc::new(first));
+        runner.retain_mod(Arc::new(second));
+        let winner = runner.compaction_strategy("dup").expect("resolves");
+        assert_eq!(winner.mod_id, "user-mod");
+        let snapshot = serde_json::json!({ "total_tokens": 1 });
+        assert!(winner.call_trigger(&snapshot).expect("user mod wins"));
+    }
+
+    /// Duplicate names within one mod and a spec missing its closures fail
+    /// the load loudly (fail loud at the earliest point).
+    #[test]
+    fn register_compaction_strategy_rejects_duplicates_and_missing_fns() {
+        let dup = RhaiMod::load_source(
+            "dup-mod",
+            "Dup",
+            "0.1.0",
+            r#"
+                register_compaction_strategy("s", #{ trigger: |x| true, plan: |x| #{} });
+                register_compaction_strategy("s", #{ trigger: |x| true, plan: |x| #{} });
+            "#
+            .to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        );
+        assert!(dup.is_err(), "duplicate name must fail the load");
+
+        let missing = RhaiMod::load_source(
+            "missing-fn",
+            "Missing",
+            "0.1.0",
+            r#"register_compaction_strategy("s", #{ trigger: |x| true });"#.to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        );
+        assert!(missing.is_err(), "missing plan closure must fail the load");
+
+        let bad_name = RhaiMod::load_source(
+            "bad-name",
+            "Bad",
+            "0.1.0",
+            r#"register_compaction_strategy("bad name!", #{ trigger: |x| true, plan: |x| #{} });"#
+                .to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        );
+        assert!(bad_name.is_err(), "invalid name must fail the load");
+    }
+
+    /// A trigger closure that returns a non-bool is a call-time error the
+    /// host turns into "did not trigger" (after logging loudly).
+    #[test]
+    fn compaction_strategy_trigger_type_error_surfaces_as_err() {
+        let m = RhaiMod::load_source(
+            "bad-trigger",
+            "Bad",
+            "0.1.0",
+            r#"register_compaction_strategy("s", #{ trigger: |x| "yes", plan: |x| #{} });"#
+                .to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load");
+        let err = m
+            .compaction_strategy("s")
+            .expect("registered")
+            .call_trigger(&serde_json::json!({ "total_tokens": 1 }))
+            .expect_err("non-bool trigger must be an error");
+        assert!(err.contains("bool"), "error names the expected type: {err}");
     }
 
     // === on_event (general-agent-aligned Emit/Serial registration) ====================
@@ -3790,7 +4112,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         runner.bind_core(std::sync::Arc::new(PolicyCtx));
         // Builtin tier first — the baseline the fallbacks must land on.
-        for (_, m) in crate::script::builtin::load_builtin_mods(hub()) {
+        for (_, m) in crate::script::builtin::load_builtin_mods(hub(), &[]) {
             let m = m.expect("builtin mod compiles");
             rt.block_on(runner.bind_mod(std::sync::Arc::new(m)))
                 .expect("bind builtin");
@@ -3876,7 +4198,7 @@ mod tests {
 
     #[test]
     fn builtin_mods_compile_and_register_defaults() {
-        for (id, m) in crate::script::builtin::load_builtin_mods(hub()) {
+        for (id, m) in crate::script::builtin::load_builtin_mods(hub(), &[]) {
             let m = m.unwrap_or_else(|e| panic!("builtin {id} must compile: {e}"));
             assert!(
                 !m.registrations().is_empty(),

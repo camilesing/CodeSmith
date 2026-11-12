@@ -104,6 +104,10 @@ pub struct ModReloadCtx {
     /// a tool-triggered or watcher reload must not resurrect the mod layer
     /// against `[mods] enabled = false`.
     pub mods_enabled: bool,
+    /// Opt-in builtin selections (`[mods] builtin`), captured at engine
+    /// build — a reload replays the same opt-in set, so an unselected
+    /// behavior-changing builtin cannot reappear via reload.
+    pub builtin_selected: Vec<String>,
     /// Session-scoped ephemeral mods (see [`SessionMods`]) — shared by the
     /// tool path, the approval classifier, and reload replay.
     pub session_mods: Arc<SessionMods>,
@@ -587,6 +591,7 @@ pub fn reload_mods(
     workspace: &Path,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     mods_enabled: bool,
+    builtin_selected: &[String],
     session_mods: &SessionMods,
 ) -> String {
     // The transition lock serializes this whole-layer rebuild against the
@@ -624,6 +629,7 @@ pub fn reload_mods(
         &ext_state,
         &mod_state,
         mods_enabled,
+        builtin_selected,
         shared_cancel_token,
         crate::core::engine::RELOAD_DRAIN_TIMEOUT,
     );
@@ -1394,7 +1400,8 @@ trust_level = "trusted"
         // user mod wins last-wins and the builtin default is what the
         // listing falls back to.
         let rt = tokio::runtime::Runtime::new().unwrap();
-        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub()) {
+        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub(), &[])
+        {
             let m = m.expect("builtin mod compiles");
             rt.block_on(runner.bind_mod(Arc::new(m)))
                 .expect("bind builtin");
@@ -1434,6 +1441,7 @@ trust_level = "trusted"
             workspace: workspace.to_path_buf(),
             shared_cancel_token: Arc::new(StdMutex::new(CancellationToken::new())),
             mods_enabled: true,
+            builtin_selected: Vec::new(),
             session_mods: Arc::new(SessionMods::default()),
         }
     }
@@ -1446,7 +1454,8 @@ trust_level = "trusted"
         let ws = workspace_in(&dir);
         let runner = bound_runner(&ws);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub()) {
+        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub(), &[])
+        {
             let m = m.expect("builtin mod compiles");
             rt.block_on(runner.bind_mod(Arc::new(m)))
                 .expect("bind builtin");
@@ -1522,7 +1531,8 @@ trust_level = "trusted"
         let ws = workspace_in(&dir);
         let runner = bound_runner(&ws);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub()) {
+        for (_, m) in codesmith_extensions::load_builtin_mods(runner.message_projection_hub(), &[])
+        {
             let m = m.expect("builtin mod compiles");
             rt.block_on(runner.bind_mod(Arc::new(m)))
                 .expect("bind builtin");
@@ -1545,6 +1555,7 @@ trust_level = "trusted"
             &ws,
             Arc::new(StdMutex::new(CancellationToken::new())),
             true,
+            &ctx.builtin_selected,
             &ctx.session_mods,
         );
         assert!(note.contains("Session mods replayed: 1"), "{note}");

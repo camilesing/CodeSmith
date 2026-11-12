@@ -288,6 +288,7 @@ pub async fn partial_compact(
                 &summarize_input,
                 &request.model,
                 window,
+                None,
             )
             .await?
             .text

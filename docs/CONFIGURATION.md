@@ -290,6 +290,33 @@ Wrapping the run from a Rust extension is the composition half,
 `register_around_turn` (`docs/EXTENSIONS.md`) — wrapped around the
 main turn and every sub-agent turn alike.
 
+#### Compaction strategy selection (`[compaction] strategy`)
+
+Auto-compaction decisions are pluggable: `"builtin"` (the default — the
+compiled algorithm) or the name a mod registered with
+`register_compaction_strategy` (see MODS.md "Writing a compaction
+strategy"). The mod owns the pure decisions (trigger formula, how much
+survives, summary directives); the host owns the effects and the immune
+zone (pairing invariant, append-only storage, the summary LLM call, the
+circuit breaker).
+
+```toml
+[mods]
+builtin = ["compact-pi"]   # load the opt-in builtin strategy mod (by id)
+
+[compaction]
+strategy = "compact-pi"    # select it (default "builtin")
+```
+
+The name resolves against loaded mods at compaction time — the strategy
+set is session state (mods load and reload around config), so unlike
+`turn_executor` this cannot be validated at config-load time. An unknown
+name is a loud per-attempt error that falls back to the builtin
+algorithm: compaction is a safety mechanism; a config typo must not wedge
+it. Opt-in builtin mods (behavior-changing ports: strategies,
+replacements, loops) load only when `[mods] builtin` names them — an id
+matching no opt-in builtin fails the startup audit loudly.
+
 
 Third-party OpenAI-compatible gateways that need extra request headers can set
 `http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
@@ -1272,6 +1299,9 @@ and the capacity controller remains disabled unless configured.
   [MODS.md](MODS.md):
   - `[mods].enabled` (bool, default `true`): gates the whole script-mod layer
     (discovery, the `manage_mods` tool)
+  - `[mods].builtin` (string list, default empty) — opt-in builtin mods to
+    load, by id (the behavior-changing builtin tier: strategies,
+    replacements, loops). Unknown ids fail the startup audit loudly
 - `commands.*` (optional): built-in slash-command controls:
   - `[commands].disabled` (string list, default empty) — canonical names
     (or aliases) of built-in REPL commands to hide. Dispatch, `/help`, and
