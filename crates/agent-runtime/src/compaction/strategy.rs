@@ -462,4 +462,62 @@ mod tests {
         config.auto_floor_tokens = 0;
         assert!(host_trigger_gates(&history(10), &config));
     }
+
+    /// The four opt-in builtin strategies (Compare ports, sources compiled
+    /// into the extensions crate) produce plans that pass the host's real
+    /// interpretation — a port the host would reject is a binary defect,
+    /// not a runtime surprise.
+    #[test]
+    fn builtin_opt_in_strategy_plans_pass_interpretation() {
+        let ports: &[(&str, &str)] = &[
+            (
+                "compact-pi",
+                include_str!("../../../extensions/src/script/builtin/compact_pi.rhai"),
+            ),
+            (
+                "compact-omp",
+                include_str!("../../../extensions/src/script/builtin/compact_omp.rhai"),
+            ),
+            (
+                "compact-minimax",
+                include_str!("../../../extensions/src/script/builtin/compact_minimax.rhai"),
+            ),
+            (
+                "compact-dsh",
+                include_str!("../../../extensions/src/script/builtin/compact_dsh.rhai"),
+            ),
+        ];
+        let snapshot = json!({
+            "total_tokens": 190_000, "window": 200_000, "threshold": 160_000,
+            "messages": 40,
+            "rounds": [
+                {"start": 0, "len": 4, "tokens": 50_000, "has_tool_use": true, "has_media": false},
+                {"start": 4, "len": 4, "tokens": 50_000, "has_tool_use": true, "has_media": false},
+                {"start": 8, "len": 4, "tokens": 50_000, "has_tool_use": true, "has_media": false},
+            ],
+        });
+        for (name, source) in ports {
+            let m = codesmith_extensions::script::RhaiMod::load_source(
+                name,
+                name,
+                "0.1.0",
+                source.to_string(),
+                codesmith_extensions::script::ModKvStore::ephemeral(),
+                std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+            )
+            .unwrap_or_else(|e| panic!("{name} loads: {e}"));
+            let strategy = m
+                .compaction_strategy(name)
+                .unwrap_or_else(|| panic!("{name} registered"));
+            let plan = strategy
+                .call_plan(&snapshot)
+                .unwrap_or_else(|e| panic!("{name} plan: {e}"));
+            let directives = interpret_plan(plan, name)
+                .unwrap_or_else(|e| panic!("{name} passes host interpretation: {e}"));
+            // The ported keep specs convert to a real message count.
+            let messages = history(6);
+            let keep = keep_recent_messages_for(&messages, &directives.keep);
+            assert!(keep >= 1 && keep <= messages.len(), "{name}: keep {keep}");
+        }
+    }
 }
