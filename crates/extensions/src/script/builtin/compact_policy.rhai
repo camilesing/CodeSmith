@@ -7,6 +7,12 @@
 //   time_trigger_gap_secs     — silent gap that trips a time trigger
 //   micro_compactable_tools   — tool names whose results may be cleared
 //   cleared_placeholder       — the text a cleared result becomes
+//   keep_head_chars           — dsh-style partial clear: characters of the
+//                               head kept around the placeholder (0 = bare
+//                               placeholder; dsh ships 4096 — search hits
+//                               live at the head)
+//   keep_tail_chars           — same for the tail (dsh ships 1024 — shell
+//                               errors live at the tail)
 
 register_policy("compact-policy", #{
     cache_trigger_threshold: 32768,
@@ -17,4 +23,6 @@ register_policy("compact-policy", #{
         "apply_patch", "edit_file",
     ],
     cleared_placeholder: "[tool result cleared for context economy]",
+    keep_head_chars: 0,
+    keep_tail_chars: 0,
 });

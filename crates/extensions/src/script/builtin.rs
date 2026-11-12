@@ -97,6 +97,40 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         source: include_str!("builtin/lats_policy.rhai"),
         opt_in: false,
     },
+    // --- opt-in builtin strategies (compaction ports; select the mod in
+    // `[mods] builtin` AND the strategy in `[compaction] strategy`) ---
+    BuiltinMod {
+        id: "compact-pi",
+        version: "0.1.0",
+        description: "pi-style compaction strategy: window−16,384 trigger, \
+                      20,000-token round-aligned tail, split-turn handoff",
+        source: include_str!("builtin/compact_pi.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "compact-omp",
+        version: "0.1.0",
+        description: "omp-style compaction strategy: scaled reserve, \
+                      recovery-band tail clamp, 16,384 summary cap",
+        source: include_str!("builtin/compact_omp.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "compact-minimax",
+        version: "0.1.0",
+        description: "minimax-style compaction strategy: integer 95% \
+                      trigger, 5-round tail, window/8 summary cap",
+        source: include_str!("builtin/compact_minimax.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "compact-dsh",
+        version: "0.1.0",
+        description: "dsh-style compaction strategy: 0.8×window / 65,536 \
+                      headroom trigger, 16% tail retention",
+        source: include_str!("builtin/compact_dsh.rhai"),
+        opt_in: true,
+    },
 ];
 
 /// Compile + run the builtin tier against the runner (used by the host's
@@ -236,5 +270,171 @@ mod tests {
         // construction; with no opt-in entries shipped yet this asserts
         // the shape (non-empty, all Ok) and pins the call path.
         assert!(!defaults.is_empty());
+    }
+
+    // === opt-in compaction strategies (Compare ports) ========================
+
+    /// Load every opt-in strategy mod and hand back its callable strategy
+    /// keyed by the mod's static id (compile failures surface as panics —
+    /// a broken builtin is a binary defect).
+    fn strategies() -> Vec<(
+        &'static str,
+        crate::script::rhai_mod::ScriptCompactionStrategy,
+    )> {
+        let selected: Vec<String> = BUILTIN_MODS
+            .iter()
+            .filter(|m| m.opt_in)
+            .map(|m| m.id.to_string())
+            .collect();
+        let by_id: std::collections::HashMap<
+            String,
+            crate::script::rhai_mod::ScriptCompactionStrategy,
+        > = load_builtin_mods(hub(), &selected)
+            .into_iter()
+            .filter(|(id, _)| selected.contains(id))
+            .map(|(id, m)| {
+                let m = m.expect("opt-in builtin compiles");
+                let names = m.compaction_strategy_names();
+                assert_eq!(names.len(), 1, "{id}: exactly one strategy per mod");
+                let strategy = m
+                    .compaction_strategy(&names[0])
+                    .expect("registered under its name");
+                (id, strategy)
+            })
+            .collect();
+        BUILTIN_MODS
+            .iter()
+            .filter(|m| m.opt_in)
+            .map(|m| (m.id, by_id[m.id].clone()))
+            .collect()
+    }
+
+    fn snap(total: i64, window: i64, threshold: i64) -> serde_json::Value {
+        serde_json::json!({
+            "total_tokens": total, "window": window, "threshold": threshold,
+            "messages": 40,
+            "rounds": [
+                {"start": 0,  "len": 4, "tokens": 50_000, "has_tool_use": true,  "has_media": false},
+                {"start": 4,  "len": 4, "tokens": 50_000, "has_tool_use": true,  "has_media": false},
+                {"start": 8,  "len": 4, "tokens": 50_000, "has_tool_use": true,  "has_media": false},
+            ],
+        })
+    }
+
+    fn strategy<'a>(
+        all: &'a [(
+            &'static str,
+            crate::script::rhai_mod::ScriptCompactionStrategy,
+        )],
+        name: &str,
+    ) -> &'a crate::script::rhai_mod::ScriptCompactionStrategy {
+        &all.iter().find(|(id, _)| *id == name).expect(name).1
+    }
+
+    /// Boundary assertions against the Compare article's exact values
+    /// (window 200,000): each trigger fires one token past its documented
+    /// threshold and holds one token under it.
+    #[test]
+    fn opt_in_strategies_match_the_ported_trigger_formulas() {
+        let all = strategies();
+        assert_eq!(all.len(), 4, "four opt-in strategies ship");
+
+        // pi: window − 16,384 = 183,616
+        let pi = strategy(&all, "compact-pi");
+        assert!(!pi.call_trigger(&snap(183_616, 200_000, 160_000)).unwrap());
+        assert!(pi.call_trigger(&snap(183_617, 200_000, 160_000)).unwrap());
+
+        // omp: reserve max(⌊200k×0.15⌋, 16,384) = 30,000 ⇒ 170,000
+        let omp = strategy(&all, "compact-omp");
+        assert!(!omp.call_trigger(&snap(170_000, 200_000, 160_000)).unwrap());
+        assert!(omp.call_trigger(&snap(170_001, 200_000, 160_000)).unwrap());
+
+        // minimax: 95% × (200k − 200k/4) = 142,500
+        let minimax = strategy(&all, "compact-minimax");
+        assert!(
+            !minimax
+                .call_trigger(&snap(142_500, 200_000, 160_000))
+                .unwrap()
+        );
+        assert!(
+            minimax
+                .call_trigger(&snap(142_501, 200_000, 160_000))
+                .unwrap()
+        );
+
+        // dsh: min(0.8×200k, 200k − 65,536) = 134,464
+        let dsh = strategy(&all, "compact-dsh");
+        assert!(!dsh.call_trigger(&snap(134_464, 200_000, 160_000)).unwrap());
+        assert!(dsh.call_trigger(&snap(134_465, 200_000, 160_000)).unwrap());
+
+        // Unknown window (0) — every port falls back to the configured
+        // builtin threshold instead of firing early.
+        for (_, s) in &all {
+            assert!(!s.call_trigger(&snap(160_000, 0, 160_000)).unwrap());
+            assert!(s.call_trigger(&snap(160_001, 0, 160_000)).unwrap());
+        }
+    }
+
+    /// The plan side: keep budgets and summary caps at the ported values.
+    #[test]
+    fn opt_in_strategies_match_the_ported_plans() {
+        let all = strategies();
+        let snapshot = snap(190_000, 200_000, 160_000);
+
+        // pi: 20,000-token tail; split-turn handoff; cap 0.8×reserve.
+        let pi = strategy(&all, "compact-pi");
+        let plan = pi.call_plan(&snapshot).unwrap();
+        assert_eq!(plan["keep_recent_tokens"], 20_000);
+        assert_eq!(plan["summary_max_tokens"], 13_107);
+        assert!(
+            plan["summary_instructions"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Turn Context (split turn)"),
+            "split-turn handoff rides the summary instructions"
+        );
+
+        // omp: band 0.8×(200k−30k) = 136,000 ⇒ 50k+50k rounds fit, the
+        // third would overshoot ⇒ kept 100,000; cap 16,384.
+        let omp = strategy(&all, "compact-omp");
+        let plan = omp.call_plan(&snapshot).unwrap();
+        assert_eq!(plan["keep_recent_tokens"], 100_000);
+        assert_eq!(plan["summary_max_tokens"], 16_384);
+
+        // minimax: 5 rounds; cap window/8; todo/plan exclusion note.
+        let minimax = strategy(&all, "compact-minimax");
+        let plan = minimax.call_plan(&snapshot).unwrap();
+        assert_eq!(plan["keep_recent_rounds"], 5);
+        assert_eq!(plan["summary_max_tokens"], 25_000);
+        assert!(
+            plan["summary_instructions"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("todo")
+        );
+
+        // dsh: 16% tail = 32,000; cap 65,536.
+        let dsh = strategy(&all, "compact-dsh");
+        let plan = dsh.call_plan(&snapshot).unwrap();
+        assert_eq!(plan["keep_recent_tokens"], 32_000);
+        assert_eq!(plan["summary_max_tokens"], 65_536);
+    }
+
+    /// The strategies stay opt-in: an empty selection loads none of them.
+    #[test]
+    fn opt_in_strategies_need_selection() {
+        let entries = load_builtin_mods(hub(), &[]);
+        let ids: Vec<&String> = entries.iter().map(|(id, _)| id).collect();
+        for id in [
+            "compact-pi",
+            "compact-omp",
+            "compact-minimax",
+            "compact-dsh",
+        ] {
+            assert!(
+                !ids.contains(&&id.to_string()),
+                "{id} must not load unselected"
+            );
+        }
     }
 }

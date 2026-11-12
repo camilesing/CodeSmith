@@ -301,7 +301,10 @@ register_policy("shell-output", #{
   id 不带 `builtin-` 前缀（id 即用户面对的选择键，与选择它的配置键共享
   ——如 `[compaction] strategy`）。列出的 id 匹配不到任何 opt-in 内置
   mod 会让启动审计大声失败；未被选中的 opt-in mod 编译进二进制但从不
-  运行。reload 重放同一选择集。
+  运行。reload 重放同一选择集。当前 opt-in id：
+  - `compact-pi`、`compact-omp`、`compact-minimax`、`compact-dsh`——
+    自五 agent 对比文章移植的压缩策略（取值与出处见各 mod 头部注释；
+    经 `[compaction] strategy` 选择，见"编写压缩策略"）。
 
 ### 停用一个内建斜杠命令
 

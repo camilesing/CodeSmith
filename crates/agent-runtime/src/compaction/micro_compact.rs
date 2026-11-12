@@ -62,6 +62,18 @@ pub(crate) fn policy_read() -> CompactPolicyKnobs {
             DEFAULT_CLEARED_PLACEHOLDER,
             512,
         ),
+        keep_head_chars: codesmith_agent::policy::policy_usize(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "keep_head_chars",
+            0,
+            64 * 1024,
+        ),
+        keep_tail_chars: codesmith_agent::policy::policy_usize(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "keep_tail_chars",
+            0,
+            64 * 1024,
+        ),
     }
 }
 
@@ -71,6 +83,13 @@ pub(crate) struct CompactPolicyKnobs {
     pub time_trigger_gap_secs: u64,
     pub micro_compactable_tools: Vec<String>,
     pub cleared_placeholder: String,
+    /// dsh-style partial clear (decision point 3, "sweep before move"):
+    /// when > 0, a cleared result keeps its head/tail around the
+    /// placeholder instead of collapsing to the placeholder alone —
+    /// errors live at the tail of a shell log, hits at the head of a
+    /// search. `0` (the default) keeps the bare-placeholder behavior.
+    pub keep_head_chars: usize,
+    pub keep_tail_chars: usize,
 }
 
 /// Per-session micro-compaction state.
@@ -261,13 +280,30 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                     .and_then(|b| serde_json::to_string(b).ok())
                     .map_or(0, |s| s.len());
                 let original_len = content.len() + blocks_len;
-                if original_len <= knobs.cleared_placeholder.len() {
+                // The replacement this pass will leave behind: the bare
+                // placeholder, or (keep_head/keep_tail > 0) a dsh-style
+                // head+placeholder+tail slice — errors live at a shell
+                // log's tail, hits at a search's head, so the kept ends
+                // carry exactly what a later turn re-reads for.
+                let replacement = if knobs.keep_head_chars > 0 || knobs.keep_tail_chars > 0 {
+                    let head =
+                        super::compact::truncate_chars(content, knobs.keep_head_chars).to_string();
+                    let tail = super::compact::tail_chars(content, knobs.keep_tail_chars);
+                    if head.len() + tail.len() >= original_len {
+                        // Keeping both ends costs more than clearing saves.
+                        continue;
+                    }
+                    format!("{head}\n{}\n{tail}", knobs.cleared_placeholder)
+                } else {
+                    knobs.cleared_placeholder.clone()
+                };
+                if original_len <= replacement.len() {
                     continue; // Too small to benefit from clearing
                 }
 
-                bytes_cleared += original_len.saturating_sub(knobs.cleared_placeholder.len());
+                bytes_cleared += original_len.saturating_sub(replacement.len());
                 state.cleared_tool_ids.insert(tool_use_id.clone());
-                *content = knobs.cleared_placeholder.clone();
+                *content = replacement;
                 *content_blocks = None;
             }
         }
@@ -548,6 +584,75 @@ mod tests {
             panic!("expected tool result");
         };
         assert_eq!(content, "[gone]");
+
+        clear_published_policies();
+    }
+
+    /// dsh-style partial clear (decision point 3, "sweep before move"):
+    /// with `keep_head_chars` / `keep_tail_chars` > 0, a cleared result
+    /// keeps its head and tail around the placeholder — hits at the head
+    /// of a search, errors at the tail of a shell log.
+    #[test]
+    fn keep_head_tail_keeps_the_around_placeholder() {
+        let _guard = policy_test_lock();
+        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
+        use std::collections::HashMap;
+        let mut set = HashMap::new();
+        set.insert(
+            PolicyKind::CompactPolicy,
+            serde_json::json!({
+                "cache_trigger_threshold": 1,
+                "micro_compactable_tools": ["grep"],
+                "cleared_placeholder": "[cleared]",
+                "keep_head_chars": 10,
+                "keep_tail_chars": 5,
+            }),
+        );
+        publish_policies(set);
+
+        let body = format!("{}END", "x".repeat(100));
+        let original_len = body.len();
+        let mut messages = vec![
+            tool_use_msg("t1", "grep", serde_json::json!({})),
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: body,
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let mut st = MicroCompactState::default();
+        let cleared = micro_compact_messages(&mut messages, &mut st);
+        let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+        // head(10) + placeholder + tail(5), joined around the marker line.
+        assert!(content.starts_with("xxxxxxxxxx"), "head kept: {content:?}");
+        assert!(content.contains("[cleared]"), "marker rides: {content:?}");
+        assert!(content.ends_with("xxEND"), "tail kept: {content:?}");
+        // Bytes cleared is measured against the real replacement length.
+        let replacement_len = 10 + 1 + "[cleared]".len() + 1 + 5;
+        assert_eq!(cleared, original_len - replacement_len);
+
+        // A result smaller than head+tail keeps everything (nothing to save).
+        let mut small = vec![
+            tool_use_msg("t2", "grep", serde_json::json!({})),
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: "short".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let mut st2 = MicroCompactState::default();
+        let cleared_small = micro_compact_messages(&mut small, &mut st2);
+        assert_eq!(cleared_small, 0, "too small to benefit");
 
         clear_published_policies();
     }

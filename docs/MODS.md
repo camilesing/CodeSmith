@@ -331,7 +331,11 @@ recompile.
   behavior — e.g. `[compaction] strategy`). An id matching no opt-in
   builtin fails the startup audit loudly; an unselected opt-in mod stays
   compiled into the binary but never runs. A reload replays the same
-  selection.
+  selection. Current opt-in ids:
+  - `compact-pi`, `compact-omp`, `compact-minimax`, `compact-dsh` —
+    compaction strategies ported from the five-agent comparison (values
+    and provenance in each mod's header comment; select via
+    `[compaction] strategy`, see "Writing a compaction strategy").
 
 ### Disabling a built-in slash command
 
