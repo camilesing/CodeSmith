@@ -27,8 +27,9 @@ Tauri App (desktop/)
     └─ child process: `codesmith serve --http` (free port + fresh token)
 ```
 
-- The frontend writes no new UI code beyond the boot assembly and the
-  transport adapter; pixels come from the vendored bundles.
+- The frontend writes no new page UI beyond the boot assembly, the transport
+  adapter, and the first-party ticket-board header action (which renders the
+  vendored primitives); every other pixel comes from the vendored bundles.
 - Upward: client routes → runtime_api REST (`POST /v1/threads/{id}/queue`,
   `…/steer`, `…/interrupt`, `PATCH /v1/threads/{id}`, `GET /v1/models` …).
 - Downward: the backend's SSE stream folds into client wire events and
@@ -496,6 +497,30 @@ Known limitations of the current implementation:
   turn. The client's optional `maxGoalRounds` edit is accepted only at the
   runtime's fixed cap (25); any other value is refused with `goal/rejected`
   rather than silently ignored.
+- The coordinator ticket board is a first-party header action
+  (`desktop/ui/src/ticket-board-plugin.ts`, its own first-party boot row) fed
+  by the `agentTeam` projection from the runtime's durable coordinator ticket
+  store (`<workspace>/.codesmith/state/tickets.v1.json`, written by
+  `crates/cli/src/coordinator/tickets.rs`). It mirrors the upstream client's
+  shared-task panel: a compact trigger with per-state counts, a read-only
+  popover, and one expanded detail (the ticket's full objective and worker
+  name) at a time. The mapping is the runtime board's own: a `ready` report
+  is a completed task; `blocked`/`failed` or an open question is a pending
+  task with the panel's warning glyph (`ready:false`); any other open ticket
+  is in progress; an ended `completed` ticket stays completed. Reading the
+  file never loads an engine, so the board survives eviction; a followed
+  session re-reads it every 2s and pushes a changed `agentTeam` value, so a
+  `progress` report that never wakes the coordinator still appears. This is
+  the team half only: CodeSmith sub-agents are in-process children without
+  their own journals, so the vendored `ui-subagent` tree stays out and this
+  board owns the header slot. Known limitations: a stopped, failed or
+  dropped ticket is hidden (the shared-task vocabulary has no failure
+  state); the board follows the durable tickets rather than the thread
+  mode, so leaving coordinator still shows the tickets a session already
+  created; the 2s poll is the live tail; the store writes atomically
+  (tmp+rename) but best-effort, so a failed write leaves the board at its
+  last durable record until the next successful write; a corrupt or
+  unreadable store yields no board rather than an error row.
 - The document-preview and changed-file open controls
   (`client-ui-open-in-app` + `client-ui-file-actions`) are bridged over the
   existing workspace-files surface: `session/canOpenWorkspacePath` answers
@@ -610,9 +635,9 @@ Known limitations of the current implementation:
   workflow) record nothing. (The jobs popover, the attachment
   presentation, the changes-review tab, the sidebar files/preview tabs, the
   sidebar terminal tabs, the plan page, the permission surfaces, the `@`
-  file source, the Workspace picker/registry, the GoalBar, the
-  open/reveal/file actions, and the per-message feedback surface ARE
-  bridged — see their bullets.)
+  file source, the Workspace picker/registry, the GoalBar, the coordinator
+  ticket board, the open/reveal/file actions, and the per-message feedback
+  surface ARE bridged — see their bullets.)
 - The sidebar files tree and document preview
   (`client-ui-sidebar-files` + `client-ui-sidebar-documentpreview` over the
   `workspaceFiles` remote, `host::files`) read the session's workspace
@@ -806,7 +831,8 @@ lives in the bullets above.
 | Sidebar terminal tabs | bridged | — | landed |
 | Message quotes | bridged (client-only `message-quotes` plugin) | — | landed |
 | workflow-run panel | fed (runtime journal + mapper) | — | landed |
-| Subagent / team board | not vendored | in-process subagents are not threads; needs runtime-side design | needs design |
+| Team board (coordinator tickets) | first-party header action over the durable ticket store (2s poll) | — | landed |
+| Subagent child-session views | not vendored | in-process subagents are not threads; needs a runtime child-session journal before the vendored catalog can open a child conversation | needs design |
 | Plugin manager / market | not simulated | map onto CodeSmith extensions + Rhai mods | **needs product decision** |
 | Agent presets | not simulated | map onto launch presets | **needs product decision** |
 | Office document preview | bridged over a local `soffice` | — | landed |

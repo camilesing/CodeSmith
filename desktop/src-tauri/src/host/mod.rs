@@ -30,6 +30,7 @@ pub mod schedule;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;
+pub mod tickets;
 pub mod uploads;
 pub mod workspace;
 
@@ -1351,7 +1352,10 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner())
             .clone();
         Ok(Json(json!({
-            "thread": { "id": id, "workspace": "" },
+            // The runtime's thread record carries the workspace every
+            // per-session file surface resolves against; the fake mirrors it
+            // so the ticket-board read path is exercised end to end.
+            "thread": { "id": id, "workspace": fake.workspace.to_string_lossy() },
             "turns": [],
             "items": items,
         })))
@@ -2394,6 +2398,54 @@ mod tests {
         )
         .await;
         assert_eq!(missing["error"]["code"], "gateway/internal", "{missing}");
+    }
+
+    /// The coordinator ticket board rides `session/projections` as the
+    /// `agentTeam` value the shared-task panel reads: the bridge reads the
+    /// workspace's durable ticket store without loading an engine, and maps
+    /// reports to the panel's status vocabulary.
+    #[tokio::test]
+    async fn ticket_board_projects_from_the_durable_coordinator_store() {
+        let home = test_home("ticket-board");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(cwd.join(".codesmith/state")).expect("ticket state dir");
+        std::fs::write(
+            cwd.join(".codesmith/state/tickets.v1.json"),
+            br#"{
+                "schema_version": 1,
+                "tickets": [
+                    { "id": "worker-a", "session_name": "anvil",
+                      "title": "Ship the board", "scope": "Build the shared-task panel",
+                      "reports": [{ "state": "progress", "summary": "working" }] },
+                    { "id": "worker-b", "session_name": "forge",
+                      "title": "Review it", "scope": "Check the wire shape",
+                      "reports": [{ "state": "ready", "summary": "done" }] },
+                    { "id": "worker-c", "session_name": "lathe",
+                      "title": "Stuck", "scope": "Needs a human",
+                      "reports": [{ "state": "blocked", "summary": "blocked" }] }
+                ]
+            }"#,
+        )
+        .expect("ticket store");
+        let host = test_host(fake_runtime(cwd.clone()).await, cwd);
+        let value = dispatch(
+            &host,
+            "session/projections",
+            &json!({ "args": { "sessionId": "thr_a" } }),
+        )
+        .await;
+        let team = &value["value"]["values"]["agentTeam"];
+        assert_eq!(team["enabled"], json!(true), "{value}");
+        assert_eq!(
+            team["tasks"][0]["subject"],
+            json!("Ship the board"),
+            "{value}"
+        );
+        assert_eq!(team["tasks"][0]["status"], json!("in_progress"), "{value}");
+        assert_eq!(team["tasks"][0]["ownerName"], json!("anvil"), "{value}");
+        assert_eq!(team["tasks"][1]["status"], json!("completed"), "{value}");
+        assert_eq!(team["tasks"][2]["status"], json!("pending"), "{value}");
+        assert_eq!(team["tasks"][2]["ready"], json!(false), "{value}");
     }
 
     /// The vendored Workspace remote's value shapes, through dispatch: a

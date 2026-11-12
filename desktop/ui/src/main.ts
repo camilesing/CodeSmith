@@ -7,6 +7,7 @@ import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
 import { installHostDropBridge } from './host-drop'
+import { create as createTicketBoard } from './ticket-board-plugin'
 import { bridgeUrl, initTransport, installApiRouteRedirect } from './transport'
 
 const g = globalThis as {
@@ -53,8 +54,22 @@ const g = globalThis as {
 
 // First-party plugin rows ride the module queue: the graph lists them, the
 // factory is our statically imported namespace (never fetched over a URL).
-;(g as { __ModuleLoader__?: { load: (r: { id: string; factory: () => unknown }) => void } })
-  .__ModuleLoader__?.load?.({ id: '@codesmith/desktop-brand', factory: () => brandModule })
+// The ticket board borrows the client's own React and primitives through the
+// loader's `load` function, so its hooks share the client's React instance.
+{
+  const loader = g as {
+    __ModuleLoader__?: {
+      load: (r: { id: string; factory: (load?: (spec: string) => unknown) => unknown }) => void
+    }
+  }
+  loader.__ModuleLoader__?.load?.({ id: '@codesmith/desktop-brand', factory: () => brandModule })
+  loader.__ModuleLoader__?.load?.({
+    id: '@codesmith/desktop-ticket-board',
+    factory: load => createTicketBoard(load ?? (() => {
+      throw new Error('codesmith desktop: ticket board requires the client module table')
+    })),
+  })
+}
 
 // The boot graph the loader reads in AppWebEntry.run().
 g.__CODESMITH_BOOT__ = buildBootGraph()

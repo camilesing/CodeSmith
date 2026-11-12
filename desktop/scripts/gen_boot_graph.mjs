@@ -28,6 +28,9 @@ const MODULES_ID = '@codesmith/client-modules'
 /** Built-in first-party rows prequeued from our own bundle (never fetched). */
 const BUILTIN_ROWS = [
   { id: '@codesmith/desktop-brand', entry: 'client.js', inject: [], immediately: false },
+  // The coordinator ticket board reads the bridged `agentTeam` projection;
+  // it borrows React and the client primitives through the loader table.
+  { id: '@codesmith/desktop-ticket-board', entry: 'client.js', inject: [], immediately: false },
 ]
 
 /**

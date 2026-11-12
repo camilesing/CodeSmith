@@ -175,6 +175,9 @@ pub async fn follow(
         .and_then(Value::as_str)
         .filter(|cwd| !cwd.is_empty());
     let values = projection_values(host, &session_id, &detail, &models).await;
+    // The live poll compares against the snapshot's own value, so the first
+    // tick after a quiet follow never re-pushes an unchanged board.
+    let mut last_team = values.get("agentTeam").cloned();
     let mut header = json!({ "sessionId": session_id, "title": title });
     if let Some(cwd) = cwd {
         header["cwd"] = json!(cwd);
@@ -193,6 +196,16 @@ pub async fn follow(
     if tx.send(snapshot).await.is_err() {
         return Ok(());
     }
+
+    // The ticket board's live tail: the coordinator store persists before a
+    // mutation returns, so a slow poll of its file keeps the board current
+    // even when a report never wakes the coordinator. The ticker and the SSE
+    // stream share this task; a tick that wins drops only the `next()`
+    // future, which the stream owns cancel-safely.
+    let ticket_workspace = cwd.map(std::path::PathBuf::from);
+    let mut tickets_tick = tokio::time::interval(super::tickets::POLL_INTERVAL);
+    tickets_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tickets_tick.tick().await;
 
     // Live tail: subscribe from the backend's own latest seq.
     let since = detail
@@ -215,7 +228,29 @@ pub async fn follow(
     }
     use futures_util::StreamExt;
     let mut buffer = String::new();
-    while let Some(chunk) = lines.next().await {
+    loop {
+        let chunk = tokio::select! {
+            _ = tickets_tick.tick() => {
+                let next = match ticket_workspace.as_deref() {
+                    Some(workspace) => super::tickets::projection(workspace).await,
+                    None => None,
+                };
+                if next != last_team {
+                    last_team = next.clone();
+                    let seq = host.next_projection_seq();
+                    host.push_live(
+                        "session/control",
+                        projection_update(&session_id, seq, &json!({ "agentTeam": next })),
+                    )
+                    .await;
+                }
+                continue;
+            }
+            chunk = lines.next() => match chunk {
+                Some(chunk) => chunk,
+                None => break,
+            },
+        };
         let chunk = chunk?;
         buffer.push_str(&chunk);
         while let Some(newline) = buffer.find('\n') {
@@ -1694,10 +1729,15 @@ async fn projection_values(
         super::goals::projection(host, session_id, detail).await,
     );
     values.insert("turnOutline".into(), turn_outline_projection(detail));
-    values.insert(
-        "workingDirectory".into(),
-        json!(detail.pointer("/thread/workspace").and_then(Value::as_str)),
-    );
+    let workspace = detail.pointer("/thread/workspace").and_then(Value::as_str);
+    values.insert("workingDirectory".into(), json!(workspace));
+    // The coordinator ticket board (host::tickets): a durable ticket file is
+    // read without loading an engine, so the board survives an eviction.
+    if let Some(workspace) = workspace.filter(|path| !path.is_empty()) {
+        if let Some(team) = super::tickets::projection(std::path::Path::new(workspace)).await {
+            values.insert("agentTeam".into(), team);
+        }
+    }
     let queue = detail
         .get("queue")
         .and_then(Value::as_array)

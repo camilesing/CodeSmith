@@ -27,7 +27,8 @@ Tauri App (desktop/)
     └─ 子进程：`codesmith serve --http`（随机端口 + 一次性 token）
 ```
 
-- 前端除 boot 装配与传输适配外不写新 UI 代码；像素来自 vendored 产物。
+- 前端除 boot 装配、传输适配与第一方工单板 header action（渲染 vendored
+  原语）外不写新页面 UI；其余像素来自 vendored 产物。
 - 上行：客户端路由 → runtime_api REST（`POST /v1/threads/{id}/queue`、
   `…/steer`、`…/interrupt`、`PATCH /v1/threads/{id}`、`GET /v1/models` …）。
 - 下行：后端 SSE 流折叠为客户端线事件与 assistant-stream 帧。
@@ -393,6 +394,25 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   启动的排队 turn 若中间没有桌面 prompt，可能抢在 pause 重放前多跑一轮。
   客户端可选的 `maxGoalRounds` 编辑只接受运行时固定上限（25），其他值以
   `goal/rejected` 拒绝，不会静默忽略。
+- coordinator 工单板是第一个第一方 header action
+  （`desktop/ui/src/ticket-board-plugin.ts`，独立的第一方 boot row），由
+  运行时持久化的 coordinator 工单库
+  （`<workspace>/.codesmith/state/tickets.v1.json`，写入方为
+  `crates/cli/src/coordinator/tickets.rs`）投影成 `agentTeam`。它复刻上游
+  客户端的 shared-task 面板：紧凑触发器带各状态计数、只读弹层、一次只展开
+  一行（工单完整目标与 worker 名）。映射沿用运行时看板自己的规则：
+  `ready` 报告算已完成；`blocked`/`failed` 或有未回答的问题算待处理并使用
+  面板的警告字形（`ready:false`）；其余未结束工单算进行中；已结束且
+  `completed` 的保持已完成。读取该文件不会加载引擎，工单板因此能熬过驱逐；
+  被跟随的会话每 2s 重读一次并在值变化时推送新的 `agentTeam`，所以不会
+  唤醒 coordinator 的 `progress` 报告也会出现。这里只做团队半边：
+  CodeSmith 的子代理是进程内子 turn，没有自己的 journal，因此 vendored
+  `ui-subagent` 树不进入，header 位置由本看板占用。已知限制：stopped、
+  failed、dropped 工单不显示（shared-task 词表没有失败态）；看板跟随持久化
+  工单而非线程模式，离开 coordinator 后仍会显示该会话已创建的工单；2s 轮询
+  就是实时尾巴；工单库原子写入（tmp+rename）但属于 best-effort，写入失败时
+  看板停在最后一份持久化记录，直到下一次成功写入；损坏或不可读的工单库不
+  渲染看板，而不是伪造错误行。
 - 文档预览与改动文件的打开控件（`client-ui-open-in-app` +
   `client-ui-file-actions`）经既有工作区文件面桥接：
   `session/canOpenWorkspacePath` 为真，`session/workspacePathApplications`
@@ -478,8 +498,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   事件不重放）；嵌套运行（子代理自己的 workflow）不记录。（Jobs 弹窗、附件呈现、改动审查
   标签页、右侧栏文件/预览标签页、右侧栏终端标签页、计划页、权限面、
   `@` 文件源、工作区
-  选择器/注册表、GoalBar、打开/定位/文件动作与逐消息反馈面**已**桥接
-  ——见各条。）
+  选择器/注册表、GoalBar、coordinator 工单板、打开/定位/文件动作与逐消息
+  反馈面**已**桥接——见各条。）
 - 右侧栏文件树与文档预览（`client-ui-sidebar-files` +
   `client-ui-sidebar-documentpreview`，经 `workspaceFiles` remote，
   `host::files`）直接读会话工作区：`workspaceFileScope` 从线程记录解析
@@ -630,7 +650,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 | 侧栏终端标签 | 已桥接 | — | 已落地 |
 | 消息引用 | 已桥接（纯客户端 `message-quotes` 插件） | — | 已落地 |
 | workflow 运行面板 | 已喂给（运行时 journal + 映射） | — | 已落地 |
-| 子代理 / 团队看板 | 未 vendor | in-process 子代理不是线程，需运行时侧设计 | 待设计 |
+| coordinator 工单板 | 第一方 header action，读持久化工单库（2s 轮询） | — | 已落地 |
+| 子代理子会话视图 | 未 vendor | in-process 子代理不是线程；需要运行时先提供子会话 journal，vendored catalog 才能打开子对话 | 待设计 |
 | 插件管理器 / 市场 | 不模拟 | 对接 CodeSmith extensions + Rhai mods | **待产品决策** |
 | Agent 预设 | 不模拟 | 对接启动预设体系 | **待产品决策** |
 | Office 文档预览 | 已桥接（外呼本机 `soffice`） | — | 已落地 |

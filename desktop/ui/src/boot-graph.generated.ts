@@ -60,6 +60,7 @@ export const BOOT_ENTRIES: BootEntry[] = [
   { id: "@codesmith/message-quotes", url: "plugins/??@codesmith/message-quotes/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV, inject: ["@codesmith/api-session-controller","@codesmith/client-locale","@codesmith/client-ui-chat","@codesmith/client-ui-conversation","@codesmith/client-ui-renderer"] },
   { id: "@codesmith/typert-registry", url: "plugins/??@codesmith/typert-registry/client.browser.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV, immediately: true },
   { id: "@codesmith/desktop-brand", url: "plugins/??@codesmith/desktop-brand/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV },
+  { id: "@codesmith/desktop-ticket-board", url: "plugins/??@codesmith/desktop-ticket-board/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV },
 ]
 export function buildBootGraph() {
   const bootstrap = [MODULES_ID]
