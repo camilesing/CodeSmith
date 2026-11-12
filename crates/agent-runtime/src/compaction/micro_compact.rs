@@ -74,8 +74,23 @@ pub(crate) fn policy_read() -> CompactPolicyKnobs {
             0,
             64 * 1024,
         ),
+        elide_uneventful: codesmith_agent::policy::policy_usize(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "elide_uneventful",
+            0,
+            1,
+        ),
+        elide_placeholder: codesmith_agent::policy::policy_string(
+            codesmith_agent::policy::PolicyKind::CompactPolicy,
+            "elide_placeholder",
+            DEFAULT_ELIDE_PLACEHOLDER,
+            512,
+        ),
     }
 }
+
+/// Compiled fallback for the omp-style elision placeholder.
+const DEFAULT_ELIDE_PLACEHOLDER: &str = "[Uneventful result elided]";
 
 /// The compact-policy knobs (see `policy_read`).
 pub(crate) struct CompactPolicyKnobs {
@@ -90,6 +105,13 @@ pub(crate) struct CompactPolicyKnobs {
     /// search. `0` (the default) keeps the bare-placeholder behavior.
     pub keep_head_chars: usize,
     pub keep_tail_chars: usize,
+    /// omp-style per-turn elision lane: when > 0, an uneventful result
+    /// (successful, media-free, no error marker) in a COMPLETED round
+    /// clears to `elide_placeholder` and its presence alone trips the
+    /// trigger — the live round stays byte-for-byte (omp's cache-safe
+    /// lookback window, as an AppendLog rebuild).
+    pub elide_uneventful: usize,
+    pub elide_placeholder: String,
 }
 
 /// Per-session micro-compaction state.
@@ -134,11 +156,29 @@ pub fn is_micro_compactable_tool(name: &str) -> bool {
         .any(|t| t == name)
 }
 
+/// An "uneventful" result — omp's per-turn elision target (Compare
+/// Compaction/ContextEngineering): a successful, media-free result whose
+/// body carries no error marker. Eliding these (with the
+/// `elide_placeholder`) keeps failure lines intact for later turns.
+pub(crate) fn is_uneventful_result(content: &str, is_error: Option<bool>) -> bool {
+    if is_error == Some(true) {
+        return false;
+    }
+    let lower = content.to_lowercase();
+    !codesmith_session::transcript::ERROR_MARKERS
+        .iter()
+        .any(|m| lower.contains(m))
+}
+
 /// Determine whether micro-compaction should be triggered.
 ///
 /// Triggers when:
 /// 1. Time trigger: >=60 minutes since last assistant message
 /// 2. Cache trigger: accumulated bytes_cleared exceeds threshold
+/// 3. Elision trigger (`elide_uneventful` > 0, the omp per-turn lane):
+///    at least one uneventful compactable result sits in a COMPLETED round
+///    (before the last assistant message) — elision keeps the live round
+///    byte-for-byte, mirroring omp's cache-safe lookback window.
 ///
 /// Does NOT trigger in subagents (is_subagent=true).
 pub fn should_trigger_micro_compact(
@@ -165,6 +205,42 @@ pub fn should_trigger_micro_compact(
     // Check if there are enough micro-compactable tool results to warrant clearing.
     let compactable_count = count_compactable_tool_results(messages);
     compactable_count > 0 && estimate_compactable_bytes(messages) >= state.cache_trigger_threshold
+        || (policy_read().elide_uneventful > 0 && has_elidable_uneventful_results(messages))
+}
+
+/// Any uneventful compactable result in a completed round (before the
+/// last assistant message)? The elision lane's trigger.
+fn has_elidable_uneventful_results(messages: &[Message]) -> bool {
+    let tool_use_names = collect_tool_use_names(messages);
+    let live_from = messages
+        .iter()
+        .rposition(|m| m.role == "assistant")
+        .map_or(0, |idx| idx + 1);
+    messages
+        .iter()
+        .take(live_from)
+        .flat_map(|msg| msg.content.iter())
+        .any(|block| {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                content_blocks,
+                ..
+            } = block
+            {
+                tool_use_names
+                    .get(tool_use_id)
+                    .is_some_and(|name| is_micro_compactable_tool(name))
+                    && content_blocks.as_ref().is_none_or(|b| {
+                        b.iter()
+                            .all(|blk| blk.get("type").and_then(|v| v.as_str()) != Some("image"))
+                    })
+                    && is_uneventful_result(content, *is_error)
+            } else {
+                false
+            }
+        })
 }
 
 /// Count how many tool results in messages are from micro-compactable tools.
@@ -252,6 +328,7 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
             if let ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                is_error,
                 content_blocks,
                 ..
             } = block
@@ -280,6 +357,27 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                     .and_then(|b| serde_json::to_string(b).ok())
                     .map_or(0, |s| s.len());
                 let original_len = content.len() + blocks_len;
+                // omp-style elision lane first: an uneventful result in a
+                // completed round collapses to the elision placeholder
+                // (media/error results and the live round keep the regular
+                // treatment below — failure lines are exactly what later
+                // turns re-read for).
+                let uneventful = knobs.elide_uneventful > 0
+                    && is_uneventful_result(content, *is_error)
+                    && content_blocks.as_ref().is_none_or(|b| {
+                        b.iter()
+                            .all(|blk| blk.get("type").and_then(|v| v.as_str()) != Some("image"))
+                    });
+                if uneventful && knobs.keep_head_chars == 0 && knobs.keep_tail_chars == 0 {
+                    if original_len <= knobs.elide_placeholder.len() {
+                        continue; // Too small to benefit from eliding
+                    }
+                    bytes_cleared += original_len.saturating_sub(knobs.elide_placeholder.len());
+                    state.cleared_tool_ids.insert(tool_use_id.clone());
+                    *content = knobs.elide_placeholder.clone();
+                    *content_blocks = None;
+                    continue;
+                }
                 // The replacement this pass will leave behind: the bare
                 // placeholder, or (keep_head/keep_tail > 0) a dsh-style
                 // head+placeholder+tail slice — errors live at a shell
@@ -293,7 +391,12 @@ pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompact
                         // Keeping both ends costs more than clearing saves.
                         continue;
                     }
-                    format!("{head}\n{}\n{tail}", knobs.cleared_placeholder)
+                    let marker = if uneventful {
+                        &knobs.elide_placeholder
+                    } else {
+                        &knobs.cleared_placeholder
+                    };
+                    format!("{head}\n{marker}\n{tail}")
                 } else {
                     knobs.cleared_placeholder.clone()
                 };
@@ -408,6 +511,120 @@ mod tests {
         let state = MicroCompactState::default();
         let messages = vec![msg("user", "test")];
         assert!(!should_trigger_micro_compact(&messages, &state, true));
+    }
+
+    /// omp-style elision lane: with `elide_uneventful` on, an uneventful
+    /// result in a completed round trips the trigger by itself; the same
+    /// result in the live round (after the last assistant message) does
+    /// not; an error-marker body never counts as uneventful.
+    #[test]
+    fn elision_trigger_fires_on_completed_uneventful_results() {
+        let _guard = policy_test_lock();
+        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
+        use std::collections::HashMap;
+        let mut set = HashMap::new();
+        set.insert(
+            PolicyKind::CompactPolicy,
+            serde_json::json!({
+                "cache_trigger_threshold": 999_999, // keep the byte lane quiet
+                "micro_compactable_tools": ["grep"],
+                "elide_uneventful": 1,
+            }),
+        );
+        publish_policies(set);
+
+        // Completed round: assistant tool_use → user result → assistant.
+        let completed = vec![
+            tool_use_msg("t1", "grep", serde_json::json!({})),
+            tool_result_msg("t1", &"hit ".repeat(200)),
+            msg("assistant", "done with that search"),
+        ];
+        let state = MicroCompactState::default();
+        assert!(
+            should_trigger_micro_compact(&completed, &state, false),
+            "uneventful result in a completed round elides on presence"
+        );
+
+        // Live round only (no assistant after the result) — stays intact.
+        let live = vec![
+            msg("assistant", "starting"),
+            tool_use_msg("t2", "grep", serde_json::json!({})),
+            tool_result_msg("t2", &"hit ".repeat(200)),
+        ];
+        assert!(
+            !should_trigger_micro_compact(&live, &state, false),
+            "the live round is never an elision target"
+        );
+
+        // Error-marker bodies are never uneventful.
+        let failing = vec![
+            tool_use_msg("t3", "grep", serde_json::json!({})),
+            tool_result_msg("t3", "error: pattern not found"),
+            msg("assistant", "handled"),
+        ];
+        assert!(
+            !should_trigger_micro_compact(&failing, &state, false),
+            "failure lines stay for later turns"
+        );
+
+        // With the lane off (default), the completed-round result does not
+        // trip the trigger by presence.
+        clear_published_policies();
+        let state = MicroCompactState::default();
+        assert!(
+            !should_trigger_micro_compact(&completed, &state, false),
+            "elision is opt-in"
+        );
+    }
+
+    /// The elision clear: an uneventful completed-round result collapses to
+    /// the elision placeholder while an error-marker result keeps the
+    /// regular cleared placeholder.
+    #[test]
+    fn elision_clear_uses_the_elide_placeholder_for_uneventful_results() {
+        let _guard = policy_test_lock();
+        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
+        use std::collections::HashMap;
+        let mut set = HashMap::new();
+        set.insert(
+            PolicyKind::CompactPolicy,
+            serde_json::json!({
+                "cache_trigger_threshold": 999_999,
+                "micro_compactable_tools": ["grep"],
+                "elide_uneventful": 1,
+                "elide_placeholder": "[Uneventful result elided]",
+            }),
+        );
+        publish_policies(set);
+
+        let mut messages = vec![
+            tool_use_msg("t1", "grep", serde_json::json!({})),
+            tool_result_msg("t1", &"hit ".repeat(200)),
+            tool_use_msg("t2", "grep", serde_json::json!({})),
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: format!("error: pattern invalid\n{}", "context ".repeat(40)),
+                    is_error: Some(true),
+                    content_blocks: None,
+                }],
+            },
+            msg("assistant", "moving on"),
+        ];
+        let mut st = MicroCompactState::default();
+        let cleared = micro_compact_messages(&mut messages, &mut st);
+        assert!(cleared > 0);
+        let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, "[Uneventful result elided]");
+        let ContentBlock::ToolResult { content, .. } = &messages[3].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, "[tool result cleared for context economy]");
+
+        clear_published_policies();
     }
 
     #[test]

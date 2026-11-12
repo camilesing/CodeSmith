@@ -97,6 +97,12 @@ pub enum PolicyKind {
     /// the `loop_policy_int` capability native on the loop surface
     /// (compiled fallback per field); the search itself is script.
     LatsPolicy,
+    /// Tool-output gate budgets for the read/search surfaces
+    /// (`read_max_lines`, `read_max_bytes`, `read_hard_max_lines`,
+    /// `grep_max_results`) — the omp-style unified OutputSink tiers. The
+    /// gates themselves (UTF-8-safe slicing, continuation notices as
+    /// executable read-more instructions) stay in Rust.
+    ToolOutputGate,
 }
 
 impl PolicyKind {
@@ -112,6 +118,7 @@ impl PolicyKind {
             Self::WorkingSet => "working-set",
             Self::KnowledgeOnDemand => "knowledge-on-demand",
             Self::LatsPolicy => "lats-policy",
+            Self::ToolOutputGate => "tool-output-gate",
         }
     }
 
@@ -127,6 +134,7 @@ impl PolicyKind {
             "working-set" => Some(Self::WorkingSet),
             "knowledge-on-demand" => Some(Self::KnowledgeOnDemand),
             "lats-policy" => Some(Self::LatsPolicy),
+            "tool-output-gate" => Some(Self::ToolOutputGate),
             _ => None,
         }
     }
@@ -141,6 +149,7 @@ impl PolicyKind {
         PolicyKind::WorkingSet,
         PolicyKind::KnowledgeOnDemand,
         PolicyKind::LatsPolicy,
+        PolicyKind::ToolOutputGate,
     ];
 }
 

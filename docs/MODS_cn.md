@@ -265,7 +265,10 @@ register_policy("shell-output", #{
   `summary_max_chars`、`preserved_summary_lines`、`preserved_line_bytes`、
   `preserved_total_bytes`）、`compact-policy`（`cache_trigger_threshold`、
   `time_trigger_gap_secs`、`micro_compactable_tools`、
-  `cleared_placeholder` —— 压缩引擎本体留在 Rust；摘要提示词由多个会话
+  `cleared_placeholder`、`keep_head_chars`、`keep_tail_chars`（dsh 式
+  部分清除——清除后围绕占位符保留的头/尾字符）、`elide_uneventful`、
+  `elide_placeholder`（omp 式逐轮淘汰——已完成轮次中成功且无媒体的
+  结果凭存在即折叠；活动轮次逐字保留）—— 压缩引擎本体留在 Rust；摘要提示词由多个会话
   来源合并而成、并非单一模板，故不进此接缝）、`large-output-route`
   （`threshold_tokens`、`per_tool` —— 路由决策；utility LLM 综合调用留在
   Rust。显式 `[workshop]` TOML（`large_output_threshold_tokens` /
@@ -277,7 +280,10 @@ register_policy("shell-output", #{
   `max_entrypoint_bytes`、`enabled_types` —— 记忆呈现的会话字节预算、
   MEMORY.md 索引预算、可呈现的记忆类型子集；扫描、相关性旁路查询与
   截断留在 Rust。预算单位是字节而非 token。刻意不设相关性*阈值* ——
-  旁路查询挑选文件名，不打分）。
+  旁路查询挑选文件名，不打分）、`tool-output-gate`（`read_max_lines`、
+  `read_max_bytes`、`read_hard_max_lines`、`grep_max_results` —— 读/搜
+  面的 omp 式统一输出档位；门控本体——UTF-8 安全切片、可执行的续读
+  提示——留在 Rust）。
 - 解析为**按装载顺序后写者胜**（内置 < 全局 < 项目）：用户 mod 注册同
   种类即覆盖内置默认——与工具/命令的"先到者得"刻意不同。
 - **可观测**：`/mods list` 与 `manage_mods action=list` 末尾附带"已解析

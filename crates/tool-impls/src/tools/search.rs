@@ -126,7 +126,16 @@ impl ToolSpec for GrepFilesTool {
                 .unwrap_or(2);
         let case_insensitive = optional_bool(&input, "case_insensitive", false)?;
         let multiline = optional_bool(&input, "multiline", false)?;
-        let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64)?)
+        // The default match cap rides the `tool-output-gate` policy seam
+        // (omp-style unified tiers, docs/MODS.md); the compiled constant is
+        // the fallback when no policy is published.
+        let gate_max_results = codesmith_agent::policy::policy_usize(
+            codesmith_agent::policy::PolicyKind::ToolOutputGate,
+            "grep_max_results",
+            MAX_RESULTS,
+            1_000,
+        ) as u64;
+        let max_results = usize::try_from(optional_u64(&input, "max_results", gate_max_results)?)
             .unwrap_or(MAX_RESULTS);
 
         // Parse include patterns

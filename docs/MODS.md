@@ -281,7 +281,12 @@ recompile.
   `summary_max_chars`, `preserved_summary_lines`, `preserved_line_bytes`,
   `preserved_total_bytes`), `compact-policy` (`cache_trigger_threshold`,
   `time_trigger_gap_secs`, `micro_compactable_tools`,
-  `cleared_placeholder` — the compaction engine itself stays in Rust;
+  `cleared_placeholder`, `keep_head_chars`, `keep_tail_chars` (dsh-style
+  partial clears — the head/tail a cleared result keeps around the
+  placeholder), `elide_uneventful`, `elide_placeholder` (omp-style
+  per-turn elision: successful media-free results in completed rounds
+  collapse on their presence alone; the live round stays byte-for-byte)
+  — the compaction engine itself stays in Rust;
   the summarizer prompt is merged from several session sources and is
   not a single template, so it stays out of this seam),
   `large-output-route` (`threshold_tokens`, `per_tool` — the routing
@@ -299,7 +304,11 @@ recompile.
   scanning, the relevance side-query and truncation stay in Rust.
   Budgets are bytes, not tokens. A relevance *threshold* is
   deliberately absent — the side-query picks filenames, it does not
-  score them).
+  score them), `tool-output-gate` (`read_max_lines`,
+  `read_max_bytes`, `read_hard_max_lines`, `grep_max_results` — the
+  omp-style unified output tiers for the read/search surfaces; the gates
+  themselves — UTF-8-safe slicing, continuation notices phrased as
+  executable read-more instructions — stay in Rust).
 - Resolution is **last-wins by load order** (builtin < global < project):
   a user mod overrides the builtin default by registering the same kind —
   deliberately unlike tools/commands, where the incumbent keeps the name.

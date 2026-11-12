@@ -97,6 +97,13 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         source: include_str!("builtin/lats_policy.rhai"),
         opt_in: false,
     },
+    BuiltinMod {
+        id: "builtin-tool-output-gate",
+        version: "0.1.0",
+        description: "Default read/search output-gate budgets (lines, bytes, match cap)",
+        source: include_str!("builtin/tool_output_gate.rhai"),
+        opt_in: false,
+    },
     // --- opt-in builtin strategies (compaction ports; select the mod in
     // `[mods] builtin` AND the strategy in `[compaction] strategy`) ---
     BuiltinMod {

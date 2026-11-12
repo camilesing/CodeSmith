@@ -91,11 +91,19 @@ impl ToolSpec for ReadFileTool {
         // window with continuation hints so the model can page through
         // without re-loading the entire file on every turn. Harvested
         // from PR #1451 by @Oliver-ZPLiu, closes part of #1450.
-        const DEFAULT_READ_LINES: usize = 200;
-        const HARD_MAX_READ_LINES: usize = 500;
-        const MAX_VISIBLE_BYTES: usize = 16 * 1024;
+        //
+        // The window budgets ride the `tool-output-gate` policy seam
+        // (omp-style unified tiers, docs/MODS.md); the compiled values are
+        // the fallback when no policy is published.
         const SMALL_FILE_LINES: usize = 200;
         const SMALL_FILE_BYTES: usize = 16 * 1024;
+        let gate = codesmith_agent::policy::PolicyKind::ToolOutputGate;
+        let default_read_lines =
+            codesmith_agent::policy::policy_usize(gate, "read_max_lines", 200, 5_000);
+        let hard_max_read_lines =
+            codesmith_agent::policy::policy_usize(gate, "read_hard_max_lines", 500, 20_000);
+        let max_visible_bytes =
+            codesmith_agent::policy::policy_usize(gate, "read_max_bytes", 16 * 1024, 1024 * 1024);
 
         let path_str = required_str(&input, "path")?;
         let file_path = context.resolve_path(path_str)?;
@@ -153,9 +161,9 @@ impl ToolSpec for ReadFileTool {
         };
 
         let max_lines = match input.get("max_lines") {
-            None => DEFAULT_READ_LINES,
+            None => default_read_lines,
             Some(v) => match v.as_i64() {
-                Some(n) if n > 0 => std::cmp::min(n as usize, HARD_MAX_READ_LINES),
+                Some(n) if n > 0 => std::cmp::min(n as usize, hard_max_read_lines),
                 _ => {
                     return Err(ToolError::invalid_input(
                         "max_lines must be a positive integer".to_string(),
@@ -190,9 +198,9 @@ impl ToolSpec for ReadFileTool {
         }
 
         // UTF-8-safe byte truncation of the rendered range.
-        let truncated_by_bytes = numbered.len() > MAX_VISIBLE_BYTES;
+        let truncated_by_bytes = numbered.len() > max_visible_bytes;
         let shown_content = if truncated_by_bytes {
-            let mut end = MAX_VISIBLE_BYTES;
+            let mut end = max_visible_bytes;
             while end > 0 && !numbered.is_char_boundary(end) {
                 end -= 1;
             }
@@ -219,9 +227,9 @@ impl ToolSpec for ReadFileTool {
             ));
         }
         if truncated_by_bytes {
-            output.push_str(
-                "\n[TRUNCATED] The selected range exceeded 16KB. Continue with a smaller max_lines value.\n",
-            );
+            output.push_str(&format!(
+                "\n[TRUNCATED] The selected range exceeded the {max_visible_bytes}-byte budget. Continue with a smaller max_lines value.\n",
+            ));
         }
         output.push_str("</file>");
 
@@ -1578,6 +1586,41 @@ mod tests {
 
         assert!(result.success);
         assert_eq!(result.content, "hello world");
+    }
+
+    /// The `tool-output-gate` policy seam owns the read window budgets
+    /// (omp-style tiers): a published `read_max_lines` shrinks the default
+    /// window and the continuation notice names the next start line.
+    /// No cross-test lock: this is the only reader of the kind in the
+    /// process (the other file tests run without a runner, on compiled
+    /// fallbacks), so publish → assert → clear cannot interleave.
+    #[tokio::test]
+    async fn read_window_budgets_follow_the_tool_output_gate_policy() {
+        codesmith_agent::policy::publish_policies(std::collections::HashMap::from([(
+            codesmith_agent::policy::PolicyKind::ToolOutputGate,
+            json!({"read_max_lines": 3}),
+        )]));
+
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        // Over the small-file fast path (200 lines) so the windowed path
+        // with the policy budget runs.
+        let body: String = (0..300).map(|i| format!("line {i}\n")).collect();
+        fs::write(tmp.path().join("big.txt"), body).expect("write");
+
+        let result = ReadFileTool
+            .execute(json!({"path": "big.txt"}), &ctx)
+            .await
+            .expect("execute");
+
+        // Exactly the policy window: lines 1-3, with the executable
+        // continuation notice naming start_line=4.
+        assert!(result.content.contains("line 0"));
+        assert!(result.content.contains("line 2"));
+        assert!(!result.content.contains("line 3"), "window shrunk to 3");
+        assert!(result.content.contains("start_line=4"), "continue hint");
+
+        codesmith_agent::policy::clear_published_policies();
     }
 
     #[tokio::test]
