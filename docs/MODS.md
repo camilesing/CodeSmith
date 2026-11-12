@@ -354,6 +354,16 @@ recompile.
   - `reject-templates` — deny-only guard over destructive shell
     patterns (`rm -rf /`, force-push, `reset --hard`) with corrective
     rejection templates.
+  - `runaway-guard` — runaway detection (minimax `exact_action_repeat`,
+    remind-strength): three consecutive identical tool calls get a
+    denial naming the loop and the way out.
+  - `goal-loop` — the dsh goal state machine as a loop script: phase
+    (active/complete/blocked/paused) + revision counter in the mod KV,
+    per-round `compact_now()`, fail-streak blocking (needs
+    `turn_executor = "rhai"` + `[rhai_loop] mod = "goal-loop"`).
+  - `verify-loop` — omp's diagnosticsOnWrite as a loop script: an edit
+    batch is immediately followed by a `diagnostics` batch (same
+    three-key enablement as `goal-loop`).
 
 ### Disabling a built-in slash command
 

@@ -317,6 +317,15 @@ register_policy("shell-output", #{
     替换比例失衡时拒绝并附纠正下一步。
   - `reject-templates`——破坏性 shell 模式（`rm -rf /`、force-push、
     `reset --hard`）的 deny-only 守卫，拒绝附纠正模板。
+  - `runaway-guard`——失控检测（minimax `exact_action_repeat` 精确重复
+    信号，提醒强度）：连续第三次完全相同的工具调用被拒绝，附循环
+    识别与出路。
+  - `goal-loop`——dsh 目标状态机的 loop 脚本形态：phase
+    （active/complete/blocked/paused）+ mod KV 修订计数、每轮
+    `compact_now()`、连败熔断（需 `turn_executor = "rhai"` +
+    `[rhai_loop] mod = "goal-loop"`）。
+  - `verify-loop`——omp diagnosticsOnWrite 的 loop 脚本形态：编辑批次
+    后立即跑一批 `diagnostics`（与 `goal-loop` 同三键启用）。
 
 ### 停用一个内建斜杠命令
 

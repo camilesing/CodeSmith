@@ -167,6 +167,33 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         source: include_str!("builtin/reject_templates.rhai"),
         opt_in: true,
     },
+    // --- opt-in builtin harness mods (HarnessEngineering ports; loop
+    // mods additionally need turn_executor = "rhai" + [rhai_loop] mod) ---
+    BuiltinMod {
+        id: "runaway-guard",
+        version: "0.1.0",
+        description: "runaway detection: three consecutive identical tool \
+                      calls get a denial naming the loop and the way out",
+        source: include_str!("builtin/runaway_guard.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "goal-loop",
+        version: "0.1.0",
+        description: "dsh goal state machine as a loop: phase \
+                      (active/complete/blocked/paused) + revision counter, \
+                      per-round compact_now, fail-streak blocking",
+        source: include_str!("builtin/goal_loop.rhai"),
+        opt_in: true,
+    },
+    BuiltinMod {
+        id: "verify-loop",
+        version: "0.1.0",
+        description: "omp diagnosticsOnWrite as a loop: an edit batch is \
+                      immediately followed by a diagnostics batch",
+        source: include_str!("builtin/verify_loop.rhai"),
+        opt_in: true,
+    },
 ];
 
 /// Compile + run the builtin tier against the runner (used by the host's

@@ -1715,6 +1715,164 @@ mod tests {
         assert_eq!(kv.get("messages"), Some(serde_json::json!(1)));
     }
 
+    /// A tool that records every call's name into a shared log (the
+    /// verify-loop proof: which tools ran, in what order).
+    struct RecordingTool {
+        name: &'static str,
+        calls: std::sync::Arc<Mutex<Vec<String>>>,
+    }
+    impl FrameworkTool for RecordingTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "records its call"
+        }
+        fn run(
+            &self,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + '_>> {
+            let log = self.calls.clone();
+            let name = self.name;
+            Box::pin(async move {
+                log.lock().unwrap().push(name.to_string());
+                Ok(ToolResult::success(format!("{name} ran")))
+            })
+        }
+    }
+
+    /// The opt-in `goal-loop` builtin (dsh goal state machine): a
+    /// tool-then-done turn drives the phase to `complete` and bumps the
+    /// revision counter in the mod's KV.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn goal_loop_drives_to_complete_with_a_revision() {
+        let kv = codesmith_extensions::script::kv::ModKvStore::new(std::env::temp_dir().join(
+            format!("codesmith-goal-loop-test-{}.json", std::process::id()),
+        ));
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "goal-loop",
+            "Goal Loop",
+            "0.1.0",
+            include_str!("../../../extensions/src/script/builtin/goal_loop.rhai").to_string(),
+            kv.clone(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("load goal-loop");
+        let entry = rhai_mod.loop_entry().expect("declares a loop").to_string();
+
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "goal reached");
+        call2.extend(finish("end_turn"));
+
+        let mut tools = ToolSet::new();
+        tools.register(Arc::new(EchoTool));
+        let host = Arc::new(HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            Arc::new(tools),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry,
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(Arc::new(RoutedMockLlm::new(Vec::new())), None, 0),
+        };
+
+        let mut history = VecChatHistory::new();
+        let reason = executor
+            .run(&mut history, "ship the feature".to_string())
+            .await
+            .expect("the scripted turn runs");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        assert_eq!(kv.get("phase"), Some(serde_json::json!("complete")));
+        let rev = kv
+            .get("goal_rev")
+            .and_then(|v| v.as_u64())
+            .expect("revision recorded");
+        assert!(rev >= 2, "active → complete bumps the counter: {rev}");
+    }
+
+    /// The opt-in `verify-loop` builtin (omp diagnosticsOnWrite): a batch
+    /// that edits files is immediately followed by a `diagnostics` batch
+    /// — same turn, before the next model round.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_loop_runs_diagnostics_after_an_edit_batch() {
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let kv = codesmith_extensions::script::kv::ModKvStore::new(std::env::temp_dir().join(
+            format!("codesmith-verify-loop-test-{}.json", std::process::id()),
+        ));
+        let rhai_mod = codesmith_extensions::script::RhaiMod::load_source(
+            "verify-loop",
+            "Verify Loop",
+            "0.1.0",
+            include_str!("../../../extensions/src/script/builtin/verify_loop.rhai").to_string(),
+            kv.clone(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("load verify-loop");
+        let entry = rhai_mod.loop_entry().expect("declares a loop").to_string();
+
+        let mut call1 = text_block(0, "editing");
+        call1.extend(tool_use_block(1, "t1", "edit_file", r#"{"path":"a.rs"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "verified and done");
+        call2.extend(finish("end_turn"));
+
+        let mut tools = ToolSet::new();
+        tools.register(Arc::new(RecordingTool {
+            name: "edit_file",
+            calls: calls.clone(),
+        }));
+        tools.register(Arc::new(RecordingTool {
+            name: "diagnostics",
+            calls: calls.clone(),
+        }));
+        let host = Arc::new(HostAgentExecutor::new(
+            Arc::new(MockLlm::new(vec![call1, call2])),
+            Arc::new(tools),
+            Arc::new(codesmith_agent::callback::CallbackSet::new()),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(rhai_mod),
+            entry,
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(Arc::new(RoutedMockLlm::new(Vec::new())), None, 0),
+        };
+
+        let mut history = VecChatHistory::new();
+        let reason = executor
+            .run(&mut history, "fix the bug".to_string())
+            .await
+            .expect("the scripted turn runs");
+        assert_eq!(reason, StopReason::NoToolCalls);
+        let ran = calls.lock().unwrap().clone();
+        assert_eq!(ran, vec!["edit_file", "diagnostics"]);
+    }
+
     struct NoSubAgents;
 
     #[async_trait::async_trait]
