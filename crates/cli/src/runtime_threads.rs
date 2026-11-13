@@ -591,6 +591,57 @@ impl RuntimeThreadStore {
         Ok(out)
     }
 
+    /// Completed `create_goal`/`update_goal` items of one thread, oldest
+    /// first — the goal-journal slice `goal_seed_from_items` consumes. Two
+    /// directory scans total (turns, then one pass over items filtered by
+    /// the thread's turn ids), unlike `get_thread_detail`, which re-scans
+    /// the whole items directory once per turn.
+    pub fn goal_items_for_thread(&self, thread_id: &str) -> Result<Vec<TurnItemRecord>> {
+        let turn_ids: HashSet<String> = self
+            .list_turns_for_thread(thread_id)?
+            .into_iter()
+            .map(|turn| turn.id)
+            .collect();
+        if turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.items_dir)
+            .with_context(|| format!("Failed to read {}", self.items_dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            let item: TurnItemRecord = serde_json::from_str(&raw)
+                .with_context(|| format!("Failed to parse {}", path.display()))?;
+            if item.schema_version > CURRENT_RUNTIME_SCHEMA_VERSION {
+                bail!(
+                    "Item schema v{} is newer than supported v{}",
+                    item.schema_version,
+                    CURRENT_RUNTIME_SCHEMA_VERSION
+                );
+            }
+            if !turn_ids.contains(&item.turn_id)
+                || item.status != TurnItemLifecycleStatus::Completed
+                || !(item.summary.starts_with("create_goal")
+                    || item.summary.starts_with("update_goal"))
+            {
+                continue;
+            }
+            out.push(item);
+        }
+        out.sort_by(|a, b| {
+            let left = a.started_at.unwrap_or_else(Utc::now);
+            let right = b.started_at.unwrap_or_else(Utc::now);
+            left.cmp(&right)
+        });
+        Ok(out)
+    }
+
     pub async fn append_event(
         &self,
         thread_id: &str,
@@ -3092,10 +3143,18 @@ impl RuntimeThreadManager {
         // goal is restored — a paused/blocked goal must not be resumed by a
         // reload (the model or the desktop deliberately stopped it).
         let goal_state = self
-            .get_thread_detail(&thread.id)
-            .await
+            .store
+            .goal_items_for_thread(&thread.id)
+            .map_err(|err| {
+                tracing::warn!(
+                    target: "codesmith_runtime_threads",
+                    thread = %thread.id,
+                    "goal journal scan failed: {err:#}"
+                );
+                err
+            })
             .ok()
-            .and_then(|detail| goal_seed_from_items(&detail.items))
+            .and_then(|items| goal_seed_from_items(&items))
             .map(|(objective, budget, completed)| {
                 new_shared_goal_state_from_host(Some(objective), budget, completed)
             })
