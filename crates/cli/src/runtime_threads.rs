@@ -557,6 +557,37 @@ impl RuntimeThreadStore {
         Ok(out)
     }
 
+    /// Every turn in the store grouped by thread id (each group oldest
+    /// first), from a single pass over the turns directory.
+    pub fn turns_by_thread(&self) -> Result<HashMap<String, Vec<TurnRecord>>> {
+        let mut out: HashMap<String, Vec<TurnRecord>> = HashMap::new();
+        for entry in fs::read_dir(&self.turns_dir)
+            .with_context(|| format!("Failed to read {}", self.turns_dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            let turn: TurnRecord = serde_json::from_str(&raw)
+                .with_context(|| format!("Failed to parse {}", path.display()))?;
+            if turn.schema_version > CURRENT_RUNTIME_SCHEMA_VERSION {
+                bail!(
+                    "Turn schema v{} is newer than supported v{}",
+                    turn.schema_version,
+                    CURRENT_RUNTIME_SCHEMA_VERSION
+                );
+            }
+            out.entry(turn.thread_id.clone()).or_default().push(turn);
+        }
+        for turns in out.values_mut() {
+            turns.sort_by_key(|a| a.created_at);
+        }
+        Ok(out)
+    }
+
     pub fn list_items_for_turn(&self, turn_id: &str) -> Result<Vec<TurnItemRecord>> {
         validated_record_id(turn_id, "turn id")?;
         let mut out = Vec::new();
@@ -1796,11 +1827,20 @@ impl RuntimeThreadManager {
     pub async fn subagent_catalog(&self, parent_id: &str) -> Result<Vec<SubagentSummary>> {
         let now = Utc::now();
         let mut out = Vec::new();
-        for thread in self.store.list_threads()? {
-            if !thread.is_subagent() || thread.parent_id.as_deref() != Some(parent_id) {
-                continue;
-            }
-            let turns = self.store.list_turns_for_thread(&thread.id)?;
+        let children: Vec<ThreadRecord> = self
+            .store
+            .list_threads()?
+            .into_iter()
+            .filter(|thread| thread.is_subagent() && thread.parent_id.as_deref() == Some(parent_id))
+            .collect();
+        if children.is_empty() {
+            return Ok(out);
+        }
+        // One pass over the turns directory for every child, not one full
+        // scan per child.
+        let mut turns_by_thread = self.store.turns_by_thread()?;
+        for thread in children {
+            let turns = turns_by_thread.remove(&thread.id).unwrap_or_default();
             let mut usage: Option<Usage> = None;
             let mut active = None;
             for turn in &turns {
