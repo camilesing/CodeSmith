@@ -829,12 +829,17 @@ mod tests {
             let plan0 = strategy
                 .call_plan(&snap(0, *tokens))
                 .unwrap_or_else(|e| panic!("{name} plan@cap0: {e}"));
-            assert_eq!(plan0["summary_max_tokens"], json!(summary0), "{name} summary at cap 0");
+            assert_eq!(
+                plan0["summary_max_tokens"],
+                json!(summary0),
+                "{name} summary at cap 0"
+            );
             let plan_cap = strategy
                 .call_plan(&snap(8_192, *tokens))
                 .unwrap_or_else(|e| panic!("{name} plan@cap8192: {e}"));
             assert_eq!(
-                plan_cap["summary_max_tokens"], json!(summary_cap),
+                plan_cap["summary_max_tokens"],
+                json!(summary_cap),
                 "{name} summary at cap 8192"
             );
         }

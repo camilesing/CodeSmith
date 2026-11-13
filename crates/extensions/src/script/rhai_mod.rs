@@ -4221,7 +4221,10 @@ mod tests {
         }
         hub.fold_message(&msg("assistant", vec![tool_use("e4", "p3")]));
         let out = rt.block_on(runner.emit(call("e4", "p3"))).outcome;
-        assert!(is_block(&out), "retrying the same-failing call blocks: {out:?}");
+        assert!(
+            is_block(&out),
+            "retrying the same-failing call blocks: {out:?}"
+        );
         hub.fold_message(&msg("assistant", vec![tool_use("e5", "p9")]));
         let out = rt.block_on(runner.emit(call("e5", "p9"))).outcome;
         assert!(!is_block(&out), "a different argument proceeds: {out:?}");
@@ -4239,7 +4242,10 @@ mod tests {
         hub.fold_message(&msg("user", vec![tool_err("r4")]));
         hub.fold_message(&msg("assistant", vec![tool_use("r5", "q1")]));
         let out = rt.block_on(runner.emit(call("r5", "q1"))).outcome;
-        assert!(!is_block(&out), "a success resets the error family: {out:?}");
+        assert!(
+            !is_block(&out),
+            "a success resets the error family: {out:?}"
+        );
 
         // abab: X, Y, X, Y — the third dispatch proceeds, the fourth
         // blocks.
@@ -4256,15 +4262,14 @@ mod tests {
         // arguments — five proceed, six blocks.
         let (runner, hub) = setup("runaway-guard");
         for i in 1..=6 {
-            hub.fold_message(&msg("assistant", vec![tool_use(&format!("p{i}"), &format!("v{i}"))]));
+            hub.fold_message(&msg(
+                "assistant",
+                vec![tool_use(&format!("p{i}"), &format!("v{i}"))],
+            ));
         }
-        let out = rt
-            .block_on(runner.emit(call("p5", "v5")))
-            .outcome;
+        let out = rt.block_on(runner.emit(call("p5", "v5"))).outcome;
         assert!(!is_block(&out), "five changing calls proceed: {out:?}");
-        let out = rt
-            .block_on(runner.emit(call("p6", "v6")))
-            .outcome;
+        let out = rt.block_on(runner.emit(call("p6", "v6"))).outcome;
         assert!(is_block(&out), "the sixth polling call blocks: {out:?}");
     }
 
@@ -4646,10 +4651,7 @@ mod tests {
                     "builtin-knowledge-on-demand".to_string()
                 ),
                 ("lats-policy", "builtin-lats-policy".to_string()),
-                (
-                    "goal-loop-policy",
-                    "builtin-goal-loop-policy".to_string()
-                ),
+                ("goal-loop-policy", "builtin-goal-loop-policy".to_string()),
                 ("tool-output-gate", "builtin-tool-output-gate".to_string()),
             ]
         );

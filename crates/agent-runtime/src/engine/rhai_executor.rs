@@ -2213,9 +2213,9 @@ mod tests {
             .await
             .expect("runs on the fallback");
         assert!(history.messages().iter().any(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 7 steps 24"))
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 7 steps 24"),
+            )
         }));
 
         // A published override on either kind wins for its own kind.
@@ -2237,9 +2237,9 @@ mod tests {
             .await
             .expect("runs on the override");
         assert!(history.messages().iter().any(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 9 steps 12"))
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 9 steps 12"),
+            )
         }));
     }
 
