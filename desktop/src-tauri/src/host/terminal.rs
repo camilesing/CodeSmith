@@ -776,48 +776,83 @@ async fn create_inner(host: &HostState, args: &Value) -> Result<Value, TermError
         .await
         .map_err(|err| TermError::new("workspace-file/not-found", err.message))?;
 
-    let mut owners = host.terminals.owners.lock().unwrap();
-    let owner = owners.entry(session.clone()).or_default();
-    if owner.closed.contains(&id) {
-        return Err(TermError::unavailable(
-            "Terminal was closed in this Session",
-        ));
-    }
-    if let Some(existing) = owner.terminals.get(&id) {
-        let shared = existing.shared.lock().unwrap();
-        return Ok(existing.info_json(&id, &shared));
-    }
-    if owner.terminals.len() >= MAX_TERMINALS {
-        return Err(TermError::new(
-            "terminal/limit-reached",
-            "Session terminal limit reached",
-        ));
-    }
-
-    // Shell resolution: a discovered path, or any existing executable (see
-    // the module limitations — this host restricts nothing the user's own
-    // shell could already do).
-    let shell = match str_arg(request, "shellPath") {
-        Some(path) => {
-            let known = discover_shells().iter().any(|shell| shell.path == path);
-            if !known && !(std::path::Path::new(&path).is_file()) {
-                return Err(TermError::invalid(
-                    "terminal/create: selected shell is not available on this host",
-                ));
-            }
-            shell_profile(&path)
+    // Validate against the registry, then spawn OFF the lock: resolving the
+    // shell stats the PATH and the spawn opens a PTY and forks — blocking
+    // work that must not run on an async worker or inside the critical
+    // section every other terminal RPC shares.
+    {
+        let mut owners = host.terminals.owners.lock().unwrap();
+        let owner = owners.entry(session.clone()).or_default();
+        if owner.closed.contains(&id) {
+            return Err(TermError::unavailable(
+                "Terminal was closed in this Session",
+            ));
         }
-        None => default_shell(),
-    };
+        if let Some(existing) = owner.terminals.get(&id) {
+            let shared = existing.shared.lock().unwrap();
+            return Ok(existing.info_json(&id, &shared));
+        }
+        if owner.terminals.len() >= MAX_TERMINALS {
+            return Err(TermError::new(
+                "terminal/limit-reached",
+                "Session terminal limit reached",
+            ));
+        }
+    }
 
-    let terminal = spawn_terminal(&session, &shell, &cwd, id.clone(), cols, rows)
-        .map_err(|err| TermError::new("gateway/internal", format!("terminal/create: {err}")))?;
-    let info = {
-        let shared = terminal.shared.lock().unwrap();
-        terminal.info_json(&id, &shared)
+    let shell_path = str_arg(request, "shellPath");
+    let (spawn_session, spawn_id) = (session.clone(), id.clone());
+    let terminal = tokio::task::spawn_blocking(move || {
+        // Shell resolution: a discovered path, or any existing executable
+        // (see the module limitations — this host restricts nothing the
+        // user's own shell could already do).
+        let shell = match shell_path {
+            Some(path) => {
+                let known = discover_shells().iter().any(|shell| shell.path == path);
+                if !known && !(std::path::Path::new(&path).is_file()) {
+                    return Err(TermError::invalid(
+                        "terminal/create: selected shell is not available on this host",
+                    ));
+                }
+                shell_profile(&path)
+            }
+            None => default_shell(),
+        };
+        spawn_terminal(&spawn_session, &shell, &cwd, spawn_id, cols, rows)
+            .map_err(|err| TermError::new("gateway/internal", format!("terminal/create: {err}")))
+    })
+    .await
+    .map_err(|err| TermError::new("gateway/internal", format!("terminal/create: {err}")))??;
+
+    // Re-check under the lock: a concurrent create of the same identity, a
+    // close, or the limit may have landed while the shell was spawning. The
+    // loser's freshly spawned shell is closed instead of leaking.
+    let rejected = {
+        let mut owners = host.terminals.owners.lock().unwrap();
+        let owner = owners.entry(session).or_default();
+        if owner.closed.contains(&id) {
+            Err(TermError::unavailable(
+                "Terminal was closed in this Session",
+            ))
+        } else if let Some(existing) = owner.terminals.get(&id) {
+            let shared = existing.shared.lock().unwrap();
+            Ok(existing.info_json(&id, &shared))
+        } else if owner.terminals.len() >= MAX_TERMINALS {
+            Err(TermError::new(
+                "terminal/limit-reached",
+                "Session terminal limit reached",
+            ))
+        } else {
+            let info = {
+                let shared = terminal.shared.lock().unwrap();
+                terminal.info_json(&id, &shared)
+            };
+            owner.terminals.insert(id, terminal);
+            return Ok(info);
+        }
     };
-    owner.terminals.insert(id, terminal);
-    Ok(info)
+    let _ = close_terminal(&id, &terminal).await;
+    rejected
 }
 
 fn spawn_terminal(
