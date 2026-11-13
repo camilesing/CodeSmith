@@ -320,7 +320,10 @@ register_policy("shell-output", #{
     `reset --hard`）的 deny-only 守卫，拒绝附纠正模板。
   - `runaway-guard`——失控检测（minimax `exact_action_repeat` 精确重复
     信号，提醒强度）：连续第三次完全相同的工具调用被拒绝，附循环
-    识别与出路。
+    识别与出路。连击计数是消息投影（会话日志的折叠）——天然按会话
+    隔离、不落盘；子代理 turn 上自然弃权（子代理的循环纪律归宿主
+    LoopGuard）。对比研究中的其余信号（同族错误、abab 循环、轮询、
+    无进展）未移植，其中无进展需要日志之外的状态、归宿主。
   - `goal-loop`——dsh 目标状态机的 loop 脚本形态：phase
     （active/complete/blocked/paused）+ mod KV 修订计数、每轮
     `compact_now()`、连败熔断（需 `turn_executor = "rhai"` +
@@ -632,7 +635,8 @@ register_compaction_strategy("compact-pi", #{
   切开配对的边界，免疫区也成立。
 - **选择与失败姿态。** 名称在压缩时对已装载 mod 解析（策略集是会话
   状态——mod 围绕配置装载/重载，因此不同于 `turn_executor`，无法在
-  配置装载时校验）。未知名是每次尝试的大声错误并回落内建：压缩是安全
+  配置装载时校验）。未知名是按名只记一次的大声错误（策略重新可解析后
+  重新武装）并回落内建：压缩是安全
   机制，配置笔误不能卡死它。解析按装载序后写者胜——用户 mod 复用同名
   即覆盖内置策略。
 - **范围（v1）。** 策略治理自动压缩路径（`run_compaction`）。容量干预

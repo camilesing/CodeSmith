@@ -4047,6 +4047,101 @@ mod tests {
         );
     }
 
+    /// The builtin runaway-guard counts from the session-log fold, not the
+    /// persistent KV: parallel identical calls in one batch block on the
+    /// third dispatch only, a different call breaks the streak, a second
+    /// session (fresh fold, SHARED kv file — the old implementation leaked
+    /// its counter through exactly that file) starts at 1, and the store
+    /// never gains the old keys (no disk writes on the tool hot path, no
+    /// tool inputs persisted outside the session log).
+    #[test]
+    fn builtin_runaway_guard_counts_from_the_log_fold() {
+        use codesmith_agent::models::ContentBlock;
+
+        let tool_use = |id: &str, pattern: &str| ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: "grep".to_string(),
+            input: serde_json::json!({ "pattern": pattern }),
+            caller: None,
+        };
+        let assistant = |blocks: Vec<ContentBlock>| codesmith_agent::models::Message {
+            role: "assistant".to_string(),
+            content: blocks,
+        };
+        let call = |id: &str, pattern: &str| {
+            ExtensionEvent::ToolCall(codesmith_agent::extension::ToolCallEvent {
+                id: id.to_string(),
+                name: "grep".to_string(),
+                input: serde_json::json!({ "pattern": pattern }),
+            })
+        };
+
+        let runner = crate::ExtensionRunner::new();
+        let hub = runner.message_projection_hub();
+        let dir = TempDir::new().unwrap();
+        let source = include_str!("builtin/runaway_guard.rhai");
+        let rhai_mod = RhaiMod::load(
+            &discovered_for(&dir, "runaway-guard", source),
+            kv_for(&dir, "runaway-guard"),
+            hub.clone(),
+        )
+        .expect("load mod");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&rhai_mod)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        // One assistant message, three identical parallel calls: the fold
+        // orders them; the first dispatch proceeds, the third blocks.
+        hub.fold_message(&assistant(vec![
+            tool_use("t1", "same"),
+            tool_use("t2", "same"),
+            tool_use("t3", "same"),
+        ]));
+        let out = rt.block_on(runner.emit(call("t1", "same"))).outcome;
+        assert!(
+            matches!(out, codesmith_agent::extension::HandlerOutcome::Continue),
+            "first identical call proceeds: {out:?}"
+        );
+        let out = rt.block_on(runner.emit(call("t3", "same"))).outcome;
+        assert!(
+            matches!(out, codesmith_agent::extension::HandlerOutcome::Block { .. }),
+            "third identical call blocks: {out:?}"
+        );
+
+        // A different call breaks the streak (position resets to 1).
+        hub.fold_message(&assistant(vec![tool_use("t4", "other")]));
+        let out = rt.block_on(runner.emit(call("t4", "other"))).outcome;
+        assert!(
+            matches!(out, codesmith_agent::extension::HandlerOutcome::Continue),
+            "a changed call resets the streak: {out:?}"
+        );
+
+        // A second session — fresh fold, but the SAME kv file the old
+        // implementation leaked its counter through — starts at 1.
+        let runner2 = crate::ExtensionRunner::new();
+        let hub2 = runner2.message_projection_hub();
+        let dir2 = TempDir::new().unwrap();
+        let mod2 = RhaiMod::load(
+            &discovered_for(&dir2, "runaway-guard", source),
+            kv_for(&dir, "runaway-guard"),
+            hub2.clone(),
+        )
+        .expect("load mod 2");
+        rt.block_on(runner2.load(&mod2)).expect("configure 2");
+        runner2.bind_core(Arc::new(PerModCtx));
+        hub2.fold_message(&assistant(vec![tool_use("u1", "same")]));
+        let out = rt.block_on(runner2.emit(call("u1", "same"))).outcome;
+        assert!(
+            matches!(out, codesmith_agent::extension::HandlerOutcome::Continue),
+            "a fresh session starts at streak 1: {out:?}"
+        );
+
+        // The store never gains the old counter keys.
+        let kv = kv_for(&dir, "runaway-guard");
+        assert_eq!(kv.get("last_fingerprint"), None);
+        assert_eq!(kv.get("repeat_count"), None);
+    }
+
     #[test]
     fn message_projection_duplicate_key_fails_load() {
         let dir = TempDir::new().unwrap();

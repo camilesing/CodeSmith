@@ -357,7 +357,12 @@ recompile.
     rejection templates.
   - `runaway-guard` — runaway detection (minimax `exact_action_repeat`,
     remind-strength): three consecutive identical tool calls get a
-    denial naming the loop and the way out.
+    denial naming the loop and the way out. The streak is a message
+    projection (a fold of the session log) — per-session by construction,
+    nothing on disk, sub-agent turns abstain (the host LoopGuard owns
+    their loop discipline); the study's other signals (same-error-family,
+    abab cycles, polling, unchanged progress) are not ported, and
+    unchanged-progress needs file state that stays with the host.
   - `goal-loop` — the dsh goal state machine as a loop script: phase
     (active/complete/blocked/paused) + revision counter in the mod KV,
     per-round `compact_now()`, fail-streak blocking (needs
@@ -725,8 +730,9 @@ Semantics worth knowing before porting a strategy from another agent:
 - **Selection and failure posture.** The name resolves against loaded
   mods at compaction time (the strategy set is session state — mods load
   and reload around config, so unlike `turn_executor` this cannot be
-  validated at config-load time). An unknown name is a loud per-attempt
-  error that falls back to builtin: compaction is a safety mechanism, a
+  validated at config-load time). An unknown name is a loud error logged
+  once per name (re-arming when a strategy resolves again) that falls
+  back to builtin: compaction is a safety mechanism, a
   config typo must not wedge it. Resolution is last-wins by load order —
   a user mod overrides a builtin strategy by reusing its name.
 - **Scope (v1).** The strategy governs the auto-compaction path

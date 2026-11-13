@@ -392,16 +392,23 @@ impl CompactionDecisions for ScriptDecisions {
 /// configured strategy resolves again — not once per model request.
 static UNRESOLVED_REPORTED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// `true` the first time `slot` sees `name` since the slot last changed —
+/// the once-per-name dedupe. Pure over the slot so the behavior is pinnable
+/// without the process-global static.
+fn unresolved_report_dedupes(slot: &mut Option<String>, name: &str) -> bool {
+    if slot.as_deref() == Some(name) {
+        return false;
+    }
+    *slot = Some(name.to_string());
+    true
+}
+
 /// `true` the first time `name` is reported since a strategy last resolved.
 fn first_unresolved_report(name: &str) -> bool {
     let mut last = UNRESOLVED_REPORTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if last.as_deref() == Some(name) {
-        return false;
-    }
-    *last = Some(name.to_string());
-    true
+    unresolved_report_dedupes(&mut last, name)
 }
 
 fn note_resolved() {
@@ -641,6 +648,22 @@ mod tests {
             keep_recent_messages_for(&messages, &StrategyKeep::Rounds(2)),
             expected
         );
+    }
+
+    /// An unknown strategy reports once per name, re-arms for a different
+    /// name, and re-arms when a strategy resolves again (the slot clears) —
+    /// pinned on a local slot so the process-global static is not
+    /// contended by parallel tests.
+    #[test]
+    fn unresolved_reports_dedupe_per_name_until_resolution() {
+        let mut slot: Option<String> = None;
+        assert!(unresolved_report_dedupes(&mut slot, "ghost"));
+        assert!(!unresolved_report_dedupes(&mut slot, "ghost"));
+        // A different name re-arms the report.
+        assert!(unresolved_report_dedupes(&mut slot, "other"));
+        // Resolution clears the slot — the same name reports again.
+        slot = None;
+        assert!(unresolved_report_dedupes(&mut slot, "ghost"));
     }
 
     #[test]
