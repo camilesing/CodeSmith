@@ -625,7 +625,9 @@ register_compaction_strategy("compact-pi", #{
 
 - **快照形状。** token 数由宿主预计算；round 按 assistant 起始分组
   （round 边界天然是配对安全切点）。`window` 是解析后的上下文窗口，
-  `threshold` 是配置的 token 阈值。
+  `output_cap` 是解析后的每模型输出上限（未知时为 0——超出它的输出
+  预留或摘要预算要么浪费窗口、要么是无法完成的请求），`threshold`
+  是配置的 token 阈值。
 - **宿主门仍在。** `enabled`、自动压缩下限、断路器与最小消息数在策略
   之前/周围检查——策略收紧时机，不能解除安全。
 - **plan 解释有校验。** `keep_recent_rounds` / `keep_recent_tokens` /

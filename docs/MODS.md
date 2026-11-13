@@ -716,8 +716,10 @@ Semantics worth knowing before porting a strategy from another agent:
 
 - **Snapshot shape.** Token counts are host-precomputed; rounds are
   assistant-start groups (a round boundary is a pairing-safe cut point by
-  construction). `window` is the resolved context window, `threshold`
-  the configured token threshold.
+  construction). `window` is the resolved context window, `output_cap`
+  the resolved per-model output ceiling (0 when unknown — an output
+  reserve or summary budget above it is wasted window or an
+  unfulfillable request), `threshold` the configured token threshold.
 - **Host gates still run.** `enabled`, the auto-compaction floor, the
   breaker, and the minimum message count are checked before/around the
   strategy — a strategy tightens timing, it cannot disable safety.

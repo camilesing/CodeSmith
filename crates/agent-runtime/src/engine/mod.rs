@@ -902,6 +902,10 @@ impl Engine {
                     if config.context_window.is_none() {
                         config.context_window = Some(self.effective_context_window(&config.model));
                     }
+                    if config.output_cap.is_none() {
+                        config.output_cap =
+                            crate::models::max_output_tokens_for_model(&config.model);
+                    }
                     self.config.compaction = config;
                     let _ = self
                         .tx_event
@@ -2775,6 +2779,8 @@ impl Engine {
         self.config.compaction.model.clone_from(&self.session.model);
         let window = self.effective_context_window(&self.session.model);
         self.config.compaction.context_window = Some(window);
+        self.config.compaction.output_cap =
+            crate::models::max_output_tokens_for_model(&self.session.model);
     }
 
     pub fn estimated_input_tokens(&self) -> usize {

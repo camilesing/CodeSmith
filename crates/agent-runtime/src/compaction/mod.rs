@@ -64,6 +64,14 @@ pub struct CompactionConfig {
     /// read this instead of re-deriving the window from the model name.
     /// `None` (embedders, tests) falls back to the static table.
     pub context_window: Option<u32>,
+    /// The resolved per-model output ceiling
+    /// (`models::max_output_tokens_for_model`), filled alongside
+    /// `context_window`. Compaction strategies read it from the strategy
+    /// snapshot as `output_cap` (0 when unknown): an output reserve or
+    /// summary budget larger than what the model can emit back is wasted
+    /// window or an unfulfillable request. `None` = unknown (embedders,
+    /// tests, off-table models).
+    pub output_cap: Option<u32>,
     pub cache_summary: bool,
     /// Hard floor — `should_compact` returns `false` when total session
     /// tokens fall below this number, regardless of `enabled` or
@@ -98,6 +106,7 @@ impl Default for CompactionConfig {
             token_threshold: 967_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
             context_window: None,
+            output_cap: None,
             cache_summary: true,
             auto_floor_tokens: MINIMUM_AUTO_COMPACTION_TOKENS,
             strategy: strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),

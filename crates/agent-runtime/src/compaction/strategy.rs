@@ -32,10 +32,9 @@
 //!   thresholds in v1.
 //! - The summary request *shape* (cache-aligned vs formatted) stays the
 //!   host's; a strategy adjusts the instruction tail and the output cap
-//!   only.
-//! - `output_cap` is not in the snapshot (the per-model output ceiling is
-//!   not threaded to the compaction probe); strategies that need it
-//!   approximate with `window / 4` — the same cap minimax applies.
+//!   only. The per-model output ceiling rides the snapshot as
+//!   `output_cap` (0 when unknown), so a strategy never reserves or
+//!   budgets more output than the model can emit back.
 
 use std::sync::Arc;
 
@@ -152,6 +151,7 @@ pub fn snapshot(messages: &[Message], config: &CompactionConfig) -> Value {
     json!({
         "total_tokens": total_tokens,
         "window": config.context_window.unwrap_or(0),
+        "output_cap": config.output_cap.unwrap_or(0),
         "threshold": config.token_threshold,
         "messages": messages.len(),
         "rounds": rounds.iter().map(|r| json!({
@@ -731,6 +731,112 @@ mod tests {
             let messages = history(6);
             let keep = keep_recent_messages_for(&messages, &directives.keep);
             assert!(keep >= 1 && keep <= messages.len(), "{name}: keep {keep}");
+        }
+    }
+
+    #[test]
+    fn snapshot_carries_output_cap() {
+        let messages = history(2);
+        let mut config = CompactionConfig::default();
+        config.output_cap = Some(8_192);
+        let snap = snapshot(&messages, &config);
+        assert_eq!(snap["output_cap"], json!(8_192));
+        config.output_cap = None;
+        let snap = snapshot(&messages, &config);
+        assert_eq!(snap["output_cap"], json!(0));
+    }
+
+    /// The four opt-in ports honor the snapshot's `output_cap` the way the
+    /// study classifies each number: omp clamps its output reserve (fires
+    /// later), minimax uses the exact min(cap, window/4) reserve (and
+    /// clamps the summary), dsh subtracts the ceiling as reservedCompletion
+    /// (fires earlier), and pi's 16,384 measurement buffer is deliberately
+    /// untouched — only its summary cap clamps.
+    #[test]
+    fn builtin_ports_honor_the_model_output_cap() {
+        let round = json!({
+            "start": 0, "len": 4, "tokens": 50_000,
+            "has_tool_use": true, "has_media": false,
+        });
+        let snap = |output_cap: i64, total: i64| {
+            json!({
+                "total_tokens": total, "window": 200_000, "output_cap": output_cap,
+                "threshold": 160_000, "messages": 40,
+                "rounds": [round.clone(), round.clone(), round.clone()],
+            })
+        };
+        // (name, source, tokens, trigger@cap0, trigger@cap8192,
+        //  summary_max_tokens@cap0, summary_max_tokens@cap8192)
+        let cases: &[(&str, &str, i64, bool, bool, i64, i64)] = &[
+            (
+                "compact-pi",
+                include_str!("../../../extensions/src/script/builtin/compact_pi.rhai"),
+                190_000,
+                true,
+                true,
+                13_107,
+                8_192,
+            ),
+            (
+                "compact-omp",
+                include_str!("../../../extensions/src/script/builtin/compact_omp.rhai"),
+                190_000,
+                true,
+                false,
+                16_384,
+                16_384,
+            ),
+            (
+                "compact-minimax",
+                include_str!("../../../extensions/src/script/builtin/compact_minimax.rhai"),
+                180_000,
+                true,
+                false,
+                25_000,
+                6_553,
+            ),
+            (
+                "compact-dsh",
+                include_str!("../../../extensions/src/script/builtin/compact_dsh.rhai"),
+                131_000,
+                false,
+                true,
+                65_536,
+                65_536,
+            ),
+        ];
+        for (name, source, tokens, fires0, fires_cap, summary0, summary_cap) in cases {
+            let m = codesmith_extensions::script::RhaiMod::load_source(
+                name,
+                name,
+                "0.1.0",
+                source.to_string(),
+                codesmith_extensions::script::ModKvStore::ephemeral(),
+                std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+            )
+            .unwrap_or_else(|e| panic!("{name} loads: {e}"));
+            let strategy = m
+                .compaction_strategy(name)
+                .unwrap_or_else(|| panic!("{name} registered"));
+            let t0 = strategy
+                .call_trigger(&snap(0, *tokens))
+                .unwrap_or_else(|e| panic!("{name} trigger@cap0: {e}"));
+            assert_eq!(t0, *fires0, "{name} trigger at cap 0");
+            let t_cap = strategy
+                .call_trigger(&snap(8_192, *tokens))
+                .unwrap_or_else(|e| panic!("{name} trigger@cap8192: {e}"));
+            assert_eq!(t_cap, *fires_cap, "{name} trigger at cap 8192");
+            let plan0 = strategy
+                .call_plan(&snap(0, *tokens))
+                .unwrap_or_else(|e| panic!("{name} plan@cap0: {e}"));
+            assert_eq!(plan0["summary_max_tokens"], json!(summary0), "{name} summary at cap 0");
+            let plan_cap = strategy
+                .call_plan(&snap(8_192, *tokens))
+                .unwrap_or_else(|e| panic!("{name} plan@cap8192: {e}"));
+            assert_eq!(
+                plan_cap["summary_max_tokens"], json!(summary_cap),
+                "{name} summary at cap 8192"
+            );
         }
     }
 }

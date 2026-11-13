@@ -9459,6 +9459,7 @@ mod tests {
             token_threshold: 100,
             model: "mock-v0".to_string(),
             context_window: None,
+            output_cap: None,
             cache_summary: false,
             auto_floor_tokens: 0,
             strategy: crate::compaction::strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
