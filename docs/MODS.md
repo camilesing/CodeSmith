@@ -308,7 +308,11 @@ recompile.
   `read_max_bytes`, `read_hard_max_lines`, `grep_max_results` — the
   omp-style unified output tiers for the read/search surfaces; the gates
   themselves — UTF-8-safe slicing, continuation notices phrased as
-  executable read-more instructions — stay in Rust).
+  executable read-more instructions — stay in Rust), `lats-policy`
+  (`width`, `depth`, `beam` — loop-script search knobs, read on the loop
+  surface via `loop_policy_int`), `goal-loop-policy` (`max_steps`,
+  `fail_streak_limit` — goal-loop budgets, read the same way; the loop
+  shape itself is script).
 - Resolution is **last-wins by load order** (builtin < global < project):
   a user mod overrides the builtin default by registering the same kind —
   deliberately unlike tools/commands, where the incumbent keeps the name.
@@ -323,7 +327,8 @@ recompile.
 - **Builtin tier**: the defaults themselves ship as embedded Rhai mods
   (`builtin-output-diff`, `builtin-shell-output`, `builtin-compact-policy`,
   `builtin-large-output-route`, `builtin-working-set`,
-  `builtin-knowledge-on-demand` — sources under
+  `builtin-knowledge-on-demand`, `builtin-lats-policy`,
+  `builtin-goal-loop-policy`, `builtin-tool-output-gate` — sources under
   `crates/extensions/src/script/builtin/`). They always load (even with
   `[mods] enabled = false`; the flag gates user mods only), skip
   consent/hash gates (they ship in the binary), use ephemeral KV, and are
@@ -367,7 +372,9 @@ recompile.
     signal (unchanged progress) needs file state and stays with the host.
   - `goal-loop` — the dsh goal state machine as a loop script: phase
     (active/complete/blocked/paused) + revision counter in the mod KV,
-    per-round `compact_now()`, fail-streak blocking (needs
+    per-round `compact_now()`, fail-streak blocking; budgets
+    (`max_steps`, `fail_streak_limit`) ride the `goal-loop-policy` kind
+    (needs
     `turn_executor = "rhai"` + `[rhai_loop] mod = "goal-loop"`).
   - `verify-loop` — omp's diagnosticsOnWrite as a loop script: an edit
     batch is immediately followed by a `diagnostics` batch (same
@@ -640,7 +647,7 @@ capability surface is a set of global functions the loop engine registers:
 | `spawn_child(spec)` | `handle` (int) — spawn an in-process child turn from `#{prompt, type?, allowed_tools?}` through the same child-turn seam the CLI spawn path uses (`run_child_turn`: the session's loop runs in the child, `SessionBeforeFork` veto fires, the child inherits the parent's tool surface — narrowed when `allowed_tools` names a subset, unknown names fail loud). Ceilings error loudly: `[runtime] max_spawn_depth` (fan-out is **one level** in v1 — a child's own `spawn_child` is rejected) and `max_subagents` (live children per turn). |
 | `eval_child(handle, timeout_ms)` | `#{status, final_text, steps}` — await a spawned child (`status` is `completed`/`cancelled`/`failed`; `final_text` is `()` unless completed). A timeout aborts the child and errors — an abandoned branch must not linger. |
 | `spawn_depth()` | This turn's depth (`0` = the main turn) — the role switch for mods that both search and evaluate, since children run the same script. |
-| `loop_policy_int(field, default)` | Read one `lats-policy` knob (`width`/`depth`/`beam`) — last-wins policy resolution with the script's compiled `default` as fallback, so a user mod's `register_policy("lats-policy", …)` retunes a running loop without a recompile. |
+| `loop_policy_int(kind, field, default)` | Read one loop-tier policy knob — `kind` is `lats-policy` (`width`/`depth`/`beam`) or `goal-loop-policy` (`max_steps`/`fail_streak_limit`) — last-wins policy resolution with the script's compiled `default` as fallback, so a user mod's `register_policy(kind, …)` retunes a running loop without a recompile. |
 | `compact_now()` | `#{ran, messages}` — run the host's compaction step service on demand (micro-compact, the trigger gate — including any selected `[compaction] strategy` — the LLM summary). `ran == false` is a clean no-op (under threshold / disabled / breaker open), not an error. Unlike the builtin loop there is no automatic pre-request preflight: the script calls this where its shape needs one, typically before each `llm_request`. |
 | `cancelled()` | `true` once the turn's cancel token fired — check it in long-running loops. |
 | `note(text)` | Records a script decision on the session log path (live presentation and the persisted record agree). |
@@ -679,10 +686,13 @@ Four moves cover the whole pattern:
    the transcript needs unwinding; the search narrative *is* the log.
 
 Search knobs (`width`/`depth`/`beam`) ride the `lats-policy` policy
-kind: the builtin tier ships defaults, `loop_policy_int("width", 3)`
+kind: the builtin tier ships defaults,
+`loop_policy_int("lats-policy", "width", 3)`
 reads the resolved value with the script's compiled fallback, and a user
 mod's `register_policy("lats-policy", …)` retunes a running session —
 data, not code, verified via `/mods list`'s resolved-policies section.
+Goal-loop budgets (`max_steps`, `fail_streak_limit`) ride the sibling
+`goal-loop-policy` kind the same way.
 
 ## Writing a compaction strategy
 

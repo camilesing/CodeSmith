@@ -98,6 +98,13 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         opt_in: false,
     },
     BuiltinMod {
+        id: "builtin-goal-loop-policy",
+        version: "0.1.0",
+        description: "Default goal-loop budget policy (max steps / fail streak)",
+        source: include_str!("builtin/goal_loop_policy.rhai"),
+        opt_in: false,
+    },
+    BuiltinMod {
         id: "builtin-tool-output-gate",
         version: "0.1.0",
         description: "Default read/search output-gate budgets (lines, bytes, match cap)",

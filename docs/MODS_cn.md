@@ -284,7 +284,10 @@ register_policy("shell-output", #{
   旁路查询挑选文件名，不打分）、`tool-output-gate`（`read_max_lines`、
   `read_max_bytes`、`read_hard_max_lines`、`grep_max_results` —— 读/搜
   面的 omp 式统一输出档位；门控本体——UTF-8 安全切片、可执行的续读
-  提示——留在 Rust）。
+  提示——留在 Rust）、`lats-policy`（`width`、`depth`、`beam`——loop
+  脚本搜索旋钮，经 loop 面的 `loop_policy_int` 读取）、
+  `goal-loop-policy`（`max_steps`、`fail_streak_limit`——goal-loop
+  预算，同法读取；loop 形态本身是脚本）。
 - 解析为**按装载顺序后写者胜**（内置 < 全局 < 项目）：用户 mod 注册同
   种类即覆盖内置默认——与工具/命令的"先到者得"刻意不同。
 - **可观测**：`/mods list` 与 `manage_mods action=list` 末尾附带"已解析
@@ -296,7 +299,8 @@ register_policy("shell-output", #{
 - **内置层**：默认值本身以内嵌 Rhai mod 发布（`builtin-output-diff`、
   `builtin-shell-output`、`builtin-compact-policy`、
   `builtin-large-output-route`、`builtin-working-set`、
-  `builtin-knowledge-on-demand` —— 源码在
+  `builtin-knowledge-on-demand`、`builtin-lats-policy`、
+  `builtin-goal-loop-policy`、`builtin-tool-output-gate` —— 源码在
   `crates/extensions/src/script/builtin/`）。
   它们始终装载（`[mods] enabled = false` 也只禁用户 mod）、跳过同意/哈希
   门（随二进制发布）、使用临时 KV，且不出现在 `/mods` 的 mod 列表（不是
@@ -327,7 +331,8 @@ register_policy("shell-output", #{
     LoopGuard）。第六个信号（无进展）需要日志之外的文件状态、归宿主。
   - `goal-loop`——dsh 目标状态机的 loop 脚本形态：phase
     （active/complete/blocked/paused）+ mod KV 修订计数、每轮
-    `compact_now()`、连败熔断（需 `turn_executor = "rhai"` +
+    `compact_now()`、连败熔断；预算（`max_steps`、`fail_streak_limit`）
+    走 `goal-loop-policy` 种类（需 `turn_executor = "rhai"` +
     `[rhai_loop] mod = "goal-loop"`）。
   - `verify-loop`——omp diagnosticsOnWrite 的 loop 脚本形态：编辑批次
     后立即跑一批 `diagnostics`（与 `goal-loop` 同三键启用）。
@@ -560,7 +565,7 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 | `spawn_child(spec)` | `handle`（int）——从 `#{prompt, type?, allowed_tools?}` 起一个进程内子代理 turn，走宿主 spawn 路径同一条 child-turn 接缝（`run_child_turn`：子代理运行会话的 loop、触发 `SessionBeforeFork` 否决、继承父工具面——`allowed_tools` 命名子集时收窄，未知名响亮失败）。上限越界响亮报错：`[runtime] max_spawn_depth`（v1 扇出**仅一层**——子代理自己的 `spawn_child` 会被拒绝）与 `max_subagents`（每 turn 存活子代理数）。 |
 | `eval_child(handle, timeout_ms)` | `#{status, final_text, steps}`——等待一个已 spawn 的子代理（`status` 为 `completed`/`cancelled`/`failed`；未完成时 `final_text` 为 `()`）。超时中止该子代理并报错——被放弃的分支不得滞留。 |
 | `spawn_depth()` | 本 turn 的深度（`0` = 主 turn）——子代理运行同一脚本，搜索/评估的角色切换就靠它。 |
-| `loop_policy_int(field, default)` | 读一个 `lats-policy` 旋钮（`width`/`depth`/`beam`）——按后写者胜解析策略，脚本的编译 `default` 兜底；用户 mod 的 `register_policy("lats-policy", …)` 无需重编译即可调参运行中的 loop。 |
+| `loop_policy_int(kind, field, default)` | 读一个 loop 层策略旋钮——`kind` 为 `lats-policy`（`width`/`depth`/`beam`）或 `goal-loop-policy`（`max_steps`/`fail_streak_limit`）——按后写者胜解析策略，脚本的编译 `default` 兜底；用户 mod 的 `register_policy(kind, …)` 无需重编译即可调参运行中的 loop。 |
 | `compact_now()` | `#{ran, messages}`——按需运行宿主的压缩步骤服务（micro-compact、触发门——含已选的 `[compaction] strategy`——LLM 摘要）。`ran == false` 是干净的空操作（未过阈值/被禁/断路器开启），不是错误。与 builtin 循环不同，没有自动的请求前预检：脚本在自己的形状需要处调用，典型是每次 `llm_request` 之前。 |
 | `cancelled()` | turn 的取消令牌触发后返回 `true`——长循环里要检查。 |
 | `note(text)` | 把脚本决策记录到会话日志路径（现场呈现与持久记录一致）。 |
@@ -592,9 +597,12 @@ steer 接缝——移植需要这些的循环前，先看 `rhai_executor` 模块
    按 best-first 剪到 `beam`。转录无需回退；搜索叙事本身就是日志。
 
 搜索旋钮（`width`/`depth`/`beam`）走 `lats-policy` 策略种类：内置层
-发布缺省，`loop_policy_int("width", 3)` 以脚本的编译兜底读解析值，用户
+发布缺省，`loop_policy_int("lats-policy", "width", 3)` 以脚本的编译兜底
+读解析值，用户
 mod 的 `register_policy("lats-policy", …)` 即可调参运行中的会话——数据
-而非代码，经 `/mods list` 的已解析策略节自证。
+而非代码，经 `/mods list` 的已解析策略节自证。goal-loop 的预算
+（`max_steps`、`fail_streak_limit`）以同法走姊妹种类
+`goal-loop-policy`。
 
 ## 编写压缩策略
 

@@ -134,6 +134,7 @@ enum LoopCall {
         timeout_ms: u64,
     },
     Policy {
+        kind: codesmith_agent::policy::PolicyKind,
         field: String,
         default: i64,
     },
@@ -707,9 +708,13 @@ impl RhaiTurnExecutor {
                     }
                 }
             }
-            LoopCall::Policy { field, default } => {
+            LoopCall::Policy {
+                kind,
+                field,
+                default,
+            } => {
                 let value = codesmith_agent::policy::policy_usize(
-                    codesmith_agent::policy::PolicyKind::LatsPolicy,
+                    kind,
                     &field,
                     default.unsigned_abs() as usize,
                     LOOP_POLICY_INT_MAX.unsigned_abs() as usize,
@@ -1371,8 +1376,20 @@ impl RhaiTurnExecutor {
                         i64::from(depth)
                     });
                     let call = make_call();
-                    engine.register_fn("loop_policy_int", move |field: &str, default: rhai::INT| -> Result<rhai::INT, Box<rhai::EvalAltResult>> {
+                    // Loop-tier policy reads only: the two kinds owned by
+                    // loop scripts. Other policy kinds customize host
+                    // mechanisms and are not readable here.
+                    engine.register_fn("loop_policy_int", move |kind: &str, field: &str, default: rhai::INT| -> Result<rhai::INT, Box<rhai::EvalAltResult>> {
+                        let kind = match codesmith_agent::policy::PolicyKind::from_kebab_name(kind) {
+                            Some(k @ (codesmith_agent::policy::PolicyKind::LatsPolicy
+                            | codesmith_agent::policy::PolicyKind::GoalLoopPolicy)) => k,
+                            _ => return Err(llm_error(
+                                "loop_policy_int(): kind must be 'lats-policy' or 'goal-loop-policy'"
+                                    .to_string(),
+                            )),
+                        };
                         match call(LoopCall::Policy {
+                            kind,
                             field: field.to_string(),
                             default,
                         })? {
@@ -2175,17 +2192,19 @@ mod tests {
         );
     }
 
-    /// `loop_policy_int` reads the `lats-policy` kind with the script's
-    /// compiled fallback, and a published override wins (last-wins store).
+    /// `loop_policy_int(kind, field, default)` reads its kind with the
+    /// script's compiled fallback, and a published override wins
+    /// (last-wins store) — pinned for both loop-tier kinds.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn loop_policy_int_reads_lats_policy_with_fallback() {
+    async fn loop_policy_int_reads_loop_tier_kinds_with_fallback() {
         let source = r#"
             fn main() {
-                let w = loop_policy_int("width", 7);
-                llm_request(#{prompt: "width is " + w});
+                let w = loop_policy_int("lats-policy", "width", 7);
+                let s = loop_policy_int("goal-loop-policy", "max_steps", 24);
+                llm_request(#{prompt: "width is " + w + " steps " + s});
             }
         "#;
-        // No registration in this private store → the compiled fallback.
+        // No registration in this private store → the compiled fallbacks.
         let empty = codesmith_agent::policy::PolicyStore::new();
         let executor = scripted_executor(source, vec![("width is", "ok")], None, 3);
         let mut history = VecChatHistory::new();
@@ -2196,15 +2215,19 @@ mod tests {
         assert!(history.messages().iter().any(|m| {
             m.content
                 .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 7"))
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 7 steps 24"))
         }));
 
-        // A published override wins.
+        // A published override on either kind wins for its own kind.
         let store = codesmith_agent::policy::PolicyStore::new();
         let mut set = std::collections::HashMap::new();
         set.insert(
             codesmith_agent::policy::PolicyKind::LatsPolicy,
             serde_json::json!({"width": 9}),
+        );
+        set.insert(
+            codesmith_agent::policy::PolicyKind::GoalLoopPolicy,
+            serde_json::json!({"max_steps": 12}),
         );
         store.publish(set);
         let executor = scripted_executor(source, vec![("width is", "ok")], None, 3);
@@ -2216,7 +2239,7 @@ mod tests {
         assert!(history.messages().iter().any(|m| {
             m.content
                 .iter()
-                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 9"))
+                .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "width is 9 steps 12"))
         }));
     }
 

@@ -97,6 +97,9 @@ pub enum PolicyKind {
     /// the `loop_policy_int` capability native on the loop surface
     /// (compiled fallback per field); the search itself is script.
     LatsPolicy,
+    /// Goal-loop budget knobs (`max_steps`, `fail_streak_limit`) — read by
+    /// `loop_policy_int` the same way; the loop shape itself is script.
+    GoalLoopPolicy,
     /// Tool-output gate budgets for the read/search surfaces
     /// (`read_max_lines`, `read_max_bytes`, `read_hard_max_lines`,
     /// `grep_max_results`) — the omp-style unified OutputSink tiers. The
@@ -118,6 +121,7 @@ impl PolicyKind {
             Self::WorkingSet => "working-set",
             Self::KnowledgeOnDemand => "knowledge-on-demand",
             Self::LatsPolicy => "lats-policy",
+            Self::GoalLoopPolicy => "goal-loop-policy",
             Self::ToolOutputGate => "tool-output-gate",
         }
     }
@@ -134,6 +138,7 @@ impl PolicyKind {
             "working-set" => Some(Self::WorkingSet),
             "knowledge-on-demand" => Some(Self::KnowledgeOnDemand),
             "lats-policy" => Some(Self::LatsPolicy),
+            "goal-loop-policy" => Some(Self::GoalLoopPolicy),
             "tool-output-gate" => Some(Self::ToolOutputGate),
             _ => None,
         }
@@ -149,6 +154,7 @@ impl PolicyKind {
         PolicyKind::WorkingSet,
         PolicyKind::KnowledgeOnDemand,
         PolicyKind::LatsPolicy,
+        PolicyKind::GoalLoopPolicy,
         PolicyKind::ToolOutputGate,
     ];
 }

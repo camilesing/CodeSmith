@@ -20,10 +20,10 @@ fn set_phase(phase) {
 }
 
 fn main() {
-    // Locals, not top-level consts: the loop engine calls `main` with a
-    // fresh scope, where top-level constants are not visible.
-    let max_steps = 24;
-    let fail_streak_limit = 3;
+    // Budgets ride the `goal-loop-policy` policy seam (builtin defaults,
+    // last-wins overridable by any mod) — same pattern as lats-policy.
+    let max_steps = loop_policy_int("goal-loop-policy", "max_steps", 24);
+    let fail_streak_limit = loop_policy_int("goal-loop-policy", "fail_streak_limit", 3);
     set_phase("active");
     let step = 0;
     let fail_streak = 0;

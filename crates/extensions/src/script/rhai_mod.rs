@@ -4103,10 +4103,14 @@ mod tests {
             "first identical call proceeds: {out:?}"
         );
         let out = rt.block_on(runner.emit(call("t3", "same"))).outcome;
-        assert!(
-            matches!(out, codesmith_agent::extension::HandlerOutcome::Block { .. }),
-            "third identical call blocks: {out:?}"
-        );
+        match out {
+            codesmith_agent::extension::HandlerOutcome::Block { reason } => {
+                // The denial names the loop and the way out.
+                assert!(reason.contains("identical arguments"), "{reason}");
+                assert!(reason.contains("NEVER retry"), "{reason}");
+            }
+            other => panic!("third identical call blocks, got {other:?}"),
+        }
 
         // A different call breaks the streak (position resets to 1).
         hub.fold_message(&assistant(vec![tool_use("t4", "other")]));
@@ -4642,6 +4646,10 @@ mod tests {
                     "builtin-knowledge-on-demand".to_string()
                 ),
                 ("lats-policy", "builtin-lats-policy".to_string()),
+                (
+                    "goal-loop-policy",
+                    "builtin-goal-loop-policy".to_string()
+                ),
                 ("tool-output-gate", "builtin-tool-output-gate".to_string()),
             ]
         );
@@ -4655,7 +4663,7 @@ mod tests {
         // Unload pol-a: snapshot falls back per kind, survivors stay.
         let outcome = rt.block_on(runner.unload_retained_mod("pol-a"));
         assert!(outcome.evicted, "{outcome:?}");
-        assert_eq!(outcome.replayed, 9, "{outcome:?}"); // 8 builtins + pol-b
+        assert_eq!(outcome.replayed, 10, "{outcome:?}"); // 9 builtins + pol-b
         assert!(outcome.errors.is_empty(), "{outcome:?}");
         // Survivor's override still effective (not fallen back to builtin).
         assert_eq!(
@@ -4811,7 +4819,6 @@ mod tests {
             "grep-guard" => include_str!("builtin/grep_guard.rhai"),
             "edit-input-guard" => include_str!("builtin/edit_input_guard.rhai"),
             "reject-templates" => include_str!("builtin/reject_templates.rhai"),
-            "runaway-guard" => include_str!("builtin/runaway_guard.rhai"),
             _ => panic!("unknown opt-in mod {id}"),
         };
         RhaiMod::load_source(
@@ -4980,55 +4987,5 @@ mod tests {
             out.outcome,
             codesmith_agent::extension::HandlerOutcome::Continue
         ));
-    }
-
-    /// runaway-guard: the third consecutive identical call is denied with
-    /// the way out; a different call resets the streak; the first two
-    /// pass. (minimax `exact_action_repeat`, remind-strength.)
-    #[test]
-    fn runaway_guard_denies_the_third_identical_call() {
-        let m = opt_in_mod("runaway-guard");
-        let runner = crate::ExtensionRunner::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(runner.load(&m)).expect("configure");
-        runner.bind_core(Arc::new(PerModCtx));
-
-        let call = |input: serde_json::Value| {
-            runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
-                id: "t".into(),
-                name: "grep".into(),
-                input,
-            }))
-        };
-        let same = serde_json::json!({"pattern": "TODO", "path": "src"});
-        // First two identical calls pass.
-        for _ in 0..2 {
-            let out = rt.block_on(call(same.clone()));
-            assert!(
-                matches!(
-                    out.outcome,
-                    codesmith_agent::extension::HandlerOutcome::Continue
-                ),
-                "streak under the limit passes"
-            );
-        }
-        // Third identical call: denied with the loop named and the way out.
-        let out = rt.block_on(call(same.clone()));
-        match out.outcome {
-            codesmith_agent::extension::HandlerOutcome::Block { reason } => {
-                assert!(reason.contains("identical arguments"), "{reason}");
-                assert!(reason.contains("NEVER retry"), "{reason}");
-            }
-            other => panic!("third identical call denied, got {other:?}"),
-        }
-        // A different call resets the streak and passes.
-        let out = rt.block_on(call(serde_json::json!({"pattern": "FIXME"})));
-        assert!(
-            matches!(
-                out.outcome,
-                codesmith_agent::extension::HandlerOutcome::Continue
-            ),
-            "a different call resets the streak"
-        );
     }
 }

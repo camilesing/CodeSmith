@@ -105,9 +105,9 @@ fn main() {
         return ();
     }
 
-    let width = loop_policy_int("width", 3);
-    let depth = loop_policy_int("depth", 2);
-    let beam = loop_policy_int("beam", 2);
+    let width = loop_policy_int("lats-policy", "width", 3);
+    let depth = loop_policy_int("lats-policy", "depth", 2);
+    let beam = loop_policy_int("lats-policy", "beam", 2);
     note("lats: search start (width " + width + ", depth " + depth + ", beam " + beam + ")");
 
     // Seed the frontier with the model's opening read of the task.
