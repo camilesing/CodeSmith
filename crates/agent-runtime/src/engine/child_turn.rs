@@ -262,15 +262,23 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
                         _ = task_cancel.cancelled() => break,
                         message = input.recv() => match message {
                             Some(steer) => {
-                                if !steer.text.trim().is_empty() {
-                                    journal
-                                        .record(ChildSessionEvent::UserMessage {
-                                            text: steer.text.clone(),
-                                        })
-                                        .await;
-                                }
-                                if forward_tx.send(steer).await.is_err() {
+                                // Forward first, journal after: a steer the
+                                // loop never drains must not be recorded as
+                                // a user message the child's model saw. The
+                                // send is cancel-selectable so teardown is
+                                // never held hostage by a full channel.
+                                let text = steer.text.clone();
+                                let delivered = tokio::select! {
+                                    sent = forward_tx.send(steer) => sent.is_ok(),
+                                    _ = task_cancel.cancelled() => false,
+                                };
+                                if !delivered {
                                     break;
+                                }
+                                if !text.trim().is_empty() {
+                                    journal
+                                        .record(ChildSessionEvent::UserMessage { text })
+                                        .await;
                                 }
                             }
                             None => break,
@@ -398,6 +406,15 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     let final_text = (status == ChildTurnStatus::Completed)
         .then(|| last_assistant_text(&messages[opening.min(messages.len())..]))
         .flatten();
+    // Tear the forwarder down before the terminal record: a steer racing
+    // the run's end is either forwarded (and journaled) or dropped here —
+    // never journaled after `Finished`.
+    if let Some(cancel) = forward_cancel {
+        cancel.cancel();
+    }
+    if let Some(task) = forward_task {
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
     // The child's terminal record lands before the lease is released: a
     // reload/eviction drain that waits for the lease to drop can then rely
     // on the journal already naming a terminal status.
@@ -417,12 +434,6 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
                 usage: usage.clone(),
             })
             .await;
-    }
-    if let Some(cancel) = forward_cancel {
-        cancel.cancel();
-    }
-    if let Some(task) = forward_task {
-        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
     }
     drop(built);
     drop(lease);
