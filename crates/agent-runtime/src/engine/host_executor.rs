@@ -616,7 +616,7 @@ use super::turn::{
 use super::{CapacityDecision, GuardrailAction, ReplayOutcome, SteerInput, TargetedRefreshOutcome};
 use crate::compaction::circuit_breaker::CompactionCircuitBreaker;
 use crate::compaction::micro_compact::{
-    MicroCompactState, micro_compact_messages, should_trigger_micro_compact,
+    MicroCompactState, builtin_cadence_due, micro_compact_messages, should_trigger_micro_compact,
 };
 use crate::compaction::{
     CompactionConfig, CompactionEnhancements, compact_messages_safe, estimate_tokens, message_text,
@@ -2628,6 +2628,15 @@ impl HostAgentExecutor {
                 crate::compaction::micro_compact::SweepRules::from_runner(self.extension.as_ref());
             let mut state = probe.micro_state.lock().expect("poisoned");
             if should_trigger_micro_compact(&history.messages(), &state, false, &sweep) {
+                // A pass fired by a script rule's presence alone dispatches
+                // script rules only: the builtin rule keeps its own
+                // time/byte cadence instead of clearing every compactable
+                // result (the live round included) on each such step.
+                let sweep = if builtin_cadence_due(&history.messages(), &state) {
+                    sweep
+                } else {
+                    sweep.without_builtin()
+                };
                 let mut msgs = history.messages().to_vec();
                 let cleared = micro_compact_messages(&mut msgs, &mut state, &sweep);
                 if cleared > 0 {

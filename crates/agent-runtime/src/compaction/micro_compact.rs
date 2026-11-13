@@ -210,9 +210,16 @@ fn compiled_builtin_rule() -> ResolvedSweepRule {
 /// dispatch surface. Script rules (in load order) claim first; the
 /// compiled builtin rule always answers last, so behavior without mods is
 /// byte-for-byte the pre-seam pass.
+///
+/// Known limitation: the builtin rule does not look at `in_live_round` —
+/// under its own time/byte cadence it clears live-round results too (the
+/// pre-seam behavior). A pass fired only by a script rule's presence must
+/// therefore run [`SweepRules::without_builtin`].
 pub struct SweepRules {
     script_rules: Vec<ResolvedSweepRule>,
     builtin_rule: ResolvedSweepRule,
+    /// Whether the builtin rule answers last in this pass's dispatch.
+    builtin_participates: bool,
 }
 
 impl Default for SweepRules {
@@ -259,6 +266,7 @@ impl SweepRules {
         Self {
             script_rules,
             builtin_rule: compiled_builtin_rule(),
+            builtin_participates: true,
         }
     }
 
@@ -268,15 +276,28 @@ impl SweepRules {
         Self {
             script_rules: Vec::new(),
             builtin_rule: compiled_builtin_rule(),
+            builtin_participates: true,
         }
     }
 
+    /// The dispatch for a pass fired by a script rule's presence alone:
+    /// script rules only. The builtin rule keeps its own time/byte cadence
+    /// ([`builtin_cadence_due`]) — riding a presence-fired pass it would
+    /// clear every compactable result, the live round included, on each
+    /// step a script rule has a claim.
+    #[must_use]
+    pub fn without_builtin(mut self) -> Self {
+        self.builtin_participates = false;
+        self
+    }
+
     /// First-match dispatch: script rules in load order, then the
-    /// compiled builtin rule. `None` = nobody claims (leave intact).
+    /// compiled builtin rule (when it participates in this pass). `None`
+    /// = nobody claims (leave intact).
     fn first_claim(&self, view: &SweepView) -> Option<&ResolvedSweepRule> {
         self.script_rules
             .iter()
-            .chain(std::iter::once(&self.builtin_rule))
+            .chain(self.builtin_participates.then_some(&self.builtin_rule))
             .find(|rule| rule.eligible(view))
     }
 
@@ -360,7 +381,14 @@ pub fn should_trigger_micro_compact(
     if is_subagent {
         return false;
     }
+    builtin_cadence_due(messages, state) || sweep.any_script_rule_claims(messages)
+}
 
+/// The builtin rule's own cadence — the time/byte lanes of
+/// [`should_trigger_micro_compact`], without the script-rule presence
+/// lane. A pass that fires while this is `false` was fired by a script
+/// rule alone and must dispatch [`SweepRules::without_builtin`].
+pub fn builtin_cadence_due(messages: &[Message], state: &MicroCompactState) -> bool {
     // Time trigger: large gap since last assistant message means cache is stale.
     if let Some(last_at) = state.last_assistant_message_at
         && last_at.elapsed().as_secs() >= policy_read().time_trigger_gap_secs
@@ -376,7 +404,6 @@ pub fn should_trigger_micro_compact(
     // Check if there are enough micro-compactable tool results to warrant clearing.
     let compactable_count = count_compactable_tool_results(messages);
     compactable_count > 0 && estimate_compactable_bytes(messages) >= state.cache_trigger_threshold
-        || sweep.any_script_rule_claims(messages)
 }
 
 /// Count how many tool results in messages are from micro-compactable tools.
@@ -678,6 +705,14 @@ mod tests {
             }),
         );
         publish_policies(set);
+        (elision_rules(), MicroCompactState::default())
+    }
+
+    /// The opt-in `elide-uneventful` mod's compiled rule beside the
+    /// compiled builtin rule, over whatever policy is current — publishes
+    /// nothing, so it is safe beside tests that read the default policy
+    /// without the policy lock.
+    fn elision_rules() -> SweepRules {
         let m = codesmith_extensions::script::RhaiMod::load_source(
             "elide-uneventful",
             "Elide Uneventful",
@@ -690,8 +725,16 @@ mod tests {
         .expect("elide-uneventful compiles");
         let runner = codesmith_extensions::ExtensionRunner::new();
         runner.retain_mod(std::sync::Arc::new(m));
-        let rules = SweepRules::from_runner(Some(&std::sync::Arc::new(runner)));
-        (rules, MicroCompactState::default())
+        SweepRules::from_runner(Some(&std::sync::Arc::new(runner)))
+    }
+
+    /// A state whose byte lane stays quiet, so only a script rule's
+    /// presence can fire the trigger.
+    fn quiet_byte_lane() -> MicroCompactState {
+        MicroCompactState {
+            cache_trigger_threshold: usize::MAX,
+            ..MicroCompactState::default()
+        }
     }
 
     /// omp-style elision cadence — the rule's compiled `eligible` closure
@@ -785,6 +828,40 @@ mod tests {
         assert_eq!(content, "[tool result cleared for context economy]");
 
         codesmith_agent::policy::clear_published_policies();
+    }
+
+    /// A pass fired by the script rule's presence alone (byte/time lanes
+    /// quiet) dispatches script rules only: the result the script rule
+    /// refuses stays intact instead of falling through to the builtin rule.
+    #[test]
+    fn presence_fired_pass_keeps_the_builtin_rule_out() {
+        let _guard = policy_test_lock();
+        let (sweep, mut st) = (elision_rules(), quiet_byte_lane());
+
+        let failing = format!("error: pattern invalid\n{}", "context ".repeat(40));
+        let mut messages = vec![
+            tool_use_msg("t1", "grep", serde_json::json!({})),
+            tool_result_msg("t1", &"hit ".repeat(200)),
+            tool_use_msg("t2", "grep", serde_json::json!({})),
+            tool_result_msg("t2", &failing),
+            msg("assistant", "moving on"),
+        ];
+        assert!(should_trigger_micro_compact(&messages, &st, false, &sweep));
+        assert!(
+            !builtin_cadence_due(&messages, &st),
+            "only the script rule's presence fired"
+        );
+
+        let cleared = micro_compact_messages(&mut messages, &mut st, &sweep.without_builtin());
+        assert!(cleared > 0);
+        let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, "[Uneventful result elided]");
+        let ContentBlock::ToolResult { content, .. } = &messages[3].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(content, &failing, "the builtin rule must not claim here");
     }
 
     #[test]
