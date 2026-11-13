@@ -1997,6 +1997,7 @@ impl RuntimeThreadManager {
 
     pub async fn fork_thread(&self, id: &str) -> Result<ThreadRecord> {
         let source = self.get_thread(id).await?;
+        refuse_subagent_fork(&source)?;
         let mut forked = source.clone();
         let now = Utc::now();
         forked.id = format!("thr_{}", &Uuid::new_v4().to_string()[..8]);
@@ -2076,6 +2077,7 @@ impl RuntimeThreadManager {
         depth_from_tail: usize,
     ) -> Result<(ThreadRecord, Option<String>)> {
         let source = self.get_thread(id).await?;
+        refuse_subagent_fork(&source)?;
         let source_turns = self.store.list_turns_for_thread(&source.id)?;
 
         // Walk turns from newest to oldest. For each turn, ask: does it
@@ -5128,6 +5130,19 @@ fn goal_view_json(state: &codesmith_agent_runtime::tool_state::goal::GoalState) 
         "rounds_started": state.rounds_driven(),
         "max_goal_rounds": codesmith_agent_runtime::tool_state::goal::MAX_GOAL_ROUNDS,
     }))
+}
+
+/// A child session is a replacement record: forking it would clone
+/// `origin`/`parent_id`/status into a phantom child that the thread list
+/// hides, no engine can load, and the parent's catalog shows forever.
+fn refuse_subagent_fork(source: &ThreadRecord) -> Result<()> {
+    if source.is_subagent() {
+        bail!(
+            "Child session {} is a replacement record and cannot be forked",
+            source.id
+        );
+    }
+    Ok(())
 }
 
 /// Seed an engine's goal from the thread journal: the latest completed
