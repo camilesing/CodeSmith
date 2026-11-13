@@ -295,33 +295,51 @@ impl SweepRules {
     /// compiled builtin rule (when it participates in this pass). `None`
     /// = nobody claims (leave intact).
     fn first_claim(&self, view: &SweepView) -> Option<&ResolvedSweepRule> {
-        self.script_rules
-            .iter()
-            .chain(self.builtin_participates.then_some(&self.builtin_rule))
-            .find(|rule| rule.eligible(view))
+        self.first_script_claim(view).or_else(|| {
+            (self.builtin_participates && self.builtin_rule.eligible(view))
+                .then_some(&self.builtin_rule)
+        })
     }
 
-    /// The script-rule trigger: any loaded rule claims some result in a
+    /// The script rules' half of the dispatch (load order, first match).
+    fn first_script_claim(&self, view: &SweepView) -> Option<&ResolvedSweepRule> {
+        self.script_rules.iter().find(|rule| rule.eligible(view))
+    }
+
+    /// The script-rule trigger: some loaded rule would clear a result in a
     /// COMPLETED round. This is how "load a rule" changes the pass's
     /// cadence too (omp's elision fires on presence, not on the byte
     /// threshold) — the builtin rule never participates here; its cadence
-    /// stays the time/byte triggers below.
-    fn any_script_rule_claims(&self, messages: &[Message]) -> bool {
+    /// stays the time/byte triggers below. It asks the pass's own decision
+    /// (`sweep_decision_for`), so an already-cleared id or a result too
+    /// small to benefit does not count: the lane re-arms once a pass has
+    /// run instead of latching the trigger for the rest of the session.
+    fn any_script_rule_claims(&self, messages: &[Message], state: &MicroCompactState) -> bool {
         if self.script_rules.is_empty() {
             return false;
         }
         let tool_use_names = collect_tool_use_names(messages);
+        let builtin_placeholder = policy_read().cleared_placeholder;
         let live_from = messages
             .iter()
             .rposition(|m| m.role == "assistant")
             .map_or(0, |idx| idx + 1);
         messages
             .iter()
-            .enumerate()
-            .take_while(|(idx, _)| idx < &live_from)
-            .flat_map(|(_, msg)| msg.content.iter())
-            .filter_map(|block| sweep_view_of(block, &tool_use_names, false))
-            .any(|view| self.script_rules.iter().any(|rule| rule.eligible(&view)))
+            .take(live_from)
+            .flat_map(|msg| msg.content.iter())
+            .any(|block| {
+                sweep_decision_for(
+                    block,
+                    &tool_use_names,
+                    false,
+                    state,
+                    &builtin_placeholder,
+                    self,
+                    true,
+                )
+                .is_some()
+            })
     }
 }
 
@@ -381,7 +399,7 @@ pub fn should_trigger_micro_compact(
     if is_subagent {
         return false;
     }
-    builtin_cadence_due(messages, state) || sweep.any_script_rule_claims(messages)
+    builtin_cadence_due(messages, state) || sweep.any_script_rule_claims(messages, state)
 }
 
 /// The builtin rule's own cadence — the time/byte lanes of
@@ -478,6 +496,8 @@ fn collect_tool_use_names(messages: &[Message]) -> std::collections::HashMap<Str
 /// The decide/execute split's decision half: everything a pass needs to
 /// know about one candidate, computed under a read-only borrow —
 /// `(tool_use_id, replacement, bytes_saved)`. `None` = leave intact.
+/// `script_only` asks the script rules alone (the presence trigger's
+/// question), whatever the pass's builtin participation.
 fn sweep_decision_for(
     block: &ContentBlock,
     tool_use_names: &std::collections::HashMap<String, String>,
@@ -485,6 +505,7 @@ fn sweep_decision_for(
     state: &MicroCompactState,
     builtin_placeholder: &str,
     sweep: &SweepRules,
+    script_only: bool,
 ) -> Option<(String, String, usize)> {
     let ContentBlock::ToolResult {
         tool_use_id,
@@ -515,7 +536,11 @@ fn sweep_decision_for(
     // head+placeholder+tail slice (errors live at a shell log's tail,
     // hits at a search's head, so the kept ends carry exactly what a
     // later turn re-reads for).
-    let rule = sweep.first_claim(&view)?;
+    let rule = if script_only {
+        sweep.first_script_claim(&view)
+    } else {
+        sweep.first_claim(&view)
+    }?;
     let replacement = if rule.keep_head_chars > 0 || rule.keep_tail_chars > 0 {
         let head = super::compact::truncate_chars(content, rule.keep_head_chars).to_string();
         let tail = super::compact::tail_chars(content, rule.keep_tail_chars);
@@ -567,6 +592,7 @@ pub fn micro_compact_messages(
                 state,
                 &builtin_placeholder,
                 sweep,
+                false,
             ) else {
                 continue;
             };
@@ -862,6 +888,27 @@ mod tests {
             panic!("expected tool result");
         };
         assert_eq!(content, &failing, "the builtin rule must not claim here");
+    }
+
+    /// The presence lane re-arms: once a pass has elided what the rule
+    /// claims, the same history no longer trips the trigger.
+    #[test]
+    fn presence_trigger_does_not_latch_after_a_pass() {
+        let _guard = policy_test_lock();
+        let (sweep, mut st) = (elision_rules(), quiet_byte_lane());
+
+        let mut messages = vec![
+            tool_use_msg("t1", "grep", serde_json::json!({})),
+            tool_result_msg("t1", &"hit ".repeat(200)),
+            msg("assistant", "done with that search"),
+        ];
+        assert!(should_trigger_micro_compact(&messages, &st, false, &sweep));
+        let cleared = micro_compact_messages(&mut messages, &mut st, &sweep.without_builtin());
+        assert!(cleared > 0);
+        assert!(
+            !should_trigger_micro_compact(&messages, &st, false, &elision_rules()),
+            "nothing is left for the rule to clear"
+        );
     }
 
     #[test]
