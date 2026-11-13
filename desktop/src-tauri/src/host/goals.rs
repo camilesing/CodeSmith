@@ -104,6 +104,12 @@ const FALLBACK_MAX_GOAL_ROUNDS: u64 = 25;
 /// Serializes read-modify-write cycles over the one overlay file.
 static PERSIST_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// Serializes goal mutations (`action`): the whole ref-check → runtime
+/// POST → overlay revision-bump section must be atomic against another
+/// client's mutation, or the loser's edit lands unobserved (a lost update
+/// the CAS contract exists to surface as `goal/stale-revision`).
+static ACTION_LOCK: Mutex<()> = Mutex::const_new(());
+
 /// One session's bridge-local mutation overlay. Persisted at
 /// `desktop/goals.json` so a pause/clear survives a bridge restart and an
 /// engine eviction.
@@ -934,6 +940,12 @@ pub async fn action(host: &HostState, endpoint: &str, args: &Value) -> Value {
             );
         }
     };
+    // One mutation at a time: the ref check below reads the projection, but
+    // the revision that invalidates the ref is bumped only after the runtime
+    // POST. Unserialized, two clients holding the same ref both pass the
+    // check and the loser's edit lands unobserved instead of refusing with
+    // `goal/stale-revision`.
+    let _action_guard = ACTION_LOCK.lock().await;
     let detail: Value = match host.backend.get(&format!("/v1/threads/{session_id}")).await {
         Ok(detail) => detail,
         Err(err) => {
