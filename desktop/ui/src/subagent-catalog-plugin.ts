@@ -321,7 +321,17 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         return React.createElement(React.Fragment, null, trigger, panel)
       }
 
-      /** Child header lineage: a back control when the crumb is a subagent session. */
+      /**
+       * Child header lineage: a back control when the crumb is a subagent
+       * session. The vendored header renders this slot in two modes: for a
+       * subagent crumb the slot REPLACES the title (`fallback: title`), for a
+       * plain session it rides AFTER the title (`fallback: null`). Our
+       * registration defeats both fallbacks, so a plain session (no
+       * subagent address, ever) must render null — the title span it would
+       * emit is a duplicate. A child session only reaches this header
+       * through the catalog projection, whose address is already loaded, so
+       * the undefined-address window is the opening flash of a child crumb.
+       */
       function ParentLink(props: LineageProps) {
         const t = typeof props.t === 'function'
           ? props.t
@@ -330,7 +340,7 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         const sessionId = props.lineageSessionId
         const address = sessionId === undefined ? undefined : ctx.sessions.subagentAddress(sessionId)
         if (address === undefined) {
-          return React.createElement('span', null, props.displayTitle ?? '')
+          return null
         }
         const parent = ctx.sessions.list.getSnapshot().byId[address.parentSessionId]
         const parentTitle = parent?.displayTitle ?? t('parent')
@@ -368,7 +378,8 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         ),
       )
       // The child breadcrumb gets a back control to the immediate parent;
-      // ordinary sessions keep the normal title through the slot fallback.
+      // plain sessions render nothing here (their title already precedes
+      // the slot — see ParentLink).
       ctx.slots.inject('conversation.session.header.lineage', () =>
         ctx.slots.register(
           {
