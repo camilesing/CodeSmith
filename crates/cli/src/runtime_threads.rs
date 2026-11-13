@@ -612,7 +612,6 @@ impl RuntimeThreadStore {
         let seq = state.next_seq;
         state.next_seq = state.next_seq.saturating_add(1);
         write_json_atomic(&self.state_path, &*state)?;
-        drop(state);
 
         let record = RuntimeEventRecord {
             schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
@@ -625,6 +624,10 @@ impl RuntimeThreadStore {
             payload,
         };
 
+        // The seq-allocating state lock is held across the tail repair and
+        // the append: concurrent appenders (turn monitor, HTTP handlers,
+        // the workflow recorder) must not interleave the torn-tail check
+        // with another writer's partial line.
         if path.exists() {
             // A crash mid-write can leave bytes without the closing newline;
             // appending after it would fuse the fragment into an unreadable
@@ -636,12 +639,17 @@ impl RuntimeThreadStore {
             .append(true)
             .open(&path)
             .with_context(|| format!("Failed to open {}", path.display()))?;
-        let line = serde_json::to_string(&record)?;
-        writeln!(file, "{line}").with_context(|| format!("Failed to append {}", path.display()))?;
+        // One write of a newline-terminated buffer: `writeln!` issues two
+        // `write_all` calls, leaving a non-newline-terminated window even
+        // under the lock's protection against the tail repair above.
+        let line = format!("{}\n", serde_json::to_string(&record)?);
+        file.write_all(line.as_bytes())
+            .with_context(|| format!("Failed to append {}", path.display()))?;
         file.flush()
             .with_context(|| format!("Failed to flush {}", path.display()))?;
         file.sync_all()
             .with_context(|| format!("Failed to fsync {}", path.display()))?;
+        drop(state);
         Ok(record)
     }
 
