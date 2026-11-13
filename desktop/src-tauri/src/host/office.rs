@@ -187,12 +187,24 @@ fn convert(
     before: &str,
     timeout: Duration,
 ) -> Result<Converted, RenderFail> {
-    let scratch = std::env::temp_dir().join(format!("cds-office-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&scratch)
-        .map_err(|err| RenderFail::new("failed", format!("scratch: {err}")))?;
+    let scratch =
+        create_scratch().map_err(|err| RenderFail::new("failed", format!("scratch: {err}")))?;
     let outcome = convert_in(&scratch, soffice, source, ext, before, timeout);
     let _ = std::fs::remove_dir_all(&scratch);
     outcome
+}
+
+/// A fresh owner-only scratch directory: the staged source and the
+/// converted PDF are copies of a possibly private document, and a shared
+/// `/tmp` is world-listable.
+fn create_scratch() -> std::io::Result<PathBuf> {
+    let scratch = std::env::temp_dir().join(format!("cds-office-{}", uuid::Uuid::new_v4()));
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&scratch)?;
+    Ok(scratch)
 }
 
 fn convert_in(
@@ -329,6 +341,18 @@ fn convert_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scratch directory holds a copy of the user's document; nobody
+    /// but the owner may traverse into it.
+    #[cfg(unix)]
+    #[test]
+    fn scratch_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = create_scratch().unwrap();
+        let mode = std::fs::metadata(&scratch).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(mode & 0o077, 0, "group/other access on scratch: {mode:o}");
+    }
 
     /// A converter stand-in: parse `--outdir <dir>` and write a minimal PDF.
     fn fake_soffice(dir: &Path, body: &str) -> PathBuf {
