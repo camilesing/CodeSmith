@@ -4142,6 +4142,128 @@ mod tests {
         assert_eq!(kv.get("repeat_count"), None);
     }
 
+    /// The three log-derivable signals beyond exact repeat: same-error-
+    /// family (retrying the exact call that just failed the same way three
+    /// times — and a success result resets the family), abab alternation
+    /// (the last four calls ping-pong between two argument sets), and
+    /// polling (six consecutive same-name calls with changing arguments;
+    /// five still proceed). Errors fold from `tool_result` blocks.
+    #[test]
+    fn builtin_runaway_guard_error_family_abab_and_polling() {
+        use codesmith_agent::models::ContentBlock;
+
+        let tool_use = |id: &str, pattern: &str| ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: "grep".to_string(),
+            input: serde_json::json!({ "pattern": pattern }),
+            caller: None,
+        };
+        let tool_err = |id: &str| ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: "Error: pattern not found in index".to_string(),
+            is_error: Some(true),
+            content_blocks: None,
+        };
+        let tool_ok = |id: &str| ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: "ok".to_string(),
+            is_error: None,
+            content_blocks: None,
+        };
+        let msg = |role: &str, blocks: Vec<ContentBlock>| codesmith_agent::models::Message {
+            role: role.to_string(),
+            content: blocks,
+        };
+        let call = |id: &str, pattern: &str| {
+            ExtensionEvent::ToolCall(codesmith_agent::extension::ToolCallEvent {
+                id: id.to_string(),
+                name: "grep".to_string(),
+                input: serde_json::json!({ "pattern": pattern }),
+            })
+        };
+
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let setup = |tag: &str| -> (
+            crate::ExtensionRunner,
+            codesmith_agent::extension::MessageProjectionHubArc,
+        ) {
+            let runner = crate::ExtensionRunner::new();
+            let hub = runner.message_projection_hub();
+            let dir = TempDir::new().unwrap();
+            let m = RhaiMod::load(
+                &discovered_for(
+                    &dir,
+                    "runaway-guard",
+                    include_str!("builtin/runaway_guard.rhai"),
+                ),
+                kv_for(&dir, tag),
+                hub.clone(),
+            )
+            .expect("load mod");
+            rt.block_on(runner.load(&m)).expect("configure");
+            runner.bind_core(Arc::new(PerModCtx));
+            (runner, hub)
+        };
+        let is_block = |o: &codesmith_agent::extension::HandlerOutcome| {
+            matches!(o, codesmith_agent::extension::HandlerOutcome::Block { .. })
+        };
+
+        // same-error-family: three DIFFERENT calls (no exact-repeat trip)
+        // hitting the same error, then a retry of the last one.
+        let (runner, hub) = setup("runaway-guard");
+        for (id, pattern) in [("e1", "p1"), ("e2", "p2"), ("e3", "p3")] {
+            hub.fold_message(&msg("assistant", vec![tool_use(id, pattern)]));
+            hub.fold_message(&msg("user", vec![tool_err(id)]));
+        }
+        hub.fold_message(&msg("assistant", vec![tool_use("e4", "p3")]));
+        let out = rt.block_on(runner.emit(call("e4", "p3"))).outcome;
+        assert!(is_block(&out), "retrying the same-failing call blocks: {out:?}");
+        hub.fold_message(&msg("assistant", vec![tool_use("e5", "p9")]));
+        let out = rt.block_on(runner.emit(call("e5", "p9"))).outcome;
+        assert!(!is_block(&out), "a different argument proceeds: {out:?}");
+
+        // A success result resets the family: two same errors, one
+        // success, one more error — the retry does not trip at count 1.
+        let (runner, hub) = setup("runaway-guard");
+        hub.fold_message(&msg("assistant", vec![tool_use("r1", "q1")]));
+        hub.fold_message(&msg("user", vec![tool_err("r1")]));
+        hub.fold_message(&msg("assistant", vec![tool_use("r2", "q2")]));
+        hub.fold_message(&msg("user", vec![tool_err("r2")]));
+        hub.fold_message(&msg("assistant", vec![tool_use("r3", "q3")]));
+        hub.fold_message(&msg("user", vec![tool_ok("r3")]));
+        hub.fold_message(&msg("assistant", vec![tool_use("r4", "q1")]));
+        hub.fold_message(&msg("user", vec![tool_err("r4")]));
+        hub.fold_message(&msg("assistant", vec![tool_use("r5", "q1")]));
+        let out = rt.block_on(runner.emit(call("r5", "q1"))).outcome;
+        assert!(!is_block(&out), "a success resets the error family: {out:?}");
+
+        // abab: X, Y, X, Y — the third dispatch proceeds, the fourth
+        // blocks.
+        let (runner, hub) = setup("runaway-guard");
+        for (id, pattern) in [("a1", "x"), ("a2", "y"), ("a3", "x"), ("a4", "y")] {
+            hub.fold_message(&msg("assistant", vec![tool_use(id, pattern)]));
+        }
+        let out = rt.block_on(runner.emit(call("a3", "x"))).outcome;
+        assert!(!is_block(&out), "three alternations proceed: {out:?}");
+        let out = rt.block_on(runner.emit(call("a4", "y"))).outcome;
+        assert!(is_block(&out), "the A-B-A-B fourth call blocks: {out:?}");
+
+        // polling: six consecutive same-name calls with changing
+        // arguments — five proceed, six blocks.
+        let (runner, hub) = setup("runaway-guard");
+        for i in 1..=6 {
+            hub.fold_message(&msg("assistant", vec![tool_use(&format!("p{i}"), &format!("v{i}"))]));
+        }
+        let out = rt
+            .block_on(runner.emit(call("p5", "v5")))
+            .outcome;
+        assert!(!is_block(&out), "five changing calls proceed: {out:?}");
+        let out = rt
+            .block_on(runner.emit(call("p6", "v6")))
+            .outcome;
+        assert!(is_block(&out), "the sixth polling call blocks: {out:?}");
+    }
+
     #[test]
     fn message_projection_duplicate_key_fails_load() {
         let dir = TempDir::new().unwrap();

@@ -318,12 +318,13 @@ register_policy("shell-output", #{
     替换比例失衡时拒绝并附纠正下一步。
   - `reject-templates`——破坏性 shell 模式（`rm -rf /`、force-push、
     `reset --hard`）的 deny-only 守卫，拒绝附纠正模板。
-  - `runaway-guard`——失控检测（minimax `exact_action_repeat` 精确重复
-    信号，提醒强度）：连续第三次完全相同的工具调用被拒绝，附循环
-    识别与出路。连击计数是消息投影（会话日志的折叠）——天然按会话
-    隔离、不落盘；子代理 turn 上自然弃权（子代理的循环纪律归宿主
-    LoopGuard）。对比研究中的其余信号（同族错误、abab 循环、轮询、
-    无进展）未移植，其中无进展需要日志之外的状态、归宿主。
+  - `runaway-guard`——失控检测（minimax V1 信号族，提醒强度）：精确
+    重复（连续 3 次完全相同调用）、同族错误（重试刚以同样方式失败
+    3 次的那个调用）、abab 交替（最近四次调用在两组参数间打乒乓）、
+    轮询（同名工具连续 6 次换参数调用）各自触发拒绝并附循环识别与
+    出路。四个信号都是会话日志的折叠（消息投影）——天然按会话隔离、
+    不落盘；子代理 turn 上自然弃权（子代理的循环纪律归宿主
+    LoopGuard）。第六个信号（无进展）需要日志之外的文件状态、归宿主。
   - `goal-loop`——dsh 目标状态机的 loop 脚本形态：phase
     （active/complete/blocked/paused）+ mod KV 修订计数、每轮
     `compact_now()`、连败熔断（需 `turn_executor = "rhai"` +

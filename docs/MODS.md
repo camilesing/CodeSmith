@@ -355,14 +355,16 @@ recompile.
   - `reject-templates` — deny-only guard over destructive shell
     patterns (`rm -rf /`, force-push, `reset --hard`) with corrective
     rejection templates.
-  - `runaway-guard` — runaway detection (minimax `exact_action_repeat`,
-    remind-strength): three consecutive identical tool calls get a
-    denial naming the loop and the way out. The streak is a message
-    projection (a fold of the session log) — per-session by construction,
-    nothing on disk, sub-agent turns abstain (the host LoopGuard owns
-    their loop discipline); the study's other signals (same-error-family,
-    abab cycles, polling, unchanged progress) are not ported, and
-    unchanged-progress needs file state that stays with the host.
+  - `runaway-guard` — runaway detection (minimax V1 signals,
+    remind-strength): exact-action repeat (3 identical calls),
+    same-error-family (retrying the exact call that just failed the same
+    way 3×), abab alternation (the last four calls ping-pong between two
+    argument sets), and polling (6 consecutive same-name calls with
+    changing arguments) each get a denial naming the loop and the way out.
+    All four are folds of the session log (a message projection) —
+    per-session by construction, nothing on disk, sub-agent turns abstain
+    (the host LoopGuard owns their loop discipline); the sixth study
+    signal (unchanged progress) needs file state and stays with the host.
   - `goal-loop` — the dsh goal state machine as a loop script: phase
     (active/complete/blocked/paused) + revision counter in the mod KV,
     per-round `compact_now()`, fail-streak blocking (needs
