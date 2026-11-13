@@ -986,12 +986,9 @@ impl SubAgentRuntime {
         self
     }
 
-    /// Attach the resolved `[workflow]` limits (run timeout + default
-    /// agent cap) from the engine config so the `workflow` tool sees the
-    /// same bounds at every spawn depth.
-    #[must_use]
     /// Set the workflow-run recorder (the runtime-thread store's journaling
     /// seam). Not propagated to children.
+    #[must_use]
     pub fn with_workflow_recorder(
         mut self,
         recorder: Option<Arc<dyn codesmith_agent_runtime::workflow::WorkflowRunRecorder>>,
@@ -1000,6 +997,10 @@ impl SubAgentRuntime {
         self
     }
 
+    /// Attach the resolved `[workflow]` limits (run timeout + default
+    /// agent cap) from the engine config so the `workflow` tool sees the
+    /// same bounds at every spawn depth.
+    #[must_use]
     pub fn with_workflow_limits(mut self, timeout: Duration, max_agents: Option<u32>) -> Self {
         self.workflow_timeout = timeout;
         self.workflow_max_agents = max_agents;
