@@ -2685,15 +2685,23 @@ impl HostAgentExecutor {
         // safety mechanism; a config typo must not wedge it).
         let strategy =
             crate::compaction::strategy::resolve_configured(self.extension.as_ref(), &probe.config);
-        let snapshot = crate::compaction::strategy::snapshot(&history.messages(), &probe.config);
-        let fired =
-            crate::compaction::strategy::host_trigger_gates(&history.messages(), &probe.config)
-                && strategy.trigger(
-                    &snapshot,
-                    &history.messages(),
-                    &probe.config,
-                    Some(&probe.workspace),
-                );
+        if !crate::compaction::strategy::host_trigger_gates(&history.messages(), &probe.config) {
+            return;
+        }
+        // Only a unit that reads the snapshot pays for it (a full-history
+        // token pass, and this runs every loop step): the compiled builtin
+        // unit decides from the messages.
+        let snapshot = if strategy.reads_snapshot() {
+            crate::compaction::strategy::snapshot(&history.messages(), &probe.config)
+        } else {
+            serde_json::Value::Null
+        };
+        let fired = strategy.trigger(
+            &snapshot,
+            &history.messages(),
+            &probe.config,
+            Some(&probe.workspace),
+        );
         if !fired {
             return;
         }

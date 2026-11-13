@@ -284,6 +284,13 @@ pub trait CompactionDecisions: Send + Sync {
     /// Status/observability label (the unit's name — "builtin" or the
     /// registered strategy name).
     fn label(&self) -> String;
+    /// Whether this unit reads the host-built snapshot. A unit that
+    /// decides from the messages alone says `false`, and the caller hands
+    /// it `Value::Null` instead of paying a full-history token pass on
+    /// every loop step.
+    fn reads_snapshot(&self) -> bool {
+        true
+    }
     /// Whether this attempt should fire. Errors inside a script unit are
     /// the unit's own loud-then-fallback concern (`false` after logging).
     fn trigger(
@@ -308,6 +315,10 @@ pub struct CompiledBuiltinDecisions;
 impl CompactionDecisions for CompiledBuiltinDecisions {
     fn label(&self) -> String {
         BUILTIN_COMPACTION_STRATEGY.to_string()
+    }
+
+    fn reads_snapshot(&self) -> bool {
+        false
     }
 
     fn trigger(
@@ -376,11 +387,35 @@ impl CompactionDecisions for ScriptDecisions {
     }
 }
 
+/// The strategy name last reported unresolvable. Resolution runs on every
+/// loop step, so the loud error fires once per name and re-arms when the
+/// configured strategy resolves again — not once per model request.
+static UNRESOLVED_REPORTED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// `true` the first time `name` is reported since a strategy last resolved.
+fn first_unresolved_report(name: &str) -> bool {
+    let mut last = UNRESOLVED_REPORTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.as_deref() == Some(name) {
+        return false;
+    }
+    *last = Some(name.to_string());
+    true
+}
+
+fn note_resolved() {
+    *UNRESOLVED_REPORTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 /// Resolve the configured strategy into ONE decision unit — the single
 /// construction-time dispatch (never a call-site branch). `"builtin"` /
 /// empty / no mod system / an unregistered name all resolve to the
-/// compiled builtin unit; an unregistered name is a loud per-attempt
-/// error (logged here) first — a config typo must not wedge compaction.
+/// compiled builtin unit; an unregistered name is a loud error first
+/// (logged here once per name until a strategy resolves again — this
+/// runs every loop step) — a config typo must not wedge compaction.
 /// The strategy set is session state (mods load/reload around config),
 /// so unlike `turn_executor` this cannot be validated at config-load
 /// time.
@@ -391,28 +426,36 @@ pub fn resolve_configured(
 ) -> Arc<dyn CompactionDecisions> {
     let compiled = || Arc::new(CompiledBuiltinDecisions) as Arc<dyn CompactionDecisions>;
     if config.strategy == BUILTIN_COMPACTION_STRATEGY || config.strategy.is_empty() {
+        note_resolved();
         return compiled();
     }
     let Some(runner) = runner else {
-        tracing::error!(
-            target: "compaction",
-            "compaction strategy {:?} selected but no extension runtime is loaded — \
-             using the builtin algorithm",
-            config.strategy
-        );
+        if first_unresolved_report(&config.strategy) {
+            tracing::error!(
+                target: "compaction",
+                "compaction strategy {:?} selected but no extension runtime is loaded — \
+                 using the builtin algorithm",
+                config.strategy
+            );
+        }
         return compiled();
     };
     match runner.compaction_strategy(&config.strategy) {
-        Some(strategy) => Arc::new(ScriptDecisions::new(strategy)),
+        Some(strategy) => {
+            note_resolved();
+            Arc::new(ScriptDecisions::new(strategy))
+        }
         None => {
-            tracing::error!(
-                target: "compaction",
-                "compaction strategy {:?} is not registered by any loaded mod \
-                 (registered: {:?}) — using the builtin algorithm. Check \
-                 [compaction] strategy and /mods status.",
-                config.strategy,
-                runner.compaction_strategy_names()
-            );
+            if first_unresolved_report(&config.strategy) {
+                tracing::error!(
+                    target: "compaction",
+                    "compaction strategy {:?} is not registered by any loaded mod \
+                     (registered: {:?}) — using the builtin algorithm. Check \
+                     [compaction] strategy and /mods status.",
+                    config.strategy,
+                    runner.compaction_strategy_names()
+                );
+            }
             compiled()
         }
     }
