@@ -1,6 +1,6 @@
 // Opt-in builtin tool hardening — critical-pattern rejection templates.
-// Ported from oh-my-pi @33ea58aa (articles/CodingAgent/Compare/
-// CodingTools.md / HarnessEngineering.md): a deny-only guard over the
+// Ported from a comparative study of popular coding agents (harness
+// feedback rules): a deny-only guard over the
 // destructive shell patterns, where each denial carries the corrective
 // next step (the harness feedback rule: an error code without a remedy
 // gets retried). omp's full 21-pattern registry is trimmed to the

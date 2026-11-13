@@ -1,6 +1,6 @@
 // Opt-in builtin compaction strategy — minimax-style 95% trigger.
-// Ported from minimax-code @3c21163c (articles/CodingAgent/Compare/
-// Compaction.md decision points 1-2):
+// Ported from a comparative study of popular coding agents
+// (decision points 1-2):
 //   trigger : input > 95% × (window − min(outputCap, window/4)) — integer
 //             percent, so the trigger is bit-reproducible; the output
 //             reserve is capped at window/4 (a larger declared output cap

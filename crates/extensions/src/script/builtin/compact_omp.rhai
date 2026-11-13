@@ -1,6 +1,6 @@
 // Opt-in builtin compaction strategy — omp-style band retention.
-// Ported from oh-my-pi @33ea58aa (articles/CodingAgent/Compare/Compaction.md
-// decision points 1-2, 7):
+// Ported from a comparative study of popular coding agents
+// (decision points 1-2, 7):
 //   reserve : max(⌊window × 0.15⌋, 16,384) — floored AND window-scaled
 //   trigger : tokens > window − reserve
 //   band    : the kept tail is clamped so post-compaction usage lands

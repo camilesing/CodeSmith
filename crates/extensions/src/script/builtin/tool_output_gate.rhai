@@ -1,6 +1,5 @@
 // Builtin default policy: tool-output gate budgets for the read/search
-// surfaces (the omp-style unified OutputSink tiers, articles/CodingAgent/
-// Compare/ContextEngineering.md decision point 3). The gates themselves
+// surfaces (the omp-style unified OutputSink tiers). The gates themselves
 // (UTF-8-safe slicing, continuation notices phrased as executable
 // read-more instructions) stay in Rust; this policy owns the tiers.
 //

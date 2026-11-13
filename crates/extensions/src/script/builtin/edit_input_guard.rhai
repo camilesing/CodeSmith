@@ -1,6 +1,6 @@
 // Opt-in builtin tool hardening — edit input guards.
-// Ported from minimax-code/deepseek-harness (articles/CodingAgent/Compare/
-// CodingTools.md decision point 2): the parameter-level layers of the
+// Ported from a comparative study of popular coding agents
+// (decision point 2): the parameter-level layers of the
 // fidelity/disproportion guards. CodeSmith's edit_file already enforces
 // the deeper span-level checks in Rust (exact match → indentation fuzzy →
 // punctuation fuzzy, occurrence disambiguation, start/end anchors); this

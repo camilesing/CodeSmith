@@ -1,6 +1,6 @@
 // Opt-in builtin harness guard — runaway detection, minimax V1 style.
-// Ported from minimax-code @3c21163c (articles/CodingAgent/Compare/
-// HarnessEngineering.md decision point 3): the runaway-guard's
+// Ported from a comparative study of popular coding agents
+// (decision point 3): the runaway-guard's
 // `exact_action_repeat` signal at remind-not-stop strength — three
 // consecutive identical tool calls (same name + same input fingerprint)
 // get a denial that names the loop and the way out. The other five

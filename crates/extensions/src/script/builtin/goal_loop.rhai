@@ -1,6 +1,6 @@
 // Opt-in builtin loop — the dsh goal state machine as a script shape.
-// Ported from deepseek-harness @8bd07339 (articles/CodingAgent/Compare/
-// HarnessEngineering.md decision point 2): a long-task progressor with
+// Ported from a comparative study of popular coding agents
+// (decision point 2): a long-task progressor with
 // an explicit phase (active → complete | blocked | paused) and a
 // revision counter in the mod's KV. The objective is the transcript's
 // first user message (the host already carries it); what the machine

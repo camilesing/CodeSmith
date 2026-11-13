@@ -1,6 +1,6 @@
 // Opt-in builtin compaction strategy — pi-style token-granular retention.
-// Ported from pi-mono @592667df (articles/CodingAgent/Compare/Compaction.md
-// decision points 1-2, 4):
+// Ported from a comparative study of popular coding agents
+// (decision points 1-2, 4):
 //   trigger : tokens > window − 16,384 (the output reserve)
 //   plan    : keepRecentTokens 20,000 — the host backward-accumulates
 //             whole rounds until the budget is met, then aligns the cut

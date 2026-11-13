@@ -1,6 +1,6 @@
 // Opt-in builtin sweep rule — omp-style per-turn elision.
-// Ported from oh-my-pi @33ea58aa (articles/CodingAgent/Compare/
-// Compaction.md decision point 3, "sweep before move"): a successful,
+// Ported from a comparative study of popular coding agents
+// (decision point 3, "sweep before move"): a successful,
 // media-free result in a COMPLETED round whose body carries no error
 // marker collapses to `[Uneventful result elided]` — and its presence
 // alone trips the pass (loading this rule IS the cadence switch; no host

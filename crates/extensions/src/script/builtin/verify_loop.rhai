@@ -1,6 +1,6 @@
-// Opt-in builtin loop — write-time verification, omp diagnosticsOnWrite
-// as a loop shape. Ported from oh-my-pi @33ea58aa (articles/CodingAgent/
-// Compare/CodingTools.md decision point 4): after any batch that edited
+// Opt-in builtin loop — write-time verification (omp-style
+// diagnostics-on-write as a loop shape). Ported from a comparative study
+// of popular coding agents: after any batch that edited
 // files (edit_file / write_file / apply_patch), the loop immediately
 // runs the workspace `diagnostics` tool so millisecond-level feedback
 // rides the same turn instead of waiting for the next model round.

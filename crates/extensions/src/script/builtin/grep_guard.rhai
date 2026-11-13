@@ -1,6 +1,6 @@
 // Opt-in builtin tool hardening — grep input normalization.
-// Ported from minimax-code @3c21163c (articles/CodingAgent/Compare/
-// CodingTools.md decision point 1): the argv hardening points that have a
+// Ported from a comparative study of popular coding agents
+// (decision point 1): the argv hardening points that have a
 // referent under structured (non-argv) parameters. The `--` separator and
 // last-match-wins deny-list are argv-specific and have no referent here;
 // CodeSmith's grep already reports `truncated` (the --max-count surplus

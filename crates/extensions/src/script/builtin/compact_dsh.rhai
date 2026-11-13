@@ -1,6 +1,6 @@
 // Opt-in builtin compaction strategy — dsh-style 16% tail retention.
-// Ported from deepseek-harness @8bd07339 (articles/CodingAgent/Compare/
-// Compaction.md decision points 1-2):
+// Ported from a comparative study of popular coding agents
+// (decision points 1-2):
 //   trigger : floor(min(0.8 × window, window − 65,536 headroom))
 //   plan    : retain 16% of the window as the kept tail, deliberately
 //             even mid-turn (the host re-aligns to whole rounds — pairing

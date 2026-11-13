@@ -342,7 +342,8 @@ recompile.
   compiled into the binary but never runs. A reload replays the same
   selection. Current opt-in ids:
   - `compact-pi`, `compact-omp`, `compact-minimax`, `compact-dsh` —
-    compaction strategies ported from the five-agent comparison (values
+    compaction strategies ported from a comparison of popular coding
+    agents (values
     and provenance in each mod's header comment; select via
     `[compaction] strategy`, see "Writing a compaction strategy").
   - `grep-guard` — grep input normalization (empty-pattern refusal with
