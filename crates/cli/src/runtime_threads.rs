@@ -1224,19 +1224,18 @@ impl RuntimeThreadManager {
         thread_id: String,
     ) -> Arc<dyn codesmith_agent_runtime::workflow::WorkflowRunRecorder> {
         struct ThreadWorkflowRecorder {
-            tx: std::sync::mpsc::SyncSender<codesmith_agent_runtime::workflow::WorkflowRunEvent>,
+            tx: tokio::sync::mpsc::Sender<codesmith_agent_runtime::workflow::WorkflowRunEvent>,
         }
         impl codesmith_agent_runtime::workflow::WorkflowRunRecorder for ThreadWorkflowRecorder {
             fn record(&self, event: codesmith_agent_runtime::workflow::WorkflowRunEvent) {
                 let _ = self.tx.try_send(event);
             }
         }
-        let (tx, rx) = std::sync::mpsc::sync_channel::<
-            codesmith_agent_runtime::workflow::WorkflowRunEvent,
-        >(256);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<codesmith_agent_runtime::workflow::WorkflowRunEvent>(256);
         tokio::spawn(async move {
             use codesmith_agent_runtime::workflow::WorkflowRunEvent;
-            while let Ok(event) = rx.recv() {
+            while let Some(event) = rx.recv().await {
                 let (name, payload) = match event {
                     WorkflowRunEvent::RunStart { run_id, name } => (
                         "workflow.run_started",
