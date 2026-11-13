@@ -35,6 +35,7 @@ wired into the binary at compile time. Which tier fits a given surface:
 | Policies (host-mechanism knobs) | ✓ `register_policy` (last-wins) | ✓ — the defaults ship as builtin mods | ✓ | data, not code; `/mods list` shows resolution |
 | Turn loop (every agent) | ✓ `register_loop` (drive, via the `rhai` executor) | — | ✓ `register_around_turn` (wrap) | kernel composition — *selection*: config `turn_executor` picks a crate-compiled `TurnExecutorRegistry` entry (`builtin`, or `"rhai"` to run a mod's loop script) for the main turn and every in-process sub-agent turn alike; *composition*: a Rust extension wraps the run with the general agent's `next()` (every turn — a sub-agent composes the chain at its agent-type scope); a script loop owns only the loop SHAPE — its capability calls (`llm_request`, `run_tools`) execute the host's step services (see "Writing a loop script") |
 | Compaction strategy | ✓ `register_compaction_strategy` (trigger + plan decisions) | ✓ (opt-in ports select via `[compaction] strategy`) | — | the mod owns the *decisions* (when to compact, how much to keep, summary directives); the host owns the *effects* and the immune zone (pairing invariant, system-prompt prefix, append-only storage, the summary LLM call, the circuit breaker). Selection: config `[compaction] strategy = "builtin" \| "<name>"` (see "Writing a compaction strategy") |
+| Micro-compaction sweep rules | ✓ `register_sweep_rule` (compiled `eligible` closure + replacement params) | ✓ (opt-in ports; loading the rule IS the switch) | — | the compiled closure decides which old tool results a pass may clear (and its presence changes the pass's cadence); the host owns the clearing primitive (replacement execution, byte accounting, idempotence, pairing) and the time/byte trigger baseline |
 | `BASE_PROMPT`, sub-agent tool registries | — | — | — | core by declared contract (sole base prompt, built-in-only sub-agent registries) |
 
 Rule of thumb: **logic and data → Rhai** (no recompile, consent-gated,
@@ -281,11 +282,10 @@ recompile.
   `summary_max_chars`, `preserved_summary_lines`, `preserved_line_bytes`,
   `preserved_total_bytes`), `compact-policy` (`cache_trigger_threshold`,
   `time_trigger_gap_secs`, `micro_compactable_tools`,
-  `cleared_placeholder`, `keep_head_chars`, `keep_tail_chars` (dsh-style
-  partial clears — the head/tail a cleared result keeps around the
-  placeholder), `elide_uneventful`, `elide_placeholder` (omp-style
-  per-turn elision: successful media-free results in completed rounds
-  collapse on their presence alone; the live round stays byte-for-byte)
+  `cleared_placeholder`, `keep_head_chars`, `keep_tail_chars` (the
+  compiled builtin sweep rule's replacement parameters — the head/tail a
+  cleared result keeps around the placeholder; omp-style elision is now
+  a compiled sweep rule, `register_sweep_rule`, not a knob)
   — the compaction engine itself stays in Rust;
   the summarizer prompt is merged from several session sources and is
   not a single template, so it stays out of this seam),
@@ -364,6 +364,9 @@ recompile.
   - `verify-loop` — omp's diagnosticsOnWrite as a loop script: an edit
     batch is immediately followed by a `diagnostics` batch (same
     three-key enablement as `goal-loop`).
+  - `elide-uneventful` — omp's per-turn elision as a compiled sweep rule:
+    uneventful results in completed rounds collapse on their presence
+    alone; the live round stays byte-for-byte (see "Sweep rules").
 
 ### Disabling a built-in slash command
 
@@ -730,6 +733,41 @@ Semantics worth knowing before porting a strategy from another agent:
   builtin thresholds; the summary request *shape* (cache-aligned vs
   formatted) stays the host's. Known limitations are written down beside
   the seam (`crates/agent-runtime/src/compaction/strategy.rs`).
+- **One call path.** The builtin algorithm is itself a decision unit
+  (`CompiledBuiltinDecisions` — the compiled formulas, equivalence-pinned
+  by test); `"builtin"` / an unknown name / no mod system all resolve to
+  it. The engine's `run_compaction` never branches on which unit it got —
+  it resolves one `CompactionDecisions` and asks it the same two
+  questions. Switching behavior = swapping the compiled unit, not
+  toggling code paths.
+
+## Sweep rules (micro-compaction eligibility)
+
+`register_sweep_rule(name, spec)` makes the "sweep before move" layer's
+eligibility **compiled code**: the `eligible` closure decides which old
+tool results a pass may clear, and the rule's presence alone changes the
+pass's cadence (a claimed completed-round result trips the trigger — no
+host knob gates it in Rust). The host owns the clearing primitive:
+replacement execution, byte accounting, idempotence, pairing, and the
+time/byte trigger baseline.
+
+```rhai
+register_sweep_rule("uneventful", #{
+    // view: #{ tool, is_error, has_media, content_chars,
+    //         content_head (lowercased, ≤512 chars), in_live_round }
+    eligible: |r| !r.in_live_round && !r.is_error && !r.has_media,
+    placeholder: "[Uneventful result elided]",
+    keep_head_chars: 0,   // optional, dsh-style head kept around the placeholder
+    keep_tail_chars: 0,   // optional, same for the tail
+});
+```
+
+Dispatch: loaded rules in load order claim a result first; the compiled
+builtin rule (compactable-tool list + `compact-policy` replacement knobs)
+always answers last, so behavior without rules is byte-for-byte the
+pre-seam pass. Rules resolve per pass — a `/mods reload` takes effect on
+the next pass. The opt-in `elide-uneventful` builtin ships the omp port
+(see the opt-in list above).
 
 ## mod.toml Fields
 

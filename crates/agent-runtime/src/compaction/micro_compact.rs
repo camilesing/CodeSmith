@@ -74,23 +74,8 @@ pub(crate) fn policy_read() -> CompactPolicyKnobs {
             0,
             64 * 1024,
         ),
-        elide_uneventful: codesmith_agent::policy::policy_usize(
-            codesmith_agent::policy::PolicyKind::CompactPolicy,
-            "elide_uneventful",
-            0,
-            1,
-        ),
-        elide_placeholder: codesmith_agent::policy::policy_string(
-            codesmith_agent::policy::PolicyKind::CompactPolicy,
-            "elide_placeholder",
-            DEFAULT_ELIDE_PLACEHOLDER,
-            512,
-        ),
     }
 }
-
-/// Compiled fallback for the omp-style elision placeholder.
-const DEFAULT_ELIDE_PLACEHOLDER: &str = "[Uneventful result elided]";
 
 /// The compact-policy knobs (see `policy_read`).
 pub(crate) struct CompactPolicyKnobs {
@@ -103,15 +88,10 @@ pub(crate) struct CompactPolicyKnobs {
     /// placeholder instead of collapsing to the placeholder alone —
     /// errors live at the tail of a shell log, hits at the head of a
     /// search. `0` (the default) keeps the bare-placeholder behavior.
+    /// These parameterize the compiled builtin sweep rule; script rules
+    /// (`register_sweep_rule`) carry their own replacement parameters.
     pub keep_head_chars: usize,
     pub keep_tail_chars: usize,
-    /// omp-style per-turn elision lane: when > 0, an uneventful result
-    /// (successful, media-free, no error marker) in a COMPLETED round
-    /// clears to `elide_placeholder` and its presence alone trips the
-    /// trigger — the live round stays byte-for-byte (omp's cache-safe
-    /// lookback window, as an AppendLog rebuild).
-    pub elide_uneventful: usize,
-    pub elide_placeholder: String,
 }
 
 /// Per-session micro-compaction state.
@@ -156,18 +136,209 @@ pub fn is_micro_compactable_tool(name: &str) -> bool {
         .any(|t| t == name)
 }
 
-/// An "uneventful" result — omp's per-turn elision target (Compare
-/// Compaction/ContextEngineering): a successful, media-free result whose
-/// body carries no error marker. Eliding these (with the
-/// `elide_placeholder`) keeps failure lines intact for later turns.
-pub(crate) fn is_uneventful_result(content: &str, is_error: Option<bool>) -> bool {
-    if is_error == Some(true) {
-        return false;
+// === sweep rules: the "sweep before move" dispatch =========================
+//
+// WHICH old results a pass may clear is compiled code, not a host branch:
+// a mod's `register_sweep_rule` closures (load-time compiled, resolved via
+// `ExtensionRunner::sweep_rules`) come first in load order, and the
+// compiled builtin rule rides last as the fallback. The host owns only the
+// clearing primitive below (replacement execution, byte accounting,
+// idempotence, pairing) and the time/byte trigger cadence. Loading a rule
+// IS the behavior switch — no config knob gates it in Rust.
+
+/// The host-built view a sweep rule's `eligible` closure sees — pure data,
+/// token/char counts precomputed, `content_head` capped so a script never
+/// touches a full payload.
+pub struct SweepView<'a> {
+    pub tool: &'a str,
+    pub is_error: bool,
+    pub has_media: bool,
+    pub content_chars: usize,
+    /// Lowercased head of the content (≤ 512 chars) — enough for an
+    /// eligibility judgment (error-marker scans), never the whole body.
+    pub content_head_lower: String,
+    /// Inside the live round (at/after the last assistant message)?
+    pub in_live_round: bool,
+}
+
+impl SweepView<'_> {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "tool": self.tool,
+            "is_error": self.is_error,
+            "has_media": self.has_media,
+            "content_chars": self.content_chars,
+            "content_head": self.content_head_lower,
+            "in_live_round": self.in_live_round,
+        })
     }
-    let lower = content.to_lowercase();
-    !codesmith_session::transcript::ERROR_MARKERS
-        .iter()
-        .any(|m| lower.contains(m))
+}
+
+/// One resolved sweep rule — an eligibility callable (compiled builtin
+/// predicate or a load-time-compiled script closure) plus its replacement
+/// parameters.
+pub struct ResolvedSweepRule {
+    /// Observability label ("builtin" or "<mod>/<rule>").
+    pub label: String,
+    eligible: Box<dyn Fn(&SweepView) -> bool + Send + Sync>,
+    pub placeholder: String,
+    pub keep_head_chars: usize,
+    pub keep_tail_chars: usize,
+}
+
+impl ResolvedSweepRule {
+    #[must_use]
+    pub fn eligible(&self, view: &SweepView) -> bool {
+        (self.eligible)(view)
+    }
+}
+
+/// The compiled builtin rule: eligibility is the compactable-tool list
+/// (policy-owned), replacement parameters the compact-policy knobs.
+fn compiled_builtin_rule() -> ResolvedSweepRule {
+    let knobs = policy_read();
+    ResolvedSweepRule {
+        label: "builtin".to_string(),
+        eligible: Box::new(|view| is_micro_compactable_tool(view.tool)),
+        placeholder: knobs.cleared_placeholder,
+        keep_head_chars: knobs.keep_head_chars,
+        keep_tail_chars: knobs.keep_tail_chars,
+    }
+}
+
+/// The rule set a micro-compaction pass runs against — the single
+/// dispatch surface. Script rules (in load order) claim first; the
+/// compiled builtin rule always answers last, so behavior without mods is
+/// byte-for-byte the pre-seam pass.
+pub struct SweepRules {
+    script_rules: Vec<ResolvedSweepRule>,
+    builtin_rule: ResolvedSweepRule,
+}
+
+impl Default for SweepRules {
+    fn default() -> Self {
+        Self::compiled()
+    }
+}
+
+impl SweepRules {
+    /// Resolve from the loaded mods (their compiled `eligible` closures)
+    /// plus the compiled builtin fallback. Constructed per pass, so a
+    /// `/mods reload` takes effect on the next pass.
+    #[must_use]
+    pub fn from_runner(
+        runner: Option<&std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
+    ) -> Self {
+        let script_rules = runner
+            .map(|r| r.sweep_rules())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rule| {
+                let label = format!("{}/{}", rule.mod_id, rule.name);
+                let name = rule.name.clone();
+                let placeholder = rule.placeholder.clone();
+                let keep_head_chars = rule.keep_head_chars;
+                let keep_tail_chars = rule.keep_tail_chars;
+                ResolvedSweepRule {
+                    label,
+                    eligible: Box::new(move |view: &SweepView| {
+                        rule.eligible(&view.to_json()).unwrap_or_else(|err| {
+                            tracing::error!(
+                                target: "compaction",
+                                "sweep rule {name:?} eligible failed: {err} — treating as not-eligible"
+                            );
+                            false
+                        })
+                    }),
+                    placeholder,
+                    keep_head_chars,
+                    keep_tail_chars,
+                }
+            })
+            .collect();
+        Self {
+            script_rules,
+            builtin_rule: compiled_builtin_rule(),
+        }
+    }
+
+    /// No mod system (embeds/tests): the compiled builtin rule alone.
+    #[must_use]
+    pub fn compiled() -> Self {
+        Self {
+            script_rules: Vec::new(),
+            builtin_rule: compiled_builtin_rule(),
+        }
+    }
+
+    /// First-match dispatch: script rules in load order, then the
+    /// compiled builtin rule. `None` = nobody claims (leave intact).
+    fn first_claim(&self, view: &SweepView) -> Option<&ResolvedSweepRule> {
+        self.script_rules
+            .iter()
+            .chain(std::iter::once(&self.builtin_rule))
+            .find(|rule| rule.eligible(view))
+    }
+
+    /// The script-rule trigger: any loaded rule claims some result in a
+    /// COMPLETED round. This is how "load a rule" changes the pass's
+    /// cadence too (omp's elision fires on presence, not on the byte
+    /// threshold) — the builtin rule never participates here; its cadence
+    /// stays the time/byte triggers below.
+    fn any_script_rule_claims(&self, messages: &[Message]) -> bool {
+        if self.script_rules.is_empty() {
+            return false;
+        }
+        let tool_use_names = collect_tool_use_names(messages);
+        let live_from = messages
+            .iter()
+            .rposition(|m| m.role == "assistant")
+            .map_or(0, |idx| idx + 1);
+        messages
+            .iter()
+            .enumerate()
+            .take_while(|(idx, _)| idx < &live_from)
+            .flat_map(|(_, msg)| msg.content.iter())
+            .filter_map(|block| sweep_view_of(block, &tool_use_names, false))
+            .any(|view| self.script_rules.iter().any(|rule| rule.eligible(&view)))
+    }
+}
+
+/// Build the [`SweepView`] for one tool-result block (None for
+/// non-results / unknown tools).
+fn sweep_view_of<'a>(
+    block: &'a ContentBlock,
+    tool_use_names: &'a std::collections::HashMap<String, String>,
+    in_live_round: bool,
+) -> Option<SweepView<'a>> {
+    let ContentBlock::ToolResult {
+        tool_use_id,
+        content,
+        is_error,
+        content_blocks,
+        ..
+    } = block
+    else {
+        return None;
+    };
+    let tool = tool_use_names.get(tool_use_id)?;
+    let has_media = content_blocks.as_ref().is_some_and(|b| {
+        b.iter()
+            .any(|blk| blk.get("type").and_then(|v| v.as_str()) == Some("image"))
+    });
+    let content_head_lower: String = content
+        .chars()
+        .take(512)
+        .flat_map(char::to_lowercase)
+        .collect();
+    Some(SweepView {
+        tool,
+        is_error: *is_error == Some(true),
+        has_media,
+        content_chars: content.chars().count(),
+        content_head_lower,
+        in_live_round,
+    })
 }
 
 /// Determine whether micro-compaction should be triggered.
@@ -175,16 +346,16 @@ pub(crate) fn is_uneventful_result(content: &str, is_error: Option<bool>) -> boo
 /// Triggers when:
 /// 1. Time trigger: >=60 minutes since last assistant message
 /// 2. Cache trigger: accumulated bytes_cleared exceeds threshold
-/// 3. Elision trigger (`elide_uneventful` > 0, the omp per-turn lane):
-///    at least one uneventful compactable result sits in a COMPLETED round
-///    (before the last assistant message) — elision keeps the live round
-///    byte-for-byte, mirroring omp's cache-safe lookback window.
+/// 3. Enough compactable bytes to clear, OR any loaded sweep rule claims
+///    a completed-round result (loading a rule switches the cadence — no
+///    host knob gates it).
 ///
 /// Does NOT trigger in subagents (is_subagent=true).
 pub fn should_trigger_micro_compact(
     messages: &[Message],
     state: &MicroCompactState,
     is_subagent: bool,
+    sweep: &SweepRules,
 ) -> bool {
     if is_subagent {
         return false;
@@ -205,42 +376,7 @@ pub fn should_trigger_micro_compact(
     // Check if there are enough micro-compactable tool results to warrant clearing.
     let compactable_count = count_compactable_tool_results(messages);
     compactable_count > 0 && estimate_compactable_bytes(messages) >= state.cache_trigger_threshold
-        || (policy_read().elide_uneventful > 0 && has_elidable_uneventful_results(messages))
-}
-
-/// Any uneventful compactable result in a completed round (before the
-/// last assistant message)? The elision lane's trigger.
-fn has_elidable_uneventful_results(messages: &[Message]) -> bool {
-    let tool_use_names = collect_tool_use_names(messages);
-    let live_from = messages
-        .iter()
-        .rposition(|m| m.role == "assistant")
-        .map_or(0, |idx| idx + 1);
-    messages
-        .iter()
-        .take(live_from)
-        .flat_map(|msg| msg.content.iter())
-        .any(|block| {
-            if let ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-                content_blocks,
-                ..
-            } = block
-            {
-                tool_use_names
-                    .get(tool_use_id)
-                    .is_some_and(|name| is_micro_compactable_tool(name))
-                    && content_blocks.as_ref().is_none_or(|b| {
-                        b.iter()
-                            .all(|blk| blk.get("type").and_then(|v| v.as_str()) != Some("image"))
-                    })
-                    && is_uneventful_result(content, *is_error)
-            } else {
-                false
-            }
-        })
+        || sweep.any_script_rule_claims(messages)
 }
 
 /// Count how many tool results in messages are from micro-compactable tools.
@@ -312,100 +448,109 @@ fn collect_tool_use_names(messages: &[Message]) -> std::collections::HashMap<Str
     map
 }
 
+/// The decide/execute split's decision half: everything a pass needs to
+/// know about one candidate, computed under a read-only borrow —
+/// `(tool_use_id, replacement, bytes_saved)`. `None` = leave intact.
+fn sweep_decision_for(
+    block: &ContentBlock,
+    tool_use_names: &std::collections::HashMap<String, String>,
+    in_live_round: bool,
+    state: &MicroCompactState,
+    builtin_placeholder: &str,
+    sweep: &SweepRules,
+) -> Option<(String, String, usize)> {
+    let ContentBlock::ToolResult {
+        tool_use_id,
+        content,
+        content_blocks,
+        ..
+    } = block
+    else {
+        return None;
+    };
+    // Identity check (not placeholder-text equality): the placeholder is
+    // policy/rule-controlled; drift between passes used to make string
+    // comparison re-clear and double-count already-cleared results.
+    if state.cleared_tool_ids.contains(tool_use_id) || content == builtin_placeholder {
+        return None;
+    }
+    let view = sweep_view_of(block, tool_use_names, in_live_round)?;
+    // Size both payload holders: `content_blocks` can carry the real
+    // payload while `content` is a short fallback, and a content-only
+    // length skips clearing exactly those results.
+    let blocks_len = content_blocks
+        .as_ref()
+        .and_then(|b| serde_json::to_string(b).ok())
+        .map_or(0, |s| s.len());
+    let original_len = content.len() + blocks_len;
+    // ONE dispatch: the first claiming rule's replacement — the bare
+    // placeholder, or (keep_head/keep_tail > 0) a dsh-style
+    // head+placeholder+tail slice (errors live at a shell log's tail,
+    // hits at a search's head, so the kept ends carry exactly what a
+    // later turn re-reads for).
+    let rule = sweep.first_claim(&view)?;
+    let replacement = if rule.keep_head_chars > 0 || rule.keep_tail_chars > 0 {
+        let head = super::compact::truncate_chars(content, rule.keep_head_chars).to_string();
+        let tail = super::compact::tail_chars(content, rule.keep_tail_chars);
+        if head.len() + tail.len() >= original_len {
+            // Keeping both ends costs more than clearing saves.
+            return None;
+        }
+        format!("{head}\n{}\n{tail}", rule.placeholder)
+    } else {
+        rule.placeholder.clone()
+    };
+    if original_len <= replacement.len() {
+        return None; // Too small to benefit from clearing
+    }
+    let saved = original_len.saturating_sub(replacement.len());
+    Some((tool_use_id.clone(), replacement, saved))
+}
+
 /// Apply micro-compaction to messages.
 ///
-/// Scans for tool results from compactable tools and replaces their content
-/// with a placeholder, preserving message structure and tool_use/tool_result pairs.
+/// ONE dispatch per candidate: the resolved sweep rules (script rules in
+/// load order, then the compiled builtin rule) decide eligibility and the
+/// replacement parameters; this primitive executes the clear —
+/// idempotence, byte accounting, pairing preservation. Preserves message
+/// structure and tool_use/tool_result pairs.
 ///
 /// Returns the number of bytes cleared by this pass.
-pub fn micro_compact_messages(messages: &mut [Message], state: &mut MicroCompactState) -> usize {
+pub fn micro_compact_messages(
+    messages: &mut [Message],
+    state: &mut MicroCompactState,
+    sweep: &SweepRules,
+) -> usize {
     let tool_use_names = collect_tool_use_names(messages);
-    let knobs = policy_read();
+    let builtin_placeholder = policy_read().cleared_placeholder;
+    let live_from = messages
+        .iter()
+        .rposition(|m| m.role == "assistant")
+        .map_or(0, |idx| idx + 1);
     let mut bytes_cleared = 0usize;
 
-    for msg in messages.iter_mut() {
+    for (msg_idx, msg) in messages.iter_mut().enumerate() {
         for block in msg.content.iter_mut() {
+            // Decide (read-only borrow), then execute (mutable) — the
+            // split keeps the borrow checker and the dispatch honest.
+            let Some((tool_use_id, replacement, saved)) = sweep_decision_for(
+                block,
+                &tool_use_names,
+                msg_idx >= live_from,
+                state,
+                &builtin_placeholder,
+                sweep,
+            ) else {
+                continue;
+            };
+            bytes_cleared += saved;
+            state.cleared_tool_ids.insert(tool_use_id);
             if let ContentBlock::ToolResult {
-                tool_use_id,
                 content,
-                is_error,
                 content_blocks,
                 ..
             } = block
             {
-                let Some(tool_name) = tool_use_names.get(tool_use_id) else {
-                    continue;
-                };
-                if !is_micro_compactable_tool(tool_name) {
-                    continue;
-                }
-                // Identity check (not placeholder-text equality): the
-                // placeholder is policy-controlled; drift between passes
-                // used to make string comparison re-clear and double-count
-                // already-cleared results.
-                if state.cleared_tool_ids.contains(tool_use_id)
-                    || *content == knobs.cleared_placeholder
-                {
-                    continue;
-                }
-
-                // Size both payload holders: `content_blocks` can carry the
-                // real payload while `content` is a short fallback, and a
-                // content-only length skips clearing exactly those results.
-                let blocks_len = content_blocks
-                    .as_ref()
-                    .and_then(|b| serde_json::to_string(b).ok())
-                    .map_or(0, |s| s.len());
-                let original_len = content.len() + blocks_len;
-                // omp-style elision lane first: an uneventful result in a
-                // completed round collapses to the elision placeholder
-                // (media/error results and the live round keep the regular
-                // treatment below — failure lines are exactly what later
-                // turns re-read for).
-                let uneventful = knobs.elide_uneventful > 0
-                    && is_uneventful_result(content, *is_error)
-                    && content_blocks.as_ref().is_none_or(|b| {
-                        b.iter()
-                            .all(|blk| blk.get("type").and_then(|v| v.as_str()) != Some("image"))
-                    });
-                if uneventful && knobs.keep_head_chars == 0 && knobs.keep_tail_chars == 0 {
-                    if original_len <= knobs.elide_placeholder.len() {
-                        continue; // Too small to benefit from eliding
-                    }
-                    bytes_cleared += original_len.saturating_sub(knobs.elide_placeholder.len());
-                    state.cleared_tool_ids.insert(tool_use_id.clone());
-                    *content = knobs.elide_placeholder.clone();
-                    *content_blocks = None;
-                    continue;
-                }
-                // The replacement this pass will leave behind: the bare
-                // placeholder, or (keep_head/keep_tail > 0) a dsh-style
-                // head+placeholder+tail slice — errors live at a shell
-                // log's tail, hits at a search's head, so the kept ends
-                // carry exactly what a later turn re-reads for.
-                let replacement = if knobs.keep_head_chars > 0 || knobs.keep_tail_chars > 0 {
-                    let head =
-                        super::compact::truncate_chars(content, knobs.keep_head_chars).to_string();
-                    let tail = super::compact::tail_chars(content, knobs.keep_tail_chars);
-                    if head.len() + tail.len() >= original_len {
-                        // Keeping both ends costs more than clearing saves.
-                        continue;
-                    }
-                    let marker = if uneventful {
-                        &knobs.elide_placeholder
-                    } else {
-                        &knobs.cleared_placeholder
-                    };
-                    format!("{head}\n{marker}\n{tail}")
-                } else {
-                    knobs.cleared_placeholder.clone()
-                };
-                if original_len <= replacement.len() {
-                    continue; // Too small to benefit from clearing
-                }
-
-                bytes_cleared += original_len.saturating_sub(replacement.len());
-                state.cleared_tool_ids.insert(tool_use_id.clone());
                 *content = replacement;
                 *content_blocks = None;
             }
@@ -475,7 +620,7 @@ mod tests {
             cache_trigger_threshold: 1024,
             ..MicroCompactState::default()
         };
-        let first = micro_compact_messages(&mut messages, &mut state);
+        let first = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert!(first > 0);
         assert_eq!(state.bytes_cleared, first);
 
@@ -484,7 +629,7 @@ mod tests {
         if let ContentBlock::ToolResult { content, .. } = &mut messages[1].content[0] {
             *content = "[cleared]".to_string();
         }
-        let second = micro_compact_messages(&mut messages, &mut state);
+        let second = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert_eq!(second, 0, "already-cleared id must not re-clear on drift");
         // bytes_cleared reflects the (empty) latest pass — the trigger
         // re-arms instead of latching.
@@ -510,17 +655,19 @@ mod tests {
         let _guard = policy_test_lock();
         let state = MicroCompactState::default();
         let messages = vec![msg("user", "test")];
-        assert!(!should_trigger_micro_compact(&messages, &state, true));
+        assert!(!should_trigger_micro_compact(
+            &messages,
+            &state,
+            true,
+            &SweepRules::compiled()
+        ));
     }
 
-    /// omp-style elision lane: with `elide_uneventful` on, an uneventful
-    /// result in a completed round trips the trigger by itself; the same
-    /// result in the live round (after the last assistant message) does
-    /// not; an error-marker body never counts as uneventful.
-    #[test]
-    fn elision_trigger_fires_on_completed_uneventful_results() {
-        let _guard = policy_test_lock();
-        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
+    /// A sweep set resolved from the opt-in `elide-uneventful` mod's
+    /// compiled rule (the real port source), with the byte lane kept
+    /// quiet so only the rule's presence-cadence can fire.
+    fn elision_sweep() -> (SweepRules, MicroCompactState) {
+        use codesmith_agent::policy::{PolicyKind, publish_policies};
         use std::collections::HashMap;
         let mut set = HashMap::new();
         set.insert(
@@ -528,10 +675,33 @@ mod tests {
             serde_json::json!({
                 "cache_trigger_threshold": 999_999, // keep the byte lane quiet
                 "micro_compactable_tools": ["grep"],
-                "elide_uneventful": 1,
             }),
         );
         publish_policies(set);
+        let m = codesmith_extensions::script::RhaiMod::load_source(
+            "elide-uneventful",
+            "Elide Uneventful",
+            "0.1.0",
+            include_str!("../../../extensions/src/script/builtin/elide_uneventful.rhai")
+                .to_string(),
+            codesmith_extensions::script::ModKvStore::ephemeral(),
+            std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+        )
+        .expect("elide-uneventful compiles");
+        let runner = codesmith_extensions::ExtensionRunner::new();
+        runner.retain_mod(std::sync::Arc::new(m));
+        let rules = SweepRules::from_runner(Some(&std::sync::Arc::new(runner)));
+        (rules, MicroCompactState::default())
+    }
+
+    /// omp-style elision cadence — the rule's compiled `eligible` closure
+    /// decides: an uneventful completed-round result trips the trigger by
+    /// presence; the live round and error-marker bodies never do; with
+    /// the rule NOT loaded (compiled set), presence alone never trips.
+    #[test]
+    fn elision_rule_switches_the_trigger_by_presence() {
+        let _guard = policy_test_lock();
+        let (sweep, state) = elision_sweep();
 
         // Completed round: assistant tool_use → user result → assistant.
         let completed = vec![
@@ -539,10 +709,9 @@ mod tests {
             tool_result_msg("t1", &"hit ".repeat(200)),
             msg("assistant", "done with that search"),
         ];
-        let state = MicroCompactState::default();
         assert!(
-            should_trigger_micro_compact(&completed, &state, false),
-            "uneventful result in a completed round elides on presence"
+            should_trigger_micro_compact(&completed, &state, false, &sweep),
+            "the loaded rule claims an uneventful completed-round result"
         );
 
         // Live round only (no assistant after the result) — stays intact.
@@ -552,7 +721,7 @@ mod tests {
             tool_result_msg("t2", &"hit ".repeat(200)),
         ];
         assert!(
-            !should_trigger_micro_compact(&live, &state, false),
+            !should_trigger_micro_compact(&live, &state, false, &sweep),
             "the live round is never an elision target"
         );
 
@@ -563,39 +732,30 @@ mod tests {
             msg("assistant", "handled"),
         ];
         assert!(
-            !should_trigger_micro_compact(&failing, &state, false),
+            !should_trigger_micro_compact(&failing, &state, false, &sweep),
             "failure lines stay for later turns"
         );
 
-        // With the lane off (default), the completed-round result does not
-        // trip the trigger by presence.
-        clear_published_policies();
-        let state = MicroCompactState::default();
+        // Without the rule (the compiled set), presence alone never trips.
         assert!(
-            !should_trigger_micro_compact(&completed, &state, false),
-            "elision is opt-in"
+            !should_trigger_micro_compact(
+                &completed,
+                &MicroCompactState::default(),
+                false,
+                &SweepRules::compiled()
+            ),
+            "elision rides the loaded rule, not a host knob"
         );
+        codesmith_agent::policy::clear_published_policies();
     }
 
-    /// The elision clear: an uneventful completed-round result collapses to
-    /// the elision placeholder while an error-marker result keeps the
-    /// regular cleared placeholder.
+    /// The elision clear dispatch: the script rule's placeholder claims
+    /// the uneventful result; the error-marker result falls through to
+    /// the compiled builtin rule's placeholder.
     #[test]
-    fn elision_clear_uses_the_elide_placeholder_for_uneventful_results() {
+    fn elision_rule_claims_with_its_own_placeholder() {
         let _guard = policy_test_lock();
-        use codesmith_agent::policy::{PolicyKind, clear_published_policies, publish_policies};
-        use std::collections::HashMap;
-        let mut set = HashMap::new();
-        set.insert(
-            PolicyKind::CompactPolicy,
-            serde_json::json!({
-                "cache_trigger_threshold": 999_999,
-                "micro_compactable_tools": ["grep"],
-                "elide_uneventful": 1,
-                "elide_placeholder": "[Uneventful result elided]",
-            }),
-        );
-        publish_policies(set);
+        let (sweep, _) = elision_sweep();
 
         let mut messages = vec![
             tool_use_msg("t1", "grep", serde_json::json!({})),
@@ -613,7 +773,7 @@ mod tests {
             msg("assistant", "moving on"),
         ];
         let mut st = MicroCompactState::default();
-        let cleared = micro_compact_messages(&mut messages, &mut st);
+        let cleared = micro_compact_messages(&mut messages, &mut st, &sweep);
         assert!(cleared > 0);
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
             panic!("expected tool result");
@@ -624,7 +784,7 @@ mod tests {
         };
         assert_eq!(content, "[tool result cleared for context economy]");
 
-        clear_published_policies();
+        codesmith_agent::policy::clear_published_policies();
     }
 
     #[test]
@@ -644,7 +804,12 @@ mod tests {
         };
         state.last_assistant_message_at = Some(stale_at);
         let messages = vec![msg("user", "test")];
-        assert!(should_trigger_micro_compact(&messages, &state, false));
+        assert!(should_trigger_micro_compact(
+            &messages,
+            &state,
+            false,
+            &SweepRules::compiled()
+        ));
     }
 
     #[test]
@@ -658,7 +823,7 @@ mod tests {
         ];
         let mut state = MicroCompactState::default();
 
-        let cleared = micro_compact_messages(&mut messages, &mut state);
+        let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
 
         assert!(cleared > 0);
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
@@ -677,7 +842,7 @@ mod tests {
         ];
         let mut state = MicroCompactState::default();
 
-        let cleared = micro_compact_messages(&mut messages, &mut state);
+        let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert_eq!(cleared, 0);
 
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
@@ -696,7 +861,7 @@ mod tests {
         ];
         let mut state = MicroCompactState::default();
 
-        let cleared = micro_compact_messages(&mut messages, &mut state);
+        let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert_eq!(cleared, 0);
     }
 
@@ -710,7 +875,7 @@ mod tests {
         ];
         let mut state = MicroCompactState::default();
 
-        let cleared = micro_compact_messages(&mut messages, &mut state);
+        let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         assert_eq!(cleared, 0);
     }
 
@@ -738,7 +903,7 @@ mod tests {
         );
 
         let mut state = MicroCompactState::default();
-        let cleared = micro_compact_messages(&mut messages, &mut state);
+        let cleared = micro_compact_messages(&mut messages, &mut state, &SweepRules::compiled());
         // 4KB of blocks minus the ~42-char placeholder still clears >4KB.
         assert!(cleared >= 4_000, "cleared bytes must include the blocks");
         let ContentBlock::ToolResult {
@@ -794,7 +959,7 @@ mod tests {
             },
         ];
         let mut st = MicroCompactState::default();
-        let cleared = micro_compact_messages(&mut messages, &mut st);
+        let cleared = micro_compact_messages(&mut messages, &mut st, &SweepRules::compiled());
         // The return is bytes cleared: 100 original − 6 for "[gone]".
         assert_eq!(cleared, 94, "custom_tool result compacted");
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
@@ -842,7 +1007,7 @@ mod tests {
             },
         ];
         let mut st = MicroCompactState::default();
-        let cleared = micro_compact_messages(&mut messages, &mut st);
+        let cleared = micro_compact_messages(&mut messages, &mut st, &SweepRules::compiled());
         let ContentBlock::ToolResult { content, .. } = &messages[1].content[0] else {
             panic!("expected tool result");
         };
@@ -868,7 +1033,7 @@ mod tests {
             },
         ];
         let mut st2 = MicroCompactState::default();
-        let cleared_small = micro_compact_messages(&mut small, &mut st2);
+        let cleared_small = micro_compact_messages(&mut small, &mut st2, &SweepRules::compiled());
         assert_eq!(cleared_small, 0, "too small to benefit");
 
         clear_published_policies();

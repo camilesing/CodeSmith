@@ -273,19 +273,125 @@ pub fn keep_recent_messages_for(messages: &[Message], keep: &StrategyKeep) -> us
     }
 }
 
-/// Resolve the configured strategy against the loaded mods. `None` = the
-/// builtin algorithm. A configured name that resolves to nothing is a
-/// loud error (logged here, every attempt) that falls back to builtin —
-/// the alternative, wedging compaction over a config typo, is worse. The
-/// strategy set is session state (mods load/reload around config), so
-/// unlike `turn_executor` this cannot be validated at config-load time.
+/// The unified decision unit every compaction attempt runs through —
+/// ONE call path in the host. "Which way compaction behaves" is decided
+/// by *which compiled unit resolves*, never by branching at the call
+/// site: the builtin algorithm ships as [`CompiledBuiltinDecisions`]
+/// (compiled into the binary), a mod's `register_compaction_strategy`
+/// lands as a load-time-compiled script unit, and both answer the same
+/// two questions over the same inputs.
+pub trait CompactionDecisions: Send + Sync {
+    /// Status/observability label (the unit's name — "builtin" or the
+    /// registered strategy name).
+    fn label(&self) -> String;
+    /// Whether this attempt should fire. Errors inside a script unit are
+    /// the unit's own loud-then-fallback concern (`false` after logging).
+    fn trigger(
+        &self,
+        snapshot: &Value,
+        messages: &[Message],
+        config: &CompactionConfig,
+        workspace: Option<&std::path::Path>,
+    ) -> bool;
+    /// The boundary + summary directives for this attempt. Never fails:
+    /// a rejected script plan falls back to the builtin boundary (the
+    /// trigger already decided compaction is needed).
+    fn plan(&self, snapshot: &Value) -> StrategyDirectives;
+}
+
+/// The builtin algorithm as a decision unit: the pre-seam formulas
+/// (`should_compact`'s token gate, the `KEEP_RECENT_MESSAGES` tail).
+/// Equivalence is pinned by test against those free functions, which
+/// remain the other internal consumers' path (capacity, recovery).
+pub struct CompiledBuiltinDecisions;
+
+impl CompactionDecisions for CompiledBuiltinDecisions {
+    fn label(&self) -> String {
+        BUILTIN_COMPACTION_STRATEGY.to_string()
+    }
+
+    fn trigger(
+        &self,
+        _snapshot: &Value,
+        messages: &[Message],
+        config: &CompactionConfig,
+        workspace: Option<&std::path::Path>,
+    ) -> bool {
+        super::should_compact(messages, config, workspace, None, None)
+    }
+
+    fn plan(&self, _snapshot: &Value) -> StrategyDirectives {
+        StrategyDirectives::builtin_fallback(BUILTIN_COMPACTION_STRATEGY)
+    }
+}
+
+/// A mod-registered strategy (`register_compaction_strategy`) wrapped in
+/// the unified interface — the script closures are compiled at load;
+/// invoking them here is the only thing that differs from builtin.
+pub struct ScriptDecisions {
+    strategy: codesmith_extensions::script::ScriptCompactionStrategy,
+}
+
+impl ScriptDecisions {
+    #[must_use]
+    pub fn new(strategy: codesmith_extensions::script::ScriptCompactionStrategy) -> Self {
+        Self { strategy }
+    }
+}
+
+impl CompactionDecisions for ScriptDecisions {
+    fn label(&self) -> String {
+        self.strategy.name.clone()
+    }
+
+    fn trigger(
+        &self,
+        snapshot: &Value,
+        _messages: &[Message],
+        _config: &CompactionConfig,
+        _workspace: Option<&std::path::Path>,
+    ) -> bool {
+        self.strategy.call_trigger(snapshot).unwrap_or_else(|err| {
+            tracing::error!(
+                target: "compaction",
+                "strategy {:?} trigger failed: {err} — treating as not-triggered",
+                self.strategy.name
+            );
+            false
+        })
+    }
+
+    fn plan(&self, snapshot: &Value) -> StrategyDirectives {
+        self.strategy
+            .call_plan(snapshot)
+            .and_then(|plan| interpret_plan(plan, &self.strategy.name))
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    target: "compaction",
+                    "strategy {:?} plan rejected ({err}) — using the builtin boundary",
+                    self.strategy.name
+                );
+                StrategyDirectives::builtin_fallback(&self.strategy.name)
+            })
+    }
+}
+
+/// Resolve the configured strategy into ONE decision unit — the single
+/// construction-time dispatch (never a call-site branch). `"builtin"` /
+/// empty / no mod system / an unregistered name all resolve to the
+/// compiled builtin unit; an unregistered name is a loud per-attempt
+/// error (logged here) first — a config typo must not wedge compaction.
+/// The strategy set is session state (mods load/reload around config),
+/// so unlike `turn_executor` this cannot be validated at config-load
+/// time.
 #[must_use]
 pub fn resolve_configured(
     runner: Option<&Arc<ExtensionRunner>>,
     config: &CompactionConfig,
-) -> Option<codesmith_extensions::script::ScriptCompactionStrategy> {
+) -> Arc<dyn CompactionDecisions> {
+    let compiled = || Arc::new(CompiledBuiltinDecisions) as Arc<dyn CompactionDecisions>;
     if config.strategy == BUILTIN_COMPACTION_STRATEGY || config.strategy.is_empty() {
-        return None;
+        return compiled();
     }
     let Some(runner) = runner else {
         tracing::error!(
@@ -294,10 +400,10 @@ pub fn resolve_configured(
              using the builtin algorithm",
             config.strategy
         );
-        return None;
+        return compiled();
     };
     match runner.compaction_strategy(&config.strategy) {
-        Some(strategy) => Some(strategy),
+        Some(strategy) => Arc::new(ScriptDecisions::new(strategy)),
         None => {
             tracing::error!(
                 target: "compaction",
@@ -307,7 +413,7 @@ pub fn resolve_configured(
                 config.strategy,
                 runner.compaction_strategy_names()
             );
-            None
+            compiled()
         }
     }
 }
@@ -315,6 +421,47 @@ pub fn resolve_configured(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The compiled builtin unit IS the pre-seam formulas — pinned by
+    /// running both over a trigger matrix. `should_compact` stays the
+    /// other internal consumers' path (capacity, recovery), so drift
+    /// between the two would split the engine's compaction story.
+    #[test]
+    fn compiled_builtin_decisions_match_the_rust_formulas() {
+        let unit = CompiledBuiltinDecisions;
+        let configs = [
+            CompactionConfig {
+                token_threshold: 100,
+                auto_floor_tokens: 0,
+                ..CompactionConfig::default()
+            },
+            CompactionConfig {
+                token_threshold: 50,
+                auto_floor_tokens: 1_000_000,
+                ..CompactionConfig::default()
+            },
+            CompactionConfig::default(),
+        ];
+        for config in &configs {
+            for rounds in [0usize, 1, 3, 8, 20] {
+                let messages = history(rounds);
+                let snap = snapshot(&messages, config);
+                assert_eq!(
+                    unit.trigger(&snap, &messages, config, None),
+                    super::super::should_compact(&messages, config, None, None, None),
+                    "trigger equivalence at {rounds} rounds / threshold {}",
+                    config.token_threshold,
+                );
+            }
+        }
+        // The compiled unit's plan is the builtin tail.
+        let directives = unit.plan(&serde_json::json!({}));
+        assert_eq!(
+            directives.keep,
+            StrategyKeep::Messages(super::KEEP_RECENT_MESSAGES)
+        );
+        assert_eq!(unit.label(), BUILTIN_COMPACTION_STRATEGY);
+    }
 
     fn user_msg(text: &str) -> Message {
         Message {

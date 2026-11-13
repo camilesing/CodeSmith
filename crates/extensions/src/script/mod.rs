@@ -40,4 +40,4 @@ pub use adapters::{ScriptCommandDefinition, ScriptHandler, ScriptToolDefinition}
 pub use builtin::{BUILTIN_MODS, BuiltinMod, builtin_policy_defaults, load_builtin_mods};
 pub use kv::ModKvStore;
 pub use mod_manifest::{DiscoveredMod, ModManifest, apply_mod_trust_gate, discover_mods};
-pub use rhai_mod::{RhaiMod, ScriptCompactionStrategy};
+pub use rhai_mod::{RhaiMod, ScriptCompactionStrategy, ScriptSweepRule};

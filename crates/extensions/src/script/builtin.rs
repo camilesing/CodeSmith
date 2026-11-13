@@ -194,6 +194,17 @@ pub const BUILTIN_MODS: &[BuiltinMod] = &[
         source: include_str!("builtin/verify_loop.rhai"),
         opt_in: true,
     },
+    // --- opt-in builtin sweep rules (micro-compaction ports; loading the
+    // rule IS the behavior switch) ---
+    BuiltinMod {
+        id: "elide-uneventful",
+        version: "0.1.0",
+        description: "omp-style per-turn elision: uneventful results in \
+                      completed rounds collapse on their presence alone; \
+                      the live round stays byte-for-byte",
+        source: include_str!("builtin/elide_uneventful.rhai"),
+        opt_in: true,
+    },
 ];
 
 /// Compile + run the builtin tier against the runner (used by the host's

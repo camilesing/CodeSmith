@@ -2843,9 +2843,13 @@ impl Engine {
             match action {
                 ResponsiveCompactAction::MicroCompact => {
                     let mut messages = self.session.messages.to_vec();
+                    let sweep = crate::compaction::micro_compact::SweepRules::from_runner(
+                        self.extension_runner.as_ref(),
+                    );
                     let bytes = crate::compaction::micro_compact::micro_compact_messages(
                         &mut messages,
                         &mut self.session.micro_compact_state,
+                        &sweep,
                     );
                     if bytes > 0 {
                         self.rebuild_transcript(RebuildReason::MicroCompaction, messages);

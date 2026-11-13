@@ -2621,10 +2621,15 @@ impl HostAgentExecutor {
         // `&[Message]` (immutable), so clone → mutate → audited
         // `replace_all` swap.
         {
+            // Sweep rules resolved per pass from the loaded mods (a
+            // `/mods reload` takes effect on the next pass); the compiled
+            // builtin rule rides last.
+            let sweep =
+                crate::compaction::micro_compact::SweepRules::from_runner(self.extension.as_ref());
             let mut state = probe.micro_state.lock().expect("poisoned");
-            if should_trigger_micro_compact(&history.messages(), &state, false) {
+            if should_trigger_micro_compact(&history.messages(), &state, false, &sweep) {
                 let mut msgs = history.messages().to_vec();
-                let cleared = micro_compact_messages(&mut msgs, &mut state);
+                let cleared = micro_compact_messages(&mut msgs, &mut state, &sweep);
                 if cleared > 0 {
                     // Feed the fact ledger from the tool-result bodies this
                     // clear is about to erase (constraint docs read long ago
@@ -2658,65 +2663,32 @@ impl HostAgentExecutor {
             }
         }
 
-        // Phase 2 — auto-compaction (LLM summary). Gate on the configured
-        // strategy: the builtin algorithm asks `should_compact` (mirrors
-        // the retired turn handler) BEFORE calling `compact_messages_safe`
-        // (the safe wrapper does NOT early-return when under threshold, so
-        // without this gate it would summarize an in-budget transcript).
-        // A mod-registered strategy (`[compaction] strategy`, docs/MODS.md)
-        // owns the trigger/plan decisions instead — over a host-built
-        // snapshot, with the host gates (floor, minimum messages) still
-        // applied and every immune-zone invariant enforced downstream. A
-        // strategy resolution error is loud and falls back to builtin
-        // (compaction is a safety mechanism; a config typo must not wedge
-        // it).
+        // Phase 2 — auto-compaction (LLM summary). ONE call path: resolve
+        // the configured decision unit (`[compaction] strategy` → a
+        // load-time-compiled script strategy, or the compiled builtin
+        // unit), then ask it the same two questions every unit answers —
+        // trigger over a host-built snapshot (host gates: floor, minimum
+        // messages, still applied; immune zone enforced downstream), plan
+        // for the boundary + summary directives. `compact_messages_safe`
+        // does NOT early-return when under threshold, so the gate stays
+        // here (mirrors the retired turn handler). Resolution failure is
+        // loud and lands on the compiled builtin unit (compaction is a
+        // safety mechanism; a config typo must not wedge it).
         let strategy =
             crate::compaction::strategy::resolve_configured(self.extension.as_ref(), &probe.config);
-        let directives = match &strategy {
-            Some(strategy) => {
-                let snapshot =
-                    crate::compaction::strategy::snapshot(&history.messages(), &probe.config);
-                let fired = crate::compaction::strategy::host_trigger_gates(
-                    &history.messages(),
-                    &probe.config,
-                ) && strategy.call_trigger(&snapshot).unwrap_or_else(|err| {
-                    tracing::error!(
-                        target: "compaction",
-                        "strategy {:?} trigger failed: {err} — treating as not-triggered",
-                        strategy.name
-                    );
-                    false
-                });
-                if !fired {
-                    return;
-                }
-                let directives = strategy.call_plan(&snapshot).and_then(|plan| {
-                    crate::compaction::strategy::interpret_plan(plan, &strategy.name)
-                });
-                Some(directives.unwrap_or_else(|err| {
-                    tracing::warn!(
-                        target: "compaction",
-                        "strategy {:?} plan rejected ({err}) — using the builtin boundary",
-                        strategy.name
-                    );
-                    crate::compaction::strategy::StrategyDirectives::builtin_fallback(
-                        &strategy.name,
-                    )
-                }))
-            }
-            None => {
-                if !should_compact(
+        let snapshot = crate::compaction::strategy::snapshot(&history.messages(), &probe.config);
+        let fired =
+            crate::compaction::strategy::host_trigger_gates(&history.messages(), &probe.config)
+                && strategy.trigger(
+                    &snapshot,
                     &history.messages(),
                     &probe.config,
                     Some(&probe.workspace),
-                    None,
-                    None,
-                ) {
-                    return;
-                }
-                None
-            }
-        };
+                );
+        if !fired {
+            return;
+        }
+        let directives = Arc::new(strategy.plan(&snapshot));
         // §F2b T3 — `SessionBeforeCompact` lets an extension veto
         // compaction (Cancel → skip the summary call entirely). The veto
         // runs BEFORE the refill detector records the trigger: a vetoed
@@ -2762,21 +2734,11 @@ impl HostAgentExecutor {
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
         let messages = history.messages().to_vec();
-        let strategy_directives = directives.map(Arc::new);
-        let enhancements = probe
-            .fact_ledger
-            .as_ref()
-            .map(|ledger| CompactionEnhancements {
-                fact_ledger: Some(Arc::clone(ledger)),
-                strategy: strategy_directives.clone(),
-                ..CompactionEnhancements::default()
-            })
-            .or_else(|| {
-                strategy_directives.map(|d| CompactionEnhancements {
-                    strategy: Some(d),
-                    ..CompactionEnhancements::default()
-                })
-            });
+        let enhancements = Some(CompactionEnhancements {
+            fact_ledger: probe.fact_ledger.clone(),
+            strategy: Some(directives),
+            ..CompactionEnhancements::default()
+        });
         match compact_messages_safe(
             client.as_ref(),
             &messages,
@@ -2857,14 +2819,10 @@ impl HostAgentExecutor {
                     .lock()
                     .expect("poisoned")
                     .record_compaction(step);
-                let strategy_note = enhancements
-                    .as_ref()
-                    .and_then(|e| e.strategy.as_deref())
-                    .map(|d| format!(", strategy {}", d.name))
-                    .unwrap_or_default();
                 self.emit_status(format!(
-                    "Compaction completed ({} messages after{strategy_note})",
-                    history.len()
+                    "Compaction completed ({} messages after, strategy {})",
+                    history.len(),
+                    strategy.label()
                 ))
                 .await;
             }
@@ -3203,9 +3161,11 @@ impl HostAgentExecutor {
         // is present), so a second pass with fresh state re-examines all
         // messages but only clears content that hasn't been cleared yet.
         {
+            let sweep =
+                crate::compaction::micro_compact::SweepRules::from_runner(self.extension.as_ref());
             let mut msgs = history.messages().to_vec();
             let mut local_state = MicroCompactState::default();
-            let cleared = micro_compact_messages(&mut msgs, &mut local_state);
+            let cleared = micro_compact_messages(&mut msgs, &mut local_state, &sweep);
             if cleared > 0 {
                 if let Some(ledger) = probe.fact_ledger() {
                     accumulate_cleared_facts(ledger, &probe.workspace, &history.messages(), &msgs);

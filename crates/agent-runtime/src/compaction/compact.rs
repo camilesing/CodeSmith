@@ -714,19 +714,34 @@ pub struct CompactionEnhancements {
     pub strategy: Option<Arc<crate::compaction::strategy::StrategyDirectives>>,
 }
 
-/// The `keep_recent` message count for this attempt: the strategy's
-/// interpreted keep spec, or the builtin [`KEEP_RECENT_MESSAGES`] tail.
+/// The `keep_recent` message count for this attempt — ONE path: the
+/// resolved decision unit's keep spec, converted whole-round-safe.
+/// Engine callers inject the unit's directives via `enhancements`;
+/// everyone else (and a missing slot) resolves to the compiled builtin
+/// unit's directives, so the conversion never branches.
 fn effective_keep_recent(
     messages: &[Message],
     enhancements: Option<&CompactionEnhancements>,
 ) -> usize {
-    match enhancements
-        .and_then(|e| e.strategy.as_ref())
-        .map(|d| crate::compaction::strategy::keep_recent_messages_for(messages, &d.keep))
-    {
-        Some(n) => n,
-        None => KEEP_RECENT_MESSAGES,
-    }
+    let directives = resolved_directives(enhancements);
+    crate::compaction::strategy::keep_recent_messages_for(messages, &directives.keep)
+}
+
+/// The directives in force for a compaction pipeline call — the
+/// strategy slot when the engine injected one, else the compiled
+/// builtin unit's (both are decision-unit outputs; there is no third
+/// branch).
+fn resolved_directives(
+    enhancements: Option<&CompactionEnhancements>,
+) -> crate::compaction::strategy::StrategyDirectives {
+    enhancements
+        .and_then(|e| e.strategy.as_deref())
+        .cloned()
+        .unwrap_or_else(|| {
+            crate::compaction::strategy::StrategyDirectives::builtin_fallback(
+                crate::compaction::strategy::BUILTIN_COMPACTION_STRATEGY,
+            )
+        })
 }
 
 impl std::fmt::Debug for CompactionEnhancements {
@@ -1033,6 +1048,8 @@ pub async fn compact_messages_safe(
             external_pins,
             external_working_set_paths,
             &fact_ledger_section,
+            // `compact_messages` resolves a missing slot to the compiled
+            // builtin unit's directives itself — no branch here.
             enhancements.and_then(|e| e.strategy.as_deref()),
         )
         .await
@@ -1157,10 +1174,17 @@ pub async fn compact_messages(
         return Ok((Vec::new(), None, Vec::new(), 0));
     }
 
-    let keep_recent = match directives {
-        Some(d) => crate::compaction::strategy::keep_recent_messages_for(messages, &d.keep),
-        None => KEEP_RECENT_MESSAGES,
-    };
+    // ONE path: the decision unit's directives drive the boundary (a
+    // missing slot resolves to the compiled builtin unit's — there is no
+    // second branch).
+    let directives = directives.cloned().unwrap_or_else(|| {
+        crate::compaction::strategy::StrategyDirectives::builtin_fallback(
+            crate::compaction::strategy::BUILTIN_COMPACTION_STRATEGY,
+        )
+    });
+    let directives = &directives;
+    let keep_recent =
+        crate::compaction::strategy::keep_recent_messages_for(messages, &directives.keep);
     let plan = plan_compaction(
         messages,
         workspace,
@@ -1184,16 +1208,27 @@ pub async fn compact_messages(
     // right-sized but wrong-shaped" failure the ledger cannot fix. The
     // deterministic sections (ledger, failed attempts) ride regardless.
     let window = window_tokens_for_config(config);
-    let mut summary_result =
-        create_summary_for_window(client, &to_summarize, &config.model, window, directives).await?;
+    let mut summary_result = create_summary_for_window(
+        client,
+        &to_summarize,
+        &config.model,
+        window,
+        Some(directives),
+    )
+    .await?;
     if summary_section_count(&summary_result.text) < LAYERED_SUMMARY_HEADERS.len() {
         tracing::warn!(
             target: "compaction",
             "summary missing layered sections; retrying once with a fresh draw"
         );
-        if let Ok(second) =
-            create_summary_for_window(client, &to_summarize, &config.model, window, directives)
-                .await
+        if let Ok(second) = create_summary_for_window(
+            client,
+            &to_summarize,
+            &config.model,
+            window,
+            Some(directives),
+        )
+        .await
             && summary_section_count(&second.text) > summary_section_count(&summary_result.text)
         {
             summary_result = second;

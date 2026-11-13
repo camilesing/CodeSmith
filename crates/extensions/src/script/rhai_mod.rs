@@ -105,6 +105,24 @@ pub enum ScriptRegistration {
         /// strategy`).
         plan: rhai::FnPtr,
     },
+    /// A micro-compaction sweep rule captured by the
+    /// `register_sweep_rule(name, spec)` native — the "sweep before move"
+    /// layer's eligibility *code*. The `eligible` closure (compiled at
+    /// load) decides which old tool results a pass may clear and the rule's
+    /// replacement parameters; the host owns the clearing primitive
+    /// (replacement execution, byte accounting, idempotence, pairing —
+    /// see `codesmith_agent_runtime::compaction::micro_compact`).
+    SweepRule {
+        name: String,
+        /// `|view| -> bool` — pure eligibility over a host-built result
+        /// view (`#{tool, is_error, has_media, content_chars,
+        /// content_head, in_live_round}`).
+        eligible: rhai::FnPtr,
+        /// What a swept result collapses to (around any kept head/tail).
+        placeholder: String,
+        keep_head_chars: usize,
+        keep_tail_chars: usize,
+    },
     Tool {
         name: String,
         description: String,
@@ -1299,6 +1317,90 @@ fn register_natives(
         },
     );
 
+    // register_sweep_rule(name, spec_map) — declare a micro-compaction
+    // sweep rule ("sweep before move"): the compiled `eligible` closure
+    // decides which old tool results a pass may clear; `placeholder` (+
+    // optional keep_head_chars / keep_tail_chars) is what a swept result
+    // collapses to. The host owns the clearing primitive — replacement
+    // execution, byte accounting, idempotence, the time/byte trigger
+    // cadence, pairing. Loading a rule IS the switch: an opt-in mod that
+    // registers one changes micro-compaction's behavior the moment it
+    // loads (docs/MODS.md). Captured at load; duplicate name within this
+    // mod fails. Not replayed at `configure` — the micro-compaction pass
+    // consumes the registration directly.
+    let cell_sweep = Arc::clone(cell);
+    engine.register_fn(
+        "register_sweep_rule",
+        move |name: &str, spec: rhai::Map| -> Result<(), Box<rhai::EvalAltResult>> {
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Err(script_error(format!(
+                    "register_sweep_rule(): name {name:?} must match [a-zA-Z0-9_-] and be 1-64 chars"
+                )));
+            }
+            let eligible = spec
+                .get("eligible")
+                .cloned()
+                .and_then(|d| d.try_cast::<rhai::FnPtr>())
+                .ok_or_else(|| {
+                    script_error(
+                        "register_sweep_rule(): spec must include an `eligible` closure",
+                    )
+                })?;
+            let placeholder = spec
+                .get("placeholder")
+                .cloned()
+                .and_then(|d| d.try_cast::<String>())
+                .ok_or_else(|| {
+                    script_error(
+                        "register_sweep_rule(): spec must include a string `placeholder`",
+                    )
+                })?;
+            if placeholder.chars().count() > 512 {
+                return Err(script_error(
+                    "register_sweep_rule(): placeholder exceeds 512 chars",
+                ));
+            }
+            let knob = |field: &str| -> Result<usize, Box<rhai::EvalAltResult>> {
+                match spec.get(field).cloned() {
+                    None => Ok(0),
+                    Some(d) if d.is_unit() => Ok(0),
+                    Some(v) => v
+                        .try_cast::<rhai::INT>()
+                        .filter(|n| *n >= 0)
+                        .map(|n| n.min(64 * 1024) as usize)
+                        .ok_or_else(|| {
+                            script_error(format!(
+                                "register_sweep_rule(): `{field}` must be a non-negative integer"
+                            ))
+                        }),
+                }
+            };
+            let keep_head_chars = knob("keep_head_chars")?;
+            let keep_tail_chars = knob("keep_tail_chars")?;
+            let mut cell = cell_sweep.lock().expect("mod registration cell poisoned");
+            if cell.iter().any(|reg| {
+                matches!(reg, ScriptRegistration::SweepRule { name: n, .. } if n == name)
+            }) {
+                return Err(script_error(format!(
+                    "register_sweep_rule(): name {name:?} already registered in this mod — pick a new name"
+                )));
+            }
+            cell.push(ScriptRegistration::SweepRule {
+                name: name.to_string(),
+                eligible,
+                placeholder,
+                keep_head_chars,
+                keep_tail_chars,
+            });
+            Ok(())
+        },
+    );
+
     // register_guard(callback) — route B (1.2 alignment): a deny-only tool
     // guard (the general agent's `ctx.tools.guard()`). The closure takes the tool-call
     // payload (`|e|` — `#{kind, id, name, input}`, same shape as a
@@ -1751,6 +1853,35 @@ impl RhaiMod {
             .collect()
     }
 
+    /// The sweep rules this mod registered (`register_sweep_rule`), in
+    /// registration order — the host's micro-compaction pass resolves its
+    /// rule set through this (via
+    /// [`ExtensionRunner::sweep_rules`](crate::ExtensionRunner::sweep_rules)).
+    #[must_use]
+    pub fn sweep_rules(&self) -> Vec<ScriptSweepRule> {
+        self.registrations
+            .iter()
+            .filter_map(|reg| match reg {
+                ScriptRegistration::SweepRule {
+                    name,
+                    eligible,
+                    placeholder,
+                    keep_head_chars,
+                    keep_tail_chars,
+                } => Some(ScriptSweepRule {
+                    name: name.clone(),
+                    mod_id: self.metadata.id.to_string(),
+                    runtime: Arc::clone(&self.runtime),
+                    eligible: eligible.clone(),
+                    placeholder: placeholder.clone(),
+                    keep_head_chars: *keep_head_chars,
+                    keep_tail_chars: *keep_tail_chars,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Build a fresh engine for a loop-execution run: the mod's native
     /// surface (KV, control values, projections) rebuilt on a private
     /// engine — the shared runtime engine is `Arc` and cannot carry the
@@ -1997,6 +2128,12 @@ impl Extension for RhaiMod {
                     // here — there is no `ExtensionApi` surface for a
                     // strategy.
                 }
+                ScriptRegistration::SweepRule { .. } => {
+                    // Consumed by the micro-compaction pass (resolved
+                    // through `ExtensionRunner::sweep_rules`), never
+                    // replayed here — there is no `ExtensionApi` surface
+                    // for a sweep rule.
+                }
             }
         }
         Ok(())
@@ -2055,6 +2192,48 @@ impl ScriptCompactionStrategy {
 impl std::fmt::Debug for ScriptCompactionStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScriptCompactionStrategy")
+            .field("name", &self.name)
+            .field("mod_id", &self.mod_id)
+            .finish()
+    }
+}
+
+/// A host-invocable sweep rule registered by a mod
+/// (`register_sweep_rule`). The `eligible` closure stays resolved through
+/// the mod's shared runtime; callers drive it through [`Self::eligible`]
+/// with a plain JSON view in / bool out. The replacement parameters
+/// (`placeholder`, head/tail keeps) are data the host's clearing
+/// primitive consumes.
+#[derive(Clone)]
+pub struct ScriptSweepRule {
+    pub name: String,
+    pub mod_id: String,
+    runtime: Arc<ScriptRuntime>,
+    eligible: rhai::FnPtr,
+    pub placeholder: String,
+    pub keep_head_chars: usize,
+    pub keep_tail_chars: usize,
+}
+
+impl ScriptSweepRule {
+    /// Invoke the eligibility closure against a result view (the
+    /// host-built `#{tool, is_error, has_media, content_chars,
+    /// content_head, in_live_round}` map). `Err` is a script error; the
+    /// host treats it as "not eligible" after logging loudly.
+    pub fn eligible(&self, view: &serde_json::Value) -> Result<bool, String> {
+        let arg = json_to_dynamic(view);
+        let ret = self
+            .eligible
+            .call::<Dynamic>(&self.runtime.engine, &self.runtime.ast, (arg,))
+            .map_err(|e| format!("eligible: {e}"))?;
+        ret.try_cast::<bool>()
+            .ok_or_else(|| "eligible: closure must return a bool".to_string())
+    }
+}
+
+impl std::fmt::Debug for ScriptSweepRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptSweepRule")
             .field("name", &self.name)
             .field("mod_id", &self.mod_id)
             .finish()
@@ -2135,6 +2314,7 @@ mod tests {
                     ScriptRegistration::Policy { kind, .. } => format!("y:{:?}", kind),
                     ScriptRegistration::Loop { entry } => format!("l:{entry}"),
                     ScriptRegistration::CompactionStrategy { name, .. } => format!("z:{name}"),
+                    ScriptRegistration::SweepRule { name, .. } => format!("w:{name}"),
                     ScriptRegistration::DisableCommand { name } => format!("d:{name}"),
                 })
                 .collect::<Vec<_>>()
@@ -2470,6 +2650,104 @@ mod tests {
             .expect("registered")
             .call_trigger(&serde_json::json!({ "total_tokens": 1 }))
             .expect_err("non-bool trigger must be an error");
+        assert!(err.contains("bool"), "error names the expected type: {err}");
+    }
+
+    // === register_sweep_rule (micro-compaction's compiled eligibility) =======
+
+    /// Rules register at load and invoke with plain JSON views; the knobs
+    /// ride along as data for the host's clearing primitive.
+    #[test]
+    fn register_sweep_rule_captures_and_invokes() {
+        let m = RhaiMod::load_source(
+            "sweep-mod",
+            "Sweep",
+            "0.1.0",
+            r#"
+                register_sweep_rule("uneventful", #{
+                    eligible: |r| !r.in_live_round && !r.is_error,
+                    placeholder: "[gone]",
+                    keep_head_chars: 4096,
+                    keep_tail_chars: 1024,
+                });
+            "#
+            .to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load");
+        let rules = m.sweep_rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "uneventful");
+        assert_eq!(rules[0].placeholder, "[gone]");
+        assert_eq!(rules[0].keep_head_chars, 4096);
+        assert_eq!(rules[0].keep_tail_chars, 1024);
+        let completed = serde_json::json!({
+            "tool": "grep", "is_error": false, "has_media": false,
+            "content_chars": 900, "content_head": "hits", "in_live_round": false,
+        });
+        assert!(rules[0].eligible(&completed).expect("eligible"));
+        let live = serde_json::json!({
+            "tool": "grep", "is_error": false, "has_media": false,
+            "content_chars": 900, "content_head": "hits", "in_live_round": true,
+        });
+        assert!(!rules[0].eligible(&live).expect("eligible"));
+    }
+
+    /// Bad specs fail the load at capture (fail loud at the earliest
+    /// point): a missing `eligible` closure, a missing `placeholder`, a
+    /// negative knob, and a duplicate name.
+    #[test]
+    fn register_sweep_rule_rejects_bad_specs() {
+        for (label, source) in [
+            (
+                "missing eligible",
+                r#"register_sweep_rule("s", #{ placeholder: "x" });"#,
+            ),
+            (
+                "missing placeholder",
+                r#"register_sweep_rule("s", #{ eligible: |r| true });"#,
+            ),
+            (
+                "negative knob",
+                r#"register_sweep_rule("s", #{ eligible: |r| true, placeholder: "x", keep_head_chars: -1 });"#,
+            ),
+            (
+                "duplicate name",
+                r#"
+                    register_sweep_rule("s", #{ eligible: |r| true, placeholder: "x" });
+                    register_sweep_rule("s", #{ eligible: |r| true, placeholder: "x" });
+                "#,
+            ),
+        ] {
+            let m = RhaiMod::load_source(
+                "sweep-bad",
+                "Bad",
+                "0.1.0",
+                source.to_string(),
+                ModKvStore::ephemeral(),
+                hub(),
+            );
+            assert!(m.is_err(), "{label} must fail the load");
+        }
+    }
+
+    /// A non-bool `eligible` return is a call-time error the host turns
+    /// into "not eligible" (after logging loudly).
+    #[test]
+    fn sweep_rule_eligible_type_error_surfaces_as_err() {
+        let m = RhaiMod::load_source(
+            "sweep-bad-return",
+            "Bad",
+            "0.1.0",
+            r#"register_sweep_rule("s", #{ eligible: |r| "yes", placeholder: "x" });"#.to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        )
+        .expect("load");
+        let err = m.sweep_rules()[0]
+            .eligible(&serde_json::json!({}))
+            .expect_err("non-bool eligible must be an error");
         assert!(err.contains("bool"), "error names the expected type: {err}");
     }
 

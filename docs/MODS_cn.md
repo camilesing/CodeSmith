@@ -34,6 +34,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
 | turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 通用 Agent `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
 | 压缩策略 | ✓ `register_compaction_strategy`（trigger + plan 纯决策） | ✓（opt-in 移植经 `[compaction] strategy` 选择） | — | mod 拥有*决策*（何时压缩、保留多少、摘要指令）；宿主拥有*效果*与免疫区（配对不变量、系统提示前缀、append-only 存储、摘要 LLM 调用、断路器）。选择：config `[compaction] strategy = "builtin" \| "<name>"`（见"编写压缩策略"） |
+| 压缩清扫规则（micro-compact 资格判定） | ✓ `register_sweep_rule`（编译的 `eligible` 闭包 + 替换参数） | ✓（opt-in 移植；装载规则即切换） | — | 编译闭包决定一次清扫可清哪些旧工具结果（其存在还改变清扫节奏）；宿主拥有清扫原语（替换执行、字节计量、幂等、配对）与时间/字节触发基线 |
 | `BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建） |
 
 经验法则：**逻辑与数据 → Rhai**（免重编译、consent 门控、以"无 I/O 原生
@@ -265,10 +266,10 @@ register_policy("shell-output", #{
   `summary_max_chars`、`preserved_summary_lines`、`preserved_line_bytes`、
   `preserved_total_bytes`）、`compact-policy`（`cache_trigger_threshold`、
   `time_trigger_gap_secs`、`micro_compactable_tools`、
-  `cleared_placeholder`、`keep_head_chars`、`keep_tail_chars`（dsh 式
-  部分清除——清除后围绕占位符保留的头/尾字符）、`elide_uneventful`、
-  `elide_placeholder`（omp 式逐轮淘汰——已完成轮次中成功且无媒体的
-  结果凭存在即折叠；活动轮次逐字保留）—— 压缩引擎本体留在 Rust；摘要提示词由多个会话
+  `cleared_placeholder`、`keep_head_chars`、`keep_tail_chars`（编译
+  内建清扫规则的替换参数——清除后围绕占位符保留的头/尾字符；omp 式
+  逐轮淘汰现为编译清扫规则 `register_sweep_rule`，不再是旋钮）
+  —— 压缩引擎本体留在 Rust；摘要提示词由多个会话
   来源合并而成、并非单一模板，故不进此接缝）、`large-output-route`
   （`threshold_tokens`、`per_tool` —— 路由决策；utility LLM 综合调用留在
   Rust。显式 `[workshop]` TOML（`large_output_threshold_tokens` /
@@ -326,6 +327,8 @@ register_policy("shell-output", #{
     `[rhai_loop] mod = "goal-loop"`）。
   - `verify-loop`——omp diagnosticsOnWrite 的 loop 脚本形态：编辑批次
     后立即跑一批 `diagnostics`（与 `goal-loop` 同三键启用）。
+  - `elide-uneventful`——omp 逐轮淘汰的编译清扫规则形态：已完结轮次的
+    无事件结果凭存在即折叠；活动轮次逐字保留（见"清扫规则"）。
 
 ### 停用一个内建斜杠命令
 
@@ -636,6 +639,35 @@ register_compaction_strategy("compact-pi", #{
   与恢复压缩保持内建阈值；摘要请求*形状*（cache 对齐 vs 格式化）归
   宿主。已知限制写在接缝旁
   （`crates/agent-runtime/src/compaction/strategy.rs`）。
+- **单一调用路径。** 内建算法本身也是一个决策单元
+  （`CompiledBuiltinDecisions` —— 编译公式，等价性由测试钉死）；
+  `"builtin"` / 未知名 / 无 mod 系统都解析到它。引擎的 `run_compaction`
+  从不按"拿到哪个单元"分支——解析出一个 `CompactionDecisions`，问它
+  同样两个问题。切换行为 = 换编译单元，不是切代码路径。
+
+## 清扫规则（micro-compaction 的资格判定）
+
+`register_sweep_rule(name, spec)` 让"先扫后搬"层的资格判定成为
+**编译代码**：`eligible` 闭包决定一次清扫可清哪些旧工具结果，且规则的
+存在本身改变清扫节奏（已完结轮次的结果被认领即触发——Rust 里没有任何
+开关旋钮）。宿主拥有清扫原语：替换执行、字节计量、幂等、配对，以及
+时间/字节触发基线。
+
+```rhai
+register_sweep_rule("uneventful", #{
+    // view: #{ tool, is_error, has_media, content_chars,
+    //         content_head（小写、≤512 字符）, in_live_round }
+    eligible: |r| !r.in_live_round && !r.is_error && !r.has_media,
+    placeholder: "[Uneventful result elided]",
+    keep_head_chars: 0,   // 可选，dsh 式占位符前保留的头
+    keep_tail_chars: 0,   // 可选，同理保留的尾
+});
+```
+
+分派：已装载规则按装载序先认领；编译内建规则（可清工具清单 +
+`compact-policy` 替换参数）恒在最后应答——无规则时行为与接缝落地前
+逐字节一致。规则按次解析——`/mods reload` 下一次清扫即生效。opt-in
+`elide-uneventful` 内置 mod 即 omp 移植（见上方 opt-in 清单）。
 
 ## mod.toml 字段
 

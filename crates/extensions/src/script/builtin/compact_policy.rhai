@@ -13,14 +13,6 @@
 //                               live at the head)
 //   keep_tail_chars           — same for the tail (dsh ships 1024 — shell
 //                               errors live at the tail)
-//   elide_uneventful          — omp-style per-turn elision lane: 1 = an
-//                               uneventful result (successful, media-free,
-//                               no error marker) in a completed round
-//                               elides on its presence alone; the live
-//                               round stays byte-for-byte
-//   elide_placeholder         — what an elided result becomes (omp ships
-//                               "[Uneventful result elided]")
-
 register_policy("compact-policy", #{
     cache_trigger_threshold: 32768,
     time_trigger_gap_secs: 3600,
@@ -32,6 +24,4 @@ register_policy("compact-policy", #{
     cleared_placeholder: "[tool result cleared for context economy]",
     keep_head_chars: 0,
     keep_tail_chars: 0,
-    elide_uneventful: 0,
-    elide_placeholder: "[Uneventful result elided]",
 });

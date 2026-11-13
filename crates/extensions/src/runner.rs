@@ -1533,6 +1533,21 @@ impl ExtensionRunner {
         names
     }
 
+    /// Every registered sweep rule (`register_sweep_rule`), in load
+    /// order — the micro-compaction pass resolves its rule set through
+    /// this. Load order is the precedence order (a rule loaded earlier
+    /// claims a result first); the compiled builtin rule always rides
+    /// last as the fallback (see
+    /// `codesmith_agent_runtime::compaction::micro_compact::SweepRules`).
+    pub fn sweep_rules(&self) -> Vec<crate::script::rhai_mod::ScriptSweepRule> {
+        self.mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .iter()
+            .flat_map(|m| m.sweep_rules())
+            .collect()
+    }
+
     /// Look up a registered command by name (exact match; `:N` conflict
     /// suffixing is §F2 — slice 1 uses first-wins via HashMap insert). Used
     /// by the CLI `extension_commands::try_dispatch` (Task 8).
