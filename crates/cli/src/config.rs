@@ -1268,6 +1268,17 @@ impl Config {
             })
     }
 
+    /// The configured `[compaction] summary_model`, trimmed and
+    /// non-empty. `None` — the session model writes the summary.
+    #[must_use]
+    pub fn compaction_summary_model(&self) -> Option<String> {
+        self.compaction
+            .as_ref()
+            .and_then(|c| c.summary_model.clone())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     /// Step cap per turn for scheduled automation runs. `None` when unset —
     /// callers apply [`AUTOMATION_DEFAULT_MAX_STEPS`].
     #[must_use]
@@ -1299,6 +1310,11 @@ pub struct CompactionToml {
     /// strategy set is session state (mods), so unlike `turn_executor`
     /// this cannot be validated at config-load time.
     pub strategy: Option<String>,
+    /// Optional model id for the compaction summary LLM call — a cheaper
+    /// model may write the summary while the session model drives the
+    /// conversation (dsh's `summarizationModel`). Unset — the session
+    /// model summarizes.
+    pub summary_model: Option<String>,
 }
 
 /// The `[rhai_loop]` config table (script-driven executor settings).

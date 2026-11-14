@@ -308,6 +308,19 @@ builtin = ["compact-pi"]   # load the opt-in builtin strategy mod (by id)
 strategy = "compact-pi"    # select it (default "builtin")
 ```
 
+#### Summary model (`[compaction] summary_model`)
+
+The summary LLM call may ride a dedicated (typically cheaper) model while
+the session model drives the conversation — dsh's `summarizationModel`
+posture. Unset by default (the session model summarizes). The summary
+input limits are budgeted from the summary model's own context window
+when it differs.
+
+```toml
+[compaction]
+summary_model = "deepseek-v3.2-128k"
+```
+
 The name resolves against loaded mods at compaction time — the strategy
 set is session state (mods load and reload around config), so unlike
 `turn_executor` this cannot be validated at config-load time. An unknown

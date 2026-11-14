@@ -281,6 +281,17 @@ builtin = ["compact-pi"]   # 按 id 装载 opt-in 内置策略 mod
 strategy = "compact-pi"    # 选中它（默认 "builtin"）
 ```
 
+#### 摘要模型（`[compaction] summary_model`）
+
+摘要 LLM 调用可走独立的（通常更便宜的）模型，会话模型继续驱动对话
+——dsh 的 `summarizationModel` 姿态。默认不设（会话模型自己写摘要）。
+模型不同时，摘要输入限额按摘要模型自己的上下文窗口预算。
+
+```toml
+[compaction]
+summary_model = "deepseek-v3.2-128k"
+```
+
 名称在压缩时对已装载 mod 解析——策略集是会话状态（mod 围绕配置装载与
 重载），因此不同于 `turn_executor`，无法在配置装载时校验。未知名是
 每次尝试的大声错误并回落内建算法：压缩是安全机制，配置笔误不能卡死

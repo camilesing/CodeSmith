@@ -1208,11 +1208,22 @@ pub async fn compact_messages(
     // right-sized but wrong-shaped" failure the ledger cannot fix. The
     // deterministic sections (ledger, failed attempts) ride regardless.
     let window = window_tokens_for_config(config);
+    // The summary call may ride a dedicated (cheaper) model; budget its
+    // input limits from that model's own window when it differs.
+    let summary_model = config
+        .summary_model
+        .clone()
+        .unwrap_or_else(|| config.model.clone());
+    let summary_window = if summary_model != config.model {
+        context_window_for_model(&summary_model).unwrap_or(window)
+    } else {
+        window
+    };
     let mut summary_result = create_summary_for_window(
         client,
         &to_summarize,
-        &config.model,
-        window,
+        &summary_model,
+        summary_window,
         Some(directives),
     )
     .await?;
@@ -1224,8 +1235,8 @@ pub async fn compact_messages(
         if let Ok(second) = create_summary_for_window(
             client,
             &to_summarize,
-            &config.model,
-            window,
+            &summary_model,
+            summary_window,
             Some(directives),
         )
         .await

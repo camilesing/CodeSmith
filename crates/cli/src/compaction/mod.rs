@@ -1520,6 +1520,7 @@ mod tests {
             cache_summary: false,
             auto_floor_tokens: 0,
             strategy: strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
+            summary_model: None,
         }
     }
 
@@ -1888,6 +1889,36 @@ mod tests {
         - assumption: state file can be rewritten in place — refuted: readers saw a torn write; invariant: write to a temp file then rename atomically\n\
         ### File Map\n\
         - src/parser.py — owns CSV parsing, cli depends on it";
+
+    /// `[compaction] summary_model`: the summary request rides the
+    /// configured model, not the session model.
+    #[tokio::test]
+    async fn summary_model_override_rides_the_summary_request() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(summary_response("s", LAYERED_SUMMARY_TEXT));
+
+        let mut config = over_threshold_config();
+        config.summary_model = Some("cheap-summarizer".to_string());
+        compact_messages(
+            &mock,
+            &long_conversation(),
+            &config,
+            None,
+            None,
+            None,
+            "",
+            None,
+        )
+        .await
+        .expect("compaction should succeed");
+
+        let requests = mock.captured_requests();
+        assert!(
+            requests.iter().all(|r| r.model == "cheap-summarizer"),
+            "every summary request must carry the override model: {:?}",
+            requests.iter().map(|r| r.model.clone()).collect::<Vec<_>>()
+        );
+    }
 
     /// P0-2 gate: a flat first draw is retried once and the layered second
     /// draw wins; a retry that is no more structured changes nothing.

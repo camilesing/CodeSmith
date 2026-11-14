@@ -1109,6 +1109,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #
 # [compaction]
 # strategy = "builtin"
+# summary_model = "deepseek-v3.2-128k"   # a cheaper model writes the summary
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Built-in slash commands (optional)

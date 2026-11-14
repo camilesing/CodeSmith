@@ -702,6 +702,13 @@
             "string",
             "null"
           ]
+        },
+        "summary_model": {
+          "description": "Optional model id for the compaction summary LLM call — a cheaper\nmodel may write the summary while the session model drives the\nconversation (dsh's `summarizationModel`). Unset — the session\nmodel summarizes.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

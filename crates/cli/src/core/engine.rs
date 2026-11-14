@@ -2007,6 +2007,7 @@ pub(crate) fn headless_engine_config(
         model: model.clone(),
         token_threshold: config.compaction_threshold(&model),
         strategy: config.compaction_strategy(),
+        summary_model: config.compaction_summary_model(),
         ..Default::default()
     };
     let network_policy = Some(config.network_policy_decider());

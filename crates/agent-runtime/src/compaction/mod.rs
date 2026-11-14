@@ -57,6 +57,12 @@ pub struct CompactionConfig {
     pub enabled: bool,
     pub token_threshold: usize,
     pub model: String,
+    /// Optional model id for the compaction summary LLM call (dsh's
+    /// `summarizationModel` posture): a cheaper model may write the
+    /// summary while the session model drives the conversation. `None`
+    /// (the default) — the session model summarizes. Set via
+    /// `[compaction] summary_model`.
+    pub summary_model: Option<String>,
     /// The resolved context window for `model` (override → provider
     /// capability → static table → 128K), filled by the engine at
     /// construction and refreshed when the model changes. Compaction's
@@ -105,6 +111,7 @@ impl Default for CompactionConfig {
             // which caps windows >=400K at 4/5 of the window.
             token_threshold: 967_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
+            summary_model: None,
             context_window: None,
             output_cap: None,
             cache_summary: true,
