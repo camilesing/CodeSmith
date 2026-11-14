@@ -342,6 +342,25 @@ mod tests {
         assert!(err.to_string().contains("no opt-in builtin mod"));
     }
 
+    /// A `replace_tool` target that names no registered tool is a silent
+    /// no-op (missing targets warn, they do not fail the load) — pin
+    /// grep-guard's binding to the catalog's canonical name. This exact
+    /// drift (`grep` vs `grep_files`) shipped as a no-op once.
+    #[test]
+    fn grep_guard_binds_to_the_registered_tool_name() {
+        let entries = load_builtin_mods(hub(), &["grep-guard".to_string()]);
+        let (_, result) = entries
+            .iter()
+            .find(|(id, _)| *id == "grep-guard")
+            .expect("grep-guard entry");
+        let m = result.as_ref().expect("grep-guard compiles");
+        assert_eq!(
+            m.replacement_targets(),
+            vec!["grep_files".to_string()],
+            "the replacement must target the registered tool name"
+        );
+    }
+
     /// `builtin_policy_defaults` (the embed path) excludes opt-in mods:
     /// they contribute ambient defaults only when selected.
     #[test]

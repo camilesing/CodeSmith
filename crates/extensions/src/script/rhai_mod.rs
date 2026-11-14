@@ -1853,6 +1853,21 @@ impl RhaiMod {
             .collect()
     }
 
+    /// The registered tool names this mod replaces (`replace_tool` targets).
+    /// A target that names no registered tool is a silent no-op (missing
+    /// targets warn, they do not fail the load), so tests pin the binding
+    /// against the catalog's canonical names.
+    #[must_use]
+    pub fn replacement_targets(&self) -> Vec<String> {
+        self.registrations
+            .iter()
+            .filter_map(|reg| match reg {
+                ScriptRegistration::ReplaceTool { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The sweep rules this mod registered (`register_sweep_rule`), in
     /// registration order — the host's micro-compaction pass resolves its
     /// rule set through this (via
@@ -4843,11 +4858,13 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(runner.load(&m)).expect("configure");
         runner.bind_core(Arc::new(PerModCtx));
+        // The canonical registered name — the mod once targeted `grep` and
+        // silently no-opped against the real registry.
         let repl = runner
             .bound_replacements()
             .into_iter()
-            .find(|(n, _)| n == "grep")
-            .expect("grep replacement bound");
+            .find(|(n, _)| n == "grep_files")
+            .expect("grep_files replacement bound");
         let ctx: Arc<dyn codesmith_agent::extension::ExtensionContext> = Arc::new(PerModCtx);
 
         // Empty pattern → err with the corrective template.

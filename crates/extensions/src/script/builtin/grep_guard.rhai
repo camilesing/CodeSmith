@@ -11,7 +11,7 @@
 //      groups, minimax's rule) — `"ts, tsx"` becomes two entries.
 // Enable: [mods] builtin = ["grep-guard"].
 
-replace_tool(#{ name: "grep" }, |input, ctx| {
+replace_tool(#{ name: "grep_files" }, |input, ctx| {
     let pattern = input.get("pattern");
     pattern.trim();
     if pattern == "" {
