@@ -365,7 +365,10 @@ recompile.
     same-error-family (retrying the exact call that just failed the same
     way 3×), abab alternation (the last four calls ping-pong between two
     argument sets), and polling (6 consecutive same-name calls with
-    changing arguments) each get a denial naming the loop and the way out.
+    changing arguments; read-only exploration tools — `grep_files`,
+    `file_search`, `read_file`, … — are exempt, their bursts are
+    exploration, not waiting) each get a denial naming the loop and the
+    way out.
     All four are folds of the session log (a message projection) —
     per-session by construction, nothing on disk, sub-agent turns abstain
     (the host LoopGuard owns their loop discipline); the sixth study
@@ -620,7 +623,7 @@ or `/extension reload` removes the alias.
 
 Per script call: 200,000 operations, 64 call levels, 8 MiB strings / 100k array & map elements. On limit breach or script error: **hooks fail open** (`warn` + `Continue` — one broken mod cannot break the chain); tools/commands return a normal error to the model. No fs/net/process — the engine registers no I/O natives; absence is the sandbox.
 
-One Rhai semantic worth knowing before a handler silently fails open: **a named top-level `fn` cannot see top-level `const`s** (its call state is fresh each call), while event callbacks can (closures capture them). Pass everything a named fn needs as a parameter — `fn record(lesson, max)` called as `record(lesson, MAX_REFLECTIONS)`, never `fn record(lesson)` reading `MAX_REFLECTIONS` inside.
+One Rhai semantic worth knowing before a handler silently fails open: **neither a named top-level `fn` nor an `on(...)` callback can see top-level bindings** (`const` or `let`) — the fn's call state is fresh each call, and a top-level binding referenced from a handler errors at dispatch (the hook then fails open). Inline literals in the callback or re-derive them inside it (`runaway_guard.rhai` carries an example). Pass everything a named fn needs as a parameter — `fn record(lesson, max)` called as `record(lesson, MAX_REFLECTIONS)`, never `fn record(lesson)` reading `MAX_REFLECTIONS` inside.
 
 A second, for dense loop scripts: **Rhai caps expression depth per body (default 32)** — a long doubly-nested block (a `for` inside a `for`, each statement a map-literal call) trips "Expression exceeds maximum complexity" at compile time. Hoist loop bodies into named functions (`fn search_round(frontier, …)`), which parse with a fresh budget.
 

@@ -4286,6 +4286,36 @@ mod tests {
         assert!(!is_block(&out), "five changing calls proceed: {out:?}");
         let out = rt.block_on(runner.emit(call("p6", "v6"))).outcome;
         assert!(is_block(&out), "the sixth polling call blocks: {out:?}");
+
+        // The exemption: the same six-call burst on a read-only exploration
+        // tool (canonical registered name) proceeds — a search streak is
+        // exploration, not polling, and blocking it would kill legitimate
+        // work (the false positive minimax keeps remind-strength for).
+        let tool_use_explore = |id: &str, pattern: &str| ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: "grep_files".to_string(),
+            input: serde_json::json!({ "pattern": pattern }),
+            caller: None,
+        };
+        let call_explore = |id: &str, pattern: &str| {
+            ExtensionEvent::ToolCall(codesmith_agent::extension::ToolCallEvent {
+                id: id.to_string(),
+                name: "grep_files".to_string(),
+                input: serde_json::json!({ "pattern": pattern }),
+            })
+        };
+        let (runner, hub) = setup("runaway-guard");
+        for i in 1..=6 {
+            hub.fold_message(&msg(
+                "assistant",
+                vec![tool_use_explore(&format!("x{i}"), &format!("q{i}"))],
+            ));
+        }
+        let out = rt.block_on(runner.emit(call_explore("x6", "q6"))).outcome;
+        assert!(
+            !is_block(&out),
+            "a grep_files burst is exploration, not polling: {out:?}"
+        );
     }
 
     #[test]

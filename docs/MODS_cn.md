@@ -325,8 +325,9 @@ register_policy("shell-output", #{
   - `runaway-guard`——失控检测（minimax V1 信号族，提醒强度）：精确
     重复（连续 3 次完全相同调用）、同族错误（重试刚以同样方式失败
     3 次的那个调用）、abab 交替（最近四次调用在两组参数间打乒乓）、
-    轮询（同名工具连续 6 次换参数调用）各自触发拒绝并附循环识别与
-    出路。四个信号都是会话日志的折叠（消息投影）——天然按会话隔离、
+    轮询（同名工具连续 6 次换参数调用；只读探索工具——
+    `grep_files`、`file_search`、`read_file` 等——豁免，它们的连发是
+    探索不是等待）各自触发拒绝并附循环识别与出路。四个信号都是会话日志的折叠（消息投影）——天然按会话隔离、
     不落盘；子代理 turn 上自然弃权（子代理的循环纪律归宿主
     LoopGuard）。第六个信号（无进展）需要日志之外的文件状态、归宿主。
   - `goal-loop`——dsh 目标状态机的 loop 脚本形态：phase
@@ -538,7 +539,7 @@ provider、header 值不是字符串、或 `base_url` 既非 `https://` 也非
 
 每次脚本调用上限 200,000 操作数、64 层调用深度、8 MiB 字符串 / 100k 数组与 map 元素。超限或脚本出错：**钩子 fail-open**（`warn` + `Continue`，一个坏 mod 不会打断链）；工具/命令返回普通错误给模型。不暴露文件/网络/进程——引擎未注册任何 I/O native，不注入即不存在。
 
-一个值得先知道的 Rhai 语义（否则 handler 会静默 fail-open）：**命名的顶层 `fn` 看不到顶层 `const`**（每次调用的调用状态是全新的），而事件回调可以（闭包会捕获）。命名 fn 需要的一切都走参数传入——写 `fn record(lesson, max)` 并以 `record(lesson, MAX_REFLECTIONS)` 调用，不要写 `fn record(lesson)` 在体内读 `MAX_REFLECTIONS`。
+一个值得先知道的 Rhai 语义（否则 handler 会静默 fail-open）：**命名的顶层 `fn` 和 `on(...)` 回调都看不到顶层绑定**（`const` 或 `let`）——fn 每次调用的调用状态是全新的；handler 里引用顶层绑定会在分发时报错（钩子随即 fail-open）。在回调里内联字面量、或在回调体内重新推导（`runaway_guard.rhai` 有示例）。命名 fn 需要的一切都走参数传入——写 `fn record(lesson, max)` 并以 `record(lesson, MAX_REFLECTIONS)` 调用，不要写 `fn record(lesson)` 在体内读 `MAX_REFLECTIONS`。
 
 第二个，写给致密的 loop 脚本：**Rhai 按函数体限制表达式深度（默认 32）**——很长的双重嵌套块（`for` 套 `for`，每条语句又是 map 字面量调用）会在编译时报 "Expression exceeds maximum complexity"。把循环体提升为命名函数（`fn search_round(frontier, …)`）即可——每个函数体重新获得完整的解析预算。
 

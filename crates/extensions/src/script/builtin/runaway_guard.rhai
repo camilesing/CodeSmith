@@ -14,7 +14,13 @@
 //                         argument sets (A-B-A-B) on the same tool.
 //   polling             — 6 consecutive calls to one tool name with
 //                         changing arguments reads like waiting for an
-//                         external change.
+//                         external change. Read-only exploration tools
+//                         (grep_files, file_search, read_file, ...) are
+//                         exempt: a burst of searches with different
+//                         patterns IS exploration, not waiting — minimax
+//                         keeps this signal remind-strength for exactly
+//                         that false positive, and a denial would kill a
+//                         legitimate search streak.
 //
 // unchanged-progress (the sixth) needs file state the log does not carry
 // and stays with the host LoopGuard.
@@ -148,7 +154,9 @@ on("tool-call", |e| {
     }
     // polling: same tool, changing arguments, no fixed target.
     let r = s.run[e.id] ?? 0;
-    if r >= 6 {
+    // Read-only exploration tools are exempt (inline array: a top-level
+    // binding is not visible inside an on(...) callback).
+    if r >= 6 && !(e.name in ["grep_files", "file_search", "read_file", "list_dir", "web_search", "fetch_url", "symbol_search", "find_references"]) {
         return block(`runaway-guard: ${r} consecutive calls to ${e.name} with changing arguments reads like polling for a change. State what you are waiting for, batch the work differently, or stop and report.`);
     }
     proceed()
