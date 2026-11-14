@@ -1981,3 +1981,28 @@ fn command_program_skips_env_prefixes_and_paths() {
     assert_eq!(command_program("env RG=1 /usr/bin/rg foo"), "rg");
     assert_eq!(command_program(""), "");
 }
+
+/// A classified sandbox denial must carry the dialect marker; an
+/// unclassified failure must not gain one (a wrong marker would send the
+/// model chasing sandbox policy instead of the real error).
+#[test]
+fn sandbox_denied_hint_marks_only_classified_denials() {
+    let denied = {
+        let mut result = failed_network_shell_result("", "Permission denied");
+        result.sandbox_denied = true;
+        result
+    };
+    let hint = sandbox_denied_hint(&denied).expect("classified denial carries the marker");
+    assert!(
+        hint.starts_with("[sandbox:"),
+        "marker must be greppable: {hint}"
+    );
+    assert!(hint.contains("Do NOT chmod"));
+
+    let plain = failed_network_shell_result("", "Permission denied");
+    assert_eq!(
+        sandbox_denied_hint(&plain),
+        None,
+        "an unclassified permission failure must not claim the sandbox"
+    );
+}

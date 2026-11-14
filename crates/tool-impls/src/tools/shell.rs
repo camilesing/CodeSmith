@@ -215,6 +215,19 @@ fn exit_code_semantics(exit_code: Option<i32>, command: Option<&str>) -> Option<
     Some(format!("[{note}]"))
 }
 
+/// The sandbox-denial dialect marker. On Linux a Landlock denial surfaces as
+/// a bare `Permission denied` in stderr — indistinguishable from a real file
+/// permission error, which invites chmod/sudo wild-goose chases. When the
+/// manager already classified the failure (`ShellResult::sandbox_denied`),
+/// say so in a recognizable cross-tool form so the model reads "the sandbox
+/// blocked this", not "the file is read-only". Same shape as the network
+/// hint: prepended to the output, never a substitute for the raw stderr.
+const SANDBOX_DENIED_HINT: &str = "[sandbox: the code sandbox denied this operation — the block is sandbox policy, not file permissions. Do NOT chmod/sudo around it; write inside the workspace, narrow the operation, or ask the user to run it.]";
+
+fn sandbox_denied_hint(result: &ShellResult) -> Option<&'static str> {
+    result.sandbox_denied.then_some(SANDBOX_DENIED_HINT)
+}
+
 fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
     if matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
         || result.exit_code == Some(0)
@@ -1115,6 +1128,9 @@ impl ToolSpec for ExecShellTool {
                 if let Some(hint) = provenance_hint {
                     output = format!("{hint}\n\n{output}");
                 }
+                if let Some(hint) = sandbox_denied_hint(&result) {
+                    output = format!("{hint}\n\n{output}");
+                }
 
                 let mut metadata = json!({
                     "exit_code": result.exit_code,
@@ -1334,6 +1350,9 @@ async fn build_shell_delta_tool_result(
         output = format!("{hint}\n\n{output}");
     }
     if let Some(hint) = provenance_hint {
+        output = format!("{hint}\n\n{output}");
+    }
+    if let Some(hint) = sandbox_denied_hint(&result) {
         output = format!("{hint}\n\n{output}");
     }
 
