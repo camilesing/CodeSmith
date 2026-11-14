@@ -320,8 +320,11 @@ register_policy("shell-output", #{
     include glob 逗号拆分，花括号组保留）。
   - `edit-input-guard`——`edit_file` 输入守卫：search/replace 相同与
     替换比例失衡时拒绝并附纠正下一步。
-  - `reject-templates`——破坏性 shell 模式（`rm -rf /`、force-push、
-    `reset --hard`）的 deny-only 守卫，拒绝附纠正模板。
+  - `reject-templates`——毁机器级 shell 模式（`rm -rf /`、force-push、
+    `reset --hard`、fork 炸弹、`mkfs`、裸设备 `dd`/重定向、`/dev/tcp`
+    反弹 shell；`of=/dev/null` 豁免）的 deny-only 守卫，拒绝附纠正
+    模板。`curl | bash` 刻意不在列——对照研究中的各家都为 nvm/
+    homebrew/rustup 把它降级为审批；这里归审批层管。
   - `runaway-guard`——失控检测（minimax V1 信号族，提醒强度）：精确
     重复（连续 3 次完全相同调用）、同族错误（重试刚以同样方式失败
     3 次的那个调用）、abab 交替（最近四次调用在两组参数间打乒乓）、

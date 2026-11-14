@@ -357,9 +357,12 @@ recompile.
   - `edit-input-guard` — `edit_file` input guards: identical
     search/replace and disproportionate replacements refuse with the
     corrective next step.
-  - `reject-templates` — deny-only guard over destructive shell
-    patterns (`rm -rf /`, force-push, `reset --hard`) with corrective
-    rejection templates.
+  - `reject-templates` — deny-only guard over machine-destroying shell
+    patterns (`rm -rf /`, force-push, `reset --hard`, fork bomb, `mkfs`,
+    raw-device `dd`/redirect, `/dev/tcp` reverse shells; `of=/dev/null`
+    spared) with corrective rejection templates. `curl | bash` is
+    deliberately absent — the studied agents demote it to approval for
+    nvm/homebrew/rustup's sake; the approval ladder owns it here.
   - `runaway-guard` — runaway detection (minimax V1 signals,
     remind-strength): exact-action repeat (3 identical calls),
     same-error-family (retrying the exact call that just failed the same
