@@ -98,6 +98,11 @@ impl ToolSpec for GrepFilesTool {
                 "literal": {
                     "type": "boolean",
                     "description": "Match `pattern` as a literal string instead of a regex (default: false). Use this when searching for text that contains regex metacharacters ( ( ) [ ] { } . * + ? ^ $ | \\ ) — e.g. searching for `foo(bar)`."
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches"],
+                    "description": "\"files_with_matches\" returns only the list of matching files, newest-modified first — much cheaper when locating where a pattern lives; \"content\" (default) returns matched lines with context."
                 }
             },
             "required": ["pattern"]
@@ -142,6 +147,18 @@ impl ToolSpec for GrepFilesTool {
         ) as u64;
         let max_results = usize::try_from(optional_u64(&input, "max_results", gate_max_results)?)
             .unwrap_or(MAX_RESULTS);
+        // "files_with_matches" (minimax's default output tier): return only
+        // the matching-file list — far cheaper than content rows when the
+        // question is "where does this pattern live".
+        let files_with_matches = match optional_str(&input, "output_mode").unwrap_or("content") {
+            "content" => false,
+            "files_with_matches" => true,
+            other => {
+                return Err(ToolError::invalid_input(format!(
+                    "output_mode must be \"content\" or \"files_with_matches\", got \"{other}\""
+                )));
+            }
+        };
 
         // Parse include patterns
         let include_patterns: Vec<String> = input
@@ -262,6 +279,75 @@ impl ToolSpec for GrepFilesTool {
                     .canonicalize()
                     .unwrap_or_else(|_| workspace.clone());
 
+                let relative_path_of = |file_path: &std::path::Path| -> String {
+                    file_path
+                        .strip_prefix(&workspace)
+                        .or_else(|_| file_path.strip_prefix(&canonical_workspace))
+                        .unwrap_or(file_path)
+                        .to_string_lossy()
+                        .to_string()
+                };
+
+                // The cheap tier: first-match detection per file, list-only
+                // output. One `is_match` per file (the matcher anchors ^/$ to
+                // line boundaries over the whole buffer, so this agrees with
+                // the content path for single- and multi-line patterns alike).
+                if files_with_matches {
+                    let mut matched: Vec<(String, u64)> = Vec::new();
+                    let mut files_searched = 0usize;
+                    for file_path in files {
+                        check_cancelled(cancel_token, aborted)?;
+                        if let Ok(metadata) = fs::metadata(&file_path)
+                            && metadata.len() > MAX_FILE_SIZE
+                        {
+                            continue;
+                        }
+                        let Ok(file_content) = fs::read_to_string(&file_path) else {
+                            continue;
+                        };
+                        files_searched += 1;
+                        let has_match = matcher
+                            .is_match(file_content.as_bytes())
+                            .map_err(|e| {
+                                ToolError::execution_failed(format!("grep matcher error: {e}"))
+                            })?;
+                        if !has_match {
+                            continue;
+                        }
+                        let mtime_ms = fs::metadata(&file_path)
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map_or(0u64, |d| d.as_millis() as u64);
+                        matched.push((relative_path_of(&file_path), mtime_ms));
+                    }
+                    // Newest first (minimax's ordering): the most recently
+                    // touched matching file is the likeliest target.
+                    matched.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                    let matching_files = matched.len();
+                    let truncated = matching_files > max_results;
+                    let files_json: Vec<Value> = matched
+                        .into_iter()
+                        .take(max_results)
+                        .map(|(file, last_modified_ms)| {
+                            json!({"file": file, "last_modified_ms": last_modified_ms})
+                        })
+                        .collect();
+                    let mut result = json!({
+                        "output_mode": "files_with_matches",
+                        "files": files_json,
+                        "matching_files": matching_files,
+                        "files_searched": files_searched,
+                        "truncated": truncated,
+                    });
+                    if truncated {
+                        result["truncation_hint"] = json!(
+                            "file list truncated at the max_results cap — narrow the pattern or the path, or raise max_results and re-run"
+                        );
+                    }
+                    return Ok(result);
+                }
+
                 // Search files
                 let mut results: Vec<GrepMatch> = Vec::new();
                 let mut files_searched = 0;
@@ -293,12 +379,7 @@ impl ToolSpec for GrepFilesTool {
 
                     files_searched += 1;
                     let lines: Vec<&str> = file_content.lines().collect();
-                    let relative_path = file_path
-                        .strip_prefix(&workspace)
-                        .or_else(|_| file_path.strip_prefix(&canonical_workspace))
-                        .unwrap_or(&file_path)
-                        .to_string_lossy()
-                        .to_string();
+                    let relative_path = relative_path_of(&file_path);
 
                     if multiline {
                         // Whole-buffer matching: `.` and `^`/`$` cross line
@@ -817,6 +898,68 @@ mod tests {
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["file"].as_str().unwrap(), "visible.js");
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_with_matches_lists_files_newest_first() {
+        use std::time::{Duration, SystemTime};
+
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for (name, age) in [("old.txt", 3600), ("new.txt", 0)] {
+            let path = root.join(name);
+            fs::write(&path, "NEEDLE\n").expect("write");
+            let file = fs::File::options().write(true).open(&path).expect("open");
+            let modified = SystemTime::now()
+                .checked_sub(Duration::from_secs(age))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            file.set_times(fs::FileTimes::new().set_modified(modified))
+                .expect("set mtime");
+        }
+        fs::write(root.join("miss.txt"), "nope\n").expect("write");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(
+                json!({"pattern": "NEEDLE", "output_mode": "files_with_matches"}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["output_mode"], json!("files_with_matches"));
+        assert_eq!(parsed["matching_files"], json!(2));
+        let files = parsed["files"].as_array().unwrap();
+        assert_eq!(
+            files[0]["file"].as_str().unwrap(),
+            "new.txt",
+            "newest match first: {files:?}"
+        );
+        assert_eq!(files[1]["file"].as_str().unwrap(), "old.txt");
+        assert!(
+            files[0]["last_modified_ms"].as_u64().unwrap()
+                > files[1]["last_modified_ms"].as_u64().unwrap()
+        );
+
+        // Truncation in files mode caps the file list and carries the hint.
+        let capped = tool
+            .execute(
+                json!({"pattern": "NEEDLE", "output_mode": "files_with_matches", "max_results": 1}),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        let parsed: Value = serde_json::from_str(&capped.content).unwrap();
+        assert_eq!(parsed["truncated"], json!(true));
+        assert!(parsed["truncation_hint"].is_string());
+
+        // An unknown mode is a loud input error, not a silent default.
+        let bad = tool
+            .execute(json!({"pattern": "x", "output_mode": "filenames"}), &ctx)
+            .await;
+        assert!(bad.is_err());
     }
 
     #[tokio::test]
