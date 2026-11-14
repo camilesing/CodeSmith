@@ -2788,16 +2788,23 @@ impl HostAgentExecutor {
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
         let messages = history.messages().to_vec();
-        // The fold input: whatever summary already exists — this turn's
-        // (the pending slot) or the session's (the turn-start snapshot on
-        // the probe). Folding keeps the carrier one block (see
+        // The fold input: whatever summary already exists. A pending slot
+        // that did NOT fold (responsive/recovery compaction this turn) sits
+        // ON TOP of the turn-start session snapshot — merging both matters
+        // because the engine's replace path drops the session carrier's
+        // blocks from `session.system_prompt`; a pending-only fold would
+        // drop them unfolded (silent loss of the oldest summary). A pending
+        // slot that already folded (`folded`) subsumes the snapshot — fold
+        // it alone. Folding keeps the carrier one block (see
         // `PendingCompactionSummary`).
-        let previous_summary = self
-            .peek_pending_compaction_summary()
-            .prompt
-            .or_else(|| probe.previous_summary.clone())
-            .as_ref()
-            .map(crate::compaction::prompt_summary_text);
+        let pending = self.peek_pending_compaction_summary();
+        let previous_summary = if pending.folded {
+            pending.prompt
+        } else {
+            crate::compaction::merge_system_prompts(probe.previous_summary.as_ref(), pending.prompt)
+        }
+        .as_ref()
+        .map(crate::compaction::prompt_summary_text);
         let enhancements = Some(CompactionEnhancements {
             fact_ledger: probe.fact_ledger.clone(),
             strategy: Some(directives),
@@ -2999,8 +3006,10 @@ impl HostAgentExecutor {
             // applied after, mirroring `run_compaction` Phase-2 at 2862-2873).
             let messages = history.messages().to_vec();
             // `enhancements = None` — `build_compaction_enhancements` needs
-            // `&mut self` Engine state unreachable mid-loop (same gap class as
-            // `run_compaction`, which also passes `None`).
+            // `&mut self` Engine state unreachable mid-loop. Unlike
+            // `run_compaction` (which folds via the probe snapshot), this
+            // path does not fold; its summary is recorded non-folded and a
+            // later `run_compaction` folds it on top of the session carrier.
             match compact_messages_safe(
                 client.as_ref(),
                 &messages,
@@ -5231,6 +5240,10 @@ mod tests {
         compaction_error: Mutex<Option<String>>,
         /// Count of `create_message` calls (compaction summary attempts).
         compaction_calls: Mutex<u32>,
+        /// Serialized `messages` of each `create_message` call, in call order
+        /// — lets tests assert what the compaction summary request carried
+        /// (e.g. the `<previous-summary>` fold payload).
+        compaction_requests: Mutex<Vec<String>>,
         /// §E cancel-token test hook: when set, `create_message_stream`
         /// cancels this token as a side-effect when the stream opens. Taken
         /// (fired once) so only the first stream call triggers it. This lets
@@ -5266,6 +5279,7 @@ mod tests {
                 compaction_reply: Mutex::new(None),
                 compaction_error: Mutex::new(None),
                 compaction_calls: Mutex::new(0),
+                compaction_requests: Mutex::new(Vec::new()),
                 cancel_on_stream: Mutex::new(None),
                 steer_on_stream: Mutex::new(None),
             }
@@ -5324,6 +5338,12 @@ mod tests {
             *self.compaction_calls.lock().unwrap()
         }
 
+        /// Serialized `messages` of each `create_message` call, in order —
+        /// the compaction summary request bodies.
+        fn compaction_request_texts(&self) -> Vec<String> {
+            self.compaction_requests.lock().unwrap().clone()
+        }
+
         /// §E cancel-token test hook: cancel `token` as a side-effect when the
         /// next `create_message_stream` opens. Fired once (taken). Lets
         /// cancel-checkpoint tests prove the token is cancelled by the time
@@ -5355,12 +5375,16 @@ mod tests {
         }
         fn create_message(
             &self,
-            _request: MessageRequest,
+            request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
             // Locks are taken and dropped here (sync, before the async block) so
             // no guard crosses an `await` — the returned future captures only
             // owned data (`reply` / `error`).
             *self.compaction_calls.lock().unwrap() += 1;
+            self.compaction_requests
+                .lock()
+                .unwrap()
+                .push(serde_json::to_string(&request.messages).unwrap_or_default());
             let reply = self.compaction_reply.lock().unwrap().clone();
             let error = self.compaction_error.lock().unwrap().clone();
             Box::pin(async move {
@@ -10100,6 +10124,128 @@ mod tests {
         );
         // One-shot drain (mirrors `take_usage`): a second read yields `None`.
         assert!(executor.take_pending_compaction_summary().prompt.is_none());
+    }
+
+    /// The auto-compaction fold input MERGES the turn-start session carrier
+    /// with this turn's pending (non-folding) summary — a pending slot must
+    /// not shadow the session carrier. The engine's replace path drops the
+    /// carrier's blocks from `session.system_prompt` after a folded
+    /// compaction, so a pending-only fold would drop the carrier's facts
+    /// unfolded (silent loss of the oldest summary). A pending slot that
+    /// already folded subsumes the carrier and folds alone (no double fold).
+    #[tokio::test]
+    async fn run_compaction_folds_the_session_carrier_under_a_pending_summary() {
+        let marker = |text: &str| {
+            SystemPrompt::Blocks(vec![SystemBlock {
+                block_type: "text".to_string(),
+                text: text.to_string(),
+                cache_control: None,
+            }])
+        };
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]).with_compaction_summary("Conversation summary."));
+        let client: LlmClientHandle = mock.clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(
+                CompactionProbe::new(
+                    compaction_config_low_threshold(),
+                    PathBuf::from("/tmp/codesmith-test"),
+                )
+                .with_previous_summary(Some(marker("SESSION-CARRIER-FACTS"))),
+            ),
+            None,
+            None,
+            None,
+            None,
+        );
+        // An earlier in-turn compaction (responsive/recovery — non-folding)
+        // recorded a pending summary on top of the session carrier.
+        executor.record_compaction_summary(Some(marker("PENDING-TURN-FACTS")), false);
+
+        executor.run_compaction(&client, &mut history, 0).await;
+
+        assert_eq!(mock.compaction_calls(), 1);
+        let bodies = mock.compaction_request_texts();
+        assert!(
+            bodies.iter().any(|body| {
+                body.contains("<previous-summary>")
+                    && body.contains("SESSION-CARRIER-FACTS")
+                    && body.contains("PENDING-TURN-FACTS")
+            }),
+            "the fold payload must carry BOTH the session carrier and the \
+             pending summary: {bodies:?}"
+        );
+        let pending = executor.take_pending_compaction_summary();
+        assert!(pending.folded, "the result replaces the carrier");
+    }
+
+    /// A pending slot that already folded (`folded == true`) subsumes the
+    /// turn-start session carrier — a second compaction this turn folds the
+    /// pending summary alone, not the carrier twice.
+    #[tokio::test]
+    async fn run_compaction_does_not_refold_the_carrier_behind_a_folded_pending() {
+        let marker = |text: &str| {
+            SystemPrompt::Blocks(vec![SystemBlock {
+                block_type: "text".to_string(),
+                text: text.to_string(),
+                cache_control: None,
+            }])
+        };
+        let mut sess = fresh_session();
+        seed_text_messages(&mut sess, 12);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let callback: Arc<dyn Callback> = Arc::new(codesmith_agent::callback::NoopCallback);
+        let mock = Arc::new(MockLlm::new(vec![]).with_compaction_summary("Conversation summary."));
+        let client: LlmClientHandle = mock.clone();
+        let executor = HostAgentExecutor::new(
+            mock.clone(),
+            Arc::new(ToolSet::new()),
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(
+                CompactionProbe::new(
+                    compaction_config_low_threshold(),
+                    PathBuf::from("/tmp/codesmith-test"),
+                )
+                .with_previous_summary(Some(marker("SESSION-CARRIER-FACTS"))),
+            ),
+            None,
+            None,
+            None,
+            None,
+        );
+        // The pending summary already folded the carrier in an earlier
+        // compaction this turn.
+        executor.record_compaction_summary(Some(marker("FOLDED-THIS-TURN")), true);
+
+        executor.run_compaction(&client, &mut history, 0).await;
+
+        assert_eq!(mock.compaction_calls(), 1);
+        let bodies = mock.compaction_request_texts();
+        assert!(
+            bodies.iter().any(|body| {
+                body.contains("<previous-summary>")
+                    && body.contains("FOLDED-THIS-TURN")
+                    && !body.contains("SESSION-CARRIER-FACTS")
+            }),
+            "the fold payload must not repeat the already-folded carrier: \
+             {bodies:?}"
+        );
     }
 
     /// Slice 25a §E: a `run` that triggers `recover_context_overflow`
