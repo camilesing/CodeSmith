@@ -1950,3 +1950,34 @@ fn test_fresh_shell_spill_id_is_process_unique() {
         "id must embed the pid for cross-process uniqueness: {a}"
     );
 }
+
+#[test]
+fn exit_code_semantics_translates_shared_codes() {
+    assert_eq!(
+        exit_code_semantics(Some(127), None).as_deref(),
+        Some(
+            "[command not found — check the spelling and that the binary is on PATH; NEVER retry the same command verbatim]"
+        )
+    );
+    assert_eq!(
+        exit_code_semantics(Some(126), None).as_deref(),
+        Some(
+            "[found but not executable — check the file mode (chmod +x) or invoke it through its interpreter]"
+        )
+    );
+    // Search-family exit 1 is a result; anything else stays untranslated.
+    assert!(
+        exit_code_semantics(Some(1), Some("grep -r foo ."))
+            .is_some_and(|note| note.contains("NO MATCHES"))
+    );
+    assert!(exit_code_semantics(Some(1), Some("cargo build")).is_none());
+    assert_eq!(exit_code_semantics(Some(0), Some("grep x")), None);
+    assert_eq!(exit_code_semantics(None, Some("grep x")), None);
+}
+
+#[test]
+fn command_program_skips_env_prefixes_and_paths() {
+    assert_eq!(command_program("grep -rn foo ."), "grep");
+    assert_eq!(command_program("env RG=1 /usr/bin/rg foo"), "rg");
+    assert_eq!(command_program(""), "");
+}

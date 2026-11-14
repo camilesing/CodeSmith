@@ -169,6 +169,52 @@ fn command_likely_needs_network(command: &str) -> bool {
     }
 }
 
+/// The program name of `command` (first token, basename, skipping `env`
+/// assignment prefixes) — used only to widen the exit-1 arm of
+/// [`exit_code_semantics`] to search-family commands. Empty when no program
+/// can be identified.
+fn command_program(command: &str) -> &str {
+    let mut tokens = command
+        .split_whitespace()
+        .filter(|token| *token != "env" && !token.contains('='));
+    let Some(primary) = tokens.next() else {
+        return "";
+    };
+    primary.rsplit(['/', '\\']).next().unwrap_or(primary)
+}
+
+/// Search-family programs whose exit 1 overwhelmingly means "no matches"
+/// (or, for `which`, "not installed") — the command's result, not a failure
+/// to debug.
+const EXIT_ONE_IS_RESULT_PROGRAMS: &[&str] =
+    &["grep", "egrep", "fgrep", "rg", "ag", "ack", "which"];
+
+/// One-line semantic translation of a non-zero exit code — the model-facing
+/// dialect for "command fact, not framework failure". A bare `exit code:
+/// Some(1)` from a grep is a result; 127 is a spelling problem, not
+/// something to sudo around. `None` when the code carries no shared
+/// meaning (the raw code line stays as-is).
+fn exit_code_semantics(exit_code: Option<i32>, command: Option<&str>) -> Option<String> {
+    let code = exit_code?;
+    let note = match code {
+        126 => "found but not executable — check the file mode (chmod +x) or invoke it through its interpreter".to_owned(),
+        127 => "command not found — check the spelling and that the binary is on PATH; NEVER retry the same command verbatim".to_owned(),
+        130 => "interrupted (SIGINT)".to_owned(),
+        137 => "killed (SIGKILL) — commonly an out-of-memory kill or a hard timeout".to_owned(),
+        143 => "terminated (SIGTERM)".to_owned(),
+        1 => {
+            let program = command.map(command_program).unwrap_or("");
+            if EXIT_ONE_IS_RESULT_PROGRAMS.contains(&program) {
+                "for a search command this exit code usually means NO MATCHES — that is the command's result, not an execution failure; refine the pattern or path instead of debugging the command".to_owned()
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(format!("[{note}]"))
+}
+
 fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
     if matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
         || result.exit_code == Some(0)
@@ -1055,8 +1101,11 @@ impl ToolSpec for ExecShellTool {
                         result.stdout, result.stderr
                     )
                 } else {
+                    let exit_note = exit_code_semantics(result.exit_code, Some(command))
+                        .map(|note| format!(" {note}"))
+                        .unwrap_or_default();
                     format!(
-                        "Command failed (exit code: {:?})\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+                        "Command failed (exit code: {:?}){exit_note}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
                         result.exit_code, result.stdout, result.stderr
                     )
                 };
@@ -1262,7 +1311,17 @@ async fn build_shell_delta_tool_result(
         match result.status {
             ShellStatus::Running => "Background task running (no new output).".to_string(),
             ShellStatus::Completed => "(no new output)".to_string(),
-            ShellStatus::Failed => format!("Command failed (exit code: {:?})", result.exit_code),
+            ShellStatus::Failed => {
+                // The poll path has no command text in scope; the program-
+                // specific exit-1 arm simply stays off here.
+                let exit_note = exit_code_semantics(result.exit_code, None)
+                    .map(|note| format!(" {note}"))
+                    .unwrap_or_default();
+                format!(
+                    "Command failed (exit code: {:?}){exit_note}",
+                    result.exit_code
+                )
+            }
             ShellStatus::TimedOut => "Command timed out (no new output).".to_string(),
             ShellStatus::Killed => "Command killed (no new output).".to_string(),
         }
