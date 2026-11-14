@@ -1481,6 +1481,7 @@ mod tests {
             token_threshold: 10,
             model: "deepseek-v3.2-128k".to_string(),
             context_window: None,
+            output_cap: None,
             cache_summary: false,
             auto_floor_tokens: 0,
             strategy: strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
