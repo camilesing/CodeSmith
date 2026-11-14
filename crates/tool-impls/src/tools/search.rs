@@ -374,12 +374,21 @@ impl ToolSpec for GrepFilesTool {
                 // Build result. When context_lines == 1, return the single context
                 // line as a string instead of a one-item array. That keeps the common
                 // "show just the adjacent line" case easy for model callers to read.
-                Ok(json!({
+                // A truncated result carries an executable continuation: what to
+                // change to see more, not just the fact that something was cut.
+                let truncated = total_matches > max_results || stopped_early;
+                let mut result = json!({
                     "matches": matches_json,
                     "total_matches": total_matches,
                     "files_searched": files_searched,
-                    "truncated": total_matches > max_results || stopped_early,
-                }))
+                    "truncated": truncated,
+                });
+                if truncated {
+                    result["truncation_hint"] = json!(
+                        "results truncated at the max_results cap — narrow the pattern or the path, or raise max_results and re-run"
+                    );
+                }
+                Ok(result)
             },
         )
         .await?;
@@ -808,6 +817,41 @@ mod tests {
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["file"].as_str().unwrap(), "visible.js");
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_truncated_results_carry_continuation_hint() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for i in 0..5 {
+            fs::write(root.join(format!("f{i}.txt")), "NEEDLE\n").expect("write");
+        }
+        let ctx = ToolContext::new(root.to_path_buf());
+
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(json!({"pattern": "NEEDLE", "max_results": 2}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["truncated"], json!(true));
+        assert!(
+            parsed["truncation_hint"]
+                .as_str()
+                .unwrap()
+                .contains("narrow"),
+            "hint must be an executable continuation: {}",
+            parsed["truncation_hint"]
+        );
+
+        // Untruncated results carry no hint (nothing to continue from).
+        let full = tool
+            .execute(json!({"pattern": "NEEDLE"}), &ctx)
+            .await
+            .expect("execute");
+        let parsed: Value = serde_json::from_str(&full.content).unwrap();
+        assert!(parsed.get("truncation_hint").is_none());
     }
 
     #[tokio::test]
