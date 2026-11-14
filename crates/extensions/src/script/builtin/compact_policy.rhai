@@ -16,10 +16,14 @@
 register_policy("compact-policy", #{
     cache_trigger_threshold: 32768,
     time_trigger_gap_secs: 3600,
+    // Canonical registered names first; the legacy spellings stay so a
+    // resumed pre-rename transcript (tool_use blocks carrying the old
+    // names) still sweeps.
     micro_compactable_tools: [
-        "file_read", "exec_shell", "exec_shell_wait", "exec_shell_interact",
-        "grep", "glob", "web_search", "web_fetch", "write_file",
-        "apply_patch", "edit_file",
+        "read_file", "grep_files", "file_search", "fetch_url",
+        "exec_shell", "exec_shell_wait", "exec_shell_interact",
+        "web_search", "write_file", "apply_patch", "edit_file",
+        "file_read", "grep", "glob", "web_fetch",
     ],
     cleared_placeholder: "[tool result cleared for context economy]",
     keep_head_chars: 0,

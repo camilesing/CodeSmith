@@ -15,18 +15,25 @@ use crate::models::{ContentBlock, Message};
 // ordering, retries) stays here.
 
 /// Compiled fallback for the compactable-tool list (see `policy_read`).
+/// The canonical registered names come first; the legacy spellings
+/// (`file_read`/`grep`/`glob`/`web_fetch`) stay so a resumed pre-rename
+/// transcript — whose tool_use blocks carry the old names — still sweeps.
 const DEFAULT_MICRO_COMPACT_TOOL_NAMES: &[&str] = &[
-    "file_read",
+    "read_file",
+    "grep_files",
+    "file_search",
+    "fetch_url",
     "exec_shell",
     "exec_shell_wait",
     "exec_shell_interact",
-    "grep",
-    "glob",
     "web_search",
-    "web_fetch",
     "write_file",
     "apply_patch",
     "edit_file",
+    "file_read",
+    "grep",
+    "glob",
+    "web_fetch",
 ];
 
 /// Compiled fallback for the placeholder text.
@@ -693,11 +700,17 @@ mod tests {
     #[test]
     fn is_micro_compactable_tool_matches_known_tools() {
         let _guard = policy_test_lock();
-        assert!(is_micro_compactable_tool("file_read"));
+        // Canonical registered names …
+        assert!(is_micro_compactable_tool("read_file"));
+        assert!(is_micro_compactable_tool("grep_files"));
+        assert!(is_micro_compactable_tool("file_search"));
+        assert!(is_micro_compactable_tool("fetch_url"));
         assert!(is_micro_compactable_tool("exec_shell"));
+        assert!(is_micro_compactable_tool("web_search"));
+        // … and the legacy spellings, for resumed pre-rename transcripts.
+        assert!(is_micro_compactable_tool("file_read"));
         assert!(is_micro_compactable_tool("grep"));
         assert!(is_micro_compactable_tool("glob"));
-        assert!(is_micro_compactable_tool("web_search"));
         assert!(is_micro_compactable_tool("web_fetch"));
         assert!(!is_micro_compactable_tool("agent_open"));
         assert!(!is_micro_compactable_tool("unknown_tool"));
