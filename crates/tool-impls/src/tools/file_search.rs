@@ -246,6 +246,19 @@ fn parse_exclude_patterns(input: &Value) -> Vec<String> {
         "build/**",
         "*.lock",
         "*.plist",
+        // Credential files — same default set as `grep_files`: live secrets
+        // must not ride a default search into the transcript. An explicit
+        // `exclude` array overrides the defaults.
+        ".env",
+        ".env.*",
+        "*.pem",
+        "*.key",
+        "id_rsa*",
+        "id_ed25519*",
+        "id_ecdsa*",
+        ".netrc",
+        ".npmrc",
+        ".aws/**",
     ]
     .into_iter()
     .map(ToOwned::to_owned)
@@ -529,6 +542,37 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("\"path\": \"needle.txt\""));
         assert!(!result.content.contains("target/needle.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_file_search_default_excludes_credential_files() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join(".env"), "SECRET=1\n").expect("write");
+        std::fs::write(root.join("id_rsa"), "-----BEGIN KEY-----\n").expect("write");
+        std::fs::create_dir_all(root.join(".aws")).expect("mkdir");
+        std::fs::write(root.join(".aws").join("credentials"), "key=x\n").expect("write");
+        std::fs::write(root.join("env-notes.txt"), "notes\n").expect("write");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let tool = FileSearchTool;
+        let result = tool
+            .execute(json!({"query": "env"}), &ctx)
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.content.contains("\"path\": \"env-notes.txt\""),
+            "visible file must surface: {}",
+            result.content
+        );
+        for secret in [".env", "id_rsa", ".aws"] {
+            assert!(
+                !result.content.contains(secret),
+                "credential file {secret} must not appear in default results"
+            );
+        }
     }
 
     #[tokio::test]

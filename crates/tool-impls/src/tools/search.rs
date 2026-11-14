@@ -158,10 +158,13 @@ impl ToolSpec for GrepFilesTool {
         let exclude_patterns: Vec<String> =
             input.get("exclude").and_then(|v| v.as_array()).map_or_else(
                 || {
-                    // Default exclusions for common non-code directories.
-                    // Bare directory names skip the directory traversal entirely;
-                    // `dir/*` filters files inside if the directory is already
-                    // being walked (belt-and-suspenders — see #2200).
+                    // Default exclusions for common non-code directories, plus
+                    // credential files (live secrets must not ride a default
+                    // search into the transcript; pass an explicit `exclude`
+                    // array to override). Bare directory names skip the
+                    // directory traversal entirely; `dir/*` filters files
+                    // inside if the directory is already being walked
+                    // (belt-and-suspenders — see #2200).
                     vec![
                         "node_modules".to_string(),
                         "node_modules/*".to_string(),
@@ -181,6 +184,17 @@ impl ToolSpec for GrepFilesTool {
                         ".venv/*".to_string(),
                         "venv".to_string(),
                         "venv/*".to_string(),
+                        ".env".to_string(),
+                        ".env.*".to_string(),
+                        "*.pem".to_string(),
+                        "*.key".to_string(),
+                        "id_rsa*".to_string(),
+                        "id_ed25519*".to_string(),
+                        "id_ecdsa*".to_string(),
+                        ".netrc".to_string(),
+                        ".npmrc".to_string(),
+                        ".aws".to_string(),
+                        ".aws/*".to_string(),
                     ]
                 },
                 |arr| {
@@ -794,6 +808,41 @@ mod tests {
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0]["file"].as_str().unwrap(), "visible.js");
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_default_excludes_credential_files() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::write(root.join(".env"), "NEEDLE\n").expect("write");
+        std::fs::write(root.join("id_rsa"), "NEEDLE\n").expect("write");
+        std::fs::write(root.join(".env.local"), "NEEDLE\n").expect("write");
+        std::fs::write(root.join("visible.js"), "NEEDLE\n").expect("write");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(json!({"pattern": "NEEDLE"}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        let matches = parsed["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "only the visible file matches");
+        assert_eq!(matches[0]["file"].as_str().unwrap(), "visible.js");
+
+        // An explicit `exclude` array overrides the defaults — the escape
+        // hatch for a deliberate secrets audit must exist.
+        let override_result = tool
+            .execute(json!({"pattern": "NEEDLE", "exclude": []}), &ctx)
+            .await
+            .expect("execute");
+        let parsed: Value = serde_json::from_str(&override_result.content).unwrap();
+        assert_eq!(
+            parsed["matches"].as_array().unwrap().len(),
+            4,
+            "exclude=[] restores the credential files"
+        );
     }
 
     #[tokio::test]
