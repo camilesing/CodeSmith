@@ -1743,6 +1743,7 @@ impl Engine {
             context: Some(executor_composition::TurnContextSources {
                 compaction: self.config.compaction.clone(),
                 workspace: self.session.workspace.clone(),
+                previous_summary: self.session.compaction_summary_prompt.clone(),
                 fact_ledger: Arc::clone(&self.session.fact_ledger),
                 api_provider: self.api_provider,
                 model: self.session.model.clone(),
@@ -1949,9 +1950,9 @@ impl Engine {
         // micro/partial→cleanup. `reinject` (25b) ran DURING `run`.
         let compaction_summary = built.harvest.take_pending_compaction_summary();
         let needs_cleanup = built.harvest.take_pending_post_compact_cleanup();
-        let had_summary = compaction_summary.is_some();
-        if let Some(summary) = compaction_summary {
-            self.merge_compaction_summary(Some(summary));
+        let had_summary = compaction_summary.prompt.is_some();
+        if compaction_summary.prompt.is_some() || compaction_summary.folded {
+            self.merge_compaction_summary(compaction_summary.prompt, compaction_summary.folded);
         }
         if needs_cleanup {
             crate::compaction::post_compact_cleanup::post_compact_cleanup(&mut self.session);
@@ -2356,7 +2357,10 @@ impl Engine {
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     let messages_after = result.messages.len();
                     self.rebuild_transcript(RebuildReason::ManualCompaction, result.messages);
-                    self.merge_compaction_summary(result.summary_prompt);
+                    self.merge_compaction_summary(
+                        result.summary_prompt,
+                        result.summary_folded_previous,
+                    );
                     let target_budget = context_input_budget_for_window(
                         self.effective_context_window(&self.session.model),
                         self.api_provider,
@@ -2522,7 +2526,7 @@ impl Engine {
         }
 
         self.rebuild_transcript(RebuildReason::ManualCompaction, result.messages);
-        self.merge_compaction_summary(result.summary_prompt);
+        self.merge_compaction_summary(result.summary_prompt, false);
         let target_budget = context_input_budget_for_window(
             self.effective_context_window(&self.session.model),
             self.api_provider,
@@ -2660,6 +2664,14 @@ impl Engine {
             session_memory,
             fact_ledger: Some(Arc::clone(&self.session.fact_ledger)),
             strategy: None,
+            // Fold the existing summary into the next request so the
+            // carrier is replaced, not appended (same posture as the
+            // executor's auto path).
+            previous_summary: self
+                .session
+                .compaction_summary_prompt
+                .as_ref()
+                .map(crate::compaction::prompt_summary_text),
         })
     }
 
@@ -2915,7 +2927,7 @@ impl Engine {
                                     RebuildReason::ContextOverflowRecovery,
                                     result.messages,
                                 );
-                                self.merge_compaction_summary(result.summary_prompt);
+                                self.merge_compaction_summary(result.summary_prompt, false);
                                 self.reinject_compaction_attachments(Some(target_budget))
                                     .await;
                                 if self.estimated_input_tokens() <= target_budget {
@@ -3004,7 +3016,7 @@ impl Engine {
         if !compacted_messages.is_empty() || self.session.messages.is_empty() {
             self.rebuild_transcript(RebuildReason::ContextOverflowRecovery, compacted_messages);
         }
-        self.merge_compaction_summary(summary_prompt);
+        self.merge_compaction_summary(summary_prompt, false);
         self.reinject_compaction_attachments(Some(target_budget))
             .await;
 
@@ -3657,15 +3669,63 @@ impl Engine {
     /// is the one intentional mid-session prefix mutation — the engine
     /// intentionally accepts the cache-invalidation cost because the
     /// context-reduction benefit outweighs it.
-    pub fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {
-        if summary_prompt.is_none() {
+    pub fn merge_compaction_summary(
+        &mut self,
+        summary_prompt: Option<SystemPrompt>,
+        folded_previous: bool,
+    ) {
+        let Some(summary_prompt) = summary_prompt else {
+            return;
+        };
+        if folded_previous {
+            // The summary folded its predecessor into itself
+            // (PRESERVE/ADD/UPDATE over `<previous-summary>`): REPLACE the
+            // carrier so repeated compactions stay one block — an appending
+            // carrier grows the pinned prefix without bound on long
+            // sessions. `session.system_prompt` carries the old summary as
+            // its TAIL blocks (every merge and refresh appends there), so
+            // the rebuild drops exactly that tail and appends the new one.
+            let old_block_count = self
+                .session
+                .compaction_summary_prompt
+                .as_ref()
+                .and_then(|prompt| match prompt {
+                    SystemPrompt::Blocks(blocks) => Some(blocks.len()),
+                    SystemPrompt::Text(_) => None,
+                })
+                .unwrap_or(0);
+            self.session.compaction_summary_prompt = Some(summary_prompt.clone());
+            let merged = match self.session.system_prompt.take() {
+                Some(SystemPrompt::Blocks(mut blocks)) => {
+                    let keep = blocks.len().saturating_sub(old_block_count);
+                    blocks.truncate(keep);
+                    match &summary_prompt {
+                        SystemPrompt::Blocks(new_blocks) => {
+                            blocks.extend(new_blocks.iter().cloned());
+                        }
+                        SystemPrompt::Text(text) => {
+                            blocks.push(crate::models::SystemBlock {
+                                block_type: "text".to_string(),
+                                text: text.clone(),
+                                cache_control: None,
+                            });
+                        }
+                    }
+                    SystemPrompt::Blocks(blocks)
+                }
+                current => merge_system_prompts(current.as_ref(), Some(summary_prompt.clone()))
+                    .unwrap_or_else(|| summary_prompt.clone()),
+            };
+            self.session.last_system_prompt_hash = Some(system_prompt_hash(Some(&merged)));
+            self.session.system_prompt = Some(merged);
             return;
         }
         self.session.compaction_summary_prompt = merge_system_prompts(
             self.session.compaction_summary_prompt.as_ref(),
-            summary_prompt.clone(),
+            Some(summary_prompt.clone()),
         );
-        let merged = merge_system_prompts(self.session.system_prompt.as_ref(), summary_prompt);
+        let merged =
+            merge_system_prompts(self.session.system_prompt.as_ref(), Some(summary_prompt));
         self.session.last_system_prompt_hash = Some(system_prompt_hash(merged.as_ref()));
         self.session.system_prompt = merged;
     }

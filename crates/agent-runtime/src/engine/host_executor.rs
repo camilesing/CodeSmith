@@ -716,6 +716,12 @@ pub struct CompactionProbe {
     /// dropped messages and render the ledger section. `None` (tests) ⇒
     /// fact extraction is disabled on the executor path.
     fact_ledger: Option<Arc<std::sync::Mutex<FactLedger>>>,
+    /// Snapshot of `session.compaction_summary_prompt` taken when the host
+    /// assembled this executor (turn start). The auto-compaction path folds
+    /// it into the next summary request (PRESERVE/ADD/UPDATE) so repeated
+    /// compactions replace the carrier instead of growing it. `None` (tests,
+    /// child turns) — no fold, the host keeps appending.
+    previous_summary: Option<SystemPrompt>,
 }
 
 impl CompactionProbe {
@@ -729,11 +735,18 @@ impl CompactionProbe {
             micro_state: Arc::new(std::sync::Mutex::new(MicroCompactState::default())),
             circuit_breaker: Arc::new(std::sync::Mutex::new(CompactionCircuitBreaker::new())),
             fact_ledger: None,
+            previous_summary: None,
         }
     }
 
-    /// Attach the session fact ledger (builder precedent: `.with_reinject`).
+    /// Attach the session's current compaction summary (the fold input).
+    /// Builder precedent: `.with_fact_ledger`.
     #[must_use]
+    pub fn with_previous_summary(mut self, previous: Option<SystemPrompt>) -> Self {
+        self.previous_summary = previous;
+        self
+    }
+
     pub fn with_fact_ledger(mut self, ledger: Option<Arc<std::sync::Mutex<FactLedger>>>) -> Self {
         self.fact_ledger = ledger;
         self
@@ -1406,7 +1419,7 @@ pub struct HostAgentExecutor {
     /// tokio): accumulation is a synchronous merge fn call, and the lock is
     /// never held across an `await` (matches the `usage` / `LspProbe` /
     /// `CompactionProbe` precedent).
-    pending_compaction_summary: std::sync::Mutex<Option<SystemPrompt>>,
+    pending_compaction_summary: std::sync::Mutex<PendingCompactionSummary>,
 
     /// Signal that a *non-merge* compaction changed the transcript during
     /// `run` (slice 25c §E) — set by [`Self::signal_post_compact_cleanup`]
@@ -1572,6 +1585,17 @@ pub struct HostAgentExecutor {
     refill: std::sync::Mutex<crate::compaction::circuit_breaker::RapidRefillDetector>,
 }
 
+/// What [`HostAgentExecutor::take_pending_compaction_summary`] drains: the
+/// accumulated summary prompt plus whether the last recorded summary folded
+/// its predecessor into itself — the host then REPLACES
+/// `session.compaction_summary_prompt` instead of appending, keeping the
+/// pinned prefix bounded across repeated compactions.
+#[derive(Debug, Default, Clone)]
+pub struct PendingCompactionSummary {
+    pub prompt: Option<SystemPrompt>,
+    pub folded: bool,
+}
+
 impl HostAgentExecutor {
     /// Construct from the four collaborators + config + an optional guardrail
     /// status channel (`None` for embeds that don't surface guardrail status) +
@@ -1623,7 +1647,7 @@ impl HostAgentExecutor {
             usage: std::sync::Mutex::new(Usage::default()),
             reported_model: std::sync::Mutex::new(None),
             failed_attempts: std::sync::Mutex::new(Vec::new()),
-            pending_compaction_summary: std::sync::Mutex::new(None),
+            pending_compaction_summary: std::sync::Mutex::new(PendingCompactionSummary::default()),
             pending_post_compact_cleanup: std::sync::Mutex::new(false),
             capacity_gate: None,
             pending_capacity_decision: std::sync::Mutex::new(None),
@@ -2084,11 +2108,13 @@ impl HostAgentExecutor {
     /// fresh per turn, so no cross-turn leakage. Mirrors the `take_usage`
     /// read-back pattern.
     #[must_use]
-    pub fn take_pending_compaction_summary(&self) -> Option<SystemPrompt> {
-        self.pending_compaction_summary
-            .lock()
-            .expect("pending_compaction_summary mutex poisoned")
-            .take()
+    pub fn take_pending_compaction_summary(&self) -> PendingCompactionSummary {
+        std::mem::take(
+            &mut *self
+                .pending_compaction_summary
+                .lock()
+                .expect("pending_compaction_summary mutex poisoned"),
+        )
     }
 
     /// Accumulate a compaction `summary_prompt` into the pending slot (slice
@@ -2100,13 +2126,24 @@ impl HostAgentExecutor {
     /// `session.compaction_summary_prompt`). Sync; the current value is read
     /// out, merged, and written back inside one synchronous critical section
     /// (no `await` crosses the guard).
-    fn record_compaction_summary(&self, summary: Option<SystemPrompt>) {
+    fn record_compaction_summary(&self, summary: Option<SystemPrompt>, folded: bool) {
         let mut guard = self
             .pending_compaction_summary
             .lock()
             .expect("pending_compaction_summary mutex poisoned");
-        let current = guard.take();
-        *guard = crate::compaction::merge_system_prompts(current.as_ref(), summary);
+        if folded {
+            // The summary folded its predecessor into itself — the slot
+            // REPLACES: the host will swap `session.compaction_summary_prompt`
+            // instead of appending, so the carrier stays one block.
+            *guard = PendingCompactionSummary {
+                prompt: summary,
+                folded: true,
+            };
+        } else {
+            let current = guard.prompt.take();
+            guard.prompt = crate::compaction::merge_system_prompts(current.as_ref(), summary);
+            guard.folded = false;
+        }
     }
 
     /// Non-draining peek of the accumulated compaction `summary_prompt`
@@ -2119,7 +2156,7 @@ impl HostAgentExecutor {
     /// request within the same turn (mirrors production's per-step
     /// `Engine::refresh_system_prompt` at the retired the retired turn handler,
     /// which folds `session.compaction_summary_prompt`).
-    fn peek_pending_compaction_summary(&self) -> Option<SystemPrompt> {
+    fn peek_pending_compaction_summary(&self) -> PendingCompactionSummary {
         self.pending_compaction_summary
             .lock()
             .expect("pending_compaction_summary mutex poisoned")
@@ -2151,7 +2188,7 @@ impl HostAgentExecutor {
     /// `merge(base, peek(cumulative))` recomputes `base + cumulative` each step
     /// — never `base + cumulative + cumulative`.
     fn refresh_system_prompt_snapshot(&self, base: Option<&SystemPrompt>) -> Option<SystemPrompt> {
-        crate::compaction::merge_system_prompts(base, self.peek_pending_compaction_summary())
+        crate::compaction::merge_system_prompts(base, self.peek_pending_compaction_summary().prompt)
     }
 
     /// Read back whether a *non-merge* compaction changed the transcript
@@ -2280,7 +2317,7 @@ impl TurnHarvest for HostAgentExecutor {
     fn take_failed_attempts(&self) -> Vec<codesmith_session::store::AttemptRecord> {
         HostAgentExecutor::take_failed_attempts(self)
     }
-    fn take_pending_compaction_summary(&self) -> Option<SystemPrompt> {
+    fn take_pending_compaction_summary(&self) -> PendingCompactionSummary {
         HostAgentExecutor::take_pending_compaction_summary(self)
     }
     fn take_pending_post_compact_cleanup(&self) -> bool {
@@ -2751,9 +2788,20 @@ impl HostAgentExecutor {
         // Clone the messages out so no `ChatHistory` borrow crosses the await
         // (the summary call is async — the compacted result is applied after).
         let messages = history.messages().to_vec();
+        // The fold input: whatever summary already exists — this turn's
+        // (the pending slot) or the session's (the turn-start snapshot on
+        // the probe). Folding keeps the carrier one block (see
+        // `PendingCompactionSummary`).
+        let previous_summary = self
+            .peek_pending_compaction_summary()
+            .prompt
+            .or_else(|| probe.previous_summary.clone())
+            .as_ref()
+            .map(crate::compaction::prompt_summary_text);
         let enhancements = Some(CompactionEnhancements {
             fact_ledger: probe.fact_ledger.clone(),
             strategy: Some(directives),
+            previous_summary,
             ..CompactionEnhancements::default()
         });
         match compact_messages_safe(
@@ -2788,7 +2836,10 @@ impl HostAgentExecutor {
                 // pre-request micro / recovery micro / hard-trim).
                 // `emit_session_updated` remains deferred until the host-side
                 // post-`run` closure (fires alongside the merge).
-                self.record_compaction_summary(result.summary_prompt.clone());
+                self.record_compaction_summary(
+                    result.summary_prompt.clone(),
+                    result.summary_folded_previous,
+                );
                 history.replace_all("full-compact", result.messages);
                 // Wholesale transcript replace — the anchor's absolute level
                 // was measured against the pre-compaction request (P2-5).
@@ -2968,7 +3019,7 @@ impl HostAgentExecutor {
                         // the host to fold into `session.system_prompt` post-`run`
                         // (the executor's system prompt is a static snapshot, so
                         // folding mid-run is invisible to this turn's requests).
-                        self.record_compaction_summary(result.summary_prompt.clone());
+                        self.record_compaction_summary(result.summary_prompt.clone(), false);
                         history.replace_all("responsive-compact", result.messages);
                         // Wholesale transcript replace — the usage anchor's
                         // absolute level was measured against the
@@ -3267,7 +3318,7 @@ impl HostAgentExecutor {
                     self.invalidate_usage_anchor();
                 }
                 // summary_prompt recorded for post-`run` merge — slice 25a §E.
-                self.record_compaction_summary(result.summary_prompt.clone());
+                self.record_compaction_summary(result.summary_prompt.clone(), false);
                 self.reinject_compaction_attachments(history, Some(target_budget))
                     .await;
             }
@@ -9460,6 +9511,7 @@ mod tests {
             model: "mock-v0".to_string(),
             context_window: None,
             output_cap: None,
+            summary_model: None,
             cache_summary: false,
             auto_floor_tokens: 0,
             strategy: crate::compaction::strategy::BUILTIN_COMPACTION_STRATEGY.to_string(),
@@ -10040,13 +10092,14 @@ mod tests {
         // post-`run` (no longer discarded — the "Known gaps" closure).
         let summary = executor
             .take_pending_compaction_summary()
+            .prompt
             .expect("summary_prompt recorded by run_compaction");
         assert!(
             system_prompt_text(&summary).contains("Conversation summary."),
             "recorded summary reflects the LLM compaction summary"
         );
         // One-shot drain (mirrors `take_usage`): a second read yields `None`.
-        assert!(executor.take_pending_compaction_summary().is_none());
+        assert!(executor.take_pending_compaction_summary().prompt.is_none());
     }
 
     /// Slice 25a §E: a `run` that triggers `recover_context_overflow`
@@ -10099,6 +10152,7 @@ mod tests {
         // will fold it into `session.system_prompt`.
         let summary = executor
             .take_pending_compaction_summary()
+            .prompt
             .expect("summary_prompt recorded by recover_context_overflow");
         assert!(
             system_prompt_text(&summary).contains("SUMMARY"),
@@ -10143,10 +10197,11 @@ mod tests {
             text: "second compaction summary".to_string(),
             cache_control: None,
         }]);
-        executor.record_compaction_summary(Some(summary_a));
-        executor.record_compaction_summary(Some(summary_b));
+        executor.record_compaction_summary(Some(summary_a), false);
+        executor.record_compaction_summary(Some(summary_b), false);
         let merged = executor
             .take_pending_compaction_summary()
+            .prompt
             .expect("accumulated merge present");
         let text = system_prompt_text(&merged);
         // Both summaries survive the in-slot fold (not last-wins).
@@ -10196,7 +10251,7 @@ mod tests {
             .expect("run");
         assert_eq!(reason, StopReason::NoToolCalls);
         assert_eq!(mock.compaction_calls(), 0);
-        assert!(executor.take_pending_compaction_summary().is_none());
+        assert!(executor.take_pending_compaction_summary().prompt.is_none());
     }
 
     // === mid-loop system-prompt refresh (slice 38 §E) ===================
@@ -10378,6 +10433,7 @@ mod tests {
         // The slot still drains post-`run` (the mid-loop peek didn't take it).
         let summary = executor
             .take_pending_compaction_summary()
+            .prompt
             .expect("slot survived the mid-loop peek");
         assert!(
             system_prompt_text(&summary).contains("CONVO SUMMARY"),
@@ -10385,7 +10441,7 @@ mod tests {
             system_prompt_text(&summary)
         );
         // One-shot drain (mirrors slice 25a): a second read yields `None`.
-        assert!(executor.take_pending_compaction_summary().is_none());
+        assert!(executor.take_pending_compaction_summary().prompt.is_none());
     }
 
     /// §E slice 38 — two summaries recorded this turn both fold into the
@@ -10424,8 +10480,8 @@ mod tests {
             text: "second compaction summary".to_string(),
             cache_control: None,
         }]);
-        executor.record_compaction_summary(Some(summary_a));
-        executor.record_compaction_summary(Some(summary_b));
+        executor.record_compaction_summary(Some(summary_a), false);
+        executor.record_compaction_summary(Some(summary_b), false);
         let folded = executor
             .refresh_system_prompt_snapshot(Some(&base))
             .expect("folded snapshot present");
@@ -10522,7 +10578,7 @@ mod tests {
             None,
         );
         let base = SystemPrompt::Text("BASE".to_string());
-        executor.record_compaction_summary(Some(SystemPrompt::Text("MARKER".to_string())));
+        executor.record_compaction_summary(Some(SystemPrompt::Text("MARKER".to_string())), false);
         // Two consecutive per-step refreshes (simulating step 1 and step 2 of a
         // run where step 0 compacted once; the slot is unchanged across them).
         let step1 = executor
@@ -11157,7 +11213,7 @@ mod tests {
         assert!(history.len() < 42);
         // XOR: full-compact recorded a summary_prompt (merge path)…
         assert!(
-            executor.take_pending_compaction_summary().is_some(),
+            executor.take_pending_compaction_summary().prompt.is_some(),
             "full-compact records a summary_prompt for the 25a merge"
         );
         // …and did NOT set the cleanup slot (full→merge, not cleanup).
@@ -13644,6 +13700,7 @@ mod tests {
         // post-`run`.
         let summary = executor
             .take_pending_compaction_summary()
+            .prompt
             .expect("summary_prompt recorded by the mid-loop refresh");
         assert!(
             system_prompt_text(&summary).contains("Conversation summary."),
@@ -19676,7 +19733,7 @@ mod tests {
             "SessionBeforeCompact cancel must skip the compaction LLM call"
         );
         assert!(
-            executor.take_pending_compaction_summary().is_none(),
+            executor.take_pending_compaction_summary().prompt.is_none(),
             "no summary_prompt recorded when compaction is vetoed"
         );
         assert_eq!(

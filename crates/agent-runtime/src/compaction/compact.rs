@@ -659,6 +659,12 @@ pub struct CompactionResult {
     pub messages: Vec<Message>,
     /// Summary system prompt
     pub summary_prompt: Option<SystemPrompt>,
+    /// True when the summary request folded the previous compaction
+    /// summary into itself (PRESERVE/ADD/UPDATE over `<previous-summary>`)
+    /// and therefore REPLACES `session.compaction_summary_prompt` instead
+    /// of appending — repeated compactions stay one block, so the pinned
+    /// prefix cannot grow without bound across a long session.
+    pub summary_folded_previous: bool,
     /// Messages that were removed from the active window
     #[allow(dead_code)]
     pub removed_messages: Vec<Message>,
@@ -712,6 +718,13 @@ pub struct CompactionEnhancements {
     /// strategy's trigger fired; `None` (the default, and every non-engine
     /// caller) keeps the builtin boundary and summary instruction.
     pub strategy: Option<Arc<crate::compaction::strategy::StrategyDirectives>>,
+    /// The previous compaction summary's text (the engine's
+    /// `session.compaction_summary_prompt`). When present, the summary
+    /// request folds it in (PRESERVE/ADD/UPDATE) and the result's
+    /// `summary_folded_previous` is `true` — the caller replaces the
+    /// carrier instead of appending. `None` (default): first compaction,
+    /// or a caller outside the engine.
+    pub previous_summary: Option<String>,
 }
 
 /// The `keep_recent` message count for this attempt — ONE path: the
@@ -941,6 +954,7 @@ pub async fn compact_messages_safe(
             return Ok(CompactionResult {
                 messages: pruned_messages,
                 summary_prompt: merge_preserve_context(None, preserve_context.as_deref()),
+                summary_folded_previous: false,
                 removed_messages: Vec::new(),
                 retries_used: 0,
             });
@@ -1025,6 +1039,9 @@ pub async fn compact_messages_safe(
                     sm.summary_prompt,
                     preserve_context.as_deref(),
                 ),
+                // The memory file did not fold the previous LLM summary —
+                // the caller must keep appending (replace would drop it).
+                summary_folded_previous: false,
                 removed_messages: Vec::new(),
                 retries_used: 0,
             });
@@ -1032,6 +1049,12 @@ pub async fn compact_messages_safe(
     }
 
     let mut last_error: Option<anyhow::Error> = None;
+    // The fold directive rides every LLM attempt below; the flag is true
+    // only when there was a previous summary to fold (a first compaction
+    // "replacing" an empty carrier would be a no-op distinction).
+    let folded_previous = enhancements
+        .and_then(|e| e.previous_summary.as_deref())
+        .is_some_and(|s| !s.trim().is_empty());
 
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
@@ -1051,6 +1074,7 @@ pub async fn compact_messages_safe(
             // `compact_messages` resolves a missing slot to the compiled
             // builtin unit's directives itself — no branch here.
             enhancements.and_then(|e| e.strategy.as_deref()),
+            enhancements.and_then(|e| e.previous_summary.as_deref()),
         )
         .await
         {
@@ -1089,6 +1113,7 @@ pub async fn compact_messages_safe(
                 return Ok(CompactionResult {
                     messages: msgs,
                     summary_prompt: merge_preserve_context(prompt, preserve_context.as_deref()),
+                    summary_folded_previous: folded_previous,
                     removed_messages: removed,
                     retries_used: attempt.saturating_add(summary_retries),
                 });
@@ -1169,6 +1194,7 @@ pub async fn compact_messages(
     external_working_set_paths: Option<&[String]>,
     fact_ledger_section: &str,
     directives: Option<&crate::compaction::strategy::StrategyDirectives>,
+    previous_summary: Option<&str>,
 ) -> Result<(Vec<Message>, Option<SystemPrompt>, Vec<Message>, u32)> {
     if messages.is_empty() {
         return Ok((Vec::new(), None, Vec::new(), 0));
@@ -1219,12 +1245,21 @@ pub async fn compact_messages(
     } else {
         window
     };
+    let fold = previous_summary_directive(previous_summary);
+    let mut directives_with_fold = Some(directives.clone());
+    if !fold.is_empty() {
+        let d = directives_with_fold.as_mut().expect("just set");
+        d.summary_instructions = match d.summary_instructions.take() {
+            Some(existing) => Some(format!("{existing}\n\n{fold}")),
+            None => Some(fold),
+        };
+    }
     let mut summary_result = create_summary_for_window(
         client,
         &to_summarize,
         &summary_model,
         summary_window,
-        Some(directives),
+        directives_with_fold.as_ref(),
     )
     .await?;
     if summary_section_count(&summary_result.text) < LAYERED_SUMMARY_HEADERS.len() {
@@ -1237,7 +1272,7 @@ pub async fn compact_messages(
             &to_summarize,
             &summary_model,
             summary_window,
-            Some(directives),
+            directives_with_fold.as_ref(),
         )
         .await
             && summary_section_count(&second.text) > summary_section_count(&summary_result.text)
@@ -1526,6 +1561,27 @@ pub fn is_context_window_error(e: &anyhow::Error) -> bool {
         || lower.contains("prompt is too long")
         || lower.contains("requested")
         || lower.contains("maximum")
+}
+
+/// Cap on the `<previous-summary>` payload folded into the next summary
+/// request (pi's UPDATE posture): the carrier is bounded by design, and an
+/// oversized fold would inflate the very request compaction is trying to
+/// shrink. Head-kept — the earliest compactions are the stalest.
+const PREVIOUS_SUMMARY_DIRECTIVE_CAP_CHARS: usize = 16_000;
+
+/// The PRESERVE/ADD/UPDATE directive sent with the previous compaction
+/// summary. Empty string when there is nothing to fold.
+fn previous_summary_directive(previous_summary: Option<&str>) -> String {
+    let Some(previous) = previous_summary.filter(|s| !s.trim().is_empty()) else {
+        return String::new();
+    };
+    let capped = truncate_chars(previous, PREVIOUS_SUMMARY_DIRECTIVE_CAP_CHARS);
+    format!(
+        "A summary of the EARLIER, already-compacted portion of this session follows. \
+         Fold it into your sections: PRESERVE facts still true, UPDATE stale ones, DROP \
+         superseded ones — never append it verbatim or repeat its wording.\n\
+         <previous-summary>\n{capped}\n</previous-summary>"
+    )
 }
 
 /// Cache-hit percentage for a compaction summary call.

@@ -119,6 +119,9 @@ pub(crate) enum TurnShape {
 pub(crate) struct TurnContextSources {
     pub compaction: CompactionConfig,
     pub workspace: PathBuf,
+    /// Session `compaction_summary_prompt` snapshot (the fold input for the
+    /// auto-compaction path — see `CompactionProbe::with_previous_summary`).
+    pub previous_summary: Option<SystemPrompt>,
     pub fact_ledger: Arc<StdMutex<FactLedger>>,
     pub api_provider: ApiProvider,
     pub model: String,
@@ -254,8 +257,8 @@ pub trait TurnHarvest: Send + Sync {
     fn take_failed_attempts(&self) -> Vec<AttemptRecord> {
         Vec::new()
     }
-    fn take_pending_compaction_summary(&self) -> Option<SystemPrompt> {
-        None
+    fn take_pending_compaction_summary(&self) -> super::host_executor::PendingCompactionSummary {
+        super::host_executor::PendingCompactionSummary::default()
     }
     fn take_pending_post_compact_cleanup(&self) -> bool {
         false
@@ -525,7 +528,8 @@ pub(crate) fn build_host_executor(deps: TurnDeps) -> Arc<HostAgentExecutor> {
         Some(ctx) => (
             Some(
                 CompactionProbe::new(ctx.compaction.clone(), ctx.workspace.clone())
-                    .with_fact_ledger(Some(ctx.fact_ledger.clone())),
+                    .with_fact_ledger(Some(ctx.fact_ledger.clone()))
+                    .with_previous_summary(ctx.previous_summary.clone()),
             ),
             Some(
                 CapacityProbe::new(
@@ -649,7 +653,7 @@ mod tests {
         assert_eq!(h.take_usage(), Usage::default());
         assert_eq!(h.take_reported_model(), None);
         assert!(h.take_failed_attempts().is_empty());
-        assert_eq!(h.take_pending_compaction_summary(), None);
+        assert!(h.take_pending_compaction_summary().prompt.is_none());
         assert!(!h.take_pending_post_compact_cleanup());
         assert!(h.take_pending_capacity_decision().is_none());
         assert!(h.take_pending_replay_outcome().is_none());

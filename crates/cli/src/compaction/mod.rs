@@ -423,7 +423,7 @@ mod tests {
         // two messages (200 ≥ 150 × 1.2 = 180), not the 20% (one) or a
         // blind half.
         let messages = (0..10)
-            .map(|idx| msg("user", &"x".repeat(400)))
+            .map(|_| msg("user", &"x".repeat(400)))
             .collect::<Vec<_>>();
 
         let peeled = peel_summary_messages_for_retry(&messages, Some(150));
@@ -1458,6 +1458,7 @@ mod tests {
     fn test_compaction_result_retries_used() {
         // This test verifies the CompactionResult structure
         let result = CompactionResult {
+            summary_folded_previous: false,
             messages: vec![],
             summary_prompt: None,
             removed_messages: vec![],
@@ -1559,6 +1560,7 @@ mod tests {
         let enhancements = CompactionEnhancements {
             hooks: None,
             strategy: None,
+            previous_summary: None,
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A\n- fact B".to_string(),
                 config: SessionMemoryCompactConfig {
@@ -1620,6 +1622,7 @@ mod tests {
         let enhancements = CompactionEnhancements {
             hooks: None,
             strategy: None,
+            previous_summary: None,
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A".to_string(),
                 config: SessionMemoryCompactConfig {
@@ -1688,6 +1691,7 @@ mod tests {
             session_memory: None,
             fact_ledger: None,
             strategy: None,
+            previous_summary: None,
         };
 
         let result = compact_messages_safe(
@@ -1729,6 +1733,7 @@ mod tests {
         let enhancements = CompactionEnhancements {
             hooks: Some((Arc::new(executor), HookContext::new())),
             strategy: None,
+            previous_summary: None,
             session_memory: Some(SessionMemorySidecar {
                 memory_content: "## Project memory\n- fact A".to_string(),
                 config: SessionMemoryCompactConfig {
@@ -1890,6 +1895,67 @@ mod tests {
         ### File Map\n\
         - src/parser.py — owns CSV parsing, cli depends on it";
 
+    /// The fold directive: a previous summary rides the summary request as
+    /// `<previous-summary>` with PRESERVE/ADD/UPDATE, and the result flags
+    /// `summary_folded_previous` (the engine replaces the carrier).
+    #[tokio::test]
+    async fn previous_summary_folds_into_the_summary_request() {
+        let mock = MockLlmClient::new(Vec::new());
+        mock.push_message_response(summary_response("s", LAYERED_SUMMARY_TEXT));
+
+        let mut config = over_threshold_config();
+        config.token_threshold = 10;
+        let enhancements = CompactionEnhancements {
+            previous_summary: Some("## earlier summary\n- keep me".to_string()),
+            ..CompactionEnhancements::default()
+        };
+        let result = compact_messages_safe(
+            &mock,
+            &long_conversation(),
+            &config,
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("compaction should succeed");
+
+        assert!(result.summary_folded_previous, "the fold happened");
+        let requests = mock.captured_requests();
+        assert!(
+            requests.iter().any(|r| {
+                let text = serde_json::to_string(&r.messages).unwrap_or_default();
+                text.contains("<previous-summary>") && text.contains("PRESERVE")
+            }),
+            "the request carries the fold directive"
+        );
+
+        // Without a previous summary: no directive, no flag.
+        let mock2 = MockLlmClient::new(Vec::new());
+        mock2.push_message_response(summary_response("s", LAYERED_SUMMARY_TEXT));
+        let result = compact_messages_safe(
+            &mock2,
+            &long_conversation(),
+            &config,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("compaction should succeed");
+        assert!(!result.summary_folded_previous);
+        let requests = mock2.captured_requests();
+        assert!(
+            requests.iter().all(|r| {
+                let text = serde_json::to_string(&r.messages).unwrap_or_default();
+                !text.contains("<previous-summary>")
+            }),
+            "no directive without a previous summary"
+        );
+    }
+
     /// `[compaction] summary_model`: the summary request rides the
     /// configured model, not the session model.
     #[tokio::test]
@@ -1907,6 +1973,7 @@ mod tests {
             None,
             None,
             "",
+            None,
             None,
         )
         .await
@@ -1937,6 +2004,7 @@ mod tests {
             None,
             "",
             None,
+            None,
         )
         .await
         .expect("compaction should succeed");
@@ -1966,6 +2034,7 @@ mod tests {
             None,
             "",
             None,
+            None,
         )
         .await
         .expect("compaction should succeed");
@@ -1987,6 +2056,7 @@ mod tests {
             None,
             None,
             "",
+            None,
             None,
         )
         .await

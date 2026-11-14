@@ -3062,11 +3062,14 @@ fn compaction_summary_stays_in_stable_system_prompt() {
         .expect("working_set poisoned")
         .observe_user_message("continue in src/main.rs", tmp.path());
     engine.refresh_system_prompt(AppMode::Agent);
-    engine.merge_compaction_summary(Some(SystemPrompt::Blocks(vec![SystemBlock {
-        block_type: "text".to_string(),
-        text: format!("{COMPACTION_SUMMARY_MARKER}\nsummary"),
-        cache_control: None,
-    }])));
+    engine.merge_compaction_summary(
+        Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: format!("{COMPACTION_SUMMARY_MARKER}\nsummary"),
+            cache_control: None,
+        }])),
+        false,
+    );
 
     let prompt = match &engine.session.system_prompt {
         Some(SystemPrompt::Text(text)) => text.clone(),
@@ -3080,6 +3083,61 @@ fn compaction_summary_stays_in_stable_system_prompt() {
 
     assert!(prompt.contains(COMPACTION_SUMMARY_MARKER));
     assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
+}
+
+/// A folded summary REPLACES the carrier: after two folded merges the
+/// carrier holds exactly one block (the newest) and the system prompt no
+/// longer carries the older text — repeated compactions cannot grow the
+/// pinned prefix without bound.
+#[test]
+fn folded_compaction_summary_replaces_instead_of_appending() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    fs::write(tmp.path().join("src/main.rs"), "fn main() {}").expect("write");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    let summary = |marker: &str| {
+        Some(SystemPrompt::Blocks(vec![SystemBlock {
+            block_type: "text".to_string(),
+            text: format!("{COMPACTION_SUMMARY_MARKER}\n{marker}"),
+            cache_control: None,
+        }]))
+    };
+    engine.merge_compaction_summary(summary("first-generation"), true);
+    engine.merge_compaction_summary(summary("second-generation"), true);
+
+    let carrier = engine
+        .session
+        .compaction_summary_prompt
+        .as_ref()
+        .expect("carrier present");
+    let SystemPrompt::Blocks(blocks) = carrier else {
+        panic!("carrier is block-shaped");
+    };
+    assert_eq!(blocks.len(), 1, "the carrier stays ONE block: {blocks:?}");
+    assert!(blocks[0].text.contains("second-generation"));
+
+    let prompt_text = match &engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+    assert!(prompt_text.contains("second-generation"));
+    assert!(
+        !prompt_text.contains("first-generation"),
+        "the folded-over generation must leave the prefix: {prompt_text}"
+    );
 }
 
 #[tokio::test]

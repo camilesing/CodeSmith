@@ -1364,7 +1364,7 @@ impl Engine {
                                 codesmith_session::zones::RebuildReason::AutoCompaction,
                                 result.messages,
                             );
-                            self.merge_compaction_summary(result.summary_prompt);
+                            self.merge_compaction_summary(result.summary_prompt, false);
                             let effective_window =
                                 self.effective_context_window(&self.session.model);
                             self.reinject_compaction_attachments(context_input_budget_for_window(
@@ -1423,12 +1423,15 @@ impl Engine {
         let pointer = self
             .persist_capacity_record(turn, GuardrailAction::TargetedContextRefresh, &record)
             .await;
-        self.merge_compaction_summary(Some(self.canonical_prompt(
-            &canonical,
-            &pointer,
-            GuardrailAction::TargetedContextRefresh,
-            None,
-        )));
+        self.merge_compaction_summary(
+            Some(self.canonical_prompt(
+                &canonical,
+                &pointer,
+                GuardrailAction::TargetedContextRefresh,
+                None,
+            )),
+            false,
+        );
         self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
@@ -1625,12 +1628,15 @@ impl Engine {
         let pointer = self
             .persist_capacity_record(turn, GuardrailAction::VerifyWithToolReplay, &record)
             .await;
-        self.merge_compaction_summary(Some(self.canonical_prompt(
-            &canonical,
-            &pointer,
-            GuardrailAction::VerifyWithToolReplay,
-            Some(&verification_note),
-        )));
+        self.merge_compaction_summary(
+            Some(self.canonical_prompt(
+                &canonical,
+                &pointer,
+                GuardrailAction::VerifyWithToolReplay,
+                Some(&verification_note),
+            )),
+            false,
+        );
         self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
@@ -1690,12 +1696,15 @@ impl Engine {
             self.refold_message_projections();
         }
 
-        self.merge_compaction_summary(Some(self.canonical_prompt(
-            &canonical,
-            &pointer,
-            GuardrailAction::VerifyAndReplan,
-            Some("Replan now from canonical state. Keep steps minimal and verifiable."),
-        )));
+        self.merge_compaction_summary(
+            Some(self.canonical_prompt(
+                &canonical,
+                &pointer,
+                GuardrailAction::VerifyAndReplan,
+                Some("Replan now from canonical state. Keep steps minimal and verifiable."),
+            )),
+            false,
+        );
         self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
@@ -1976,7 +1985,7 @@ impl Engine {
             GuardrailAction::NoIntervention,
             Some("Rehydrated canonical state from memory."),
         );
-        self.merge_compaction_summary(Some(prompt));
+        self.merge_compaction_summary(Some(prompt), false);
     }
 }
 

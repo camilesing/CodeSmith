@@ -737,11 +737,16 @@ mod tests {
     #[test]
     fn snapshot_carries_output_cap() {
         let messages = history(2);
-        let mut config = CompactionConfig::default();
-        config.output_cap = Some(8_192);
+        let config = CompactionConfig {
+            output_cap: Some(8_192),
+            ..CompactionConfig::default()
+        };
         let snap = snapshot(&messages, &config);
         assert_eq!(snap["output_cap"], json!(8_192));
-        config.output_cap = None;
+        let config = CompactionConfig {
+            output_cap: None,
+            ..CompactionConfig::default()
+        };
         let snap = snapshot(&messages, &config);
         assert_eq!(snap["output_cap"], json!(0));
     }
