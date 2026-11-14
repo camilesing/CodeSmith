@@ -1824,6 +1824,9 @@ mod tests {
         assert!(instruction.contains("### Failed Approaches"));
         assert!(instruction.contains("### Brief Process"));
         assert!(instruction.contains("500"));
+        // The injection guard rides the instruction, so both request shapes
+        // (cache-aligned replay + formatted fallback) carry it.
+        assert!(instruction.contains("untrusted source data"));
     }
 
     fn summary_response(id: &str, text: &str) -> MessageResponse {
