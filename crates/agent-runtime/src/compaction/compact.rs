@@ -1380,7 +1380,8 @@ pub async fn create_formatted_summary_with_peel_retry(
                     return Err(err);
                 }
                 let before = candidate_messages.len();
-                let peeled = peel_summary_messages_for_retry(&candidate_messages);
+                let gap = parse_context_overflow_gap(&err.to_string());
+                let peeled = peel_summary_messages_for_retry(&candidate_messages, gap);
                 if peeled.len() >= before {
                     return Err(err);
                 }
@@ -1389,10 +1390,10 @@ pub async fn create_formatted_summary_with_peel_retry(
                     "{}",
                     format!(
                         "Formatted compaction summary exceeded the model context window ({err}); \
-                     peeled old messages for retry {retries_used}/{} ({} -> {} messages)",
+                         peeled old messages for retry {retries_used}/{} ({} -> {} messages, gap={gap:?})",
                         SUMMARY_PROMPT_TOO_LONG_MAX_RETRIES,
                         before,
-                        peeled.len()
+                        peeled.len(),
                     )
                 );
                 candidate_messages = peeled;
@@ -1414,7 +1415,44 @@ pub fn extract_summary_text(response: &crate::models::MessageResponse) -> String
         .join("\n")
 }
 
-pub fn peel_summary_messages_for_retry(messages: &[Message]) -> Vec<Message> {
+/// Parse the overflowing-token gap out of a provider context-window error —
+/// `"123456 tokens > 120000"` and close variants (commas tolerated, the
+/// `tokens` word may sit on either side of the `>`). `Some(gap)` only when
+/// the message carries a usable positive pair; anything else falls back to
+/// the fixed-percentage peel.
+pub fn parse_context_overflow_gap(error_text: &str) -> Option<usize> {
+    let cleaned: String = error_text
+        .chars()
+        .filter(|c| *c != ',' && *c != '.' && *c != '(' && *c != ')')
+        .collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let number = |word: &str| -> Option<usize> {
+        let digits = word.trim_matches(|c: char| !c.is_ascii_digit());
+        digits.parse::<usize>().ok().filter(|n| *n > 0)
+    };
+    for window in words.windows(4) {
+        // "N tokens > M"
+        if window[1].to_ascii_lowercase().starts_with("token")
+            && window[2].starts_with('>')
+            && let (Some(actual), Some(limit)) = (number(window[0]), number(window[3]))
+        {
+            return actual.checked_sub(limit).filter(|gap| *gap > 0);
+        }
+        // "N > M tokens"
+        if window[1].starts_with('>')
+            && window[3].to_ascii_lowercase().starts_with("token")
+            && let (Some(actual), Some(limit)) = (number(window[0]), number(window[2]))
+        {
+            return actual.checked_sub(limit).filter(|gap| *gap > 0);
+        }
+    }
+    None
+}
+
+pub fn peel_summary_messages_for_retry(
+    messages: &[Message],
+    overflow_gap: Option<usize>,
+) -> Vec<Message> {
     if messages.len() <= 1 {
         return messages.to_vec();
     }
@@ -1431,11 +1469,29 @@ pub fn peel_summary_messages_for_retry(messages: &[Message]) -> Vec<Message> {
         return messages.to_vec();
     }
 
-    let remove_count = removable
-        .len()
-        .saturating_mul(SUMMARY_PROMPT_TOO_LONG_PEEL_PERCENT)
-        .div_ceil(100)
-        .max(1);
+    let remove_count = match overflow_gap {
+        // An exact gap beats a blind percentage: peel oldest-first until the
+        // estimated removal covers the gap (plus 20% estimator safety), so
+        // the retry does not die on the same limit — nor over-peel.
+        Some(gap) if gap > 0 => {
+            let target = gap.saturating_add(gap / 5);
+            let mut estimated = 0usize;
+            let mut count = 0usize;
+            for &idx in &removable {
+                estimated += crate::compaction::estimate_tokens_for_message(&messages[idx], false);
+                count += 1;
+                if estimated >= target {
+                    break;
+                }
+            }
+            count.clamp(1, removable.len())
+        }
+        _ => removable
+            .len()
+            .saturating_mul(SUMMARY_PROMPT_TOO_LONG_PEEL_PERCENT)
+            .div_ceil(100)
+            .max(1),
+    };
     let remove_set: HashSet<usize> = removable.into_iter().take(remove_count).collect();
 
     messages

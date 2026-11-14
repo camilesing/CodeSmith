@@ -391,12 +391,47 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let peeled = peel_summary_messages_for_retry(&messages);
+        let peeled = peel_summary_messages_for_retry(&messages, None);
 
         assert_eq!(peeled.len(), 8);
         assert_eq!(message_text(&peeled[0]).trim(), "turn 2");
         assert_eq!(message_text(&peeled[4]).trim(), "turn 6");
         assert_eq!(message_text(&peeled[7]).trim(), "turn 9");
+    }
+
+    #[test]
+    fn parse_context_overflow_gap_reads_provider_error_numbers() {
+        assert_eq!(
+            parse_context_overflow_gap(
+                "prompt is too long: 123,456 tokens > 120,000 tokens maximum"
+            ),
+            Some(3456)
+        );
+        assert_eq!(
+            parse_context_overflow_gap("input 100200 > 100000 tokens exceeded"),
+            Some(200)
+        );
+        // Inverted, absent, or non-numeric pairs peel by percentage instead.
+        assert_eq!(parse_context_overflow_gap("90 tokens > 100 tokens"), None);
+        assert_eq!(parse_context_overflow_gap("prompt is too long"), None);
+        assert_eq!(parse_context_overflow_gap(""), None);
+    }
+
+    #[test]
+    fn peel_summary_messages_for_retry_peels_the_parsed_gap() {
+        // 10 messages x ~400 chars ≈ 100 tokens each; a 150-token gap needs
+        // two messages (200 ≥ 150 × 1.2 = 180), not the 20% (one) or a
+        // blind half.
+        let messages = (0..10)
+            .map(|idx| msg("user", &"x".repeat(400)))
+            .collect::<Vec<_>>();
+
+        let peeled = peel_summary_messages_for_retry(&messages, Some(150));
+        assert_eq!(peeled.len(), 8);
+        // A gap larger than the removable span peels everything removable
+        // but never touches the pinned recent tail.
+        let peeled_all = peel_summary_messages_for_retry(&messages, Some(10_000));
+        assert_eq!(peeled_all.len(), 4);
     }
 
     #[test]
@@ -409,7 +444,7 @@ mod tests {
             tool_result("call_recent", "recent result"),
         ];
 
-        let peeled = peel_summary_messages_for_retry(&messages);
+        let peeled = peel_summary_messages_for_retry(&messages, None);
 
         assert_eq!(peeled.len(), 4);
         assert!(matches!(
