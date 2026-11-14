@@ -267,6 +267,32 @@ pub fn cache(state: &ReplState, arg: Option<&str>) {
                 .unwrap_or_else(|| "—".into()),
         );
     }
+
+    // Session-wide savings: cache hits billed at the hit rate instead of the
+    // miss rate, aggregated per model (a model switch mid-session must not
+    // bill one model's hits at another's rates). Aggregated over the FULL
+    // history, not the displayed window.
+    let mut hits_by_model: std::collections::BTreeMap<&str, u64> =
+        std::collections::BTreeMap::new();
+    for record in history.iter() {
+        if let Some(hit) = record.cache_hit_tokens {
+            *hits_by_model.entry(record.model.as_str()).or_insert(0) += u64::from(hit);
+        }
+    }
+    for (model, hit_tokens) in hits_by_model {
+        match codesmith_agent_runtime::pricing::calculate_cache_savings(
+            model,
+            u32::try_from(hit_tokens).unwrap_or(u32::MAX),
+        ) {
+            Some(savings) => println!(
+                "  cache saved this session ({model}): ${:.4} (¥{:.4}) on {hit_tokens} hit tokens",
+                savings.usd, savings.cny
+            ),
+            None => println!(
+                "  cache saved this session ({model}): pricing unknown — {hit_tokens} hit tokens"
+            ),
+        }
+    }
 }
 
 /// `/diff` — working-tree changes via `git diff` (worktree vs index; no

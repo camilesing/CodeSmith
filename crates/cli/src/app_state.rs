@@ -21,6 +21,9 @@ pub use codesmith_agent_runtime::mode::{AppMode, ReasoningEffort};
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
 #[derive(Debug, Clone)]
 pub struct TurnCacheRecord {
+    /// The model the turn actually ran on (the auto-model resolution when
+    /// enabled) — `/cache` aggregates cache savings per model.
+    pub model: String,
     /// Provider-reported total input tokens for the turn (cache-hit +
     ///   cache-miss + uncategorized). Useful for sanity-checking that hits +
     ///   misses sum back to roughly the prompt size.

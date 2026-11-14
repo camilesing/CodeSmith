@@ -1772,16 +1772,6 @@ fn apply_turn_accounting(
     state.session.last_prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
     state.session.last_prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
     state.session.last_reasoning_replay_tokens = usage.reasoning_replay_tokens;
-    state
-        .session
-        .turn_cache_history
-        .push_back(crate::app_state::TurnCacheRecord {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_hit_tokens: usage.prompt_cache_hit_tokens,
-            cache_miss_tokens: usage.prompt_cache_miss_tokens,
-        });
-
     let pricing_model = if state.auto_model {
         state
             .last_effective_model
@@ -1790,6 +1780,17 @@ fn apply_turn_accounting(
     } else {
         state.model.clone()
     };
+    state
+        .session
+        .turn_cache_history
+        .push_back(crate::app_state::TurnCacheRecord {
+            model: pricing_model.clone(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_hit_tokens: usage.prompt_cache_hit_tokens,
+            cache_miss_tokens: usage.prompt_cache_miss_tokens,
+        });
+
     if let Some(cost) = codesmith_agent_runtime::pricing::calculate_turn_cost_estimate_from_usage(
         &pricing_model,
         &usage,

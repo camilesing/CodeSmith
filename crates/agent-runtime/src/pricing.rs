@@ -463,4 +463,22 @@ mod tests {
         };
         assert_eq!(info.total_balance_f64(), None);
     }
+
+    #[test]
+    fn cache_savings_bill_the_hit_miss_rate_gap() {
+        // 1M hit tokens save exactly the miss-minus-hit rate gap per million
+        // (derived from the live rate table — the test pins the arithmetic,
+        // not the rates, which change with promos); zero hits or an unknown
+        // model save nothing.
+        let pricing = pricing_for_model("deepseek-v4-pro").unwrap();
+        let savings = calculate_cache_savings("deepseek-v4-pro", 1_000_000).unwrap();
+        let expected_usd =
+            pricing.usd.input_cache_miss_per_million - pricing.usd.input_cache_hit_per_million;
+        let expected_cny =
+            pricing.cny.input_cache_miss_per_million - pricing.cny.input_cache_hit_per_million;
+        assert!((savings.usd - expected_usd).abs() < 1e-9);
+        assert!((savings.cny - expected_cny).abs() < 1e-9);
+        assert!(calculate_cache_savings("deepseek-v4-pro", 0).is_none());
+        assert!(calculate_cache_savings("totally-unknown-model", 1_000_000).is_none());
+    }
 }
