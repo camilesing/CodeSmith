@@ -94,6 +94,10 @@ impl ToolSpec for GrepFilesTool {
                 "multiline": {
                     "type": "boolean",
                     "description": "Search the whole file buffer so patterns can span line breaks (default: false). Each match is reported at its starting line. Prefix the pattern with `(?s)` if `.` must match newlines."
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": "Match `pattern` as a literal string instead of a regex (default: false). Use this when searching for text that contains regex metacharacters ( ( ) [ ] { } . * + ? ^ $ | \\ ) — e.g. searching for `foo(bar)`."
                 }
             },
             "required": ["pattern"]
@@ -126,6 +130,7 @@ impl ToolSpec for GrepFilesTool {
                 .unwrap_or(2);
         let case_insensitive = optional_bool(&input, "case_insensitive", false)?;
         let multiline = optional_bool(&input, "multiline", false)?;
+        let literal = optional_bool(&input, "literal", false)?;
         // The default match cap rides the `tool-output-gate` policy seam
         // (omp-style unified tiers, docs/MODS.md); the compiled constant is
         // the fallback when no policy is published.
@@ -188,11 +193,24 @@ impl ToolSpec for GrepFilesTool {
         // Build the ripgrep matcher. `grep-regex` is the same engine `rg`
         // uses, so pattern semantics (including `(?i)` inline flags) carry
         // over; `case_insensitive` and `multi_line` map to builder knobs.
+        // `fixed_strings` is the literal escape hatch: a compile failure on
+        // a metacharacter-laden pattern names it in the error below.
         let matcher = RegexMatcherBuilder::new()
             .case_insensitive(case_insensitive)
             .multi_line(multiline)
+            .fixed_strings(literal)
             .build(pattern_str)
-            .map_err(|e| ToolError::invalid_input(format!("Invalid regex pattern: {e}")))?;
+            .map_err(|e| {
+                let mut message = format!("Invalid regex pattern: {e}");
+                if !literal {
+                    message.push_str(
+                        " — if you meant to search for the text literally (it contains regex \
+                         metacharacters like ( ) [ ] { } . * + ? ^ $ | \\), retry with \
+                         literal=true or escape them with a backslash",
+                    );
+                }
+                ToolError::invalid_input(message)
+            })?;
 
         // Resolve search path
         let search_path = context.resolve_path(path_str)?;
@@ -1051,6 +1069,28 @@ mod tests {
         let result = tool.execute(json!({"pattern": "[invalid"}), &ctx).await;
 
         assert!(result.is_err());
+        let message = format!("{}", result.expect_err("invalid regex must error"));
+        assert!(
+            message.contains("literal=true"),
+            "the error must name the literal escape hatch: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_literal_matches_metacharacters_verbatim() {
+        let tmp = tempdir().expect("tempdir");
+        fs::write(tmp.path().join("call.txt"), "foo(bar) baz\nno match here\n").expect("write");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let tool = GrepFilesTool;
+        let result = tool
+            .execute(json!({"pattern": "foo(bar)", "literal": true}), &ctx)
+            .await
+            .expect("literal search executes");
+
+        assert!(result.success);
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["total_matches"].as_u64().unwrap(), 1);
     }
 
     #[tokio::test]
