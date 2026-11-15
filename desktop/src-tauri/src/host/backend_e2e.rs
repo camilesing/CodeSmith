@@ -275,10 +275,26 @@ async fn real_stack(
     let process = CodesmithProcess::spawn(Some(&codesmith_binary()))
         .await
         .expect("spawn real backend");
-    let host: SharedHost = Arc::new(HostState {
+    let host = bridge_host_for(&process, workspace.clone());
+    let base = serve_bridge_on(host).await;
+
+    (
+        env,
+        reqwest::Client::new(),
+        base,
+        script,
+        workspace,
+        process,
+    )
+}
+
+/// A bridge host over an already-running backend (test shape: no app handle,
+/// no live sinks — the registries start empty).
+fn bridge_host_for(process: &CodesmithProcess, cwd: PathBuf) -> SharedHost {
+    Arc::new(HostState {
         backend: CodesmithProcess::for_test(process.base_url.clone(), process.token.clone()),
         app_handle: None,
-        cwd: workspace.clone(),
+        cwd,
         event_sinks: Default::default(),
         live_sinks: Default::default(),
         pending_inputs: Default::default(),
@@ -294,23 +310,19 @@ async fn real_stack(
         goal_overlays: Default::default(),
         goal_overlays_loaded: Default::default(),
         terminals: Default::default(),
-    });
-    let bridge_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    })
+}
+
+/// Bind the bridge router to an ephemeral port; returns its base URL.
+async fn serve_bridge_on(host: SharedHost) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bridge bind");
-    let bridge_addr = bridge_listener.local_addr().expect("bridge addr");
+    let addr = listener.local_addr().expect("bridge addr");
     tokio::spawn(async move {
-        let _ = axum::serve(bridge_listener, bridge_router(host)).await;
+        let _ = axum::serve(listener, bridge_router(host)).await;
     });
-
-    (
-        env,
-        reqwest::Client::new(),
-        format!("http://{bridge_addr}"),
-        script,
-        workspace,
-        process,
-    )
+    format!("http://{addr}")
 }
 
 // === Shared drivers ===
@@ -435,32 +447,7 @@ async fn chat_turn_settles_and_replays_identically_across_a_bridge_restart() {
 
     // A brand-new host over the same runtime (a bridge restart) replays the
     // byte-identical journal.
-    let host: SharedHost = Arc::new(HostState {
-        backend: CodesmithProcess::for_test(process.base_url.clone(), process.token.clone()),
-        app_handle: None,
-        cwd: workspace.clone(),
-        event_sinks: Default::default(),
-        live_sinks: Default::default(),
-        pending_inputs: Default::default(),
-        projection_clock: Default::default(),
-        model_choices: Default::default(),
-        waterfall_watchers: Default::default(),
-        uploads: Default::default(),
-        drop_bytes: Default::default(),
-        reference_index: Default::default(),
-        plan_handoffs: Default::default(),
-        plan_return_modes: Default::default(),
-        workspace_lock: Default::default(),
-        goal_overlays: Default::default(),
-        goal_overlays_loaded: Default::default(),
-        terminals: Default::default(),
-    });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, bridge_router(host)).await;
-    });
-    let restarted = format!("http://{addr}");
+    let restarted = serve_bridge_on(bridge_host_for(&process, workspace.clone())).await;
     let page2 = rpc(
         &client,
         &restarted,
@@ -671,5 +658,100 @@ async fn queued_prompt_parks_and_runs_after_the_running_turn_ends() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    drop(env);
+}
+
+// === C-real: the user's actual configured model, one turn ===
+
+/// One real chat turn over the user's real provider config (network +
+/// credentials; costs one model call). The config file is copied into an
+/// isolated temp home — the copy carries the inline key, lives only for the
+/// test's duration, and is deleted on drop.
+#[tokio::test]
+#[ignore = "network + the real provider config under ~/.codesmith (costs one model turn)"]
+#[allow(clippy::await_holding_lock)]
+async fn real_configured_model_answers_one_turn_through_the_bridge() {
+    let user_config = dirs::home_dir()
+        .expect("home")
+        .join(".codesmith/config.toml");
+    assert!(
+        user_config.is_file(),
+        "no real provider config at {} — configure one first (codesmith config)",
+        user_config.display()
+    );
+    let config = std::fs::read_to_string(&user_config).expect("read config");
+    assert!(
+        config.contains("base_url"),
+        "the real config has no provider base_url to exercise"
+    );
+
+    let guard = super::tests::TEST_HOME_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let home = std::env::temp_dir().join(format!(
+        "cds-backend-real-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&home).expect("backend home");
+    let workspace = home.join("ws");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    std::fs::write(home.join("config.toml"), &config).expect("config copy");
+    let mut vars = Vec::new();
+    let home_str = home.to_string_lossy().to_string();
+    let config_path = home.join("config.toml").to_string_lossy().to_string();
+    set_var("CODESMITH_HOME", &mut vars, &home_str);
+    set_var("CODESMITH_CONFIG_PATH", &mut vars, &config_path);
+    let env = BackendEnv {
+        _guard: guard,
+        home,
+        vars,
+    };
+
+    let process = CodesmithProcess::spawn(Some(&codesmith_binary()))
+        .await
+        .expect("spawn real backend");
+    let base = serve_bridge_on(bridge_host_for(&process, workspace.clone())).await;
+    let client = reqwest::Client::new();
+
+    let session = create_session(&client, &base, &workspace).await;
+    send_prompt(&client, &base, &session, "只回复两个字：pong").await;
+
+    // A real model call: generous budget, settle is settle.
+    let detail = wait_settled(&client, &process, &session, 180).await;
+    assert_eq!(
+        detail.pointer("/turns/0/status"),
+        Some(&json!("completed")),
+        "real-model turn status: {}",
+        serde_json::to_string_pretty(&detail).unwrap()
+    );
+
+    // The turn's durable journal carries a non-empty real answer, and the
+    // bridge replays it.
+    let answered = detail["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("kind").and_then(Value::as_str) == Some("agent_message"))
+        .any(|item| {
+            item.get("summary")
+                .and_then(Value::as_str)
+                .is_some_and(|summary| !summary.trim().is_empty())
+        });
+    assert!(answered, "the real model left no answer: {detail}");
+    let page = rpc(
+        &client,
+        &base,
+        "session/page",
+        json!({ "request": { "address": { "sessionId": session } } }),
+    )
+    .await;
+    assert_eq!(page["ok"], json!(true), "page: {page}");
+    assert!(
+        page["value"]["records"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty()),
+        "the bridge replay must be non-empty: {page}"
+    );
     drop(env);
 }
