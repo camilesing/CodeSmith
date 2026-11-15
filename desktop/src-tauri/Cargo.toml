@@ -45,6 +45,11 @@ toml_edit = { version = "0.23", features = ["serde"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+# Drives the stream mux from a real WebSocket client in the transport tests.
+# The same version axum's ws feature already locks, so no new crates resolve.
+tokio-tungstenite = "0.29"
+
 [profile.release]
 codegen-units = 1
 lto = true

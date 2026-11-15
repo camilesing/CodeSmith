@@ -271,15 +271,9 @@ pub async fn follow(
         return Ok(());
     }
     loop {
-        let status = current.get("status").and_then(Value::as_str).unwrap_or("");
-        if !matches!(status, "queued" | "running" | "") {
-            // Settled: the terminal status frame ends the stream, the shape
-            // upstream's follow serves.
-            let _ = tx
-                .send(json!({ "type": "status", "job": job_view(&current) }))
-                .await;
-            return Ok(());
-        }
+        // Flush the output past `from` BEFORE the settled check: a task that
+        // already finished must still hand a late follower its whole ring —
+        // ending at `status` with nothing served would render an empty ring.
         let output = render_output(&current);
         if output.len() > served {
             let text = output[served..].to_string();
@@ -293,6 +287,15 @@ pub async fn follow(
             {
                 return Ok(());
             }
+        }
+        let status = current.get("status").and_then(Value::as_str).unwrap_or("");
+        if !matches!(status, "queued" | "running" | "") {
+            // Settled: the terminal status frame ends the stream, the shape
+            // upstream's follow serves.
+            let _ = tx
+                .send(json!({ "type": "status", "job": job_view(&current) }))
+                .await;
+            return Ok(());
         }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}

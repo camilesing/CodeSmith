@@ -1147,6 +1147,17 @@ async fn drop_bytes_handler(State(host): State<SharedHost>, Path(id): Path<Strin
 /// Serve the bridge on `port`: unary calls on `/api/<endpoint>` (CORS admits
 /// the page origins), every stream on the `/api/remote.mux` WebSocket.
 pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    eprintln!("codesmith desktop: client bridge on http://{addr}");
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, bridge_router(host)).await?;
+    Ok(())
+}
+
+/// The bridge's whole route table, state-bound. `serve_bridge` binds it to a
+/// port; the transport tests bind it to an ephemeral one and drive it with a
+/// real HTTP/WebSocket client.
+fn bridge_router(host: SharedHost) -> Router {
     let origins: Vec<HeaderValue> = PAGE_ORIGINS
         .iter()
         .map(|origin| origin.parse::<HeaderValue>().unwrap())
@@ -1157,7 +1168,7 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         // One call with the full list: each allow_origin() call REPLACES the
         // previous list, so chaining them would keep only the last origin.
         .allow_origin(origins);
-    let app = Router::new()
+    Router::new()
         .route("/health", get(health))
         .route("/api/remote.mux", get(mux::upgrade))
         // The upload route takes raw bytes, not the unary JSON envelope —
@@ -1191,13 +1202,18 @@ pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
         // canonical base64 (the unary `fileUploads/upload` path) are ~13.7MB
         // of JSON — both past axum's 2MB default.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
-        .with_state(host);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    eprintln!("codesmith desktop: client bridge on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+        .with_state(host)
 }
+
+/// The transport contract lane: the real router on an ephemeral port, driven
+/// by a real HTTP/WebSocket client against a scripted fake runtime.
+#[cfg(test)]
+mod transport_tests;
+
+/// The real-backend main-path lane (#[ignore]-gated; needs a built backend
+/// binary and a scripted loopback model).
+#[cfg(test)]
+mod backend_e2e;
 
 #[cfg(test)]
 mod tests {
@@ -1556,7 +1572,9 @@ mod tests {
         (format!("http://{addr}"), goal_actions, items)
     }
 
-    static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Shared with `transport_tests`: `CODESMITH_HOME` is process-global, so
+    /// every test that sets it (in either module) must hold this lock.
+    pub(super) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// An isolated `CODESMITH_HOME` for one dispatch test. The env var is
     /// process-global, so the guard also serializes the tests that set it.
