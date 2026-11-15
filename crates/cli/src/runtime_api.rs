@@ -1425,26 +1425,41 @@ struct ModelEntry {
 /// thread/turn).
 async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntry>> {
     let registry = ModelRegistry::default();
-    let default_model = state
-        .config
-        .default_text_model
-        .clone()
-        .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
-    Json(
-        registry
-            .list()
-            .into_iter()
-            .map(|m| ModelEntry {
-                default: m.id == default_model,
-                context_window: codesmith_agent::models::context_window_for_model(&m.id),
-                id: m.id,
-                provider: m.provider.as_str().to_string(),
-                aliases: m.aliases,
-                supports_tools: m.supports_tools,
-                supports_reasoning: m.supports_reasoning,
-            })
-            .collect(),
-    )
+    // The default a client should offer is the model a new session actually
+    // runs (`Config::default_model`: the active provider's slot model, the
+    // custom entry, then `default_text_model`). The static registry alone
+    // never names a provider-scoped custom model, so its list would mark the
+    // wrong default and carry no row for the configured one — and the
+    // desktop bridge's model seat reads exactly this catalog.
+    let default_model = state.config.default_model();
+    let mut entries: Vec<ModelEntry> = registry
+        .list()
+        .into_iter()
+        .map(|m| ModelEntry {
+            default: m.id == default_model,
+            context_window: codesmith_agent::models::context_window_for_model(&m.id),
+            id: m.id,
+            provider: m.provider.as_str().to_string(),
+            aliases: m.aliases,
+            supports_tools: m.supports_tools,
+            supports_reasoning: m.supports_reasoning,
+        })
+        .collect();
+    if !entries.iter().any(|entry| entry.default) {
+        entries.push(ModelEntry {
+            id: default_model.clone(),
+            provider: state.config.api_provider().as_str().to_string(),
+            default: true,
+            context_window: codesmith_agent::models::context_window_for_model(&default_model),
+            aliases: Vec::new(),
+            // A configured gateway model the registry does not know is
+            // assumed tool-capable — the same assumption a custom
+            // OpenAI-compatible route makes.
+            supports_tools: true,
+            supports_reasoning: false,
+        });
+    }
+    Json(entries)
 }
 
 async fn runtime_info(State(state): State<RuntimeApiState>) -> Json<RuntimeInfoResponse> {
@@ -2809,6 +2824,24 @@ mod tests {
             tokio::task::JoinHandle<()>,
         )>,
     > {
+        spawn_test_server_with_config(root, sessions_dir, runtime_token, mobile_enabled, None).await
+    }
+
+    /// The full harness with an injected base `Config` (`None` = default);
+    /// the capacity override is applied to injected configs too.
+    async fn spawn_test_server_with_config(
+        root: PathBuf,
+        sessions_dir: PathBuf,
+        runtime_token: Option<String>,
+        mobile_enabled: bool,
+        base_config: Option<Config>,
+    ) -> Result<
+        Option<(
+            SocketAddr,
+            SharedRuntimeThreadManager,
+            tokio::task::JoinHandle<()>,
+        )>,
+    > {
         fs::create_dir_all(&sessions_dir)?;
         let manager = TaskManager::start_with_executor(
             TaskManagerConfig {
@@ -2824,7 +2857,7 @@ mod tests {
             Arc::new(MockExecutor),
         )
         .await?;
-        let mut config = Config::default();
+        let mut config = base_config.unwrap_or_default();
         config.capacity = Some(crate::config::CapacityConfig {
             enabled: Some(false),
             low_risk_max: None,
@@ -2843,7 +2876,7 @@ mod tests {
             fallback_default_prior: None,
         });
         let runtime_threads: SharedRuntimeThreadManager = Arc::new(RuntimeThreadManager::open(
-            config,
+            config.clone(),
             PathBuf::from("."),
             RuntimeThreadManagerConfig::from_task_data_dir(root.join("runtime")),
         )?);
@@ -2855,7 +2888,7 @@ mod tests {
 
         let auth_required = runtime_token.is_some();
         let state = RuntimeApiState {
-            config: Config::default(),
+            config,
             workspace: PathBuf::from("."),
             task_manager: manager,
             runtime_threads: runtime_threads.clone(),
@@ -4149,6 +4182,63 @@ mod tests {
             .await?;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
+        handle.abort();
+        Ok(())
+    }
+
+    /// A provider-scoped model the static registry does not know (the user's
+    /// configured provider, e.g. anthropic + claude-sonnet-4-5) must be the
+    /// catalog's default and carry its own row — the desktop bridge's model
+    /// seat reads exactly this catalog, and before the fix it offered the
+    /// wrong default with no row for the configured model at all.
+    #[tokio::test]
+    async fn models_catalog_defaults_to_the_configured_provider_model() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-models-default-{}", Uuid::new_v4()));
+        let sessions_dir = root.join("sessions");
+        let config = Config {
+            provider: Some("anthropic".into()),
+            providers: Some(crate::config::ProvidersConfig {
+                anthropic: crate::config::ProviderConfig {
+                    model: Some("claude-sonnet-4-5".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server_with_config(
+            root.clone(),
+            sessions_dir.clone(),
+            None,
+            false,
+            Some(config),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+        let models: Vec<serde_json::Value> = client
+            .get(format!("http://{addr}/v1/models"))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let configured = models
+            .iter()
+            .find(|model| model["id"] == json!("claude-sonnet-4-5"))
+            .cloned()
+            .expect("the configured provider model must be listed");
+        assert_eq!(configured["provider"], json!("anthropic"));
+        assert_eq!(configured["default"], json!(true));
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model["default"] == json!(true))
+                .count(),
+            1,
+            "exactly one default: {models:?}"
+        );
         handle.abort();
         Ok(())
     }
