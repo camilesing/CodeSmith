@@ -45,6 +45,8 @@ struct FakeRuntime {
     tasks: Arc<StdMutex<Vec<Value>>>,
     /// Automation run POSTs, in order.
     automation_runs: Arc<StdMutex<Vec<String>>>,
+    /// Sub-agent continuation inputs and cancels, as (path suffix, body).
+    subagent_posts: Arc<StdMutex<Vec<(&'static str, String)>>>,
     /// Feed of SSE `data:` lines handed to every events subscriber.
     events_tx: tokio::sync::broadcast::Sender<String>,
     /// How many SSE event subscribers are attached right now.
@@ -62,6 +64,7 @@ impl FakeRuntime {
             approvals: Default::default(),
             tasks: Default::default(),
             automation_runs: Default::default(),
+            subagent_posts: Default::default(),
             events_tx,
             watchers: Default::default(),
         }
@@ -246,6 +249,33 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
                         task["status"] = json!("canceled");
                     }
                     Json(json!({ "ok": true }))
+                },
+            ),
+        )
+        .route(
+            "/v1/subagents/{id}/input",
+            post(
+                |State(fake): State<FakeRuntime>,
+                 Path(id): Path<String>,
+                 Json(body): Json<Value>| async move {
+                    fake.subagent_posts
+                        .lock()
+                        .unwrap()
+                        .push(("input", body.to_string()));
+                    Json(json!({ "accepted": true, "id": id }))
+                },
+            ),
+        )
+        .route(
+            "/v1/subagents/{id}/cancel",
+            post(
+                |State(fake): State<FakeRuntime>, Path(id): Path<String>| async move {
+                    let _ = id;
+                    fake.subagent_posts
+                        .lock()
+                        .unwrap()
+                        .push(("cancel", "{}".into()));
+                    Json(json!({ "accepted": true }))
                 },
             ),
         )
@@ -1116,5 +1146,166 @@ async fn schedule_run_and_history_map_onto_automations() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["messageId"], json!("run_1"));
     assert_eq!(records[0]["prompt"], json!("daily report"));
+    drop(home);
+}
+
+#[tokio::test]
+async fn session_follow_snapshots_the_journal_and_streams_live_status() {
+    let (home, _client, base, fake, _host, _ws) = spawn_stack("follow").await;
+    let mut ws = open_mux_stream(
+        &base,
+        "f1",
+        "session/follow",
+        json!({ "args": { "address": { "sessionId": "thr_a" } } }),
+    )
+    .await;
+    // Baseline: an empty journal opens at cursor -1 with the thread's own
+    // header and workspace.
+    let snapshot = next_frame(&mut ws).await;
+    let value = &snapshot["value"];
+    assert_eq!(value["type"], json!("snapshot"), "follow frame: {snapshot}");
+    assert_eq!(value["header"]["sessionId"], json!("thr_a"));
+    assert_eq!(value["cursor"], json!(-1));
+    assert!(
+        value["header"]["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.ends_with(
+                fake.workspace
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )),
+        "header cwd must be the thread workspace: {snapshot}"
+    );
+    // The live tail subscribes AFTER the snapshot: wait for the follow's own
+    // SSE subscription before emitting (broadcast has no replay). The follow
+    // stream carries the journal's turn records; the session's `running` flip
+    // rides the $events stream as an `api-session/status` emit — both sides
+    // are asserted.
+    fake.await_watcher().await;
+    let mut events_ws = open_mux_stream(&base, "e1", "$events", json!({ "args": {} })).await;
+    let _ready = next_frame(&mut events_ws).await; // ready frame
+
+    fake.emit(
+        json!({ "schema_version": 1, "seq": 1, "event": "turn.started", "thread_id": "thr_a" }),
+    );
+    // Follow: the mapped journal record for the turn start.
+    let record = next_frame(&mut ws).await;
+    assert_eq!(
+        record["value"]["type"],
+        json!("event"),
+        "follow must carry the turn-start journal record: {record}"
+    );
+    // $events: the running flip.
+    let started = wait_emit(&mut events_ws, "api-session/status").await;
+    assert_eq!(started["value"]["args"], json!(["thr_a", true]));
+    fake.emit(
+        json!({ "schema_version": 1, "seq": 2, "event": "turn.completed", "thread_id": "thr_a" }),
+    );
+    let ended = wait_emit(&mut events_ws, "api-session/status").await;
+    assert_eq!(ended["value"]["args"], json!(["thr_a", false]));
+    drop(home);
+}
+
+/// Read mux frames until one is an `emit` frame of `event` (journal-event
+/// frames interleaved with it are skipped, not asserted away).
+async fn wait_emit(ws: &mut Ws, event: &str) -> Value {
+    for _ in 0..8 {
+        let frame = next_frame(ws).await;
+        if frame["value"]["type"] == json!("emit") && frame["value"]["event"] == json!(event) {
+            return frame;
+        }
+    }
+    panic!("no {event} emit frame within 8 frames");
+}
+
+#[tokio::test]
+async fn subagents_prompt_and_interrupt_map_onto_the_child_seam() {
+    let (home, client, base, fake, _host, _ws) = spawn_stack("subagents").await;
+    let value = rpc(
+        &client,
+        &base,
+        "subagents/prompt",
+        json!({ "request": {
+            "childSessionId": "thr_child",
+            "content": [{ "type": "text", "text": "continue the plan" }],
+            "requestId": "msg-42",
+        }}),
+    )
+    .await;
+    assert_eq!(value["ok"], json!(true), "subagent prompt: {value}");
+    assert_eq!(value["value"]["messageId"], json!("msg-42"));
+    let posts = fake.subagent_posts.lock().unwrap().clone();
+    assert!(
+        posts
+            .iter()
+            .any(|(kind, body)| *kind == "input" && body.contains("continue the plan")),
+        "input posts: {posts:?}"
+    );
+
+    // A file part is refused loudly — the child seam is text-only.
+    let refused = rpc(
+        &client,
+        &base,
+        "subagents/prompt",
+        json!({ "request": {
+            "childSessionId": "thr_child",
+            "content": [{ "type": "file", "receiptId": "r" }],
+        }}),
+    )
+    .await;
+    assert_eq!(
+        refused["error"]["code"],
+        json!("subagent/attachment-invalid"),
+        "{refused}"
+    );
+
+    let stopped = rpc(
+        &client,
+        &base,
+        "subagents/interruptByUser",
+        json!({ "childSessionId": "thr_child" }),
+    )
+    .await;
+    assert_eq!(stopped["value"]["accepted"], json!(true));
+    let posts = fake.subagent_posts.lock().unwrap().clone();
+    assert!(
+        posts.iter().any(|(kind, _)| *kind == "cancel"),
+        "cancel posts: {posts:?}"
+    );
+    drop(home);
+}
+
+#[tokio::test]
+async fn open_in_app_open_fences_paths_outside_every_workspace() {
+    let (home, client, base, _fake, _host, _ws) = spawn_stack("openinapp").await;
+    // The fence: a path outside every session workspace is refused before
+    // any application resolves — no launcher side effects in the test.
+    let response = client
+        .post(format!("{base}/open-in-app/open"))
+        .json(&json!({ "app": "Finder", "path": "/etc" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["code"], json!("bad-request"), "{body}");
+    // A missing body member is a loud 400, not a launch attempt.
+    let response = client
+        .post(format!("{base}/open-in-app/open"))
+        .json(&json!({ "app": "Finder" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    // An unknown app id has no icon: 404, and a foreign origin never even
+    // reaches the icon route.
+    let icon = client
+        .get(format!("{base}/open-in-app/icon/no-such-app"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(icon.status(), reqwest::StatusCode::NOT_FOUND);
     drop(home);
 }

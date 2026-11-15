@@ -109,13 +109,17 @@ transport contract lane (`host::transport_tests`: the real router on an
 ephemeral port driven by an HTTP/WebSocket client — health, CORS, the body
 limit, the mux origin gate and close codes, the upload/readBytes/dropBytes
 routes, the `$events` approval round trip over the real mux, jobs, queue,
-steer/interrupt, fork/search, schedule), and the real-backend main-path lane
+steer/interrupt, the session/follow snapshot plus live split (journal records
+on the follow stream, the running flag on `$events`), sub-agents, the
+open-in-app fence, fork/search, schedule), and the real-backend main-path lane
 (`host::backend_e2e`, `#[ignore]`-gated: build the backend first with
 `cargo build --locked -p codesmith-cli`, then run with
 `cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored` — it
 spawns the real `serve --http` child against a scripted loopback
 OpenAI-compatible model and drives chat settle/replay, both approval
-outcomes, and the queued-prompt/interrupt round).
+outcomes, the queued-prompt/interrupt round, and the `/compact` command —
+history compressed with the recent journal intact and replay identical
+across a bridge restart).
 
 ## CLI integration
 

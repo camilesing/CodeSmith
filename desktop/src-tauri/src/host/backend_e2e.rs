@@ -359,7 +359,9 @@ async fn runtime_post(
         .expect("runtime request")
 }
 
-/// Wait until the thread's latest turn settles (or panic past `secs`).
+/// Wait until every turn of the thread has settled (turns are oldest-first,
+/// so `/turns/0` alone would miss a running second turn; or panic past
+/// `secs`).
 async fn wait_settled(
     client: &reqwest::Client,
     process: &CodesmithProcess,
@@ -369,12 +371,18 @@ async fn wait_settled(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
     loop {
         let detail = runtime_get(client, process, &format!("/v1/threads/{thread}")).await;
-        let settled = detail
-            .pointer("/turns/0/status")
-            .and_then(Value::as_str)
-            .map(|status| !matches!(status, "in_progress" | "queued" | "interrupting"))
-            .unwrap_or(true);
-        if settled {
+        let busy = detail
+            .get("turns")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|turn| {
+                matches!(
+                    turn.get("status").and_then(Value::as_str),
+                    Some("in_progress") | Some("queued") | Some("interrupting")
+                )
+            });
+        if !busy {
             return detail;
         }
         assert!(
@@ -752,6 +760,115 @@ async fn real_configured_model_answers_one_turn_through_the_bridge() {
             .as_array()
             .is_some_and(|r| !r.is_empty()),
         "the bridge replay must be non-empty: {page}"
+    );
+    drop(env);
+}
+
+// === C5: /compact through the bridge compresses history, replay stays whole ===
+
+#[tokio::test]
+#[ignore = "needs target/debug/codesmith — cargo build --locked -p codesmith-cli, then run with --ignored"]
+async fn compact_command_compresses_history_and_keeps_the_recent_journal() {
+    // The third entry's empty trigger is the catch-all the compaction turn's
+    // summary request claims (its last user message is the runtime's own
+    // compaction prompt, not a topic keyword).
+    let (env, client, base, _script, workspace, process) = real_stack(
+        "c5",
+        vec![
+            (
+                "first-topic",
+                LlmAnswer::Text("first answer about the alpha topic"),
+            ),
+            (
+                "second-topic",
+                LlmAnswer::Text("second answer about the bravo topic"),
+            ),
+            (
+                "",
+                LlmAnswer::Text("compacted summary of the earlier turns"),
+            ),
+        ],
+    )
+    .await;
+    let session = create_session(&client, &base, &workspace).await;
+    send_prompt(&client, &base, &session, "tell me about first-topic").await;
+    wait_settled(&client, &process, &session, 30).await;
+    send_prompt(&client, &base, &session, "now second-topic").await;
+    wait_settled(&client, &process, &session, 30).await;
+
+    // The bridge's /compact command rides the runtime's compact route.
+    let value = rpc(
+        &client,
+        &base,
+        "commands/execute",
+        json!({ "agentId": session, "line": "/compact" }),
+    )
+    .await;
+    assert_eq!(value["ok"], json!(true), "compact: {value}");
+    assert_eq!(
+        value["value"]["result"]["kind"],
+        json!("success"),
+        "compact result: {value}"
+    );
+
+    // The compaction runs as an async turn: wait until every turn of the
+    // thread is settled again, then replay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let detail = loop {
+        let detail = runtime_get(&client, &process, &format!("/v1/threads/{session}")).await;
+        let busy = detail
+            .get("turns")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|turn| {
+                matches!(
+                    turn.get("status").and_then(Value::as_str),
+                    Some("in_progress") | Some("queued") | Some("interrupting")
+                )
+            });
+        if !busy {
+            break detail;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "compaction turn did not settle: {detail}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let turns = detail["turns"].as_array().cloned().unwrap_or_default();
+    assert!(
+        turns.len() >= 2,
+        "the two chat turns must survive compaction: {turns:?}"
+    );
+
+    // After compaction the journal still replays whole through the bridge:
+    // the most recent turn's answer stays reachable, the record stream is
+    // non-empty, and a fresh host (bridge restart) sees the same journal.
+    let page = rpc(
+        &client,
+        &base,
+        "session/page",
+        json!({ "request": { "address": { "sessionId": session } } }),
+    )
+    .await;
+    assert_eq!(page["ok"], json!(true), "page after compact: {page}");
+    let records = serde_json::to_string(&page["value"]["records"]).unwrap();
+    assert!(
+        records.contains("second answer about the bravo topic"),
+        "the recent turn's answer must survive compaction: {records}"
+    );
+    let restarted = serve_bridge_on(bridge_host_for(&process, workspace.clone())).await;
+    let page2 = rpc(
+        &client,
+        &restarted,
+        "session/page",
+        json!({ "request": { "address": { "sessionId": session } } }),
+    )
+    .await;
+    assert_eq!(
+        page2["value"]["records"], page["value"]["records"],
+        "a bridge restart must replay the identical post-compaction journal"
     );
     drop(env);
 }

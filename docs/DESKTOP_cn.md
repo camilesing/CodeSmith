@@ -98,12 +98,15 @@ cargo tauri build --manifest-path desktop/src-tauri/Cargo.toml
 的帧契约与 Origin 闸门；传输契约车道（`host::transport_tests`：真实路由绑
 临时端口，用 HTTP/WebSocket 客户端驱动——health、CORS、body 上限、mux 的
 Origin 闸门与关闭码、upload/readBytes/dropBytes 路由、真实 mux 上的
-`$events` 审批往返、jobs、队列、steer/interrupt、fork/search、schedule）；
-真后端主链路车道（`host::backend_e2e`，`#[ignore]` 门控：先
+`$events` 审批往返、jobs、队列、steer/interrupt、session/follow 快照与
+live 分流（journal 记录走 follow 流、running 位走 `$events`）、子代理、
+open-in-app 越界栅栏、fork/search、schedule）；真后端主链路车道
+（`host::backend_e2e`，`#[ignore]` 门控：先
 `cargo build --locked -p codesmith-cli` 构建后端，再
 `cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored`——拉起
 真实 `serve --http` 子进程对接脚本化 loopback OpenAI 兼容模型，驱动聊天
-落定/重放、两种审批结局、排队提示/interrupt 轮）。
+落定/重放、两种审批结局、排队提示/interrupt 轮、`/compact` 压缩命令——
+历史压缩后近期 journal 完整、bridge 重启后重放一致）。
 
 ## CLI 集成
 
