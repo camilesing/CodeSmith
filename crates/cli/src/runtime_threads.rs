@@ -36,7 +36,7 @@ use uuid::Uuid;
 use crate::app_state::AppMode;
 use crate::automation_manager::wrap_automation_manager;
 use crate::compaction::CompactionConfig;
-use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
+use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::coherence::CoherenceState;
 use crate::core::engine::{CancelReason, EngineConfig, EngineHandle, SteerInput, spawn_engine};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
@@ -1529,8 +1529,7 @@ impl RuntimeThreadManager {
         let model = req
             .model
             .filter(|m| !m.trim().is_empty())
-            .or_else(|| self.config.default_text_model.clone())
-            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string());
+            .unwrap_or_else(|| self.config.default_model());
         let workspace = req.workspace.unwrap_or_else(|| self.workspace.clone());
         let mode = req
             .mode
@@ -5221,6 +5220,7 @@ fn goal_seed_from_items(items: &[TurnItemRecord]) -> Option<(String, Option<u32>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_TEXT_MODEL;
     use crate::core::engine::{MockApprovalEvent, mock_engine_handle};
     use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
     use std::time::{Duration, Instant};

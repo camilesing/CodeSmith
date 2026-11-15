@@ -35,7 +35,7 @@ use crate::automation_manager::{
     AutomationManager, AutomationRecord, AutomationRunRecord, AutomationSchedulerConfig,
     CreateAutomationRequest, SharedAutomationManager, UpdateAutomationRequest, spawn_scheduler,
 };
-use crate::config::{Config, DEFAULT_TEXT_MODEL};
+use crate::config::Config;
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, EditQueuedRequest, EnqueueRequest, EnqueueResponse,
     ExternalApprovalDecision, GoalAction, QueuedItemRecord, RuntimeThreadManager,
@@ -412,7 +412,7 @@ pub async fn run_http_server(
     let task_cfg = TaskManagerConfig::from_runtime(
         &config,
         workspace.clone(),
-        config.default_text_model.clone(),
+        Some(config.default_model()),
         Some(options.workers),
     );
     let runtime_threads = Arc::new(RuntimeThreadManager::open(
@@ -1058,13 +1058,7 @@ async fn create_task(
         req.workspace = Some(state.workspace.clone());
     }
     if req.model.is_none() {
-        req.model = Some(
-            state
-                .config
-                .default_text_model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string()),
-        );
+        req.model = Some(state.config.default_model());
     }
     let task = state
         .task_manager
@@ -1079,13 +1073,7 @@ async fn create_thread(
     Json(mut req): Json<CreateThreadRequest>,
 ) -> Result<(StatusCode, Json<ThreadRecord>), ApiError> {
     if req.model.as_ref().is_none_or(|m| m.trim().is_empty()) {
-        req.model = Some(
-            state
-                .config
-                .default_text_model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string()),
-        );
+        req.model = Some(state.config.default_model());
     }
     if req.workspace.is_none() {
         req.workspace = Some(state.workspace.clone());
@@ -1987,13 +1975,10 @@ async fn stream_turn(
         return Err(ApiError::bad_request("prompt is required"));
     }
 
-    let model = req.model.clone().unwrap_or_else(|| {
-        state
-            .config
-            .default_text_model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TEXT_MODEL.to_string())
-    });
+    let model = req
+        .model
+        .clone()
+        .unwrap_or_else(|| state.config.default_model());
     let workspace = req
         .workspace
         .clone()
@@ -2595,6 +2580,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_TEXT_MODEL;
     use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
     use crate::models::Usage;
     use crate::runtime_threads::RuntimeEventRecord;
@@ -4238,6 +4224,21 @@ mod tests {
                 .count(),
             1,
             "exactly one default: {models:?}"
+        );
+        // A thread created without an explicit model takes the same
+        // configured default (the desktop bridge's session/create posts no
+        // model).
+        let thread: serde_json::Value = client
+            .post(format!("http://{addr}/v1/threads"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(
+            thread["model"],
+            json!("claude-sonnet-4-5"),
+            "thread default model: {thread}"
         );
         handle.abort();
         Ok(())
