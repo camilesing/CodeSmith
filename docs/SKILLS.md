@@ -263,9 +263,10 @@ my-skill/
 First launch installs a set of bundled skills into `~/.codesmith/skills`
 (or legacy `~/.codesmith/skills`): `skill-creator`, `delegate`,
 `v4-best-practices`, `plugin-creator`, `skill-installer`, `mcp-builder`,
-`documents`, `presentations`, `spreadsheets`, `pdf`, `feishu`, and
+`documents`, `presentations`, `spreadsheets`, `pdf`, `feishu`,
 `improve-from-traces` (one improvement cycle over your own session
-records). The
+records), and `ratchet` (a config-gated keep-or-revert loop that runs
+improve-from-traces repeatedly). The
 bundles are versioned: upgrades add newly introduced skills but never
 recreate one you deliberately deleted.
 

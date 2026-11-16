@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-const BUNDLED_SKILL_VERSION: &str = "4";
+const BUNDLED_SKILL_VERSION: &str = "5";
 const SKILL_CREATOR_BODY: &str = include_str!("../../assets-root/skills/skill-creator/SKILL.md");
 const DELEGATE_BODY: &str = include_str!("../../assets-root/skills/delegate/SKILL.md");
 const V4_BEST_PRACTICES_BODY: &str =
@@ -20,6 +20,7 @@ const PDF_BODY: &str = include_str!("../../assets-root/skills/pdf/SKILL.md");
 const FEISHU_BODY: &str = include_str!("../../assets-root/skills/feishu/SKILL.md");
 const IMPROVE_FROM_TRACES_BODY: &str =
     include_str!("../../assets-root/skills/improve-from-traces/SKILL.md");
+const RATCHET_BODY: &str = include_str!("../../assets-root/skills/ratchet/SKILL.md");
 
 struct BundledSkill {
     name: &'static str,
@@ -87,6 +88,11 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "improve-from-traces",
         body: IMPROVE_FROM_TRACES_BODY,
         introduced_in: 4,
+    },
+    BundledSkill {
+        name: "ratchet",
+        body: RATCHET_BODY,
+        introduced_in: 5,
     },
 ];
 
