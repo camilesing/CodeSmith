@@ -238,8 +238,9 @@ my-skill/
 首次启动会把一组内置技能安装到 `~/.codesmith/skills`（或旧版
 `~/.codesmith/skills`）：`skill-creator`、`delegate`、
 `v4-best-practices`、`plugin-creator`、`skill-installer`、
-`mcp-builder`、`documents`、`presentations`、`spreadsheets`、`pdf`
-和 `feishu`。内置集合带版本：升级会新增引入的技能，但绝不会重建你
+`mcp-builder`、`documents`、`presentations`、`spreadsheets`、`pdf`、
+`feishu` 和 `improve-from-traces`（对你自己的会话记录跑一轮改进
+循环）。内置集合带版本：升级会新增引入的技能，但绝不会重建你
 刻意删除的技能。
 
 `/skill new` 激活 `skill-creator`，引导你编写一个格式规范的技能。
