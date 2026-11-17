@@ -2497,8 +2497,22 @@ async fn shell_delta_failed_empty_output_carries_the_exit_note() {
 
 // === exec_shell failure / execpolicy paths ===============================
 
+/// Exit-code 127 renders as the command-not-found note. Scoped like its
+/// execpolicy siblings: the tool loads `codesmith_home()/execpolicy.toml`,
+/// so an unscoped run would consult (or die on) the developer's real policy
+/// file. Unix-gated: 127 is the POSIX "not found" exit code.
+#[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn exec_shell_failure_surfaces_exit_code_semantics() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = EnvRestore::new(&["CODESMITH_HOME"]);
+    let home = tempdir().expect("tempdir");
+    // SAFETY: held under env_lock; restored by EnvRestore on drop.
+    unsafe { std::env::set_var("CODESMITH_HOME", home.path()) };
+
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path());
     let result = ExecShellTool
