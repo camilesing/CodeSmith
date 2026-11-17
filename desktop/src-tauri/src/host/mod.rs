@@ -25,6 +25,7 @@ pub mod mux;
 pub mod office;
 pub mod open_in_app;
 pub mod permissions;
+pub mod presets;
 pub mod references;
 pub mod schedule;
 pub mod sessions;
@@ -531,6 +532,10 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
         "fileReferences/list" => references::list(host, args_of(payload)).await,
         "sessionReferenceResolver/candidates" => rpc_ok(json!([])),
         "agentPresets/list" => rpc_ok(json!({ "presets": [] })),
+        // The Presets settings section (host::presets): snapshot and edits
+        // forwarded to the runtime's /v1/presets endpoints.
+        "agentPresets/describe" => presets::describe(host).await,
+        "agentPresets/apply" => presets::apply(host, args_of(payload)).await,
         "dynamicCordisRunner/syncInspectManifest" => rpc_ok(Value::Null),
         "dynamicCordisRunner/inventory" => rpc_ok(json!([])),
         // The Models settings page's provider surface (host::llm): the

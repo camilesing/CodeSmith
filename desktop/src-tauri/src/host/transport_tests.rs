@@ -51,6 +51,8 @@ struct FakeRuntime {
     events_tx: tokio::sync::broadcast::Sender<String>,
     /// How many SSE event subscribers are attached right now.
     watchers: Arc<AtomicUsize>,
+    /// Every `POST /v1/presets/apply` body, in order.
+    preset_applies: Arc<StdMutex<Vec<Value>>>,
 }
 
 impl FakeRuntime {
@@ -67,6 +69,7 @@ impl FakeRuntime {
             subagent_posts: Default::default(),
             events_tx,
             watchers: Default::default(),
+            preset_applies: Default::default(),
         }
     }
 
@@ -216,6 +219,30 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
                     { "id": "m3", "provider": "p2", "default": false },
                 ]))
             }),
+        )
+        .route(
+            "/v1/presets",
+            get(|| async move {
+                Json(json!({
+                    "tiers": [{ "name": "middle", "description": "", "source": "builtin" }],
+                    "selection": {
+                        "selected": "middle", "selectedSource": "default",
+                        "effective": "middle", "deviated": []
+                    },
+                    "keys": [], "fileTree": {}, "restartPending": false, "warnings": []
+                }))
+            }),
+        )
+        .route(
+            "/v1/presets/apply",
+            post(
+                |State(fake): State<FakeRuntime>, Json(body): Json<Value>| {
+                    async move {
+                        fake.preset_applies.lock().unwrap().push(body);
+                        Json(json!({ "applied": true }))
+                    }
+                },
+            ),
         )
         .route(
             "/v1/tasks",
@@ -1307,5 +1334,35 @@ async fn open_in_app_open_fences_paths_outside_every_workspace() {
         .await
         .unwrap();
     assert_eq!(icon.status(), reqwest::StatusCode::NOT_FOUND);
+    drop(home);
+}
+
+#[tokio::test]
+async fn agent_presets_describe_forwards_to_runtime() {
+    let (home, client, base, _fake, _host, _ws) = spawn_stack("presets-describe").await;
+    let envelope = rpc(&client, &base, "agentPresets/describe", json!({})).await;
+    assert_eq!(envelope["ok"], json!(true), "{envelope}");
+    assert_eq!(envelope["value"]["selection"]["selected"], json!("middle"));
+    drop(home);
+}
+
+#[tokio::test]
+async fn agent_presets_apply_posts_ops_verbatim() {
+    let (home, client, base, fake, _host, _ws) = spawn_stack("presets-apply").await;
+    let envelope = rpc(
+        &client,
+        &base,
+        "agentPresets/apply",
+        json!({ "ops": [{ "op": "selectPreset", "name": "all" }] }),
+    )
+    .await;
+    assert_eq!(envelope["ok"], json!(true), "{envelope}");
+    // The ops array rides to the runtime untouched — the bridge adds no
+    // interpretation of its own.
+    let posts = fake.preset_applies.lock().unwrap().clone();
+    assert_eq!(
+        posts,
+        vec![json!([{ "op": "selectPreset", "name": "all" }])]
+    );
     drop(home);
 }
