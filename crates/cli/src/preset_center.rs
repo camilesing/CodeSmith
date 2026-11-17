@@ -50,7 +50,9 @@ use crate::config::Config;
 /// validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
-    Enum { options: &'static [&'static str] },
+    Enum {
+        options: &'static [&'static str],
+    },
     Bool,
     String,
     Secret,
@@ -87,7 +89,14 @@ pub struct CatalogKey {
 }
 
 const EFFORTS: &[&str] = &["off", "low", "medium", "high", "max", "auto"];
-const APPROVALS: &[&str] = &["suggest", "suggested", "on-request", "untrusted", "auto", "never"];
+const APPROVALS: &[&str] = &[
+    "suggest",
+    "suggested",
+    "on-request",
+    "untrusted",
+    "auto",
+    "never",
+];
 const SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
 const NET_DECISIONS: &[&str] = &["allow", "deny", "prompt"];
 
@@ -510,16 +519,21 @@ enum Walked<'a> {
 fn doc_walk<'a>(doc: &'a DocumentMut, path: &str) -> Option<Walked<'a>> {
     fn walk_table<'a>(table: &'a toml_edit::Table, segments: &[&str]) -> Option<Walked<'a>> {
         let (head, rest) = segments.split_first()?;
-        match table.get(*head)? {
+        match table.get(head)? {
             toml_edit::Item::Table(nested) => walk_table(nested, rest),
-            toml_edit::Item::Value(toml_edit::Value::InlineTable(inline)) => walk_inline(inline, rest),
+            toml_edit::Item::Value(toml_edit::Value::InlineTable(inline)) => {
+                walk_inline(inline, rest)
+            }
             item if rest.is_empty() => Some(Walked::Item(item)),
             _ => None,
         }
     }
-    fn walk_inline<'a>(inline: &'a toml_edit::InlineTable, segments: &[&str]) -> Option<Walked<'a>> {
+    fn walk_inline<'a>(
+        inline: &'a toml_edit::InlineTable,
+        segments: &[&str],
+    ) -> Option<Walked<'a>> {
         let (head, rest) = segments.split_first()?;
-        let value = inline.get(*head)?;
+        let value = inline.get(head)?;
         match value {
             v if rest.is_empty() => Some(Walked::Inline(v)),
             toml_edit::Value::InlineTable(nested) => walk_inline(nested, rest),
@@ -582,7 +596,7 @@ fn is_secret_path(path: &str) -> bool {
 fn definition_baseline(definition: &PresetDefinitionToml, path: &str) -> Option<Json> {
     let bool_of = |v: Option<bool>| v.map(Json::Bool);
     let str_of = |v: Option<&str>| v.map(|s| Json::String(s.to_string()));
-    let value = match path {
+    match path {
         "provider" => str_of(definition.provider.as_deref()),
         "reasoning_effort" => str_of(definition.reasoning_effort.as_deref()),
         "approval_policy" => str_of(definition.approval_policy.as_deref()),
@@ -600,7 +614,10 @@ fn definition_baseline(definition: &PresetDefinitionToml, path: &str) -> Option<
         "network.audit" => bool_of(definition.network_audit),
         "strict_tool_mode" => bool_of(definition.strict_tool_mode),
         "memory.enabled" | "memory.kod_enabled" => {
-            let derived = definition.memory_level.as_deref().and_then(MemoryLevel::from_setting);
+            let derived = definition
+                .memory_level
+                .as_deref()
+                .and_then(MemoryLevel::from_setting);
             match path {
                 "memory.enabled" => definition.memory_enabled.or(match derived? {
                     MemoryLevel::Goldfish => Some(false),
@@ -613,18 +630,14 @@ fn definition_baseline(definition: &PresetDefinitionToml, path: &str) -> Option<
             }
             .map(Json::Bool)
         }
-        _ => {
-            if let Some(feature) = path.strip_prefix("features.") {
-                return definition
-                    .features
-                    .as_ref()
-                    .and_then(|map| map.get(feature))
-                    .map(|b| Json::Bool(*b));
-            }
-            return None;
-        }
-    };
-    value
+        _ => path.strip_prefix("features.").and_then(|feature| {
+            definition
+                .features
+                .as_ref()
+                .and_then(|map| map.get(feature))
+                .map(|b| Json::Bool(*b))
+        }),
+    }
 }
 
 /// Catalog paths the folded CLI [`Config`] does not carry — file-layer
@@ -640,7 +653,7 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
     let list = |v: Option<&Vec<String>>| {
         v.map(|items| Json::Array(items.iter().map(|i| Json::String(i.clone())).collect()))
     };
-    let json = match path {
+    match path {
         "provider" => s(config.provider.as_deref()),
         "custom_provider" => s(config.custom_provider.as_deref()),
         "turn_executor" => s(config.turn_executor.as_deref()),
@@ -652,11 +665,11 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
             .map(|n| Json::Number(serde_json::Number::from(n as u64))),
         "auth_mode" => s(config.auth_mode.as_deref()),
         "output_mode" => None, // NON_RUNTIME_KEYS: file-layer value
-        "log_level" => None,  // NON_RUNTIME_KEYS: file-layer value
+        "log_level" => None,   // NON_RUNTIME_KEYS: file-layer value
         "approval_policy" => s(config.approval_policy.as_deref()),
         "sandbox_mode" => s(config.sandbox_mode.as_deref()),
         "strict_tool_mode" => b(config.strict_tool_mode),
-        "api_key" => return config.api_key.as_ref().map(|_| Json::Null),
+        "api_key" => config.api_key.as_ref().map(|_| Json::Null),
         "base_url" => s(config.base_url.as_deref()),
         "http_headers" => config.http_headers.as_ref().map(|headers| {
             Json::Object(
@@ -667,14 +680,20 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
             )
         }),
         "telemetry" => b(config.telemetry),
-        "compaction.strategy" => s(config.compaction.as_ref().and_then(|c| c.strategy.as_deref())),
-        "snapshots.enabled" => b(config.snapshots.as_ref().map(|s| s.enabled).flatten()),
+        "compaction.strategy" => s(config
+            .compaction
+            .as_ref()
+            .and_then(|c| c.strategy.as_deref())),
+        "snapshots.enabled" => b(config.snapshots.as_ref().and_then(|s| s.enabled)),
         "snapshots.max_age_days" => config
             .snapshots
             .as_ref()
             .map(|s| Json::Number(serde_json::Number::from(s.max_age_days))),
         "edit.parse_gate" => b(config.edit.as_ref().and_then(|e| e.parse_gate)),
-        "skills.registry_url" => s(config.skills.as_ref().and_then(|s| s.registry_url.as_deref())),
+        "skills.registry_url" => s(config
+            .skills
+            .as_ref()
+            .and_then(|s| s.registry_url.as_deref())),
         "skills.max_install_size_bytes" => config
             .skills
             .as_ref()
@@ -689,12 +708,9 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
             .map(|n| Json::Number(n.into())),
         "hook_sinks.unix_socket_path" => s(None),
         "desktop.enabled" => b(config.desktop.as_ref().and_then(|d| d.enabled)),
-        "tools.progressive_disclosure" => b(
-            config
-                .tools
-                .as_ref()
-                .and_then(|t| t.progressive_disclosure),
-        ),
+        "tools.progressive_disclosure" => {
+            b(config.tools.as_ref().and_then(|t| t.progressive_disclosure))
+        }
         "tools.always_load" => list(config.tools.as_ref().map(|t| &t.always_load)),
         "memory.enabled" => b(config.memory.as_ref().and_then(|m| m.enabled)),
         "memory.kod_enabled" => b(config.memory.as_ref().and_then(|m| m.kod_enabled)),
@@ -709,12 +725,9 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
         "network.deny" => list(config.network.as_ref().map(|n| &n.deny)),
         "network.proxy" => list(config.network.as_ref().map(|n| &n.proxy)),
         "sandbox.enabled" => b(config.sandbox.as_ref().and_then(|s| s.enabled)),
-        "sandbox.fail_if_unavailable" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.fail_if_unavailable),
-        ),
+        "sandbox.fail_if_unavailable" => {
+            b(config.sandbox.as_ref().and_then(|s| s.fail_if_unavailable))
+        }
         "sandbox.enabled_platforms" => list(
             config
                 .sandbox
@@ -727,31 +740,17 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
                 .as_ref()
                 .and_then(|s| s.excluded_commands.as_ref()),
         ),
-        "sandbox.auto_allow" => list(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.auto_allow.as_ref()),
-        ),
-        "sandbox.auto_allow_bash_if_sandboxed" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.auto_allow_bash_if_sandboxed),
-        ),
-        "sandbox.prefer_bwrap" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.prefer_bwrap),
-        ),
-        "sandbox.filesystem.mode" => s(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.filesystem.as_ref())
-                .and_then(|f| f.mode.as_deref()),
-        ),
+        "sandbox.auto_allow" => list(config.sandbox.as_ref().and_then(|s| s.auto_allow.as_ref())),
+        "sandbox.auto_allow_bash_if_sandboxed" => b(config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.auto_allow_bash_if_sandboxed)),
+        "sandbox.prefer_bwrap" => b(config.sandbox.as_ref().and_then(|s| s.prefer_bwrap)),
+        "sandbox.filesystem.mode" => s(config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.filesystem.as_ref())
+            .and_then(|f| f.mode.as_deref())),
         "sandbox.filesystem.writable_roots" => list(
             config
                 .sandbox
@@ -787,34 +786,26 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
                 .and_then(|s| s.filesystem.as_ref())
                 .and_then(|f| f.deny_write.as_ref()),
         ),
-        "sandbox.filesystem.exclude_tmpdir" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.filesystem.as_ref())
-                .and_then(|f| f.exclude_tmpdir),
-        ),
-        "sandbox.filesystem.exclude_slash_tmp" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.filesystem.as_ref())
-                .and_then(|f| f.exclude_slash_tmp),
-        ),
-        "sandbox.network.enabled" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.network.as_ref())
-                .and_then(|n| n.enabled),
-        ),
-        "sandbox.network.allow_managed_domains_only" => b(
-            config
-                .sandbox
-                .as_ref()
-                .and_then(|s| s.network.as_ref())
-                .and_then(|n| n.allow_managed_domains_only),
-        ),
+        "sandbox.filesystem.exclude_tmpdir" => b(config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.filesystem.as_ref())
+            .and_then(|f| f.exclude_tmpdir)),
+        "sandbox.filesystem.exclude_slash_tmp" => b(config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.filesystem.as_ref())
+            .and_then(|f| f.exclude_slash_tmp)),
+        "sandbox.network.enabled" => b(config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.network.as_ref())
+            .and_then(|n| n.enabled)),
+        "sandbox.network.allow_managed_domains_only" => b(config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.network.as_ref())
+            .and_then(|n| n.allow_managed_domains_only)),
         "sandbox.network.allow" => list(
             config
                 .sandbox
@@ -831,27 +822,21 @@ fn effective_value(config: &Config, path: &str) -> Option<Json> {
         ),
         "sandbox_backend" => s(config.sandbox_backend.as_deref()),
         "sandbox_url" => s(config.sandbox_url.as_deref()),
-        "sandbox_api_key" => return config.sandbox_api_key.as_ref().map(|_| Json::Null),
+        "sandbox_api_key" => config.sandbox_api_key.as_ref().map(|_| Json::Null),
         "preset" => s(config.preset.as_deref()),
         "rhai_loop" | "providers" => None,
-        _ => {
-            if let Some(feature) = path.strip_prefix("features.") {
-                return b(config
-                    .features
-                    .as_ref()
-                    .and_then(|f| f.entries.get(feature))
-                    .copied());
-            }
-            return None;
-        }
-    };
-    json
+        _ => path.strip_prefix("features.").and_then(|feature| {
+            b(config
+                .features
+                .as_ref()
+                .and_then(|f| f.entries.get(feature))
+                .copied())
+        }),
+    }
 }
 
 fn selection_source(config: &Config) -> &'static str {
-    if config.preset.is_some() {
-        "config"
-    } else if config.mode.is_some() {
+    if config.preset.is_some() || config.mode.is_some() {
         "config"
     } else if crate::presets::persisted_selection().is_some() {
         "settings"
@@ -893,22 +878,21 @@ fn snapshot_with(
     let selection = canonicalize_preset_name(&selection_raw)
         .map(|(name, _)| name)
         .unwrap_or_else(|_| "middle".to_string());
-    let loaded = preset_catalog.get_ci(&selection).cloned().unwrap_or_else(|| {
-        preset_catalog
-            .get_ci("middle")
-            .cloned()
-            .expect("middle is compiled in")
-    });
+    let loaded = preset_catalog
+        .get_ci(&selection)
+        .cloned()
+        .unwrap_or_else(|| {
+            preset_catalog
+                .get_ci("middle")
+                .cloned()
+                .expect("middle is compiled in")
+        });
 
     let tiers: Vec<TierView> = preset_catalog
         .iter()
         .map(|loaded| TierView {
             name: loaded.name.clone(),
-            description: loaded
-                .definition
-                .description
-                .clone()
-                .unwrap_or_default(),
+            description: loaded.definition.description.clone().unwrap_or_default(),
             source: loaded.source.label().to_string(),
         })
         .collect();
@@ -944,10 +928,7 @@ fn snapshot_with(
         } else {
             KeySource::Default
         };
-        if entry.preset_governed
-            && file_raw_present
-            && baseline.is_some()
-            && file_value != baseline
+        if entry.preset_governed && file_raw_present && baseline.is_some() && file_value != baseline
         {
             deviated.push(entry.path.to_string());
         }
@@ -967,11 +948,10 @@ fn snapshot_with(
             preset_catalog
                 .iter()
                 .filter_map(|tier| {
-                    definition_baseline(&tier.definition, entry.path)
-                        .map(|value| BaselineView {
-                            tier: tier.name.clone(),
-                            value,
-                        })
+                    definition_baseline(&tier.definition, entry.path).map(|value| BaselineView {
+                        tier: tier.name.clone(),
+                        value,
+                    })
                 })
                 .collect()
         } else {
@@ -1110,9 +1090,9 @@ pub fn apply(
     config_path: &Path,
 ) -> Result<PresetSnapshot, ApplyError> {
     let raw = std::fs::read_to_string(config_path).unwrap_or_default();
-    let mut doc: DocumentMut = raw
-        .parse()
-        .map_err(|err| ApplyError::new("invalid_file", format!("config.toml parse error: {err}")))?;
+    let mut doc: DocumentMut = raw.parse().map_err(|err| {
+        ApplyError::new("invalid_file", format!("config.toml parse error: {err}"))
+    })?;
 
     let preset_catalog = PresetCatalog::load(Some(workspace));
     for op in ops {
@@ -1139,13 +1119,10 @@ pub fn apply(
             PresetOp::Set { path, value } => {
                 if value.is_null() {
                     // `set: null` reads as unset — keeps the UI single-op.
-                    doc_unset(&mut doc, path)
-                        .map_err(|err| ApplyError::new("bad_value", err))?;
+                    doc_unset(&mut doc, path).map_err(|err| ApplyError::new("bad_value", err))?;
                     continue;
                 }
-                let entry = catalog()
-                    .iter()
-                    .find(|entry| entry.path == path.as_str());
+                let entry = catalog().iter().find(|entry| entry.path == path.as_str());
                 match entry {
                     Some(entry) if entry.read_only => {
                         return Err(ApplyError::new(
@@ -1154,10 +1131,9 @@ pub fn apply(
                         ));
                     }
                     Some(entry) => {
-                        check_kind(entry.kind, value)
-                            .map_err(|reason| {
-                                ApplyError::new("bad_value", format!("{path}: {reason}"))
-                            })?;
+                        check_kind(entry.kind, value).map_err(|reason| {
+                            ApplyError::new("bad_value", format!("{path}: {reason}"))
+                        })?;
                     }
                     None => {
                         // Not curated: only keys already present in the file
@@ -1172,8 +1148,9 @@ pub fn apply(
                         }
                     }
                 }
-                let toml_value = json_to_toml(value)
-                    .ok_or_else(|| ApplyError::new("bad_value", format!("{path}: unsupported value")))?;
+                let toml_value = json_to_toml(value).ok_or_else(|| {
+                    ApplyError::new("bad_value", format!("{path}: unsupported value"))
+                })?;
                 doc_set(&mut doc, path, toml_value)
                     .map_err(|err| ApplyError::new("bad_value", err))?;
             }
@@ -1184,17 +1161,15 @@ pub fn apply(
                         format!("{path:?} is not set in config.toml"),
                     ));
                 }
-                if catalog()
-                    .iter()
-                    .any(|entry| entry.path == path.as_str() && matches!(entry.kind, KeyKind::Table))
-                {
+                if catalog().iter().any(|entry| {
+                    entry.path == path.as_str() && matches!(entry.kind, KeyKind::Table)
+                }) {
                     return Err(ApplyError::new(
                         "read_only",
                         format!("{path:?} is a whole-table key; edit it on its dedicated page"),
                     ));
                 }
-                doc_unset(&mut doc, path)
-                    .map_err(|err| ApplyError::new("bad_value", err))?;
+                doc_unset(&mut doc, path).map_err(|err| ApplyError::new("bad_value", err))?;
             }
         }
     }
@@ -1320,9 +1295,8 @@ mod tests {
 
     #[test]
     fn source_resolution_and_deviation() {
-        let (_dir, path) = temp_config(
-            "# my comment\nstrict_tool_mode = true\n\n[mystery]\nkeep = \"me\"\n",
-        );
+        let (_dir, path) =
+            temp_config("# my comment\nstrict_tool_mode = true\n\n[mystery]\nkeep = \"me\"\n");
         let startup = folded_startup();
         let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
 
@@ -1331,7 +1305,11 @@ mod tests {
         let strict = key_state(&snap, "strict_tool_mode");
         assert_eq!(strict.source, KeySource::ExplicitFile);
         assert!(strict.resettable);
-        assert!(snap.selection.deviated.contains(&"strict_tool_mode".to_string()));
+        assert!(
+            snap.selection
+                .deviated
+                .contains(&"strict_tool_mode".to_string())
+        );
         assert_eq!(snap.selection.effective, "diy");
 
         // Unset governed key that the tier filled: baseline, not resettable.
@@ -1358,8 +1336,10 @@ mod tests {
             .get_ci("middle")
             .cloned()
             .expect("middle builtin");
-        let mut startup = Config::default();
-        startup.max_subagents = Some(42);
+        let mut startup = Config {
+            max_subagents: Some(42),
+            ..Config::default()
+        };
         // `fold()` (apply_config_preset) is what ORs preset_deviated; emulate
         // it here since the test folds the definition directly.
         startup.preset_deviated |= apply_to_config(&mut startup, &middle.definition);
@@ -1506,7 +1486,10 @@ mod tests {
             &path,
         )
         .expect("apply null-unset");
-        assert!(snap.file_tree.get("mystery").is_none() || snap.file_tree["mystery"].get("keep").is_none());
+        assert!(
+            snap.file_tree.get("mystery").is_none()
+                || snap.file_tree["mystery"].get("keep").is_none()
+        );
 
         // A file-present non-catalog key may be edited generically…
         let (_d2, p2) = temp_config("[mystery]\nkeep = 1\n");

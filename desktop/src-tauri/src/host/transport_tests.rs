@@ -236,11 +236,9 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         .route(
             "/v1/presets/apply",
             post(
-                |State(fake): State<FakeRuntime>, Json(body): Json<Value>| {
-                    async move {
-                        fake.preset_applies.lock().unwrap().push(body);
-                        Json(json!({ "applied": true }))
-                    }
+                |State(fake): State<FakeRuntime>, Json(body): Json<Value>| async move {
+                    fake.preset_applies.lock().unwrap().push(body);
+                    Json(json!({ "applied": true }))
                 },
             ),
         )

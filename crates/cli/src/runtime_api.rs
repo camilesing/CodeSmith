@@ -1450,9 +1450,7 @@ async fn preset_apply(
     })
     .await
     .map_err(|err| ApiError::internal(format!("preset apply task: {err}")))?
-    .map_err(|err| {
-        ApiError::bad_request(format!("[{}] {}", err.code, err.message))
-    })?;
+    .map_err(|err| ApiError::bad_request(format!("[{}] {}", err.code, err.message)))?;
     Ok(Json(snapshot))
 }
 

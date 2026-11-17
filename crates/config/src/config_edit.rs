@@ -38,7 +38,7 @@ fn to_edit_value(value: toml::Value) -> Value {
         toml::Value::Integer(i) => i.into(),
         toml::Value::Float(f) => f.into(),
         toml::Value::Boolean(b) => b.into(),
-        toml::Value::Datetime(d) => toml_edit::Datetime::from(d).into(),
+        toml::Value::Datetime(d) => d.into(),
         toml::Value::Array(items) => {
             let mut array = toml_edit::Array::new();
             for item in items {
@@ -141,16 +141,18 @@ mod tests {
     use crate::write_config_file_private;
 
     fn doc(source: &str) -> DocumentMut {
-        source
-            .parse::<DocumentMut>()
-            .expect("test fixture parses")
+        source.parse::<DocumentMut>().expect("test fixture parses")
     }
 
     #[test]
     fn set_preserves_comments_and_unknown_tables() {
         let mut doc = doc("# leading comment\nmodel = \"deepseek-chat\"\n\n[mystery]\nkey = 1\n");
-        doc_set(&mut doc, "sandbox.filesystem.mode", "workspace-write".into())
-            .expect("set succeeds");
+        doc_set(
+            &mut doc,
+            "sandbox.filesystem.mode",
+            "workspace-write".into(),
+        )
+        .expect("set succeeds");
         let rendered = doc.to_string();
         assert!(rendered.contains("# leading comment"));
         assert!(rendered.contains("[mystery]"));
@@ -164,8 +166,7 @@ mod tests {
     fn set_then_unset_leaves_no_trace() {
         let source = "# tools comment\n[tools]\nalways_load = [\"read\"]\n";
         let mut doc = doc(source);
-        doc_set(&mut doc, "tools.progressive_disclosure", true.into())
-            .expect("set succeeds");
+        doc_set(&mut doc, "tools.progressive_disclosure", true.into()).expect("set succeeds");
         assert!(doc_unset(&mut doc, "tools.progressive_disclosure").expect("unset succeeds"));
         assert!(!doc_unset(&mut doc, "tools.progressive_disclosure").expect("second unset"));
         let rendered = doc.to_string();
@@ -201,10 +202,17 @@ mod tests {
         let mut headers = toml::Table::new();
         headers.insert("x-header".to_string(), toml::Value::String("v".into()));
         doc_set(&mut doc, "http_headers", headers.into()).expect("map set succeeds");
-        doc_set(&mut doc, "tools.always_load", toml::Value::Array(vec!["a".into(), "b".into()]))
-            .expect("list set succeeds");
+        doc_set(
+            &mut doc,
+            "tools.always_load",
+            toml::Value::Array(vec!["a".into(), "b".into()]),
+        )
+        .expect("list set succeeds");
         let parsed: crate::ConfigToml = toml::from_str(&doc.to_string()).expect("parses");
-        assert_eq!(parsed.http_headers.get("x-header").map(String::as_str), Some("v"));
+        assert_eq!(
+            parsed.http_headers.get("x-header").map(String::as_str),
+            Some("v")
+        );
         assert_eq!(parsed.tools.expect("tools").always_load, vec!["a", "b"]);
     }
 
@@ -219,7 +227,10 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("read back");
         assert!(text.contains("# keep me"));
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode();
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
 }

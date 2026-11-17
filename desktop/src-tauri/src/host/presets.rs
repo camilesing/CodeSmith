@@ -10,9 +10,9 @@
 //! caller that expects it.
 
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{HostState, rpc_error, rpc_ok};
+use super::{rpc_error, rpc_ok, HostState};
 
 /// `agentPresets/describe` → `GET /v1/presets`.
 pub async fn describe(host: &HostState) -> Value {
@@ -38,10 +38,7 @@ pub async fn apply(host: &HostState, args: &Value) -> Value {
     match forward_apply(host, &ops).await {
         Ok(Ok(snapshot)) => rpc_ok(snapshot),
         Ok(Err(message)) => rpc_error("presets/apply-refused", message),
-        Err(err) => rpc_error(
-            "gateway/internal",
-            format!("agentPresets/apply: {err:#}"),
-        ),
+        Err(err) => rpc_error("gateway/internal", format!("agentPresets/apply: {err:#}")),
     }
 }
 
