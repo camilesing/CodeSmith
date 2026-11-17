@@ -169,11 +169,12 @@ def main():
     )
     args = parser.parse_args()
     if args.report_only:
-        # Reuse the most recent measurement directory.
-        dirs = sorted(glob.glob(os.path.join(tempfile.gettempdir(), "codesmith-cov-*")))
+        # Reuse the most recent measurement directory (mkdtemp suffixes are
+        # random, so lexicographic order is not recency).
+        dirs = glob.glob(os.path.join(tempfile.gettempdir(), "codesmith-cov-*"))
         if not dirs:
             sys.exit("no previous measurement found — run without --report-only")
-        report(dirs[-1])
+        report(max(dirs, key=os.path.getmtime))
         return
     profraw_dir, rc = measure()
     report(profraw_dir)
