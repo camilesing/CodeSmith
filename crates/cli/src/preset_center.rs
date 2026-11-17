@@ -888,6 +888,18 @@ fn snapshot_with(
                 .expect("middle is compiled in")
         });
 
+    // Present the launch-equivalent view: `codesmith serve` does not fold
+    // the preset layer at startup (the REPL path does), so fold the
+    // resolved tier into a clone here — the same rationale as `codesmith
+    // doctor` folding "so the reported tier (and the effective switches)
+    // match an interactive session". Idempotent for an already-folded
+    // config: fill-if-unset finds the filled values and no-ops.
+    let mut view = startup.clone();
+    view.preset_deviated |= crate::presets::apply_to_config(&mut view, &loaded.definition);
+    if view.preset.is_none() {
+        view.preset = Some(loaded.name.clone());
+    }
+
     let tiers: Vec<TierView> = preset_catalog
         .iter()
         .map(|loaded| TierView {
@@ -912,7 +924,7 @@ fn snapshot_with(
         let effective = if NON_RUNTIME_KEYS.contains(&entry.path) {
             file_value.clone()
         } else {
-            effective_value(startup, entry.path)
+            effective_value(&view, entry.path)
         };
         let set = effective.is_some();
         let mut value = effective.unwrap_or(Json::Null);
@@ -989,7 +1001,7 @@ fn snapshot_with(
         });
     }
 
-    let effective = if startup.preset_deviated || !deviated.is_empty() {
+    let effective = if view.preset_deviated || !deviated.is_empty() {
         "diy".to_string()
     } else {
         loaded.name.clone()
@@ -1291,6 +1303,19 @@ mod tests {
         );
         // A key the tier leaves unset resolves to None (default), not panic.
         assert_eq!(effective_value(&startup, "api_key"), None);
+    }
+
+    #[test]
+    fn serve_style_unfolded_config_presents_launch_equivalent_view() {
+        // `codesmith serve` (the desktop backend) never folds the preset
+        // layer; the snapshot must still present what a launch folds.
+        let (_dir, path) = temp_config("");
+        let startup = Config::default();
+        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        let index = key_state(&snap, "index.enabled");
+        assert_eq!(index.value, Json::Bool(true));
+        assert_eq!(index.source, KeySource::Baseline);
+        assert_eq!(snap.selection.effective, "middle");
     }
 
     #[test]
