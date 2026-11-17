@@ -387,4 +387,79 @@ mod tests {
         let final_state = ApprovalGrants::load(&path);
         assert!(final_state.is_granted("/w/a", "shell:cargo check"));
     }
+
+    #[test]
+    fn list_prints_session_and_persisted_state() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir");
+        let _g1 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            &codesmith_home,
+        );
+        let _g2 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_CONFIG_PATH",
+            codesmith_home.join("config.toml"),
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: tmp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: tmp.path().join("skills"),
+            memory_path: tmp.path().join("memory.md"),
+            mcp_config_path: tmp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+        list(&state); // empty
+
+        let key = state.workspace.to_string_lossy().into_owned();
+        let cargo_grant = shell_grant_key("cargo check");
+        allow(&mut state, "cargo check");
+        assert!(
+            state.approval_grants.is_granted(&key, &cargo_grant),
+            "allow records the persisted grant"
+        );
+        allow_many(&mut state, &["git status", "cargo build"]);
+        assert!(
+            state
+                .approval_grants
+                .is_granted(&key, &shell_grant_key("git status"))
+        );
+        deny(&mut state, "rm -rf /");
+        assert!(
+            state
+                .approval_session_denied
+                .contains(&shell_grant_key("rm -rf /")),
+            "deny records the session denial"
+        );
+        // allow lifts a session deny for the same key (the gate ranks
+        // denials above grants until this removal happens).
+        deny(&mut state, "cargo test");
+        allow(&mut state, "cargo test");
+        assert!(
+            !state
+                .approval_session_denied
+                .contains(&shell_grant_key("cargo test")),
+            "allow lifts the session denial for the same key"
+        );
+        list(&state); // seeded
+
+        remove(&mut state, "cargo check");
+        assert!(
+            !state.approval_grants.is_granted(&key, &cargo_grant),
+            "remove clears the grant"
+        );
+        apply_config_rules(&mut state); // default config contributes nothing
+    }
 }

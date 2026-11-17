@@ -1486,4 +1486,463 @@ mod tests {
             PathBuf::from(".codesmith").join("state.db")
         );
     }
+
+    #[test]
+    fn memory_mode_round_trips_and_missing_thread_fails_loud() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("memory.db"))).expect("open");
+        store.upsert_thread(&test_thread("t-mem")).expect("upsert");
+
+        assert_eq!(store.get_thread_memory_mode("t-mem").expect("get"), None);
+        store
+            .set_thread_memory_mode("t-mem", Some("local"))
+            .expect("set");
+        assert_eq!(
+            store.get_thread_memory_mode("t-mem").expect("get"),
+            Some("local".to_string())
+        );
+        store.set_thread_memory_mode("t-mem", None).expect("clear");
+        assert_eq!(store.get_thread_memory_mode("t-mem").expect("get"), None);
+
+        // Missing thread: the setter fails loud, the getter reports absence.
+        assert!(
+            store
+                .set_thread_memory_mode("t-missing", Some("local"))
+                .is_err()
+        );
+        assert_eq!(
+            store.get_thread_memory_mode("t-missing").expect("get"),
+            None
+        );
+    }
+
+    fn dyn_tool(position: i64, name: &str) -> DynamicToolRecord {
+        DynamicToolRecord {
+            position,
+            name: name.to_string(),
+            description: Some(format!("tool {name}")),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"x": {"type": "integer"}}
+            }),
+        }
+    }
+
+    #[test]
+    fn dynamic_tools_persist_replace_and_clear() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("tools.db"))).expect("open");
+        store
+            .upsert_thread(&test_thread("t-tools"))
+            .expect("upsert");
+
+        // Nothing registered yet; an unknown thread lists empty.
+        assert!(store.get_dynamic_tools("t-tools").expect("get").is_empty());
+        assert!(
+            store
+                .get_dynamic_tools("t-missing")
+                .expect("get")
+                .is_empty()
+        );
+
+        // Inserted out of position order; reads come back position-ordered.
+        store
+            .persist_dynamic_tools("t-tools", &[dyn_tool(1, "beta"), dyn_tool(0, "alpha")])
+            .expect("persist");
+        let tools = store.get_dynamic_tools("t-tools").expect("get");
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(tools[0].description.as_deref(), Some("tool alpha"));
+        assert_eq!(
+            tools[0].input_schema,
+            serde_json::json!({"type": "object", "properties": {"x": {"type": "integer"}}})
+        );
+
+        // Persisting replaces the whole set.
+        store
+            .persist_dynamic_tools("t-tools", &[dyn_tool(0, "gamma")])
+            .expect("replace");
+        let tools = store.get_dynamic_tools("t-tools").expect("get");
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["gamma"]
+        );
+
+        // An empty list clears.
+        store
+            .persist_dynamic_tools("t-tools", &[])
+            .expect("clear with empty list");
+        assert!(store.get_dynamic_tools("t-tools").expect("get").is_empty());
+
+        // The FK on thread_id makes persisting for an unknown thread fail loud.
+        assert!(
+            store
+                .persist_dynamic_tools("t-missing", &[dyn_tool(0, "x")])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn append_chain_links_parents_and_lists_branch_and_leaves() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("msgs.db"))).expect("open");
+        store.upsert_thread(&test_thread("t-msgs")).expect("upsert");
+
+        let m1 = store
+            .append_message("t-msgs", "user", "one", None)
+            .expect("append");
+        let item = serde_json::json!({"kind": "tool_call", "name": "ls"});
+        let m2 = store
+            .append_message("t-msgs", "assistant", "two", Some(item.clone()))
+            .expect("append");
+        let m3 = store
+            .append_message("t-msgs", "user", "three", None)
+            .expect("append");
+
+        // Chronological order, parent chaining, item round-trip.
+        let msgs = store.list_messages("t-msgs", None).expect("list");
+        assert_eq!(
+            msgs.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+            ["one", "two", "three"]
+        );
+        assert_eq!(msgs[0].parent_entry_id, None);
+        assert_eq!(msgs[1].parent_entry_id, Some(m1));
+        assert_eq!(msgs[2].parent_entry_id, Some(m2));
+        assert_eq!(msgs[1].item, Some(item));
+        assert_eq!(msgs[2].item, None);
+
+        // A linear chain has exactly one leaf: the last message.
+        let leaves = store.list_leaf_messages("t-msgs").expect("leaves");
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].id, m3);
+
+        // limit caps the ancestor walk but always keeps the leaf.
+        let head = store.list_messages("t-msgs", Some(2)).expect("list limit");
+        assert_eq!(
+            head.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+            ["two", "three"]
+        );
+
+        // A thread with no messages lists empty.
+        store
+            .upsert_thread(&test_thread("t-empty"))
+            .expect("upsert");
+        assert!(
+            store
+                .list_messages("t-empty", None)
+                .expect("list")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_leaf_messages("t-empty")
+                .expect("leaves")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn fork_at_message_creates_branch_and_moves_current_leaf() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("fork.db"))).expect("open");
+        store.upsert_thread(&test_thread("t-fork")).expect("upsert");
+
+        let m1 = store
+            .append_message("t-fork", "user", "one", None)
+            .expect("append");
+        let m2 = store
+            .append_message("t-fork", "assistant", "two", None)
+            .expect("append");
+        let m3 = store
+            .append_message("t-fork", "user", "three", None)
+            .expect("append");
+
+        let fork_item = serde_json::json!({"kind": "fork"});
+        let f = store
+            .fork_at_message(m1, "user", "forked", Some(fork_item.clone()))
+            .expect("fork");
+
+        // The branch walk follows the fork, not the old chain.
+        let msgs = store.list_messages("t-fork", None).expect("list");
+        assert_eq!(
+            msgs.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+            ["one", "forked"]
+        );
+        assert_eq!(msgs[1].parent_entry_id, Some(m1));
+        assert_eq!(msgs[1].item, Some(fork_item));
+        assert_eq!(
+            store
+                .get_thread("t-fork")
+                .expect("get thread")
+                .expect("thread exists")
+                .current_leaf_id,
+            Some(f)
+        );
+
+        // Both the old chain tip and the fork message are leaves now.
+        let leaf_ids: Vec<i64> = store
+            .list_leaf_messages("t-fork")
+            .expect("leaves")
+            .iter()
+            .map(|m| m.id)
+            .collect();
+        assert!(leaf_ids.contains(&m3));
+        assert!(leaf_ids.contains(&f));
+        assert!(!leaf_ids.contains(&m1));
+        assert!(!leaf_ids.contains(&m2));
+
+        // Forking at an unknown message fails loud.
+        assert!(store.fork_at_message(999_999, "user", "x", None).is_err());
+    }
+
+    #[test]
+    fn clear_messages_empties_thread_and_resets_leaf() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("clear.db"))).expect("open");
+        store
+            .upsert_thread(&test_thread("t-clear"))
+            .expect("upsert");
+
+        store
+            .append_message("t-clear", "user", "one", None)
+            .expect("append");
+        store
+            .append_message("t-clear", "assistant", "two", None)
+            .expect("append");
+
+        assert_eq!(store.clear_messages("t-clear").expect("clear"), 2);
+        assert!(
+            store
+                .list_messages("t-clear", None)
+                .expect("list")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_leaf_messages("t-clear")
+                .expect("leaves")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .get_thread("t-clear")
+                .expect("get thread")
+                .expect("thread exists")
+                .current_leaf_id,
+            None
+        );
+
+        // Clearing again is a no-op, and an unknown thread clears nothing
+        // without error.
+        assert_eq!(store.clear_messages("t-clear").expect("clear again"), 0);
+        assert_eq!(store.clear_messages("t-missing").expect("clear missing"), 0);
+    }
+
+    #[test]
+    fn checkpoint_save_load_list_delete_cycle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("cp.db"))).expect("open");
+        store.upsert_thread(&test_thread("t-cp")).expect("upsert");
+
+        // Nothing saved yet: a named id and "latest" both report absence.
+        assert!(
+            store
+                .load_checkpoint("t-cp", Some("cp1"))
+                .expect("load")
+                .is_none()
+        );
+        assert!(
+            store
+                .load_checkpoint("t-cp", None)
+                .expect("load latest")
+                .is_none()
+        );
+        assert!(
+            store
+                .list_checkpoints("t-cp", None)
+                .expect("list")
+                .is_empty()
+        );
+
+        store
+            .save_checkpoint("t-cp", "cp1", &serde_json::json!({"v": 1}))
+            .expect("save");
+        store
+            .save_checkpoint("t-cp", "cp2", &serde_json::json!({"v": 2}))
+            .expect("save");
+
+        // created_at is second-granular; pin distinct timestamps so
+        // "latest" and list ordering are deterministic.
+        let conn = store.conn().expect("conn");
+        conn.execute(
+            "UPDATE checkpoints SET created_at = 100 WHERE checkpoint_id = 'cp1'",
+            [],
+        )
+        .expect("pin cp1 timestamp");
+        conn.execute(
+            "UPDATE checkpoints SET created_at = 200 WHERE checkpoint_id = 'cp2'",
+            [],
+        )
+        .expect("pin cp2 timestamp");
+
+        let latest = store
+            .load_checkpoint("t-cp", None)
+            .expect("load latest")
+            .expect("checkpoint exists");
+        assert_eq!(latest.thread_id, "t-cp");
+        assert_eq!(latest.checkpoint_id, "cp2");
+        assert_eq!(latest.state, serde_json::json!({"v": 2}));
+        assert_eq!(latest.created_at, 200);
+
+        let cp1 = store
+            .load_checkpoint("t-cp", Some("cp1"))
+            .expect("load")
+            .expect("checkpoint exists");
+        assert_eq!(cp1.state, serde_json::json!({"v": 1}));
+
+        // Newest first, limit respected.
+        let listed: Vec<String> = store
+            .list_checkpoints("t-cp", None)
+            .expect("list")
+            .iter()
+            .map(|c| c.checkpoint_id.clone())
+            .collect();
+        assert_eq!(listed, ["cp2", "cp1"]);
+        let limited = store.list_checkpoints("t-cp", Some(1)).expect("list limit");
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].checkpoint_id, "cp2");
+
+        // Saving an existing id overwrites its state in place.
+        store
+            .save_checkpoint("t-cp", "cp1", &serde_json::json!({"v": 3}))
+            .expect("overwrite");
+        assert_eq!(
+            store
+                .load_checkpoint("t-cp", Some("cp1"))
+                .expect("load")
+                .expect("checkpoint exists")
+                .state,
+            serde_json::json!({"v": 3})
+        );
+        assert_eq!(store.list_checkpoints("t-cp", None).expect("list").len(), 2);
+
+        // Delete removes exactly that checkpoint; deleting again is a no-op.
+        store.delete_checkpoint("t-cp", "cp1").expect("delete");
+        assert!(
+            store
+                .load_checkpoint("t-cp", Some("cp1"))
+                .expect("load")
+                .is_none()
+        );
+        assert_eq!(store.list_checkpoints("t-cp", None).expect("list").len(), 1);
+        store
+            .delete_checkpoint("t-cp", "cp1")
+            .expect("delete unknown");
+    }
+
+    #[test]
+    fn corrupt_checkpoint_state_fails_loud_on_read() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("corrupt.db"))).expect("open");
+        store
+            .upsert_thread(&test_thread("t-corrupt"))
+            .expect("upsert");
+
+        // Plant a row with corrupt state_json, as a partial write or manual
+        // edit could leave behind. Reads must fail rather than silently
+        // substituting Null.
+        let conn = store.conn().expect("conn");
+        conn.execute(
+            "INSERT INTO checkpoints(thread_id, checkpoint_id, state_json, created_at) \
+             VALUES ('t-corrupt', 'cp', 'not json', 1)",
+            [],
+        )
+        .expect("plant corrupt row");
+
+        assert!(store.load_checkpoint("t-corrupt", Some("cp")).is_err());
+        assert!(store.load_checkpoint("t-corrupt", None).is_err());
+        assert!(store.list_checkpoints("t-corrupt", None).is_err());
+    }
+
+    #[test]
+    fn job_upsert_get_list_delete_cycle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = StateStore::open(Some(tmp.path().join("jobs.db"))).expect("open");
+
+        assert!(store.get_job("j1").expect("get").is_none());
+        assert!(store.list_jobs(None).expect("list").is_empty());
+
+        let j1 = JobStateRecord {
+            id: "j1".to_string(),
+            name: "job j1".to_string(),
+            status: JobStateStatus::Queued,
+            progress: None,
+            detail: None,
+            created_at: 1,
+            updated_at: 100,
+        };
+        let j2 = JobStateRecord {
+            id: "j2".to_string(),
+            name: "job j2".to_string(),
+            status: JobStateStatus::Running,
+            progress: Some(42),
+            detail: Some("compiling".to_string()),
+            created_at: 1,
+            updated_at: 200,
+        };
+        store.upsert_job(&j1).expect("upsert");
+        store.upsert_job(&j2).expect("upsert");
+
+        let got = store.get_job("j1").expect("get").expect("job exists");
+        assert_eq!(got.name, "job j1");
+        assert_eq!(got.status, JobStateStatus::Queued);
+        assert_eq!(got.progress, None);
+        assert_eq!(got.detail, None);
+        assert_eq!(got.created_at, 1);
+        assert_eq!(got.updated_at, 100);
+
+        let got = store.get_job("j2").expect("get").expect("job exists");
+        assert_eq!(got.status, JobStateStatus::Running);
+        assert_eq!(got.progress, Some(42));
+        assert_eq!(got.detail, Some("compiling".to_string()));
+
+        // Upsert with the same id rewrites every column.
+        store
+            .upsert_job(&JobStateRecord {
+                id: "j1".to_string(),
+                name: "renamed".to_string(),
+                status: JobStateStatus::Completed,
+                progress: Some(100),
+                detail: Some("done".to_string()),
+                created_at: 2,
+                updated_at: 300,
+            })
+            .expect("upsert update");
+        let got = store.get_job("j1").expect("get").expect("job exists");
+        assert_eq!(got.name, "renamed");
+        assert_eq!(got.status, JobStateStatus::Completed);
+        assert_eq!(got.progress, Some(100));
+        assert_eq!(got.detail, Some("done".to_string()));
+        assert_eq!(got.updated_at, 300);
+
+        // Listing is updated_at DESC and limit-capped.
+        let ids: Vec<String> = store
+            .list_jobs(None)
+            .expect("list")
+            .iter()
+            .map(|j| j.id.clone())
+            .collect();
+        assert_eq!(ids, ["j1", "j2"]);
+        let limited = store.list_jobs(Some(1)).expect("list limit");
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].id, "j1");
+
+        // Delete removes exactly that job; deleting again is a no-op.
+        store.delete_job("j1").expect("delete");
+        assert!(store.get_job("j1").expect("get").is_none());
+        store.delete_job("j1").expect("delete unknown");
+        assert_eq!(store.list_jobs(None).expect("list").len(), 1);
+    }
 }

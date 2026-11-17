@@ -560,4 +560,34 @@ mod tests {
             "session count missing from the report"
         );
     }
+
+    #[tokio::test]
+    async fn run_rejects_bad_windows_and_writes_a_report_into_an_isolated_home() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir");
+        let _g1 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            &codesmith_home,
+        );
+        let _g2 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_CONFIG_PATH",
+            codesmith_home.join("config.toml"),
+        );
+
+        run("bogus-window").await; // refused by the window parser
+        run("7d").await;
+        run("").await; // default window
+        let reports = std::fs::read_dir(
+            codesmith_config::codesmith_home()
+                .expect("home")
+                .join("insights"),
+        )
+        .expect("insights report dir exists");
+        assert!(
+            reports.count() >= 1,
+            "each successful run writes an HTML report"
+        );
+    }
 }

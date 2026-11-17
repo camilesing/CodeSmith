@@ -1135,4 +1135,895 @@ mod tests {
         );
         assert_eq!(allowed, None);
     }
+
+    // ---- coverage slice: priority inbox scan, prompt formatting, permission
+    // resolution, task claiming, shutdown handling, and the wait loop — all
+    // against tempdir stores, no engine turns. ----
+
+    use crate::tools::team::new_shared_permission_registry;
+    use crate::tools::team::team_file::{
+        TeamFile, TeamMember, create_team_file, format_lead_agent_id,
+    };
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use uuid::Uuid;
+
+    fn wide_team_file(name: &str) -> TeamFile {
+        TeamFile {
+            name: name.to_string(),
+            description: None,
+            created_at: 0,
+            lead_agent_id: format_lead_agent_id(name),
+            lead_session_id: None,
+            team_allowed_paths: None,
+            members: vec![TeamMember {
+                agent_id: "worker1@t".to_string(),
+                name: "worker1".to_string(),
+                agent_type: None,
+                model: None,
+                prompt: None,
+                color: None,
+                joined_at: 0,
+                cwd: "/tmp".to_string(),
+                worktree_path: None,
+                session_id: None,
+                is_active: true,
+            }],
+        }
+    }
+
+    fn seed(agent: &str, team: &str, from: &str, text: &str) {
+        write_to_mailbox(
+            agent,
+            team,
+            TeammateMessage {
+                from: from.to_string(),
+                text: text.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                read: false,
+                color: None,
+                summary: None,
+            },
+        )
+        .expect("seed message");
+    }
+
+    fn protocol_text(protocol: StructuredProtocolMessage) -> String {
+        serde_json::to_string(&protocol).expect("serialize protocol")
+    }
+
+    #[test]
+    fn scan_inbox_with_priority_classifies_every_message_family() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("scan-team")).expect("team");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        seed(
+            "worker1",
+            "scan-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::ShutdownRequest {
+                request_id: "req-s1".to_string(),
+                from: team_lead_name().to_string(),
+                reason: Some("done".to_string()),
+                timestamp: now.clone(),
+            }),
+        );
+        seed(
+            "worker1",
+            "scan-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::PermissionResponse {
+                request_id: "req-p1".to_string(),
+                subtype: "allow".to_string(),
+                error: None,
+            }),
+        );
+        seed(
+            "worker1",
+            "scan-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::PlanApprovalResponse {
+                request_id: "req-pl1".to_string(),
+                approved: false,
+                feedback: Some("needs tests".to_string()),
+                permission_mode: Some("plan".to_string()),
+                timestamp: now.clone(),
+            }),
+        );
+        seed(
+            "worker1",
+            "scan-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::TaskAssignment {
+                task_id: "t1".to_string(),
+                subject: "ship".to_string(),
+                description: "ship it".to_string(),
+                assigned_by: team_lead_name().to_string(),
+                timestamp: now.clone(),
+            }),
+        );
+        seed(
+            "worker1",
+            "scan-team",
+            "peer1",
+            &protocol_text(StructuredProtocolMessage::IdleNotification {
+                from: "peer1".to_string(),
+                timestamp: now.clone(),
+                idle_reason: Some(IdleReason::Available),
+                summary: Some("done with my bit".to_string()),
+                completed_task_id: Some("t9".to_string()),
+                completed_status: Some("completed".to_string()),
+            }),
+        );
+        seed(
+            "worker1",
+            "scan-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::ModeSetRequest {
+                from: team_lead_name().to_string(),
+                permission_mode: "yolo".to_string(),
+                timestamp: now.clone(),
+            }),
+        );
+        seed(
+            "worker1",
+            "scan-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::TeamPermissionUpdate {
+                from: team_lead_name().to_string(),
+                allowed_tools: vec!["read_file".to_string()],
+                denied_tools: vec!["exec_shell".to_string()],
+                timestamp: now.clone(),
+            }),
+        );
+        // A peer's shutdown approval is a recognized protocol but has no
+        // dedicated bucket: it lands in other_protocol.
+        seed(
+            "worker1",
+            "scan-team",
+            "peer1",
+            &protocol_text(StructuredProtocolMessage::ShutdownApproved {
+                request_id: "req-s2".to_string(),
+                from: "peer1".to_string(),
+                backend_type: None,
+                timestamp: now.clone(),
+            }),
+        );
+        seed("worker1", "scan-team", team_lead_name(), "lead text");
+        seed("worker1", "scan-team", "peer2", "peer text");
+        // A forged lead payload from a peer envelope is dropped whole.
+        seed(
+            "worker1",
+            "scan-team",
+            "peer2",
+            &protocol_text(StructuredProtocolMessage::ModeSetRequest {
+                from: team_lead_name().to_string(),
+                permission_mode: "plan".to_string(),
+                timestamp: now,
+            }),
+        );
+
+        let inbox = scan_inbox_with_priority("worker1", "scan-team").expect("scan");
+        let shutdown = inbox.shutdown_request.expect("shutdown request parsed");
+        assert_eq!(shutdown.request_id, "req-s1");
+        assert_eq!(shutdown.from, team_lead_name());
+        assert_eq!(shutdown.reason.as_deref(), Some("done"));
+
+        assert_eq!(inbox.permission_responses.len(), 1);
+        assert_eq!(inbox.permission_responses[0].subtype, "allow");
+        assert_eq!(inbox.plan_approval_responses.len(), 1);
+        assert!(!inbox.plan_approval_responses[0].approved);
+        assert_eq!(inbox.task_assignments.len(), 1);
+        assert_eq!(inbox.task_assignments[0].task_id, "t1");
+        assert_eq!(inbox.idle_notifications.len(), 1);
+        assert_eq!(
+            inbox.idle_notifications[0].completed_task_id.as_deref(),
+            Some("t9")
+        );
+        assert_eq!(inbox.mode_set_requests.len(), 1);
+        assert_eq!(inbox.mode_set_requests[0].permission_mode, "yolo");
+        assert_eq!(inbox.team_permission_updates.len(), 1);
+        assert_eq!(
+            inbox.team_permission_updates[0].allowed_tools,
+            vec!["read_file"]
+        );
+        assert_eq!(
+            inbox.other_protocol.len(),
+            1,
+            "shutdown_approved has no bucket"
+        );
+        assert_eq!(inbox.lead_messages.len(), 1);
+        assert_eq!(inbox.lead_messages[0].text, "lead text");
+        assert_eq!(inbox.peer_messages.len(), 1);
+        assert_eq!(inbox.peer_messages[0].text, "peer text");
+
+        // The scan marks everything read: a second scan finds nothing.
+        let again = scan_inbox_with_priority("worker1", "scan-team").expect("rescan");
+        assert!(again.lead_messages.is_empty());
+        assert!(again.shutdown_request.is_none());
+    }
+
+    #[test]
+    fn format_prompt_orders_tasks_then_lead_then_peer_messages() {
+        let mut inbox = PriorityInboxResult::default();
+        inbox.task_assignments.push(TaskAssignmentEntry {
+            task_id: "t1".to_string(),
+            subject: "ship".to_string(),
+            description: "ship it".to_string(),
+            assigned_by: team_lead_name().to_string(),
+        });
+        inbox.lead_messages.push(TeammateMessage {
+            from: team_lead_name().to_string(),
+            text: "lead asks".to_string(),
+            timestamp: "t".to_string(),
+            read: false,
+            color: None,
+            summary: None,
+        });
+        inbox.peer_messages.push(TeammateMessage {
+            from: "peer".to_string(),
+            text: "peer says".to_string(),
+            timestamp: "t".to_string(),
+            read: false,
+            color: None,
+            summary: None,
+        });
+
+        let prompt = format_prompt_from_inbox(&inbox);
+        let task_at = prompt.find("New task assigned: ship").expect("task first");
+        let lead_at = prompt.find("lead asks").expect("lead second");
+        let peer_at = prompt.find("peer says").expect("peer last");
+        assert!(task_at < lead_at && lead_at < peer_at, "{prompt}");
+        assert!(
+            prompt.contains("ship it"),
+            "task description rides the prompt"
+        );
+
+        assert_eq!(
+            format_prompt_from_inbox(&PriorityInboxResult::default()),
+            "",
+            "an empty inbox formats an empty prompt"
+        );
+    }
+
+    #[test]
+    fn resolve_permission_responses_routes_allow_and_denies_unknown_subtypes() {
+        let registry = new_shared_permission_registry();
+        let allow_rx = {
+            let mut reg = registry.lock().unwrap();
+            reg.register("req-ok".to_string())
+        };
+        let deny_rx = {
+            let mut reg = registry.lock().unwrap();
+            reg.register("req-weird".to_string())
+        };
+
+        resolve_permission_responses(
+            &[
+                PermissionResponseEntry {
+                    request_id: "req-ok".to_string(),
+                    subtype: "success".to_string(),
+                    error: None,
+                },
+                PermissionResponseEntry {
+                    request_id: "req-weird".to_string(),
+                    subtype: "garbage".to_string(),
+                    error: Some("boom".to_string()),
+                },
+            ],
+            &registry,
+        );
+
+        assert_eq!(allow_rx.blocking_recv(), Ok(PermissionDecision::Allow));
+        match deny_rx.blocking_recv().expect("deny decision") {
+            PermissionDecision::Deny { reason } => {
+                assert_eq!(reason.as_deref(), Some("boom"))
+            }
+            other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_inbox_messages_splits_protocol_from_text() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("proc-team")).expect("team");
+        seed(
+            "worker1",
+            "proc-team",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::ModeSetRequest {
+                from: team_lead_name().to_string(),
+                permission_mode: "plan".to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+        seed("worker1", "proc-team", "peer2", "plain words");
+
+        let (protocol, text) = process_inbox_messages("worker1", "proc-team").expect("process");
+        assert_eq!(protocol.len(), 1);
+        assert!(matches!(
+            &protocol[0],
+            StructuredProtocolMessage::ModeSetRequest { .. }
+        ));
+        assert_eq!(text.len(), 1);
+        assert_eq!(text[0].text, "plain words");
+
+        // Read-marking applies here too.
+        let (protocol, text) = process_inbox_messages("worker1", "proc-team").expect("again");
+        assert!(protocol.is_empty() && text.is_empty());
+    }
+
+    #[test]
+    fn send_idle_notification_writes_the_protocol_to_the_lead_inbox() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("idle-team")).expect("team");
+
+        send_idle_notification(
+            "worker1",
+            "idle-team",
+            Some("finished the sweep".to_string()),
+            Some("t7".to_string()),
+        )
+        .expect("idle notification");
+
+        let lead =
+            crate::tools::team::teammate_mailbox::read_mailbox(team_lead_name(), "idle-team")
+                .expect("lead");
+        assert_eq!(lead.len(), 1);
+        let parsed = parse_structured_protocol_from(&lead[0].text, &lead[0].from)
+            .expect("idle protocol parses");
+        match parsed {
+            StructuredProtocolMessage::IdleNotification {
+                from,
+                idle_reason,
+                summary,
+                completed_task_id,
+                ..
+            } => {
+                assert_eq!(from, "worker1");
+                assert_eq!(idle_reason, Some(IdleReason::Available));
+                assert_eq!(summary.as_deref(), Some("finished the sweep"));
+                assert_eq!(completed_task_id.as_deref(), Some("t7"));
+            }
+            other => panic!("expected idle notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn poll_leader_inbox_formats_protocol_and_text_messages() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("poll-team")).expect("team");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        seed(
+            team_lead_name(),
+            "poll-team",
+            "worker1",
+            &protocol_text(StructuredProtocolMessage::IdleNotification {
+                from: "worker1".to_string(),
+                timestamp: now.clone(),
+                idle_reason: Some(IdleReason::Available),
+                summary: Some("standing by".to_string()),
+                completed_task_id: None,
+                completed_status: None,
+            }),
+        );
+        seed(
+            team_lead_name(),
+            "poll-team",
+            "worker1",
+            &protocol_text(StructuredProtocolMessage::ShutdownApproved {
+                request_id: "req-a".to_string(),
+                from: "worker1".to_string(),
+                backend_type: None,
+                timestamp: now.clone(),
+            }),
+        );
+        seed(
+            team_lead_name(),
+            "poll-team",
+            "worker1",
+            &protocol_text(StructuredProtocolMessage::ShutdownRejected {
+                request_id: "req-b".to_string(),
+                from: "worker1".to_string(),
+                reason: "unfinished work".to_string(),
+                timestamp: now.clone(),
+            }),
+        );
+        seed(
+            team_lead_name(),
+            "poll-team",
+            "worker2",
+            &protocol_text(StructuredProtocolMessage::TaskAssignment {
+                task_id: "t1".to_string(),
+                subject: "s".to_string(),
+                description: "d".to_string(),
+                assigned_by: "worker2".to_string(),
+                timestamp: now,
+            }),
+        );
+        seed(team_lead_name(), "poll-team", "worker2", "plain update");
+
+        let lines = poll_leader_inbox("poll-team").expect("poll");
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(
+            lines[0].contains("Teammate worker1 is idle. standing by"),
+            "line 0: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("Teammate worker1 approved shutdown"),
+            "line 1: {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("Teammate worker1 rejected shutdown: unfinished work"),
+            "line 2: {:?}",
+            lines[2]
+        );
+        assert_eq!(lines[3], "Protocol message from teammate");
+        assert_eq!(lines[4], "Message from worker2: plain update");
+    }
+
+    // ---- task claiming + lifecycle state machine on tempdir stores ----
+
+    fn shared_tasks(team: &str) -> SharedTaskV2Manager {
+        crate::tools::task_v2::new_shared_task_v2_manager(team).expect("task manager")
+    }
+
+    fn create_task(
+        manager: &SharedTaskV2Manager,
+        subject: &str,
+        owner: Option<&str>,
+        blocked_by: Vec<String>,
+    ) -> String {
+        let mut guard = manager.lock().unwrap();
+        guard
+            .create_task(
+                subject.to_string(),
+                format!("{subject} body"),
+                None,
+                None,
+                owner.map(ToString::to_string),
+                blocked_by,
+                Vec::new(),
+                None,
+            )
+            .expect("create task")
+    }
+
+    #[tokio::test]
+    async fn try_claim_next_task_skips_owned_and_blocked_tasks() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("claim-team")).expect("team");
+        let tasks = shared_tasks("claim-team");
+
+        create_task(&tasks, "owned", Some("someone-else"), Vec::new());
+        let blocker = create_task(&tasks, "blocker", Some("someone-else"), Vec::new());
+        create_task(&tasks, "blocked", None, vec![blocker.clone()]);
+        let free = create_task(&tasks, "free", None, Vec::new());
+
+        let claimed = try_claim_next_task("worker1", &tasks).await.expect("claim");
+        assert_eq!(
+            claimed.subject, "free",
+            "owned and blocked tasks are skipped"
+        );
+        assert_eq!(claimed.owner.as_deref(), Some("worker1"));
+        {
+            // The returned record is the claim snapshot; the store reflects
+            // the in-progress arming the claim performs.
+            let guard = tasks.lock().unwrap();
+            let stored = guard.get_task(&claimed.id).expect("task");
+            assert_eq!(
+                stored.status,
+                TaskV2Status::InProgress,
+                "claim arms the task"
+            );
+        }
+
+        // The blocked task is still unreachable while its blocker is
+        // unresolved, and worker1 is busy with `free`.
+        assert!(
+            try_claim_next_task("worker1", &tasks).await.is_none(),
+            "nothing left to claim"
+        );
+
+        // Completing both the claim and the blocker unblocks the dependent task.
+        {
+            let mut guard = tasks.lock().unwrap();
+            guard
+                .update_task(
+                    &free,
+                    Some(TaskV2Status::Completed),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("complete free");
+            guard
+                .update_task(
+                    &blocker,
+                    Some(TaskV2Status::Completed),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("complete blocker");
+        }
+        let next = try_claim_next_task("worker1", &tasks)
+            .await
+            .expect("unblocked task claimable");
+        assert_eq!(next.subject, "blocked");
+    }
+
+    /// Caller must hold `lock_test_env()` — constructing a context touches
+    /// env-derived state. Not reentrant: the guard is the caller's.
+    fn teammate_runtime(team: &str, agent: &str, tasks: SharedTaskV2Manager) -> TeammateRuntime {
+        let workspace = std::env::temp_dir().join(format!("teammate-lifecycle-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("workspace dir");
+        let context = ToolContext::new(workspace.clone());
+        let config = crate::config::Config {
+            api_key: Some("test-key".to_string()),
+            ..crate::config::Config::default()
+        };
+        let client = crate::core::engine::resolve_llm_client_with_secrets(
+            &config,
+            &crate::no_keyring_secrets(),
+        )
+        .expect("stub client constructs");
+        let subagent_manager = crate::tools::subagent::new_shared_subagent_manager(workspace, 4);
+        let subagent_runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-chat".to_string(),
+            context.clone(),
+            true,
+            None,
+            subagent_manager.clone(),
+        );
+        TeammateRuntime {
+            agent_id: format!("{agent}@{team}"),
+            agent_name: agent.to_string(),
+            team_name: team.to_string(),
+            color: None,
+            cancel_token: CancellationToken::new(),
+            task_v2_manager: tasks,
+            initial_prompt: String::new(),
+            permission_mode: "auto".to_string(),
+            permission_registry: new_shared_permission_registry(),
+            subagent_manager,
+            subagent_runtime,
+            tool_context: context,
+            agent_type: SubAgentType::Team,
+            model: None,
+            allowed_tools: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_shutdown_request_approves_idle_and_rejects_busy_teammates() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("sd-team")).expect("team");
+        let tasks = shared_tasks("sd-team");
+        let rt = teammate_runtime("sd-team", "worker1", tasks.clone());
+
+        // Idle: no owned in-progress work, shutdown approves.
+        let state = handle_shutdown_request(&rt, "req-1", "worker1", "sd-team")
+            .await
+            .expect("shutdown decision");
+        assert_eq!(state, TeammateState::ShutdownApproved);
+        let lead = crate::tools::team::teammate_mailbox::read_mailbox(team_lead_name(), "sd-team")
+            .expect("lead");
+        assert!(
+            lead.iter()
+                .any(|msg| msg.text.contains("shutdown_approved") && msg.text.contains("req-1")),
+            "approval lands in the lead's mailbox"
+        );
+
+        // Busy: an owned in-progress task makes the teammate refuse to die.
+        let busy = create_task(&tasks, "wip", None, Vec::new());
+        {
+            let mut guard = tasks.lock().unwrap();
+            guard.claim_task(&busy, "worker1").expect("claim");
+            guard
+                .update_task(
+                    &busy,
+                    Some(TaskV2Status::InProgress),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("in progress");
+        }
+        let state = handle_shutdown_request(&rt, "req-2", "worker1", "sd-team")
+            .await
+            .expect("shutdown decision");
+        assert_eq!(state, TeammateState::ShutdownRejected);
+        let lead = crate::tools::team::teammate_mailbox::read_mailbox(team_lead_name(), "sd-team")
+            .expect("lead");
+        assert!(
+            lead.iter()
+                .any(|msg| msg.text.contains("shutdown_rejected")
+                    && msg.text.contains("pending work")),
+            "rejection lands with the reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_task_completed_and_record_task_error_reset_task_state() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("mt-team")).expect("team");
+        let tasks = shared_tasks("mt-team");
+        let rt = teammate_runtime("mt-team", "worker1", tasks.clone());
+
+        let done = create_task(&tasks, "done", None, Vec::new());
+        {
+            let mut guard = tasks.lock().unwrap();
+            guard.claim_task(&done, "worker1").expect("claim");
+        }
+        mark_task_completed(&rt, &done, Some("all green")).await;
+        {
+            let guard = tasks.lock().unwrap();
+            let task = guard.get_task(&done).expect("task");
+            assert_eq!(task.status, TaskV2Status::Completed);
+            assert_eq!(
+                task.metadata.get("teammate_summary"),
+                Some(&serde_json::json!("all green"))
+            );
+        }
+
+        // An execution error resets the task to pending and unowned.
+        let failed = create_task(&tasks, "failed", None, Vec::new());
+        {
+            let mut guard = tasks.lock().unwrap();
+            guard.claim_task(&failed, "worker1").expect("claim");
+        }
+        record_task_error(&rt, &failed, "tool exploded").await;
+        {
+            let guard = tasks.lock().unwrap();
+            let task = guard.get_task(&failed).expect("task");
+            assert_eq!(task.status, TaskV2Status::Pending, "reset for retry");
+            assert_eq!(task.owner, None, "ownership released");
+            assert!(
+                task.metadata
+                    .get("last_teammate_error")
+                    .is_some_and(|e| e.as_str() == Some("tool exploded")),
+                "error recorded in metadata"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_loop_returns_aborted_on_a_cancelled_token() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("wait-abort")).expect("team");
+        let tasks = shared_tasks("wait-abort");
+        let mut rt = teammate_runtime("wait-abort", "worker1", tasks);
+        rt.cancel_token.cancel();
+
+        match wait_for_next_prompt_or_shutdown(&mut rt).await {
+            WaitResult::Aborted => {}
+            _ => panic!("expected Aborted from a cancelled token"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_loop_returns_new_message_for_lead_text() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("wait-msg")).expect("team");
+        let tasks = shared_tasks("wait-msg");
+        let mut rt = teammate_runtime("wait-msg", "worker1", tasks);
+        seed("worker1", "wait-msg", team_lead_name(), "get to work");
+
+        match wait_for_next_prompt_or_shutdown(&mut rt).await {
+            WaitResult::NewMessage(inbox) => {
+                assert_eq!(inbox.lead_messages.len(), 1);
+                assert_eq!(inbox.lead_messages[0].text, "get to work");
+            }
+            _ => panic!("expected NewMessage from the seeded inbox"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_loop_prioritizes_shutdown_and_carries_the_batch() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("wait-sd")).expect("team");
+        let tasks = shared_tasks("wait-sd");
+        let mut rt = teammate_runtime("wait-sd", "worker1", tasks);
+        seed("worker1", "wait-sd", "peer2", "meanwhile");
+        seed(
+            "worker1",
+            "wait-sd",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::ShutdownRequest {
+                request_id: "req-w1".to_string(),
+                from: team_lead_name().to_string(),
+                reason: Some("wrap up".to_string()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+
+        match wait_for_next_prompt_or_shutdown(&mut rt).await {
+            WaitResult::ShutdownRequest(entry, inbox) => {
+                assert_eq!(entry.request_id, "req-w1");
+                assert_eq!(inbox.peer_messages.len(), 1, "batch rides the result");
+            }
+            _ => panic!("expected ShutdownRequest to outrank text messages"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_loop_claims_a_pending_task_when_idle() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("wait-task")).expect("team");
+        let tasks = shared_tasks("wait-task");
+        let mut rt = teammate_runtime("wait-task", "worker1", tasks.clone());
+        let id = create_task(&tasks, "claimable", None, Vec::new());
+
+        match wait_for_next_prompt_or_shutdown(&mut rt).await {
+            WaitResult::TaskClaimed(task) => assert_eq!(task.id, id),
+            _ => panic!("expected TaskClaimed from the idle task list"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_loop_applies_plan_mode_permission_and_team_updates() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("wait-apply")).expect("team");
+        let tasks = shared_tasks("wait-apply");
+        let mut rt = teammate_runtime("wait-apply", "worker1", tasks);
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // A pending permission request gets resolved by the batch.
+        let permission_rx = {
+            let mut reg = rt.permission_registry.lock().unwrap();
+            reg.register("req-perm".to_string())
+        };
+        seed(
+            "worker1",
+            "wait-apply",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::PermissionResponse {
+                request_id: "req-perm".to_string(),
+                subtype: "allow".to_string(),
+                error: None,
+            }),
+        );
+        // An approved plan flips the permission mode to the response's.
+        seed(
+            "worker1",
+            "wait-apply",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::PlanApprovalResponse {
+                request_id: "req-pl-ok".to_string(),
+                approved: true,
+                feedback: None,
+                permission_mode: Some("plan".to_string()),
+                timestamp: now.clone(),
+            }),
+        );
+        // A mode set request from the lead overrides afterwards.
+        seed(
+            "worker1",
+            "wait-apply",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::ModeSetRequest {
+                from: team_lead_name().to_string(),
+                permission_mode: "yolo".to_string(),
+                timestamp: now.clone(),
+            }),
+        );
+        // A team permission update initializes the allowlist.
+        seed(
+            "worker1",
+            "wait-apply",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::TeamPermissionUpdate {
+                from: team_lead_name().to_string(),
+                allowed_tools: vec!["read_file".to_string(), "web_search".to_string()],
+                denied_tools: vec![],
+                timestamp: now.clone(),
+            }),
+        );
+        // Text so the wait returns NewMessage.
+        seed("worker1", "wait-apply", team_lead_name(), "go");
+
+        match wait_for_next_prompt_or_shutdown(&mut rt).await {
+            WaitResult::NewMessage(inbox) => {
+                assert_eq!(inbox.lead_messages.len(), 1);
+            }
+            _ => panic!("expected NewMessage from the seeded inbox"),
+        }
+        assert_eq!(
+            rt.permission_mode, "yolo",
+            "mode set wins over plan approval"
+        );
+        assert_eq!(
+            rt.allowed_tools,
+            Some(vec!["read_file".to_string(), "web_search".to_string()]),
+            "team permission update seeds the allowlist"
+        );
+        assert_eq!(
+            permission_rx.await,
+            Ok(PermissionDecision::Allow),
+            "same-batch permission responses resolve before returning"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_loop_surfaces_plan_rejection_feedback_as_a_lead_message() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("wait-reject")).expect("team");
+        let tasks = shared_tasks("wait-reject");
+        let mut rt = teammate_runtime("wait-reject", "worker1", tasks);
+        seed(
+            "worker1",
+            "wait-reject",
+            team_lead_name(),
+            &protocol_text(StructuredProtocolMessage::PlanApprovalResponse {
+                request_id: "req-pl-no".to_string(),
+                approved: false,
+                feedback: Some("add coverage".to_string()),
+                permission_mode: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+
+        match wait_for_next_prompt_or_shutdown(&mut rt).await {
+            WaitResult::NewMessage(inbox) => {
+                let feedback = inbox
+                    .lead_messages
+                    .iter()
+                    .map(|msg| msg.text.as_str())
+                    .collect::<Vec<_>>();
+                assert!(
+                    feedback
+                        .iter()
+                        .any(|text| text.contains("rejected by the lead: add coverage")),
+                    "{feedback:?}"
+                );
+            }
+            _ => panic!("expected NewMessage from the seeded inbox"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_teammate_loop_reports_terminated_on_immediate_cancel() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&wide_team_file("loop-cancel")).expect("team");
+        let tasks = shared_tasks("loop-cancel");
+        let mut rt = teammate_runtime("loop-cancel", "worker1", tasks);
+        rt.cancel_token.cancel();
+        rt.initial_prompt = String::new();
+
+        let result = run_teammate_loop(rt).await;
+        assert_eq!(result.final_state, TeammateState::Terminated);
+        assert_eq!(result.agent_name, "worker1");
+        assert!(result.summary.is_none(), "no prompt ever ran");
+    }
 }

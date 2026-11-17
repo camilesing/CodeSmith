@@ -814,7 +814,57 @@ fn expand_tilde(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_token_size;
+    // Async tests hold the test-env mutex (via ScratchEnv) across awaits.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    fn test_repl_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Redirect CODESMITH_CONFIG_PATH (settings.toml + config.toml writes)
+    /// and CODESMITH_HOME (trust store) into a scratch dir. Every test that
+    /// can reach a persist path must hold the env lock for the whole test.
+    struct ScratchEnv {
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_guard: EnvVarGuard,
+        _config_guard: EnvVarGuard,
+    }
+
+    fn scratch_env() -> ScratchEnv {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let config_guard =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+        ScratchEnv {
+            _home: home,
+            _lock: lock,
+            _home_guard: home_guard,
+            _config_guard: config_guard,
+        }
+    }
 
     #[test]
     fn token_sizes_accept_claude_codes_shorthand() {
@@ -829,5 +879,264 @@ mod tests {
         // A zero window would pin every turn over-budget.
         assert_eq!(parse_token_size("0"), None);
         assert_eq!(parse_token_size("0k"), None);
+    }
+
+    #[test]
+    fn parse_bool_accepts_words_and_digits() {
+        assert_eq!(parse_bool(" true "), Some(true));
+        assert_eq!(parse_bool("ON"), Some(true));
+        assert_eq!(parse_bool("1"), Some(true));
+        assert_eq!(parse_bool("no"), Some(false));
+        assert_eq!(parse_bool("0"), Some(false));
+        assert_eq!(parse_bool("maybe"), None);
+    }
+
+    #[test]
+    fn expand_tilde_resolves_home_prefixes() {
+        let _env = scratch_env();
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(
+            std::path::PathBuf::from(expand_tilde("~/skills")),
+            home.join("skills")
+        );
+        assert_eq!(std::path::PathBuf::from(expand_tilde("~")), home);
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+    }
+
+    #[test]
+    fn show_config_and_settings_render_on_a_fresh_environment() {
+        let _env = scratch_env();
+        let state = test_repl_state();
+        show_config(&state);
+        show_settings(&state);
+        lsp(&state);
+        keybindings();
+    }
+
+    #[test]
+    fn config_command_routes_reads_and_sets() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        // Settings::default() ships show_thinking=true; pin a known start.
+        state.show_thinking = false;
+
+        config_command(&mut state, ""); // → summary
+        config_command(&mut state, "model"); // single key read
+        config_command(&mut state, "MODEL");
+        config_command(&mut state, "no_such_key");
+        config_command(&mut state, "mcp"); // alias read
+        config_command(&mut state, "effort");
+        config_command(&mut state, "preset");
+        config_command(&mut state, "thinking --save"); // flag with no value → read
+
+        let approval_before = state.approval_mode;
+        config_command(&mut state, "approval_mode never-deny-junk"); // invalid value
+        assert_eq!(
+            state.approval_mode, approval_before,
+            "an invalid approval value must not change the mode"
+        );
+        config_command(&mut state, "approval on-request");
+        config_command(&mut state, "thinking maybe"); // invalid bool
+        assert!(!state.show_thinking);
+        config_command(&mut state, "thinking on");
+        assert!(state.show_thinking);
+        config_command(&mut state, "simple true");
+        assert!(state.is_simple);
+        config_command(&mut state, "locale zh-Hans");
+        config_command(&mut state, "locale klingon"); // rejected
+        config_command(&mut state, "mcp /tmp/other-mcp.json");
+        assert_eq!(
+            state.mcp_config_path,
+            std::path::PathBuf::from("/tmp/other-mcp.json")
+        );
+        set_config_value(&mut state, "mcp_config_path", "  ", false); // empty refused
+        config_command(&mut state, "editor_mode vim");
+        assert_eq!(state.settings.composer_vim_mode, "vim");
+        config_command(&mut state, "composer_vim_mode normal");
+        assert_eq!(state.settings.composer_vim_mode, "normal");
+        config_command(&mut state, "editor_mode wordstar"); // unknown mode
+        config_command(&mut state, "effort turbo"); // unknown effort
+        config_command(&mut state, "effort high");
+        assert_eq!(state.reasoning_effort, ReasoningEffort::High);
+        config_command(&mut state, "model gpt-x"); // routed to /model
+        config_command(&mut state, "preset middle"); // routed to /preset
+        config_command(&mut state, "bogus_key value"); // unknown key
+        config_command(&mut state, "log_level debug"); // persistable, not live
+    }
+
+    #[test]
+    fn config_status_icons_set_clear_and_reject_unknown_slots() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        config_command(&mut state, "status_icons.context ◐");
+        assert_eq!(state.settings.status_icons.context, "◐");
+        config_command(&mut state, "status_icons.mode off");
+        assert_eq!(state.settings.status_icons.mode, "");
+        config_command(&mut state, "status_icons.bogus x"); // unknown slot
+        config_command(&mut state, "status_icons.agents ⋔");
+        assert_eq!(state.settings.status_icons.agents, "⋔");
+    }
+
+    #[test]
+    fn persist_setting_string_writes_the_scratch_settings_file() {
+        let _env = scratch_env();
+        let _state = test_repl_state();
+        persist_setting_string("show_thinking", "true");
+        let settings = Settings::load().expect("settings reload");
+        assert!(settings.show_thinking);
+        persist_setting_string("locale", "zh-Hans");
+        assert_eq!(Settings::load().expect("reload").locale, "zh-Hans");
+
+        persist_setting("prompt_color", Some("cyan"));
+        assert_eq!(
+            Settings::load().expect("reload").prompt_color.as_deref(),
+            Some("cyan")
+        );
+        persist_setting("prompt_color", None);
+        assert_eq!(Settings::load().expect("reload").prompt_color, None);
+
+        persist_section_bool(None, "flags", "beta", true).expect("section write");
+        let config_path =
+            crate::interactive::commands::auto_route::config_toml_path(None).expect("path");
+        let body = std::fs::read_to_string(config_path).expect("config written");
+        assert!(
+            body.contains("beta = true"),
+            "section bool persisted: {body}"
+        );
+    }
+
+    #[test]
+    fn verbose_toggles_and_validates() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        state.show_thinking = false; // Settings::default() ships true
+        verbose(&mut state, None); // toggle
+        assert!(state.show_thinking);
+        verbose(&mut state, Some("off"));
+        assert!(!state.show_thinking);
+        verbose(&mut state, Some("yes"));
+        assert!(state.show_thinking);
+        verbose(&mut state, Some("toggle"));
+        assert!(!state.show_thinking);
+        verbose(&mut state, Some("  ")); // blank toggles
+        assert!(state.show_thinking);
+        verbose(&mut state, Some("maybe"));
+        assert!(state.show_thinking, "invalid input changes nothing");
+    }
+
+    #[test]
+    fn trust_status_toggle_and_allowlist_round_trip() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = test_repl_state();
+        state.workspace = tmp.path().to_path_buf();
+
+        trust(&mut state, Some("status"));
+        assert!(!state.trust_mode);
+        trust(&mut state, Some("on"));
+        assert!(state.trust_mode);
+        trust(&mut state, Some("off"));
+        assert!(!state.trust_mode);
+        trust(&mut state, Some("add")); // missing path
+        trust(&mut state, Some("add /definitely/not/here")); // nonexistent
+        trust(&mut state, Some("bogus-action"));
+
+        trust(&mut state, Some("list"));
+        trust(&mut state, Some(&format!("add {}", tmp.path().display())));
+        trust(&mut state, Some("list"));
+        trust(
+            &mut state,
+            Some(&format!("remove {}", tmp.path().display())),
+        );
+        trust(
+            &mut state,
+            Some(&format!("remove {}", tmp.path().display())),
+        ); // not in list
+    }
+
+    #[test]
+    fn slop_handles_actions_on_an_isolated_ledger() {
+        let _env = scratch_env();
+        slop(None);
+        slop(Some("query"));
+        slop(Some("export"));
+        slop(Some("explode"));
+    }
+
+    #[test]
+    fn effort_command_sets_and_validates() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        let effort_before = state.reasoning_effort;
+        effort(&mut state, None); // status
+        effort(&mut state, Some("status"));
+        effort(&mut state, Some("ultra"));
+        assert_eq!(
+            state.reasoning_effort, effort_before,
+            "an unknown effort tier changes nothing"
+        );
+        effort(&mut state, Some("low"));
+        assert_eq!(state.reasoning_effort, ReasoningEffort::Low);
+        assert_eq!(
+            Settings::load()
+                .expect("reload")
+                .reasoning_effort
+                .as_deref(),
+            Some("low")
+        );
+        effort(&mut state, Some("max")); // session-only
+        assert_eq!(state.reasoning_effort, ReasoningEffort::Max);
+        assert_eq!(
+            Settings::load()
+                .expect("reload")
+                .reasoning_effort
+                .as_deref(),
+            Some("low"),
+            "max must not persist"
+        );
+        effort(&mut state, Some("auto"));
+        assert_eq!(state.reasoning_effort, ReasoningEffort::Auto);
+    }
+
+    #[tokio::test]
+    async fn autocompact_status_pins_and_rejects_values() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        autocompact(&mut state, None).await; // status print
+        autocompact(&mut state, Some("500k")).await;
+        assert_eq!(state.compact_threshold, 500_000);
+        assert!(state.auto_compact);
+        autocompact(&mut state, Some("auto")).await; // back to model default
+        assert!(state.auto_compact);
+        autocompact(&mut state, Some("banana")).await; // rejected
+        assert!(
+            Settings::load().expect("reload").auto_compact,
+            "auto persists the toggle"
+        );
+    }
+
+    #[test]
+    fn sandbox_command_validates_and_updates_config() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        sandbox(&mut state, None, false); // status
+        sandbox(&mut state, Some("status"), false);
+        sandbox(&mut state, Some("space-mode"), false); // unknown
+        assert_eq!(state.config.sandbox_mode, None);
+
+        sandbox(&mut state, Some("on"), false);
+        assert_eq!(
+            state.config.sandbox_mode.as_deref(),
+            Some("workspace-write")
+        );
+        sandbox(&mut state, Some("off"), false); // → danger-full-access + warning
+        assert_eq!(
+            state.config.sandbox_mode.as_deref(),
+            Some("danger-full-access")
+        );
+        sandbox(&mut state, Some("read-only"), false);
+        assert_eq!(state.config.sandbox_mode.as_deref(), Some("read-only"));
+        sandbox(&mut state, Some("read-only"), false); // unchanged branch
+        sandbox(&mut state, Some("external-sandbox"), true); // persist path
     }
 }

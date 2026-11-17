@@ -223,3 +223,135 @@ impl ToolSpec for TeamCreateTool {
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::spec::{RuntimeToolServices, ToolSpec};
+    use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};
+
+    fn context(features_on: bool) -> ToolContext {
+        let mut ctx = ToolContext::new("/tmp");
+        ctx.runtime = RuntimeToolServices::default();
+        if features_on {
+            ctx.features.enable(Feature::AgentTeams);
+        }
+        ctx
+    }
+
+    #[test]
+    fn team_create_metadata_surface() {
+        let team_context = crate::tools::team::new_shared_team_context();
+        let tool = TeamCreateTool::new(team_context);
+        assert_eq!(tool.name(), "team_create");
+        assert!(tool.description().contains("team lead"));
+        let schema = tool.input_schema();
+        assert_eq!(
+            schema["required"]
+                .as_array()
+                .and_then(|r| r.first())
+                .and_then(|v| v.as_str()),
+            Some("team_name")
+        );
+        assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
+        assert_eq!(tool.capabilities(), vec![ToolCapability::WritesFiles]);
+        assert!(!tool.supports_parallel());
+        assert!(!tool.is_read_only());
+    }
+
+    #[tokio::test]
+    async fn team_create_guards_refuse_bad_input() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let team_context = crate::tools::team::new_shared_team_context();
+        let tool = TeamCreateTool::new(team_context.clone());
+
+        let err = tool
+            .execute(json!({"team_name": "x"}), &context(false))
+            .await
+            .expect_err("feature disabled");
+        assert!(err.to_string().contains("agent_teams"), "{err}");
+
+        let err = tool
+            .execute(json!({}), &context(true))
+            .await
+            .expect_err("missing team_name");
+        assert!(err.to_string().contains("team_name"), "{err}");
+
+        let err = tool
+            .execute(json!({"team_name": ""}), &context(true))
+            .await
+            .expect_err("empty name sanitizes to nothing");
+        assert!(
+            err.to_string().contains("at least one alphanumeric"),
+            "{err}"
+        );
+
+        // One team per leader session: an occupied context refuses.
+        {
+            let mut slot = team_context.lock().await;
+            *slot = Some(crate::tools::team::TeamContext {
+                team_name: "existing".to_string(),
+                team_file_path: std::path::PathBuf::new(),
+                lead_agent_id: format_lead_agent_id("existing"),
+                task_v2_manager: new_shared_task_v2_manager("existing").expect("manager"),
+                teammates: std::collections::HashMap::new(),
+                teammate_cancel_tokens: std::collections::HashMap::new(),
+            });
+        }
+        let err = tool
+            .execute(json!({"team_name": "second"}), &context(true))
+            .await
+            .expect_err("one team per session");
+        assert!(err.to_string().contains("Only one team"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn team_create_happy_path_registers_lead_and_refuses_duplicates() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let team_context = crate::tools::team::new_shared_team_context();
+        let tool = TeamCreateTool::new(team_context.clone());
+
+        let result = tool
+            .execute(
+                json!({
+                    "team_name": "Cov Team!",
+                    "description": "coverage team",
+                    "agent_type": "reviewer"
+                }),
+                &context(true),
+            )
+            .await
+            .expect("team created");
+        let payload: serde_json::Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(payload["team_name"], "Cov Team!");
+        assert_eq!(payload["sanitized_name"], "cov-team-");
+        assert_eq!(
+            payload["task_list_id"], "cov-team-",
+            "the task list keys on the sanitized name"
+        );
+        assert_eq!(payload["lead_agent_id"], format_lead_agent_id("Cov Team!"));
+
+        // The roster is on disk with the lead as its first member.
+        let team_file = crate::tools::team::read_team_file("Cov Team!").expect("roster");
+        assert_eq!(team_file.members.len(), 1);
+        assert_eq!(team_file.members[0].name, team_lead_name());
+        assert_eq!(team_file.members[0].agent_type.as_deref(), Some("reviewer"));
+
+        // The context is installed for the session.
+        assert!(
+            team_context.lock().await.is_some(),
+            "create registers the leader session"
+        );
+
+        // A second session creating the same-named team is refused.
+        let other_context = crate::tools::team::new_shared_team_context();
+        let other = TeamCreateTool::new(other_context);
+        let err = other
+            .execute(json!({"team_name": "Cov Team!"}), &context(true))
+            .await
+            .expect_err("duplicate team name");
+        assert!(err.to_string().contains("already exists"), "{err}");
+    }
+}

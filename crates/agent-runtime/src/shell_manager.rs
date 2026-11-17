@@ -2380,3 +2380,560 @@ mod decide_sandbox_tests {
         assert!(decision.allows_execution());
     }
 }
+
+#[cfg(test)]
+mod manager_tests {
+    use super::*;
+    use codesmith_sandbox::runtime::{
+        SandboxFilesystemConfig, SandboxNetworkConfig, SandboxPolicy as ExecutionSandboxPolicy,
+        SandboxRuntimeConfig,
+    };
+
+    fn temp_manager() -> (tempfile::TempDir, ShellManager) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager = ShellManager::new(tmp.path().to_path_buf());
+        (tmp, manager)
+    }
+
+    /// Poll `task_id` (unlocked sleeps between polls) until it leaves the
+    /// Running state, or panic after `deadline_ms`.
+    fn settle(manager: &mut ShellManager, task_id: &str, deadline_ms: u64) {
+        let deadline = Instant::now() + Duration::from_millis(deadline_ms);
+        loop {
+            let running = manager.poll_task_running(task_id).expect("poll task");
+            if !running || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn noop_terminal_control_reports_no_raw_mode_and_toggles_nothing() {
+        let control = NoopTerminalControl;
+        assert!(!control.raw_mode_enabled());
+        // The toggles are the no-op contract outside the CLI; calling them
+        // must not panic or change the reported state.
+        control.disable_raw_mode();
+        control.enable_raw_mode();
+        assert!(!control.raw_mode_enabled());
+        assert_eq!(
+            default_terminal_control().raw_mode_enabled(),
+            false,
+            "the default shared controller is the no-op"
+        );
+    }
+
+    /// ESRCH tolerance: killing a group whose leader is long gone, a
+    /// non-positive pgid, and `None` are all best-effort no-ops.
+    #[test]
+    fn kill_process_group_helpers_tolerate_missing_targets() {
+        kill_process_group_of_opt(None);
+
+        let mut child = Command::new("/usr/bin/true")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id();
+        let _ = child.wait();
+        kill_process_group_of_opt(Some(pid));
+        assert!(kill_process_group_of(pid).is_ok(), "ESRCH is tolerated");
+        // u32::MAX as a pid_t is negative: the helper returns Ok without
+        // signalling anything.
+        assert!(kill_process_group_of(u32::MAX).is_ok());
+    }
+
+    /// A decision-level refusal renders as a failed, diagnosable result —
+    /// never a silent unconfined run.
+    #[test]
+    fn sandbox_refusal_result_is_failed_and_denied() {
+        let mut manager = codesmith_sandbox::runtime::SandboxManager::new();
+        manager.force_no_backend();
+        let decision = decide_sandbox(
+            &manager,
+            &SandboxRuntimeConfig::default(),
+            &ExecutionSandboxPolicy::ReadOnly,
+            "ls -la",
+            "ls",
+        );
+
+        let result = sandbox_refusal_result(
+            &decision,
+            decision.sandbox_unavailable_reason.clone().expect("reason"),
+        );
+
+        assert_eq!(result.status, ShellStatus::Failed);
+        assert!(result.sandbox_denied);
+        assert!(
+            result.sandbox_fail_closed,
+            "the decision's refusal carries through"
+        );
+        assert!(
+            result.stderr.contains("SANDBOX_UNAVAILABLE"),
+            "{}",
+            result.stderr
+        );
+        assert_eq!(result.stderr_len, result.stderr.len());
+        assert!(result.task_id.is_none());
+    }
+
+    #[test]
+    fn apply_runtime_filesystem_policy_maps_mode_strings_to_policies() {
+        let mut runtime = SandboxRuntimeConfig::default();
+
+        for (mode, expected) in [
+            ("read-only", "read-only"),
+            ("readonly", "read-only"),
+            ("danger-full-access", "danger-full-access"),
+            ("danger_full_access", "danger-full-access"),
+            ("none", "danger-full-access"),
+        ] {
+            runtime.filesystem = SandboxFilesystemConfig {
+                mode: Some(mode.to_string()),
+                ..SandboxFilesystemConfig::default()
+            };
+            let mut policy = ExecutionSandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: false,
+                exclude_tmpdir: true,
+                exclude_slash_tmp: true,
+            };
+            apply_runtime_filesystem_policy(&mut policy, &runtime);
+            assert_eq!(policy.name(), expected, "mode {mode:?}");
+        }
+
+        // external-sandbox carries the runtime's network switch.
+        runtime.filesystem.mode = Some("external-sandbox".to_string());
+        runtime.network = SandboxNetworkConfig {
+            enabled: Some(false),
+            ..SandboxNetworkConfig::default()
+        };
+        let mut policy = ExecutionSandboxPolicy::ReadOnly;
+        apply_runtime_filesystem_policy(&mut policy, &runtime);
+        assert_eq!(
+            policy,
+            ExecutionSandboxPolicy::ExternalSandbox {
+                network_access: false
+            },
+            "network.enabled=false must reach the external policy"
+        );
+
+        // Unknown mode strings leave the caller's policy alone.
+        runtime.filesystem.mode = Some("gibberish".to_string());
+        let mut policy = ExecutionSandboxPolicy::ReadOnly;
+        apply_runtime_filesystem_policy(&mut policy, &runtime);
+        assert_eq!(policy, ExecutionSandboxPolicy::ReadOnly);
+    }
+
+    #[test]
+    fn apply_runtime_filesystem_policy_merges_workspace_write_options() {
+        let extra_root = PathBuf::from("/opt/extra");
+        let runtime = SandboxRuntimeConfig {
+            filesystem: SandboxFilesystemConfig {
+                mode: Some("workspace-write".to_string()),
+                writable_roots: vec![extra_root.clone()],
+                allow_write: vec![PathBuf::from("/opt/allow")],
+                exclude_tmpdir: Some(false),
+                exclude_slash_tmp: Some(false),
+                ..SandboxFilesystemConfig::default()
+            },
+            network: SandboxNetworkConfig {
+                enabled: Some(true),
+                allow_managed_domains_only: true,
+                ..SandboxNetworkConfig::default()
+            },
+            ..SandboxRuntimeConfig::default()
+        };
+        let mut policy = ExecutionSandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![PathBuf::from("/ws")],
+            network_access: false,
+            exclude_tmpdir: true,
+            exclude_slash_tmp: true,
+        };
+        apply_runtime_filesystem_policy(&mut policy, &runtime);
+
+        let ExecutionSandboxPolicy::WorkspaceWrite {
+            writable_roots,
+            network_access,
+            exclude_tmpdir,
+            exclude_slash_tmp,
+        } = policy
+        else {
+            panic!("workspace-write stays workspace-write");
+        };
+        assert!(writable_roots.contains(&PathBuf::from("/ws")));
+        assert!(
+            writable_roots.contains(&extra_root),
+            "runtime roots are merged in"
+        );
+        assert!(writable_roots.contains(&PathBuf::from("/opt/allow")));
+        assert!(
+            !network_access,
+            "allow_managed_domains_only must keep local backends network-restricted"
+        );
+        assert!(!exclude_tmpdir);
+        assert!(!exclude_slash_tmp);
+    }
+
+    #[test]
+    fn debug_and_accessors_report_manager_state() {
+        let (tmp, mut manager) = temp_manager();
+        manager.request_foreground_background();
+        assert!(manager.take_foreground_background_request());
+        assert!(!manager.take_foreground_background_request());
+        manager.clear_foreground_background_request();
+
+        manager.set_sandbox_policy(ExecutionSandboxPolicy::ReadOnly);
+        assert_eq!(manager.sandbox_policy().name(), "read-only");
+        assert_eq!(manager.default_workspace(), tmp.path());
+        let _ = manager.is_sandbox_available(); // platform probe must not panic
+
+        let debugged = format!("{manager:?}");
+        assert!(debugged.contains("ShellManager"), "{debugged}");
+        assert!(debugged.contains("default_workspace"), "{debugged}");
+
+        // The alternate constructors wire the same surface.
+        let sandboxed =
+            ShellManager::with_sandbox(tmp.path().to_path_buf(), ExecutionSandboxPolicy::ReadOnly);
+        assert_eq!(sandboxed.sandbox_policy().name(), "read-only");
+        let runtime = SandboxRuntimeConfig {
+            prefer_bwrap: true,
+            ..SandboxRuntimeConfig::default()
+        };
+        let mut via_terminal = ShellManager::with_terminal_control(
+            tmp.path().to_path_buf(),
+            default_terminal_control(),
+        );
+        via_terminal.set_sandbox_runtime(runtime);
+        assert_eq!(via_terminal.default_workspace(), tmp.path());
+    }
+
+    #[test]
+    fn sync_execution_runs_a_short_command_and_reports_completion() {
+        let (_tmp, mut manager) = temp_manager();
+
+        let result = manager
+            .execute("/bin/echo hello-from-sync", None, 5000, false)
+            .expect("execute");
+
+        assert_eq!(result.status, ShellStatus::Completed, "{result:?}");
+        assert!(result.stdout.contains("hello-from-sync"));
+        assert!(result.task_id.is_none(), "sync runs have no job id");
+    }
+
+    #[test]
+    fn sync_execution_feeds_stdin_and_clamps_timeouts() {
+        let (_tmp, mut manager) = temp_manager();
+
+        // stdin round-trip through `cat`.
+        let result = manager
+            .execute_with_options(
+                "cat",
+                None,
+                5000,
+                false,
+                Some("piped-stdin-payload\n"),
+                false,
+                None,
+            )
+            .expect("execute with stdin");
+        assert_eq!(result.status, ShellStatus::Completed);
+        assert!(result.stdout.contains("piped-stdin-payload"), "{result:?}");
+
+        // A timeout below the 1s clamp floor still fires: `sleep 30` with a
+        // 1 ms request is clamped to 1000 ms and then killed.
+        let started = Instant::now();
+        let result = manager
+            .execute("sleep 30", None, 1, false)
+            .expect("execute");
+        assert_eq!(result.status, ShellStatus::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the timeout must not wait for the child"
+        );
+    }
+
+    #[test]
+    fn tty_sync_execution_is_rejected_with_the_remedy() {
+        let (_tmp, mut manager) = temp_manager();
+
+        let err = manager
+            .execute_with_options("/bin/echo x", None, 5000, false, None, true, None)
+            .expect_err("tty without background is a usage error");
+        assert!(
+            err.to_string().contains("TTY mode requires background"),
+            "got: {err:#}"
+        );
+    }
+
+    /// Interactive execution inherits the test process's stdio — a command
+    /// that produces no output and exits 0 is observable through the result.
+    #[test]
+    fn interactive_execution_runs_to_completion_through_all_wrappers() {
+        let (_tmp, mut manager) = temp_manager();
+        let mut env = HashMap::new();
+        env.insert("CODESMITH_TEST_MARKER".to_string(), "present".to_string());
+
+        let direct = manager
+            .execute_interactive("/usr/bin/true", None, 5000)
+            .expect("execute_interactive");
+        assert_eq!(direct.status, ShellStatus::Completed, "{direct:?}");
+
+        let with_policy = manager
+            .execute_interactive_with_policy("/usr/bin/true", None, 5000, None)
+            .expect("with_policy");
+        assert_eq!(with_policy.status, ShellStatus::Completed);
+
+        let with_env = manager
+            .execute_interactive_with_policy_env("/usr/bin/true", None, 5000, None, env)
+            .expect("with_policy_env");
+        assert_eq!(with_env.status, ShellStatus::Completed);
+        assert!(with_env.duration_ms > 0);
+    }
+
+    #[test]
+    fn background_job_lifecycle_covers_poll_output_delta_and_listing() {
+        let (_tmp, mut manager) = temp_manager();
+
+        let result = manager
+            .execute("/bin/echo lifecycle-output", None, 10_000, true)
+            .expect("spawn background");
+        let task_id = result.task_id.expect("background run has an id");
+
+        // A tagged link survives in the snapshot.
+        manager
+            .tag_linked_task(&task_id, Some("task-42".to_string()))
+            .expect("tag");
+
+        settle(&mut manager, &task_id, 10_000);
+
+        let output = manager.get_output(&task_id, false, 0).expect("get_output");
+        assert_eq!(output.status, ShellStatus::Completed);
+        assert!(output.stdout.contains("lifecycle-output"), "{output:?}");
+
+        // The first delta carries the body; a second read has nothing new.
+        let first = manager.get_output_delta(&task_id, false, 0).expect("delta");
+        assert!(first.result.stdout.contains("lifecycle-output"));
+        let second = manager
+            .get_output_delta(&task_id, false, 0)
+            .expect("delta again");
+        assert!(second.result.stdout.is_empty(), "the delta cursor advanced");
+        assert_eq!(second.stdout_total_len, first.stdout_total_len);
+
+        let detail = manager.inspect_job(&task_id).expect("inspect");
+        assert_eq!(detail.snapshot.status, ShellStatus::Completed);
+        assert_eq!(detail.snapshot.linked_task_id.as_deref(), Some("task-42"));
+        assert!(detail.stdout.contains("lifecycle-output"));
+
+        let jobs = manager.list_jobs();
+        let job = jobs
+            .iter()
+            .find(|job| job.id == task_id)
+            .expect("the finished job stays listed until cleanup");
+        assert!(!job.stdin_available, "a finished job takes no stdin");
+
+        let err = manager
+            .inspect_job("shell_nope")
+            .expect_err("unknown id must fail loud");
+        assert!(err.to_string().contains("not found"), "{err:#}");
+    }
+
+    #[test]
+    fn write_stdin_streams_into_a_running_job_and_kill_stops_it() {
+        let (_tmp, mut manager) = temp_manager();
+
+        let result = manager
+            .execute("cat", None, 30_000, true)
+            .expect("spawn cat");
+        let task_id = result.task_id.expect("id");
+
+        manager
+            .write_stdin(&task_id, "abc", false)
+            .expect("write stdin");
+        let delta = manager.get_output_delta(&task_id, false, 0).expect("delta");
+        assert!(
+            delta.result.stdout.contains("abc") || delta.result.status == ShellStatus::Running,
+            "echoed input or still draining: {delta:?}"
+        );
+
+        let err = manager
+            .write_stdin("shell_missing", "x", false)
+            .expect_err("unknown id");
+        assert!(err.to_string().contains("not found"));
+
+        let killed = manager.kill(&task_id).expect("kill");
+        assert_eq!(killed.status, ShellStatus::Killed);
+
+        // kill_running on an empty table is an empty vec; unknown kill ids
+        // fail loud.
+        assert!(manager.kill_running().expect("kill_running").is_empty());
+        assert!(manager.kill("shell_missing").is_err());
+    }
+
+    /// A running job is killed wholesale and reported.
+    #[test]
+    fn kill_running_takes_out_every_running_job() {
+        let (_tmp, mut manager) = temp_manager();
+
+        let first = manager
+            .execute("sleep 30", None, 30_000, true)
+            .expect("spawn")
+            .task_id
+            .expect("id");
+        let second = manager
+            .execute("sleep 30", None, 30_000, true)
+            .expect("spawn")
+            .task_id
+            .expect("id");
+
+        let results = manager.kill_running().expect("kill_running");
+        assert_eq!(results.len(), 2, "both running jobs are killed");
+        assert!(results.iter().all(|r| r.status == ShellStatus::Killed));
+        let _ = (first, second);
+    }
+
+    /// Output beyond the truncation threshold is head+tail with the
+    /// omission accounting filled in.
+    #[test]
+    fn oversized_output_is_truncated_with_metadata() {
+        let (_tmp, mut manager) = temp_manager();
+
+        let result = manager
+            .execute("yes hello-truncation | head -c 200000", None, 10_000, false)
+            .expect("execute");
+
+        assert_eq!(result.status, ShellStatus::Completed);
+        assert!(
+            result.stdout_truncated,
+            "200 KiB must be truncated: {result:?}"
+        );
+        assert!(result.stdout.len() < result.stdout_len);
+        assert!(result.stdout_omitted > 0);
+        assert!(
+            result.stdout.contains("Output truncated"),
+            "{}",
+            result.stdout
+        );
+        assert!(result.stdout.contains("hello-truncation"));
+    }
+
+    #[test]
+    fn delta_and_tail_helpers_read_char_boundaries() {
+        // Delta: two reads advance the cursor.
+        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"abcdef".to_vec()));
+        let mut cursor = 0;
+        let (delta, total) = take_delta_from_buffer(&buffer, &mut cursor);
+        assert_eq!(String::from_utf8_lossy(&delta), "abcdef");
+        assert_eq!(total, 6);
+        buffer.lock().unwrap().extend_from_slice(b"gh");
+        let (delta, total) = take_delta_from_buffer(&buffer, &mut cursor);
+        assert_eq!(String::from_utf8_lossy(&delta), "gh");
+        assert_eq!(total, 8);
+
+        // A cursor past the end clamps instead of panicking.
+        let mut over = 100;
+        let (delta, total) = take_delta_from_buffer(&buffer, &mut over);
+        assert!(delta.is_empty());
+        assert_eq!(total, 8);
+
+        // Tail: a cut in the middle of a multi-byte sequence snaps forward,
+        // so no leading replacement character appears.
+        let text = format!("{}{}", "z".repeat(40), "汉字".repeat(40));
+        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(text.clone().into_bytes()));
+        let (total, tail) = tail_from_buffer(&buffer, 10);
+        assert_eq!(total, text.len());
+        assert!(tail.starts_with("..."), "long tails are capped: {tail:?}");
+        assert!(
+            !tail.contains('\u{fffd}'),
+            "boundary must snap to a char: {tail:?}"
+        );
+        assert!(tail.chars().count() <= 14, "cap plus ellipsis: {tail:?}");
+
+        // Short buffers come back whole.
+        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new("short".as_bytes().to_vec()));
+        let (_, tail) = tail_from_buffer(&buffer, 100);
+        assert_eq!(tail, "short");
+
+        // An empty stderr-shaped slot is an empty tail.
+        let empty: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(tail_from_buffer(&empty, 10), (0, String::new()));
+    }
+
+    /// The host bridge covers the same surface hosts call: blocking waits
+    /// settle through `wait_until_settled`, and every delegating method
+    /// round-trips.
+    #[test]
+    fn shell_manager_host_bridge_delegates_the_whole_surface() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let shared: SharedShellManager =
+            Arc::new(Mutex::new(ShellManager::new(tmp.path().to_path_buf())));
+        let host = wrap_shell_manager(Arc::clone(&shared));
+
+        host.request_foreground_background();
+        assert!(host.take_foreground_background_request());
+        host.clear_foreground_background_request();
+        host.set_sandbox_runtime(SandboxRuntimeConfig::default());
+
+        let spawned = host
+            .execute_with_options_env(
+                "/bin/echo bridged",
+                None,
+                10_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn via bridge");
+        let task_id = spawned.task_id.expect("id");
+
+        // The blocking read settles (the echo job finishes on its own).
+        let output = host.get_output(&task_id, true, 5000).expect("blocked read");
+        assert_eq!(output.status, ShellStatus::Completed);
+        assert!(output.stdout.contains("bridged"));
+
+        let delta = host
+            .get_output_delta(&task_id, false, 0)
+            .expect("delta via bridge");
+        assert!(delta.command.contains("echo bridged"));
+
+        host.tag_linked_task(&task_id, None)
+            .expect("tag via bridge");
+        assert!(host.list_jobs().iter().any(|job| job.id == task_id));
+        assert!(
+            host.inspect_job(&task_id)
+                .expect("inspect via bridge")
+                .snapshot
+                .id
+                == task_id
+        );
+        assert_eq!(
+            host.poll_delta(&task_id, false, 0)
+                .expect("poll_delta")
+                .result
+                .status,
+            ShellStatus::Completed
+        );
+
+        let killed = host.kill(&task_id).expect("kill via bridge");
+        assert_eq!(killed.status, ShellStatus::Killed);
+        assert!(host.kill_running().expect("kill_running").is_empty());
+
+        host.write_stdin("shell_none", "x", false)
+            .expect_err("unknown id fails through the bridge too");
+
+        // The interactive wrapper also crosses the bridge.
+        let interactive = host
+            .execute_interactive_with_policy_env("/usr/bin/true", None, 5000, None, HashMap::new())
+            .expect("interactive via bridge");
+        assert_eq!(interactive.status, ShellStatus::Completed);
+
+        // A blocking wait on an unknown id reports the missing task instead
+        // of hanging: `wait_until_settled` propagates the error.
+        let err = host
+            .get_output("shell_missing", true, 1000)
+            .expect_err("unknown id must surface");
+        assert!(err.to_string().contains("not found"), "{err:#}");
+    }
+}

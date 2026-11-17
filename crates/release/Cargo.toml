@@ -23,3 +23,8 @@ thiserror.workspace = true
 ## tokio runtime glue) out of the default dependency graph for consumers
 ## that only need the pure helpers (version comparison, mirror-URL builders).
 blocking = ["reqwest/blocking"]
+
+[dev-dependencies]
+codesmith-agent-runtime.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

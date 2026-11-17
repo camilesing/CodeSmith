@@ -10723,4 +10723,884 @@ context_window = 200000
         assert_eq!(bare.default_model(), "deepseek-v4-pro");
         Ok(())
     }
+
+    // ── Pure accessors and helpers (function-coverage slice) ──
+
+    #[test]
+    fn canonical_openrouter_recent_model_id_maps_aliases() {
+        assert_eq!(
+            canonical_openrouter_recent_model_id("trinity"),
+            Some(OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("Arcee Trinity Large Thinking"),
+            Some(OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("glm_5.1"),
+            Some(OPENROUTER_GLM_5_1_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("kimi k2 6"),
+            Some(OPENROUTER_KIMI_K2_6_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("qwen-3.7-max"),
+            Some(OPENROUTER_QWEN_3_7_MAX_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("  Xiaomi-MiMo-V2-5-Pro "),
+            Some(OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("nemotron-3-nano-omni-reasoning"),
+            Some(OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL)
+        );
+        assert_eq!(
+            canonical_openrouter_recent_model_id("totally-unknown-model"),
+            None
+        );
+    }
+
+    #[test]
+    fn snapshots_max_age_converts_days_to_duration() {
+        let cfg = SnapshotsConfig {
+            max_age_days: 2,
+            ..SnapshotsConfig::default()
+        };
+        assert_eq!(cfg.max_age(), std::time::Duration::from_secs(48 * 3600));
+        assert_eq!(
+            SnapshotsConfig::default().max_age(),
+            std::time::Duration::from_secs(SnapshotsConfig::default().max_age_days * 24 * 3600)
+        );
+    }
+
+    #[test]
+    fn telemetry_otlp_exporter_settings_gates_on_url() {
+        assert_eq!(TelemetryOtlpConfig::default().exporter_settings(), None);
+        assert_eq!(
+            TelemetryOtlpConfig {
+                url: Some("   ".to_string()),
+                ..Default::default()
+            }
+            .exporter_settings(),
+            None,
+            "blank url = exporter off (zero-network contract)"
+        );
+        assert_eq!(
+            TelemetryOtlpConfig {
+                url: Some(" https://collector.example:4318 ".to_string()),
+                ..Default::default()
+            }
+            .exporter_settings(),
+            Some(("https://collector.example:4318", true, false))
+        );
+        assert_eq!(
+            TelemetryOtlpConfig {
+                url: Some("https://collector.example:4318".to_string()),
+                events: Some(false),
+                session_log: Some(true),
+            }
+            .exporter_settings(),
+            Some(("https://collector.example:4318", false, true))
+        );
+    }
+
+    #[test]
+    fn coordinator_trigger_settings_apply_defaults_and_overrides() {
+        let defaults = CoordinatorTriggerConfig::default().to_trigger_settings();
+        assert!(defaults.interval_minutes > 0);
+        assert!(!defaults.reasons.is_empty());
+
+        let custom = CoordinatorTriggerConfig {
+            interval_minutes: Some(5),
+            reasons: Some(vec!["mention".to_string()]),
+            repos: Some(vec!["Owner/Repo".to_string()]),
+            ..Default::default()
+        }
+        .to_trigger_settings();
+        assert_eq!(custom.interval_minutes, 5);
+        assert_eq!(custom.reasons, ["mention".to_string()]);
+        assert!(custom.repos.iter().any(|r| !r.is_empty()));
+    }
+
+    #[test]
+    fn compaction_executor_mods_and_preset_accessors() {
+        let config: Config = toml::from_str(
+            r#"
+            preset = "middle"
+
+            [compaction]
+            strategy = " custom "
+            summary_model = " deepseek-v4-flash "
+
+            [mods]
+            builtin = ["turn_rewriter"]
+            turn_executor = "builtin"
+            "#,
+        )
+        .expect("config");
+        assert_eq!(config.compaction_strategy(), "custom");
+        assert_eq!(
+            config.compaction_summary_model().as_deref(),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            config.builtin_mods_selected(),
+            ["turn_rewriter".to_string()]
+        );
+        assert_eq!(config.turn_executor_id(), "builtin");
+        assert_eq!(config.preset_selection(), Some("middle"));
+
+        // Defaults: builtin strategy, session-model summary, no mods.
+        let default = Config::default();
+        assert_eq!(
+            default.compaction_strategy(),
+            codesmith_agent_runtime::compaction::strategy::BUILTIN_COMPACTION_STRATEGY
+        );
+        assert_eq!(default.compaction_summary_model(), None);
+        assert!(default.builtin_mods_selected().is_empty());
+        assert_eq!(
+            default.turn_executor_id(),
+            codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID
+        );
+        assert_eq!(default.preset_selection(), None);
+
+        // Blank values fall back to defaults; `mode` is the preset alias.
+        let blank: Config = toml::from_str(
+            r#"
+            mode = "simple"
+
+            [compaction]
+            strategy = "  "
+            summary_model = "  "
+            "#,
+        )
+        .expect("config");
+        assert_eq!(
+            blank.compaction_strategy(),
+            codesmith_agent_runtime::compaction::strategy::BUILTIN_COMPACTION_STRATEGY
+        );
+        assert_eq!(blank.compaction_summary_model(), None);
+        assert_eq!(blank.preset_selection(), Some("simple"));
+    }
+
+    #[test]
+    fn lsp_config_toml_into_runtime_fills_defaults_and_overrides() {
+        let full: LspConfigToml = toml::from_str(
+            r#"
+            enabled = false
+            poll_after_edit_ms = 1000
+            max_diagnostics_per_file = 5
+            include_warnings = true
+            servers = { rust = ["rust-analyzer"] }
+            "#,
+        )
+        .expect("lsp toml");
+        let runtime = full.into_runtime();
+        assert!(!runtime.enabled);
+        assert_eq!(runtime.poll_after_edit_ms, 1000);
+        assert_eq!(runtime.max_diagnostics_per_file, 5);
+        assert!(runtime.include_warnings);
+        assert_eq!(runtime.servers.len(), 1);
+
+        let defaults = LspConfigToml::default().into_runtime();
+        assert_eq!(defaults.enabled, crate::lsp::LspConfig::default().enabled);
+        assert!(defaults.servers.is_empty());
+    }
+
+    #[test]
+    fn model_tier_and_router_overrides_on_a_custom_provider() {
+        // A custom gateway keeps explicit overrides verbatim (no slug
+        // canonicalization) and falls back to the configured default model.
+        let config = Config {
+            custom_provider: Some("acme".to_string()),
+            default_text_model: Some("acme-default".to_string()),
+            auto: Some(AutoConfig {
+                heavy_model: Some(" acme-heavy ".to_string()),
+                light_model: None,
+                router_model: Some(" acme-router ".to_string()),
+                ..AutoConfig::default()
+            }),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://gateway.acme.example/v1".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.resolve_model_tier(ModelTier::Heavy),
+            "acme-heavy",
+            "explicit override, trimmed, kept verbatim on a custom gateway"
+        );
+        assert_eq!(
+            config.resolve_model_tier(ModelTier::Light),
+            "acme-default",
+            "no light override on a custom gateway routes to the default model"
+        );
+        assert_eq!(
+            config.auto_router_model_override().as_deref(),
+            Some("acme-router")
+        );
+
+        let none = Config::default();
+        assert_eq!(none.auto_router_model_override(), None);
+        // Builtin provider with no overrides resolves the provider tier pair.
+        let heavy = none.resolve_model_tier(ModelTier::Heavy);
+        let light = none.resolve_model_tier(ModelTier::Light);
+        assert!(!heavy.is_empty() && !light.is_empty());
+    }
+
+    #[test]
+    fn provider_base_url_custom_entry_and_nvidia_sniff() {
+        // Custom entry's own base_url wins.
+        let entry_base = Config {
+            custom_provider: Some("acme".to_string()),
+            base_url: Some("https://root.example/v1".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                base_url: Some("https://entry.example/v1".to_string()),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        assert_eq!(entry_base.provider_base_url(), "https://entry.example/v1");
+
+        // Entry without base_url falls back to the root field.
+        let root_fallback = Config {
+            custom_provider: Some("acme".to_string()),
+            base_url: Some(" https://root.example/v1 ".to_string()),
+            providers: custom_providers(vec![CustomProviderConfig {
+                id: "acme".to_string(),
+                ..Default::default()
+            }]),
+            ..Config::default()
+        };
+        assert_eq!(root_fallback.provider_base_url(), "https://root.example/v1");
+
+        // NvidiaNim back-compat: only the integrate.api.nvidia.com root
+        // base_url is honoured.
+        let nvidia: Config = toml::from_str(
+            r#"
+            provider = "nvidia-nim"
+            base_url = "https://integrate.api.nvidia.com/v1"
+            "#,
+        )
+        .expect("config");
+        assert_eq!(
+            nvidia.provider_base_url(),
+            "https://integrate.api.nvidia.com/v1"
+        );
+        let nvidia_other: Config = toml::from_str(
+            r#"
+            provider = "nvidia-nim"
+            base_url = "https://elsewhere.example/v1"
+            "#,
+        )
+        .expect("config");
+        assert_ne!(
+            nvidia_other.provider_base_url(),
+            "https://elsewhere.example/v1",
+            "a non-NVIDIA root base_url is not read for nvidia-nim"
+        );
+    }
+
+    #[test]
+    fn path_accessors_prefer_configured_values() {
+        let _lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvVarGuard::set("CODESMITH_HOME", home.path());
+
+        let config: Config = toml::from_str(
+            r#"
+            skills_dir = "/custom/skills"
+            mcp_config_path = "/custom/mcp.json"
+            notes_path = "/custom/notes.txt"
+            memory_path = "/custom/memory.md"
+            instructions = [" /a.md ", "", "b.md" ]
+            append_system_prompt = [" /append.md "]
+            "#,
+        )
+        .expect("config");
+        assert_eq!(config.skills_dir(), PathBuf::from("/custom/skills"));
+        assert_eq!(config.mcp_config_path(), PathBuf::from("/custom/mcp.json"));
+        assert_eq!(config.notes_path(), PathBuf::from("/custom/notes.txt"));
+        assert_eq!(config.memory_path(), PathBuf::from("/custom/memory.md"));
+        assert_eq!(
+            config.instructions_paths(),
+            vec![PathBuf::from("/a.md"), PathBuf::from("b.md")]
+        );
+        assert_eq!(
+            config.append_system_prompt_paths(),
+            vec![PathBuf::from("/append.md")]
+        );
+
+        // Unset values resolve under the (isolated) codesmith home.
+        let default = Config::default();
+        assert_eq!(default.skills_dir(), home.path().join("skills"));
+        assert_eq!(default.mcp_config_path(), home.path().join("mcp.json"));
+        assert_eq!(default.notes_path(), home.path().join("notes.txt"));
+        assert_eq!(default.memory_path(), home.path().join("memory.md"));
+        assert!(default.instructions_paths().is_empty());
+        assert!(default.append_system_prompt_paths().is_empty());
+    }
+
+    #[test]
+    fn system_prompt_override_text_inline_file_and_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("prompt.md");
+        std::fs::write(&file, " file prompt ").unwrap();
+
+        let inline: Config = toml::from_str(r#"system_prompt = " inline ""#).expect("config");
+        assert_eq!(
+            inline.system_prompt_override_text().as_deref(),
+            Some("inline")
+        );
+
+        let from_file: Config = toml::from_str(&format!(
+            "system_prompt_file = {:?}",
+            file.display().to_string()
+        ))
+        .expect("config");
+        assert_eq!(
+            from_file.system_prompt_override_text().as_deref(),
+            Some(" file prompt ")
+        );
+
+        // Inline wins over the file.
+        let both: Config = toml::from_str(&format!(
+            "system_prompt = \"inline\"\nsystem_prompt_file = {:?}",
+            file.display().to_string()
+        ))
+        .expect("config");
+        assert_eq!(
+            both.system_prompt_override_text().as_deref(),
+            Some("inline")
+        );
+
+        // Blank file content and missing files yield None (warn, not fail).
+        let empty = tmp.path().join("empty.md");
+        std::fs::write(&empty, "   ").unwrap();
+        let empty_cfg: Config = toml::from_str(&format!(
+            "system_prompt_file = {:?}",
+            empty.display().to_string()
+        ))
+        .expect("config");
+        assert_eq!(empty_cfg.system_prompt_override_text(), None);
+
+        let missing: Config = toml::from_str(&format!(
+            "system_prompt_file = {:?}",
+            tmp.path().join("nope.md").display().to_string()
+        ))
+        .expect("config");
+        assert_eq!(missing.system_prompt_override_text(), None);
+
+        assert_eq!(Config::default().system_prompt_override_text(), None);
+    }
+
+    #[test]
+    fn memory_overrides_and_excludes() {
+        let config: Config = toml::from_str(
+            r#"
+            [memory]
+            directory = " /custom/memory "
+            excludes = [" /a.md ", "", "b.md" ]
+            "#,
+        )
+        .expect("config");
+        assert_eq!(config.memory_dir_override(), Some("/custom/memory"));
+        assert_eq!(
+            config.memory_excludes(),
+            ["/a.md".to_string(), "b.md".to_string()]
+        );
+
+        let default = Config::default();
+        assert_eq!(default.memory_dir_override(), None);
+        assert!(default.memory_excludes().is_empty());
+    }
+
+    #[test]
+    fn sandbox_runtime_config_maps_structured_table() {
+        let config: Config = toml::from_str(
+            r#"
+            sandbox_backend = "OpenSandbox"
+            prefer_bwrap = true
+
+            [sandbox]
+            enabled = true
+            fail_if_unavailable = true
+            enabled_platforms = ["macos"]
+            excluded_commands = ["cargo"]
+            auto_allow_bash_if_sandboxed = true
+
+            [sandbox.filesystem]
+            mode = "write-temp"
+            writable_roots = ["/tmp/w"]
+            "#,
+        )
+        .expect("config");
+        let runtime = config.sandbox_runtime_config();
+        assert!(runtime.enabled);
+        assert!(runtime.fail_if_unavailable);
+        assert_eq!(runtime.enabled_platforms, ["macos".to_string()]);
+        assert_eq!(runtime.excluded_commands, ["cargo".to_string()]);
+        assert!(runtime.auto_allow_bash_if_sandboxed);
+        assert!(runtime.prefer_bwrap);
+        assert_eq!(runtime.filesystem.mode.as_deref(), Some("write-temp"));
+        assert_eq!(runtime.filesystem.writable_roots, [PathBuf::from("/tmp/w")]);
+        assert_eq!(
+            runtime.backend,
+            crate::sandbox::SandboxBackendKind::OpenSandbox
+        );
+
+        let default = Config::default().sandbox_runtime_config();
+        assert_eq!(default.backend, crate::sandbox::SandboxBackendKind::Local);
+        // Default runtime controls: enabled + fail-closed, no bwrap pref.
+        assert!(default.enabled);
+        assert!(default.fail_if_unavailable);
+        assert!(!default.prefer_bwrap);
+    }
+
+    #[test]
+    fn subagent_model_overrides_map_roles_and_models_table() {
+        assert!(Config::default().subagent_model_overrides().is_empty());
+
+        let config: Config = toml::from_str(
+            r#"
+            [subagents]
+            default_model = "d"
+            worker_model = "w"
+            explorer_model = "e"
+            awaiter_model = "a"
+            review_model = "r"
+            custom_model = " "
+
+            [subagents.models]
+            "Planner" = " planner-model "
+            "" = "ignored"
+            "#,
+        )
+        .expect("config");
+        let overrides = config.subagent_model_overrides();
+        assert_eq!(overrides["default"], "d");
+        assert_eq!(overrides["worker"], "w");
+        assert_eq!(overrides["general"], "w");
+        assert_eq!(overrides["explorer"], "e");
+        assert_eq!(overrides["explore"], "e");
+        assert_eq!(overrides["awaiter"], "a");
+        assert_eq!(overrides["plan"], "a");
+        assert_eq!(overrides["review"], "r");
+        // Blank values are dropped, models keys lowercased.
+        assert!(!overrides.contains_key("custom"));
+        assert_eq!(overrides["planner"], "planner-model");
+    }
+
+    #[test]
+    fn set_feature_rejects_unknown_keys_and_updates_known_ones() {
+        let mut config = Config::default();
+        assert!(config.set_feature("not_a_feature", true).is_err());
+        config.set_feature("shell_tool", false).expect("known key");
+        let entry = config
+            .features
+            .as_ref()
+            .and_then(|t| t.entries.get("shell_tool"))
+            .copied();
+        assert_eq!(entry, Some(false));
+    }
+
+    #[test]
+    fn parse_env_list_splits_trims_and_drops_empty_entries() {
+        assert_eq!(
+            parse_env_list(" a , b ,, c "),
+            ["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        assert!(parse_env_list("  ").is_empty());
+    }
+
+    #[test]
+    fn load_single_config_file_parses_reports_and_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let valid = tmp.path().join("valid.toml");
+        std::fs::write(&valid, "provider = \"openai\"\n").unwrap();
+        let parsed = load_single_config_file(&valid).expect("valid config");
+        assert_eq!(parsed.provider.as_deref(), Some("openai"));
+
+        let err = load_single_config_file(&tmp.path().join("missing.toml"));
+        assert!(err.is_err());
+
+        let broken = tmp.path().join("broken.toml");
+        std::fs::write(&broken, "provider = ").unwrap();
+        assert!(load_single_config_file(&broken).is_err());
+    }
+
+    #[test]
+    fn apply_requirements_enforces_allowlists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let req = tmp.path().join("requirements.toml");
+        std::fs::write(
+            &req,
+            "allowed_approval_policies = [\"never\"]\nallowed_sandbox_modes = [\"read\"]\n",
+        )
+        .unwrap();
+
+        let mut config = Config {
+            approval_policy: Some("yolo".to_string()),
+            requirements_path: Some(req.display().to_string()),
+            ..Config::default()
+        };
+        let err = apply_requirements(&mut config);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("not allowed"));
+
+        config.approval_policy = Some("NEVER".to_string());
+        config.sandbox_mode = Some("write".to_string());
+        // Still fails on the sandbox allowlist.
+        assert!(apply_requirements(&mut config).is_err());
+
+        config.sandbox_mode = Some("read".to_string());
+        apply_requirements(&mut config).expect("both policies allowed");
+
+        // No requirements file → no-op.
+        let mut bare = Config::default();
+        bare.requirements_path = Some(tmp.path().join("nope.toml").display().to_string());
+        apply_requirements(&mut bare).expect("missing requirements file is a no-op");
+    }
+
+    #[test]
+    fn ensure_parent_dir_creates_missing_parents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("a").join("b").join("config.toml");
+        ensure_parent_dir(&target).expect("parents created");
+        assert!(target.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn config_load_names_read_and_parse_failures_with_the_path() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvVarGuard::set(
+            "CODESMITH_CONFIG_PATH",
+            tmp.path().join("scratch-config.toml"),
+        );
+
+        // A directory parses as an existing path but fails to read.
+        let read_err =
+            Config::load(Some(tmp.path().to_path_buf()), None).expect_err("read failure");
+        assert!(
+            read_err
+                .to_string()
+                .contains(&tmp.path().display().to_string())
+        );
+
+        let broken = tmp.path().join("broken.toml");
+        std::fs::write(&broken, "provider = ").unwrap();
+        let parse_err = Config::load(Some(broken), None).expect_err("parse failure");
+        assert!(parse_err.to_string().contains("broken.toml"));
+    }
+
+    #[test]
+    fn warn_on_misplaced_root_base_url_covers_provider_table_arm() {
+        // Root base_url + a non-DeepSeek provider with a per-provider
+        // base_url: the provider table is consulted and the root field is
+        // dead config — no warning.
+        let config: Config = toml::from_str(
+            r#"
+            provider = "openai"
+            base_url = "https://proxy.example/v1"
+
+            [providers.openai]
+            base_url = "https://per-provider.example/v1"
+            "#,
+        )
+        .expect("config");
+        config.warn_on_misplaced_root_base_url();
+
+        // Without a per-provider base_url the same config reaches the warning.
+        let warning: Config = toml::from_str(
+            r#"
+            provider = "openai"
+            base_url = "https://proxy.example/v1"
+            "#,
+        )
+        .expect("config");
+        warning.warn_on_misplaced_root_base_url();
+
+        // DeepSeek reads the root field — no warning path.
+        let deepseek: Config = toml::from_str(
+            r#"
+            provider = "deepseek"
+            base_url = "https://api.deepseek.com"
+            "#,
+        )
+        .expect("config");
+        deepseek.warn_on_misplaced_root_base_url();
+
+        // No root base_url at all — early return.
+        Config::default().warn_on_misplaced_root_base_url();
+    }
+
+    #[test]
+    fn validate_reads_subagent_acp_config_and_gateway_model_rule() {
+        // acp external provider with a command validates; the acp closures
+        // in validate() only run when the subagent table is present.
+        let acp: Config = toml::from_str(
+            r#"
+            [subagents]
+            external_provider = "acp"
+
+            [subagents.acp]
+            command = "echo"
+            "#,
+        )
+        .expect("config");
+        acp.validate().expect("acp with command is valid");
+
+        // Custom gateway (openai + custom base_url) needs an explicit model:
+        // default_text_model satisfies the third check.
+        let gateway: Config = toml::from_str(
+            r#"
+            provider = "openai"
+            default_text_model = "local-model"
+
+            [providers.openai]
+            base_url = "http://127.0.0.1:9999/v1"
+            "#,
+        )
+        .expect("config");
+        gateway
+            .require_explicit_model_on_custom_gateway(None)
+            .expect("explicit default_text_model satisfies the gateway rule");
+
+        let bare_gateway: Config = toml::from_str(
+            r#"
+            provider = "openai"
+
+            [providers.openai]
+            base_url = "http://127.0.0.1:9999/v1"
+            "#,
+        )
+        .expect("config");
+        assert!(
+            bare_gateway
+                .require_explicit_model_on_custom_gateway(None)
+                .is_err(),
+            "a custom-gateway openai provider without any model must fail loud"
+        );
+    }
+
+    #[test]
+    fn active_provider_env_api_key_detects_every_builtin_provider() {
+        let _lock = lock_test_env();
+
+        // Set one env var per provider (plus the alternates) — every match
+        // arm's closure then runs and finds its key.
+        let cases: &[(&str, &[&str])] = &[
+            ("deepseek", &["DEEPSEEK_API_KEY"]),
+            ("nvidia-nim", &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"]),
+            ("openai", &["OPENAI_API_KEY"]),
+            ("atlascloud", &["ATLASCLOUD_API_KEY"]),
+            (
+                "wanjie-ark",
+                &[
+                    "WANJIE_ARK_API_KEY",
+                    "WANJIE_API_KEY",
+                    "WANJIE_MAAS_API_KEY",
+                ],
+            ),
+            ("openrouter", &["OPENROUTER_API_KEY"]),
+            (
+                "xiaomi-mimo",
+                &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"],
+            ),
+            ("novita", &["NOVITA_API_KEY"]),
+            ("fireworks", &["FIREWORKS_API_KEY"]),
+            ("siliconflow", &["SILICONFLOW_API_KEY"]),
+            ("moonshot", &["MOONSHOT_API_KEY", "KIMI_API_KEY"]),
+            ("sglang", &["SGLANG_API_KEY"]),
+            ("vllm", &["VLLM_API_KEY"]),
+            ("ollama", &["OLLAMA_API_KEY"]),
+            (
+                "volcengine",
+                &[
+                    "VOLCENGINE_API_KEY",
+                    "VOLCENGINE_ARK_API_KEY",
+                    "ARK_API_KEY",
+                ],
+            ),
+            ("anthropic", &["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]),
+        ];
+        let mut guards = Vec::new();
+        for (_, vars) in cases {
+            for var in *vars {
+                guards.push(EnvVarGuard::set(var, "test-key"));
+            }
+        }
+        for (provider, _) in cases {
+            let config = Config {
+                provider: Some(provider.to_string()),
+                ..Config::default()
+            };
+            assert!(
+                active_provider_has_env_api_key(&config),
+                "{provider} must see its env key"
+            );
+            assert!(
+                has_api_key_for(&config, config.api_provider()),
+                "has_api_key_for must see {provider}'s env key"
+            );
+        }
+        drop(guards);
+
+        // With no env keys and no config keys, a hosted provider has none.
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::new(tmp.path());
+        let config = Config {
+            provider: Some("openai".to_string()),
+            ..Config::default()
+        };
+        assert!(!active_provider_has_env_api_key(&config));
+        assert!(!has_api_key_for(&config, ApiProvider::Openai));
+    }
+
+    #[test]
+    fn active_provider_config_api_key_from_root_and_kimi_oauth() {
+        let _lock = lock_test_env();
+
+        // Root api_key on the deepseek provider counts.
+        let config = Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("sk-config".to_string()),
+            ..Config::default()
+        };
+        assert!(active_provider_has_config_api_key(&config));
+
+        // Sentinel (keyring-backed) values do not count as present.
+        let sentinel = Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some(API_KEYRING_SENTINEL.to_string()),
+            ..Config::default()
+        };
+        assert!(!active_provider_has_config_api_key(&sentinel));
+
+        // Moonshot with kimi_oauth auth mode defers to the credential file.
+        let share = tempfile::tempdir().unwrap();
+        let _share = EnvVarGuard::set("KIMI_SHARE_DIR", share.path());
+        let moonshot: Config = toml::from_str(
+            r#"
+            provider = "moonshot"
+
+            [providers.moonshot]
+            auth_mode = "kimi_oauth"
+            "#,
+        )
+        .expect("config");
+        assert!(!active_provider_has_config_api_key(&moonshot));
+        assert!(!kimi_cli_credentials_present());
+
+        std::fs::create_dir_all(share.path().join("credentials")).unwrap();
+        std::fs::write(
+            share.path().join("credentials").join("kimi-code.json"),
+            "{}",
+        )
+        .unwrap();
+        assert!(kimi_cli_credentials_present());
+        assert!(active_provider_has_config_api_key(&moonshot));
+    }
+
+    #[test]
+    fn kimi_oauth_credential_paths_and_fresh_access_token() {
+        let _lock = lock_test_env();
+        let share = tempfile::tempdir().unwrap();
+
+        // KIMI_SHARE_DIR wins when set.
+        let _share = EnvVarGuard::set("KIMI_SHARE_DIR", share.path());
+        let path = kimi_cli_oauth_credentials_path().expect("path");
+        assert_eq!(
+            path,
+            share.path().join("credentials").join("kimi-code.json")
+        );
+
+        // Without it, the credential lives under ~/.kimi.
+        drop(_share);
+        let home = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::new(home.path());
+        let home_path = kimi_cli_oauth_credentials_path().expect("path");
+        assert_eq!(
+            home_path,
+            home.path()
+                .join(".kimi")
+                .join("credentials")
+                .join("kimi-code.json")
+        );
+
+        // Missing file → actionable error.
+        assert!(kimi_cli_oauth_access_token().is_err());
+
+        // A fresh credential returns its access token without any refresh.
+        let cred_path = home_path;
+        std::fs::create_dir_all(cred_path.parent().unwrap()).unwrap();
+        let fresh = KimiOAuthCredential {
+            access_token: Some("tok-fresh".to_string()),
+            refresh_token: Some("refresh".to_string()),
+            expires_at: Some(now_unix_secs().unwrap() + 3600.0),
+            expires_in: None,
+            scope: None,
+            token_type: None,
+        };
+        write_kimi_oauth_credential(&cred_path, &fresh).expect("write credential");
+        assert_eq!(
+            kimi_cli_oauth_access_token().expect("fresh token"),
+            "tok-fresh"
+        );
+
+        // A stale credential without a refresh token errors instead of
+        // attempting a network refresh.
+        let stale = KimiOAuthCredential {
+            access_token: Some("tok-stale".to_string()),
+            refresh_token: None,
+            expires_at: Some(now_unix_secs().unwrap() - 3600.0),
+            expires_in: None,
+            scope: None,
+            token_type: None,
+        };
+        write_kimi_oauth_credential(&cred_path, &stale).expect("write credential");
+        let err = kimi_cli_oauth_access_token().expect_err("no refresh token");
+        assert!(err.to_string().contains("refresh token is empty"));
+
+        // Round-trip: what write puts on disk parses back.
+        let raw = std::fs::read_to_string(&cred_path).unwrap();
+        let parsed: KimiOAuthCredential = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.access_token.as_deref(), Some("tok-stale"));
+    }
+
+    #[test]
+    fn clear_api_key_strips_root_and_provider_keys_from_config() {
+        let _lock = lock_test_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::new(tmp.path());
+
+        let config_path = tmp.path().join(".codesmith").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            "provider = \"openai\"\napi_key = \"sk-live\"\napi_keyholder = \"keep\"\n\
+             [providers.openai]\napi_key = \"sk-openai\"\nmodel = \"gpt\"\n",
+        )
+        .unwrap();
+
+        clear_api_key().expect("clear");
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!after.contains("sk-live"), "{after}");
+        assert!(!after.contains("sk-openai"), "{after}");
+        // Unrelated keys survive, including the near-miss `api_keyholder`.
+        assert!(after.contains("api_keyholder = \"keep\""), "{after}");
+        assert!(after.contains("provider = \"openai\""), "{after}");
+        assert!(after.contains("model = \"gpt\""), "{after}");
+
+        // No config file at all is a no-op success.
+        std::fs::remove_file(&config_path).unwrap();
+        clear_api_key().expect("clear without a config file");
+    }
 }

@@ -1625,4 +1625,470 @@ mod tests {
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["failed"]["error"], "oops");
     }
+
+    // ── Manager listing edges ─────────────────────────────────────────
+
+    #[test]
+    fn manager_list_tools_orders_multiple_tools() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default()
+            .with_tool("zulu", json!(null))
+            .with_tool("alpha", json!(null));
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(client),
+            )
+            .unwrap();
+        let tools = manager.list_tools().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.tool_name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "zulu"]);
+        assert_eq!(tools[0].qualified_name, "mcp__s1__alpha");
+    }
+
+    #[test]
+    fn manager_list_tools_skips_stopped_servers() {
+        let mut manager = McpManager::default();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool("t", json!(null))),
+            )
+            .unwrap();
+        manager.stop_server("s1").unwrap();
+        assert!(manager.list_tools().unwrap().is_empty());
+    }
+
+    #[test]
+    fn manager_list_resources_orders_multiple_resources() {
+        let mut manager = McpManager::default();
+        let client = InMemoryMcpClient::default()
+            .with_resource("mcp://s1/zeta", json!({"z": 1}))
+            .with_resource("mcp://s1/alpha", json!({"a": 1}));
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(client),
+            )
+            .unwrap();
+        let resources = manager.list_resources().unwrap();
+        let uris: Vec<&str> = resources.iter().map(|r| r.uri.as_str()).collect();
+        assert_eq!(uris, vec!["mcp://s1/alpha", "mcp://s1/zeta"]);
+        // The manager rewrites the server name to its own registration key.
+        assert!(resources.iter().all(|r| r.server_name == "s1"));
+    }
+
+    #[test]
+    fn manager_read_resource_errors_on_missing_server() {
+        let manager = McpManager::default();
+        let err = manager.read_resource("nope", "mcp://nope/x").unwrap_err();
+        assert!(err.to_string().contains("not available"), "{err:#}");
+    }
+
+    #[test]
+    fn manager_call_qualified_tool_resolves_via_fallback_scan() {
+        // A server whose raw name contains a separator sanitizes to a key
+        // the direct path cannot match, so `call_qualified_tool` must fall
+        // back to scanning each server's qualified tool names.
+        let mut manager = McpManager::default();
+        manager
+            .register_server(
+                make_server_config("my server"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool("health", json!({"ok": true}))),
+            )
+            .unwrap();
+        let result = manager
+            .call_qualified_tool("mcp__my_server__health", json!({}))
+            .unwrap();
+        assert_eq!(result["ok"], true);
+    }
+
+    #[test]
+    fn manager_call_qualified_tool_propagates_execution_errors() {
+        let mut manager = McpManager::default();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter::default(),
+                Box::new(InMemoryMcpClient::default().with_tool("t", json!(null))),
+            )
+            .unwrap();
+        let err = manager
+            .call_qualified_tool("mcp__s1__nope", json!({}))
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err:#}");
+    }
+
+    #[test]
+    fn manager_call_tool_enforces_filter_on_every_call() {
+        let mut manager = McpManager::default();
+        manager
+            .register_server(
+                make_server_config("s1"),
+                ToolFilter {
+                    allow: vec![],
+                    deny: vec!["secret".to_string()],
+                },
+                Box::new(InMemoryMcpClient::default().with_tool("secret", json!({"leak": 1}))),
+            )
+            .unwrap();
+        let err = manager.call_tool("s1", "secret", json!({})).unwrap_err();
+        assert!(err.to_string().contains("not exposed"), "{err:#}");
+    }
+
+    // ── stdio server state / lifecycle ────────────────────────────────
+
+    fn server_definition(name: &str, enabled: bool) -> McpServerDefinition {
+        McpServerDefinition {
+            config: McpServerConfig {
+                name: name.to_string(),
+                command: "cmd".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                enabled,
+            },
+            filter: ToolFilter::default(),
+        }
+    }
+
+    #[test]
+    fn build_stdio_state_starts_enabled_servers_only() {
+        let state = build_stdio_state(vec![
+            server_definition("on", true),
+            server_definition("off", false),
+        ]);
+        let snapshot = lifecycle_snapshot(&state);
+        assert_eq!(snapshot["status"], "running");
+        assert_eq!(snapshot["counts"]["defined"], 2);
+        assert_eq!(snapshot["counts"]["running"], 1);
+        let servers = snapshot["servers"].as_array().unwrap();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0]["name"], "off");
+        assert_eq!(servers[0]["running"], false);
+        assert_eq!(servers[1]["name"], "on");
+        assert_eq!(servers[1]["running"], true);
+        assert_eq!(servers[1]["command"], "cmd");
+    }
+
+    #[test]
+    fn build_stdio_state_skips_sanitized_name_collisions() {
+        // "My-Server" and "my_server" both qualify to mcp__my_server__*; the
+        // second registration is rejected and reported as not running.
+        let state = build_stdio_state(vec![
+            server_definition("My-Server", true),
+            server_definition("my_server", true),
+        ]);
+        let snapshot = lifecycle_snapshot(&state);
+        assert_eq!(snapshot["counts"]["defined"], 2);
+        assert_eq!(snapshot["counts"]["running"], 1);
+    }
+
+    #[test]
+    fn default_rpc_methods_cover_the_dispatch_surface() {
+        let methods = default_rpc_methods();
+        for expected in [
+            "initialize",
+            "healthz",
+            "tools/list",
+            "tools/call",
+            "resources/list",
+            "resources/read",
+            "server/register",
+            "server/start",
+            "server/stop",
+            "server/unregister",
+            "shutdown",
+        ] {
+            assert!(methods.contains(&expected), "missing method {expected}");
+        }
+    }
+
+    #[test]
+    fn params_or_object_defaults_null_to_empty_object() {
+        assert_eq!(params_or_object(Value::Null), json!({}));
+        assert_eq!(params_or_object(json!({"a": 1})), json!({"a": 1}));
+    }
+
+    #[test]
+    fn parse_params_maps_deserialize_errors_to_invalid_params() {
+        let ok: ServerNameParams = parse_params(json!({"name": "srv"})).unwrap();
+        assert_eq!(ok.name, "srv");
+        let err = parse_params::<ServerNameParams>(json!({"name": 5})).unwrap_err();
+        assert_eq!(err.code, -32602);
+    }
+
+    // ── dispatch_stdio_request coverage ───────────────────────────────
+
+    fn dispatch(
+        state: &mut StdioMcpState,
+        method: &str,
+        params: Value,
+    ) -> std::result::Result<(Value, bool), JsonRpcError> {
+        dispatch_stdio_request(state, method, params)
+    }
+
+    fn stdio_state() -> StdioMcpState {
+        build_stdio_state(vec![server_definition("srv", true)])
+    }
+
+    #[test]
+    fn dispatch_initialize_capabilities_and_healthz_report_lifecycle() {
+        let mut state = stdio_state();
+        for method in ["initialize", "capabilities"] {
+            let (result, exit) = dispatch(&mut state, method, Value::Null).unwrap();
+            assert!(!exit);
+            let methods = result["methods"].as_array().unwrap();
+            assert!(methods.iter().any(|m| m == "tools/call"));
+            assert_eq!(result["lifecycle"]["counts"]["running"], 1);
+        }
+        let (result, exit) = dispatch(&mut state, "healthz", Value::Null).unwrap();
+        assert!(!exit);
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["service"], "codesmith-mcp");
+        assert_eq!(result["transport"], "stdio");
+    }
+
+    #[test]
+    fn dispatch_unknown_method_is_method_not_found() {
+        let mut state = stdio_state();
+        let err = dispatch(&mut state, "teleport", Value::Null).unwrap_err();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("teleport"));
+    }
+
+    #[test]
+    fn dispatch_tools_list_filters_by_server() {
+        let mut state = build_stdio_state(vec![
+            server_definition("srv-a", true),
+            server_definition("srv-b", true),
+        ]);
+        let (result, _) = dispatch(&mut state, "tools/list", json!({"server": "srv-a"})).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert!(!tools.is_empty());
+        assert!(tools.iter().all(|t| t["server_name"] == "srv-a"));
+    }
+
+    #[test]
+    fn dispatch_tools_list_rejects_non_string_server() {
+        let mut state = stdio_state();
+        let err = dispatch(&mut state, "tools/list", json!({"server": 5})).unwrap_err();
+        assert_eq!(err.code, -32602);
+    }
+
+    #[test]
+    fn dispatch_tools_call_param_errors() {
+        let mut state = stdio_state();
+        // Missing name.
+        let err = dispatch(&mut state, "tools/call", json!({})).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("missing tool name"), "{}", err.message);
+        // Malformed name type fails ToolsCallParams deserialization.
+        let err = dispatch(&mut state, "tools/call", json!({"name": 5})).unwrap_err();
+        assert_eq!(err.code, -32602);
+        // Unqualified tool without a server.
+        let err = dispatch(&mut state, "tools/call", json!({"name": "health"})).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(
+            err.message.contains("missing server for unqualified tool"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_tools_call_qualified_falls_back_to_scan() {
+        let mut state = build_stdio_state(vec![server_definition("my server", true)]);
+        let (result, _) = dispatch(
+            &mut state,
+            "tools/call",
+            json!({"name": "mcp__my_server__health"}),
+        )
+        .unwrap();
+        assert_eq!(result["result"]["status"], "ok");
+        assert_eq!(result["result"]["server_name"], "my server");
+    }
+
+    #[test]
+    fn dispatch_tools_call_unqualified_uses_server_param() {
+        let mut state = stdio_state();
+        let (result, _) = dispatch(
+            &mut state,
+            "tools/call",
+            json!({"name": "health", "server": "srv"}),
+        )
+        .unwrap();
+        assert_eq!(result["result"]["status"], "ok");
+    }
+
+    #[test]
+    fn dispatch_resources_list_and_read_paths() {
+        let mut state = stdio_state();
+        let (result, _) = dispatch(&mut state, "resources/list", Value::Null).unwrap();
+        let resources = result["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 2);
+        assert!(resources.iter().all(|r| r["server_name"] == "srv"));
+
+        // Explicit server param.
+        let (result, _) = dispatch(
+            &mut state,
+            "resources/read",
+            json!({"server": "srv", "uri": "mcp://srv/health"}),
+        )
+        .unwrap();
+        assert_eq!(result["resource"]["status"], "ok");
+
+        // Server derived from the mcp:// URI.
+        let (result, _) = dispatch(
+            &mut state,
+            "resources/read",
+            json!({"uri": "mcp://srv/health"}),
+        )
+        .unwrap();
+        assert_eq!(result["resource"]["status"], "ok");
+
+        // Neither server param nor mcp:// URI.
+        let err = dispatch(
+            &mut state,
+            "resources/read",
+            json!({"uri": "file:///etc/passwd"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(
+            err.message.contains("missing server for resource read"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_server_register_replace_and_rejects() {
+        let mut state = stdio_state();
+
+        // Empty name is rejected before touching the tables.
+        let err = dispatch(
+            &mut state,
+            "server/register",
+            json!({"server": {"name": "  ", "command": "cmd"}}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, -32602);
+
+        // Registering an existing name replaces the previous definition.
+        let (result, _) = dispatch(
+            &mut state,
+            "server/register",
+            json!({"server": {"name": "srv", "command": "replaced"}, "start": true}),
+        )
+        .unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["running"], 1);
+        let (result, _) = dispatch(&mut state, "server/list", Value::Null).unwrap();
+        assert_eq!(result["lifecycle"]["servers"][0]["command"], "replaced");
+
+        // A name colliding after sanitization is rejected with -32000 and
+        // must not be reported running.
+        let err = dispatch(
+            &mut state,
+            "server/register",
+            json!({"server": {"name": "SRV", "command": "cmd"}, "start": true}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, -32000);
+        assert!(err.message.contains("SRV"), "{}", err.message);
+        let (result, _) = dispatch(&mut state, "server/list", Value::Null).unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["running"], 1);
+    }
+
+    #[test]
+    fn dispatch_server_register_start_false_leaves_server_stopped() {
+        let mut state = stdio_state();
+        let (result, _) = dispatch(
+            &mut state,
+            "server/register",
+            json!({"server": {"name": "srv2", "command": "cmd"}, "start": false}),
+        )
+        .unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["defined"], 2);
+        assert_eq!(result["lifecycle"]["counts"]["running"], 1);
+    }
+
+    #[test]
+    fn dispatch_server_start_errors_and_collision_path() {
+        let mut state = stdio_state();
+
+        // Undefined server.
+        let err = dispatch(&mut state, "server/start", json!({"name": "ghost"})).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("not defined"), "{}", err.message);
+
+        // Disabled server.
+        let mut state = build_stdio_state(vec![server_definition("off", false)]);
+        let err = dispatch(&mut state, "server/start", json!({"name": "off"})).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("disabled"), "{}", err.message);
+
+        // A stored-but-unstartable definition: "my_server" collides with the
+        // already-registered "my server", so the start attempt surfaces the
+        // registration rejection.
+        let mut state = build_stdio_state(vec![server_definition("my server", true)]);
+        dispatch(
+            &mut state,
+            "server/register",
+            json!({"server": {"name": "my_server", "command": "cmd"}, "start": false}),
+        )
+        .unwrap();
+        let err = dispatch(&mut state, "server/start", json!({"name": "my_server"})).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("rejected"), "{}", err.message);
+    }
+
+    #[test]
+    fn dispatch_server_start_is_noop_when_already_running() {
+        let mut state = stdio_state();
+        let (result, _) = dispatch(&mut state, "server/start", json!({"name": "srv"})).unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["running"], 1);
+    }
+
+    #[test]
+    fn dispatch_server_stop_and_unregister_lifecycle() {
+        let mut state = stdio_state();
+
+        // Stopping a not-running server is still a success.
+        let mut fresh = build_stdio_state(vec![server_definition("off", false)]);
+        let (result, _) = dispatch(&mut fresh, "server/stop", json!({"name": "off"})).unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["running"], 0);
+
+        let (result, _) = dispatch(&mut state, "server/stop", json!({"name": "srv"})).unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["running"], 0);
+
+        let err = dispatch(&mut state, "server/unregister", json!({"name": "ghost"})).unwrap_err();
+        assert_eq!(err.code, -32602);
+
+        let (result, _) =
+            dispatch(&mut state, "server/unregister", json!({"name": "srv"})).unwrap();
+        assert_eq!(result["lifecycle"]["counts"]["defined"], 0);
+    }
+
+    #[test]
+    fn dispatch_shutdown_flips_lifecycle_and_exits() {
+        let mut state = stdio_state();
+        let (result, should_exit) = dispatch(&mut state, "shutdown", Value::Null).unwrap();
+        assert!(should_exit);
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["lifecycle"]["status"], "shutting_down");
+    }
+
+    #[test]
+    fn parse_server_from_uri_accepts_bare_server() {
+        assert_eq!(parse_server_from_uri("mcp://srv"), Some("srv".to_string()));
+        assert_eq!(parse_server_from_uri("mcp://"), None);
+    }
+
+    // ── run_stdio_server end-to-end over a piped child ────────────────
+
+    const STDIO_CHILD_ENV: &str = "CODESMITH_MCP_TEST_STDIO_CHILD";
 }

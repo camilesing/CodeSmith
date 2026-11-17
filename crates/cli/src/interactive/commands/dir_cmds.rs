@@ -328,4 +328,55 @@ mod tests {
             .expect("cd runs");
         assert_eq!(state.workspace, child_canon, "control: the move proceeds");
     }
+
+    /// `/add-dir` is `/trust add` from the REPL: the directory lands in the
+    /// workspace trust record (which is what a later `/cd` consults), and a
+    /// bad argument trusts nothing.
+    #[test]
+    fn add_dir_trusts_the_directory_and_persists_it() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _env =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_HOME", home.path());
+
+        let ws = tempfile::tempdir().expect("tempdir");
+        let extra = tempfile::tempdir().expect("tempdir");
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: ws.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let state = ReplState::new(options, &crate::config::Config::default());
+
+        add_dir(&state, extra.path().to_str().expect("utf8")).expect("add-dir runs");
+        let ws_canon = ws.path().canonicalize().expect("canonical ws");
+        let extra_canon = extra.path().canonicalize().expect("canonical extra");
+        assert!(
+            WorkspaceTrust::load_for(&ws_canon).permits(&extra_canon),
+            "the added directory is trusted for the workspace"
+        );
+        assert!(
+            home.path().join("workspace-trust.json").is_file(),
+            "the trust entry is persisted for later sessions"
+        );
+
+        // A bad argument is a usage print, not a trust change.
+        add_dir(&state, "").expect("still Ok");
+        let untouched = tempfile::tempdir().expect("tempdir");
+        assert!(
+            !WorkspaceTrust::load_for(&ws_canon).permits(untouched.path()),
+            "nothing new was trusted by the failed call"
+        );
+    }
 }

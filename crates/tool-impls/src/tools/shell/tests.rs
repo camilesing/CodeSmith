@@ -2006,3 +2006,764 @@ fn sandbox_denied_hint_marks_only_classified_denials() {
         "an unclassified permission failure must not claim the sandbox"
     );
 }
+
+// === stub shell manager for tool-level error paths ==========================
+
+/// One configurable [`ShellManagerApi`] stub for the tool-level error-path
+/// tests below. Only the fields a test sets are answered; any other call
+/// panics with "not scripted" so an unexpected reach fails the test loudly
+/// (same posture as [`StaleInspectManager`]).
+#[derive(Default)]
+struct ScriptedManager {
+    execute_result: Option<Result<ShellResult, String>>,
+    write_stdin_result: Option<Result<(), String>>,
+    kill_result: Option<Result<ShellResult, String>>,
+    kill_running_result: Option<Result<Vec<ShellResult>, String>>,
+    delta_result: Option<Result<ShellDeltaResult, String>>,
+}
+
+impl codesmith_agent_runtime::host_services::ShellManagerApi for ScriptedManager {
+    fn clear_foreground_background_request(&self) {}
+    fn set_sandbox_runtime(&self, _runtime: codesmith_sandbox::runtime::SandboxRuntimeConfig) {}
+    fn execute_with_options_env(
+        &self,
+        _command: &str,
+        _working_dir: Option<&str>,
+        _timeout_ms: u64,
+        _background: bool,
+        _stdin_data: Option<&str>,
+        _tty: bool,
+        _policy_override: Option<codesmith_sandbox::runtime::SandboxPolicy>,
+        _extra_env: std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult> {
+        match &self.execute_result {
+            Some(Ok(result)) => Ok(result.clone()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => panic!("execute_with_options_env not scripted"),
+        }
+    }
+    fn execute_interactive_with_policy_env(
+        &self,
+        _command: &str,
+        _working_dir: Option<&str>,
+        _timeout_ms: u64,
+        _policy_override: Option<codesmith_sandbox::runtime::SandboxPolicy>,
+        _extra_env: std::collections::HashMap<String, String>,
+    ) -> anyhow::Result<ShellResult> {
+        panic!("execute_interactive not scripted")
+    }
+    fn write_stdin(&self, _task_id: &str, _input: &str, _close: bool) -> anyhow::Result<()> {
+        match &self.write_stdin_result {
+            Some(Ok(())) => Ok(()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => panic!("write_stdin not scripted"),
+        }
+    }
+    fn kill(&self, _task_id: &str) -> anyhow::Result<ShellResult> {
+        match &self.kill_result {
+            Some(Ok(result)) => Ok(result.clone()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => panic!("kill not scripted"),
+        }
+    }
+    fn kill_running(&self) -> anyhow::Result<Vec<ShellResult>> {
+        match &self.kill_running_result {
+            Some(Ok(results)) => Ok(results.clone()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => panic!("kill_running not scripted"),
+        }
+    }
+    fn take_foreground_background_request(&self) -> bool {
+        false
+    }
+    fn get_output(
+        &self,
+        _task_id: &str,
+        _block: bool,
+        _timeout_ms: u64,
+    ) -> anyhow::Result<ShellResult> {
+        panic!("get_output not scripted")
+    }
+    fn get_output_delta(
+        &self,
+        _task_id: &str,
+        _wait: bool,
+        _timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult> {
+        match &self.delta_result {
+            Some(Ok(delta)) => Ok(delta.clone()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => panic!("get_output_delta not scripted"),
+        }
+    }
+    fn tag_linked_task(
+        &self,
+        _task_id: &str,
+        _linked_task_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn list_jobs(&self) -> Vec<ShellJobSnapshot> {
+        Vec::new()
+    }
+    fn inspect_job(&self, _task_id: &str) -> anyhow::Result<ShellJobDetail> {
+        panic!("inspect_job not scripted")
+    }
+    fn poll_delta(
+        &self,
+        _task_id: &str,
+        _wait: bool,
+        _timeout_ms: u64,
+    ) -> anyhow::Result<ShellDeltaResult> {
+        panic!("poll_delta not scripted")
+    }
+    fn request_foreground_background(&self) {}
+}
+
+fn killed_result() -> ShellResult {
+    let mut result = failed_network_shell_result("", "");
+    result.status = ShellStatus::Killed;
+    result.exit_code = None;
+    result
+}
+
+fn completed_delta(stdout: &str) -> ShellDeltaResult {
+    let mut result = failed_network_shell_result(stdout, "");
+    result.status = ShellStatus::Completed;
+    result.exit_code = Some(0);
+    result.task_id = Some("stub-task".to_string());
+    ShellDeltaResult {
+        command: "stub command".to_string(),
+        result,
+        stdout_total_len: stdout.len(),
+        stderr_total_len: 0,
+    }
+}
+
+#[tokio::test]
+async fn wait_delta_maps_manager_errors_from_both_branches() {
+    let tmp = tempdir().expect("tempdir");
+    let stub = std::sync::Arc::new(ScriptedManager {
+        delta_result: Some(Err("stub delta failure".to_string())),
+        ..ScriptedManager::default()
+    });
+
+    let mut plain = ToolContext::new(tmp.path());
+    plain.shell_manager = stub.clone();
+    let err = wait_for_shell_delta_cancellable(&plain, "t1", 1000, "exec_shell_wait")
+        .await
+        .expect_err("poll error must surface");
+    assert!(format!("{err}").contains("stub delta failure"));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+    let mut cancelled = ToolContext::new(tmp.path()).with_cancel_token(token);
+    cancelled.shell_manager = stub;
+    let err = wait_for_shell_delta_cancellable(&cancelled, "t1", 1000, "exec_shell_wait")
+        .await
+        .expect_err("cancelled-branch poll error must surface");
+    assert!(format!("{err}").contains("stub delta failure"));
+}
+
+#[tokio::test]
+async fn cancel_tool_maps_manager_failures_and_requires_a_task_id() {
+    let tmp = tempdir().expect("tempdir");
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.shell_manager = std::sync::Arc::new(ScriptedManager {
+        kill_result: Some(Err("stub kill failure".to_string())),
+        kill_running_result: Some(Err("stub kill_running failure".to_string())),
+        ..ScriptedManager::default()
+    });
+
+    let err = ShellCancelTool
+        .execute(json!({ "task_id": "t9" }), &ctx)
+        .await
+        .expect_err("kill failure must surface");
+    assert!(format!("{err}").contains("stub kill failure"));
+
+    let err = ShellCancelTool
+        .execute(json!({ "all": true }), &ctx)
+        .await
+        .expect_err("kill_running failure must surface");
+    assert!(format!("{err}").contains("stub kill_running failure"));
+
+    let err = ShellCancelTool
+        .execute(json!({ "all": false }), &ctx)
+        .await
+        .expect_err("task_id is required");
+    assert!(format!("{err}").contains("task_id"));
+}
+
+#[tokio::test]
+async fn cancel_tool_falls_back_to_the_requested_id_and_honors_the_alias() {
+    let tmp = tempdir().expect("tempdir");
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.shell_manager = std::sync::Arc::new(ScriptedManager {
+        kill_result: Some(Ok(killed_result())),
+        ..ScriptedManager::default()
+    });
+    // The `id` alias resolves; the kill result carries no task id, so the
+    // requested id is echoed back.
+    let ok = ShellCancelTool
+        .execute(json!({ "id": "alias-id" }), &ctx)
+        .await
+        .expect("cancel via alias");
+    assert!(ok.content.contains("Canceled background command: alias-id"));
+    let meta = ok.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("task_id").and_then(Value::as_str),
+        Some("alias-id")
+    );
+}
+
+#[tokio::test]
+async fn interact_tool_reports_delta_output_and_maps_failures() {
+    let tmp = tempdir().expect("tempdir");
+
+    // Success: the first poll already carries output.
+    let mut ok_ctx = ToolContext::new(tmp.path());
+    ok_ctx.shell_manager = std::sync::Arc::new(ScriptedManager {
+        delta_result: Some(Ok(completed_delta("stub-out"))),
+        ..ScriptedManager::default()
+    });
+    let result = ShellInteractTool::new("exec_shell_interact")
+        .execute(json!({ "task_id": "t1", "timeout_ms": 500 }), &ok_ctx)
+        .await
+        .expect("interact delta");
+    assert!(result.content.contains("stub-out"), "{}", result.content);
+
+    // write_stdin failure surfaces as a tool error.
+    let mut stdin_err_ctx = ToolContext::new(tmp.path());
+    stdin_err_ctx.shell_manager = std::sync::Arc::new(ScriptedManager {
+        write_stdin_result: Some(Err("stub stdin failure".to_string())),
+        ..ScriptedManager::default()
+    });
+    let err = ShellInteractTool::new("exec_shell_interact")
+        .execute(json!({ "task_id": "t1", "input": "x" }), &stdin_err_ctx)
+        .await
+        .expect_err("stdin failure must surface");
+    assert!(format!("{err}").contains("stub stdin failure"));
+
+    // get_output_delta failure in the polling loop.
+    let mut delta_err_ctx = ToolContext::new(tmp.path());
+    delta_err_ctx.shell_manager = std::sync::Arc::new(ScriptedManager {
+        delta_result: Some(Err("stub delta failure".to_string())),
+        ..ScriptedManager::default()
+    });
+    let err = ShellInteractTool::new("exec_shell_interact")
+        .execute(
+            json!({ "task_id": "t1", "timeout_ms": 500 }),
+            &delta_err_ctx,
+        )
+        .await
+        .expect_err("delta failure must surface");
+    assert!(format!("{err}").contains("stub delta failure"));
+
+    // A cancelled token: the cancel branch still reports the delta and
+    // stamps wait_canceled.
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel();
+    let mut cancelled = ToolContext::new(tmp.path()).with_cancel_token(token);
+    cancelled.shell_manager = std::sync::Arc::new(ScriptedManager {
+        delta_result: Some(Ok(completed_delta("late-out"))),
+        ..ScriptedManager::default()
+    });
+    let result = ShellInteractTool::new("exec_shell_interact")
+        .execute(json!({ "task_id": "t1" }), &cancelled)
+        .await
+        .expect("cancelled interact still reports the delta");
+    assert!(result.content.contains("late-out"));
+    assert_eq!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get("wait_canceled"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn interact_tool_sends_input_to_a_real_background_task() {
+    let tmp = tempdir().expect("tempdir");
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
+    let started = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .execute(&echo_stdin_command(), None, 600_000, true)
+        .expect("start stdin echo task");
+    let task_id = started.task_id.expect("task id");
+
+    let result = ShellInteractTool::new("exec_shell_interact")
+        .execute(
+            json!({
+                "task_id": task_id,
+                "input": "hello interact\n",
+                "close_stdin": true,
+                "timeout_ms": 3000
+            }),
+            &ctx,
+        )
+        .await
+        .expect("interact");
+    assert!(
+        result.content.contains("hello interact"),
+        "{}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn foreground_via_background_requires_a_process_id() {
+    let tmp = tempdir().expect("tempdir");
+    let mut no_id = failed_network_shell_result("", "");
+    no_id.status = ShellStatus::Completed;
+    no_id.task_id = None;
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.shell_manager = std::sync::Arc::new(ScriptedManager {
+        execute_result: Some(Ok(no_id)),
+        ..ScriptedManager::default()
+    });
+    let err = execute_foreground_via_background(
+        &ctx,
+        "echo hi",
+        None,
+        1000,
+        None,
+        false,
+        None,
+        std::collections::HashMap::new(),
+        SandboxRuntimeConfig::default(),
+    )
+    .await
+    .expect_err("a spawn without a task id must fail");
+    assert!(
+        format!("{err}").contains("did not return a process id"),
+        "got `{err}`"
+    );
+}
+
+// === progress checkpoints ================================================
+
+#[tokio::test]
+async fn shell_progress_emits_throttles_and_tails_excerpts() {
+    let tmp = tempdir().expect("tempdir");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ctx = ToolContext::new(tmp.path())
+        .with_progress_sink(Some(std::sync::Arc::new(RecordingSink(seen.clone()))));
+    let mut progress = ShellProgress::new("task-9", "exec_shell");
+
+    // First checkpoint with new output emits immediately.
+    progress.checkpoint(&ctx, "out1\n", 5, "", 0, false).await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // New output within the interval is throttled...
+    progress
+        .checkpoint(&ctx, "out1\nmore\n", 10, "", 0, false)
+        .await;
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "within-interval output waits"
+    );
+    // ...and unchanged lengths are a no-op.
+    progress
+        .checkpoint(&ctx, "out1\nmore\n", 10, "", 0, false)
+        .await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // Once the interval elapsed, the new slice (not the whole stream) emits.
+    progress.last_emit = Some(Instant::now() - Duration::from_secs(2));
+    progress
+        .checkpoint(&ctx, "out1\nmore\n", 10, "", 0, false)
+        .await;
+    let got = seen.lock().unwrap().clone();
+    assert_eq!(got.len(), 2);
+    assert!(
+        got[1].2.contains("more") && !got[1].2.contains("out1\n"),
+        "message carries only the new output: {got:?}"
+    );
+
+    // A truncated excerpt reports the tail of the non-empty stream.
+    progress.last_emit = Some(Instant::now() - Duration::from_secs(2));
+    progress
+        .checkpoint(
+            &ctx,
+            &"h".repeat(PROGRESS_MESSAGE_MAX_BYTES + 10),
+            5000,
+            &"e".repeat(64),
+            64,
+            true,
+        )
+        .await;
+    let got = seen.lock().unwrap().clone();
+    assert_eq!(got.len(), 3);
+    assert!(
+        got[2].2.ends_with(&"e".repeat(64)),
+        "truncated excerpts prefer the non-empty (stderr) tail, capped: {got:?}"
+    );
+    assert!(got[2].2.len() <= PROGRESS_MESSAGE_MAX_BYTES);
+}
+
+// === session cwd capture edge paths ======================================
+
+#[cfg(unix)]
+#[test]
+fn session_cwd_capture_tolerates_missing_base_directories() {
+    let tmp = tempdir().expect("tempdir");
+    let sub = tmp.path().join("sub");
+    std::fs::create_dir_all(&sub).expect("mkdir sub");
+
+    // Workspace missing: the fallback closure keeps the raw path, and the
+    // capture is still accepted via the existing ran_in directory.
+    let ctx = ToolContext::new(tmp.path().join("gone-workspace"))
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let mut stdout = format!("{}{}\n", CWD_MARKER_PREFIX, sub.display());
+    let mut stderr = String::new();
+    let applied =
+        apply_session_cwd_capture(&ctx, &mut stdout, &mut stderr, tmp.path()).expect("applied");
+    assert_eq!(applied, sub.canonicalize().unwrap());
+
+    // ran_in missing: same posture, accepted via the workspace instead.
+    let ctx = ToolContext::new(tmp.path())
+        .with_session_cwd(std::sync::Arc::new(std::sync::Mutex::new(None)));
+    let mut stdout = format!("{}{}\n", CWD_MARKER_PREFIX, sub.display());
+    let mut stderr = String::new();
+    let applied = apply_session_cwd_capture(
+        &ctx,
+        &mut stdout,
+        &mut stderr,
+        &tmp.path().join("gone-ran-in"),
+    )
+    .expect("applied");
+    assert_eq!(applied, sub.canonicalize().unwrap());
+}
+
+// === spill attachment with fresh metadata ================================
+
+#[tokio::test]
+async fn attach_spill_adds_footer_and_metadata_to_a_result_without_any() {
+    let tmp = tempdir().expect("tempdir");
+    let _spill_root = TestSpillRoot::new(tmp.path());
+    let spill = spill_full_shell_output("spill-ref-1", "AAAA", "BBBB").expect("spill to temp root");
+    let mut result = ToolResult {
+        canonical: None,
+        content: "base".to_string(),
+        success: true,
+        metadata: None,
+    };
+    attach_spill_to_result(&mut result, &spill);
+    assert!(
+        result
+            .content
+            .contains("retrieve_tool_result ref=spill-ref-1"),
+        "{}",
+        result.content
+    );
+    let meta = result.metadata.expect("metadata inserted from scratch");
+    assert_eq!(
+        meta.get("spillover_ref").and_then(Value::as_str),
+        Some("spill-ref-1")
+    );
+    assert!(meta.get("spillover_path").and_then(Value::as_str).is_some());
+}
+
+#[tokio::test]
+async fn shell_delta_failed_empty_output_carries_the_exit_note() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let mut result = failed_network_shell_result("", "");
+    result.status = ShellStatus::Failed;
+    result.exit_code = Some(127);
+    let tool_result = build_shell_delta_tool_result(
+        ShellDeltaResult {
+            command: "plain background task".to_string(),
+            result,
+            stdout_total_len: 0,
+            stderr_total_len: 0,
+        },
+        &ctx,
+    )
+    .await;
+    assert!(
+        tool_result.content.contains("command not found"),
+        "{}",
+        tool_result.content
+    );
+    assert!(tool_result.content.contains("127"));
+}
+
+// === exec_shell failure / execpolicy paths ===============================
+
+#[tokio::test]
+async fn exec_shell_failure_surfaces_exit_code_semantics() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let result = ExecShellTool
+        .execute(
+            json!({"command": "codesmith-missing-cmd-xyz", "timeout_ms": 5000}),
+            &ctx,
+        )
+        .await
+        .expect("execute");
+    assert!(!result.success);
+    assert!(
+        result.content.contains("command not found"),
+        "{}",
+        result.content
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn exec_shell_surfaces_execpolicy_load_failure() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = EnvRestore::new(&["CODESMITH_HOME"]);
+    let home = tempdir().expect("tempdir");
+    // SAFETY: held under env_lock; restored by EnvRestore on drop.
+    unsafe { std::env::set_var("CODESMITH_HOME", home.path()) };
+    std::fs::write(home.path().join("execpolicy.toml"), "not valid toml [[[")
+        .expect("write broken policy");
+
+    let tmp = tempdir().expect("tempdir");
+    let err = ExecShellTool
+        .execute(
+            json!({"command": "printf ok"}),
+            &ToolContext::new(tmp.path()),
+        )
+        .await
+        .expect_err("a broken policy must fail loud, not run unpoliced");
+    assert!(
+        format!("{err}").contains("execpolicy load failed"),
+        "got `{err}`"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn exec_shell_records_execpolicy_decision_in_metadata() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = EnvRestore::new(&["CODESMITH_HOME"]);
+    let home = tempdir().expect("tempdir");
+    // SAFETY: held under env_lock; restored by EnvRestore on drop.
+    unsafe { std::env::set_var("CODESMITH_HOME", home.path()) };
+    // No allow rules: every command evaluates to AskUser, which (attended)
+    // is recorded in the result metadata rather than blocking the run.
+    std::fs::write(
+        home.path().join("execpolicy.toml"),
+        "[rules.default]\nallow = []\ndeny = []\n",
+    )
+    .expect("write policy");
+
+    let tmp = tempdir().expect("tempdir");
+    let result = ExecShellTool
+        .execute(
+            json!({"command": "printf ok"}),
+            &ToolContext::new(tmp.path()),
+        )
+        .await
+        .expect("attended run proceeds under an ask policy");
+    assert!(result.success, "{}", result.content);
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("execpolicy")
+            .and_then(|e| e.get("decision"))
+            .and_then(Value::as_str),
+        Some("ask_user")
+    );
+}
+
+// === external sandbox backend path =======================================
+
+/// Stub backend answering `exec` with a fixed output (or an error) — the
+/// external-sandbox rendering path needs a result without a real sandbox.
+#[derive(Debug)]
+struct StubExecBackend {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl codesmith_sandbox::runtime::SandboxBackend for StubExecBackend {
+    async fn exec(
+        &self,
+        _request: codesmith_sandbox::runtime::SandboxExecRequest,
+    ) -> anyhow::Result<codesmith_sandbox::runtime::SandboxOutput> {
+        if self.fail {
+            Err(anyhow::anyhow!("stub backend blew up"))
+        } else {
+            Ok(codesmith_sandbox::runtime::SandboxOutput {
+                stdout: self.stdout.clone(),
+                stderr: self.stderr.clone(),
+                exit_code: self.exit_code,
+            })
+        }
+    }
+}
+
+#[tokio::test]
+async fn sandbox_backend_result_renders_and_spills_large_output() {
+    let tmp = tempdir().expect("tempdir");
+    let _spill_root = TestSpillRoot::new(tmp.path());
+    let ctx =
+        ToolContext::new(tmp.path()).with_sandbox_backend(std::sync::Arc::new(StubExecBackend {
+            stdout: "x".repeat(40_000),
+            stderr: String::new(),
+            exit_code: 0,
+            fail: false,
+        }));
+    let result = ExecShellTool
+        .execute(json!({"command": "printf big"}), &ctx)
+        .await
+        .expect("backend run");
+    assert!(result.success, "{}", result.content);
+    assert!(
+        result.content.contains("[Output truncated"),
+        "truncated view: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("retrieve_tool_result"),
+        "spill footer: {}",
+        result.content
+    );
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("sandbox_backend").and_then(Value::as_str),
+        Some("opensandbox")
+    );
+    assert!(meta.get("spillover_ref").is_some());
+}
+
+#[tokio::test]
+async fn sandbox_backend_errors_and_mode_limits_surface() {
+    let tmp = tempdir().expect("tempdir");
+    let tool = ExecShellTool;
+
+    // Backend failure is a tool error, not a panic.
+    let ctx =
+        ToolContext::new(tmp.path()).with_sandbox_backend(std::sync::Arc::new(StubExecBackend {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 0,
+            fail: true,
+        }));
+    let result = tool
+        .execute(json!({"command": "printf x"}), &ctx)
+        .await
+        .expect("error result");
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("Sandbox backend error: stub backend blew up"),
+        "{}",
+        result.content
+    );
+
+    // Interactive / background / tty modes are rejected with a backend set.
+    for (input, needle) in [
+        (
+            json!({"command": "printf x", "interactive": true}),
+            "Interactive mode",
+        ),
+        (
+            json!({"command": "printf x", "background": true}),
+            "Background mode",
+        ),
+        // tty shares the background rejection message (the product folds
+        // both into "Background mode is not supported…").
+        (
+            json!({"command": "printf x", "tty": true}),
+            "Background mode",
+        ),
+    ] {
+        let desc = input.clone();
+        let result = tool.execute(input, &ctx).await.expect("mode error result");
+        assert!(!result.success, "{desc}");
+        assert!(
+            result.content.contains(needle),
+            "{desc}: {}",
+            result.content
+        );
+    }
+}
+
+// === note tool ============================================================
+
+#[tokio::test]
+async fn note_tool_appends_and_reports_the_path() {
+    let tmp = tempdir().expect("tempdir");
+    let notes = tmp.path().join("notes.md");
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.notes_path = notes.clone();
+    let result = NoteTool
+        .execute(json!({"content": "remember this"}), &ctx)
+        .await
+        .expect("note");
+    assert!(result.success);
+    let body = std::fs::read_to_string(&notes).expect("notes file");
+    assert!(body.contains("remember this"), "{body}");
+}
+
+#[tokio::test]
+async fn note_tool_surfaces_directory_and_open_failures() {
+    let tmp = tempdir().expect("tempdir");
+
+    // Parent path blocked by a regular file: create_dir_all fails.
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, "x").expect("write blocker");
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.notes_path = tmp.path().join("blocker").join("notes.md");
+    let err = NoteTool
+        .execute(json!({"content": "x"}), &ctx)
+        .await
+        .expect_err("unusable notes directory");
+    assert!(
+        format!("{err}").contains("Failed to create notes directory"),
+        "got `{err}`"
+    );
+
+    // Notes path IS a directory: open fails.
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.notes_path = tmp.path().to_path_buf();
+    let err = NoteTool
+        .execute(json!({"content": "x"}), &ctx)
+        .await
+        .expect_err("notes path is a directory");
+    assert!(
+        format!("{err}").contains("Failed to open notes file"),
+        "got `{err}`"
+    );
+}
+
+// === declared approval requirements ======================================
+
+#[test]
+fn shell_tool_approval_requirements_are_declared() {
+    assert_eq!(
+        ShellCancelTool.approval_requirement(),
+        ApprovalRequirement::Required
+    );
+    assert_eq!(
+        ShellWaitTool::new("exec_shell_wait").approval_requirement(),
+        ApprovalRequirement::Auto
+    );
+    assert_eq!(
+        ShellInteractTool::new("exec_shell_interact").approval_requirement(),
+        ApprovalRequirement::Auto
+    );
+    assert_eq!(NoteTool.approval_requirement(), ApprovalRequirement::Auto);
+    assert_eq!(ShellCancelTool.name(), "exec_shell_cancel");
+    assert!(NoteTool.input_schema().get("properties").is_some());
+}

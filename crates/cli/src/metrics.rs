@@ -1286,4 +1286,294 @@ mod tests {
         // 1 − 10/40 = 0.75 message-count reduction.
         assert!((rollup.compaction.ratio_sum - 0.75).abs() < 1e-9);
     }
+
+    // ── Duration parser edges ──
+
+    #[test]
+    fn parse_since_accepts_bare_seconds_and_case_and_whitespace() {
+        let cutoff = parse_since("90").unwrap();
+        let expected = Utc::now() - Duration::seconds(90);
+        assert!((cutoff - expected).num_seconds().abs() < 2);
+
+        let cutoff = parse_since(" 7D ").unwrap();
+        let expected = Utc::now() - Duration::days(7);
+        assert!((cutoff - expected).num_seconds().abs() < 2);
+    }
+
+    #[test]
+    fn parse_since_rejects_zero_and_unknown_units() {
+        assert!(parse_since("0s").is_err(), "zero duration is refused");
+        assert!(parse_since("3w").is_err(), "unknown unit character");
+    }
+
+    // ── Percentage/average helpers ──
+
+    #[test]
+    fn tool_stats_rate_and_average_helpers() {
+        let mut stats = ToolStats::default();
+        assert_eq!(stats.success_rate_pct(), None);
+        assert_eq!(stats.avg_elapsed_ms(), None);
+
+        stats.successes = 3;
+        stats.failures = 1;
+        stats.total_elapsed_ms = 100;
+        stats.elapsed_samples = 4;
+        assert_eq!(stats.success_rate_pct(), Some(75.0));
+        assert_eq!(stats.avg_elapsed_ms(), Some(25));
+    }
+
+    #[test]
+    fn compaction_stats_avg_reduction_pct() {
+        let mut stats = CompactionStats::default();
+        assert_eq!(stats.avg_reduction_pct(), None);
+        stats.ratio_sum = 1.5;
+        stats.ratio_samples = 2;
+        assert_eq!(stats.avg_reduction_pct(), Some(75.0));
+    }
+
+    #[test]
+    fn agent_stats_success_rate_pct() {
+        let mut stats = AgentStats::default();
+        assert_eq!(stats.success_rate_pct(), None);
+        stats.successes = 1;
+        stats.failures = 1;
+        assert_eq!(stats.success_rate_pct(), Some(50.0));
+    }
+
+    // ── collect() over a seeded, isolated CODESMITH_HOME ──
+
+    #[test]
+    fn collect_reads_every_source_under_an_isolated_home() {
+        use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+        use std::io::Write;
+
+        let _lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvVarGuard::set("CODESMITH_HOME", home.path());
+
+        // audit.log — every event family the reader recognises.
+        let audit = [
+            make_audit_line(
+                "tool.approval.auto_approve",
+                "exec_shell",
+                "2026-04-01T10:00:00+00:00",
+            ),
+            make_audit_line(
+                "tool.approval.prompted",
+                "exec_shell",
+                "2026-04-01T10:01:00+00:00",
+            ),
+            r#"{"event":"tool.completed","ts":"2026-04-01T10:02:00+00:00","details":{"tool_name":"read_file","elapsed_ms":100,"success":true}}"#.to_string(),
+            r#"{"event":"tool.result","ts":"2026-04-01T10:03:00+00:00","payload":{"tool_name":"write_file","elapsed_ms":50,"success":false}}"#.to_string(),
+            r#"{"event":"compaction.completed","ts":"2026-04-01T10:04:00+00:00","details":{"reduction_ratio":0.5}}"#.to_string(),
+            r#"{"event":"agent.spawn","ts":"2026-04-01T10:05:00+00:00"}"#.to_string(),
+            r#"{"event":"subagent.completed","ts":"2026-04-01T10:06:00+00:00","details":{"success":false}}"#.to_string(),
+            r#"{"event":"capacity.throttled","ts":"2026-04-01T10:07:00+00:00","details":{"category":"llm"}}"#.to_string(),
+            r#"{"event":"capacity.flooded","ts":"2026-04-01T10:08:00+00:00"}"#.to_string(),
+            r#"{"event":"credential.save","ts":"2026-04-01T10:09:00+00:00"}"#.to_string(),
+            r#"{"event":"credential.clear","ts":"2026-04-01T10:10:00+00:00"}"#.to_string(),
+            r#"{"event":"who.knows","ts":"2026-04-01T10:11:00+00:00"}"#.to_string(),
+            "not json".to_string(),
+            String::new(),
+        ]
+        .join("\n");
+        let mut f = std::fs::File::create(home.path().join("audit.log")).unwrap();
+        writeln!(f, "{audit}").unwrap();
+
+        // sessions/ — one valid session with a tool_use→tool_result pair and
+        // an embedded compaction message, one malformed, one nested dir.
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(sessions.join("nested")).unwrap();
+        let session = serde_json::json!({
+            "metadata": {
+                "created_at": "2026-04-02T09:00:00Z",
+                "updated_at": "2026-04-02T10:00:00Z",
+                "message_count": 3,
+                "total_tokens": 100,
+                "workspace": "/Users/dev/proj",
+                "model": "deepseek-chat"
+            },
+            "messages": [
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "t1", "name": "exec_shell", "elapsed_ms": 5 }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "t1", "is_error": true }
+                ]},
+                { "role": "user", "content": [], "compaction": { "reduction_ratio": 0.25 } }
+            ]
+        });
+        std::fs::write(
+            sessions.join("one.json"),
+            serde_json::to_string(&session).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(sessions.join("bad.json"), "{nope").unwrap();
+
+        // tasks/runtime/events/ — one JSONL stream across event families.
+        let events = home.path().join("tasks").join("runtime").join("events");
+        std::fs::create_dir_all(&events).unwrap();
+        let record = |event: &str, payload: serde_json::Value| {
+            serde_json::json!({
+                "timestamp": "2026-04-03T12:00:00Z",
+                "event": event,
+                "payload": payload,
+            })
+        };
+        let stream = [
+            record(
+                "tool.started",
+                serde_json::json!({ "tool_name": "exec_shell" }),
+            ),
+            record(
+                "tool.completed",
+                serde_json::json!({ "name": "read_file", "elapsed_ms": 7 }),
+            ),
+            record(
+                "tool.failed",
+                serde_json::json!({ "tool_name": "exec_shell" }),
+            ),
+            record(
+                "compaction.completed",
+                serde_json::json!({ "reduction_ratio": 0.5 }),
+            ),
+            record("agent.spawned", serde_json::json!({})),
+            record(
+                "subagent.completed",
+                serde_json::json!({ "success": false }),
+            ),
+            record("capacity.backoff", serde_json::json!({ "category": "net" })),
+            "".into(),
+            "garbage".into(),
+        ]
+        .iter()
+        .map(|l| serde_json::to_string(l).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+        std::fs::write(events.join("thread.jsonl"), stream).unwrap();
+
+        let rollup = collect(None);
+
+        // Session-level tallies.
+        assert_eq!(rollup.sessions, 1, "malformed session skipped");
+        assert_eq!(rollup.messages, 3);
+        assert_eq!(rollup.tokens, 100);
+        assert_eq!(rollup.projects["/Users/dev/proj"], 1);
+        assert_eq!(rollup.models["deepseek-chat"], 1);
+
+        // Tool tallies across all three sources.
+        assert_eq!(rollup.tools["exec_shell"].auto_approved, 1);
+        assert_eq!(rollup.tools["exec_shell"].prompted, 1);
+        assert_eq!(
+            rollup.tools["exec_shell"].calls, 2,
+            "runtime tool.started + session tool_result pair"
+        );
+        assert_eq!(rollup.tools["exec_shell"].failures, 2);
+        assert_eq!(rollup.tools["exec_shell"].total_elapsed_ms, 5);
+        assert_eq!(rollup.tools["read_file"].successes, 2);
+        assert_eq!(rollup.tools["read_file"].total_elapsed_ms, 107);
+        assert_eq!(rollup.tools["write_file"].failures, 1);
+
+        // Family tallies.
+        assert_eq!(rollup.compaction.events, 3);
+        assert_eq!(rollup.compaction.ratio_samples, 3);
+        assert!((rollup.compaction.ratio_sum - 1.25).abs() < 1e-9);
+        assert_eq!(rollup.agents.spawns, 2);
+        assert_eq!(rollup.agents.failures, 2);
+        assert_eq!(rollup.capacity.total, 3);
+        assert_eq!(rollup.capacity.by_category["llm"], 1);
+        assert_eq!(rollup.capacity.by_category["flooded"], 1);
+        assert_eq!(rollup.capacity.by_category["net"], 1);
+        assert_eq!(rollup.credentials.saves, 1);
+        assert_eq!(rollup.credentials.clears, 1);
+
+        // Timestamps span the earliest audit line and the latest session ts.
+        assert_eq!(
+            rollup.earliest_ts.map(|t| t.to_rfc3339()),
+            Some("2026-04-01T10:00:00+00:00".to_string())
+        );
+        assert!(rollup.latest_ts.is_some());
+    }
+
+    #[test]
+    fn run_renders_json_and_human_from_an_empty_home() {
+        use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+        let _lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvVarGuard::set("CODESMITH_HOME", home.path());
+
+        run(MetricsArgs::default()).expect("human render on empty store");
+        run(MetricsArgs {
+            json: true,
+            since: None,
+        })
+        .expect("json render on empty store");
+    }
+
+    // ── Formatters over a constructed rollup ──
+
+    #[test]
+    fn print_human_and_json_render_a_populated_rollup() {
+        let mut rollup = Rollup::default();
+        rollup.earliest_ts = Some("2026-01-01T00:00:00Z".parse().unwrap());
+        rollup.latest_ts = Some("2026-02-01T00:00:00Z".parse().unwrap());
+
+        let mut busy = ToolStats {
+            calls: 9,
+            successes: 6,
+            failures: 3,
+            total_elapsed_ms: 4_500,
+            elapsed_samples: 9,
+            ..ToolStats::default()
+        };
+        busy.total_elapsed_ms = 4_500;
+        rollup.tools.insert("busy".to_string(), busy);
+
+        // Approval-only tool: no judged calls, shows the auto/prompted split.
+        let approvals = ToolStats {
+            auto_approved: 2,
+            prompted: 1,
+            ..ToolStats::default()
+        };
+        rollup.tools.insert("approval_only".to_string(), approvals);
+
+        // More than 15 tools exercises the "… and N more" footer.
+        for i in 0..17 {
+            rollup.tool_mut(&format!("tool_{i:02}")).calls = 1;
+        }
+
+        rollup.compaction = CompactionStats {
+            events: 4,
+            ratio_sum: 3.0,
+            ratio_samples: 4,
+        };
+        rollup.agents = AgentStats {
+            spawns: 10,
+            successes: 8,
+            failures: 2,
+        };
+        rollup.capacity = CapacityStats {
+            total: 5,
+            by_category: [
+                ("llm".to_string(), 3),
+                ("net".to_string(), 2),
+                ("idle".to_string(), 0),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        rollup.credentials = CredentialStats {
+            saves: 7,
+            clears: 1,
+        };
+
+        // Smoke: both renderers complete without panicking on a full rollup.
+        print_human(&rollup);
+        print_json(&rollup).expect("json render");
+
+        // And the empty rollup renders its no-data arms.
+        print_human(&Rollup::default());
+        print_json(&Rollup::default()).expect("json render");
+    }
 }

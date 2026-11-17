@@ -1089,7 +1089,8 @@ fn default_denied_exec_prefixes() -> Vec<String> {
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
-    use codesmith_protocol::AppRequest;
+    use codesmith_protocol::{AppRequest, LocalShellParams, ToolPayload};
+    use codesmith_tools::ToolCallSource;
     use std::fs;
     use tower::ServiceExt;
 
@@ -1474,5 +1475,949 @@ mod tests {
             "external edit must survive a config set, got: {raw}"
         );
         assert!(raw.contains("/tmp/cw-events.sock"));
+    }
+
+    // ── stdio dispatcher ────────────────────────────────────────────────
+
+    fn state_with_config() -> (AppState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "api_key = \"sk-codesmith-test-secret\"\n").expect("write config");
+        let state = build_state(Some(config_path), None).expect("state");
+        (state, tmp)
+    }
+
+    async fn spawn_thread_via_stdio(state: &AppState) -> String {
+        let outcome = dispatch_stdio_request(state, "thread/create", Value::Null)
+            .await
+            .expect("thread/create dispatches");
+        outcome.result["thread_id"]
+            .as_str()
+            .expect("thread id")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn stdio_healthz_reports_ok_without_exiting() {
+        let (state, _tmp) = state_with_config();
+        for method in ["healthz", "app/healthz"] {
+            let outcome = dispatch_stdio_request(&state, method, Value::Null)
+                .await
+                .expect("healthz dispatches");
+            assert!(!outcome.should_exit, "{method}");
+            assert_eq!(outcome.result["status"], "ok", "{method}");
+            assert_eq!(outcome.result["service"], "codesmith-app-server");
+            assert_eq!(outcome.result["transport"], "stdio");
+        }
+    }
+
+    #[tokio::test]
+    async fn stdio_capabilities_catalogs_and_shutdown_exits() {
+        let (state, _tmp) = state_with_config();
+
+        let caps = dispatch_stdio_request(&state, "capabilities", Value::Null)
+            .await
+            .expect("capabilities");
+        assert!(!caps.should_exit);
+        let methods = caps.result["methods"].as_array().expect("methods");
+        assert!(methods.iter().any(|m| m == "shutdown"));
+        assert!(methods.iter().any(|m| m == "thread/create"));
+        assert!(methods.iter().any(|m| m == "app/config/get"));
+        let families = caps.result["families"].as_array().expect("families");
+        assert!(families.iter().any(|f| f == "thread/*"));
+
+        let thread_caps = dispatch_stdio_request(&state, "thread/capabilities", Value::Null)
+            .await
+            .expect("thread capabilities");
+        let thread_methods = thread_caps.result["methods"].as_array().expect("methods");
+        assert!(thread_methods.iter().any(|m| m == "thread/list"));
+        assert!(!thread_methods.iter().any(|m| m == "shutdown"));
+
+        let prompt_caps = dispatch_stdio_request(&state, "prompt/capabilities", Value::Null)
+            .await
+            .expect("prompt capabilities");
+        assert_eq!(
+            prompt_caps.result["methods"],
+            json!(["prompt/request", "prompt/run"])
+        );
+
+        let shutdown = dispatch_stdio_request(&state, "shutdown", Value::Null)
+            .await
+            .expect("shutdown");
+        assert!(shutdown.should_exit);
+        assert_eq!(shutdown.result["ok"], true);
+        assert_eq!(shutdown.result["status"], "stopped");
+    }
+
+    #[tokio::test]
+    async fn stdio_unknown_method_reports_method_not_found() {
+        let (state, _tmp) = state_with_config();
+        let err = dispatch_stdio_request(&state, "no/such-method", Value::Null)
+            .await
+            .expect_err("unknown method must error");
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("no/such-method"));
+    }
+
+    #[tokio::test]
+    async fn stdio_thread_start_resume_read_and_fork() {
+        let (state, _tmp) = state_with_config();
+
+        let started = dispatch_stdio_request(&state, "thread/start", json!({}))
+            .await
+            .expect("thread/start");
+        assert_eq!(started.result["status"], "started");
+        let thread_id = started.result["thread_id"].as_str().expect("thread id");
+        assert!(thread_id.starts_with("thread-"));
+        let thread_id = thread_id.to_string();
+
+        let resumed =
+            dispatch_stdio_request(&state, "thread/resume", json!({ "thread_id": thread_id }))
+                .await
+                .expect("thread/resume");
+        assert_eq!(resumed.result["status"], "resumed");
+
+        let missing_resume = dispatch_stdio_request(
+            &state,
+            "thread/resume",
+            json!({ "thread_id": "thread-nope" }),
+        )
+        .await
+        .expect("resume of a missing thread is a response, not an error");
+        assert_eq!(missing_resume.result["status"], "missing");
+        assert_eq!(missing_resume.result["data"]["error"], "thread not found");
+
+        let read = dispatch_stdio_request(&state, "thread/read", json!({ "thread_id": thread_id }))
+            .await
+            .expect("thread/read");
+        assert_eq!(read.result["status"], "ok");
+        assert_eq!(read.result["thread"]["id"], thread_id);
+        assert!(read.result["data"]["history"].is_array());
+
+        let missing_read =
+            dispatch_stdio_request(&state, "thread/read", json!({ "thread_id": "thread-nope" }))
+                .await
+                .expect("thread/read of a missing thread");
+        assert_eq!(missing_read.result["status"], "ok");
+        assert!(missing_read.result["thread"].is_null());
+
+        let forked =
+            dispatch_stdio_request(&state, "thread/fork", json!({ "thread_id": thread_id }))
+                .await
+                .expect("thread/fork");
+        assert_eq!(forked.result["status"], "forked");
+        assert_ne!(
+            forked.result["thread_id"].as_str().expect("fork id"),
+            thread_id
+        );
+
+        let missing_fork =
+            dispatch_stdio_request(&state, "thread/fork", json!({ "thread_id": "thread-nope" }))
+                .await
+                .expect("fork of a missing thread is a response");
+        assert_eq!(missing_fork.result["status"], "missing");
+    }
+
+    #[tokio::test]
+    async fn stdio_thread_create_list_archive_and_message() {
+        let (state, _tmp) = state_with_config();
+
+        let created = dispatch_stdio_request(
+            &state,
+            "thread/create",
+            json!({ "metadata": { "origin": "test" } }),
+        )
+        .await
+        .expect("thread/create with metadata");
+        assert_eq!(created.result["status"], "created");
+        let thread_id = created.result["thread_id"].as_str().expect("thread id");
+
+        let listed = dispatch_stdio_request(&state, "thread/list", Value::Null)
+            .await
+            .expect("thread/list with null params");
+        assert!(
+            listed.result["threads"]
+                .as_array()
+                .expect("threads")
+                .iter()
+                .any(|t| t["id"] == thread_id)
+        );
+
+        let archived =
+            dispatch_stdio_request(&state, "thread/archive", json!({ "thread_id": thread_id }))
+                .await
+                .expect("thread/archive");
+        assert_eq!(archived.result["status"], "archived");
+        assert_eq!(archived.result["thread_id"], thread_id);
+
+        let active =
+            dispatch_stdio_request(&state, "thread/list", json!({ "include_archived": false }))
+                .await
+                .expect("thread/list active");
+        assert!(
+            !active.result["threads"]
+                .as_array()
+                .expect("threads")
+                .iter()
+                .any(|t| t["id"] == thread_id)
+        );
+
+        let all =
+            dispatch_stdio_request(&state, "thread/list", json!({ "include_archived": true }))
+                .await
+                .expect("thread/list all");
+        assert!(
+            all.result["threads"]
+                .as_array()
+                .expect("threads")
+                .iter()
+                .any(|t| t["id"] == thread_id)
+        );
+
+        let unarchived = dispatch_stdio_request(
+            &state,
+            "thread/unarchive",
+            json!({ "thread_id": thread_id }),
+        )
+        .await
+        .expect("thread/unarchive");
+        assert_eq!(unarchived.result["status"], "unarchived");
+
+        let message = dispatch_stdio_request(
+            &state,
+            "thread/message",
+            json!({ "thread_id": thread_id, "input": "hello" }),
+        )
+        .await
+        .expect("thread/message");
+        assert_eq!(message.result["status"], "accepted");
+        assert_eq!(
+            message.result["events"].as_array().expect("events").len(),
+            3
+        );
+
+        let missing_message = dispatch_stdio_request(
+            &state,
+            "thread/message",
+            json!({ "thread_id": "thread-nope", "input": "hello" }),
+        )
+        .await
+        .expect_err("message to a missing thread must error");
+        assert_eq!(missing_message.code, -32603);
+        assert!(missing_message.message.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn stdio_thread_set_name_supports_both_aliases() {
+        let (state, _tmp) = state_with_config();
+        let thread_id = spawn_thread_via_stdio(&state).await;
+
+        let renamed = dispatch_stdio_request(
+            &state,
+            "thread/set_name",
+            json!({ "thread_id": thread_id, "name": "first" }),
+        )
+        .await
+        .expect("thread/set_name");
+        assert_eq!(renamed.result["thread"]["name"], "first");
+
+        let renamed_alias = dispatch_stdio_request(
+            &state,
+            "thread/set-name",
+            json!({ "thread_id": thread_id, "name": "second" }),
+        )
+        .await
+        .expect("thread/set-name alias");
+        assert_eq!(renamed_alias.result["thread"]["name"], "second");
+
+        let missing = dispatch_stdio_request(
+            &state,
+            "thread/set_name",
+            json!({ "thread_id": "thread-nope", "name": "x" }),
+        )
+        .await
+        .expect("set_name of a missing thread is a response");
+        assert_eq!(missing.result["status"], "ok");
+        assert!(missing.result["thread"].is_null());
+    }
+
+    #[tokio::test]
+    async fn stdio_thread_request_roundtrip_and_param_errors() {
+        let (state, _tmp) = state_with_config();
+        let thread_id = spawn_thread_via_stdio(&state).await;
+
+        let listed = dispatch_stdio_request(
+            &state,
+            "thread/request",
+            json!({ "kind": "list", "include_archived": false }),
+        )
+        .await
+        .expect("thread/request list");
+        assert_eq!(listed.result["status"], "ok");
+        assert!(
+            listed.result["threads"]
+                .as_array()
+                .expect("threads")
+                .iter()
+                .any(|t| t["id"] == thread_id)
+        );
+
+        let read = dispatch_stdio_request(
+            &state,
+            "thread/request",
+            json!({ "kind": "read", "thread_id": thread_id }),
+        )
+        .await
+        .expect("thread/request read");
+        assert_eq!(read.result["thread"]["id"], thread_id);
+
+        let unknown_kind =
+            dispatch_stdio_request(&state, "thread/request", json!({ "kind": "explode" }))
+                .await
+                .expect_err("unknown kind must fail to deserialize");
+        assert_eq!(unknown_kind.code, -32602);
+
+        let bad_params = dispatch_stdio_request(&state, "thread/read", json!(42))
+            .await
+            .expect_err("thread/read needs an object");
+        assert_eq!(bad_params.code, -32602);
+
+        let missing_field = dispatch_stdio_request(&state, "thread/archive", json!({}))
+            .await
+            .expect_err("thread/archive requires thread_id");
+        assert_eq!(missing_field.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn stdio_app_capabilities_and_config_get_are_raw() {
+        let (state, _tmp) = state_with_config();
+
+        let caps = dispatch_stdio_request(&state, "app/capabilities", Value::Null)
+            .await
+            .expect("app/capabilities");
+        assert_eq!(caps.result["ok"], true);
+        let routes = caps.result["data"]["routes"].as_array().expect("routes");
+        assert!(routes.iter().any(|r| r == "/thread"));
+        assert!(
+            caps.result["data"]["config_path"]
+                .as_str()
+                .expect("config path")
+                .contains("config.toml")
+        );
+
+        let got = dispatch_stdio_request(&state, "app/config/get", json!({ "key": "api_key" }))
+            .await
+            .expect("app/config/get");
+        assert_eq!(got.result["ok"], true);
+        // Stdio transport keeps the raw value for legacy clients.
+        assert_eq!(got.result["data"]["value"], "sk-codesmith-test-secret");
+
+        let unknown =
+            dispatch_stdio_request(&state, "app/config/get", json!({ "key": "no_such_key" }))
+                .await
+                .expect("unknown key is still ok");
+        assert_eq!(unknown.result["ok"], true);
+        assert!(unknown.result["data"]["value"].is_null());
+    }
+
+    #[tokio::test]
+    async fn stdio_app_config_set_unset_and_list_round_trip() {
+        let (state, tmp) = state_with_config();
+
+        let set = dispatch_stdio_request(
+            &state,
+            "app/config/set",
+            json!({ "key": "hook_sinks.unix_socket_path", "value": "/tmp/cw-test.sock" }),
+        )
+        .await
+        .expect("app/config/set");
+        assert_eq!(set.result["ok"], true, "{:?}", set.result);
+
+        let got = dispatch_stdio_request(
+            &state,
+            "app/config/get",
+            json!({ "key": "hook_sinks.unix_socket_path" }),
+        )
+        .await
+        .expect("get after set");
+        assert_eq!(got.result["data"]["value"], "/tmp/cw-test.sock");
+
+        let raw = fs::read_to_string(tmp.path().join("config.toml")).expect("config persisted");
+        assert!(raw.contains("/tmp/cw-test.sock"));
+
+        let unset = dispatch_stdio_request(
+            &state,
+            "app/config/unset",
+            json!({ "key": "hook_sinks.unix_socket_path" }),
+        )
+        .await
+        .expect("app/config/unset");
+        assert_eq!(unset.result["ok"], true, "{:?}", unset.result);
+
+        let gone = dispatch_stdio_request(
+            &state,
+            "app/config/get",
+            json!({ "key": "hook_sinks.unix_socket_path" }),
+        )
+        .await
+        .expect("get after unset");
+        assert!(gone.result["data"]["value"].is_null());
+
+        let listed = dispatch_stdio_request(&state, "app/config/list", Value::Null)
+            .await
+            .expect("app/config/list");
+        assert_eq!(listed.result["ok"], true);
+        assert!(
+            listed.result["data"]["values"]
+                .as_object()
+                .expect("values")
+                .contains_key("api_key")
+        );
+
+        let invalid_set =
+            dispatch_stdio_request(&state, "app/config/set", json!({ "key": "api_key" }))
+                .await
+                .expect_err("app/config/set requires a value");
+        assert_eq!(invalid_set.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn stdio_app_request_models_and_loaded_threads() {
+        let (state, _tmp) = state_with_config();
+        let thread_id = spawn_thread_via_stdio(&state).await;
+
+        let models = dispatch_stdio_request(&state, "app/models", Value::Null)
+            .await
+            .expect("app/models");
+        assert_eq!(models.result["ok"], true);
+        assert!(
+            !models.result["data"]["models"]
+                .as_array()
+                .expect("models")
+                .is_empty()
+        );
+
+        let via_request =
+            dispatch_stdio_request(&state, "app/request", json!({ "kind": "models" }))
+                .await
+                .expect("app/request models");
+        assert_eq!(via_request.result["ok"], true);
+
+        for method in ["app/thread_loaded_list", "app/thread-loaded-list"] {
+            let loaded = dispatch_stdio_request(&state, method, Value::Null)
+                .await
+                .expect("loaded list");
+            assert_eq!(loaded.result["ok"], true);
+            assert!(
+                loaded.result["data"]["threads"]
+                    .as_array()
+                    .expect("threads")
+                    .iter()
+                    .any(|t| t["id"] == thread_id),
+                "{method} must list the created thread"
+            );
+        }
+
+        let bad = dispatch_stdio_request(&state, "app/request", json!({ "kind": "explode" }))
+            .await
+            .expect_err("unknown app request kind");
+        assert_eq!(bad.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn stdio_prompt_request_run_and_error_paths() {
+        let (state, _tmp) = state_with_config();
+
+        let run = dispatch_stdio_request(&state, "prompt/run", json!({ "prompt": "hello" }))
+            .await
+            .expect("prompt/run");
+        assert!(!run.result["model"].as_str().expect("model").is_empty());
+        let output: Value = serde_json::from_str(run.result["output"].as_str().expect("output"))
+            .expect("output is a JSON payload");
+        assert_eq!(output["prompt"], "hello");
+        assert_eq!(output["model"], run.result["model"]);
+
+        let request = dispatch_stdio_request(&state, "prompt/request", json!({ "prompt": "hi" }))
+            .await
+            .expect("prompt/request");
+        assert_eq!(request.result["model"], run.result["model"]);
+
+        let missing_prompt = dispatch_stdio_request(&state, "prompt/request", json!({}))
+            .await
+            .expect_err("prompt is required");
+        assert_eq!(missing_prompt.code, -32602);
+
+        let bad_thread = dispatch_stdio_request(
+            &state,
+            "prompt/request",
+            json!({ "prompt": "hi", "thread_id": "thread-nope" }),
+        )
+        .await
+        .expect_err("prompt against a missing thread must surface an error");
+        assert_eq!(bad_thread.code, -32603);
+        assert!(bad_thread.message.contains("not found"));
+    }
+
+    // ── HTTP handlers (dispatched via oneshot — no server bind) ─────────
+
+    async fn post_json(app: &Router, uri: &str, token: Option<&str>, body: Value) -> Response {
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        app.clone()
+            .oneshot(builder.body(Body::from(body.to_string())).expect("request"))
+            .await
+            .expect("response")
+    }
+
+    #[tokio::test]
+    async fn http_healthz_reports_protocol_v2() {
+        let (app, _tmp) = app_with_config(Some("test-token"));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["protocol"], "v2");
+        assert_eq!(body["service"], "codesmith-app-server");
+    }
+
+    #[tokio::test]
+    async fn http_thread_endpoint_creates_threads_and_maps_errors_to_500() {
+        let (app, _tmp) = app_with_config(None);
+
+        let created = post_json(&app, "/thread", None, json!({ "kind": "create" })).await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let body = response_body_json(created).await;
+        assert_eq!(body["status"], "created");
+        assert!(
+            body["thread_id"]
+                .as_str()
+                .expect("thread id")
+                .starts_with("thread-")
+        );
+
+        let failed = post_json(
+            &app,
+            "/thread",
+            None,
+            json!({ "kind": "message", "thread_id": "thread-nope", "input": "x" }),
+        )
+        .await;
+        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body_json(failed).await;
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error string")
+                .contains("not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn http_prompt_endpoint_returns_payload_and_maps_errors_to_500() {
+        let (app, _tmp) = app_with_config(None);
+
+        let ok = post_json(&app, "/prompt", None, json!({ "prompt": "hello" })).await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body = response_body_json(ok).await;
+        assert!(!body["model"].as_str().expect("model").is_empty());
+
+        let failed = post_json(
+            &app,
+            "/prompt",
+            None,
+            json!({ "prompt": "hello", "thread_id": "thread-nope" }),
+        )
+        .await;
+        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            response_body_json(failed).await["error"]
+                .as_str()
+                .expect("error string")
+                .contains("not found")
+        );
+    }
+
+    fn shell_tool_request(command: &str, cwd: &std::path::Path) -> Value {
+        serde_json::to_value(ToolCallRequest {
+            call: ToolCall {
+                name: "exec_shell".to_string(),
+                payload: ToolPayload::LocalShell {
+                    params: LocalShellParams {
+                        command: command.to_string(),
+                        cwd: None,
+                        timeout_ms: None,
+                    },
+                },
+                source: ToolCallSource::Direct,
+                raw_tool_call_id: None,
+            },
+            cwd: Some(cwd.to_path_buf()),
+            allow_mutating: false,
+        })
+        .expect("tool request json")
+    }
+
+    #[tokio::test]
+    async fn http_tool_endpoint_denies_forbidden_prefixes() {
+        let (app, tmp) = app_with_config(None);
+        let response = post_json(
+            &app,
+            "/tool",
+            None,
+            shell_tool_request("rm -rf /", tmp.path()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["status"], "denied");
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error string")
+                .contains("denied prefix rule")
+        );
+    }
+
+    #[tokio::test]
+    async fn http_tool_endpoint_requires_approval_for_unmatched_commands() {
+        let (app, tmp) = app_with_config(None);
+        let response = post_json(
+            &app,
+            "/tool",
+            None,
+            shell_tool_request("echo hello", tmp.path()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["status"], "approval_required");
+        assert!(body["approval_id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn http_jobs_and_mcp_startup_endpoints() {
+        let (app, _tmp) = app_with_config(None);
+
+        let jobs = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/jobs")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(jobs.status(), StatusCode::OK);
+        let body = response_body_json(jobs).await;
+        assert_eq!(body["ok"], true);
+        assert!(body["data"]["jobs"].is_array());
+
+        let mcp = post_json(&app, "/mcp/startup", None, json!({})).await;
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let body = response_body_json(mcp).await;
+        assert_eq!(body["ok"], true);
+        assert!(
+            body["summary"]["ready"]
+                .as_array()
+                .expect("ready list")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn http_wrong_bearer_token_is_unauthorized() {
+        let (app, _tmp) = app_with_config(Some("test-token"));
+        let response = post_json(
+            &app,
+            "/app",
+            Some("wrong-token"),
+            json!({ "kind": "config_list" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn http_protected_routes_open_when_auth_is_disabled() {
+        let (app, _tmp) = app_with_config(None);
+        let response = post_json(
+            &app,
+            "/app",
+            None,
+            json!({ "kind": "config_get", "key": "api_key" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["ok"], true);
+        // HTTP transport redacts sensitive values even without a token gate.
+        assert_eq!(body["data"]["value"], "sk-c***cret");
+    }
+
+    #[test]
+    fn cors_layer_ignores_invalid_extra_origin() {
+        // A space makes the header value invalid; the branch warns and skips.
+        let extras = vec!["https://bad origin".to_string()];
+        let _ = cors_layer(&extras);
+    }
+
+    // ── auth token resolution / generated token file ────────────────────
+
+    /// Module-local env-var scope: hold a test-binary-wide mutex while
+    /// CODESMITH_HOME points somewhere else. (codesmith-agent-runtime's
+    /// test_support is not a dev-dependency here, and adding one is outside
+    /// a test-only change.)
+    struct ScopedCodeSmithHome {
+        previous: Option<std::ffi::OsString>,
+        _keep: Option<tempfile::TempDir>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ScopedCodeSmithHome {
+        fn set(value: &std::path::Path, keep: Option<tempfile::TempDir>) -> Self {
+            static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+            let _lock = LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os("CODESMITH_HOME");
+            // SAFETY: serialized behind the module-local env mutex; the only
+            // concurrent env readers in this binary resolve disposable paths.
+            unsafe { std::env::set_var("CODESMITH_HOME", value) };
+            Self {
+                previous,
+                _keep: keep,
+                _lock,
+            }
+        }
+    }
+
+    impl Drop for ScopedCodeSmithHome {
+        fn drop(&mut self) {
+            // SAFETY: still holding the module-local env mutex.
+            unsafe {
+                if let Some(previous) = self.previous.take() {
+                    std::env::set_var("CODESMITH_HOME", previous);
+                } else {
+                    std::env::remove_var("CODESMITH_HOME");
+                }
+            }
+        }
+    }
+
+    fn token_options(auth_token: Option<&str>, insecure_no_auth: bool) -> AppServerOptions {
+        AppServerOptions {
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            config_path: None,
+            auth_token: auth_token.map(std::string::ToString::to_string),
+            insecure_no_auth,
+            cors_origins: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn generated_token_is_persisted_owner_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().to_path_buf();
+        let _env = ScopedCodeSmithHome::set(&home, Some(tmp));
+
+        let token = resolve_auth_token(&token_options(None, false))
+            .expect("token resolution")
+            .expect("generated token present");
+        assert!(token.starts_with("cwapp_"));
+
+        let token_path = home.join("app-server.token");
+        let raw = fs::read_to_string(&token_path).expect("token file written");
+        assert_eq!(raw, format!("{token}\n"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&token_path)
+                .expect("token file metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn generated_token_fails_loud_when_home_cannot_be_created() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, b"file, not a dir").expect("blocker file");
+        let unreachable_home = blocker.join("home");
+        let _env = ScopedCodeSmithHome::set(&unreachable_home, Some(tmp));
+
+        let err = resolve_auth_token(&token_options(None, false))
+            .expect_err("unwritable home must fail token generation");
+        assert!(
+            err.to_string().contains("cannot create"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn auth_token_is_trimmed() {
+        let token = resolve_auth_token(&token_options(Some("  tok  "), false))
+            .expect("trim resolution")
+            .expect("token present");
+        assert_eq!(token, "tok");
+    }
+
+    #[test]
+    fn insecure_no_auth_wins_over_explicit_token_on_loopback() {
+        let token = resolve_auth_token(&token_options(Some("tok"), true)).expect("resolution");
+        assert!(token.is_none());
+    }
+
+    #[test]
+    fn generated_token_fails_when_token_path_is_not_a_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().to_path_buf();
+        fs::create_dir_all(home.join("app-server.token")).expect("token path is a directory");
+        let _env = ScopedCodeSmithHome::set(&home, Some(tmp));
+
+        let err = resolve_auth_token(&token_options(None, false))
+            .expect_err("un-openable token path must fail token generation");
+        assert!(
+            err.to_string().contains("cannot create"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── malformed stdio params ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stdio_malformed_params_report_invalid_params_per_method() {
+        let (state, _tmp) = state_with_config();
+        let cases: &[(&str, Value)] = &[
+            ("thread/create", json!(5)),
+            ("thread/start", json!({ "cwd": 5 })),
+            ("thread/resume", json!(5)),
+            ("thread/fork", json!(5)),
+            ("thread/list", json!({ "limit": "not a number" })),
+            ("thread/set_name", json!({ "thread_id": "t" })),
+            ("thread/unarchive", json!(5)),
+            ("thread/message", json!({ "thread_id": "t" })),
+            ("app/config/get", json!(5)),
+            ("app/config/unset", json!(5)),
+        ];
+        for (method, params) in cases {
+            let err = dispatch_stdio_request(&state, method, params.clone())
+                .await
+                .expect_err("malformed params must error");
+            assert_eq!(err.code, -32602, "{method}: {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stdio_config_mutations_fail_loud_when_disk_config_is_corrupt() {
+        let (state, tmp) = state_with_config();
+        let config_path = tmp.path().join("config.toml");
+        let good = fs::read_to_string(&config_path).expect("original config");
+        fs::write(&config_path, "((( not toml").expect("corrupt config");
+
+        let set = dispatch_stdio_request(
+            &state,
+            "app/config/set",
+            json!({ "key": "hook_sinks.unix_socket_path", "value": "/tmp/x.sock" }),
+        )
+        .await
+        .expect("corrupt config still dispatches");
+        assert_eq!(set.result["ok"], false, "{:?}", set.result);
+        assert!(
+            set.result["data"]["persist_error"]
+                .as_str()
+                .expect("persist error")
+                .contains("failed to parse config"),
+            "{:?}",
+            set.result
+        );
+
+        let unset = dispatch_stdio_request(
+            &state,
+            "app/config/unset",
+            json!({ "key": "hook_sinks.unix_socket_path" }),
+        )
+        .await
+        .expect("corrupt config still dispatches");
+        assert_eq!(unset.result["ok"], false, "{:?}", unset.result);
+        assert!(unset.result["data"]["persist_error"].is_string());
+
+        // Repairing the file restores mutation: the failed attempts above
+        // must not have left a wedged in-memory snapshot.
+        fs::write(&config_path, good).expect("repaired config");
+        let recovered = dispatch_stdio_request(
+            &state,
+            "app/config/set",
+            json!({ "key": "hook_sinks.unix_socket_path", "value": "/tmp/y.sock" }),
+        )
+        .await
+        .expect("set after repair");
+        assert_eq!(recovered.result["ok"], true, "{:?}", recovered.result);
+    }
+
+    // ── build_state hook sink wiring ────────────────────────────────────
+
+    #[test]
+    fn build_state_registers_unix_socket_hook_sink_when_configured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "api_key = \"sk-codesmith-test-secret\"\n\n[hook_sinks]\nunix_socket_path = \"/tmp/cw-hook-test.sock\"\n",
+        )
+        .expect("write config");
+        // Construction succeeds; the sink connects lazily per emit and
+        // skips silently when no listener owns the socket.
+        let _state = build_state(Some(config_path), None).expect("state with hook sink");
+    }
+
+    // ── tool endpoint cwd fallback ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn http_tool_endpoint_falls_back_to_process_cwd() {
+        let (app, _tmp) = app_with_config(None);
+        let request = serde_json::to_value(ToolCallRequest {
+            call: ToolCall {
+                name: "exec_shell".to_string(),
+                payload: ToolPayload::LocalShell {
+                    params: LocalShellParams {
+                        command: "echo hello".to_string(),
+                        cwd: None,
+                        timeout_ms: None,
+                    },
+                },
+                source: ToolCallSource::Direct,
+                raw_tool_call_id: None,
+            },
+            cwd: None,
+            allow_mutating: false,
+        })
+        .expect("tool request json");
+        let response = post_json(&app, "/tool", None, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        // No cwd supplied: the process cwd is used as the policy cwd and the
+        // unmatched command still short-circuits to an approval request.
+        assert_eq!(body["status"], "approval_required");
     }
 }

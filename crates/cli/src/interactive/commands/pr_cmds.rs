@@ -306,4 +306,29 @@ mod tests {
         let diff = "--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+more\n";
         assert_eq!(diff_stat(diff), (2, 1));
     }
+
+    #[tokio::test]
+    async fn run_prints_usage_for_a_bare_invocation_and_refuses_junk() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: tmp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: tmp.path().join("skills"),
+            memory_path: tmp.path().join("memory.md"),
+            mcp_config_path: tmp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+        run(&mut state, "").await; // usage, no network
+        run(&mut state, "definitely not a PR or URL").await; // parse refusal
+        run(&mut state, "0").await; // PR numbers start at 1
+    }
 }

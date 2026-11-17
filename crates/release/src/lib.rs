@@ -655,4 +655,178 @@ mod tests {
             Err(ReleaseError::InvalidLatestTag { .. })
         ));
     }
+
+    #[test]
+    fn release_channel_from_beta_flag_and_labels() {
+        assert_eq!(
+            ReleaseChannel::from_beta_flag(false),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(ReleaseChannel::from_beta_flag(true), ReleaseChannel::Beta);
+        assert_eq!(ReleaseChannel::Stable.label(), "stable");
+        assert_eq!(ReleaseChannel::Beta.label(), "beta");
+        assert_eq!(ReleaseChannel::from_beta_flag(true).label(), "beta");
+        assert_eq!(ReleaseChannel::from_beta_flag(false).label(), "stable");
+    }
+
+    #[test]
+    fn mirror_asset_url_trims_trailing_slashes_before_joining() {
+        assert_eq!(
+            mirror_asset_url("https://mirror.example/v1/", CHECKSUM_MANIFEST_ASSET),
+            "https://mirror.example/v1/codesmith-artifacts-sha256.txt"
+        );
+        assert_eq!(
+            mirror_asset_url(
+                "https://mirror.example/v1//",
+                "codesmith-aarch64-apple-darwin"
+            ),
+            "https://mirror.example/v1/codesmith-aarch64-apple-darwin"
+        );
+        assert_eq!(
+            mirror_asset_url("https://mirror.example/v1", "b.txt"),
+            "https://mirror.example/v1/b.txt"
+        );
+    }
+
+    #[test]
+    fn update_network_fallback_hint_names_mirror_and_env_knobs() {
+        let hint = update_network_fallback_hint();
+        assert!(hint.contains(CNB_REPO_URL), "missing CNB repo URL: {hint}");
+        assert!(
+            hint.contains(RELEASE_BASE_URL_ENV),
+            "missing base-url knob: {hint}"
+        );
+        assert!(
+            hint.contains(UPDATE_VERSION_ENV),
+            "missing version knob: {hint}"
+        );
+        assert!(
+            hint.contains(CHECKSUM_MANIFEST_ASSET),
+            "missing checksum manifest name: {hint}"
+        );
+        assert!(
+            hint.contains("cargo install --git"),
+            "missing source-build path: {hint}"
+        );
+    }
+
+    #[test]
+    fn update_is_needed_rejects_invalid_versions_with_typed_errors() {
+        assert!(matches!(
+            update_is_needed(ReleaseChannel::Stable, "oops", "v1.0.0"),
+            Err(ReleaseError::InvalidCurrentVersion { .. })
+        ));
+        assert!(matches!(
+            update_is_needed(ReleaseChannel::Beta, "1.0.0", "oops"),
+            Err(ReleaseError::InvalidLatestTag { .. })
+        ));
+    }
+
+    #[test]
+    fn beta_release_list_parse_failure_is_typed() {
+        assert!(matches!(
+            latest_beta_tag_from_release_list_json("<html>not json</html>"),
+            Err(ReleaseError::Parse { .. })
+        ));
+    }
+
+    // ── fetch chain against a local one-shot HTTP mock ────────────────
+
+    /// Serve `n` HTTP 200 JSON responses on an ephemeral local port and
+    /// return the base URL. Pure std: TcpListener + one writer thread, no
+    /// external network.
+    fn local_http_mock(responses: Vec<String>) -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            for body in responses {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf); // drain the request
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn fetch_release_json_blocking_reads_a_local_mock() {
+        let base = local_http_mock(vec![r#"{"tag_name":"v9.9.9"}"#.to_string()]);
+        let body = fetch_release_json_blocking(&format!("{base}/releases/latest"), "test")
+            .expect("blocking fetch");
+        assert_eq!(latest_tag_from_release_json(&body).expect("tag"), "v9.9.9");
+    }
+
+    #[test]
+    fn fetch_release_json_blocking_maps_http_404_to_a_typed_error() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let err = fetch_release_json_blocking(&format!("http://{addr}/x"), "test")
+            .expect_err("404 must be a typed error");
+        assert!(err.to_string().to_lowercase().contains("404"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_release_json_async_reads_a_local_mock() {
+        let base = local_http_mock(vec![
+            r#"[{"tag_name":"v0.2.0-beta","prerelease":true}]"#.to_string(),
+        ]);
+        let body = fetch_release_json_async(&format!("{base}/releases"), "test")
+            .await
+            .expect("async fetch");
+        let tag = latest_beta_tag_from_release_list_json(&body).expect("beta tag");
+        assert_eq!(tag, "v0.2.0-beta");
+    }
+
+    #[test]
+    fn latest_release_tag_blocking_pinned_mirror_avoids_the_network() {
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        // Env, not HOME, decides the mirror; keep HOME untouched.
+        let _g1 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_RELEASE_BASE_URL",
+            home.path().join("mirror").to_string_lossy().into_owned(),
+        );
+        let _g2 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_VERSION",
+            "1.2.3".to_string(),
+        );
+        // update_version_from_env strips a leading `v` and rejects blanks.
+        assert_eq!(update_version_from_env(), Some("1.2.3".to_string()));
+        let tag = latest_release_tag_blocking(ReleaseChannel::Stable).expect("mirror tag");
+        assert_eq!(tag, "v1.2.3", "the pinned mirror path answers without HTTP");
+    }
+
+    #[test]
+    fn update_version_from_env_normalizes_and_rejects() {
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let guard = |value: &str| {
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_VERSION", value)
+        };
+        let _g = guard("  v4.5.6  ");
+        assert_eq!(update_version_from_env(), Some("4.5.6".to_string()));
+        let _g = guard("   ");
+        assert_eq!(update_version_from_env(), None);
+        let _g = codesmith_agent_runtime::test_support::EnvVarGuard::remove("CODESMITH_VERSION");
+        assert_eq!(update_version_from_env(), None);
+    }
 }

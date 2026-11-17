@@ -686,3 +686,200 @@ pub async fn try_user_command(state: &mut ReplState, command: &str, args: &str) 
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    // Async tests hold the test-env mutex (via ScratchEnv) across awaits.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    fn test_repl_state(skills_dir: std::path::PathBuf) -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir,
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Scratch skills dir + isolated HOME/CODESMITH_HOME, so discovery
+    /// (which scans the `~/.agents/skills` global layer via the real
+    /// `$HOME`) and the usage scanner stay off the developer's machine.
+    struct ScratchEnv {
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_guard: EnvVarGuard,
+        _codesmith_home_guard: EnvVarGuard,
+        _config_guard: EnvVarGuard,
+    }
+
+    fn scratch_env() -> ScratchEnv {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let codesmith_home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let config_guard =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+        ScratchEnv {
+            _home: home,
+            _lock: lock,
+            _home_guard: home_guard,
+            _codesmith_home_guard: codesmith_home_guard,
+            _config_guard: config_guard,
+        }
+    }
+
+    fn make_skill(dir: &std::path::Path, name: &str, description: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nDo the thing."),
+        )
+        .expect("write SKILL.md");
+    }
+
+    #[tokio::test]
+    async fn list_skills_filters_prefixes_and_reports_empty_dirs() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills).expect("mkdir");
+        make_skill(&skills, "alpha-tool", "First skill");
+        make_skill(&skills, "beta-tool", "Second skill");
+        let state = test_repl_state(skills);
+
+        list_skills(&state, None).await;
+        list_skills(&state, Some("alpha")).await;
+        list_skills(&state, Some("ALPHA")).await;
+        list_skills(&state, Some("zzz")).await; // no match
+        list_skills(&state, Some("-flag")).await; // usage
+        list_skills(&state, Some("two words")).await; // usage
+
+        let empty = tempfile::tempdir().expect("tempdir");
+        let state = test_repl_state(empty.path().to_path_buf());
+        list_skills(&state, None).await; // no skills found
+    }
+
+    #[tokio::test]
+    async fn run_skill_validates_usage_and_unknown_names() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills).expect("mkdir");
+
+        // A fresh state per call so mutations never leak between branches.
+        let fresh = || test_repl_state(skills.clone());
+        run_skill(&mut fresh(), None).await; // usage
+        run_skill(&mut fresh(), Some("   ")).await; // usage
+        run_skill(&mut fresh(), Some("no-such-skill")).await;
+        run_skill(&mut fresh(), Some("install")).await; // usage
+        run_skill(&mut fresh(), Some("update")).await; // usage
+        run_skill(&mut fresh(), Some("uninstall")).await; // usage
+        run_skill(&mut fresh(), Some("trust")).await; // usage
+        run_skill(&mut fresh(), Some("uninstall ghost")).await;
+        run_skill(&mut fresh(), Some("trust ghost")).await;
+        // Unparseable install source: refuses before any network I/O.
+        run_skill(&mut fresh(), Some("install :://bad-source")).await;
+    }
+
+    #[tokio::test]
+    async fn review_and_bundled_activations_report_failures_cleanly() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills).expect("mkdir");
+        let fresh = || test_repl_state(skills.clone());
+
+        review(&mut fresh(), None).await; // usage
+        review(&mut fresh(), Some("  ")).await;
+        review(&mut fresh(), Some("src/")).await;
+
+        // Bundled skill aliases parse their arguments; activation submits,
+        // which fails cleanly without a live engine.
+        code_review(&mut fresh(), "high --fix crates/core").await;
+        code_review(&mut fresh(), "").await;
+        simplify(&mut fresh(), "crates/cli/src").await;
+    }
+
+    #[test]
+    fn skill_doctor_reports_on_discovered_skills() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills).expect("mkdir");
+        make_skill(&skills, "alpha-tool", "First skill");
+        let state = test_repl_state(skills);
+        skill_doctor(&state);
+
+        let empty = tempfile::tempdir().expect("tempdir");
+        let state = test_repl_state(empty.path().to_path_buf());
+        skill_doctor(&state); // bundled skills still discovered
+    }
+
+    #[test]
+    fn resolve_invocation_prefers_longest_name_match() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skills = tmp.path().join("skills");
+        std::fs::create_dir_all(&skills).expect("mkdir");
+        // Two names where one is a whitespace-prefix of a longer one: the
+        // input must match both so the longest-name sort decides.
+        make_skill(&skills, "deploy", "Deploy things");
+        make_skill(&skills, "deploy-prod", "Deploy to prod");
+        let state = test_repl_state(skills);
+        let registry = discover(&state);
+
+        let (skill, args) = resolve_invocation(&registry, "deploy-prod flags").expect("match");
+        assert_eq!(skill.name, "deploy-prod");
+        assert_eq!(args, "flags");
+
+        let (skill, args) = resolve_invocation(&registry, "deploy flags").expect("match");
+        assert_eq!(skill.name, "deploy");
+        assert_eq!(args, "flags");
+
+        let (skill, args) = resolve_invocation(&registry, "deploy").expect("exact match");
+        assert_eq!(skill.name, "deploy");
+        assert_eq!(args, "");
+
+        assert!(resolve_invocation(&registry, "nope").is_none());
+    }
+
+    #[tokio::test]
+    async fn try_user_command_loads_workspace_command_files() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let commands = tmp.path().join(".codesmith").join("commands");
+        std::fs::create_dir_all(&commands).expect("mkdir");
+        std::fs::write(
+            commands.join("ship.md"),
+            "---\ndescription: ship the branch\n---\nRun the release checklist for $ARGS.",
+        )
+        .expect("write command");
+
+        let mut state = test_repl_state(std::env::temp_dir().join("skills-scratch"));
+        state.workspace = tmp.path().to_path_buf();
+
+        let handled = try_user_command(&mut state, "ship", "v1.2").await;
+        assert_eq!(handled, Some(true), "workspace command is handled");
+        assert_eq!(state.hunt.quarry.as_deref(), Some("ship the branch"));
+
+        let missed = try_user_command(&mut state, "missing-cmd", "").await;
+        assert_eq!(missed, None, "unknown command falls through");
+    }
+}

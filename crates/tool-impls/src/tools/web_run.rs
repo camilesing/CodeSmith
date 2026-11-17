@@ -1820,4 +1820,504 @@ mod tests {
             .expect_err("no service attached must fail");
         assert!(format!("{err}").contains("no web service attached"));
     }
+
+    #[tokio::test]
+    async fn open_without_a_service_fails_loud_not_silently() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let err = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://example.com/x"}]}),
+                &ToolContext::new(PathBuf::from(".")),
+            )
+            .await
+            .expect_err("no service attached must fail");
+        assert!(format!("{err}").contains("no web service attached"));
+    }
+
+    // === response length parsing and limits ===============================
+
+    #[test]
+    fn response_length_parsing_and_limits() {
+        let short = ResponseLength::from_input(Some(&serde_json::json!("SHORT")));
+        assert_eq!(short.view_lines(), 40);
+        assert_eq!(short.wrap_width(), 88);
+        assert_eq!(short.max_results(), 5);
+        assert_eq!(short.max_find_matches(), 8);
+
+        let long = ResponseLength::from_input(Some(&serde_json::json!("long")));
+        assert_eq!(long.view_lines(), 160);
+        assert_eq!(long.wrap_width(), 140);
+        assert_eq!(long.max_results(), 10);
+        assert_eq!(long.max_find_matches(), 30);
+
+        let unknown = ResponseLength::from_input(Some(&serde_json::json!("bogus")));
+        assert_eq!(unknown.view_lines(), 80);
+        assert_eq!(unknown.max_find_matches(), 15);
+
+        let absent = ResponseLength::from_input(None);
+        assert_eq!(absent.wrap_width(), 110);
+    }
+
+    // === ToolSpec surface =================================================
+
+    #[test]
+    fn web_run_tool_spec_surface() {
+        let tool = WebRunTool;
+        assert_eq!(tool.name(), "web.run");
+        assert!(!tool.description().is_empty());
+        assert_eq!(
+            tool.input_schema().get("type"),
+            Some(&json!("object")),
+            "schema is an object"
+        );
+        assert!(tool.input_schema().get("properties").is_some());
+        assert_eq!(tool.capabilities().len(), 2);
+        assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
+    }
+
+    fn prompt_policy_ctx() -> ToolContext {
+        use codesmith_agent_runtime::network_policy::{
+            Decision, NetworkPolicy, NetworkPolicyDecider,
+        };
+        ToolContext::new(PathBuf::from(".")).with_network_policy(NetworkPolicyDecider::new(
+            NetworkPolicy {
+                default: Decision::Prompt.into(),
+                allow: Vec::new(),
+                deny: Vec::new(),
+                proxy: Vec::new(),
+                audit: false,
+            },
+            None,
+        ))
+    }
+
+    #[test]
+    fn approval_gate_prompts_for_every_contacted_host_class() {
+        let tool = WebRunTool;
+        let prompt = prompt_policy_ctx();
+        // Top-level legacy `url` field.
+        assert_eq!(
+            tool.approval_requirement_for_input(&json!({"url": "https://example.com/x"}), &prompt),
+            ApprovalRequirement::Required
+        );
+        // An open whose ref_id is a direct URL.
+        assert_eq!(
+            tool.approval_requirement_for_input(
+                &json!({"open": [{"ref_id": "https://example.com/a"}]}),
+                &prompt,
+            ),
+            ApprovalRequirement::Required
+        );
+        // A search gates the configured provider hosts (the default scrape
+        // pair when no service is attached).
+        assert_eq!(
+            tool.approval_requirement_for_input(&json!({"search_query": [{"q": "x"}]}), &prompt),
+            ApprovalRequirement::Required
+        );
+        // An image search gates duckduckgo.com.
+        assert_eq!(
+            tool.approval_requirement_for_input(&json!({"image_query": [{"q": "x"}]}), &prompt),
+            ApprovalRequirement::Required
+        );
+        // Nothing contacted: Auto.
+        assert_eq!(
+            tool.approval_requirement_for_input(&json!({}), &prompt),
+            ApprovalRequirement::Auto
+        );
+        // With a service attached, its reported hosts are the gate.
+        let with_service = prompt_policy_ctx().with_web_service(Arc::new(
+            MockWebService::ok().with_search_hosts(vec!["mock.search.host".to_string()]),
+        ));
+        assert_eq!(
+            tool.approval_requirement_for_input(
+                &json!({"search_query": [{"q": "x"}]}),
+                &with_service,
+            ),
+            ApprovalRequirement::Required
+        );
+        // An allow-listed host passes without a prompt.
+        use codesmith_agent_runtime::network_policy::{
+            Decision, NetworkPolicy, NetworkPolicyDecider,
+        };
+        let allowing =
+            ToolContext::new(PathBuf::from(".")).with_network_policy(NetworkPolicyDecider::new(
+                NetworkPolicy {
+                    default: Decision::Prompt.into(),
+                    allow: vec!["example.com".to_string()],
+                    deny: Vec::new(),
+                    proxy: Vec::new(),
+                    audit: false,
+                },
+                None,
+            ));
+        assert_eq!(
+            tool.approval_requirement_for_input(
+                &json!({"url": "https://example.com/x"}),
+                &allowing
+            ),
+            ApprovalRequirement::Auto
+        );
+    }
+
+    // === session-state bookkeeping ========================================
+
+    #[test]
+    fn session_capacity_evicts_oldest_sessions() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        // Exceed the cap by inserting directly; cleanup's while-loop evicts
+        // by oldest last_access (staggered so "oldest" is deterministic).
+        with_state(|state| {
+            for i in 0..=MAX_WEB_RUN_SESSIONS {
+                let mut fresh = WebRunSessionState::default();
+                fresh.last_access =
+                    Instant::now() - Duration::from_secs((MAX_WEB_RUN_SESSIONS - i + 1) as u64);
+                state.sessions.insert(format!("ns-{i}"), fresh);
+            }
+        });
+        with_state(|state| state.cleanup());
+        let (count, oldest_gone) =
+            with_state(|state| (state.sessions.len(), !state.sessions.contains_key("ns-0")));
+        assert_eq!(count, MAX_WEB_RUN_SESSIONS);
+        assert!(oldest_gone, "the oldest session is evicted first");
+
+        // Touching a brand-new namespace at capacity also evicts the oldest.
+        with_state(|state| {
+            state.next_turn("ns-fresh");
+        });
+        assert!(with_state(|state| !state.sessions.contains_key("ns-1")));
+        assert!(with_state(|state| state.sessions.contains_key("ns-fresh")));
+    }
+
+    #[test]
+    fn restoring_a_ref_moves_it_to_the_back_of_the_session() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let ns = "session-alpha";
+        let ref_a = format!("{}turn0search1", scoped_ref_prefix(ns));
+        let ref_b = format!("{}turn0search2", scoped_ref_prefix(ns));
+        store_page(ns, &ref_a, sample_page("https://a.example"));
+        store_page(ns, &ref_b, sample_page("https://b.example"));
+        // Re-storing ref_a updates the stored page and moves it to the back.
+        store_page(ns, &ref_a, sample_page("https://a-again.example"));
+        let order = with_state(|state| {
+            state
+                .sessions
+                .get(ns)
+                .expect("session exists")
+                .refs
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(order, vec![ref_b.clone(), ref_a.clone()]);
+        assert_eq!(
+            get_page(&ref_a, ns).expect("re-stored page").url,
+            "https://a-again.example"
+        );
+    }
+
+    // === view helpers =====================================================
+
+    fn text_page(lines: Vec<&str>) -> WebPage {
+        WebPage {
+            url: "https://example.com/page".to_string(),
+            title: Some("Page".to_string()),
+            content_type: Some("text/html".to_string()),
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+            links: Vec::new(),
+            pdf_pages: None,
+        }
+    }
+
+    #[test]
+    fn find_in_page_reports_lines_and_caps_matches() {
+        let page = text_page(vec!["alpha one", "beta two", "alpha three"]);
+        let result = find_in_page("ref1", "alpha", &page, ResponseLength::Short);
+        assert_eq!(result.ref_id, "ref1");
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.matches[0].line, 1);
+        assert_eq!(result.matches[1].line, 3);
+
+        let many_lines: Vec<String> = (1..=20).map(|i| format!("hit {i}")).collect();
+        let many = WebPage {
+            lines: many_lines,
+            ..text_page(Vec::new())
+        };
+        let capped = find_in_page("ref2", "hit", &many, ResponseLength::Short);
+        assert_eq!(
+            capped.matches.len(),
+            ResponseLength::Short.max_find_matches()
+        );
+    }
+
+    #[test]
+    fn screenshot_page_bounds_checks_pdf_pages() {
+        let plain = text_page(vec!["line"]);
+        let err = screenshot_page("ref", 0, &plain).expect_err("non-PDF page");
+        assert!(
+            format!("{err}").contains("only supported for PDF pages"),
+            "got `{err}`"
+        );
+
+        let empty_pdf = WebPage {
+            pdf_pages: Some(Vec::new()),
+            ..text_page(Vec::new())
+        };
+        let err = screenshot_page("ref", 0, &empty_pdf).expect_err("no pages");
+        assert!(format!("{err}").contains("no pages"), "got `{err}`");
+
+        let pdf = WebPage {
+            pdf_pages: Some(vec![
+                vec!["page one line".to_string()],
+                vec!["page two line".to_string()],
+            ]),
+            ..text_page(Vec::new())
+        };
+        let shot = screenshot_page("ref", 1, &pdf).expect("in-range page");
+        assert_eq!(shot.pageno, 1);
+        assert_eq!(shot.total_pages, 2);
+        assert!(shot.content.contains("page two line"));
+        assert!(screenshot_page("ref", 2, &pdf).is_err());
+    }
+
+    #[test]
+    fn split_pdf_pages_trims_and_keeps_empty_pages() {
+        let pages = split_pdf_pages(" alpha \n beta \x0c\x0c gamma ");
+        assert_eq!(
+            pages,
+            vec![
+                vec!["alpha".to_string(), "beta".to_string()],
+                Vec::new(),
+                vec!["gamma".to_string()]
+            ]
+        );
+    }
+
+    /// Assemble a minimal valid one-page PDF carrying the given text lines,
+    /// so the PDF fetch path runs against real extractor input without any
+    /// network or fixture file (xref offsets are computed, not hand-written).
+    fn minimal_pdf(lines: &[&str]) -> Vec<u8> {
+        let mut content = String::from("BT\n/F1 12 Tf\n72 720 Td\n14 TL\n");
+        for line in lines {
+            content.push_str(&format!("({line}) Tj\nT*\n"));
+        }
+        content.push_str("ET\n");
+        let objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}endstream", content.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{obj}\nendobj\n", idx + 1));
+        }
+        let xref_at = pdf.len();
+        pdf.push_str("xref\n0 6\n0000000000 65535 f \n");
+        for off in offsets {
+            pdf.push_str(&format!("{off:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
+        ));
+        pdf.into_bytes()
+    }
+
+    #[tokio::test]
+    async fn open_pdf_builds_page_views_and_screenshot_pages() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_fetch(Ok(FetchOutcome {
+            url: "https://example.com/manual.pdf".to_string(),
+            status: 200,
+            headers: BTreeMap::new(),
+            content_type: "application/pdf".to_string(),
+            body: minimal_pdf(&["hello pdf page", "second line"]),
+            truncated: false,
+        }));
+        let ctx = service_ctx(service);
+        let result = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://example.com/manual.pdf"}]}),
+                &ctx,
+            )
+            .await
+            .expect("open pdf through service");
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let opens = parsed["open"].as_array().unwrap();
+        assert_eq!(opens[0]["title"], "PDF Document");
+        assert!(
+            opens[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("hello pdf page"),
+            "first PDF page renders as the page view: {parsed}"
+        );
+        let pdf_ref = opens[0]["ref_id"].as_str().unwrap().to_string();
+
+        // Screenshot page 0 renders the page's lines.
+        let shot = WebRunTool
+            .execute(
+                json!({"screenshot": [{"ref_id": pdf_ref, "pageno": 0}]}),
+                &ctx,
+            )
+            .await
+            .expect("screenshot");
+        let parsed: serde_json::Value = serde_json::from_str(&shot.content).unwrap();
+        assert!(
+            parsed["screenshot"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("hello pdf page"),
+            "{parsed}"
+        );
+        assert_eq!(parsed["screenshot"][0]["total_pages"], 1);
+
+        // Out-of-range pageno is rejected.
+        let err = WebRunTool
+            .execute(
+                json!({"screenshot": [{"ref_id": pdf_ref, "pageno": 7}]}),
+                &ctx,
+            )
+            .await
+            .expect_err("out of range");
+        assert!(format!("{err}").contains("out of range"));
+    }
+
+    #[tokio::test]
+    async fn open_invalid_pdf_surfaces_extract_failure() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_fetch(Ok(FetchOutcome {
+            url: "https://example.com/broken.pdf".to_string(),
+            status: 200,
+            headers: BTreeMap::new(),
+            content_type: "application/pdf".to_string(),
+            body: b"%PDF-1.4 this is not really a pdf".to_vec(),
+            truncated: false,
+        }));
+        let err = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://example.com/broken.pdf"}]}),
+                &service_ctx(service),
+            )
+            .await
+            .expect_err("broken pdf must fail");
+        assert!(format!("{err}").contains("PDF extract failed"));
+    }
+
+    #[tokio::test]
+    async fn click_follows_stored_links_and_open_respects_lineno() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_fetch(Ok(FetchOutcome {
+            url: "https://example.com/article".to_string(),
+            status: 200,
+            headers: BTreeMap::new(),
+            content_type: "text/html".to_string(),
+            body: b"<html><head><title>Article</title></head><body>\
+                    <p>first paragraph</p><p>second paragraph</p>\
+                    <a href=\"https://example.com/next\">Next page</a></body></html>"
+                .to_vec(),
+            truncated: false,
+        }));
+        let ctx = service_ctx(service);
+
+        // Open at line 2 — the view starts there.
+        let result = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://example.com/article", "lineno": 2}]}),
+                &ctx,
+            )
+            .await
+            .expect("open");
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        let opens = parsed["open"].as_array().unwrap();
+        assert_eq!(opens[0]["line_start"], 2, "{parsed}");
+        let view_ref = opens[0]["ref_id"].as_str().unwrap().to_string();
+
+        // Click link 1 — the target fetches through the service again.
+        let clicked = WebRunTool
+            .execute(json!({"click": [{"ref_id": view_ref, "id": 1}]}), &ctx)
+            .await
+            .expect("click");
+        let parsed: serde_json::Value = serde_json::from_str(&clicked.content).unwrap();
+        let clicks = parsed["click"].as_array().unwrap();
+        assert!(
+            clicks[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("first paragraph"),
+            "{parsed}"
+        );
+
+        // Find reports the lines that matched.
+        let found = WebRunTool
+            .execute(
+                json!({"find": [{"ref_id": view_ref, "pattern": "second"}]}),
+                &ctx,
+            )
+            .await
+            .expect("find");
+        let parsed: serde_json::Value = serde_json::from_str(&found.content).unwrap();
+        let finds = parsed["find"].as_array().unwrap();
+        assert_eq!(finds[0]["count"], 1, "{parsed}");
+        assert!(
+            finds[0]["matches"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("second"),
+            "{parsed}"
+        );
+
+        // Unknown ref, id 0, and an unknown link id are input errors.
+        let err = WebRunTool
+            .execute(
+                json!({"click": [{"ref_id": "turn0search9", "id": 1}]}),
+                &ctx,
+            )
+            .await
+            .expect_err("unknown ref");
+        assert!(format!("{err}").contains("Unknown ref_id"));
+        let err = WebRunTool
+            .execute(json!({"click": [{"ref_id": view_ref, "id": 0}]}), &ctx)
+            .await
+            .expect_err("id 0");
+        assert!(format!("{err}").contains("id must be >= 1"));
+        let err = WebRunTool
+            .execute(json!({"click": [{"ref_id": view_ref, "id": 99}]}), &ctx)
+            .await
+            .expect_err("unknown link id");
+        assert!(format!("{err}").contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn image_query_policy_deny_fails_before_the_seed_request() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        use codesmith_agent_runtime::network_policy::{
+            Decision, NetworkPolicy, NetworkPolicyDecider,
+        };
+        let ctx =
+            ToolContext::new(PathBuf::from(".")).with_network_policy(NetworkPolicyDecider::new(
+                NetworkPolicy {
+                    default: Decision::Allow.into(),
+                    allow: Vec::new(),
+                    deny: vec!["duckduckgo.com".to_string()],
+                    proxy: Vec::new(),
+                    audit: false,
+                },
+                None,
+            ));
+        let err = WebRunTool
+            .execute(json!({"image_query": [{"q": "rust logo"}]}), &ctx)
+            .await
+            .expect_err("duckduckgo.com is denied");
+        assert!(format!("{err}").contains("blocked by network policy"));
+    }
 }

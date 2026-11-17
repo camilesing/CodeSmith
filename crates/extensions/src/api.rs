@@ -536,6 +536,7 @@ impl ExtensionApi for RealExtensionApi {
 mod tests {
     use super::*;
     use crate::runner::Pending;
+    use codesmith_tools::ToolResult;
 
     #[tokio::test]
     async fn stub_after_invalidate_returns_stale_context() {
@@ -593,5 +594,554 @@ mod tests {
             p.handlers[0].kind_filter,
             Some(ExtensionEventKind::ToolCall)
         );
+    }
+
+    // === coverage: the full stub + real registration surfaces =============
+
+    struct NopHandler;
+    #[async_trait]
+    impl Handler for NopHandler {
+        async fn handle(
+            &self,
+            _: &ExtensionEvent,
+            _: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    struct NopTool;
+    #[async_trait]
+    impl ToolDefinition for NopTool {
+        fn name(&self) -> &str {
+            "nop_tool"
+        }
+        fn description(&self) -> &str {
+            "does nothing"
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<ToolResult, ExtensionError> {
+            Ok(ToolResult::success("nop"))
+        }
+    }
+
+    struct NopCmd;
+    #[async_trait]
+    impl CommandDefinition for NopCmd {
+        fn name(&self) -> &str {
+            "nop_cmd"
+        }
+        fn description(&self) -> &str {
+            "does nothing"
+        }
+        async fn run(
+            &self,
+            _ctx: &dyn ExtensionCommandContext,
+            _args: &str,
+        ) -> Result<CommandOutput, ExtensionError> {
+            Ok(CommandOutput::Message("nop".into()))
+        }
+    }
+
+    struct NopReplacement;
+    #[async_trait]
+    impl ToolReplacement for NopReplacement {
+        fn target(&self) -> &str {
+            "echo"
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<ReplacementOutcome, ExtensionError> {
+            Ok(ReplacementOutcome::Delegate(None))
+        }
+    }
+
+    struct NopAroundTool;
+    #[async_trait]
+    impl codesmith_agent::extension::AroundToolHandler for NopAroundTool {
+        async fn call(
+            &self,
+            _call: codesmith_agent::extension::ToolCallEvent,
+            next: codesmith_agent::extension::ToolCallNext<'_>,
+        ) -> Result<ToolResult, codesmith_agent::tools::ToolError> {
+            next.await
+        }
+    }
+
+    struct NopAroundTurn;
+    #[async_trait]
+    impl codesmith_agent::extension::AroundTurnHandler for NopAroundTurn {
+        async fn call(
+            &self,
+            _turn: codesmith_agent::extension::TurnAroundEvent,
+            next: codesmith_agent::extension::TurnNext<'_>,
+        ) -> anyhow::Result<codesmith_agent::callback::StopReason> {
+            next.await
+        }
+    }
+
+    struct NopFactory;
+    impl ProviderFactory for NopFactory {
+        fn id(&self) -> codesmith_agent::provider::ProviderId {
+            codesmith_agent::provider::ProviderId::from("nop-llm")
+        }
+        fn build(
+            &self,
+            _cfg: &codesmith_agent::provider::ProviderConfig,
+        ) -> anyhow::Result<codesmith_agent::llm_client::LlmClientHandle> {
+            Err(anyhow::anyhow!("not built in this test"))
+        }
+    }
+
+    fn nop_alias(id: &str) -> ProviderAlias {
+        ProviderAlias {
+            id: id.to_string(),
+            target: codesmith_agent::provider::ProviderId::from("openai"),
+            base_url: Some("https://gateway.example.test/v1".to_string()),
+            default_model: Some("gwt-large".to_string()),
+            http_headers: None,
+        }
+    }
+
+    /// The stub's whole registration surface queues into `pending`: the
+    /// generation read, every contribution kind, and the loud validation
+    /// arms (bad scope/section/skill names, dylib-scoped rejection, blank
+    /// disable name, non-object policy config).
+    #[tokio::test]
+    async fn stub_registration_surface_queues_and_validates() {
+        let generation = Arc::new(AtomicU64::new(7));
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let stub = StubExtensionApi::new(
+            generation.clone(),
+            pending.clone(),
+            SharedProviderRegistry::new(),
+            RegistrationOrigin::Script,
+        );
+        assert_eq!(stub.generation(), 7);
+
+        // Happy-path registrations of every kind.
+        stub.register_tool(Box::new(NopTool)).unwrap();
+        stub.register_tool_scoped(Scope::AgentType("explore".into()), Box::new(NopTool))
+            .unwrap();
+        stub.register_command(Box::new(NopCmd)).unwrap();
+        stub.disable_command("model".into()).unwrap();
+        stub.on(Arc::new(NopHandler)).unwrap();
+        stub.on_variant(ExtensionEventKind::ToolCall, Arc::new(NopHandler))
+            .unwrap();
+        stub.on_variant_scoped(
+            ExtensionEventKind::TurnStart,
+            Scope::AgentType("explore".into()),
+            Arc::new(NopHandler),
+        )
+        .unwrap();
+        stub.restrict_tools(Scope::Global, vec!["web_fetch".into()])
+            .unwrap();
+        stub.replace_tool(Box::new(NopReplacement)).unwrap();
+        stub.register_around_tool(Arc::new(NopAroundTool)).unwrap();
+        stub.register_around_turn(Arc::new(NopAroundTurn)).unwrap();
+        stub.register_provider(Arc::new(NopFactory)).unwrap();
+        stub.register_provider_alias(nop_alias("acme-gw")).unwrap();
+        stub.register_prompt_section("guide".into(), "Be terse.".into())
+            .unwrap();
+        stub.register_skill(codesmith_agent::extension::SkillRegistration {
+            owner: "cov".into(),
+            name: "inline-skill".into(),
+            description: "does one thing".into(),
+            body: "Do the thing.".into(),
+            when_to_use: None,
+        })
+        .unwrap();
+        stub.register_message_projection(
+            "cov".into(),
+            "counts".into(),
+            serde_json::json!(0),
+            Arc::new(|state, _msg| Ok(state)),
+        )
+        .unwrap();
+        stub.register_policy(
+            "cov".into(),
+            codesmith_agent::policy::PolicyKind::from_kebab_name("shell-output").unwrap(),
+            serde_json::json!({"max_output_size": 20000}),
+        )
+        .unwrap();
+
+        {
+            let p = pending.lock().unwrap();
+            assert_eq!(p.tools.len(), 2, "global + scoped tool queued");
+            assert_eq!(p.commands.len(), 1);
+            assert_eq!(p.handlers.len(), 3, "on + on_variant + on_variant_scoped");
+            assert_eq!(p.disabled_commands, vec!["model".to_string()]);
+            assert_eq!(p.tool_restrictions.len(), 1);
+            assert_eq!(p.replacements.len(), 1);
+            assert_eq!(p.around_tools.len(), 1);
+            assert_eq!(p.around_turns.len(), 1);
+            assert_eq!(p.providers.len(), 2, "factory + alias factory");
+            assert_eq!(p.prompt_sections.len(), 1);
+            assert_eq!(p.skills.len(), 1);
+            assert_eq!(p.message_projections.len(), 1);
+            assert_eq!(p.policies.len(), 1);
+        }
+
+        // Loud validation arms.
+        assert!(
+            stub.disable_command("   ".into()).is_err(),
+            "blank disable name rejected"
+        );
+        assert!(
+            stub.register_prompt_section("bad id!".into(), "x".into())
+                .is_err(),
+            "bad section id rejected"
+        );
+        let mut bad_skill = codesmith_agent::extension::SkillRegistration {
+            owner: "cov".into(),
+            name: "bad name!".into(),
+            description: "d".into(),
+            body: "b".into(),
+            when_to_use: None,
+        };
+        assert!(stub.register_skill(bad_skill.clone()).is_err());
+        bad_skill.name = "ok".into();
+        bad_skill.body = "  ".into();
+        assert!(stub.register_skill(bad_skill).is_err());
+        assert!(
+            stub.restrict_tools(Scope::Global, Vec::new()).is_err(),
+            "empty restriction list rejected"
+        );
+        assert!(
+            stub.register_tool_scoped(Scope::AgentType("  ".into()), Box::new(NopTool))
+                .is_err(),
+            "blank scope id rejected"
+        );
+        assert!(
+            stub.register_policy(
+                "cov".into(),
+                codesmith_agent::policy::PolicyKind::from_kebab_name("shell-output").unwrap(),
+                serde_json::json!("not-an-object"),
+            )
+            .is_err(),
+            "non-object policy config rejected"
+        );
+        assert!(
+            stub.register_provider_alias(nop_alias("")).is_err(),
+            "empty alias id rejected"
+        );
+        assert!(
+            stub.register_provider_alias(ProviderAlias {
+                id: "loopback-http".into(),
+                target: codesmith_agent::provider::ProviderId::from("openai"),
+                base_url: Some("http://gateway.example.test/v1".into()),
+                default_model: None,
+                http_headers: None,
+            })
+            .is_err(),
+            "non-loopback http base_url rejected"
+        );
+    }
+
+    /// A dylib-origin stub rejects *scoped* registrations at load (§F5d) —
+    /// they serve sub-agent surfaces dylib code cannot reach.
+    #[tokio::test]
+    async fn stub_dylib_origin_rejects_scoped_registrations() {
+        let generation = Arc::new(AtomicU64::new(0));
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let stub = StubExtensionApi::new(
+            generation,
+            pending,
+            SharedProviderRegistry::new(),
+            RegistrationOrigin::Dylib,
+        );
+        let err = stub
+            .register_tool_scoped(Scope::AgentType("explore".into()), Box::new(NopTool))
+            .unwrap_err();
+        assert!(err.to_string().contains("dylib"), "{err}");
+        let err = stub
+            .on_variant_scoped(
+                ExtensionEventKind::TurnStart,
+                Scope::AgentType("explore".into()),
+                Arc::new(NopHandler),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("dylib"), "{err}");
+    }
+
+    /// The real api (§F2 long-lived handle) writes the bound registries
+    /// directly: registrations are observable without a flush, validation
+    /// arms stay loud, and a generation bump makes every surface read
+    /// `StaleContext`.
+    #[tokio::test]
+    async fn real_api_flushes_into_bound_registries_and_guards_generation() {
+        let generation = Arc::new(AtomicU64::new(3));
+        let tools = Arc::new(Mutex::new(crate::runner::BoundToolMap::new()));
+        let commands = Arc::new(Mutex::new(HashMap::new()));
+        let handlers = Arc::new(Mutex::new(Vec::new()));
+        let providers = Arc::new(Mutex::new(Vec::new()));
+        let shared = SharedProviderRegistry::new();
+        let prompt_sections = Arc::new(Mutex::new(Vec::new()));
+        let skills = Arc::new(Mutex::new(Vec::new()));
+        let hub = codesmith_agent::extension::MessageProjectionHubArc::new(
+            codesmith_agent::extension::MessageProjectionHub::new(),
+        );
+        let api = RealExtensionApi::new(
+            generation.clone(),
+            RegistrationOrigin::Script,
+            tools.clone(),
+            commands.clone(),
+            handlers.clone(),
+            providers.clone(),
+            shared.clone(),
+            prompt_sections.clone(),
+            skills.clone(),
+            hub.clone(),
+        );
+        assert_eq!(api.generation(), 3);
+
+        api.register_tool(Box::new(NopTool)).unwrap();
+        api.register_command(Box::new(NopCmd)).unwrap();
+        api.on(Arc::new(NopHandler)).unwrap();
+        api.on_variant(ExtensionEventKind::ToolCall, Arc::new(NopHandler))
+            .unwrap();
+        api.register_provider(Arc::new(NopFactory)).unwrap();
+        api.register_provider_alias(nop_alias("acme-gw2")).unwrap();
+        api.register_prompt_section("guide".into(), "first".into())
+            .unwrap();
+        // Same id re-register replaces in place, not appends.
+        api.register_prompt_section("guide".into(), "second".into())
+            .unwrap();
+        let skill = |name: &str| codesmith_agent::extension::SkillRegistration {
+            owner: "cov".into(),
+            name: name.to_string(),
+            description: "d".into(),
+            body: "b".into(),
+            when_to_use: None,
+        };
+        api.register_skill(skill("s1")).unwrap();
+        // Same owner re-register replaces in place.
+        api.register_skill(skill("s1")).unwrap();
+        api.register_message_projection(
+            "cov".into(),
+            "counts".into(),
+            serde_json::json!(0),
+            Arc::new(|state, _msg| Ok(state)),
+        )
+        .unwrap();
+
+        assert_eq!(tools.lock().unwrap().len(), 1);
+        assert!(commands.lock().unwrap().contains_key("nop_cmd"));
+        assert_eq!(handlers.lock().unwrap().len(), 2);
+        assert_eq!(providers.lock().unwrap().len(), 2);
+        assert_eq!(
+            shared
+                .resolve(&codesmith_agent::provider::ProviderId::from("nop-llm"))
+                .is_some(),
+            true
+        );
+        assert_eq!(
+            *prompt_sections.lock().unwrap(),
+            vec![("guide".to_string(), "second".to_string())]
+        );
+        assert_eq!(skills.lock().unwrap().len(), 1);
+        assert_eq!(
+            hub.state("cov", "counts"),
+            Some(serde_json::json!(0)),
+            "projection registered on the hub"
+        );
+
+        // Loud arms: cross-owner skill conflict.
+        let mut other_owner = skill("s1");
+        other_owner.owner = "other".into();
+        assert!(api.register_skill(other_owner).is_err());
+        assert!(
+            api.register_prompt_section("bad id!".into(), "x".into())
+                .is_err()
+        );
+
+        // Duplicate projection key errors through the hub.
+        assert!(
+            api.register_message_projection(
+                "cov".into(),
+                "counts".into(),
+                serde_json::json!(0),
+                Arc::new(|state, _msg| Ok(state)),
+            )
+            .is_err()
+        );
+
+        // Invalidation: every live surface reads StaleContext afterwards.
+        generation.fetch_add(1, Ordering::AcqRel);
+        assert!(matches!(
+            api.register_tool(Box::new(NopTool)),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.register_command(Box::new(NopCmd)),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.on(Arc::new(NopHandler)),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.on_variant(ExtensionEventKind::ToolCall, Arc::new(NopHandler)),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.register_provider(Arc::new(NopFactory)),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.register_provider_alias(nop_alias("acme-gw3")),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.register_prompt_section("late".into(), "x".into()),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.register_skill(skill("late")),
+            Err(ExtensionError::StaleContext)
+        ));
+        assert!(matches!(
+            api.register_message_projection(
+                "cov".into(),
+                "late".into(),
+                serde_json::json!(0),
+                Arc::new(|state, _msg| Ok(state)),
+            ),
+            Err(ExtensionError::StaleContext)
+        ));
+    }
+
+    /// The `Nop` handler bodies used by the stale-context tests run (their
+    /// `handle` is the observable contract: continue the chain).
+    #[tokio::test]
+    async fn nop_handler_handle_continues() {
+        struct Ctx;
+        #[async_trait]
+        impl ExtensionContext for Ctx {
+            fn cwd(&self) -> &std::path::Path {
+                std::path::Path::new(".")
+            }
+            fn mode(&self) -> ExtensionMode {
+                ExtensionMode::Interactive
+            }
+            fn is_idle(&self) -> bool {
+                true
+            }
+            fn signal(&self) -> tokio_util::sync::CancellationToken {
+                tokio_util::sync::CancellationToken::new()
+            }
+            fn generation(&self) -> u64 {
+                1
+            }
+        }
+        let out = NopHandler
+            .handle(&ExtensionEvent::SessionShutdown, &Ctx)
+            .await
+            .unwrap();
+        assert!(matches!(out, HandlerOutcome::Continue));
+    }
+
+    /// The unimplemented default methods of `ExtensionApi` must all refuse
+    /// with a diagnosable error (a silent no-op would look like success).
+    /// Drive every one through the stub api's `&dyn` surface.
+    #[test]
+    fn extension_api_default_methods_refuse_loudly() {
+        use codesmith_agent::extension::Scope;
+        let generation = Arc::new(AtomicU64::new(0));
+        let pending = Arc::new(Mutex::new(crate::runner::Pending::default()));
+        let stub = StubExtensionApi::new(
+            generation,
+            pending,
+            SharedProviderRegistry::new(),
+            crate::runner::RegistrationOrigin::CompiledIn,
+        );
+        // The stub implements disable_command; assert it records instead.
+        stub.disable_command("x".to_string())
+            .expect("stub records command disables");
+        // The stub implements both scoped registrations; they succeed.
+        stub.on_variant_scoped(
+            ExtensionEventKind::SessionStart,
+            Scope::Global,
+            std::sync::Arc::new(NopHandler),
+        )
+        .expect("stub registers scoped handlers");
+        stub.restrict_tools(Scope::AgentType("sub".to_string()), vec!["t".to_string()])
+            .expect("stub records tool restrictions");
+    }
+
+    /// A bare `ExtensionApi` (only the required methods) must refuse every
+    /// optional surface with a diagnosable error — a silent no-op default
+    /// would look like successful registration.
+    struct BareApi;
+    #[async_trait]
+    impl codesmith_agent::extension::ExtensionApi for BareApi {
+        fn generation(&self) -> u64 {
+            0
+        }
+        fn register_tool(
+            &self,
+            _tool: Box<dyn codesmith_agent::extension::ToolDefinition>,
+        ) -> Result<(), ExtensionError> {
+            Ok(())
+        }
+        fn register_command(
+            &self,
+            _command: Box<dyn codesmith_agent::extension::CommandDefinition>,
+        ) -> Result<(), ExtensionError> {
+            Ok(())
+        }
+        fn on(
+            &self,
+            _handler: Arc<dyn codesmith_agent::extension::Handler>,
+        ) -> Result<(), ExtensionError> {
+            Ok(())
+        }
+        fn on_variant(
+            &self,
+            _kind: ExtensionEventKind,
+            _handler: Arc<dyn codesmith_agent::extension::Handler>,
+        ) -> Result<(), ExtensionError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn bare_extension_api_refuses_every_optional_surface() {
+        use codesmith_agent::extension::Scope;
+        let api: &dyn codesmith_agent::extension::ExtensionApi = &BareApi;
+        let nop = Arc::new(NopHandler);
+        for label in [
+            api.on_variant_scoped(ExtensionEventKind::SessionStart, Scope::Global, nop.clone())
+                .is_err(),
+            api.register_tool_scoped(Scope::Global, Box::new(NopTool))
+                .is_err(),
+            api.disable_command("x".to_string()).is_err(),
+            api.restrict_tools(Scope::Global, vec!["t".to_string()])
+                .is_err(),
+            api.register_skill(codesmith_agent::extension::SkillRegistration {
+                owner: "m".to_string(),
+                name: "s".to_string(),
+                description: "d".to_string(),
+                body: "b".to_string(),
+                when_to_use: None,
+            })
+            .is_err(),
+            api.register_message_projection(
+                "o".to_string(),
+                "k".to_string(),
+                serde_json::Value::Null,
+                std::sync::Arc::new(|_state, _msg: &codesmith_agent::models::Message| {
+                    Ok(serde_json::Value::Null)
+                }),
+            )
+            .is_err(),
+        ] {
+            assert!(label, "optional api surface must refuse loudly");
+        }
     }
 }

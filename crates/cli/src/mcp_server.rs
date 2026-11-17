@@ -816,6 +816,236 @@ mod tests {
         assert_eq!(response["error"]["code"], json!(-32600));
     }
 
+    /// `McpServerSettings::load` with no config file under
+    /// `CODESMITH_HOME`: the default exposure set and the fail-closed
+    /// approval default.
+    #[test]
+    fn settings_load_defaults_without_a_config_file() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("CODESMITH_HOME", dir.path());
+
+        let settings = McpServerSettings::load().expect("defaults");
+
+        assert_eq!(settings.expose_tools, default_expose_tools());
+        assert!(
+            settings.require_approval,
+            "the default exposure includes shell, so approval is required"
+        );
+    }
+
+    #[test]
+    fn settings_load_reads_the_server_section_and_fails_loud_on_bad_toml() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("CODESMITH_HOME", dir.path());
+        std::fs::write(
+            dir.path().join("mcp_server.toml"),
+            "[server]\nexpose_tools = [\"file_read\"]\nrequire_approval = false\n",
+        )
+        .expect("write config");
+
+        let settings = McpServerSettings::load().expect("settings");
+        assert_eq!(settings.expose_tools, vec!["file_read".to_string()]);
+        assert!(!settings.require_approval, "explicit opt-out is honored");
+
+        std::fs::write(dir.path().join("mcp_server.toml"), "not [ a toml").expect("clobber");
+        let err = McpServerSettings::load().expect_err("unparseable config must fail load");
+        assert!(err.to_string().contains("Failed to parse"), "got: {err:#}");
+    }
+
+    #[test]
+    fn handle_message_answers_initialize_ping_and_unknown_methods() {
+        let (mut server, runtime, _dir) = approval_server(false);
+
+        let init = server
+            .handle_message(
+                &runtime,
+                json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }),
+            )
+            .expect("initialize answers");
+        assert_eq!(init["id"], json!(1));
+        assert_eq!(init["result"]["serverInfo"]["name"], "codesmith-mcp-server");
+
+        let ping = server
+            .handle_message(
+                &runtime,
+                json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }),
+            )
+            .expect("ping answers");
+        assert_eq!(ping["result"], json!({}));
+
+        let unknown = server
+            .handle_message(
+                &runtime,
+                json!({ "jsonrpc": "2.0", "id": 3, "method": "no/such" }),
+            )
+            .expect("unknown methods get a JSON-RPC error, not silence");
+        assert_eq!(unknown["error"]["code"], json!(-32601));
+        assert!(
+            unknown["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no/such")
+        );
+
+        // A notification (no id) gets no response at all.
+        assert!(
+            server
+                .handle_message(
+                    &runtime,
+                    json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })
+                )
+                .is_none()
+        );
+        // A request-shaped message without an id is a notification too.
+        assert!(
+            server
+                .handle_message(&runtime, json!({ "jsonrpc": "2.0", "method": "ping" }))
+                .is_none()
+        );
+        // An error for a notification is not written either.
+        assert!(
+            server
+                .handle_message(&runtime, json!({ "jsonrpc": "2.0", "method": "no/such" }))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn list_tools_names_public_aliases_and_skips_unregistered_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = McpServer::new(
+            dir.path().to_path_buf(),
+            McpServerSettings {
+                expose_tools: vec![
+                    "file_read".to_string(),
+                    "file_read".to_string(), // duplicates collapse
+                    "bogus".to_string(),     // no registry entry → skipped
+                    "codesmith".to_string(),
+                    "codesmith-reply".to_string(),
+                ],
+                require_approval: false,
+            },
+        )
+        .expect("server");
+
+        let listed = server.list_tools_response();
+        let names: Vec<&str> = listed["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(names, ["file_read", "codesmith", "codesmith-reply"]);
+        // The native tools describe their thread contract.
+        assert!(
+            listed["tools"]
+                .to_string()
+                .contains("Creates a new conversation thread")
+        );
+    }
+
+    #[test]
+    fn list_resources_leads_with_the_workspace_root() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = EnvVarGuard::set("CODESMITH_HOME", dir.path().join("home"));
+        let server = McpServer::new(
+            dir.path().to_path_buf(),
+            McpServerSettings {
+                expose_tools: default_expose_tools(),
+                require_approval: false,
+            },
+        )
+        .expect("server");
+
+        let resources = server.list_resources_response();
+        let first = &resources["resources"][0];
+        assert_eq!(first["name"], "workspace");
+        assert!(
+            first["uri"].as_str().unwrap().starts_with("file://"),
+            "got: {first}"
+        );
+    }
+
+    #[test]
+    fn call_tool_rejects_malformed_params_before_any_tool_runs() {
+        let (mut server, runtime, _dir) = approval_server(false);
+
+        let err = server
+            .call_tool(&runtime, json!("not an object"), None)
+            .expect_err("params must be an object");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("Invalid params"));
+
+        let err = server
+            .call_tool(&runtime, json!({ "arguments": {} }), None)
+            .expect_err("name is required");
+        assert!(err.message.contains("Missing tool name"));
+
+        let err = server
+            .call_tool(&runtime, json!({ "name": "grep_files" }), None)
+            .expect_err("only exposed names run");
+        assert!(
+            err.message.contains("Tool not exposed: grep_files"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn tool_result_to_mcp_maps_metadata_and_errors() {
+        let ok = tool_result_to_mcp(Ok(ToolResult {
+            metadata: Some(json!({ "exit_code": 0 })),
+            ..ToolResult::success("done")
+        }));
+        assert_eq!(ok["isError"], json!(false));
+        assert_eq!(ok["content"][0]["text"], "done");
+        assert_eq!(ok["structuredContent"], json!({ "exit_code": 0 }));
+
+        let plain = tool_result_to_mcp(Ok(ToolResult::success("done")));
+        assert!(plain.get("structuredContent").is_none());
+
+        let failed = tool_result_to_mcp(Ok(ToolResult::error("boom")));
+        assert_eq!(failed["isError"], json!(true));
+        assert_eq!(failed["content"][0]["text"], "boom");
+
+        let errored = tool_result_to_mcp(Err(ToolError::execution_failed(
+            "dispatch blew up".to_string(),
+        )));
+        assert_eq!(errored["isError"], json!(true));
+        assert!(
+            errored["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("dispatch blew up")
+        );
+    }
+
+    #[test]
+    fn evict_lru_thread_drops_the_least_recently_used() {
+        let mut threads = HashMap::new();
+        for (id, age_secs) in [("old", 60u64), ("mid", 30), ("new", 1)] {
+            threads.insert(
+                id.to_string(),
+                ThreadEntry {
+                    messages: Vec::new(),
+                    last_used: Instant::now() - std::time::Duration::from_secs(age_secs),
+                },
+            );
+        }
+
+        evict_lru_thread(&mut threads);
+        assert!(!threads.contains_key("old"), "the LRU entry is evicted");
+        assert_eq!(threads.len(), 2);
+
+        // An empty map is a no-op, and an evicted id cannot be re-evicted.
+        let mut empty: HashMap<String, ThreadEntry> = HashMap::new();
+        evict_lru_thread(&mut empty);
+        assert!(empty.is_empty());
+    }
+
     #[test]
     fn exposed_tools_map_aliases() {
         let names = vec![

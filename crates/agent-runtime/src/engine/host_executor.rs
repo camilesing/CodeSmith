@@ -20600,4 +20600,294 @@ mod tests {
             other => panic!("expected ToolResult, got {other:?}"),
         }
     }
+
+    // === pure helpers and mock surfaces =====================================
+
+    #[test]
+    fn append_loaded_sentinel_marks_newly_callable_tools() {
+        // No difference: the result body is untouched.
+        let mut result = ToolResult::success("found 3 tools");
+        let same: std::collections::HashSet<String> =
+            ["read_file".to_string()].into_iter().collect();
+        append_loaded_sentinel(&mut result, &same, &same);
+        assert_eq!(result.content, "found 3 tools");
+
+        // Newly callable names are appended, sorted, as the sentinel the
+        // transcript reader looks for.
+        let before: std::collections::HashSet<String> =
+            ["read_file".to_string()].into_iter().collect();
+        let after: std::collections::HashSet<String> = [
+            "read_file".to_string(),
+            "z_tool".to_string(),
+            "a_tool".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        append_loaded_sentinel(&mut result, &before, &after);
+        assert!(
+            result.content.contains("found 3 tools"),
+            "the original body survives: {}",
+            result.content
+        );
+        assert!(
+            crate::engine::tool_search_loaded_sentinel(&[
+                "a_tool".to_string(),
+                "z_tool".to_string()
+            ])
+            .lines()
+            .all(|line| result.content.contains(line)),
+            "sorted sentinel appended: {}",
+            result.content
+        );
+    }
+
+    fn user_text_message(text: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    /// A micro-compaction's cleared tool results feed the fact ledger before
+    /// their content is lost; unchanged messages contribute nothing.
+    #[test]
+    fn accumulate_cleared_facts_feeds_the_ledger_for_changed_messages() {
+        let ledger = Arc::new(std::sync::Mutex::new(FactLedger::default()));
+        let workspace = PathBuf::from("/tmp/ws");
+        let constraint = "```text\nthe deploy script must run with --dry-run first\n```";
+        let originals = vec![
+            user_text_message(constraint),
+            user_text_message("unchanged prose"),
+        ];
+        let cleared = vec![
+            user_text_message("[cleared placeholder]"),
+            user_text_message("unchanged prose"),
+        ];
+
+        accumulate_cleared_facts(&ledger, &workspace, &originals, &cleared);
+
+        let guard = ledger.lock().expect("ledger");
+        assert_eq!(guard.len(), 1, "only the changed message is accumulated");
+        let serialized = serde_json::to_string(&*guard).expect("ledger serializes");
+        assert!(
+            serialized.contains("--dry-run"),
+            "the fenced constraint survives the clear: {serialized}"
+        );
+        drop(guard);
+
+        // Idempotent: re-accumulating the same originals adds nothing.
+        accumulate_cleared_facts(&ledger, &workspace, &originals, &cleared);
+        assert_eq!(ledger.lock().expect("ledger").len(), 1);
+    }
+
+    /// The dyn-safe harvest surface delegates to the inherent methods: the
+    /// interrupted-text slot round-trips and the pending-outcome slots read
+    /// empty on a fresh executor.
+    #[tokio::test]
+    async fn harvest_surface_reads_pending_slots_and_the_interrupted_text() {
+        let callback: Arc<dyn Callback> =
+            Arc::new(CallbackBridge::new(None, None, test_template()));
+        let registry = ToolRegistry::new(ToolContext::new(PathBuf::from("/tmp/ws")));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let executor = HostAgentExecutor::new(
+            Arc::new(MockLlm::new(Vec::new())),
+            tools,
+            callback,
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Nothing has run: every pending slot is empty.
+        assert!(executor.take_pending_replay_outcome().is_none());
+        assert!(executor.take_pending_targeted_refresh_outcome().is_none());
+        assert!(executor.take_interrupted_text().is_none());
+
+        // The interrupted-response slot round-trips (set is pub(crate), the
+        // read is what the engine drains after a cancel).
+        executor.set_interrupted_text("the user saw this much".to_string());
+        assert_eq!(
+            executor.take_interrupted_text(),
+            Some("the user saw this much".to_string())
+        );
+        assert!(
+            executor.take_interrupted_text().is_none(),
+            "the slot is taken"
+        );
+
+        // The dyn surface carries the same answers (an alternate executor
+        // owes only these defaults; the production one delegates).
+        executor.set_interrupted_text("again".to_string());
+        let harvest: &dyn TurnHarvest = &executor;
+        assert_eq!(harvest.take_interrupted_text(), Some("again".to_string()));
+        assert!(harvest.take_pending_replay_outcome().is_none());
+        assert!(harvest.take_pending_targeted_refresh_outcome().is_none());
+        assert_eq!(harvest.take_usage(), Usage::default());
+        assert!(harvest.take_reported_model().is_none());
+        assert!(harvest.take_failed_attempts().is_empty());
+        let _ = harvest.drain_stale_steers().await;
+        assert!(!harvest.take_pending_post_compact_cleanup());
+        assert!(harvest.take_pending_capacity_decision().is_none());
+        let _ = harvest.take_pending_compaction_summary();
+    }
+
+    /// The test doubles' no-op surfaces stay complete (they are part of the
+    /// trait contracts the executor relies on, so exercising them keeps the
+    /// doubles honest).
+    #[tokio::test]
+    async fn sub_agent_doubles_expose_their_no_op_surfaces() {
+        let fake = FakeSubAgentApi::new(Vec::new());
+        assert_eq!(fake.running_count().await, 0);
+        assert!(fake.list().await.is_empty());
+        fake.cleanup(std::time::Duration::from_secs(1)).await;
+        assert!(fake.live_running_snapshots().await.is_empty());
+
+        let vanishing = VanishingSubAgentApi::new();
+        assert_eq!(
+            vanishing.running_count().await,
+            1,
+            "first poll reports a child"
+        );
+        assert_eq!(vanishing.running_count().await, 0, "then it vanishes");
+        assert!(vanishing.list().await.is_empty());
+        vanishing.cleanup(std::time::Duration::from_secs(1)).await;
+        assert!(vanishing.live_running_snapshots().await.is_empty());
+    }
+
+    #[test]
+    fn hook_host_double_answers_the_observer_surface() {
+        let host = RecordingHookHost::default();
+        let context = test_template();
+
+        assert_eq!(host.execute_pre_compact_hook(&context), None);
+        assert_eq!(
+            host.execute_message_submit_transform(&context, "original"),
+            MessageSubmitOutcome::unchanged()
+        );
+        assert!(host.is_enabled());
+        assert_eq!(host.session_id(), "test");
+        assert!(host.collect_shell_env(&context).is_empty());
+        assert!(host.calls().is_empty(), "no execute() calls were made");
+    }
+
+    #[test]
+    fn dispatcher_doubles_answer_the_catalog_surface() {
+        let fake = FakeDispatcher::new(None);
+        assert!(fake.has_tool("anything"));
+        assert_eq!(fake.resolve("read_file").as_deref(), Some("read_file"));
+        assert!(fake.metadata("read_file").is_none());
+        assert!(!fake.is_destructive("write_file", &serde_json::json!({})));
+        assert!(!fake.is_interactive("exec_shell", &serde_json::json!({})));
+        assert_eq!(
+            fake.approval_requirement_for("write_file", &serde_json::json!({})),
+            None
+        );
+        assert!(
+            fake.escaped_path_for("read_file", &serde_json::json!({}))
+                .is_none()
+        );
+        fake.grant_external_path(PathBuf::from("/tmp/granted"));
+        assert!(
+            fake.validate_input("read_file", &serde_json::json!({}))
+                .is_ok()
+        );
+        assert!(fake.to_api_tools().is_empty());
+        assert!(fake.to_api_tools_with_cache(true).is_empty());
+        assert!(fake.hook_host().is_none());
+
+        let elevation = ElevationRecordingDispatcher {
+            overrides: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        assert!(elevation.has_tool("exec_shell"));
+        assert_eq!(
+            elevation.resolve("exec_shell").as_deref(),
+            Some("exec_shell")
+        );
+        assert!(elevation.metadata("exec_shell").is_none());
+        assert!(!elevation.is_destructive("exec_shell", &serde_json::json!({})));
+        assert!(!elevation.is_interactive("exec_shell", &serde_json::json!({})));
+        assert_eq!(
+            elevation.approval_requirement_for("exec_shell", &serde_json::json!({})),
+            None
+        );
+        assert!(
+            elevation
+                .escaped_path_for("exec_shell", &serde_json::json!({}))
+                .is_none()
+        );
+        elevation.grant_external_path(PathBuf::from("/tmp/elev"));
+        assert!(
+            elevation
+                .validate_input("exec_shell", &serde_json::json!({}))
+                .is_ok()
+        );
+        assert!(elevation.to_api_tools().is_empty());
+        assert!(elevation.to_api_tools_with_cache(false).is_empty());
+        assert!(elevation.hook_host().is_none());
+        assert!(elevation.overrides.lock().unwrap().is_empty());
+    }
+
+    /// Every extension double names itself through `metadata()` — the
+    /// runner's log lines and error contexts read this field.
+    #[test]
+    fn extension_doubles_report_their_metadata() {
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let exts: Vec<Box<dyn codesmith_agent::extension::Extension>> = vec![
+            Box::new(RecExt { seen: seen.clone() }),
+            Box::new(ToolChainExt {
+                around: None,
+                ask: None,
+            }),
+            Box::new(FullLifecycleRecExt { seen }),
+            Box::new(BlockToolCallExt),
+            Box::new(TransformToolResultExt),
+            Box::new(InjectSystemPromptExt),
+            Box::new(RewriteProviderRequestExt),
+            Box::new(RewriteInputExt),
+            Box::new(RewriteSteerExt),
+            Box::new(ToolExecRecorderExt {
+                seen: Arc::new(Mutex::new(Vec::new())),
+            }),
+            Box::new(CancelCompactExt),
+            Box::new(CompactRecorderExt {
+                seen: Arc::new(Mutex::new(Vec::new())),
+                compacts: Arc::new(Mutex::new(Vec::new())),
+            }),
+            Box::new(ProjectTrustRecorderExt {
+                seen: Arc::new(Mutex::new(Vec::new())),
+            }),
+        ];
+        let names: Vec<std::borrow::Cow<'static, str>> =
+            exts.iter().map(|ext| ext.metadata().name.clone()).collect();
+        for expected in [
+            "rec",
+            "tool-chain",
+            "full-lifecycle-rec",
+            "block-toolcall",
+            "transform-toolresult",
+            "inject-system-prompt",
+            "rewrite-provider-request",
+            "rewrite-input",
+            "rewrite-steer",
+            "tool-exec-recorder",
+            "cancel-compact",
+            "compact-recorder",
+            "project-trust-recorder",
+        ] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing metadata name {expected:?} in {names:?}"
+            );
+        }
+    }
 }

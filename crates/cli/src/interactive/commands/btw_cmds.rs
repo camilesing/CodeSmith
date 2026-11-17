@@ -124,19 +124,97 @@ pub async fn ask(state: &ReplState, question: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
+    use codesmith_agent_runtime::test_support::lock_test_env;
+
+    fn test_repl_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
 
     #[test]
     fn the_record_path_lands_in_the_codesmith_home() {
         // `record_path()` resolves `codesmith_home()` from the process env;
         // other tests retarget `CODESMITH_HOME` under the env lock, so this
         // reader holds it too or the full-suite parallel run races.
-        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let _guard = lock_test_env();
         // Resolvable on any machine with a home directory; the command says
         // so out loud when it is not.
         if let Some(path) = record_path() {
             assert!(path.ends_with("side-questions.jsonl"));
             assert!(path.to_string_lossy().contains(".codesmith"));
         }
+    }
+
+    #[test]
+    fn record_appends_one_json_line_per_exchange() {
+        let _guard = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _env =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_HOME", home.path());
+
+        record(Some("sess-7"), "what did we read?", "the config file")
+            .expect("first exchange recorded");
+        record(None, "again?", "still there").expect("second exchange recorded");
+
+        let body =
+            std::fs::read_to_string(home.path().join("side-questions.jsonl")).expect("record file");
+        let lines: Vec<serde_json::Value> = body
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json line"))
+            .collect();
+        assert_eq!(lines.len(), 2, "one line per exchange:\n{body}");
+        assert_eq!(lines[0]["session"], "sess-7");
+        assert_eq!(lines[0]["question"], "what did we read?");
+        assert_eq!(lines[0]["answer"], "the config file");
+        assert_eq!(
+            lines[1]["session"], "(unsaved)",
+            "an unsaved session is named, not null"
+        );
+    }
+
+    /// The two guards before any model call: a bare `/btw` prints usage and
+    /// an empty session has nothing to answer from — neither reaches the
+    /// model, so neither is a network test.
+    #[tokio::test]
+    async fn ask_refuses_empty_questions_and_empty_sessions() {
+        let _guard = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _env =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_HOME", home.path());
+        let state = test_repl_state();
+        assert!(
+            state.api_messages.is_empty(),
+            "a fresh state has no conversation to answer from"
+        );
+
+        ask(&state, "   ")
+            .await
+            .expect("usage branch is not an error");
+        ask(&state, "what happened so far?")
+            .await
+            .expect("empty-session branch is not an error");
+        assert!(
+            !home.path().join("side-questions.jsonl").exists(),
+            "no exchange happened, so none was recorded"
+        );
     }
 }

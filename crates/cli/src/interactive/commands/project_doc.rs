@@ -261,3 +261,127 @@ fn extract_cargo_name(content: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cargo_names_come_only_from_the_package_table() {
+        assert_eq!(
+            extract_cargo_name("[package]\nname = \"demo\"\nversion = \"0.1\"\n"),
+            Some("demo".to_string())
+        );
+        assert_eq!(
+            extract_cargo_name("[package]\nname = 'single'\n"),
+            Some("single".to_string())
+        );
+        // name-like keys outside [package] must not leak into the doc.
+        assert_eq!(extract_cargo_name("[[bin]]\nname = \"binname\"\n"), None);
+        assert_eq!(
+            extract_cargo_name("[workspace.package]\nname = \"wp\"\n[package]\nname = \"real\"\n"),
+            Some("real".to_string())
+        );
+        assert_eq!(extract_cargo_name("[dependencies]\nname = \"x\"\n"), None);
+        assert_eq!(extract_cargo_name(""), None);
+    }
+
+    #[test]
+    fn docs_name_the_detected_project_type_and_commands() {
+        let rust = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            rust.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("write Cargo.toml");
+        std::fs::write(rust.path().join("README.md"), "readme").expect("write README");
+        std::fs::write(rust.path().join(".gitignore"), "target/\n").expect("write gitignore");
+        let doc = generate_project_doc(rust.path());
+        assert!(doc.starts_with("# Project Instructions"));
+        assert!(doc.contains("Project Type: Rust"));
+        assert!(doc.contains("### Project: demo"));
+        assert!(doc.contains("`cargo clippy`"));
+        assert!(doc.contains("See README.md"));
+        assert!(doc.contains("uses Git"));
+        assert!(doc.contains("## Agent Guidance"));
+        assert!(doc.contains("## Cache Stability"));
+
+        // Node.js flavors.
+        let next = tempfile::tempdir().expect("tempdir");
+        std::fs::write(next.path().join("package.json"), "{}").expect("write package.json");
+        std::fs::write(next.path().join("next.config.js"), "{}").expect("write next config");
+        assert!(generate_project_doc(next.path()).contains("Framework: Next.js"));
+
+        let vite = tempfile::tempdir().expect("tempdir");
+        std::fs::write(vite.path().join("package.json"), "{}").expect("write package.json");
+        std::fs::write(vite.path().join("vite.config.ts"), "{}").expect("write vite config");
+        let doc = generate_project_doc(vite.path());
+        assert!(doc.contains("Project Type: Node.js"));
+        assert!(doc.contains("Framework: Vite"));
+
+        // Python (both markers) and Go.
+        let py = tempfile::tempdir().expect("tempdir");
+        std::fs::write(py.path().join("pyproject.toml"), "[project]\n").expect("write pyproject");
+        assert!(generate_project_doc(py.path()).contains("pip install -e ."));
+        let py_setup = tempfile::tempdir().expect("tempdir");
+        std::fs::write(py_setup.path().join("setup.py"), "").expect("write setup.py");
+        assert!(generate_project_doc(py_setup.path()).contains("Project Type: Python"));
+
+        let go = tempfile::tempdir().expect("tempdir");
+        std::fs::write(go.path().join("go.mod"), "module m\n").expect("write go.mod");
+        assert!(generate_project_doc(go.path()).contains("go test ./..."));
+
+        // Nothing recognized: unknown type, no documentation section.
+        let empty = tempfile::tempdir().expect("tempdir");
+        let doc = generate_project_doc(empty.path());
+        assert!(doc.contains("Project Type: Unknown"));
+        assert!(!doc.contains("### Documentation"));
+    }
+
+    #[test]
+    fn codesmith_is_gitignored_once_at_the_enclosing_repo_root() {
+        // A workspace nested inside the repo writes at the repo root.
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(repo.path().join(".git")).expect("git dir");
+        let ws = repo.path().join("ws");
+        std::fs::create_dir(&ws).expect("workspace");
+        ensure_codesmith_gitignored(&ws);
+        let gitignore = repo.path().join(".gitignore");
+        assert_eq!(
+            std::fs::read_to_string(&gitignore).expect("gitignore created"),
+            ".codesmith/\n"
+        );
+        // Idempotent: a second call appends nothing.
+        ensure_codesmith_gitignored(&ws);
+        assert_eq!(
+            std::fs::read_to_string(&gitignore).expect("reread"),
+            ".codesmith/\n"
+        );
+
+        // An entry without the trailing slash already covers it.
+        let slashless = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(slashless.path().join(".git")).expect("git dir");
+        std::fs::write(slashless.path().join(".gitignore"), ".codesmith\n").expect("seed");
+        ensure_codesmith_gitignored(slashless.path());
+        assert_eq!(
+            std::fs::read_to_string(slashless.path().join(".gitignore")).expect("reread"),
+            ".codesmith\n",
+            "no duplicate entry"
+        );
+
+        // A .gitignore without a trailing newline gets one before the append.
+        let no_newline = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(no_newline.path().join(".git")).expect("git dir");
+        std::fs::write(no_newline.path().join(".gitignore"), "target/").expect("seed");
+        ensure_codesmith_gitignored(no_newline.path());
+        assert_eq!(
+            std::fs::read_to_string(no_newline.path().join(".gitignore")).expect("reread"),
+            "target/\n.codesmith/\n"
+        );
+
+        // No enclosing repo: nothing is written.
+        let plain = tempfile::tempdir().expect("tempdir");
+        ensure_codesmith_gitignored(plain.path());
+        assert!(!plain.path().join(".gitignore").exists());
+    }
+}

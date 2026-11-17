@@ -478,3 +478,292 @@ fn truncate_for_auto_router(text: &str, max_chars: usize) -> String {
         truncated
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    #[test]
+    fn heuristic_routes_keywords_cjk_length_and_cost_saving() {
+        use crate::config::ModelTier;
+        // Strong keywords are decisive at any length, English or CJK — the
+        // CJK entries exist because those requests used to fall through to
+        // the length thresholds.
+        assert_eq!(
+            auto_model_heuristic_tier("please refactor the module", false),
+            ModelTier::Heavy
+        );
+        assert_eq!(
+            auto_model_heuristic_tier("帮我重构这个模块", false),
+            ModelTier::Heavy
+        );
+        assert_eq!(
+            auto_model_heuristic_tier("审计安全漏洞", true),
+            ModelTier::Heavy,
+            "strong keywords escalate even under cost saving"
+        );
+        // Borderline keywords escalate by default but not under cost saving.
+        assert_eq!(
+            auto_model_heuristic_tier("implement", false),
+            ModelTier::Heavy
+        );
+        assert_eq!(
+            auto_model_heuristic_tier("implement", true),
+            ModelTier::Light
+        );
+        // Short conversational input stays light.
+        assert_eq!(auto_model_heuristic_tier("hi", true), ModelTier::Light);
+        // Long-but-routine text escalates at 500 chars; cost saving defers
+        // the threshold to 1000.
+        let routine = "plain data rows follow here. ".repeat(20); // 600 chars
+        assert_eq!(auto_model_heuristic_tier(&routine, false), ModelTier::Heavy);
+        assert_eq!(auto_model_heuristic_tier(&routine, true), ModelTier::Light);
+        // Grey zone: no keyword, mid length — light is the fallback.
+        let grey = "x".repeat(200);
+        assert_eq!(auto_model_heuristic_tier(&grey, false), ModelTier::Light);
+    }
+
+    #[test]
+    fn parse_recommendation_accepts_tiers_legacy_models_and_efforts() {
+        use crate::config::ModelTier;
+        let ok = |raw: &str| parse_auto_route_recommendation(raw).expect("parses");
+
+        let r = ok(r#"{"tier":"heavy","thinking":"max"}"#);
+        assert_eq!(
+            (r.tier, r.reasoning_effort),
+            (ModelTier::Heavy, Some(ReasoningEffort::Max))
+        );
+        // Prose-wrapped JSON still parses; tier matching is case-insensitive.
+        let r = ok("sure — {\"tier\":\" LIGHT \",\"reasoning_effort\":\"high\"} — done");
+        assert_eq!(
+            (r.tier, r.reasoning_effort),
+            (ModelTier::Light, Some(ReasoningEffort::High))
+        );
+        // Legacy model vocabulary keeps pre-tier router responses parsing.
+        let r = ok(r#"{"model":"deepseek-v4-flash"}"#);
+        assert_eq!(r.tier, ModelTier::Light);
+        assert_eq!(r.reasoning_effort, None);
+        let r = ok(r#"{"tier":"pro","thinking":"off"}"#);
+        assert_eq!(
+            (r.tier, r.reasoning_effort),
+            (ModelTier::Heavy, Some(ReasoningEffort::Off))
+        );
+        // Medium/low collapse to high; an unknown effort degrades to none,
+        // not a parse failure.
+        let r = ok(r#"{"tier":"flash","thinking":"medium"}"#);
+        assert_eq!(r.reasoning_effort, Some(ReasoningEffort::High));
+        let r = ok(r#"{"tier":"heavy","thinking":"bogus"}"#);
+        assert_eq!(
+            (r.tier, r.reasoning_effort),
+            (ModelTier::Heavy, None),
+            "the tier still parses when the effort word does not"
+        );
+        // Anything the whitelist does not name is refused — a classifier
+        // can never name a concrete model into the turn.
+        assert!(parse_auto_route_recommendation(r#"{"tier":"gpt-5-turbo"}"#).is_none());
+        assert!(parse_auto_route_recommendation("").is_none());
+        assert!(parse_auto_route_recommendation("no json here").is_none());
+    }
+
+    #[test]
+    fn low_and_medium_efforts_collapse_to_high() {
+        assert_eq!(
+            normalize_auto_route_effort(ReasoningEffort::Low),
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            normalize_auto_route_effort(ReasoningEffort::Medium),
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            normalize_auto_route_effort(ReasoningEffort::Off),
+            ReasoningEffort::Off
+        );
+        assert_eq!(
+            normalize_auto_route_effort(ReasoningEffort::Max),
+            ReasoningEffort::Max
+        );
+    }
+
+    #[test]
+    fn persist_round_trips_and_preserves_unknown_keys() {
+        let _env = lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\n").expect("seed config");
+        let _guard = EnvVarGuard::set("CODESMITH_CONFIG_PATH", &path);
+
+        let written =
+            persist_root_string_key(None, "preferred_model", "m2").expect("first persist");
+        assert_eq!(written, path);
+        let doc: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).expect("reread")).expect("parses");
+        assert_eq!(
+            doc["theme"].as_str(),
+            Some("dark"),
+            "unknown keys survive the round-trip"
+        );
+        assert_eq!(doc["preferred_model"].as_str(), Some("m2"));
+
+        persist_root_string_key(None, "preferred_model", "m3").expect("replace persist");
+        let doc: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).expect("reread")).expect("parses");
+        assert_eq!(
+            doc["preferred_model"].as_str(),
+            Some("m3"),
+            "the same key is replaced, not duplicated"
+        );
+
+        // An explicit path whose parent does not exist yet is created.
+        let nested = dir.path().join("a/b/config.toml");
+        persist_root_string_key(Some(&nested), "k", "v").expect("nested persist");
+        assert!(nested.is_file());
+    }
+
+    #[test]
+    fn config_toml_path_prefers_explicit_then_env_then_home() {
+        let _env = lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let explicit = dir.path().join("explicit.toml");
+        assert_eq!(
+            config_toml_path(Some(&explicit)).expect("explicit"),
+            explicit
+        );
+
+        let env_path = dir.path().join("env.toml");
+        let _guard = EnvVarGuard::set("CODESMITH_CONFIG_PATH", &env_path);
+        assert_eq!(config_toml_path(None).expect("env"), env_path);
+
+        let _removed = EnvVarGuard::remove("CODESMITH_CONFIG_PATH");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        let _home_guard = EnvVarGuard::set("CODESMITH_HOME", &home);
+        assert_eq!(
+            config_toml_path(None).expect("home fallback"),
+            home.join("config.toml")
+        );
+    }
+
+    /// The router model call is stubbed off under `cfg(test)`, so every path
+    /// through `resolve_auto_route` answers from the heuristic — no network.
+    #[tokio::test]
+    async fn resolve_auto_route_answers_from_the_heuristic_in_tests() {
+        let _env = lock_test_env();
+        let config = crate::config::Config::default();
+
+        // Decisive keyword input never consults the router.
+        let decisive = resolve_auto_route(
+            &config,
+            "please refactor the auth module",
+            "",
+            "auto",
+            "auto",
+        )
+        .await;
+        assert_eq!(decisive.source, AutoRouteSource::Heuristic);
+        assert_eq!(
+            decisive.model,
+            config.resolve_model_tier(crate::config::ModelTier::Heavy)
+        );
+        assert!(decisive.reasoning_effort.is_some());
+
+        // Grey-zone input asks the router, gets the test stub's `Ok(None)`,
+        // and falls back to the heuristic (light tier).
+        let grey = resolve_auto_route(
+            &config,
+            &"plain question with no signal ".repeat(8),
+            "some earlier chatter",
+            "auto",
+            "off",
+        )
+        .await;
+        assert_eq!(grey.source, AutoRouteSource::Heuristic);
+        assert_eq!(
+            grey.model,
+            config.resolve_model_tier(crate::config::ModelTier::Light)
+        );
+    }
+
+    #[test]
+    fn router_prompt_states_modes_and_truncates() {
+        let prompt = auto_route_prompt("do the thing", "", "auto", "off");
+        assert!(prompt.contains("Selected model mode: auto"));
+        assert!(prompt.contains("Selected thinking mode: off"));
+        assert!(
+            prompt.contains("No prior context."),
+            "empty context says so"
+        );
+        assert!(prompt.contains("do the thing"));
+        assert!(prompt.ends_with("Return JSON only."));
+        assert!(auto_route_prompt("x", "earlier chatter", "a", "b").contains("earlier chatter"));
+
+        assert_eq!(truncate_for_auto_router("short", 10), "short");
+        let exact: String = "x".repeat(10);
+        assert_eq!(
+            truncate_for_auto_router(&exact, 10),
+            exact,
+            "at the cap is not cut"
+        );
+        assert_eq!(
+            truncate_for_auto_router(&"x".repeat(11), 10),
+            format!("{}...", "x".repeat(10)),
+            "past the cap gets an ellipsis"
+        );
+    }
+
+    #[test]
+    fn router_text_flattens_every_block_kind() {
+        let response = MessageResponse {
+            id: "r".to_string(),
+            r#type: "message".to_string(),
+            role: "assistant".to_string(),
+            model: "m".to_string(),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "hm".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "{\"tier\":\"heavy\"}".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "1".to_string(),
+                    name: "exec_shell".to_string(),
+                    input: serde_json::json!({}),
+                    caller: None,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "1".to_string(),
+                    content: "done".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                },
+                // Any other block contributes nothing.
+                ContentBlock::ServerToolUse {
+                    id: "2".to_string(),
+                    name: "other".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            stop_reason: None,
+            stop_sequence: None,
+            container: None,
+            usage: crate::models::Usage::default(),
+        };
+        let flat = message_response_text(&response);
+        assert_eq!(
+            flat, "hm\n{\"tier\":\"heavy\"}\n[tool call: exec_shell]\ndone",
+            "blocks join with newlines; tool calls are named"
+        );
+        // The flattened text round-trips through the recommendation parser.
+        assert_eq!(
+            parse_auto_route_recommendation(&flat).map(|r| r.tier),
+            Some(crate::config::ModelTier::Heavy)
+        );
+    }
+}

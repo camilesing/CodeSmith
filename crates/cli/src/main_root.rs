@@ -8496,3 +8496,1016 @@ mod telemetry_startup_tests {
         assert!(!cfg.telemetry_enabled());
     }
 }
+
+#[cfg(test)]
+mod dispatch_helper_tests {
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+    use tempfile::TempDir;
+
+    /// Swap HOME/USERPROFILE for the duration of `f`. Callers must hold
+    /// `lock_test_env()` for the whole call.
+    pub(crate) fn with_home_env<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+        }
+        let result = f();
+        unsafe {
+            match prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        result
+    }
+
+    fn parse_cli(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("CLI args should parse")
+    }
+
+    fn exec_args(args: &[&str]) -> ExecArgs {
+        let Some(Commands::Exec(parsed)) = parse_cli(args).command else {
+            panic!("expected exec command");
+        };
+        parsed
+    }
+
+    #[test]
+    fn feature_toggles_apply_enables_disables_and_rejects_unknown_keys() {
+        let mut config = Config::default();
+        let toggles = FeatureToggles {
+            enable: vec!["shell_tool".to_string()],
+            disable: vec!["web_search".to_string()],
+        };
+        toggles.apply(&mut config).expect("known keys must apply");
+        assert!(config.features().enabled(Feature::ShellTool));
+        assert!(!config.features().enabled(Feature::WebSearch));
+
+        let unknown = FeatureToggles {
+            enable: vec!["not_a_real_feature".to_string()],
+            disable: Vec::new(),
+        };
+        let mut config = Config::default();
+        let err = unknown
+            .apply(&mut config)
+            .expect_err("unknown key must fail");
+        assert!(
+            err.to_string().contains("Unknown feature flag"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn generate_completions_renders_shells_without_panicking() {
+        generate_completions(Shell::Bash);
+        generate_completions(Shell::Fish);
+    }
+
+    #[test]
+    fn swebench_prompt_table() {
+        // Prefix present and trimmed.
+        let with_prefix = swebench_prompt(
+            "inst-1",
+            Path::new("/w"),
+            "  crash on startup  ",
+            Some("  Preamble  "),
+        );
+        assert!(with_prefix.starts_with("Preamble\n\n"));
+        assert!(with_prefix.contains("Instance ID: inst-1"));
+        assert!(with_prefix.contains("Workspace: /w"));
+        assert!(with_prefix.contains("untrusted bug report"));
+        assert!(with_prefix.contains("Issue text:\ncrash on startup\n"));
+
+        // No prefix, and a whitespace-only prefix is skipped the same way.
+        let no_prefix = swebench_prompt("inst-2", Path::new("/w"), "issue", None);
+        assert!(no_prefix.starts_with("You are solving one SWE-bench task."));
+        let blank_prefix = swebench_prompt("inst-3", Path::new("/w"), "issue", Some("   "));
+        assert!(blank_prefix.starts_with("You are solving one SWE-bench task."));
+    }
+
+    #[test]
+    fn write_swebench_prediction_rejects_non_jsonl_paths() {
+        let tmp = TempDir::new().unwrap();
+        let err =
+            write_swebench_prediction(tmp.path(), &tmp.path().join("preds.txt"), "inst-1", "model")
+                .expect_err("non-jsonl predictions path must fail");
+        assert!(
+            err.to_string().contains("must be .jsonl"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn prediction_path_inside_workspace_table() {
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path();
+        // Build the inside path from the canonical workspace so the test is
+        // immune to /var -> /private/var symlink resolution on macOS (the
+        // helper canonicalizes the workspace but not the predictions path).
+        let ws_canon = ws.canonicalize().unwrap();
+        assert_eq!(
+            prediction_path_inside_workspace(ws, &ws_canon.join("out").join("preds.jsonl"))
+                .unwrap(),
+            Some("out/preds.jsonl".to_string()),
+            "absolute path inside the workspace resolves to a relative exclusion"
+        );
+        let outside = TempDir::new().unwrap();
+        assert_eq!(
+            prediction_path_inside_workspace(ws, &outside.path().join("preds.jsonl")).unwrap(),
+            None,
+            "path outside the workspace is not excluded"
+        );
+        assert_eq!(
+            prediction_path_inside_workspace(ws, &ws.canonicalize().unwrap()).unwrap(),
+            None,
+            "the workspace itself has no relative remainder"
+        );
+    }
+
+    #[test]
+    fn parse_sandbox_policy_table() {
+        use crate::sandbox::SandboxPolicy;
+
+        assert_eq!(
+            parse_sandbox_policy("danger-full-access", false, Vec::new(), true, true).unwrap(),
+            SandboxPolicy::DangerFullAccess
+        );
+        assert_eq!(
+            parse_sandbox_policy("read-only", false, Vec::new(), true, true).unwrap(),
+            SandboxPolicy::ReadOnly
+        );
+        assert_eq!(
+            parse_sandbox_policy("external-sandbox", true, Vec::new(), true, true).unwrap(),
+            SandboxPolicy::ExternalSandbox {
+                network_access: true
+            }
+        );
+        assert_eq!(
+            parse_sandbox_policy(
+                "workspace-write",
+                true,
+                vec![PathBuf::from("/extra")],
+                false,
+                true
+            )
+            .unwrap(),
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![PathBuf::from("/extra")],
+                network_access: true,
+                exclude_tmpdir: false,
+                exclude_slash_tmp: true,
+            }
+        );
+        let err = parse_sandbox_policy("bogus", false, Vec::new(), true, true)
+            .expect_err("unknown policy must fail");
+        assert!(
+            err.to_string().contains("Unknown sandbox policy: bogus"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_cors_origins_merges_flags_env_and_config_in_order() {
+        let _guard = lock_test_env();
+        let _cors = EnvVarGuard::remove("CODESMITH_CORS_ORIGINS");
+
+        // Flags only: trimmed, empties skipped, first-seen dedup.
+        let config = Config::default();
+        assert_eq!(
+            resolve_cors_origins(
+                &config,
+                &[
+                    " http://a ".to_string(),
+                    "  ".to_string(),
+                    "http://a".to_string(),
+                    "http://b".to_string(),
+                ]
+            ),
+            vec!["http://a".to_string(), "http://b".to_string()]
+        );
+
+        // Env var and config extend the flags without duplicating entries.
+        let _cors = EnvVarGuard::set(
+            "CODESMITH_CORS_ORIGINS",
+            "http://env1, http://env2 ,http://flag",
+        );
+        let config = Config {
+            runtime_api: Some(crate::config::RuntimeApiConfig {
+                cors_origins: Some(vec!["http://cfg".to_string(), "http://env1".to_string()]),
+            }),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolve_cors_origins(&config, &["http://flag".to_string()]),
+            vec![
+                "http://flag".to_string(),
+                "http://env1".to_string(),
+                "http://env2".to_string(),
+                "http://cfg".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_cli_auto_route_passes_through_non_auto_models() {
+        let config = Config::default();
+        let route = resolve_cli_auto_route(&config, "my-model", "do a thing").await;
+        assert_eq!(route.model, "my-model");
+        assert!(!route.auto_model);
+        assert_eq!(route.reasoning_effort, None);
+
+        // A configured reasoning effort survives the non-auto path.
+        let config = Config {
+            reasoning_effort: Some("high".to_string()),
+            ..Config::default()
+        };
+        let route = resolve_cli_auto_route(&config, "my-model", "do a thing").await;
+        assert_eq!(route.model, "my-model");
+        assert_eq!(
+            route.reasoning_effort,
+            Some(crate::app_state::ReasoningEffort::High)
+        );
+        assert!(!route.auto_model);
+    }
+
+    #[test]
+    fn resolve_exec_system_prompt_override_table() {
+        let tmp = TempDir::new().unwrap();
+
+        // Inline wins and is trimmed.
+        let args = exec_args(&["codesmith", "exec", "--system-prompt", "  be brief  ", "p"]);
+        assert_eq!(
+            resolve_exec_system_prompt_override(&Config::default(), &args).unwrap(),
+            Some("be brief".to_string())
+        );
+
+        // Whitespace-only inline falls through to the config override.
+        let args = exec_args(&["codesmith", "exec", "--system-prompt", "   ", "p"]);
+        let config = Config {
+            system_prompt: Some("cfg-prompt".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolve_exec_system_prompt_override(&config, &args).unwrap(),
+            Some("cfg-prompt".to_string())
+        );
+
+        // File override, returned verbatim when non-empty.
+        let file = tmp.path().join("prompt.md");
+        std::fs::write(&file, " file body ").unwrap();
+        let args = exec_args(&[
+            "codesmith",
+            "exec",
+            "--system-prompt-file",
+            file.to_str().unwrap(),
+            "p",
+        ]);
+        assert_eq!(
+            resolve_exec_system_prompt_override(&Config::default(), &args).unwrap(),
+            Some(" file body ".to_string())
+        );
+
+        // An empty file falls through to the (unset) config override.
+        let empty = tmp.path().join("empty.md");
+        std::fs::write(&empty, "   ").unwrap();
+        let args = exec_args(&[
+            "codesmith",
+            "exec",
+            "--system-prompt-file",
+            empty.to_str().unwrap(),
+            "p",
+        ]);
+        assert_eq!(
+            resolve_exec_system_prompt_override(&Config::default(), &args).unwrap(),
+            None
+        );
+
+        // A missing file fails loud with the path in the error.
+        let args = exec_args(&[
+            "codesmith",
+            "exec",
+            "--system-prompt-file",
+            tmp.path().join("missing.md").to_str().unwrap(),
+            "p",
+        ]);
+        let err = resolve_exec_system_prompt_override(&Config::default(), &args)
+            .expect_err("missing file must fail");
+        assert!(
+            err.to_string().contains("failed to read"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_exec_append_system_prompts_combines_config_and_args() {
+        use crate::prompts::PromptAppendSource;
+
+        // Config paths first; inline entries keep their pre-filter index in
+        // the label and blank entries are dropped; file flags come last.
+        let config = Config {
+            append_system_prompt: Some(vec!["/cfg/one.md".to_string()]),
+            ..Config::default()
+        };
+        let args = exec_args(&[
+            "codesmith",
+            "exec",
+            "--append-system-prompt",
+            "keep",
+            "--append-system-prompt",
+            "   ",
+            "--append-system-prompt",
+            "also",
+            "--append-system-prompt-file",
+            "/f.md",
+            "p",
+        ]);
+        let sources = resolve_exec_append_system_prompts(&config, &args);
+        assert_eq!(sources.len(), 4);
+        assert!(
+            matches!(&sources[0], PromptAppendSource::File(p) if *p == Path::new("/cfg/one.md"))
+        );
+        assert!(
+            matches!(&sources[1], PromptAppendSource::Inline { name, content }
+                if name == "cli:inline:1" && content == "keep")
+        );
+        assert!(
+            matches!(&sources[2], PromptAppendSource::Inline { name, content }
+                if name == "cli:inline:3" && content == "also")
+        );
+        assert!(matches!(&sources[3], PromptAppendSource::File(p) if *p == Path::new("/f.md")));
+
+        // No config, no flags → nothing to append.
+        let args = exec_args(&["codesmith", "exec", "p"]);
+        assert!(resolve_exec_append_system_prompts(&Config::default(), &args).is_empty());
+    }
+
+    #[test]
+    fn emit_exec_stream_event_serializes_every_variant() {
+        let events = [
+            ExecStreamEvent::Content {
+                content: "hi".to_string(),
+            },
+            ExecStreamEvent::ToolUse {
+                name: "read_file".to_string(),
+                id: "t1".to_string(),
+                input: serde_json::json!({"path": "x"}),
+            },
+            ExecStreamEvent::ToolResult {
+                id: "t1".to_string(),
+                output: "ok".to_string(),
+                status: "success".to_string(),
+            },
+            ExecStreamEvent::SessionCapture {
+                content: "capture".to_string(),
+            },
+            ExecStreamEvent::Metadata {
+                meta: ExecStreamMeta {
+                    model: "m".to_string(),
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    session_id: "s".to_string(),
+                    status: Some("done".to_string()),
+                },
+            },
+            ExecStreamEvent::Done,
+            ExecStreamEvent::Error {
+                error: "boom".to_string(),
+            },
+        ];
+        for event in &events {
+            emit_exec_stream_event(event).expect("stream event must serialize");
+        }
+    }
+
+    #[test]
+    fn features_preset_and_execpolicy_commands_run_table() {
+        // `codesmith features list`
+        run_features_command(
+            &Config::default(),
+            FeaturesCli {
+                command: FeaturesSubcommand::List,
+            },
+        )
+        .expect("features list must run");
+
+        // `codesmith preset show`
+        run_preset_command(
+            &Config::default(),
+            PresetCli {
+                command: PresetSubcommand::Show,
+            },
+        )
+        .expect("preset show must run");
+
+        // `codesmith execpolicy check` with a matching rule and with a
+        // rule file that matches nothing.
+        let tmp = TempDir::new().unwrap();
+        let rules = tmp.path().join("rules.policy");
+        std::fs::write(&rules, r#"prefix_rule(pattern=["ls"], decision="allow")"#).unwrap();
+        run_execpolicy_command(ExecpolicyCommand {
+            command: ExecpolicySubcommand::Check(
+                codesmith_agent_runtime::execpolicy::ExecPolicyCheckCommand {
+                    rules: vec![rules],
+                    pretty: true,
+                    command: vec!["ls".to_string(), "-l".to_string()],
+                },
+            ),
+        })
+        .expect("execpolicy check with a match must run");
+
+        let empty_rules = tmp.path().join("empty.policy");
+        std::fs::write(&empty_rules, "").unwrap();
+        run_execpolicy_command(ExecpolicyCommand {
+            command: ExecpolicySubcommand::Check(
+                codesmith_agent_runtime::execpolicy::ExecPolicyCheckCommand {
+                    rules: vec![empty_rules],
+                    pretty: false,
+                    command: vec!["anything".to_string()],
+                },
+            ),
+        })
+        .expect("execpolicy check without matches must run");
+    }
+
+    #[test]
+    fn report_write_status_covers_all_statuses() {
+        report_write_status("Tools README", Path::new("/tmp/a.md"), WriteStatus::Created);
+        report_write_status(
+            "Tools README",
+            Path::new("/tmp/a.md"),
+            WriteStatus::Overwritten,
+        );
+        report_write_status(
+            "Tools README",
+            Path::new("/tmp/a.md"),
+            WriteStatus::SkippedExists,
+        );
+    }
+
+    #[test]
+    fn install_token_counter_tolerates_missing_and_bad_paths() {
+        // No tokenizer configured: no-op.
+        install_token_counter(&Config::default());
+
+        // Bad path: warn and keep the heuristic counter (never an error).
+        let config = Config {
+            context: crate::config::ContextConfig {
+                tokenizer_path: Some(PathBuf::from("/definitely/not/here-9f2b/tokenizer.json")),
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        install_token_counter(&config);
+    }
+
+    #[test]
+    fn state_home_helpers_respect_codesmith_home_and_home_fallback() {
+        let _guard = lock_test_env();
+
+        // Explicit CODESMITH_HOME wins everywhere.
+        let tmp = TempDir::new().unwrap();
+        let _home = EnvVarGuard::set("CODESMITH_HOME", tmp.path());
+        assert_eq!(codesmith_state_home_dir(), tmp.path().to_path_buf());
+        assert_eq!(
+            default_checkpoints_dir(),
+            tmp.path().join("sessions").join("checkpoints")
+        );
+        assert_eq!(
+            telemetry_sink_path(),
+            Some(tmp.path().join("telemetry").join("events.jsonl"))
+        );
+
+        // Without it, state lives under $HOME/.codesmith.
+        let _removed = EnvVarGuard::remove("CODESMITH_HOME");
+        let tmp2 = TempDir::new().unwrap();
+        with_home_env(tmp2.path(), || {
+            assert_eq!(
+                codesmith_state_home_dir(),
+                tmp2.path().join(".codesmith"),
+                "CODESMITH_HOME unset must fall back to $HOME/.codesmith"
+            );
+        });
+    }
+
+    #[test]
+    fn resolve_workspace_prefers_flag_over_current_dir() {
+        let cli = parse_cli(&["codesmith", "--workspace", "/tmp/ws"]);
+        assert_eq!(resolve_workspace(&cli), PathBuf::from("/tmp/ws"));
+
+        let cli = parse_cli(&["codesmith"]);
+        assert_eq!(
+            resolve_workspace(&cli),
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            "no --workspace flag falls back to the process working directory"
+        );
+    }
+}
+
+#[cfg(test)]
+mod setup_session_tests {
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+    use tempfile::TempDir;
+
+    fn home_guarded<T>(home: &Path, f: impl FnOnce() -> T) -> T {
+        let _guard = lock_test_env();
+        let _home = EnvVarGuard::set("CODESMITH_HOME", home);
+        f()
+    }
+
+    fn sample_messages(text: &str) -> Vec<Message> {
+        vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }]
+    }
+
+    #[test]
+    fn write_template_file_table() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nested").join("dir").join("file.md");
+
+        // Parent dirs are created on demand.
+        assert!(matches!(
+            write_template_file(&path, "one", false).unwrap(),
+            WriteStatus::Created
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
+
+        // Existing file is skipped without force.
+        assert!(matches!(
+            write_template_file(&path, "two", false).unwrap(),
+            WriteStatus::SkippedExists
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
+
+        // Force overwrites.
+        assert!(matches!(
+            write_template_file(&path, "three", true).unwrap(),
+            WriteStatus::Overwritten
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "three");
+
+        // A path with no parent component is left alone by ensure_parent_dir.
+        ensure_parent_dir(Path::new("no-parent-covsmith.txt"))
+            .expect("empty-parent path must not error");
+
+        // A blocked parent (regular file where a dir is needed) fails loud.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let err = ensure_parent_dir(&tmp.path().join("blocker").join("sub").join("f"))
+            .expect_err("blocked parent must fail");
+        assert!(
+            err.to_string().contains("Failed to create directory"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn mcp_template_and_init_mcp_config_table() {
+        let tmp = TempDir::new().unwrap();
+
+        let template = mcp_template_json().expect("template must render");
+        assert!(template.contains("\"example\""));
+        assert!(template.contains("your-mcp-server.js"));
+
+        let path = tmp.path().join("mcp.json");
+        assert!(matches!(
+            init_mcp_config(&path, false).unwrap(),
+            WriteStatus::Created
+        ));
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, template, "init writes the rendered template");
+        assert!(matches!(
+            init_mcp_config(&path, false).unwrap(),
+            WriteStatus::SkippedExists
+        ));
+        assert!(matches!(
+            init_mcp_config(&path, true).unwrap(),
+            WriteStatus::Overwritten
+        ));
+
+        // Blocked parent dir surfaces the ensure_parent_dir error.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let err = init_mcp_config(&tmp.path().join("blocker").join("mcp.json"), false)
+            .expect_err("blocked parent must fail");
+        assert!(
+            err.to_string().contains("Failed to create directory"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn skills_template_and_init_skills_dir_table() {
+        let tmp = TempDir::new().unwrap();
+
+        let template = skills_template("custom-name");
+        assert!(template.starts_with("---\nname: custom-name\ndescription:"));
+        assert!(template.contains("When this skill is active:"));
+
+        let dir = tmp.path().join("skills");
+        let (skill_path, status) = init_skills_dir(&dir, false).unwrap();
+        assert_eq!(skill_path, dir.join("getting-started").join("SKILL.md"));
+        assert!(matches!(status, WriteStatus::Created));
+        assert_eq!(
+            std::fs::read_to_string(&skill_path).unwrap(),
+            skills_template("getting-started")
+        );
+        let (_, status) = init_skills_dir(&dir, false).unwrap();
+        assert!(matches!(status, WriteStatus::SkippedExists));
+
+        // Blocked parent dir fails loud.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let err = init_skills_dir(&tmp.path().join("blocker").join("skills"), false)
+            .expect_err("blocked parent must fail");
+        assert!(
+            err.to_string().contains("Failed to create"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn init_tools_and_plugins_dirs_fail_loud_on_blocked_parents() {
+        let tmp = TempDir::new().unwrap();
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+
+        let err = init_tools_dir(&tmp.path().join("blocker").join("tools"), false)
+            .expect_err("blocked tools parent must fail");
+        assert!(
+            err.to_string().contains("Failed to create tools dir"),
+            "unexpected error: {err:#}"
+        );
+        let err = init_plugins_dir(&tmp.path().join("blocker").join("plugins"), false)
+            .expect_err("blocked plugins parent must fail");
+        assert!(
+            err.to_string().contains("Failed to create plugins dir"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn count_dir_entries_table() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a"), "x").unwrap();
+        std::fs::write(tmp.path().join("b"), "x").unwrap();
+        assert_eq!(count_dir_entries(tmp.path()), 2);
+        assert_eq!(
+            count_dir_entries(&tmp.path().join("missing")),
+            0,
+            "missing dir counts as zero entries"
+        );
+    }
+
+    #[test]
+    fn mcp_config_load_save_roundtrip_table() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nested").join("mcp.json");
+
+        // Missing file loads as the empty default.
+        assert!(
+            load_mcp_config(&tmp.path().join("absent.json"))
+                .unwrap()
+                .servers
+                .is_empty()
+        );
+
+        // Save creates parents and the round-trip preserves the server.
+        let mut cfg = McpConfig::default();
+        cfg.servers.insert(
+            "demo".to_string(),
+            McpServerConfig {
+                command: Some("echo".to_string()),
+                args: vec!["hi".to_string()],
+                env: std::collections::HashMap::new(),
+                url: None,
+                transport: None,
+                connect_timeout: None,
+                execute_timeout: None,
+                read_timeout: None,
+                disabled: false,
+                enabled: true,
+                required: false,
+                enabled_tools: Vec::new(),
+                disabled_tools: Vec::new(),
+                headers: std::collections::HashMap::new(),
+                oauth: None,
+            },
+        );
+        save_mcp_config(&path, &cfg).expect("save must succeed");
+        let loaded = load_mcp_config(&path).unwrap();
+        assert_eq!(loaded.servers.len(), 1);
+        assert_eq!(
+            loaded.servers.get("demo").and_then(|s| s.command.clone()),
+            Some("echo".to_string())
+        );
+
+        // Malformed JSON fails loud with the path.
+        std::fs::write(&path, "not json").unwrap();
+        let err = load_mcp_config(&path).expect_err("malformed config must fail");
+        assert!(
+            err.to_string().contains("Failed to parse MCP config"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn execute_clean_plan_reports_removal_failures() {
+        let tmp = TempDir::new().unwrap();
+        // A directory cannot be removed by remove_file: the error context
+        // must name the target.
+        let plan = CleanPlan {
+            targets: vec![tmp.path().to_path_buf()],
+        };
+        let err = execute_clean_plan(&plan).expect_err("remove_file on a directory must fail");
+        assert!(
+            err.to_string().contains("Failed to remove"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn run_setup_writes_templates_and_respects_force_and_local() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        home_guarded(&home, || {
+            let config = Config::default();
+
+            // No explicit flag: mcp + skills run (the historical default).
+            run_setup(&config, &workspace, SetupArgs::default())
+                .expect("default setup must succeed");
+            assert!(home.join("mcp.json").is_file());
+            assert!(
+                home.join("skills")
+                    .join("getting-started")
+                    .join("SKILL.md")
+                    .is_file()
+            );
+            assert!(
+                !home.join("tools").exists(),
+                "tools only with --tools/--all"
+            );
+
+            // Explicit tools + plugins.
+            run_setup(
+                &config,
+                &workspace,
+                SetupArgs {
+                    tools: true,
+                    plugins: true,
+                    ..SetupArgs::default()
+                },
+            )
+            .expect("tools+plugins setup must succeed");
+            assert!(home.join("tools").join("README.md").is_file());
+            assert!(home.join("tools").join("example.sh").is_file());
+            assert!(home.join("plugins").join("README.md").is_file());
+            assert!(
+                home.join("plugins")
+                    .join("example")
+                    .join("PLUGIN.md")
+                    .is_file()
+            );
+
+            // Re-run without force keeps existing files.
+            run_setup(&config, &workspace, SetupArgs::default())
+                .expect("second default setup must succeed");
+
+            // --all --force overwrites everything without error.
+            run_setup(
+                &config,
+                &workspace,
+                SetupArgs {
+                    all: true,
+                    force: true,
+                    ..SetupArgs::default()
+                },
+            )
+            .expect("forced full setup must succeed");
+
+            // --local writes the skills dir into the workspace instead.
+            run_setup(
+                &config,
+                &workspace,
+                SetupArgs {
+                    skills: true,
+                    local: true,
+                    ..SetupArgs::default()
+                },
+            )
+            .expect("local skills setup must succeed");
+            assert!(
+                workspace
+                    .join("skills")
+                    .join("getting-started")
+                    .join("SKILL.md")
+                    .is_file()
+            );
+
+            // --status prints the read-only report (covers the dispatch).
+            run_setup(
+                &config,
+                &workspace,
+                SetupArgs {
+                    status: true,
+                    ..SetupArgs::default()
+                },
+            )
+            .expect("setup --status must succeed");
+        });
+    }
+
+    #[test]
+    fn session_resolution_and_fork_table() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        home_guarded(&home, || {
+            // Empty store: --continue and --last both fail with guidance,
+            // and the interactive picker bails before reading stdin.
+            let args = exec_args_continue();
+            let err = resolve_exec_resume_session_id(&args, &ws)
+                .expect_err("--continue with no sessions must fail");
+            assert!(
+                err.to_string().contains("No saved sessions found"),
+                "unexpected error: {err:#}"
+            );
+            let err = resolve_session_id(None, true, &ws).expect_err("--last with no sessions");
+            assert!(err.to_string().contains("No saved sessions found"));
+            let err = pick_session_id().expect_err("picker with no sessions");
+            assert!(err.to_string().contains("No saved sessions found"));
+
+            // Save one session for this workspace.
+            let manager = FileSessionStore::default_location().expect("store");
+            let session = create_saved_session(&sample_messages("hello"), "m", &ws, 3, None);
+            let id = session.metadata.id.clone();
+            manager.save_session(&session).expect("save");
+
+            // Latest-session resolution finds it.
+            assert_eq!(
+                latest_session_id_for_workspace(&ws).unwrap().as_deref(),
+                Some(id.as_str())
+            );
+            assert_eq!(
+                resolve_exec_resume_session_id(&exec_args_continue(), &ws).unwrap(),
+                Some(id.clone())
+            );
+            assert_eq!(resolve_session_id(None, true, &ws).unwrap(), id);
+
+            // Explicit ids win without touching the store.
+            assert_eq!(
+                resolve_exec_resume_session_id(&exec_args_resume("abc123"), &ws).unwrap(),
+                Some("abc123".to_string())
+            );
+            assert_eq!(
+                resolve_exec_resume_session_id(&exec_args_session_id("deadbee"), &ws).unwrap(),
+                Some("deadbee".to_string())
+            );
+            assert_eq!(
+                resolve_exec_resume_session_id(&exec_args_plain(), &ws).unwrap(),
+                None
+            );
+            assert_eq!(
+                resolve_session_id(Some("xyz".to_string()), false, &ws).unwrap(),
+                "xyz"
+            );
+
+            // Fork by latest and by explicit id: new ids, source intact.
+            let forked_latest = fork_session(None, true, &ws).expect("fork latest must succeed");
+            assert_ne!(forked_latest, id);
+            let forked_explicit =
+                fork_session(Some(id.clone()), false, &ws).expect("fork by id must succeed");
+            assert_ne!(forked_explicit, id);
+            assert_ne!(forked_explicit, forked_latest);
+            assert!(manager.load_session(&id).is_ok(), "source survives forks");
+
+            // Fork with no sessions for a different workspace fails loud.
+            let other = tmp.path().join("other-ws");
+            std::fs::create_dir_all(&other).unwrap();
+            let err = fork_session(None, true, &other).expect_err("fork with no sessions");
+            assert!(err.to_string().contains("No saved sessions found"));
+
+            // Listing: empty search query path and plain listing both run.
+            list_sessions(10, None).expect("list must succeed");
+            list_sessions(10, Some("zzz-no-match".to_string()))
+                .expect("searched list must succeed");
+        });
+    }
+
+    fn exec_args(args: &[&str]) -> ExecArgs {
+        let Some(Commands::Exec(parsed)) = Cli::try_parse_from(args)
+            .expect("CLI args should parse")
+            .command
+        else {
+            panic!("expected exec command");
+        };
+        parsed
+    }
+
+    fn exec_args_continue() -> ExecArgs {
+        exec_args(&["codesmith", "exec", "--continue", "p"])
+    }
+
+    fn exec_args_resume(id: &str) -> ExecArgs {
+        exec_args(&["codesmith", "exec", "--resume", id, "p"])
+    }
+
+    fn exec_args_session_id(id: &str) -> ExecArgs {
+        exec_args(&["codesmith", "exec", "--session-id", id, "p"])
+    }
+
+    fn exec_args_plain() -> ExecArgs {
+        exec_args(&["codesmith", "exec", "p"])
+    }
+
+    #[test]
+    fn persist_exec_session_creates_updates_and_respects_ids() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        home_guarded(&home, || {
+            let no_prompt = None::<SystemPrompt>;
+
+            // No id: creates a fresh session.
+            let id = persist_exec_session(&sample_messages("one"), "m", &ws, &no_prompt, None, 5)
+                .expect("persist new session");
+            assert!(!id.trim().is_empty());
+
+            // Same id: updates instead of creating a second session.
+            let again = persist_exec_session(
+                &sample_messages("two"),
+                "m",
+                &ws,
+                &no_prompt,
+                Some(id.as_str()),
+                9,
+            )
+            .expect("persist update");
+            assert_eq!(again, id);
+
+            // Explicit new id is honored (create-with-id branch), and a
+            // second persist with that id updates it.
+            let custom = persist_exec_session(
+                &sample_messages("three"),
+                "m",
+                &ws,
+                &no_prompt,
+                Some("custom-exec-session-1"),
+                1,
+            )
+            .expect("persist with custom id");
+            assert_eq!(custom, "custom-exec-session-1");
+            let custom_again = persist_exec_session(
+                &sample_messages("four"),
+                "m",
+                &ws,
+                &no_prompt,
+                Some("custom-exec-session-1"),
+                2,
+            )
+            .expect("persist update with custom id");
+            assert_eq!(custom_again, "custom-exec-session-1");
+        });
+    }
+
+    #[test]
+    fn dump_effective_config_renders_toml_for_a_fresh_home() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        home_guarded(&home, || {
+            let _cfg_path = EnvVarGuard::remove("CODESMITH_CONFIG_PATH");
+            let cli = Cli::try_parse_from([
+                "codesmith",
+                "--workspace",
+                ws.to_str().unwrap(),
+                "--skip-onboarding",
+                "config",
+                "dump",
+            ])
+            .expect("cli should parse");
+            dump_effective_config(&cli).expect("config dump must render for a fresh home");
+        });
+    }
+}

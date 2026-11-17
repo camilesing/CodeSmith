@@ -5049,4 +5049,438 @@ mod tests {
             );
         }
     }
+    // === coverage: reason payloads, transform seams, native error arms =======
+
+    /// `SessionStart` / `ProjectTrust` payloads stamp their reason field
+    /// (`session_reason` / `trust_reason`) — every enum variant round-trips
+    /// as its kebab name.
+    #[test]
+    fn event_to_dynamic_session_and_trust_reasons() {
+        use codesmith_agent::extension::{SessionReason, TrustReason};
+        for (reason, name) in [
+            (SessionReason::Startup, "startup"),
+            (SessionReason::Reload, "reload"),
+            (SessionReason::New, "new"),
+            (SessionReason::Resume, "resume"),
+            (SessionReason::Fork, "fork"),
+        ] {
+            let map = event_to_dynamic(&ExtensionEvent::SessionStart { reason })
+                .try_cast::<rhai::Map>()
+                .expect("payload map");
+            assert_eq!(
+                map.get("reason")
+                    .and_then(|d| d.clone().try_cast::<String>()),
+                Some(name.to_string()),
+                "{name:?}"
+            );
+        }
+        for (reason, name) in [
+            (TrustReason::FirstLoad, "first-load"),
+            (TrustReason::Trusted, "trusted"),
+            (TrustReason::Untrusted, "untrusted"),
+        ] {
+            let map = event_to_dynamic(&ExtensionEvent::ProjectTrust { reason })
+                .try_cast::<rhai::Map>()
+                .expect("payload map");
+            assert_eq!(
+                map.get("reason")
+                    .and_then(|d| d.clone().try_cast::<String>()),
+                Some(name.to_string()),
+                "{name:?}"
+            );
+        }
+    }
+
+    /// `before-provider-request`'s writable field: a role-bearing message
+    /// array replaces the payload's messages; anything else warns and
+    /// keeps the running event.
+    #[test]
+    fn merge_transform_before_provider_request_messages() {
+        use codesmith_agent::extension::BeforeProviderRequestEvent;
+        let event = ExtensionEvent::BeforeProviderRequest(BeforeProviderRequestEvent {
+            messages: serde_json::json!([{"role": "user", "content": "old"}]),
+        });
+
+        // Valid: array of role-bearing maps.
+        let mut fields = rhai::Map::new();
+        fields.insert(
+            "messages".into(),
+            json_to_dynamic(&serde_json::json!([
+                {"role": "user", "content": "rewritten"},
+                {"role": "assistant", "content": "prior"},
+            ])),
+        );
+        match merge_transform(&event, &Dynamic::from(fields)) {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::BeforeProviderRequest(e),
+            ) => {
+                assert_eq!(
+                    e.messages,
+                    serde_json::json!([
+                        {"role": "user", "content": "rewritten"},
+                        {"role": "assistant", "content": "prior"},
+                    ])
+                );
+            }
+            other => panic!("expected a BeforeProviderRequest transform, got {other:?}"),
+        }
+
+        // Wrong shape 1: not an array.
+        let mut fields = rhai::Map::new();
+        fields.insert("messages".into(), Dynamic::from("not-an-array".to_string()));
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(fields)),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+
+        // Wrong shape 2: array entries without a role.
+        let mut fields = rhai::Map::new();
+        fields.insert(
+            "messages".into(),
+            json_to_dynamic(&serde_json::json!([{"content": "no-role"}])),
+        );
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(fields)),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+
+        // Missing field entirely.
+        assert!(matches!(
+            merge_transform(&event, &Dynamic::from(rhai::Map::new())),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+    }
+
+    /// `provider-request-error`'s writable field: `retry` bool decides the
+    /// plan; `delay_ms` rewrites the backoff; a missing `retry` is a mod
+    /// bug that keeps the running plan.
+    #[test]
+    fn merge_transform_provider_request_error_retry_plans() {
+        use codesmith_agent::extension::{ProviderFailure, ProviderRequestErrorEvent, RetryPlan};
+        let event = ExtensionEvent::ProviderRequestError(ProviderRequestErrorEvent {
+            failure: ProviderFailure {
+                category: "rate_limited".into(),
+                message: "slow down".into(),
+            },
+            attempt: 2,
+            plan: RetryPlan::Retry { delay_ms: 1000 },
+        });
+
+        let fields = |entries: Vec<(&str, Dynamic)>| {
+            let mut m = rhai::Map::new();
+            for (k, v) in entries {
+                m.insert(k.into(), v);
+            }
+            Dynamic::from(m)
+        };
+
+        // retry: true + delay_ms → the forced plan carries the rewrite.
+        match merge_transform(
+            &event,
+            &fields(vec![
+                ("retry", Dynamic::from(true)),
+                ("delay_ms", Dynamic::from(5000_i64)),
+            ]),
+        ) {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::ProviderRequestError(e),
+            ) => {
+                assert_eq!(e.attempt, 2);
+                assert!(
+                    matches!(e.plan, RetryPlan::Retry { delay_ms: 5000 }),
+                    "plan was {:?}",
+                    e.plan
+                );
+            }
+            other => panic!("expected a ProviderRequestError transform, got {other:?}"),
+        }
+
+        // retry: true without delay_ms → keeps the running plan's backoff.
+        match merge_transform(&event, &fields(vec![("retry", Dynamic::from(true))])) {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::ProviderRequestError(e),
+            ) => assert!(
+                matches!(e.plan, RetryPlan::Retry { delay_ms: 1000 }),
+                "plan was {:?}",
+                e.plan
+            ),
+            other => panic!("expected a transform, got {other:?}"),
+        }
+
+        // retry: false → give up (also from a GiveUp running plan without
+        // delay: the default rewrites to 0 delay, then GiveUp here).
+        match merge_transform(&event, &fields(vec![("retry", Dynamic::from(false))])) {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::ProviderRequestError(e),
+            ) => assert!(matches!(e.plan, RetryPlan::GiveUp), "plan was {:?}", e.plan),
+            other => panic!("expected a transform, got {other:?}"),
+        }
+
+        // Negative delay clamps to 0.
+        match merge_transform(
+            &event,
+            &fields(vec![
+                ("retry", Dynamic::from(true)),
+                ("delay_ms", Dynamic::from(-7_i64)),
+            ]),
+        ) {
+            codesmith_agent::extension::HandlerOutcome::Transform(
+                ExtensionEvent::ProviderRequestError(e),
+            ) => assert!(
+                matches!(e.plan, RetryPlan::Retry { delay_ms: 0 }),
+                "plan was {:?}",
+                e.plan
+            ),
+            other => panic!("expected a transform, got {other:?}"),
+        }
+
+        // Missing retry → warn and continue (the running plan survives).
+        assert!(matches!(
+            merge_transform(&event, &fields(vec![("delay_ms", Dynamic::from(9_i64))])),
+            codesmith_agent::extension::HandlerOutcome::Continue
+        ));
+    }
+
+    /// `tool-result`'s boolean fields: `success` rewrites the flag and
+    /// `is_error` decides the error lane — the map_field_bool reads with a
+    /// present field run.
+    #[test]
+    fn merge_transform_tool_result_success_and_error_flags() {
+        let ok_event = ExtensionEvent::ToolResult(ToolResultEvent {
+            id: "c1".into(),
+            name: "echo".into(),
+            result: Ok(ToolResult::success("original")),
+        });
+        let mut fields = rhai::Map::new();
+        fields.insert("success".into(), Dynamic::from(false));
+        fields.insert("content".into(), Dynamic::from("failed".to_string()));
+        match merge_transform(&ok_event, &Dynamic::from(fields)) {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolResult(
+                tr,
+            )) => {
+                let err = tr
+                    .result
+                    .expect_err("success:false flips to the error lane");
+                assert!(err.to_string().contains("failed"), "{err}");
+            }
+            other => panic!("expected a ToolResult transform, got {other:?}"),
+        }
+
+        // Explicit is_error:false keeps a failed success flag on the ok lane.
+        let mut fields = rhai::Map::new();
+        fields.insert("success".into(), Dynamic::from(false));
+        fields.insert("is_error".into(), Dynamic::from(false));
+        fields.insert("content".into(), Dynamic::from("kept".to_string()));
+        match merge_transform(&ok_event, &Dynamic::from(fields)) {
+            codesmith_agent::extension::HandlerOutcome::Transform(ExtensionEvent::ToolResult(
+                tr,
+            )) => {
+                let r = tr.result.expect("is_error:false keeps the ok lane");
+                assert_eq!(r.content, "kept");
+                assert!(!r.success);
+            }
+            other => panic!("expected a ToolResult transform, got {other:?}"),
+        }
+    }
+
+    /// The `now_ms` native answers, and `projection_state` reads hub state
+    /// registered under this mod's id (the fold-state readback) — a
+    /// missing key is a loud script error.
+    #[test]
+    fn now_ms_and_projection_state_natives() {
+        let dir = TempDir::new().unwrap();
+        let shared_hub = hub();
+        shared_hub
+            .register(
+                "proj-reader",
+                "counts",
+                serde_json::json!({ "users": 2 }),
+                Arc::new(|state, _msg| Ok(state)),
+            )
+            .expect("seed hub state");
+        let m = RhaiMod::load_source(
+            "proj-reader",
+            "Reader",
+            "0.1.0",
+            r#"
+                let stamp = now_ms();
+                if stamp < 0 { return; }
+                let s = projection_state("counts");
+                if s.users != 2 { return; }
+                mod_state_set("read_ok", true);
+            "#
+            .to_string(),
+            kv_for(&dir, "proj-reader"),
+            shared_hub,
+        )
+        .expect("load reads seeded projection state");
+        assert_eq!(
+            kv_for(&dir, "proj-reader").get("read_ok"),
+            Some(serde_json::json!(true)),
+            "the script read the hub state through the native"
+        );
+
+        // A missing key fails the load (fail loud, not a silent unit).
+        let missing = RhaiMod::load_source(
+            "proj-reader2",
+            "Reader",
+            "0.1.0",
+            r#"let s = projection_state("never-registered");"#.to_string(),
+            ModKvStore::ephemeral(),
+            hub(),
+        );
+        assert!(missing.is_err(), "missing projection key must fail loudly");
+    }
+
+    /// A fold closure that errors (script runtime error) or returns a
+    /// non-JSON value reports `Err` through the configure-built fold
+    /// adapter — the host's documented drop-the-projection input.
+    #[test]
+    fn message_projection_fold_error_paths() {
+        let runner = crate::ExtensionRunner::new();
+        let hub = runner.message_projection_hub();
+        let dir = TempDir::new().unwrap();
+        let rhai_mod = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "fold-errors",
+                r#"
+                    register_message_projection("errs", 0, |state, m| 1 / (m.role.len() - m.role.len()));
+                    register_message_projection("not_json", 0, |state, m| m.nonexistent);
+                "#,
+            ),
+            kv_for(&dir, "fold-errors"),
+            hub.clone(),
+        )
+        .expect("load mod");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&rhai_mod)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        let msg = codesmith_agent::models::Message {
+            role: "user".to_string(),
+            content: vec![codesmith_agent::models::ContentBlock::Text {
+                text: "x".into(),
+                cache_control: None,
+            }],
+        };
+        // Both folds error; the hub's contract drops the projection (no
+        // panic, no state).
+        hub.fold_message(&msg);
+        assert_eq!(hub.state("fold-errors", "errs"), None);
+    }
+
+    /// Native registration validation arms fail the mod's load loudly:
+    /// missing tool/skill fields, duplicate loop entries, duplicate
+    /// strategy names, non-JSON policy config, provider spec problems.
+    #[test]
+    fn native_registration_error_arms_fail_load() {
+        let cases: Vec<(&str, &str, &str)> = vec![
+            (
+                "tool-missing-name",
+                r#"register_tool(#{ description: "d" }, |i, ctx| ok("x"));"#,
+                "name",
+            ),
+            (
+                "tool-missing-description",
+                r#"register_tool(#{ name: "t" }, |i, ctx| ok("x"));"#,
+                "description",
+            ),
+            (
+                "skill-missing-name",
+                r#"register_skill(#{ description: "d", body: "b" });"#,
+                "name",
+            ),
+            (
+                "skill-missing-description",
+                r#"register_skill(#{ name: "s", body: "b" });"#,
+                "description",
+            ),
+            (
+                "loop-twice",
+                r#"register_loop("main"); register_loop("again");"#,
+                "at most one loop",
+            ),
+            (
+                "strategy-dup",
+                r#"
+                    register_compaction_strategy("dup", #{ trigger: |s| false, plan: |s| #{} });
+                    register_compaction_strategy("dup", #{ trigger: |s| false, plan: |s| #{} });
+                "#,
+                "already registered",
+            ),
+            (
+                "strategy-bad-name",
+                r#"register_compaction_strategy("bad name!", #{ trigger: |s| false, plan: |s| #{} });"#,
+                "must match",
+            ),
+            (
+                "sweep-dup",
+                r#"
+                    register_sweep_rule("dup", #{ eligible: |v| true, placeholder: "p" });
+                    register_sweep_rule("dup", #{ eligible: |v| true, placeholder: "p" });
+                "#,
+                "already registered",
+            ),
+            (
+                "sweep-bad-knob",
+                r#"register_sweep_rule("r", #{ eligible: |v| true, placeholder: "p", keep_head_chars: -1 });"#,
+                "non-negative",
+            ),
+            (
+                "policy-bad-kind",
+                r#"register_policy("no-such-policy", #{ x: 1 });"#,
+                "unknown policy kind",
+            ),
+            (
+                "policy-not-json",
+                r#"register_policy("shell-output", #{ fn_value: || 0 });"#,
+                "not JSON-compatible",
+            ),
+            (
+                "provider-missing-kind",
+                r#"register_provider(#{ id: "gw" });"#,
+                "kind",
+            ),
+            (
+                "provider-not-builtin",
+                r#"register_provider(#{ id: "gw", kind: "not-a-builtin" });"#,
+                "builtin",
+            ),
+            (
+                "provider-bad-url",
+                r#"register_provider(#{ id: "gw", kind: "openai", base_url: "ftp://nope" });"#,
+                "https",
+            ),
+            (
+                "provider-bad-header-value",
+                r#"register_provider(#{ id: "gw", kind: "openai", headers: #{ "X": 42 } });"#,
+                "must be a string",
+            ),
+            (
+                "projection-dup-key",
+                r#"
+                    register_message_projection("k", 0, |s, m| s);
+                    register_message_projection("k", 0, |s, m| s);
+                "#,
+                "already registered",
+            ),
+            (
+                "projection-bad-key",
+                r#"register_message_projection("bad key!", 0, |s, m| s);"#,
+                "must match",
+            ),
+        ];
+        for (id, script, needle) in cases {
+            let dir = TempDir::new().unwrap();
+            let out = RhaiMod::load(&discovered_for(&dir, id, script), kv_for(&dir, id), hub());
+            let err = out
+                .err()
+                .unwrap_or_else(|| panic!("mod {id:?} must fail its load (script: {script})"));
+            assert!(
+                err.to_string().contains(needle),
+                "mod {id:?}: error must mention {needle:?}, got: {err}"
+            );
+        }
+    }
 }

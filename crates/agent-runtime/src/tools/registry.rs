@@ -1177,4 +1177,279 @@ mod tests {
             "a refused path yields no key, so the writer stays serial: {escaped:?}"
         );
     }
+
+    // ── Registration surface: approval classification, context, name
+    // resolution, catalog caching, and the dispatcher bridge. ─────────────
+
+    /// Shape-identical probe whose approval requirement is per-instance, so
+    /// classification tests can register one implementation under several
+    /// requirements.
+    struct ApprovalProbe {
+        name: &'static str,
+        requirement: ApprovalRequirement,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSpec for ApprovalProbe {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "approval classification probe"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        fn approval_requirement(&self) -> ApprovalRequirement {
+            self.requirement
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, crate::tools::spec::ToolError> {
+            unreachable!("the approval probe is never executed")
+        }
+    }
+
+    fn approval_probe_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new(ToolContext::new(std::path::PathBuf::from("/tmp/ws")));
+        for (name, requirement) in [
+            ("needs_approval", ApprovalRequirement::Required),
+            ("suggests_approval", ApprovalRequirement::Suggest),
+            ("auto_tool", ApprovalRequirement::Auto),
+        ] {
+            registry.register(Arc::new(ApprovalProbe { name, requirement }));
+        }
+        registry
+    }
+
+    fn catalog_names(tools: &[Tool]) -> Vec<&str> {
+        tools.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    #[test]
+    fn approval_classification_partitions_registered_tools() {
+        let registry = approval_probe_registry();
+
+        let required = registry.approval_required_tools();
+        let required: Vec<&str> = required.iter().map(|t| t.name()).collect();
+        assert_eq!(required, vec!["needs_approval"]);
+
+        // "Suggested" includes the required tier: both surface an approval
+        // prompt, they only differ in whether it can be skipped.
+        let suggested = registry.approval_suggested_tools();
+        let mut suggested: Vec<&str> = suggested.iter().map(|t| t.name()).collect();
+        suggested.sort_unstable();
+        assert_eq!(suggested, vec!["needs_approval", "suggests_approval"]);
+    }
+
+    #[test]
+    fn set_context_and_context_mut_replace_effective_context() {
+        let mut registry = approval_probe_registry();
+
+        registry.set_context(ToolContext::new(std::path::PathBuf::from("/tmp/other-ws")));
+        assert_eq!(
+            registry.context().workspace,
+            std::path::PathBuf::from("/tmp/other-ws")
+        );
+
+        registry.context_mut().workspace = std::path::PathBuf::from("/tmp/mutated-ws");
+        assert_eq!(
+            registry.context().workspace,
+            std::path::PathBuf::from("/tmp/mutated-ws")
+        );
+
+        // A context swap keeps the registered tools.
+        assert_eq!(registry.names().len(), 3);
+    }
+
+    #[test]
+    fn clone_carries_tools_context_and_pinned_catalog() {
+        let mut registry = approval_probe_registry();
+        let pinned = registry.to_api_tools(); // primes the memoised catalog
+        let clone = registry.clone();
+
+        // The pinned catalog travels with the clone unchanged.
+        assert_eq!(catalog_names(&clone.to_api_tools()), catalog_names(&pinned));
+        assert_eq!(clone.context().workspace, registry.context().workspace);
+
+        // Post-clone mutations of the original do not leak into the clone…
+        registry.register(Arc::new(ApprovalProbe {
+            name: "late_tool",
+            requirement: ApprovalRequirement::Auto,
+        }));
+        assert!(registry.contains("late_tool"));
+        assert!(!clone.contains("late_tool"));
+        assert_eq!(catalog_names(&clone.to_api_tools()), catalog_names(&pinned));
+        // …and the original's invalidated cache rebuilds with the new tool.
+        assert_eq!(registry.to_api_tools().len(), 4);
+    }
+
+    #[test]
+    fn resolve_walks_the_normalisation_ladder() {
+        let mut registry = ToolRegistry::new(ToolContext::new(std::path::PathBuf::from("/tmp/ws")));
+        registry.register(Arc::new(ApprovalProbe {
+            name: "read_file",
+            requirement: ApprovalRequirement::Auto,
+        }));
+        registry.register(Arc::new(ApprovalProbe {
+            name: "glob",
+            requirement: ApprovalRequirement::Auto,
+        }));
+
+        // 1. Exact and case-insensitive matches.
+        assert_eq!(registry.resolve("read_file"), Some("read_file"));
+        assert_eq!(registry.resolve("READ_FILE"), Some("read_file"));
+        // 2. Hyphen / space → underscore.
+        assert_eq!(registry.resolve("read-file"), Some("read_file"));
+        assert_eq!(registry.resolve("read file"), Some("read_file"));
+        // 3. CamelCase → snake_case.
+        assert_eq!(registry.resolve("ReadFile"), Some("read_file"));
+        // 4. `_tool` suffix stripped (also after CamelCase conversion).
+        assert_eq!(registry.resolve("read_file_tool"), Some("read_file"));
+        assert_eq!(registry.resolve("ReadFileTool"), Some("read_file"));
+        // 5. Fuzzy prefix needs at least 3 characters.
+        assert_eq!(registry.resolve("glo"), Some("glob"));
+        // No match: unresolvable, or too short for the fuzzy rung.
+        assert_eq!(registry.resolve("zzz"), None);
+        assert_eq!(registry.resolve("re"), None);
+    }
+
+    #[test]
+    fn to_snake_case_converts_camel_case_only() {
+        assert_eq!(to_snake_case("ReadFile"), "read_file");
+        assert_eq!(to_snake_case("already_snake"), "already_snake");
+        // A single leading uppercase char gets no leading underscore.
+        assert_eq!(to_snake_case("A"), "a");
+        assert_eq!(to_snake_case("HTTPServer"), "h_t_t_p_server");
+        assert_eq!(to_snake_case(""), "");
+    }
+
+    #[test]
+    fn dispatcher_resolve_delegates_to_the_registry_ladder() {
+        let registry = approval_probe_registry();
+        assert_eq!(
+            crate::tool_dispatch::ToolDispatcher::resolve(&registry, "AutoTool"),
+            Some("auto_tool".to_string())
+        );
+        assert_eq!(
+            crate::tool_dispatch::ToolDispatcher::resolve(&registry, "zzz"),
+            None
+        );
+    }
+
+    #[test]
+    fn dispatcher_grant_external_path_extends_shared_trust() {
+        let registry = approval_probe_registry();
+        let granted = std::env::temp_dir().join("codesmith-registry-granted-path");
+        crate::tool_dispatch::ToolDispatcher::grant_external_path(&registry, granted.clone());
+
+        assert!(registry.context().is_trusted_external_path(&granted));
+        let unrelated = std::path::PathBuf::from("/definitely/not/granted");
+        assert!(!registry.context().is_trusted_external_path(&unrelated));
+    }
+
+    /// Probe that rejects inputs carrying `"reject": true`, so the
+    /// dispatcher's `validate_input` delegation is observable.
+    struct ValidatingProbe;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for ValidatingProbe {
+        fn name(&self) -> &str {
+            "validating"
+        }
+        fn description(&self) -> &str {
+            "validate_input delegation probe"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::ReadOnly]
+        }
+        fn validate_input(&self, input: &Value, _context: &ToolContext) -> Result<(), ToolError> {
+            if input
+                .get("reject")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                Err(ToolError::invalid_input("rejected by probe"))
+            } else {
+                Ok(())
+            }
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, crate::tools::spec::ToolError> {
+            unreachable!("the validating probe is never executed")
+        }
+    }
+
+    #[test]
+    fn dispatcher_validate_input_delegates_and_fails_closed_on_unknown() {
+        let mut registry = ToolRegistry::new(ToolContext::new(std::path::PathBuf::from("/tmp/ws")));
+        registry.register(Arc::new(ValidatingProbe));
+
+        // Unknown tool names fail closed instead of validating nothing.
+        let err = crate::tool_dispatch::ToolDispatcher::validate_input(
+            &registry,
+            "no_such_tool",
+            &serde_json::json!({}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ToolError::NotAvailable { .. }), "{err}");
+
+        // Registered tool: the spec's own validation runs.
+        assert!(
+            crate::tool_dispatch::ToolDispatcher::validate_input(
+                &registry,
+                "validating",
+                &serde_json::json!({})
+            )
+            .is_ok()
+        );
+        let err = crate::tool_dispatch::ToolDispatcher::validate_input(
+            &registry,
+            "validating",
+            &serde_json::json!({"reject": true}),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("rejected by probe"), "{err}");
+    }
+
+    #[test]
+    fn dispatcher_to_api_tools_with_cache_marks_only_the_last_tool() {
+        let registry = approval_probe_registry();
+
+        let plain = crate::tool_dispatch::ToolDispatcher::to_api_tools(&registry);
+        // Sorted by name for prefix-cache stability, no cache markers.
+        assert_eq!(
+            catalog_names(&plain),
+            vec!["auto_tool", "needs_approval", "suggests_approval"]
+        );
+        assert!(plain.iter().all(|t| t.cache_control.is_none()));
+
+        let cached = crate::tool_dispatch::ToolDispatcher::to_api_tools_with_cache(&registry, true);
+        let last = cached.last().expect("at least one tool");
+        assert_eq!(last.name, "suggests_approval");
+        assert_eq!(
+            last.cache_control
+                .as_ref()
+                .expect("last tool is cache-marked")
+                .cache_type,
+            "ephemeral"
+        );
+        assert!(
+            cached[..cached.len() - 1]
+                .iter()
+                .all(|t| t.cache_control.is_none()),
+            "only the last tool carries the cache marker"
+        );
+    }
 }

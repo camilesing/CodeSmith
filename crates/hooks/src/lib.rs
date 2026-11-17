@@ -552,4 +552,91 @@ mod tests {
         let path = root.join(format!("{label}.sock"));
         (root, path)
     }
+
+    // ── WebhookHookSink against a local one-shot HTTP mock ────────────
+
+    use std::io::{Read as _, Write as _};
+
+    fn local_http(status_lines: Vec<&'static str>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            for status in status_lines {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf); // drain the request (and its body)
+                let head = format!("{status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(head.as_bytes());
+            }
+        });
+        format!("http://{addr}/hook")
+    }
+
+    #[tokio::test]
+    async fn webhook_sink_emits_and_retries_then_gives_up() {
+        // First emit: 500 twice then 200 — the retry loop must land on
+        // success without surfacing an error.
+        let url = local_http(vec![
+            "HTTP/1.1 500 Internal Server Error",
+            "HTTP/1.1 500 Internal Server Error",
+            "HTTP/1.1 200 OK",
+        ]);
+        let sink = WebhookHookSink::new(url);
+        sink.emit(&HookEvent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        })
+        .await
+        .expect("webhook succeeds after retries");
+
+        // A client error (400) is NOT retried: it fails immediately.
+        let url = local_http(vec!["HTTP/1.1 400 Bad Request"]);
+        let sink = WebhookHookSink::new(url);
+        let err = sink
+            .emit(&HookEvent::ResponseStart {
+                response_id: "resp-1".to_string(),
+            })
+            .await
+            .expect_err("client errors are terminal");
+        assert!(err.to_string().contains("400"), "{err}");
+
+        // An unreachable endpoint fails as a request error (no server at
+        // that port after the mock thread exits — use a closed port).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener); // port now closed
+        let sink = WebhookHookSink::new(format!("http://{addr}/hook"));
+        assert!(
+            sink.emit(&HookEvent::ResponseStart {
+                response_id: "resp-1".to_string()
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hook_event_to_json_covers_more_variants() {
+        // Every variant serializes; probe a set the existing tests skip.
+        for event in [
+            HookEvent::ResponseStart {
+                response_id: "resp-1".to_string(),
+            },
+            HookEvent::JobLifecycle {
+                job_id: "job-1".to_string(),
+                phase: "started".to_string(),
+                progress: Some(50),
+                detail: Some("halfway".to_string()),
+            },
+            HookEvent::ApprovalLifecycle {
+                approval_id: "ap-1".to_string(),
+                phase: "requested".to_string(),
+                reason: None,
+            },
+        ] {
+            let json = event.to_json();
+            assert!(json.get("type").is_some(), "type tag present: {json}");
+        }
+    }
 }

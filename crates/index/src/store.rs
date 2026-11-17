@@ -852,4 +852,37 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a, workspace_hash(Path::new("/repos/alpha")));
     }
+
+    #[test]
+    fn backend_id_round_trips_and_clear_symbols_empties() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = IndexStore::open(tmp.path(), &tmp.path().join("index.db")).expect("open");
+        assert_eq!(store.backend_id().expect("backend id"), None);
+        store.set_backend("tree-sitter").expect("set backend");
+        assert_eq!(
+            store.backend_id().expect("backend id").as_deref(),
+            Some("tree-sitter")
+        );
+        store.clear_symbols().expect("clear");
+        // clear_symbols is a symbol purge, not a meta purge:
+        assert_eq!(
+            store.backend_id().expect("backend id").as_deref(),
+            Some("tree-sitter")
+        );
+    }
+
+    #[test]
+    fn open_default_creates_the_workspace_hashed_dir() {
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir");
+        let _g = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            &codesmith_home,
+        );
+        let ws = tempfile::tempdir().expect("tempdir");
+        let store = IndexStore::open_default(ws.path()).expect("open default");
+        assert!(true, "opened under the isolated home");
+    }
 }

@@ -1367,4 +1367,194 @@ mod tests {
                 .join("secrets.json")
         );
     }
+
+    // ── FileKeyringStore plumbing ─────────────────────────────────────
+
+    #[test]
+    fn file_store_path_accessor_returns_constructor_path() {
+        let store = FileKeyringStore::new("/tmp/somewhere/secrets.json");
+        assert_eq!(store.path(), Path::new("/tmp/somewhere/secrets.json"));
+    }
+
+    #[test]
+    fn file_store_default_path_falls_back_to_platform_home() {
+        // Empty HOME/USERPROFILE values are ignored, so the `dirs` crate's
+        // platform home resolution is the last resort. On macOS that is the
+        // real user home (getpwuid); we only assert the suffix so the test
+        // stays independent of the machine it runs on.
+        let _lock = env_lock();
+        clear_known_envs();
+        let _home = EnvVarGuard::set("HOME", "");
+        let _userprofile = EnvVarGuard::set("USERPROFILE", "");
+
+        let path = FileKeyringStore::default_path()
+            .expect("platform home resolution must not fail with an OS account");
+        assert!(
+            path.ends_with(Path::new(".codesmith").join("secrets").join("secrets.json")),
+            "unexpected fallback path: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn file_store_tmp_sibling_paths_stay_in_directory() {
+        let rooted = FileKeyringStore::new("/data/secrets.json");
+        let sibling = rooted.tmp_sibling_path();
+        assert_eq!(sibling.parent(), Some(Path::new("/data")));
+        let name = sibling.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with(".secrets.json.tmp-")
+                && name.contains(&std::process::id().to_string()),
+            "sibling name must be unique per process: {name}"
+        );
+
+        // A bare filename has no parent directory — the sibling lands in the
+        // CWD's place (relative path), not under `/`.
+        let bare = FileKeyringStore::new("secrets.json");
+        let sibling = bare.tmp_sibling_path();
+        assert!(!sibling.is_absolute());
+        assert!(sibling.to_string_lossy().starts_with(".secrets.json.tmp-"));
+
+        // A path without a file name falls back to a generic base name.
+        let root = FileKeyringStore::new("/");
+        let sibling = root.tmp_sibling_path();
+        assert!(sibling.to_string_lossy().starts_with(".secrets.tmp-"));
+    }
+
+    // ── UnavailableStore / Secrets facade ─────────────────────────────
+
+    #[test]
+    fn unavailable_store_reads_none_writes_loud_and_deletes_quietly() {
+        let store = UnavailableStore;
+        assert_eq!(store.get("k").unwrap(), None);
+        let err = store.set("k", "v").unwrap_err();
+        assert!(
+            err.to_string().contains("unavailable"),
+            "write must fail loudly instead of leaking to CWD: {err}"
+        );
+        store.delete("k").unwrap();
+        assert_eq!(store.backend_name(), "unavailable (no home directory)");
+    }
+
+    #[test]
+    fn unavailable_store_still_resolves_from_env() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-layer") };
+
+        let secrets = Secrets::new(Arc::new(UnavailableStore));
+        assert_eq!(secrets.resolve("deepseek").as_deref(), Some("env-layer"));
+        assert_eq!(
+            secrets.resolve_with_source("deepseek"),
+            Some(("env-layer".to_string(), SecretSource::Env))
+        );
+
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    }
+
+    #[test]
+    fn secrets_facade_set_get_delete_delegate_to_store() {
+        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
+        secrets.set("deepseek", "sk-1").unwrap();
+        assert_eq!(secrets.get("deepseek").unwrap().as_deref(), Some("sk-1"));
+        secrets.delete("deepseek").unwrap();
+        assert_eq!(secrets.get("deepseek").unwrap(), None);
+    }
+
+    #[test]
+    fn secrets_debug_reports_backend_and_service() {
+        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
+        let rendered = format!("{secrets:?}");
+        assert!(rendered.contains("in-memory (test)"), "{rendered}");
+        assert!(rendered.contains(DEFAULT_SERVICE), "{rendered}");
+    }
+
+    #[test]
+    fn secrets_file_backed_and_system_keyring_construct_backends() {
+        let _lock = env_lock();
+        clear_known_envs();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("HOME", tmp.path());
+        let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
+
+        let file_backed = Secrets::file_backed();
+        assert_eq!(file_backed.backend_name(), FILE_BACKEND_LABEL);
+
+        // `system_keyring` probes the OS backend and falls back to the file
+        // store when it is unavailable — both outcomes are acceptable, the
+        // call must just never panic.
+        let system = Secrets::system_keyring();
+        assert!(
+            system.backend_name() == "system keyring"
+                || system.backend_name() == FILE_BACKEND_LABEL,
+            "unexpected backend: {}",
+            system.backend_name()
+        );
+    }
+
+    #[test]
+    fn auto_detect_with_unknown_backend_value_falls_back_to_file() {
+        let _lock = env_lock();
+        clear_known_envs();
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("HOME", tmp.path());
+        let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
+        let _backend = EnvVarGuard::set(SECRET_BACKEND_ENV, "carrier-pigeon");
+
+        let secrets = Secrets::auto_detect();
+        assert_eq!(secrets.backend_name(), FILE_BACKEND_LABEL);
+    }
+
+    // ── DefaultKeyringStore (OS keyring) ──────────────────────────────
+
+    #[test]
+    fn default_keyring_store_construction_probe_and_label() {
+        let store = DefaultKeyringStore::default();
+        assert_eq!(store.backend_name(), "system keyring");
+        assert_eq!(
+            DefaultKeyringStore::new("codesmith-test-service").backend_name(),
+            "system keyring"
+        );
+        // `probe` only constructs the platform entry — on macOS/Windows it
+        // performs no credential read or write, so calling it is
+        // side-effect free and merely exercises the backend path check.
+        let _ = store.probe();
+    }
+
+    #[test]
+    fn system_keyring_store_round_trips_when_available() {
+        let service = format!("codesmith-coverage-test-{}", std::process::id());
+        let store = DefaultKeyringStore::new(service);
+        match store.set("probe-key", "probe-value") {
+            Ok(()) => {
+                assert_eq!(
+                    store.get("probe-key").unwrap().as_deref(),
+                    Some("probe-value")
+                );
+                store.delete("probe-key").unwrap();
+                assert_eq!(store.get("probe-key").unwrap(), None);
+                // Deleting an already-absent entry is a no-op, not an error.
+                store.delete("probe-key").unwrap();
+            }
+            // No usable OS keyring in this environment (headless CI, no
+            // Secret Service): the opt-in backend's contract is fallback,
+            // not failure, so there is nothing to assert here.
+            Err(SecretsError::Keyring(_)) => {}
+            Err(err) => panic!("unexpected keyring error: {err}"),
+        }
+    }
+
+    #[test]
+    fn in_memory_keyring_store_round_trips() {
+        let store = InMemoryKeyringStore::default();
+        assert_eq!(store.get("k").expect("get"), None);
+        store.set("k", "v").expect("set");
+        assert_eq!(store.get("k").expect("get").as_deref(), Some("v"));
+        store.delete("k").expect("delete");
+        assert_eq!(store.get("k").expect("get"), None);
+        // Deleting a missing key is idempotent, not an error.
+        store.delete("k").expect("delete again");
+    }
 }

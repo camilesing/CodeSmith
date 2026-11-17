@@ -3561,4 +3561,557 @@ mod tests {
             "the refresh must not ride the engine's op channel"
         );
     }
+
+    // === composer keys and pure render helpers ==============================
+
+    #[test]
+    fn composer_move_left_steps_over_multibyte_chars() {
+        let mut composer = Composer {
+            buffer: "aé中".to_string(),
+            cursor: "aé中".len(),
+        };
+        composer.move_left(); // over 中 (3 bytes)
+        assert_eq!(composer.cursor, "aé".len());
+        composer.move_left(); // over é (2 bytes)
+        assert_eq!(composer.cursor, 1);
+        composer.move_left(); // over a
+        assert_eq!(composer.cursor, 0);
+        composer.move_left(); // at the start: stays put
+        assert_eq!(composer.cursor, 0);
+    }
+
+    /// Ctrl+W across a multi-byte space (U+3000, common in CJK input): the
+    /// cut index must advance by the whitespace char's whole length, not the
+    /// legacy `i + 1` that landed mid-character and panicked. The cut lands
+    /// after the whitespace, so the word goes and the separator stays for
+    /// the next press (which takes the whole remaining head).
+    #[test]
+    fn composer_kill_word_cuts_at_multibyte_whitespace() {
+        let buffer = "alpha\u{3000}beta".to_string();
+        let mut composer = Composer {
+            cursor: buffer.len(),
+            buffer,
+        };
+        assert_eq!(composer.kill_word(), "beta");
+        assert_eq!(composer.buffer, "alpha\u{3000}");
+        assert_eq!(composer.cursor, composer.buffer.len());
+        // Second press takes the head plus its trailing separator.
+        assert_eq!(composer.kill_word(), "alpha\u{3000}");
+        assert!(composer.is_empty());
+        assert_eq!(composer.cursor, 0);
+    }
+
+    #[test]
+    fn backgroundable_tools_are_shells_and_subagents() {
+        assert!(is_backgroundable_tool("exec_shell"));
+        assert!(is_backgroundable_tool("exec_shell_stream"));
+        assert!(is_backgroundable_tool("agent_open"));
+        assert!(!is_backgroundable_tool("read_file"));
+        assert!(!is_backgroundable_tool("web_search"));
+    }
+
+    #[test]
+    fn turn_status_str_names_every_outcome() {
+        assert_eq!(turn_status_str(TurnOutcomeStatus::Completed), "completed");
+        assert_eq!(
+            turn_status_str(TurnOutcomeStatus::Interrupted),
+            "interrupted"
+        );
+        assert_eq!(turn_status_str(TurnOutcomeStatus::Failed), "failed");
+    }
+
+    #[test]
+    fn error_envelope_message_is_its_display_form() {
+        let envelope = ErrorEnvelope::transient("stream stalled");
+        assert_eq!(error_envelope_message(&envelope), envelope.to_string());
+        assert!(error_envelope_message(&envelope).contains("stream stalled"));
+    }
+
+    #[test]
+    fn tool_log_is_capped_and_replayed_once() {
+        let mut state = test_repl_state();
+        state.tool_log_turn = 3;
+        for index in 0..(crate::tool_summary::TOOL_LOG_CAP + 2) {
+            push_tool_record(
+                &mut state,
+                "read_file",
+                Some(format!("path: f{index}.rs")),
+                Some(format!("body {index}")),
+                None,
+            );
+        }
+        assert_eq!(
+            state.tool_log.len(),
+            crate::tool_summary::TOOL_LOG_CAP,
+            "the oldest records are drained past the cap"
+        );
+        // The surviving records all belong to the current turn.
+        assert!(state.tool_log.iter().all(|record| record.turn == 3));
+
+        replay_turn_tool_detail(&mut state);
+        assert!(
+            state.tool_log.iter().all(|record| record.replayed),
+            "every current-turn record is marked replayed"
+        );
+        // A second toggle reprints nothing: all records are already replayed
+        // (observable as the same flags, no duplicates added).
+        replay_turn_tool_detail(&mut state);
+        assert!(state.tool_log.iter().all(|record| record.replayed));
+    }
+
+    #[test]
+    fn carry_composer_out_moves_a_draft_to_the_next_prompt() {
+        let mut state = test_repl_state();
+        let mut view = TurnView::new();
+        view.composer.buffer = "half-typed".to_string();
+        view.composer.cursor = view.composer.buffer.len();
+
+        carry_composer_out(&mut state, &mut view);
+        assert_eq!(state.turn_end_draft.as_deref(), Some("half-typed"));
+        assert!(view.composer.is_empty());
+
+        // An empty composer leaves the draft slot untouched.
+        state.turn_end_draft = None;
+        carry_composer_out(&mut state, &mut view);
+        assert_eq!(state.turn_end_draft, None);
+    }
+
+    #[tokio::test]
+    async fn apply_plan_mode_sync_enters_plan_and_restores_with_handoff() {
+        let mut state = test_repl_state();
+
+        apply_plan_mode_sync(&mut state, PlanModeSync::Enter).await;
+        assert_eq!(state.mode, AppMode::Plan);
+
+        // Enter while already in Plan mode is a no-op (no duplicate notice).
+        apply_plan_mode_sync(&mut state, PlanModeSync::Enter).await;
+        assert_eq!(state.mode, AppMode::Plan);
+
+        apply_plan_mode_sync(&mut state, PlanModeSync::Exit(AppMode::Agent)).await;
+        assert_eq!(state.mode, AppMode::Agent);
+        assert!(
+            state.plan_implementation_pending,
+            "an approved plan hands the REPL its implementation kickoff"
+        );
+    }
+
+    #[test]
+    fn apply_turn_accounting_accumulates_usage_and_cache_telemetry() {
+        let mut state = test_repl_state();
+        state.turn_started_at = Some(Instant::now());
+        let usage = crate::models::Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            prompt_cache_hit_tokens: Some(40),
+            prompt_cache_miss_tokens: Some(60),
+            reasoning_replay_tokens: None,
+            ..Default::default()
+        };
+
+        apply_turn_accounting(
+            &mut state,
+            usage,
+            TurnOutcomeStatus::Completed,
+            None,
+            None,
+            None,
+            Some("reported-model".to_string()),
+        );
+
+        assert_eq!(state.session.total_tokens, 150);
+        assert_eq!(state.session.total_input_tokens, 100);
+        assert_eq!(state.session.total_output_tokens, 50);
+        assert_eq!(state.session.total_cache_hit_tokens, 40);
+        assert_eq!(state.session.total_cache_miss_tokens, 60);
+        assert_eq!(state.session.last_prompt_tokens, Some(100));
+        assert_eq!(state.session.last_completion_tokens, Some(50));
+        assert_eq!(state.reported_model.as_deref(), Some("reported-model"));
+        assert_eq!(state.session.turn_cache_history.len(), 1);
+        assert!(!state.cumulative_turn_duration.is_zero());
+
+        // A second turn without an explicit miss count derives it from the
+        // hit, and the reported model slot stays (empty reports don't clear).
+        apply_turn_accounting(
+            &mut state,
+            crate::models::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                prompt_cache_hit_tokens: Some(4),
+                prompt_cache_miss_tokens: None,
+                ..Default::default()
+            },
+            TurnOutcomeStatus::Failed,
+            Some("boom".to_string()),
+            None,
+            None,
+            Some(String::new()),
+        );
+        assert_eq!(state.session.total_tokens, 165);
+        assert_eq!(state.session.total_cache_miss_tokens, 66, "10 - 4 = 6 more");
+        assert_eq!(
+            state.reported_model.as_deref(),
+            Some("reported-model"),
+            "an empty report must not clear the label"
+        );
+        assert_eq!(state.session.turn_cache_history.len(), 2);
+    }
+
+    /// The seeded sub-agent surface the pump reads: counts, listing, and the
+    /// live-running snapshot filter.
+    #[tokio::test]
+    async fn seeded_subagent_surface_counts_running_children() {
+        use codesmith_agent_runtime::host_services::SubAgentApi as _;
+
+        let mut done = running_snapshot("child-done");
+        done.status = crate::tools::subagent::SubAgentStatus::Completed;
+        let seeded = SeededSubAgents(vec![running_snapshot("child-run"), done]);
+
+        assert_eq!(seeded.running_count().await, 1);
+        assert_eq!(seeded.list().await.len(), 2);
+        seeded.cleanup(Duration::from_secs(1)).await;
+        let live = seeded.live_running_snapshots().await;
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].agent_id, "child-run");
+    }
+
+    /// Queued messages ride the steer channel in order; a dead steer mailbox
+    /// re-queues the text instead of dropping it.
+    #[tokio::test]
+    async fn flush_queue_into_turn_delivers_in_order_and_requeues_on_failure() {
+        let mut mock = crate::core::engine::mock_engine_handle();
+        let engine = mock.handle.clone();
+        let mut state = test_repl_state();
+        let mut view = TurnView::new();
+        state.queued_messages = vec!["first".to_string(), "second".to_string()];
+
+        flush_queue_into_turn(&mut state, &mut view, &engine).await;
+        assert!(state.queued_messages.is_empty(), "both delivered");
+        let mut steered = Vec::new();
+        while let Ok(steer) = mock.rx_steer.try_recv() {
+            steered.push(steer);
+        }
+        assert_eq!(steered.len(), 2, "steers arrive in typed order");
+
+        // Nothing queued: a no-op flush.
+        flush_queue_into_turn(&mut state, &mut view, &engine).await;
+
+        // Drop the steer receiver: delivery fails and the text goes back on
+        // the queue for the next turn.
+        drop(mock);
+        state.queued_messages = vec!["come back".to_string()];
+        flush_queue_into_turn(&mut state, &mut view, &engine).await;
+        assert_eq!(
+            state.queued_messages,
+            vec!["come back".to_string()],
+            "an undeliverable message is re-queued, not lost"
+        );
+    }
+
+    /// The mid-turn composer keys: editing, take-back (Up), queueing, and the
+    /// engine-facing actions, all against the mock engine.
+    #[tokio::test]
+    async fn handle_turn_key_edits_queues_and_signals_the_engine() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let mut mock = crate::core::engine::mock_engine_handle();
+        let engine = mock.handle.clone();
+        let mut state = test_repl_state();
+        state.engine = Some(engine.clone());
+        let mut view = TurnView::new();
+
+        with_home_async(&home, async {
+            // Typing and editing.
+            for key in [TurnKey::Char('h'), TurnKey::Char('i')] {
+                handle_turn_key(&mut state, &mut view, key, &engine).await;
+            }
+            handle_turn_key(&mut state, &mut view, TurnKey::Backspace, &engine).await;
+            assert_eq!(view.composer.buffer, "h");
+            handle_turn_key(&mut state, &mut view, TurnKey::Char('!'), &engine).await;
+            handle_turn_key(&mut state, &mut view, TurnKey::Left, &engine).await;
+            handle_turn_key(&mut state, &mut view, TurnKey::Delete, &engine).await;
+            assert_eq!(view.composer.buffer, "h");
+            handle_turn_key(&mut state, &mut view, TurnKey::End, &engine).await;
+            handle_turn_key(&mut state, &mut view, TurnKey::Home, &engine).await;
+            assert_eq!(view.composer.cursor, 0);
+            handle_turn_key(&mut state, &mut view, TurnKey::Right, &engine).await;
+            handle_turn_key(&mut state, &mut view, TurnKey::Newline, &engine).await;
+            assert_eq!(view.composer.buffer, "h\n");
+            handle_turn_key(&mut state, &mut view, TurnKey::KillToStart, &engine).await;
+            assert!(view.composer.is_empty());
+            for key in [TurnKey::Char('a'), TurnKey::Char(' '), TurnKey::Char('b')] {
+                handle_turn_key(&mut state, &mut view, key, &engine).await;
+            }
+            handle_turn_key(&mut state, &mut view, TurnKey::KillWord, &engine).await;
+            assert_eq!(view.composer.buffer, "a ");
+            // KillToEnd at the end of the buffer removes nothing; a second
+            // Ctrl+W takes the remaining head and its separator.
+            handle_turn_key(&mut state, &mut view, TurnKey::KillToEnd, &engine).await;
+            assert_eq!(view.composer.buffer, "a ");
+            handle_turn_key(&mut state, &mut view, TurnKey::KillWord, &engine).await;
+            assert!(view.composer.is_empty());
+            // Down is consumed (no composer history mid-turn).
+            handle_turn_key(&mut state, &mut view, TurnKey::Down, &engine).await;
+            assert!(view.composer.is_empty());
+
+            // Queue takes the composer text into the durable queue.
+            for key in [
+                TurnKey::Char('n'),
+                TurnKey::Char('o'),
+                TurnKey::Char('t'),
+                TurnKey::Char('e'),
+            ] {
+                handle_turn_key(&mut state, &mut view, key, &engine).await;
+            }
+            handle_turn_key(&mut state, &mut view, TurnKey::Queue, &engine).await;
+            assert_eq!(state.queued_messages, vec!["note".to_string()]);
+            assert!(view.composer.is_empty());
+
+            // Up takes the newest queued message back for editing.
+            handle_turn_key(&mut state, &mut view, TurnKey::Up, &engine).await;
+            assert_eq!(view.composer.buffer, "note");
+            assert!(state.queued_messages.is_empty());
+
+            // SendNow queues and flushes immediately — the steer carries it.
+            handle_turn_key(&mut state, &mut view, TurnKey::SendNow, &engine).await;
+            assert!(state.queued_messages.is_empty());
+            assert!(view.composer.is_empty());
+
+            // A bare Enter on an empty composer redraws without queueing.
+            handle_turn_key(&mut state, &mut view, TurnKey::Queue, &engine).await;
+            assert!(state.queued_messages.is_empty());
+
+            // Detail and task-list toggles flip their flags.
+            let detail_before = state.tool_detail;
+            handle_turn_key(&mut state, &mut view, TurnKey::ToggleDetail, &engine).await;
+            assert_eq!(state.tool_detail, !detail_before);
+            handle_turn_key(&mut state, &mut view, TurnKey::TaskList, &engine).await;
+            assert!(state.show_tasks);
+            handle_turn_key(&mut state, &mut view, TurnKey::TaskList, &engine).await;
+            assert!(!state.show_tasks);
+
+            // Thinking and mode rings advance.
+            let effort_before = state.reasoning_effort;
+            handle_turn_key(&mut state, &mut view, TurnKey::CycleThinking, &engine).await;
+            assert_ne!(state.reasoning_effort, effort_before);
+            handle_turn_key(&mut state, &mut view, TurnKey::CycleMode, &engine).await;
+
+            // Engine-facing keys arrive as ops.
+            handle_turn_key(&mut state, &mut view, TurnKey::Background, &engine).await;
+            handle_turn_key(&mut state, &mut view, TurnKey::StopAll, &engine).await;
+            handle_turn_key(&mut state, &mut view, TurnKey::StopAll, &engine).await;
+            // Escape with a backgroundable tool running backgrounds it.
+            view.current_tool = Some("exec_shell".to_string());
+            handle_turn_key(&mut state, &mut view, TurnKey::Esc, &engine).await;
+        })
+        .await;
+
+        let mut saw_background = false;
+        let mut saw_cancel_all = false;
+        while let Ok(op) = mock.rx_op.try_recv() {
+            saw_background |= matches!(op, Op::BackgroundCurrentShell);
+            saw_cancel_all |= matches!(op, Op::CancelAllBackgroundTasks);
+        }
+        assert!(
+            saw_background,
+            "Ctrl+B and Esc background the running shell"
+        );
+        assert!(saw_cancel_all, "a confirmed Ctrl+X Ctrl+K stops all work");
+        assert!(
+            state.queued_messages.is_empty(),
+            "the Esc flush delivered the queued note"
+        );
+
+        // Esc with nothing backgroundable cancels the turn instead.
+        let mut view = TurnView::new();
+        view.current_tool = Some("read_file".to_string());
+        handle_turn_key(&mut state, &mut view, TurnKey::Esc, &engine).await;
+        assert!(mock.cancel_token.is_cancelled(), "the interrupt path fires");
+
+        // Esc with a queued message keeps it for the next turn.
+        state.queued_messages = vec!["later".to_string()];
+        handle_turn_key(&mut state, &mut view, TurnKey::Esc, &engine).await;
+        assert_eq!(state.queued_messages, vec!["later".to_string()]);
+    }
+
+    /// The approval gate's pre-prompt paths: auto mode approves, session
+    /// denials refuse, session grants approve — all without touching stdin.
+    #[tokio::test]
+    async fn handle_approval_answers_pre_prompt_paths_without_stdin() {
+        let mock = crate::core::engine::mock_engine_handle();
+        let engine = mock.handle.clone();
+        let mut state = test_repl_state();
+        let mut keys = super::super::keys::KeyTap::start();
+        let mut view = TurnView::new();
+
+        // Auto mode: approved and logged as such.
+        state.approval_mode = ApprovalMode::Auto;
+        handle_approval(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "call-auto".to_string(),
+            "exec_shell".to_string(),
+            "Run a shell command.".to_string(),
+            serde_json::json!({ "command": "cargo build" }),
+            "shell:exec_shell:aaa".to_string(),
+            "shell:cargo build".to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(state.approvals.last().unwrap().decision, "auto-mode");
+        assert!(!state.awaiting_approval);
+
+        // A session denial vetoes before the prompt.
+        state.approval_mode = ApprovalMode::Suggest;
+        state
+            .approval_session_denied
+            .insert("shell:exec_shell:bbb".to_string());
+        handle_approval(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "call-deny".to_string(),
+            "exec_shell".to_string(),
+            "Run a shell command.".to_string(),
+            serde_json::json!({ "command": "cargo build" }),
+            "shell:exec_shell:bbb".to_string(),
+            "shell:cargo build".to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(state.approvals.last().unwrap().decision, "session-deny");
+
+        // A session `[a]` grant approves and says where it came from.
+        state
+            .approval_session_approved
+            .insert("shell:cargo build".to_string());
+        handle_approval(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "call-grant".to_string(),
+            "exec_shell".to_string(),
+            "Run a shell command.".to_string(),
+            serde_json::json!({ "command": "cargo build" }),
+            "shell:exec_shell:ccc".to_string(),
+            "shell:cargo build".to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(state.approvals.last().unwrap().decision, "session-grant");
+
+        // Two approvals and one denial crossed the engine's channel.
+        let mut mock = mock;
+        let mut approved = 0;
+        let mut denied = 0;
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), mock.recv_approval_event()).await
+        {
+            match event {
+                crate::core::engine::MockApprovalEvent::Approved { .. } => approved += 1,
+                crate::core::engine::MockApprovalEvent::Denied { .. } => denied += 1,
+                _ => {}
+            }
+        }
+        assert_eq!((approved, denied), (2, 1));
+    }
+
+    #[tokio::test]
+    async fn handle_path_access_auto_mode_allows_without_asking() {
+        let mock = crate::core::engine::mock_engine_handle();
+        let engine = mock.handle.clone();
+        let mut state = test_repl_state();
+        state.approval_mode = ApprovalMode::Auto;
+        let mut keys = super::super::keys::KeyTap::start();
+        let mut view = TurnView::new();
+
+        handle_path_access(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "path-1".to_string(),
+            "read_file".to_string(),
+            std::path::PathBuf::from("/outside/workspace.txt"),
+        )
+        .await;
+
+        let mut mock = mock;
+        assert!(matches!(
+            mock.recv_approval_event().await,
+            Some(crate::core::engine::MockApprovalEvent::Approved { .. })
+        ));
+    }
+
+    /// Auto-mode elevation: catastrophic commands are denied even with trust,
+    /// benign commands elevate only with the trust opt-in.
+    #[tokio::test]
+    async fn handle_elevation_auto_mode_strips_or_elevates_by_command() {
+        let mut mock = crate::core::engine::mock_engine_handle();
+        let engine = mock.handle.clone();
+        let mut state = test_repl_state();
+        state.approval_mode = ApprovalMode::Auto;
+        let mut keys = super::super::keys::KeyTap::start();
+        let mut view = TurnView::new();
+
+        // Catastrophic: denied even with trust mode on.
+        state.trust_mode = true;
+        handle_elevation(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "elev-1".to_string(),
+            "exec_shell".to_string(),
+            Some("rm -rf /".to_string()),
+            "sandbox denied write".to_string(),
+        )
+        .await;
+        assert!(matches!(
+            mock.recv_approval_event().await,
+            Some(crate::core::engine::MockApprovalEvent::Denied { .. })
+        ));
+
+        // Benign without trust: auto-approve does not bypass the sandbox.
+        state.trust_mode = false;
+        handle_elevation(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "elev-2".to_string(),
+            "exec_shell".to_string(),
+            Some("cargo build".to_string()),
+            "sandbox denied write".to_string(),
+        )
+        .await;
+        assert!(matches!(
+            mock.recv_approval_event().await,
+            Some(crate::core::engine::MockApprovalEvent::Denied { .. })
+        ));
+
+        // Benign with trust: retried under the mode's sandbox policy.
+        state.trust_mode = true;
+        handle_elevation(
+            &mut state,
+            &engine,
+            &mut view,
+            &mut keys,
+            "elev-3".to_string(),
+            "exec_shell".to_string(),
+            Some("cargo build".to_string()),
+            "sandbox denied write".to_string(),
+        )
+        .await;
+        assert!(matches!(
+            mock.recv_approval_event().await,
+            Some(crate::core::engine::MockApprovalEvent::RetryWithPolicy { .. })
+        ));
+    }
 }

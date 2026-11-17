@@ -610,6 +610,73 @@ pub fn run(state: &ReplState, arg: &str, yes: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    /// Redirect HOME (`/import` resolves source configs from the real home
+    /// via `effective_home_dir`), CODESMITH_HOME, and CODESMITH_CONFIG_PATH
+    /// into a scratch dir. Every test that constructs a `ReplState` or scans
+    /// from a home must hold the env lock for the whole test.
+    struct ScratchEnv {
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_guard: EnvVarGuard,
+        _smith_home_guard: EnvVarGuard,
+        _config_guard: EnvVarGuard,
+    }
+
+    fn scratch_env() -> ScratchEnv {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let smith_home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let config_guard =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+        ScratchEnv {
+            _home: home,
+            _lock: lock,
+            _home_guard: home_guard,
+            _smith_home_guard: smith_home_guard,
+            _config_guard: config_guard,
+        }
+    }
+
+    fn test_repl_state(mcp_config_path: std::path::PathBuf) -> ReplState {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: workspace.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: workspace.path().join("skills"),
+            memory_path: workspace.path().join("memory.md"),
+            mcp_config_path,
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    fn write(home: &Path, rel: &str, body: &str) {
+        let path = home.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, body).expect("write source config");
+    }
+
+    fn claude_home_json(server_name: &str, command: &str) -> String {
+        let mut servers = serde_json::Map::new();
+        servers.insert(
+            server_name.to_string(),
+            serde_json::json!({"command": command, "args": ["server.js"], "env": {"TOKEN": "x"}}),
+        );
+        serde_json::json!({ "mcpServers": servers }).to_string()
+    }
 
     #[test]
     fn json_servers_import_stdio_and_url_alike() {
@@ -641,6 +708,70 @@ mod tests {
         );
     }
 
+    /// The extractor also accepts the `servers` key and Claude Code's
+    /// project-scoped nesting in `~/.claude.json` (where most servers live).
+    #[test]
+    fn json_servers_accept_the_alias_key_and_project_nesting() {
+        let document = serde_json::json!({
+            "servers": {"aliased": {"command": "uvx"}},
+            "projects": {
+                "/some/project": {"mcpServers": {"nested": {"url": "https://example.test/n"}}},
+                "/other/project": {"servers": {"also-nested": {"command": "node"}}}
+            }
+        });
+        let found = servers_from_json(&document);
+        let names: Vec<&str> = found.servers.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"aliased"), "{names:?}");
+        assert!(names.contains(&"nested"), "{names:?}");
+        assert!(names.contains(&"also-nested"), "{names:?}");
+        assert!(found.skipped.is_empty());
+    }
+
+    /// Non-string scalars in env/headers/args are stringified, never
+    /// dropped: a numeric token or a JSON null arg must survive with its
+    /// position.
+    #[test]
+    fn json_import_stringifies_non_string_scalars_and_keeps_arg_positions() {
+        let document = serde_json::json!({
+            "mcpServers": {
+                "stdio": {
+                    "command": "node",
+                    "args": ["--flag", null, 5, true, {"k": "v"}],
+                    "env": {"TOKEN": 12345, "VERBOSE": false},
+                    "headers": {"X-Count": 3}
+                }
+            }
+        });
+        let found = servers_from_json(&document);
+        let server = &found.servers[0];
+        assert_eq!(
+            server.args,
+            vec![
+                "--flag".to_string(),
+                "null".to_string(),
+                "5".to_string(),
+                "true".to_string(),
+                "{\"k\":\"v\"}".to_string()
+            ],
+            "arg positions carry meaning; nothing may be dropped"
+        );
+        assert!(
+            server
+                .env
+                .contains(&("TOKEN".to_string(), "12345".to_string()))
+        );
+        assert!(
+            server
+                .env
+                .contains(&("VERBOSE".to_string(), "false".to_string()))
+        );
+        assert!(
+            server
+                .headers
+                .contains(&("X-Count".to_string(), "3".to_string()))
+        );
+    }
+
     #[test]
     fn an_imported_server_becomes_a_config_entry() {
         let server = ImportedServer {
@@ -657,6 +788,40 @@ mod tests {
         assert_eq!(entry.url.as_deref(), Some("https://example.test/mcp"));
         assert_eq!(entry.transport.as_deref(), Some("sse"));
         assert!(entry.enabled, "serde's default keeps a new server enabled");
+    }
+
+    /// `to_config_value` for a stdio server emits command/args/env and
+    /// omits the URL-only fields; `endpoint` names how the server is
+    /// reached, "(none)" included.
+    #[test]
+    fn stdio_config_values_and_endpoints_render() {
+        let server = ImportedServer {
+            name: "stdio".to_string(),
+            command: Some("node".to_string()),
+            args: vec!["server.js".to_string()],
+            env: vec![("TOKEN".to_string(), "x".to_string())],
+            url: None,
+            transport: None,
+            headers: Vec::new(),
+        };
+        assert_eq!(server.endpoint(), "node");
+        let value = server.to_config_value();
+        assert_eq!(value["command"], serde_json::json!("node"));
+        assert_eq!(value["args"], serde_json::json!(["server.js"]));
+        assert_eq!(value["env"], serde_json::json!({"TOKEN": "x"}));
+        assert!(value.get("url").is_none());
+        assert!(value.get("transport").is_none());
+
+        let bare = ImportedServer {
+            name: "bare".to_string(),
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            url: None,
+            transport: None,
+            headers: Vec::new(),
+        };
+        assert_eq!(bare.endpoint(), "(none)");
     }
 
     #[test]
@@ -677,6 +842,41 @@ args = ["mcp-server-fetch"]
         assert_eq!(
             found.skipped,
             vec![("empty".to_string(), "neither command nor url".to_string())]
+        );
+    }
+
+    /// The TOML side stringifies legal non-string scalars with the same
+    /// policy as the JSON side.
+    #[test]
+    fn codex_toml_stringifies_non_string_scalars() {
+        let found = servers_from_toml(
+            r#"
+[mcp_servers.docs]
+command = "uvx"
+args = ["--port", 8080, true]
+env = { TOKEN = 12345, VERBOSE = false, RATIO = 1.5 }
+"#,
+        );
+        assert_eq!(found.servers.len(), 1);
+        let server = &found.servers[0];
+        assert_eq!(
+            server.args,
+            vec!["--port".to_string(), "8080".to_string(), "true".to_string()]
+        );
+        assert!(
+            server
+                .env
+                .contains(&("TOKEN".to_string(), "12345".to_string()))
+        );
+        assert!(
+            server
+                .env
+                .contains(&("VERBOSE".to_string(), "false".to_string()))
+        );
+        assert!(
+            server
+                .env
+                .contains(&("RATIO".to_string(), "1.5".to_string()))
         );
     }
 
@@ -701,6 +901,66 @@ args = ["mcp-server-fetch"]
         );
     }
 
+    /// `scan` walks each source's home and workspace paths: present files
+    /// are read, missing ones are silent, and an existing-but-unparseable
+    /// JSON config is reported as unreadable (never as "no MCP config").
+    #[test]
+    fn scan_reads_home_and_workspace_paths_and_flags_bad_json() {
+        let _env = scratch_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let workspace = tempfile::tempdir().expect("tempdir");
+
+        write(
+            home.path(),
+            ".claude.json",
+            &claude_home_json("home-server", "node"),
+        );
+        write(
+            workspace.path(),
+            ".mcp.json",
+            &serde_json::json!({"mcpServers": {"ws-server": {"url": "https://example.test/w"}}})
+                .to_string(),
+        );
+
+        let found = scan(Source::Claude, Some(home.path()), workspace.path());
+        let names: Vec<&str> = found.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["home-server", "ws-server"]);
+        assert_eq!(found.read_files.len(), 2, "both configs were read");
+        assert!(found.skipped.is_empty());
+
+        // An existing-but-broken config is a skip with the path, not silence.
+        std::fs::write(workspace.path().join(".mcp.json"), "{not json").unwrap();
+        let found = scan(Source::Claude, Some(home.path()), workspace.path());
+        assert_eq!(found.servers.len(), 1, "only the home server survives");
+        assert_eq!(found.skipped.len(), 1, "{:?}", found.skipped);
+        assert!(found.skipped[0].0.ends_with(".mcp.json"));
+        assert!(
+            found.skipped[0].1.starts_with("unreadable"),
+            "{:?}",
+            found.skipped
+        );
+        assert_eq!(found.read_files.len(), 1, "the broken file is not 'read'");
+    }
+
+    /// The Codex scan path parses `.codex/config.toml` from both home and
+    /// workspace.
+    #[test]
+    fn scan_reads_codex_toml_from_home_and_workspace() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let toml = "[mcp_servers.docs]\ncommand = \"uvx\"\n";
+        write(home.path(), ".codex/config.toml", toml);
+        write(
+            workspace.path(),
+            ".codex/config.toml",
+            "[mcp_servers.ws]\nurl = \"https://example.test/t\"\n",
+        );
+
+        let found = scan(Source::Codex, Some(home.path()), workspace.path());
+        let names: Vec<&str> = found.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["docs", "ws"]);
+    }
+
     #[test]
     fn source_words_parse() {
         assert_eq!(Source::parse("claude"), Some(Source::Claude));
@@ -709,5 +969,214 @@ args = ["mcp-server-fetch"]
         assert_eq!(Source::parse("codex"), Some(Source::Codex));
         assert_eq!(Source::parse("gemini"), Some(Source::Gemini));
         assert_eq!(Source::parse("windsurf"), None);
+    }
+
+    #[test]
+    fn source_aliases_parse_and_labels_render() {
+        assert_eq!(Source::parse(" CC "), Some(Source::Claude));
+        assert_eq!(Source::parse("openai-codex"), Some(Source::Codex));
+        assert_eq!(Source::parse("gemini-cli"), Some(Source::Gemini));
+        assert_eq!(
+            Source::all(),
+            [
+                Source::Claude,
+                Source::Cursor,
+                Source::Codex,
+                Source::Gemini
+            ]
+        );
+        assert_eq!(Source::Claude.label(), "claude");
+        assert_eq!(Source::Cursor.label(), "cursor");
+        assert_eq!(Source::Codex.label(), "codex");
+        assert_eq!(Source::Gemini.label(), "gemini");
+    }
+
+    /// `/import claude` without `--yes` is a report: nothing is written and
+    /// no config file appears.
+    #[test]
+    fn run_dry_run_reports_without_writing() {
+        let _env = scratch_env();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        write(
+            &home,
+            ".claude.json",
+            &claude_home_json("dry-run-server", "node"),
+        );
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "claude", false);
+
+        assert!(
+            !mcp_path.exists(),
+            "a dry run must not create the MCP config"
+        );
+    }
+
+    /// `/import claude --yes` writes the found server into the configured
+    /// `mcp.json`.
+    #[test]
+    fn run_with_yes_writes_the_found_servers() {
+        let _env = scratch_env();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        write(
+            &home,
+            ".claude.json",
+            &claude_home_json("written-server", "node"),
+        );
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "claude", true);
+
+        let body = std::fs::read_to_string(&mcp_path).expect("mcp.json written");
+        let config: serde_json::Value = serde_json::from_str(&body).expect("mcp.json parses");
+        let server = &config["servers"]["written-server"];
+        assert_eq!(server["command"], serde_json::json!("node"));
+        assert_eq!(server["args"], serde_json::json!(["server.js"]));
+        assert_eq!(server["env"], serde_json::json!({"TOKEN": "x"}));
+        assert_eq!(
+            server["enabled"],
+            serde_json::json!(true),
+            "entries land in this client's full shape"
+        );
+    }
+
+    /// A name already present in the target config is left alone — the
+    /// existing entry wins.
+    #[test]
+    fn run_leaves_pre_configured_names_alone() {
+        let _env = scratch_env();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        write(
+            &home,
+            ".claude.json",
+            &claude_home_json("clash", "imported-command"),
+        );
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        std::fs::write(
+            &mcp_path,
+            serde_json::json!({"servers": {"clash": {"command": "keep-me"}}}).to_string(),
+        )
+        .unwrap();
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "claude", true);
+
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert_eq!(
+            config["servers"]["clash"]["command"],
+            serde_json::json!("keep-me"),
+            "the pre-existing entry wins"
+        );
+        assert_eq!(
+            config["servers"].as_object().unwrap().len(),
+            1,
+            "nothing else was added"
+        );
+    }
+
+    /// Two sources defining the same name import it once (dry run and write
+    /// agree on which one).
+    #[test]
+    fn run_deduplicates_a_name_shared_by_two_sources() {
+        let _env = scratch_env();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        write(
+            &home,
+            ".claude.json",
+            &claude_home_json("shared", "claude-command"),
+        );
+        write(
+            &home,
+            ".cursor/mcp.json",
+            &serde_json::json!({"mcpServers": {"shared": {"command": "cursor-command"}}})
+                .to_string(),
+        );
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "claude cursor", true);
+
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        let servers = config["servers"].as_object().expect("servers");
+        assert_eq!(servers.len(), 1, "the name imports exactly once");
+        assert_eq!(
+            servers["shared"]["command"],
+            serde_json::json!("claude-command"),
+            "the first scanned source wins"
+        );
+    }
+
+    /// A typo'd source word with `--yes` must not fall through to "all
+    /// sources" and write everything it finds.
+    #[test]
+    fn run_with_only_rejected_source_words_scans_nothing() {
+        let _env = scratch_env();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        write(
+            &home,
+            ".claude.json",
+            &claude_home_json("would-be-imported", "node"),
+        );
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "claudee --yes", true);
+
+        assert!(
+            !mcp_path.exists(),
+            "every rejected source word must not scan (let alone write) anything"
+        );
+    }
+
+    /// No positional word scans every source; with nothing found the
+    /// command reports and writes nothing (also covers each source's
+    /// extra-notes surface on a present home).
+    #[test]
+    fn run_without_a_source_word_scans_every_source_and_finds_nothing() {
+        let _env = scratch_env();
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "--dry-run", false);
+
+        assert!(
+            !mcp_path.exists(),
+            "nothing was found, so nothing may be written"
+        );
+    }
+
+    /// An existing `mcp.json` that cannot be parsed is never overwritten —
+    /// with `--yes` the save would otherwise destroy the user's config.
+    #[test]
+    fn run_refuses_to_clobber_an_unparseable_config() {
+        let _env = scratch_env();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        write(
+            &home,
+            ".claude.json",
+            &claude_home_json("clobber-attempt", "node"),
+        );
+        let out = tempfile::tempdir().expect("tempdir");
+        let mcp_path = out.path().join("mcp.json");
+        std::fs::write(&mcp_path, "{definitely not json").unwrap();
+        let state = test_repl_state(mcp_path.clone());
+
+        run(&state, "claude", true);
+
+        assert_eq!(
+            std::fs::read_to_string(&mcp_path).unwrap(),
+            "{definitely not json",
+            "the unreadable config must survive a --yes run byte-for-byte"
+        );
     }
 }

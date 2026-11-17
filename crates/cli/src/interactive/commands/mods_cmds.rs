@@ -257,3 +257,60 @@ pub(super) async fn reload_note(state: &ReplState) -> Result<String, String> {
         Ok(note)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    fn state_in(workspace: &std::path::Path) -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: workspace.to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: workspace.join("skills"),
+            memory_path: workspace.join("memory.md"),
+            mcp_config_path: workspace.join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    #[tokio::test]
+    async fn mods_command_routes_and_reports_unknown_ids_cleanly() {
+        let _lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir");
+        let _g1 = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let _g2 = EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = state_in(tmp.path());
+
+        mods_command(&state, "").await; // list
+        mods_command(&state, "ls").await;
+        mods_command(&state, "status").await;
+        mods_command(&state, "info").await; // usage
+        mods_command(&state, "info no-such-mod").await;
+        mods_command(&state, "activate").await; // usage
+        mods_command(&state, "enable ghost-mod").await;
+        mods_command(&state, "disable ghost-mod").await;
+        mods_command(&state, "remove ghost-mod").await;
+        mods_command(&state, "explode").await; // unknown subcommand
+
+        // Engine-less reload is a clean refusal, not a panic.
+        let note = reload_note(&state).await;
+        assert!(
+            note.is_err(),
+            "reload without an engine must refuse: {note:?}"
+        );
+    }
+}

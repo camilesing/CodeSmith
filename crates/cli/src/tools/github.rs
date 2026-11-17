@@ -875,4 +875,469 @@ mod tests {
         let err = validate_evidence(&input, false).expect_err("should refuse");
         assert!(err.to_string().contains("at least one field"));
     }
+
+    #[test]
+    fn missing_evidence_object_refuses_for_comments_and_closures() {
+        let comment = json!({ "target": "issue", "number": 1, "body": "b" });
+        let err = validate_evidence(&comment, false).expect_err("should refuse");
+        assert!(err.to_string().contains("evidence object is required"));
+
+        let close = json!({ "number": 1, "acceptance_criteria": ["done"] });
+        let err = validate_evidence(&close, true).expect_err("should refuse");
+        assert!(err.to_string().contains("evidence object is required"));
+    }
+
+    #[test]
+    fn acceptance_criteria_must_be_present_and_substantive() {
+        let missing = json!({
+            "number": 1,
+            "evidence": { "files_changed": ["a"], "tests_run": ["t"], "final_status": "ok" }
+        });
+        let err = validate_evidence(&missing, true).expect_err("should refuse");
+        assert!(err.to_string().contains("acceptance_criteria"), "{err}");
+
+        let empty_entry = json!({
+            "number": 1,
+            "acceptance_criteria": ["done", "  "],
+            "evidence": { "files_changed": ["a"], "tests_run": ["t"], "final_status": "ok" }
+        });
+        let err = validate_evidence(&empty_entry, true).expect_err("should refuse");
+        assert!(
+            err.to_string().contains("entries must be non-empty"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn substantive_evidence_passes_validation() {
+        let closing = json!({
+            "number": 1,
+            "acceptance_criteria": ["tests green"],
+            "evidence": { "files_changed": ["src/a.rs"], "tests_run": ["cargo test"], "final_status": "green" }
+        });
+        validate_evidence(&closing, true).expect("substantive closure evidence passes");
+
+        let comment = json!({ "evidence": { "note": "partial work" } });
+        validate_evidence(&comment, false).expect("non-empty comment evidence passes");
+    }
+
+    #[test]
+    fn close_target_mapping_table() {
+        for (target, subcmd, metadata, subject, display) in [
+            (GithubCloseTarget::Issue, "issue", "issue", "Issue", "issue"),
+            (GithubCloseTarget::Pr, "pr", "pr", "PR", "PR"),
+        ] {
+            assert_eq!(target.cli_subcommand(), subcmd);
+            assert_eq!(target.metadata_target(), metadata);
+            assert_eq!(target.summary_subject(), subject);
+            assert_eq!(target.display(), display);
+        }
+    }
+
+    #[test]
+    fn error_args_label_elides_bodies_and_redacts_credentials() {
+        assert_eq!(
+            error_args_label(&["issue", "comment", "7", "--body", "secret text"]),
+            "issue comment 7 --body <body>",
+            "the arg after --body is replaced, not echoed"
+        );
+        assert_eq!(
+            error_args_label(&["pr", "view", "--body"]),
+            "pr view --body",
+            "a trailing --body with no value labels nothing"
+        );
+        assert_eq!(
+            error_args_label(&["issue", "view", "9"]),
+            "issue view 9",
+            "plain args pass through joined"
+        );
+        let labelled = error_args_label(&["issue", "comment", "api_key=sk-123456"]);
+        assert_eq!(labelled, "issue comment <redacted>", "{labelled}");
+    }
+
+    #[test]
+    fn summarize_truncates_long_text_and_strips_control_chars() {
+        assert_eq!(summarize("short", 10), "short");
+        let truncated = summarize("0123456789a", 8);
+        assert_eq!(truncated, "01234...", "{truncated}");
+        assert_eq!(summarize("exactly-five", 16), "exactly-five");
+        assert_eq!(
+            summarize("a\u{1}b\u{7}", 10),
+            "ab",
+            "control chars (except newline/tab) are dropped"
+        );
+        assert_eq!(summarize("a\nb\tc", 10), "a\nb\tc");
+        assert_eq!(summarize("", 10), "");
+    }
+
+    #[test]
+    fn sanitize_filename_folds_unsafe_chars() {
+        assert_eq!(sanitize_filename("pr_diff"), "pr_diff");
+        assert_eq!(sanitize_filename("issue body/back:1"), "issue_body_back_1");
+        assert_eq!(sanitize_filename("###"), "___");
+        assert_eq!(sanitize_filename(""), "artifact");
+        assert_eq!(sanitize_filename("café"), "caf_");
+    }
+
+    fn gh_ctx(workspace: &std::path::Path) -> ToolContext {
+        let mut ctx = ToolContext::new(workspace);
+        ctx.runtime = crate::tools::spec::RuntimeToolServices::default();
+        ctx
+    }
+
+    #[test]
+    fn gh_bin_honors_the_env_override() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let override_bin = std::env::temp_dir().join(format!(
+            "gh-override-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_GH_BIN",
+            &override_bin,
+        );
+        assert_eq!(gh_bin(), override_bin.to_string_lossy());
+        drop(guard);
+        // Without the override the shared resolver runs: any non-empty binary name.
+        assert!(!gh_bin().is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_artifact_offloads_only_large_content_with_a_task() {
+        let dir = std::env::temp_dir().join(format!("gh-artifacts-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dirs");
+        let small = "x".repeat(100);
+        let large = "y".repeat(BODY_ARTIFACT_THRESHOLD + 1);
+
+        // No active task: never offloads, even above the threshold.
+        let mut ctx = gh_ctx(&dir);
+        ctx.runtime.task_data_dir = Some(dir.clone());
+        assert_eq!(
+            write_artifact_if_needed(&ctx, "issue_body", &large, BODY_ARTIFACT_THRESHOLD)
+                .await
+                .expect("no-task path is Ok"),
+            None
+        );
+
+        // Below the threshold: no artifact even with a task.
+        let mut ctx = gh_ctx(&dir);
+        ctx.runtime.active_task_id = Some("task_1".to_string());
+        ctx.runtime.task_data_dir = Some(dir.clone());
+        assert_eq!(
+            write_artifact_if_needed(&ctx, "issue_body", &small, BODY_ARTIFACT_THRESHOLD)
+                .await
+                .expect("small content is Ok"),
+            None
+        );
+
+        // Large + task + data dir: writes under artifacts/<task>/ and returns
+        // a path relative to the data dir.
+        let reference =
+            write_artifact_if_needed(&ctx, "issue body/1", &large, BODY_ARTIFACT_THRESHOLD)
+                .await
+                .expect("offload")
+                .expect("artifact path");
+        assert!(
+            reference.starts_with("artifacts/task_1/"),
+            "relative to the data dir: {reference:?}"
+        );
+        let absolute = dir.join(&reference);
+        let on_disk = std::fs::read_to_string(&absolute).expect("artifact written");
+        assert_eq!(on_disk, large);
+        assert!(
+            absolute
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("2") && n.contains("issue_body_1")),
+            "timestamped, sanitized file name: {absolute:?}"
+        );
+
+        // Large + task but no data dir and no manager: nothing to write to.
+        let mut ctx = gh_ctx(&dir);
+        ctx.runtime.active_task_id = Some("task_2".to_string());
+        assert_eq!(
+            write_artifact_if_needed(&ctx, "issue_body", &large, BODY_ARTIFACT_THRESHOLD)
+                .await
+                .expect("no backend is Ok"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn shape_large_text_offloads_and_summarizes_only_with_artifact_backend() {
+        let dir = std::env::temp_dir().join(format!("gh-shape-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dirs");
+        let big_body = "z".repeat(BODY_ARTIFACT_THRESHOLD + 10);
+        let value = json!({ "title": "T", "body": big_body });
+
+        // No backend: the fetched body must be kept whole (data-loss guard).
+        let ctx = gh_ctx(&dir);
+        let shaped = shape_large_text(&ctx, value.clone(), "issue_body", BODY_ARTIFACT_THRESHOLD)
+            .await
+            .expect("shape");
+        assert_eq!(shaped["body"].as_str(), Some(big_body.as_str()));
+        assert!(shaped.get("body_summary").is_none());
+
+        // With a task backend: body is summarized, artifact referenced.
+        let mut ctx = gh_ctx(&dir);
+        ctx.runtime.active_task_id = Some("task_1".to_string());
+        ctx.runtime.task_data_dir = Some(dir.clone());
+        let shaped = shape_large_text(&ctx, value, "issue_body", BODY_ARTIFACT_THRESHOLD)
+            .await
+            .expect("shape");
+        assert!(
+            shaped["body"]
+                .as_str()
+                .is_some_and(|body| body.len() < big_body.len()),
+            "body truncated once the artifact retains the copy"
+        );
+        assert!(shaped["body_summary"].is_string());
+        assert!(shaped["body_artifact"].is_string());
+
+        // Small bodies pass through untouched even with a backend.
+        let small = json!({ "title": "T", "body": "tiny" });
+        let shaped = shape_large_text(&ctx, small.clone(), "issue_body", BODY_ARTIFACT_THRESHOLD)
+            .await
+            .expect("shape");
+        assert_eq!(shaped, small);
+    }
+
+    #[test]
+    fn artifact_refs_from_context_collects_nested_references() {
+        assert!(
+            artifact_refs_from_context("not json", "github_issue_body").is_empty(),
+            "non-JSON tool content yields no refs"
+        );
+
+        let body = json!({
+            "summary": "Issue #1: T",
+            "issue": {
+                "title": "T",
+                "body_artifact": "artifacts/t1/issue_body_1.txt",
+                "body_summary": "first 900 chars"
+            }
+        })
+        .to_string();
+        let refs = artifact_refs_from_context(&body, "github_issue_body");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].label, "github_issue_body");
+        assert_eq!(refs[0].path, PathBuf::from("artifacts/t1/issue_body_1.txt"));
+        assert_eq!(refs[0].summary, "first 900 chars");
+
+        // Diff label keys + default summary when the summary key is absent.
+        let diff = json!({
+            "pr": { "diff_artifact": "artifacts/t2/pr_diff.txt", "nested": [{ "diff_artifact": "artifacts/t3/pr_diff.txt" }] }
+        })
+        .to_string();
+        let refs = artifact_refs_from_context(&diff, "github_pr_diff");
+        assert_eq!(refs.len(), 2, "objects and arrays are walked");
+        assert_eq!(refs[0].path, PathBuf::from("artifacts/t2/pr_diff.txt"));
+        assert_eq!(
+            refs[1].summary, "GitHub github_pr_diff artifact",
+            "fallback summary names the label"
+        );
+
+        // A body-shaped payload under a diff label finds nothing.
+        let mismatch = json!({ "body_artifact": "x" }).to_string();
+        assert!(artifact_refs_from_context(&mismatch, "github_pr_diff").is_empty());
+    }
+
+    #[test]
+    fn github_event_metadata_carries_event_and_optional_artifact() {
+        let bare = github_event_metadata(
+            "comment",
+            "issue",
+            5,
+            "did the thing".to_string(),
+            None,
+            None,
+        );
+        assert_eq!(bare["task_updates"]["github_event"]["action"], "comment");
+        assert_eq!(bare["task_updates"]["github_event"]["target"], "issue");
+        assert_eq!(bare["task_updates"]["github_event"]["number"], 5);
+        assert_eq!(
+            bare["task_updates"]["github_event"]["summary"],
+            "did the thing"
+        );
+        assert!(
+            bare["task_updates"]["github_event"]["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("gh_")),
+            "event id is a prefixed uuid"
+        );
+        assert_eq!(bare["task_updates"]["artifacts"], json!([]));
+
+        let with_artifact = github_event_metadata(
+            "close",
+            "pr",
+            9,
+            "closed".to_string(),
+            None,
+            Some(PathBuf::from("artifacts/t9/close.txt")),
+        );
+        let artifacts = with_artifact["task_updates"]["artifacts"]
+            .as_array()
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0]["label"], "github_close");
+        assert_eq!(artifacts[0]["path"], "artifacts/t9/close.txt");
+    }
+
+    #[test]
+    fn close_and_comment_tool_metadata_surface() {
+        let comment = GithubCommentTool;
+        assert_eq!(comment.name(), "github_comment");
+        assert!(comment.description().contains("evidence-backed"));
+        assert_eq!(
+            comment.approval_requirement(),
+            ApprovalRequirement::Required
+        );
+        assert!(comment.capabilities().contains(&ToolCapability::Network));
+        assert!(
+            comment
+                .capabilities()
+                .contains(&ToolCapability::RequiresApproval)
+        );
+        assert!(
+            comment.input_schema()["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("evidence"))
+        );
+
+        let issue_ctx = GithubIssueContextTool;
+        assert_eq!(issue_ctx.approval_requirement(), ApprovalRequirement::Auto);
+        assert!(issue_ctx.capabilities().contains(&ToolCapability::ReadOnly));
+        assert_eq!(
+            issue_ctx.input_schema()["properties"]["include_comments"]["default"],
+            true
+        );
+
+        let pr_ctx = GithubPrContextTool;
+        assert_eq!(pr_ctx.approval_requirement(), ApprovalRequirement::Auto);
+        assert_eq!(
+            pr_ctx.input_schema()["properties"]["include_diff"]["default"],
+            false
+        );
+
+        for tool_name in ["github_close_issue", "github_close_pr"] {
+            let tool: Box<dyn ToolSpec> = if tool_name == "github_close_issue" {
+                Box::new(GithubCloseIssueTool)
+            } else {
+                Box::new(GithubClosePrTool)
+            };
+            assert_eq!(tool.name(), tool_name);
+            assert_eq!(tool.approval_requirement(), ApprovalRequirement::Required);
+            assert!(
+                tool.input_schema()["properties"]["evidence"]["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("final_status"))
+            );
+        }
+    }
+
+    fn closing_input(number: u64, dry_run: bool) -> serde_json::Value {
+        json!({
+            "number": number,
+            "acceptance_criteria": ["tests green"],
+            "evidence": {
+                "files_changed": ["src/a.rs"],
+                "tests_run": ["cargo test"],
+                "final_status": "green"
+            },
+            "allow_dirty": true,
+            "dry_run": dry_run,
+        })
+    }
+
+    #[tokio::test]
+    async fn close_tools_dry_run_skips_gh_and_git_entirely() {
+        let workspace = std::env::temp_dir().join(format!("gh-close-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("dirs");
+        let ctx = gh_ctx(&workspace);
+
+        let result = GithubCloseIssueTool
+            .execute(closing_input(7, true), &ctx)
+            .await
+            .expect("dry run succeeds without gh/git");
+        assert!(
+            result.content.contains("Dry run: would close issue #7."),
+            "{}",
+            result.content
+        );
+
+        let result = GithubClosePrTool
+            .execute(closing_input(8, true), &ctx)
+            .await
+            .expect("dry run succeeds without gh/git");
+        assert!(
+            result.content.contains("Dry run: would close PR #8."),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn close_tool_without_a_gh_binary_fails_loud_not_available() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let workspace = std::env::temp_dir().join(format!("gh-missing-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("dirs");
+        let missing = workspace.join("gh-definitely-not-here");
+        let _gh =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_GH_BIN", &missing);
+        let ctx = gh_ctx(&workspace);
+
+        let err = GithubCloseIssueTool
+            .execute(closing_input(7, false), &ctx)
+            .await
+            .expect_err("spawn fails, nothing runs");
+        assert!(
+            err.to_string().contains("gh CLI not found"),
+            "not_available surfaces the install hint: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn comment_tool_dry_run_returns_without_gh() {
+        let workspace = std::env::temp_dir().join(format!("gh-comment-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("dirs");
+        let ctx = gh_ctx(&workspace);
+
+        let result = GithubCommentTool
+            .execute(
+                json!({
+                    "target": "issue",
+                    "number": 3,
+                    "body": "partial work: tests added",
+                    "evidence": { "tests": ["cargo test cli"] },
+                    "dry_run": true,
+                }),
+                &ctx,
+            )
+            .await
+            .expect("dry run needs no gh");
+        assert!(
+            result
+                .content
+                .contains("Dry run: would comment on issue #3."),
+            "{}",
+            result.content
+        );
+
+        let err = GithubCommentTool
+            .execute(
+                json!({
+                    "target": "pr",
+                    "number": 3,
+                    "body": "b",
+                    "evidence": {},
+                    "dry_run": true,
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("empty evidence refuses before anything runs");
+        assert!(err.to_string().contains("at least one field"), "{err}");
+    }
 }

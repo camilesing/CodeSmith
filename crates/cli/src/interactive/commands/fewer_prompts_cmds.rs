@@ -217,7 +217,30 @@ pub async fn run(state: &mut ReplState, arg: &str) {
 }
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, ScopedCodeSmithHome, lock_test_env};
+
+    fn options(workspace: std::path::PathBuf) -> crate::app_state::InteractiveOptions {
+        crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace,
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        }
+    }
 
     fn runs(commands: &[&str]) -> HashMap<String, (Vec<String>, u32)> {
         tally(
@@ -318,5 +341,68 @@ mod tests {
         let proposed = suggestions(counts, &[]);
         let dangerous_is_safe = analyze_command("git push --force").level == SafetyLevel::Safe;
         assert_eq!(proposed.is_empty(), !dangerous_is_safe);
+    }
+
+    /// A home with no saved sessions has nothing to learn from: the command
+    /// says so and writes nothing, whatever flags it was given.
+    #[tokio::test]
+    async fn run_without_saved_sessions_proposes_nothing() {
+        let _lock = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let ws = tempfile::tempdir().expect("tempdir");
+        let mut state = ReplState::new(
+            options(ws.path().to_path_buf()),
+            &crate::config::Config::default(),
+        );
+
+        run(&mut state, "").await;
+        run(&mut state, "--yes").await;
+        assert!(
+            state
+                .approval_grants
+                .grants_for(&ws.path().to_string_lossy())
+                .is_empty(),
+            "no session history means no rules, applied or not"
+        );
+    }
+
+    /// `--yes` writes exactly what the dry run proposed: grants in memory
+    /// (this session) plus approvals.toml under the home (later sessions).
+    #[tokio::test]
+    async fn run_applies_frequent_safe_rules_with_yes() {
+        let _lock = lock_test_env();
+        let home = ScopedCodeSmithHome::new();
+        let _config = EnvVarGuard::set("CODESMITH_CONFIG_PATH", home.path().join("config.toml"));
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).expect("mkdir sessions");
+        let tool_use = r#"{"role":"assistant","content":[{"type":"tool_use","name":"exec_shell","input":{"command":"git status"}}]}"#;
+        let messages: Vec<&str> = std::iter::repeat_n(tool_use, 4).collect();
+        std::fs::write(
+            sessions.join("s.json"),
+            format!("{{\"messages\":[{}]}}", messages.join(",")),
+        )
+        .expect("write session");
+
+        let ws = tempfile::tempdir().expect("tempdir");
+        let mut state = ReplState::new(
+            options(ws.path().to_path_buf()),
+            &crate::config::Config::default(),
+        );
+        run(&mut state, "--yes").await;
+
+        // The expectation follows the same safety authority as the filter.
+        let expect_git = analyze_command("git status").level == SafetyLevel::Safe;
+        let granted = state
+            .approval_grants
+            .grants_for(&ws.path().to_string_lossy());
+        assert_eq!(
+            granted.contains(&"shell:git status".to_string()),
+            expect_git,
+            "grants: {granted:?}"
+        );
+        assert!(
+            home.path().join("approvals.toml").is_file(),
+            "the grants are persisted for later sessions"
+        );
     }
 }

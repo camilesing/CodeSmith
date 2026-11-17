@@ -5419,4 +5419,459 @@ backend = "openai-compat"
         assert!(std::ptr::eq(a, b));
         assert!(a.providers.is_empty());
     }
+
+    // === previously-uncovered helpers ===
+
+    #[test]
+    fn provider_kind_display_name_covers_every_builtin() {
+        let expected: [(ProviderKind, &str); 16] = [
+            (ProviderKind::Deepseek, "DeepSeek"),
+            (ProviderKind::NvidiaNim, "NVIDIA NIM"),
+            (ProviderKind::Openai, "OpenAI-compatible"),
+            (ProviderKind::Atlascloud, "AtlasCloud"),
+            (ProviderKind::WanjieArk, "Wanjie Ark"),
+            (ProviderKind::Volcengine, "Volcengine Ark"),
+            (ProviderKind::Openrouter, "OpenRouter"),
+            (ProviderKind::XiaomiMimo, "Xiaomi MiMo"),
+            (ProviderKind::Novita, "Novita AI"),
+            (ProviderKind::Fireworks, "Fireworks AI"),
+            (ProviderKind::Siliconflow, "SiliconFlow"),
+            (ProviderKind::Moonshot, "Moonshot/Kimi"),
+            (ProviderKind::Sglang, "SGLang"),
+            (ProviderKind::Vllm, "vLLM"),
+            (ProviderKind::Ollama, "Ollama"),
+            (ProviderKind::Anthropic, "Anthropic"),
+        ];
+        for (provider, name) in expected {
+            assert_eq!(provider.display_name(), name);
+        }
+        // `ALL` mirrors the expected order exactly (onboarding / `auth list`).
+        for (provider, (kind, _)) in ProviderKind::ALL.iter().zip(expected) {
+            assert_eq!(*provider, kind);
+        }
+        let mut names: Vec<&str> = expected.iter().map(|(_, name)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), expected.len(), "display names must be unique");
+    }
+
+    #[test]
+    fn custom_endpoint_default_only_for_the_generic_routes() {
+        assert_eq!(
+            custom_endpoint_provider_default(ProviderKind::Openai),
+            Some(DEFAULT_OPENAI_BASE_URL)
+        );
+        assert_eq!(
+            custom_endpoint_provider_default(ProviderKind::Anthropic),
+            Some(DEFAULT_ANTHROPIC_BASE_URL)
+        );
+        for provider in ProviderKind::ALL {
+            if !matches!(provider, ProviderKind::Openai | ProviderKind::Anthropic) {
+                assert_eq!(custom_endpoint_provider_default(provider), None);
+            }
+        }
+    }
+
+    #[test]
+    fn snapshots_default_to_enabled_with_seven_day_retention() {
+        let defaults = SnapshotsToml::default();
+        assert!(defaults.enabled);
+        assert_eq!(defaults.max_age_days, 7);
+
+        // Serde field defaults agree with `Default` (an empty `[snapshots]`
+        // table behaves like an absent one).
+        let parsed: SnapshotsToml = toml::from_str("").expect("empty table parses");
+        assert_eq!(parsed.enabled, defaults.enabled);
+        assert_eq!(parsed.max_age_days, defaults.max_age_days);
+
+        // Explicit values survive inside ConfigToml.
+        let config: ConfigToml =
+            toml::from_str("[snapshots]\nenabled = false\nmax_age_days = 30\n").expect("parse");
+        let snapshots = config.snapshots.as_ref().expect("snapshots table");
+        assert!(!snapshots.enabled);
+        assert_eq!(snapshots.max_age_days, 30);
+    }
+
+    #[test]
+    fn network_policy_default_is_prompt_with_empty_lists_and_audit_on() {
+        let defaults = NetworkPolicyToml::default();
+        assert_eq!(defaults.default, "prompt");
+        assert!(defaults.allow.is_empty());
+        assert!(defaults.deny.is_empty());
+        assert!(defaults.proxy.is_empty());
+        assert!(defaults.audit);
+
+        let parsed: NetworkPolicyToml = toml::from_str("").expect("empty table parses");
+        assert_eq!(parsed.default, "prompt");
+        assert!(parsed.audit);
+    }
+
+    #[test]
+    fn get_value_serializes_telemetry_and_tools_always_load() {
+        let mut config = ConfigToml::default();
+        assert_eq!(config.get_value("telemetry"), None);
+        assert_eq!(config.get_value("tools.always_load"), None);
+
+        config.telemetry = Some(false);
+        config.tools = Some(ToolsToml {
+            always_load: vec!["fs_read".to_string(), "fs_write".to_string()],
+            progressive_disclosure: None,
+        });
+
+        assert_eq!(config.get_value("telemetry").as_deref(), Some("false"));
+        assert_eq!(
+            config.get_value("tools.always_load").as_deref(),
+            Some("fs_read,fs_write")
+        );
+    }
+
+    #[test]
+    fn set_value_provider_rejects_unknown_name_with_context() {
+        let mut config = ConfigToml::default();
+        let err = config
+            .set_value("provider", "not-a-real-provider")
+            .expect_err("unknown provider rejected");
+        assert!(
+            format!("{err:#}").contains("unknown provider 'not-a-real-provider'"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(config.provider, ProviderKind::Deepseek);
+    }
+
+    #[test]
+    fn unset_providers_custom_each_scalar_field() {
+        let mut config = ConfigToml::default();
+        let mut headers = BTreeMap::new();
+        headers.insert("X-A".to_string(), "1".to_string());
+        config.providers.custom.push(CustomProviderToml {
+            id: "acme".to_string(),
+            api_key: Some("sk-acme".to_string()),
+            base_url: Some("https://api.acme.dev/v1".to_string()),
+            model: Some("acme-pro".to_string()),
+            auth_mode: Some("api_key".to_string()),
+            display_name: None,
+            http_headers: headers,
+        });
+
+        config
+            .unset_value("providers.custom.acme.base_url")
+            .expect("base_url unset");
+        config
+            .unset_value("providers.custom.acme.model")
+            .expect("model unset");
+        config
+            .unset_value("providers.custom.acme.auth_mode")
+            .expect("auth_mode unset");
+        config
+            .unset_value("providers.custom.acme.http_headers")
+            .expect("http_headers unset");
+
+        let entry = &config.providers.custom[0];
+        assert_eq!(entry.id, "acme", "entry must survive field unsets");
+        assert!(entry.base_url.is_none());
+        assert!(entry.model.is_none());
+        assert!(entry.auth_mode.is_none());
+        assert!(entry.http_headers.is_empty());
+        assert_eq!(entry.api_key.as_deref(), Some("sk-acme"));
+    }
+
+    #[test]
+    fn load_project_config_reads_workspace_codesmith_dir() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("tempdir");
+
+        // Absent file → None.
+        assert!(load_project_config(dir.path()).is_none());
+
+        // Valid file under `.codesmith/config.toml` → Some.
+        let app_dir = dir.path().join(CODESMITH_APP_DIR);
+        fs::create_dir_all(&app_dir).expect("mkdir");
+        fs::write(app_dir.join(CONFIG_FILE_NAME), "model = \"m1\"\n").expect("seed");
+        let loaded = load_project_config(dir.path()).expect("loads");
+        assert_eq!(loaded.model.as_deref(), Some("m1"));
+
+        // Unparseable file → None (untrusted input never fails the run).
+        fs::write(app_dir.join(CONFIG_FILE_NAME), "not = [ a valid table").expect("seed bad");
+        assert!(load_project_config(dir.path()).is_none());
+    }
+
+    #[test]
+    fn runtime_api_key_source_env_values() {
+        assert_eq!(RuntimeApiKeySource::Cli.as_env_value(), "cli");
+        assert_eq!(RuntimeApiKeySource::ConfigFile.as_env_value(), "config");
+        assert_eq!(RuntimeApiKeySource::Keyring.as_env_value(), "keyring");
+        assert_eq!(RuntimeApiKeySource::Env.as_env_value(), "env");
+    }
+
+    #[test]
+    fn default_secrets_is_a_process_wide_singleton() {
+        // Under cfg(test) the facade installs an in-memory store, so this
+        // can never touch the OS keyring.
+        let a = default_secrets();
+        let b = default_secrets();
+        assert!(std::ptr::eq(a, b));
+    }
+
+    #[test]
+    fn config_store_load_defaults_parse_and_read_failures() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("tempdir");
+
+        // Missing file → defaults.
+        let fresh = dir.path().join("fresh-config.toml");
+        let store = ConfigStore::load(Some(fresh.clone())).expect("missing file loads defaults");
+        assert_eq!(store.path(), fresh);
+        assert_eq!(store.config.provider, ProviderKind::Deepseek);
+        assert!(store.config.model.is_none());
+
+        // Valid file → parsed config.
+        fs::write(&fresh, "model = \"m1\"\n").expect("seed");
+        let store = ConfigStore::load(Some(fresh)).expect("parses");
+        assert_eq!(store.config.model.as_deref(), Some("m1"));
+
+        // Garbage TOML → parse failure naming the path.
+        let bad = dir.path().join("bad-config.toml");
+        fs::write(&bad, "not = [ valid").expect("seed garbage");
+        let parse_err = ConfigStore::load(Some(bad)).expect_err("garbage must fail");
+        assert!(
+            format!("{parse_err:#}").contains("failed to parse config at"),
+            "unexpected error: {parse_err:#}"
+        );
+
+        // A directory where the file should be → read failure naming the path.
+        let read_err = ConfigStore::load(Some(dir.path().to_path_buf()))
+            .expect_err("reading a directory must fail");
+        assert!(
+            format!("{read_err:#}").contains("failed to read config at"),
+            "unexpected error: {read_err:#}"
+        );
+    }
+
+    #[test]
+    fn config_store_save_reports_directory_failures() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("tempdir");
+
+        // Parent path occupied by a regular file: create_dir_all fails.
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "x").expect("seed blocker");
+        let store = ConfigStore {
+            path: blocker.join(CONFIG_FILE_NAME),
+            config: ConfigToml::default(),
+        };
+        let err = store.save().expect_err("parent is a file");
+        assert!(
+            format!("{err:#}").contains("failed to create config directory"),
+            "unexpected error: {err:#}"
+        );
+
+        // Path itself is a directory: open fails.
+        let as_dir = dir.path().join("as-dir");
+        fs::create_dir_all(&as_dir).expect("mkdir");
+        let store = ConfigStore {
+            path: as_dir,
+            config: ConfigToml::default(),
+        };
+        let err = store.save().expect_err("path is a directory");
+        assert!(
+            format!("{err:#}").contains("failed to write config at"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn ensure_state_dir_creates_and_reports_blocked_paths() {
+        use tempfile::TempDir;
+        let _lock = env_lock();
+        let dir = TempDir::new().expect("tempdir");
+        let home_prev = env::var_os("CODESMITH_HOME");
+        // Safety: test-only env mutation guarded by env_lock().
+        unsafe { env::set_var("CODESMITH_HOME", dir.path().join("home")) };
+
+        let state = ensure_state_dir("sessions").expect("state dir created");
+        assert_eq!(state, dir.path().join("home").join("sessions"));
+        assert!(state.is_dir());
+        // Idempotent on second call.
+        ensure_state_dir("sessions").expect("existing dir is fine");
+
+        // A regular file inside the chain makes create_dir_all fail (ENOTDIR).
+        fs::write(dir.path().join("home").join("file"), "x").expect("seed blocker");
+        let err = ensure_state_dir("file/state").expect_err("blocked path");
+        assert!(
+            format!("{err:#}").contains("failed to create"),
+            "unexpected error: {err:#}"
+        );
+
+        // Safety: restore under the same lock.
+        unsafe {
+            match home_prev {
+                Some(prev) => env::set_var("CODESMITH_HOME", prev),
+                None => env::remove_var("CODESMITH_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn ensure_project_state_dir_creates_and_reports_blocked_paths() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("tempdir");
+
+        let state = ensure_project_state_dir(dir.path(), "sessions").expect("created");
+        assert_eq!(state, dir.path().join(CODESMITH_APP_DIR).join("sessions"));
+        assert!(state.is_dir());
+        ensure_project_state_dir(dir.path(), "sessions").expect("idempotent");
+
+        // `.codesmith` occupied by a regular file: create_dir_all fails.
+        let dir2 = TempDir::new().expect("tempdir");
+        fs::write(dir2.path().join(CODESMITH_APP_DIR), "x").expect("block .codesmith");
+        let err = ensure_project_state_dir(dir2.path(), "sessions").expect_err("blocked path");
+        assert!(
+            format!("{err:#}").contains("failed to create"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// Save, set, and (on drop) restore env vars that
+    /// `EnvGuard::without_runtime_overrides` does not already cover.
+    struct ScopedEnvVars {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl ScopedEnvVars {
+        fn set(vars: &[(&'static str, &str)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(key, _)| (*key, env::var_os(key)))
+                .collect();
+            // Safety: test-only environment mutation guarded by env_lock().
+            unsafe {
+                for (key, value) in vars {
+                    env::set_var(key, value);
+                }
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for ScopedEnvVars {
+        fn drop(&mut self) {
+            // Safety: restore while the same env lock is still held.
+            unsafe {
+                for (key, value) in self.saved.drain(..) {
+                    EnvGuard::restore_var(key, value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn env_runtime_overrides_load_representative_env_arms() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        // WANJIE_MODEL is saved/removed by EnvGuard; the rest need the
+        // scoped guard because EnvGuard does not cover them.
+        // Safety: test-only env mutation guarded by env_lock().
+        unsafe { env::set_var("WANJIE_MODEL", "wanjie-alias-model") };
+        let _scoped = ScopedEnvVars::set(&[
+            ("CODESMITH_OUTPUT_MODE", "plain"),
+            ("CODESMITH_AUTH_MODE", "oauth"),
+            ("CODESMITH_LOG_LEVEL", "debug"),
+            ("CODESMITH_TELEMETRY", "enabled"),
+            ("CODESMITH_BASE_URL", "https://deepseek-mirror.example/beta"),
+            ("VOLCENGINE_ARK_MODEL", "volc-alias-model"),
+            ("OPENAI_BASE_URL", "https://openai-mirror.example/v1"),
+            ("ATLASCLOUD_BASE_URL", "https://atlas-mirror.example/v1"),
+            ("VOLCENGINE_BASE_URL", "https://volc-mirror.example/api/v3"),
+            ("KIMI_MODEL_NAME", "kimi-env-model"),
+            ("KIMI_BASE_URL", "https://kimi-mirror.example/v1"),
+            ("XIAOMI_MIMO_MODEL", "mimo-env-model"),
+            ("ANTHROPIC_BASE_URL", "https://anthropic-mirror.example/v1"),
+            ("SGLANG_BASE_URL", "http://localhost:30001/v1"),
+            ("VLLM_BASE_URL", "http://localhost:8001/v1"),
+            ("FIREWORKS_BASE_URL", "https://fireworks-mirror.example/v1"),
+            (
+                "OPENROUTER_BASE_URL",
+                "https://openrouter-mirror.example/v1",
+            ),
+            ("NOVITA_BASE_URL", "https://novita-mirror.example/v1"),
+        ]);
+
+        let overrides = EnvRuntimeOverrides::load();
+
+        assert_eq!(overrides.output_mode.as_deref(), Some("plain"));
+        assert_eq!(overrides.auth_mode.as_deref(), Some("oauth"));
+        assert_eq!(overrides.log_level.as_deref(), Some("debug"));
+        assert_eq!(overrides.telemetry, Some(true));
+        assert_eq!(
+            overrides.deepseek_base_url.as_deref(),
+            Some("https://deepseek-mirror.example/beta")
+        );
+        // Alias arms: the fallback env name is honored when the primary is
+        // unset (EnvGuard removed VOLCENGINE_MODEL / MOONSHOT_MODEL /
+        // MOONSHOT_BASE_URL / WANJIE_ARK_MODEL above).
+        assert_eq!(
+            overrides.volcengine_model.as_deref(),
+            Some("volc-alias-model")
+        );
+        assert_eq!(
+            overrides.wanjie_ark_model.as_deref(),
+            Some("wanjie-alias-model")
+        );
+        assert_eq!(overrides.moonshot_model.as_deref(), Some("kimi-env-model"));
+        assert_eq!(
+            overrides.moonshot_base_url.as_deref(),
+            Some("https://kimi-mirror.example/v1")
+        );
+        assert_eq!(
+            overrides.xiaomi_mimo_model.as_deref(),
+            Some("mimo-env-model")
+        );
+        assert_eq!(
+            overrides.openai_base_url.as_deref(),
+            Some("https://openai-mirror.example/v1")
+        );
+        assert_eq!(
+            overrides.atlascloud_base_url.as_deref(),
+            Some("https://atlas-mirror.example/v1")
+        );
+        assert_eq!(
+            overrides.volcengine_base_url.as_deref(),
+            Some("https://volc-mirror.example/api/v3")
+        );
+        assert_eq!(
+            overrides.anthropic_base_url.as_deref(),
+            Some("https://anthropic-mirror.example/v1")
+        );
+        assert_eq!(
+            overrides.sglang_base_url.as_deref(),
+            Some("http://localhost:30001/v1")
+        );
+        assert_eq!(
+            overrides.vllm_base_url.as_deref(),
+            Some("http://localhost:8001/v1")
+        );
+        assert_eq!(
+            overrides.fireworks_base_url.as_deref(),
+            Some("https://fireworks-mirror.example/v1")
+        );
+        assert_eq!(
+            overrides.openrouter_base_url.as_deref(),
+            Some("https://openrouter-mirror.example/v1")
+        );
+        assert_eq!(
+            overrides.novita_base_url.as_deref(),
+            Some("https://novita-mirror.example/v1")
+        );
+    }
+
+    #[test]
+    fn env_runtime_overrides_skip_blank_alias_values() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_runtime_overrides();
+        let _scoped = ScopedEnvVars::set(&[("VOLCENGINE_ARK_MODEL", "   ")]);
+
+        let overrides = EnvRuntimeOverrides::load();
+
+        assert_eq!(overrides.volcengine_model, None);
+    }
 }

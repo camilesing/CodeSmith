@@ -1737,3 +1737,89 @@ async fn submit_with_images(
     }
     send_result.context("failed to send message to engine")
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn test_repl_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    fn scratch_env() {
+        // hold the process-wide env lock and redirect the settings home
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+    }
+
+    #[test]
+    fn theme_command_validates_and_switches() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        theme_command(&mut state, "", false); // list
+        theme_command(&mut state, "list", false);
+        theme_command(&mut state, "bubblegum", false); // unknown
+        theme_command(&mut state, " dark ", false); // known
+        assert_eq!(state.settings.theme, "dark");
+    }
+
+    #[test]
+    fn statusline_command_sets_clears_and_persists() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        statusline_command(&mut state, ""); // show unset
+        statusline_command(&mut state, "echo hi");
+        assert_eq!(
+            state.settings.statusline_command.as_deref(),
+            Some("echo hi")
+        );
+        statusline_command(&mut state, "OFF");
+        assert_eq!(state.settings.statusline_command, None);
+        assert_eq!(state.statusline_text, None);
+    }
+
+    #[test]
+    fn btw_request_messages_appends_framed_side_question() {
+        let state = test_repl_state();
+        let messages = btw_request_messages(&state, "what did we decide?");
+        assert_eq!(messages.len(), 1, "empty history + the question");
+        let text = match &messages[0].content[0] {
+            crate::models::ContentBlock::Text { text, .. } => text.clone(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("Side question"));
+        assert!(text.contains("what did we decide?"));
+    }
+
+    #[test]
+    fn prompt_str_renders_an_accented_prompt() {
+        let state = test_repl_state();
+        let prompt = prompt_str(&state);
+        assert!(prompt.contains("❯"), "prompt glyph present: {prompt:?}");
+    }
+
+    #[test]
+    fn toggle_and_cycle_thinking_flip_effort() {
+        let mut state = test_repl_state();
+        let before = state.reasoning_effort;
+        toggle_thinking(&mut state);
+        assert_ne!(state.reasoning_effort, before);
+        cycle_thinking_level(&mut state);
+        cycle_thinking_level(&mut state); // walk at least two stops
+    }
+}

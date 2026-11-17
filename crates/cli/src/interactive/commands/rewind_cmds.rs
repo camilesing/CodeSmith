@@ -175,7 +175,41 @@ fn classify_open_error(err: std::io::Error) -> RewindError {
 
 #[cfg(test)]
 mod tests {
+    // The async list/restore tests hold the test-env mutex (via ScratchEnv)
+    // across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    /// Redirect HOME + CODESMITH_HOME + CODESMITH_CONFIG_PATH into a scratch
+    /// dir so the snapshot-repo resolution (`~/.codesmith/snapshots/…`) can
+    /// never touch the developer's real state, even read-only.
+    struct ScratchEnv {
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_guard: EnvVarGuard,
+        _smith_home_guard: EnvVarGuard,
+        _config_guard: EnvVarGuard,
+    }
+
+    fn scratch_env() -> ScratchEnv {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let smith_home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let config_guard =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+        ScratchEnv {
+            _home: home,
+            _lock: lock,
+            _home_guard: home_guard,
+            _smith_home_guard: smith_home_guard,
+            _config_guard: config_guard,
+        }
+    }
 
     #[test]
     fn rows_render_a_time_and_a_copyable_id() {
@@ -241,5 +275,74 @@ mod tests {
             source: std::io::Error::other("bad object"),
         };
         assert_eq!(git.to_string(), "restore failed: bad object");
+
+        let bad_id = RewindError::InvalidId(std::io::Error::other("not a snapshot id: -abc"));
+        assert_eq!(bad_id.to_string(), "not a snapshot id: -abc");
+    }
+
+    /// A workspace with no side repo lists as the greyed-out NoSnapshots
+    /// case — `try_open` never initializes anything, so the read side of
+    /// `/rewind` on a fresh workspace stays read-only.
+    #[tokio::test]
+    async fn list_reports_no_snapshots_for_a_fresh_workspace() {
+        let _env = scratch_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+
+        let err = list(ws.path()).await.err().expect("no repo exists");
+
+        assert!(
+            matches!(err, RewindError::NoSnapshots(_)),
+            "a fresh workspace is the read-intent case: {err}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("no snapshots for this workspace"),
+            "{err}"
+        );
+        // Nothing was initialized on the read path.
+        let smith_home = std::env::var("CODESMITH_HOME").unwrap_or_default();
+        let snapshots = std::path::PathBuf::from(smith_home).join("snapshots");
+        let entries: Vec<_> = std::fs::read_dir(&snapshots)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "the read side must not initialize snapshot state"
+        );
+    }
+
+    /// The option-injection guard: an id that is not a hex object name (a
+    /// leading `-` in particular would reach git as an option) is rejected
+    /// before the repo is even opened.
+    #[tokio::test]
+    async fn restore_rejects_non_hex_ids_before_opening_the_repo() {
+        let _env = scratch_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+
+        for bad in ["-abcdef", "shiny-object", "deadbeefz", ""] {
+            let err = restore(ws.path(), bad.to_string())
+                .await
+                .expect_err("non-hex ids are refused");
+            assert!(matches!(err, RewindError::InvalidId(_)), "{bad:?}: {err}");
+        }
+    }
+
+    /// A valid hex id for a workspace with no repo is still the NoSnapshots
+    /// case (the id is fine, there is simply nothing to rewind to).
+    #[tokio::test]
+    async fn restore_reports_no_snapshots_for_a_fresh_workspace() {
+        let _env = scratch_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+
+        let err = restore(ws.path(), "0123456789abcdef".to_string())
+            .await
+            .expect_err("no repo exists");
+
+        assert!(
+            matches!(err, RewindError::NoSnapshots(_)),
+            "the id was valid; the workspace is the problem: {err}"
+        );
     }
 }

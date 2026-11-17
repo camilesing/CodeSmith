@@ -940,4 +940,168 @@ mod tests {
             "`..` must still be rejected"
         );
     }
+
+    // ── ScenarioStepKind surface ──
+
+    #[test]
+    fn scenario_step_kind_tool_names_and_parse_aliases() {
+        assert_eq!(ScenarioStepKind::List.tool_name(), "list_dir");
+        assert_eq!(ScenarioStepKind::Read.tool_name(), "read_file");
+        assert_eq!(ScenarioStepKind::Search.tool_name(), "search");
+        assert_eq!(ScenarioStepKind::Edit.tool_name(), "edit_file");
+        assert_eq!(ScenarioStepKind::ApplyPatch.tool_name(), "apply_patch");
+        assert_eq!(ScenarioStepKind::ExecShell.tool_name(), "exec_shell");
+
+        for (raw, expected) in [
+            ("list", ScenarioStepKind::List),
+            ("LIST_DIR", ScenarioStepKind::List),
+            (" read ", ScenarioStepKind::Read),
+            ("grep", ScenarioStepKind::Search),
+            ("grep_files", ScenarioStepKind::Search),
+            ("edit_file", ScenarioStepKind::Edit),
+            ("patch", ScenarioStepKind::ApplyPatch),
+            ("shell", ScenarioStepKind::ExecShell),
+            ("exec", ScenarioStepKind::ExecShell),
+        ] {
+            assert_eq!(ScenarioStepKind::parse(raw), Some(expected), "{raw:?}");
+        }
+        assert_eq!(ScenarioStepKind::parse("bogus"), None);
+    }
+
+    // ── Harness defaults ──
+
+    #[test]
+    fn eval_harness_config_default_is_offline_safe() {
+        let config = EvalHarnessConfig::default();
+        assert_eq!(config.scenario_name, "offline-tool-loop");
+        assert_eq!(config.fail_step, None);
+        assert!(config.shell_command.contains("eval-harness"));
+        assert_eq!(config.shell_expect_token, "eval-harness");
+        assert_eq!(config.max_output_chars, 240);
+        assert_eq!(config.record_dir, None);
+
+        // Default-constructed harness wraps the default config.
+        let harness = EvalHarness::default();
+        assert_eq!(harness.config.scenario_name, config.scenario_name);
+        assert_eq!(
+            EvalHarness::new(config.clone()).config.shell_expect_token,
+            config.shell_expect_token
+        );
+    }
+
+    // ── Full offline runs ──
+
+    #[test]
+    fn eval_harness_run_succeeds_across_all_six_steps() {
+        let run = EvalHarness::default().run().expect("offline run");
+
+        assert!(run.metrics.success, "steps: {:#?}", run.steps);
+        assert_eq!(run.metrics.steps, 6);
+        assert_eq!(run.metrics.tool_errors, 0);
+        assert_eq!(run.metrics.per_tool.len(), 6);
+        for (kind, stats) in &run.metrics.per_tool {
+            assert_eq!(stats.invocations, 1, "{kind:?}");
+            assert_eq!(stats.errors, 0, "{kind:?}");
+        }
+        assert!(run.steps.iter().all(|s| s.success));
+        assert!(run.workspace_root().join("notes.txt").exists());
+
+        let report = run.to_report();
+        assert_eq!(report.scenario_name, "offline-tool-loop");
+        assert_eq!(report.workspace_root, run.workspace_root());
+        assert!(report.workspace_summary.file_count >= 3);
+        assert!(
+            report
+                .workspace_summary
+                .files
+                .iter()
+                .any(|f| f.ends_with("notes.txt"))
+        );
+    }
+
+    #[test]
+    fn eval_harness_failed_read_step_records_error_metrics_and_err_fixtures() {
+        let dir = tempfile::tempdir().unwrap();
+        let harness = EvalHarness::new(EvalHarnessConfig {
+            fail_step: Some(ScenarioStepKind::Read),
+            record_dir: Some(dir.path().to_path_buf()),
+            ..EvalHarnessConfig::default()
+        });
+        let run = harness.run().expect("run completes despite failure");
+
+        assert!(!run.metrics.success);
+        assert_eq!(run.metrics.tool_errors, 1);
+        let read = &run.steps[1];
+        assert_eq!(read.kind, ScenarioStepKind::Read);
+        assert!(!read.success);
+        assert!(read.error.is_some());
+        assert!(read.output.is_none());
+        assert_eq!(run.metrics.per_tool[&ScenarioStepKind::Read].errors, 1);
+
+        // The fixture file exists, one line per step, Read's line is an error.
+        let fixture = dir.path().join("offline-tool-loop.jsonl");
+        let body = std::fs::read_to_string(&fixture).expect("fixture written");
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 6);
+        let records: Vec<FixtureRecord> = lines
+            .iter()
+            .map(|l| serde_json::from_str(l).expect("fixture line parses"))
+            .collect();
+        assert_eq!(records[1].response_events[0]["type"], "error");
+        assert!(records[0].response_events[0]["type"] == "ok");
+        assert_eq!(records[1].request["step"], "read_file");
+    }
+
+    #[test]
+    fn eval_harness_failed_patch_step_surfaces_context_mismatch() {
+        let harness = EvalHarness::new(EvalHarnessConfig {
+            fail_step: Some(ScenarioStepKind::ApplyPatch),
+            ..EvalHarnessConfig::default()
+        });
+        let run = harness.run().expect("run completes despite failure");
+
+        assert!(!run.metrics.success);
+        let patch = run
+            .steps
+            .iter()
+            .find(|s| s.kind == ScenarioStepKind::ApplyPatch)
+            .unwrap();
+        assert!(!patch.success);
+        // The failing patch must not be partially applied: notes.txt keeps
+        // its seeded todo line and gains the edit-step marker only.
+        let notes = std::fs::read_to_string(run.workspace_root().join("notes.txt")).unwrap();
+        assert!(notes.contains("todo: offline metrics\n"));
+        assert!(!notes.contains("(patched)"));
+    }
+
+    #[test]
+    fn record_fixture_sanitizes_scenario_names_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = record_fixture(
+            dir.path(),
+            "scenario name!",
+            FixtureRecord::ok(ScenarioStepKind::List, "x"),
+        )
+        .expect("record");
+        assert_eq!(first, dir.path().join("scenario_name_.jsonl"));
+        assert!(first.exists());
+
+        // Append semantics: a second record lands on the next line.
+        record_fixture(
+            dir.path(),
+            "scenario name!",
+            FixtureRecord::err(ScenarioStepKind::Read, "boom"),
+        )
+        .expect("record");
+        let body = std::fs::read_to_string(&first).unwrap();
+        assert_eq!(body.lines().count(), 2);
+    }
+
+    #[test]
+    fn truncate_output_counts_chars_and_appends_ellipsis() {
+        assert_eq!(truncate_output("abcd", 4), "abcd");
+        assert_eq!(truncate_output("abcde", 4), "abcd..."); // keeps 4 chars, ellipsis extra
+        // char-boundary truncation, not byte truncation
+        assert_eq!(truncate_output("ééééé", 3), "ééé...");
+    }
 }

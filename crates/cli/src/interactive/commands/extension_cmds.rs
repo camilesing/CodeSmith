@@ -443,4 +443,77 @@ mod tests {
             "in flight: main turn ×1, sub-agents depth 1 ×2, sub-agents depth 2 ×1"
         );
     }
+
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    fn scratch_env() -> (
+        tempfile::TempDir,
+        std::sync::MutexGuard<'static, ()>,
+        EnvVarGuard,
+        EnvVarGuard,
+    ) {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir");
+        let home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let config_guard =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+        (home, lock, home_guard, config_guard)
+    }
+
+    #[tokio::test]
+    async fn extension_command_routes_and_reports_errors_cleanly() {
+        #![allow(clippy::await_holding_lock)]
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = test_state_in(tmp.path());
+
+        extension_command(&state, "").await; // list
+        extension_command(&state, "list").await;
+        extension_command(&state, "status").await;
+        extension_command(&state, "info").await; // usage
+        extension_command(&state, "info no-such-extension").await;
+        extension_command(&state, "enable").await; // usage
+        extension_command(&state, "disable").await; // usage
+        extension_command(&state, "install").await; // usage
+        extension_command(&state, "install :://bad-source").await;
+        extension_command(&state, "uninstall").await; // usage
+        extension_command(&state, "uninstall ghost-extension").await;
+        extension_command(&state, "explode").await; // unknown subcommand
+    }
+
+    #[test]
+    fn extension_roots_split_global_and_project_scopes() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (global, project) = extension_roots(tmp.path());
+        assert_eq!(
+            global.len(),
+            1,
+            "the isolated codesmith home provides one root"
+        );
+        assert!(global[0].ends_with("extensions"));
+        assert_eq!(project, tmp.path().join(".codesmith").join("extensions"));
+    }
+
+    fn test_state_in(workspace: &std::path::Path) -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: workspace.to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: workspace.join("skills"),
+            memory_path: workspace.join("memory.md"),
+            mcp_config_path: workspace.join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
 }

@@ -1582,6 +1582,10 @@ fn cmd_logout(_state: &mut ReplState) {
 
 #[cfg(test)]
 mod tests {
+    // The dispatch smoke test holds the process-wide test-env mutex across
+    // awaits (same shape as session_cmds' tests).
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
 
     /// `[commands] disabled` entries canonicalize (aliases resolve to the
@@ -1681,5 +1685,159 @@ mod tests {
         dispatch(&mut state, "/permission danger-full-access").await;
         assert_eq!(state.mode, AppMode::Yolo);
         assert_eq!(permission_preset(state.mode), "danger-full-access");
+    }
+
+    /// Routing smoke: every command below must resolve through the registry
+    /// and reach its handler without a live engine, isolating CODESMITH_HOME
+    /// so the handful that persist (settings/trust) never touch the
+    /// developer's real state. Handlers print; the assertions cover the
+    /// observable state changes (`/exit`'s bool, `/yolo`'s mode, `/translate`).
+    #[tokio::test]
+    async fn dispatch_routes_the_read_only_command_surface() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("mkdir");
+        let _home_guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            &codesmith_home,
+        );
+        let _config_guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_CONFIG_PATH",
+            codesmith_home.join("config.toml"),
+        );
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let mut options = test_options();
+        options.workspace = workspace.path().to_path_buf();
+        options.skills_dir = workspace.path().join("skills");
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+
+        for line in [
+            "/help",
+            "/status",
+            "/clear",
+            "/expand",
+            "/model",
+            "/mode",
+            "/plan",
+            "/agent",
+            "/permission",
+            "/preset",
+            "/provider",
+            "/sessions",
+            "/fork",
+            "/rename",
+            "/agents",
+            "/tokens",
+            "/usage",
+            "/tools",
+            "/system",
+            "/context",
+            "/cache",
+            "/diff",
+            "/edit",
+            "/config",
+            "/settings",
+            "/verbose",
+            "/trust",
+            "/effort",
+            "/autocompact",
+            "/sandbox",
+            "/release-notes",
+            "/terminal-setup",
+            "/tasks",
+            "/reload-skills",
+            "/skill-doctor",
+            "/skills",
+            "/skill",
+            "/hooks",
+            "/network",
+            "/jobs",
+            "/balance",
+            "/verify",
+            "/links",
+            "/home",
+            "/profile",
+            "/workspace",
+            "/anchor",
+            "/note",
+            "/attach",
+            "/output-style",
+            "/queue",
+            "/stash",
+            "/memory",
+            "/loop",
+            "/bashes",
+            "/cost",
+            "/stats",
+            "/ctx",
+            // Session lifecycle (all under the isolated home above).
+            "/save",
+            "/new",
+            "/export",
+            "/load",
+            "/purge",
+            "/compact",
+            "/logout",
+            // Permission and navigation surfaces.
+            "/permissions",
+            "/fewer-permission-prompts",
+            "/cd",
+            "/add-dir",
+            "/import",
+            // Diagnostics and review helpers.
+            "/insights",
+            "/copy",
+            "/color",
+            "/btw",
+            "/rewind",
+            "/recap",
+            "/doctor",
+            "/debug",
+            "/claim-check",
+            "/batch",
+            "/security-review",
+            "/pr",
+            "/run",
+            "/deep-research",
+            "/plugin-authoring",
+            "/update-config",
+            "/goal",
+            "/hunt",
+            "/task",
+            "/share",
+            "/mods",
+            "/extension",
+            "/mcp",
+            "/definitely-not-a-command",
+        ] {
+            let should_exit = dispatch(&mut state, line).await;
+            assert!(!should_exit, "/{line} must not read as an exit");
+        }
+
+        // `/export` (in the list above) writes a timestamped markdown file
+        // into the process CWD — the crate dir during `cargo test`. Clean up
+        // this run's exports so the test leaves no repository artifacts.
+        for export in std::fs::read_dir(".")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("chat_export_") && n.ends_with(".md"))
+            })
+        {
+            let _ = std::fs::remove_file(export);
+        }
+
+        // Observable state effects.
+        dispatch(&mut state, "/yolo").await;
+        assert_eq!(state.mode, AppMode::Yolo);
+        dispatch(&mut state, "/translate").await;
+        assert!(state.translation_enabled);
+
+        assert!(dispatch(&mut state, "/exit").await, "/exit exits");
     }
 }

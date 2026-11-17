@@ -185,4 +185,49 @@ mod tests {
         assert!(skill_activations(&path).is_empty());
         assert!(shell_commands(Path::new("/nonexistent/session.json")).is_empty());
     }
+
+    #[test]
+    fn session_files_are_newest_first_json_only_and_capped() {
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).expect("mkdir sessions");
+        let _guard =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_HOME", home.path());
+
+        let set_mtime = |name: &str, age_secs: u64| {
+            let path = sessions.join(name);
+            std::fs::write(&path, "{}").expect("write session");
+            let file = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open");
+            file.set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
+            )
+            .expect("set mtime");
+        };
+        set_mtime("old.json", 600);
+        set_mtime("newest.json", 1);
+        set_mtime("middle.json", 300);
+        std::fs::write(sessions.join("ignored.txt"), "{}").expect("non-json file");
+
+        let files = session_files(10);
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().expect("name").to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["newest.json", "middle.json", "old.json"]);
+        let capped = session_files(1);
+        assert_eq!(capped.len(), 1, "the limit is applied after sorting");
+        assert_eq!(capped[0], sessions.join("newest.json"));
+
+        // A home with no sessions directory: empty, not an error.
+        let empty_home = tempfile::tempdir().expect("tempdir");
+        let _swap = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            empty_home.path(),
+        );
+        assert!(session_files(5).is_empty());
+    }
 }

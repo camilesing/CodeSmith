@@ -1375,4 +1375,652 @@ mod tests {
             "sleep 30 with a 1s budget must time out: {content}"
         );
     }
+
+    // === Coverage additions: approval surfaces, pure helpers, executes ===
+
+    use crate::task_manager::{
+        CURRENT_TASK_SCHEMA_VERSION, ExecutionTask, TaskExecutionEvent, TaskExecutionResult,
+        TaskExecutor, TaskManager, TaskManagerConfig, TaskStatus,
+    };
+    use tokio::sync::mpsc;
+
+    /// Executor stub that finishes immediately — enough for create/list/read,
+    /// where the record's terminal state is not the point.
+    struct InstantExecutor;
+
+    #[async_trait]
+    impl TaskExecutor for InstantExecutor {
+        async fn execute(
+            &self,
+            _task: ExecutionTask,
+            events: mpsc::UnboundedSender<TaskExecutionEvent>,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> TaskExecutionResult {
+            let _ = events.send(TaskExecutionEvent::Status {
+                message: "instant".to_string(),
+            });
+            TaskExecutionResult {
+                status: TaskStatus::Completed,
+                result_text: Some("done".to_string()),
+                error: None,
+            }
+        }
+    }
+
+    /// Executor stub that runs until cancelled — keeps the task in Running
+    /// so cancel paths have something to cancel.
+    struct HangingExecutor;
+
+    #[async_trait]
+    impl TaskExecutor for HangingExecutor {
+        async fn execute(
+            &self,
+            _task: ExecutionTask,
+            _events: mpsc::UnboundedSender<TaskExecutionEvent>,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> TaskExecutionResult {
+            loop {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            TaskExecutionResult {
+                status: TaskStatus::Canceled,
+                result_text: None,
+                error: None,
+            }
+        }
+    }
+
+    fn test_task_config(root: std::path::PathBuf) -> TaskManagerConfig {
+        TaskManagerConfig {
+            data_dir: root,
+            worker_count: 1,
+            default_workspace: PathBuf::from("."),
+            default_model: "deepseek-v4-flash".to_string(),
+            default_mode: "agent".to_string(),
+            allow_shell: false,
+            trust_mode: false,
+            max_subagents: 2,
+        }
+    }
+
+    fn test_task_manager_root(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "codesmith-tasks-test-{label}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn durable_task_tool_approval_surfaces() {
+        // State-changing durable-task tools are approval-gated; reads auto-run.
+        assert!(matches!(
+            TaskCreateTool.approval_requirement(),
+            ApprovalRequirement::Required
+        ));
+        assert!(matches!(
+            TaskListTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+        assert!(matches!(
+            TaskReadTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+        assert!(matches!(
+            TaskCancelTool.approval_requirement(),
+            ApprovalRequirement::Required
+        ));
+        assert!(matches!(
+            TaskStopTool.approval_requirement(),
+            ApprovalRequirement::Required
+        ));
+        assert!(matches!(
+            TaskGateRunTool.approval_requirement(),
+            ApprovalRequirement::Required
+        ));
+        assert!(matches!(
+            TaskShellStartTool.approval_requirement(),
+            ApprovalRequirement::Required
+        ));
+        assert!(matches!(
+            TaskShellWaitTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+        assert!(matches!(
+            PrAttemptRecordTool.approval_requirement(),
+            ApprovalRequirement::Required
+        ));
+        // Writes vs reads split cleanly on capabilities.
+        assert!(
+            TaskCreateTool
+                .capabilities()
+                .contains(&ToolCapability::RequiresApproval)
+        );
+        assert!(
+            TaskListTool
+                .capabilities()
+                .contains(&ToolCapability::ReadOnly)
+        );
+        assert!(
+            TaskReadTool
+                .capabilities()
+                .contains(&ToolCapability::ReadOnly)
+        );
+        assert!(
+            PrAttemptRecordTool
+                .capabilities()
+                .contains(&ToolCapability::WritesFiles)
+        );
+        assert_eq!(TaskCancelTool.name(), "task_cancel");
+        assert_eq!(TaskStopTool.name(), "task_stop");
+        assert_eq!(TaskGateRunTool.name(), "task_gate_run");
+        assert_eq!(PrAttemptRecordTool.name(), "pr_attempt_record");
+        assert_eq!(PrAttemptListTool.name(), "pr_attempt_list");
+        assert_eq!(PrAttemptReadTool.name(), "pr_attempt_read");
+        assert_eq!(PrAttemptPreflightTool.name(), "pr_attempt_preflight");
+        assert!(!TaskCreateTool.description().is_empty());
+        // The pr_attempt family is deferred until asked for.
+        assert!(PrAttemptRecordTool.defer_loading());
+        assert!(PrAttemptListTool.defer_loading());
+        assert!(PrAttemptReadTool.defer_loading());
+        assert!(PrAttemptPreflightTool.defer_loading());
+        // task_stop accepts every alias spelling the schema advertises.
+        let stop_schema = TaskStopTool.input_schema();
+        for alias in ["id", "task_id", "agent_id", "name"] {
+            assert!(
+                stop_schema["properties"][alias].is_object(),
+                "task_stop alias {alias}: {stop_schema}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_shell_wait_approval_depends_on_gate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        // Plain polling stays auto-approved…
+        assert!(matches!(
+            TaskShellWaitTool.approval_requirement_for_input(&json!({"task_id": "t1"}), &context),
+            ApprovalRequirement::Auto
+        ));
+        // …but recording gate evidence writes durable state — same gate as
+        // task_gate_run.
+        assert!(matches!(
+            TaskShellWaitTool.approval_requirement_for_input(
+                &json!({"task_id": "t1", "gate": "test"}),
+                &context
+            ),
+            ApprovalRequirement::Required
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_stop_requires_a_target_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        let err = TaskStopTool
+            .execute(json!({}), &context)
+            .await
+            .expect_err("missing id must fail");
+        assert!(err.to_string().contains("id"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_stop_unknown_target_fails_loud_after_all_lanes_miss() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        // No background registry, team context, live shell task, or durable
+        // manager — the miss must name every lane it checked.
+        let err = TaskStopTool
+            .execute(json!({"id": "no-such-target-anywhere"}), &context)
+            .await
+            .expect_err("unknown target must fail");
+        assert!(
+            err.to_string()
+                .contains("No running task, worker, teammate, shell job, or durable task found"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn task_id_resolution_rejects_unsafe_and_falls_back_to_active() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        assert_eq!(
+            task_id_from_input_or_context(&json!({"task_id": "t42"}), &context)
+                .expect("explicit id"),
+            "t42"
+        );
+        context.runtime.active_task_id = Some("active-1".to_string());
+        assert_eq!(
+            task_id_from_input_or_context(&json!({}), &context).expect("active id"),
+            "active-1"
+        );
+        context.runtime.active_task_id = None;
+        let err = task_id_from_input_or_context(&json!({}), &context)
+            .expect_err("no id anywhere must fail");
+        assert!(err.to_string().contains("task_id is required"), "{err}");
+        // The id is joined into artifact paths — traversal must be refused.
+        let err = task_id_from_input_or_context(&json!({"task_id": "../escape"}), &context)
+            .expect_err("unsafe id must fail");
+        assert!(err.to_string().contains("safe path component"), "{err}");
+    }
+
+    #[test]
+    fn sanitize_filename_keeps_safe_chars_and_falls_back() {
+        assert_eq!(sanitize_filename("gate_log-1.2"), "gate_log-1_2"); // dots are not safe chars
+        assert_eq!(sanitize_filename("gate: log/2"), "gate__log_2");
+        assert_eq!(sanitize_filename("门"), "_"); // one char, char-based replacement
+        assert_eq!(sanitize_filename(""), "artifact");
+        assert_eq!(sanitize_filename("   "), "___");
+    }
+
+    #[test]
+    fn shell_kill_not_found_is_the_expected_miss() {
+        assert!(is_shell_task_not_found(&anyhow::anyhow!(
+            "Task shell_123 not found"
+        )));
+        assert!(!is_shell_task_not_found(&anyhow::anyhow!(
+            "permission denied"
+        )));
+    }
+
+    fn hand_task_record(id: &str, status: TaskStatus) -> TaskRecord {
+        TaskRecord {
+            schema_version: CURRENT_TASK_SCHEMA_VERSION,
+            id: id.to_string(),
+            prompt: "hand-built record".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            workspace: PathBuf::from("."),
+            mode: "agent".to_string(),
+            allow_shell: false,
+            trust_mode: false,
+            auto_approve: false,
+            status,
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            result_summary: None,
+            result_detail_path: None,
+            error: None,
+            thread_id: None,
+            turn_id: None,
+            runtime_event_count: 0,
+            checklist: Default::default(),
+            gates: Vec::new(),
+            attempts: Vec::new(),
+            artifacts: Vec::new(),
+            github_events: Vec::new(),
+            tool_calls: Vec::new(),
+            timeline: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn task_result_renders_label_id_and_status() {
+        let result = task_result(
+            "task_cancel",
+            &hand_task_record("task_abc", TaskStatus::Canceled),
+        )
+        .expect("serialize");
+        let parsed: Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(parsed["task"]["id"], "task_abc");
+        assert_eq!(parsed["task"]["status"], "canceled");
+        assert_eq!(parsed["summary"], "task_cancel: task_abc (Canceled)");
+    }
+
+    #[test]
+    fn write_runtime_artifact_none_without_active_task() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        assert_eq!(
+            write_runtime_artifact(&context, "gate", "body")
+                .expect("no active task is a soft skip"),
+            None
+        );
+    }
+
+    #[test]
+    fn write_runtime_artifact_writes_under_task_data_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        let data_dir = tmp.path().join("taskdata");
+        context.runtime.task_data_dir = Some(data_dir.clone());
+        context.runtime.active_task_id = Some("task_art".to_string());
+        let rel = write_runtime_artifact(&context, "gate: 1", "gate output")
+            .expect("write artifact")
+            .expect("path");
+        assert!(
+            rel.starts_with("artifacts/task_art/"),
+            "artifact path stays relative to the data dir: {}",
+            rel.display()
+        );
+        let written = std::fs::read_to_string(data_dir.join(&rel)).expect("artifact on disk");
+        assert_eq!(written, "gate output");
+        assert!(
+            rel.file_name()
+                .and_then(|n| n.to_str())
+                .expect("file name")
+                .contains("gate__1"),
+            "label is sanitized into the file name: {}",
+            rel.display()
+        );
+    }
+
+    #[test]
+    fn write_task_artifact_for_requires_manager_or_active_task() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        let data_dir = tmp.path().join("taskdata");
+        context.runtime.task_data_dir = Some(data_dir);
+        context.runtime.active_task_id = Some("task_mine".to_string());
+        // Active task, no manager → the runtime-artifact fallback path.
+        assert!(
+            write_task_artifact_for(&context, "task_mine", "attempt_patch", "diff --git")
+                .expect("write for active task")
+                .is_some()
+        );
+        // Non-active task without a manager → nothing to attach to.
+        assert_eq!(
+            write_task_artifact_for(&context, "task_other", "attempt_patch", "diff --git")
+                .expect("mismatch is a soft skip"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_task_tools_fail_closed_without_manager() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        for err in [
+            TaskCreateTool
+                .execute(json!({"prompt": "p"}), &context)
+                .await
+                .expect_err("create without manager"),
+            TaskListTool
+                .execute(json!({}), &context)
+                .await
+                .expect_err("list without manager"),
+            TaskReadTool
+                .execute(json!({"task_id": "t1"}), &context)
+                .await
+                .expect_err("read without manager"),
+            TaskCancelTool
+                .execute(json!({"task_id": "t1"}), &context)
+                .await
+                .expect_err("cancel without manager"),
+        ] {
+            assert!(err.to_string().contains("not attached"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn task_create_execute_attaches_durable_record() {
+        let manager = TaskManager::start_with_executor(
+            crate::task_manager::TaskManagerConfig {
+                data_dir: test_task_manager_root("create"),
+                worker_count: 2,
+                default_workspace: std::env::temp_dir(),
+                default_model: "test-model".to_string(),
+                default_mode: "agent".to_string(),
+                allow_shell: false,
+                trust_mode: false,
+                max_subagents: 2,
+            },
+            std::sync::Arc::new(InstantExecutor),
+        )
+        .await
+        .expect("manager");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        context.runtime.task_manager = Some(manager.clone());
+
+        let result = TaskCreateTool
+            .execute(
+                json!({
+                    "prompt": "verify durable create",
+                    "mode": "agent",
+                    "workspace": tmp.path().display().to_string()
+                }),
+                &context,
+            )
+            .await
+            .expect("task_create through the manager");
+        let parsed: Value = serde_json::from_str(&result.content).expect("json");
+        let task_id = parsed["task"]["id"].as_str().expect("id").to_string();
+        assert!(!task_id.is_empty());
+        assert!(result.content.contains("task_create"), "{}", result.content);
+
+        // task_list sees it and task_read resolves the id prefix.
+        let listed = TaskListTool
+            .execute(json!({"limit": 10}), &context)
+            .await
+            .expect("task_list");
+        let parsed: Value = serde_json::from_str(&listed.content).expect("json");
+        assert!(
+            parsed["tasks"]
+                .as_array()
+                .expect("tasks array")
+                .iter()
+                .any(|t| t["id"] == task_id.as_str()),
+            "listed: {parsed}"
+        );
+
+        let prefix: String = task_id.chars().take(8).collect();
+        let read = TaskReadTool
+            .execute(json!({"task_id": prefix}), &context)
+            .await
+            .expect("task_read by prefix");
+        assert!(read.content.contains(&task_id), "{}", read.content);
+
+        let err = TaskReadTool
+            .execute(json!({"task_id": "does-not-exist"}), &context)
+            .await
+            .expect_err("unknown id");
+        assert!(err.to_string().contains("does-not-exist"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_cancel_execute_cancels_a_running_task() {
+        // HangingExecutor keeps the task Running until the cancel lands.
+        let manager = TaskManager::start_with_executor(
+            crate::task_manager::TaskManagerConfig {
+                data_dir: test_task_manager_root("cancel"),
+                worker_count: 2,
+                default_workspace: std::env::temp_dir(),
+                default_model: "test-model".to_string(),
+                default_mode: "agent".to_string(),
+                allow_shell: false,
+                trust_mode: false,
+                max_subagents: 2,
+            },
+            std::sync::Arc::new(HangingExecutor),
+        )
+        .await
+        .expect("manager");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        context.runtime.task_manager = Some(manager.clone());
+
+        let task = manager
+            .add_task(NewTaskRequest {
+                prompt: "hang until cancelled".to_string(),
+                model: None,
+                workspace: Some(tmp.path().to_path_buf()),
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+            })
+            .await
+            .expect("enqueue");
+        // Wait for the worker to pick it up (bounded).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let snapshot = manager.get_task(&task.id).await.expect("snapshot");
+            if snapshot.status == TaskStatus::Running {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "task never started");
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        let result = TaskCancelTool
+            .execute(json!({"task_id": task.id}), &context)
+            .await
+            .expect("task_cancel");
+        let parsed: Value = serde_json::from_str(&result.content).expect("json");
+        assert_eq!(parsed["task"]["id"], task.id.as_str());
+        // Cancellation is asynchronous: the record reflects the request
+        // immediately (cancel_requested timeline, or already-canceled).
+        let requested = parsed["task"]["timeline"]
+            .as_array()
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|e| e["kind"] == "cancel_requested" || e["kind"] == "canceled")
+            })
+            || parsed["task"]["status"] == "canceled"
+            || parsed["task"]["status"] == "Canceled";
+        assert!(requested, "cancel result: {parsed}");
+
+        let err = TaskCancelTool
+            .execute(json!({"task_id": "missing-task"}), &context)
+            .await
+            .expect_err("cancel unknown id");
+        assert!(err.to_string().contains("missing-task"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn pr_attempt_list_and_read_execute_through_manager() {
+        let manager = TaskManager::start_with_executor(
+            crate::task_manager::TaskManagerConfig {
+                data_dir: test_task_manager_root("pr-list"),
+                worker_count: 2,
+                default_workspace: std::env::temp_dir(),
+                default_model: "test-model".to_string(),
+                default_mode: "agent".to_string(),
+                allow_shell: false,
+                trust_mode: false,
+                max_subagents: 2,
+            },
+            std::sync::Arc::new(InstantExecutor),
+        )
+        .await
+        .expect("manager");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut context = ToolContext::new(tmp.path().to_path_buf());
+        context.runtime.task_manager = Some(manager.clone());
+        let task = manager
+            .add_task(NewTaskRequest {
+                prompt: "attempt host".to_string(),
+                model: None,
+                workspace: Some(tmp.path().to_path_buf()),
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+            })
+            .await
+            .expect("task");
+
+        let listed = PrAttemptListTool
+            .execute(json!({"task_id": task.id}), &context)
+            .await
+            .expect("pr_attempt_list");
+        let parsed: Value = serde_json::from_str(&listed.content).expect("json");
+        assert_eq!(parsed["task_id"], task.id.as_str());
+        assert_eq!(
+            parsed["attempts"].as_array().map(Vec::len),
+            Some(0),
+            "fresh task has no attempts: {parsed}"
+        );
+
+        for err in [
+            PrAttemptReadTool
+                .execute(
+                    json!({"task_id": task.id, "attempt_id": "attempt_none"}),
+                    &context,
+                )
+                .await
+                .expect_err("read unknown attempt"),
+            PrAttemptPreflightTool
+                .execute(
+                    json!({"task_id": task.id, "attempt_id": "attempt_none"}),
+                    &context,
+                )
+                .await
+                .expect_err("preflight unknown attempt"),
+        ] {
+            assert!(err.to_string().contains("Attempt not found"), "{err}");
+        }
+    }
+
+    /// Run one git command inside `dir`, failing the test with its output.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}{}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn task_shell_start_and_wait_records_gate_evidence() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = ToolContext::new(tmp.path().to_path_buf());
+
+        let started = TaskShellStartTool
+            .execute(json!({"command": "echo task-shell-gate-marker"}), &context)
+            .await
+            .expect("task_shell_start");
+        let shell_task_id = started
+            .metadata
+            .as_ref()
+            .and_then(|m| m["task_id"].as_str())
+            .expect("background task id in metadata")
+            .to_string();
+        assert_eq!(
+            started
+                .metadata
+                .as_ref()
+                .and_then(|m| m["task_shell"].as_bool()),
+            Some(true),
+            "start metadata marks the task_shell lane"
+        );
+
+        let waited = TaskShellWaitTool
+            .execute(
+                json!({
+                    "task_id": shell_task_id,
+                    "wait": true,
+                    "timeout_ms": 10_000,
+                    "gate": "test",
+                    "command": "echo task-shell-gate-marker"
+                }),
+                &context,
+            )
+            .await
+            .expect("task_shell_wait with gate");
+        assert!(
+            waited.content.contains("task-shell-gate-marker"),
+            "{}",
+            waited.content
+        );
+        let metadata = waited.metadata.expect("wait metadata");
+        let gate = &metadata["task_updates"]["gate"];
+        assert_eq!(gate["status"], "passed", "gate record: {gate}");
+        assert_eq!(gate["gate"], "test");
+        assert_eq!(gate["exit_code"], 0);
+    }
 }

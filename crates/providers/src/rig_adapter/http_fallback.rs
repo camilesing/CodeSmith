@@ -910,4 +910,614 @@ mod tests {
         assert!(truncated.contains("…(+") && truncated.ends_with(")"));
         assert!(truncated.len() < multibyte.len());
     }
+
+    // --- request-body structural summaries ------------------------------
+
+    #[test]
+    fn wire_message_summary_covers_content_shapes() {
+        let summary = wire_message_summary(&serde_json::json!({
+            "role": "assistant",
+            "content": "hello world",
+            "reasoning_content": "because"
+        }));
+        assert_eq!(summary["role"], "assistant");
+        assert_eq!(summary["kinds"], serde_json::json!(["text"]));
+        assert_eq!(summary["chars"], 11);
+        assert_eq!(summary["empty_content"], false);
+        assert_eq!(summary["has_reasoning_content"], true);
+        assert_eq!(summary["tool_call_ids"], serde_json::json!([]));
+        assert_eq!(summary["tool_result_id"], serde_json::json!(null));
+
+        // Blank string content counts as empty for the offline analyzer.
+        let summary = wire_message_summary(&serde_json::json!({"role": "user", "content": "   "}));
+        assert_eq!(summary["empty_content"], true);
+        assert_eq!(summary["chars"], 3);
+
+        // Block-array content: typed text/thinking blocks, an untyped block,
+        // and sizes summed from text/thinking fields.
+        let summary = wire_message_summary(&serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "abc"},
+                {"type": "thinking", "thinking": "abcdef"},
+                {"untyped": true}
+            ]
+        }));
+        assert_eq!(
+            summary["kinds"],
+            serde_json::json!(["text", "thinking", "?"])
+        );
+        assert_eq!(summary["chars"], 9);
+        assert_eq!(summary["empty_content"], false);
+
+        let summary = wire_message_summary(&serde_json::json!({"role": "user", "content": []}));
+        assert_eq!(summary["empty_content"], true);
+
+        // Null and absent content both count as empty.
+        for message in [
+            serde_json::json!({"role": "tool", "content": null}),
+            serde_json::json!({"role": "tool"}),
+        ] {
+            let summary = wire_message_summary(&message);
+            assert_eq!(summary["empty_content"], true, "{message}");
+        }
+
+        // Non-string scalar content is neither text nor flagged empty — the
+        // explicitly ignored shape.
+        let summary = wire_message_summary(&serde_json::json!({"role": "user", "content": 42}));
+        assert_eq!(summary["kinds"], serde_json::json!([]));
+        assert_eq!(summary["empty_content"], false);
+    }
+
+    #[test]
+    fn wire_message_summary_covers_tool_calls_and_results() {
+        let summary = wire_message_summary(&serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+                {"id": "call-1", "function": {"arguments": "{\"a\":1}"}},
+                {"function": {"arguments": "short"}},
+                {}
+            ]
+        }));
+        assert_eq!(summary["tool_call_ids"], serde_json::json!(["call-1"]));
+        // 7 chars of `{"a":1}` + 5 chars of "short" + 0 for the bare call.
+        assert_eq!(summary["chars"], 12);
+        assert_eq!(summary["empty_content"], true);
+
+        let summary = wire_message_summary(&serde_json::json!({
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "result body"
+        }));
+        assert_eq!(summary["tool_result_id"], "call-1");
+        // The tool branch counts the content twice (String branch once, the
+        // tool_call_id branch once more) — pin the product behavior.
+        assert_eq!(summary["chars"], 22);
+    }
+
+    #[test]
+    fn wire_summary_counts_messages_and_tool_pairs() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "c1", "function": {"arguments": "1"}},
+                    {"id": "c2", "function": {"arguments": "2"}}
+                ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "r1"}
+            ]
+        });
+        let summary = wire_summary(&body);
+        assert_eq!(summary["message_count"], 3);
+        assert_eq!(summary["tool_call_count"], 2);
+        assert_eq!(summary["tool_result_count"], 1);
+        assert_eq!(summary["messages"].as_array().unwrap().len(), 3);
+
+        // Bodies without a messages array summarize to zero counts.
+        let summary = wire_summary(&serde_json::json!({"error": "x"}));
+        assert_eq!(summary["message_count"], 0);
+        assert_eq!(summary["tool_call_count"], 0);
+        assert_eq!(summary["messages"], serde_json::json!([]));
+    }
+
+    // --- URI redaction ----------------------------------------------------
+
+    #[test]
+    fn redact_uri_for_diagnostics_masks_userinfo_and_credentials() {
+        // user:pass@ userinfo is masked wholesale.
+        let redacted = redact_uri_for_diagnostics("https://user:secret@gateway.example/v1");
+        assert_eq!(redacted, "https://***@gateway.example/v1");
+
+        // Credential-looking query params are dropped (case-insensitively);
+        // benign params stay in order.
+        let redacted = redact_uri_for_diagnostics(
+            "https://api.example/v1/chat?model=glm&key=abc&api_key=def&APIKEY=x&token=t&signature=s&sig=g&secret=q&access_token=z",
+        );
+        assert_eq!(redacted, "https://api.example/v1/chat?model=glm");
+
+        // Every param filtered → the '?' disappears entirely.
+        let redacted = redact_uri_for_diagnostics("https://api.example/v1?key=only");
+        assert_eq!(redacted, "https://api.example/v1");
+
+        // No query and no userinfo — unchanged.
+        assert_eq!(
+            redact_uri_for_diagnostics("https://api.example/v1"),
+            "https://api.example/v1"
+        );
+        // Garbage input is passed through untouched.
+        assert_eq!(
+            redact_uri_for_diagnostics("not a uri at all"),
+            "not a uri at all"
+        );
+    }
+
+    // --- forensic dump ----------------------------------------------------
+
+    /// Serializes tests that read or write the dump env toggles: the flags
+    /// are process-global, and a concurrent 4xx/5xx response test would
+    /// otherwise observe a momentarily-set flag.
+    static DUMP_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn unique_dump_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "codesmith-dump-test-{label}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dump dir");
+        dir
+    }
+
+    fn dump_spec(uri: &str, body: &[u8]) -> ReplaySpec {
+        ReplaySpec {
+            method: reqwest::Method::POST,
+            uri: uri.to_string(),
+            headers: reqwest::header::HeaderMap::new(),
+            body: Bytes::copy_from_slice(body),
+        }
+    }
+
+    fn set_dump_env(dir: &std::path::Path) {
+        // SAFETY: callers hold DUMP_ENV_LOCK; the dump flags are only read
+        // on already-failing request paths in this module.
+        unsafe {
+            std::env::set_var("CODESMITH_DUMP_400_PAYLOAD", "1");
+            std::env::set_var("CODESMITH_DUMP_400_PAYLOAD_DIR", dir);
+        }
+    }
+
+    fn clear_dump_env() {
+        // SAFETY: callers hold DUMP_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("CODESMITH_DUMP_400_PAYLOAD");
+            std::env::remove_var("CODESMITH_DUMP_400_PAYLOAD_DIR");
+        }
+    }
+
+    fn single_dump_file(dir: &std::path::Path) -> serde_json::Value {
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .expect("read dump dir")
+            .map(|entry| entry.expect("dir entry").path())
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one dump file expected");
+        entries.sort();
+        serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn dump_failed_request_writes_redacted_forensic_file() {
+        let _env = DUMP_ENV_LOCK.lock().unwrap();
+        let dir = unique_dump_dir("ok");
+        set_dump_env(&dir);
+
+        let spec = dump_spec(
+            "https://user:secret@api.example/v1/chat?key=abc",
+            br#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        dump_failed_request(
+            &spec,
+            reqwest::StatusCode::BAD_REQUEST,
+            "{\"error\":\"boom\"}",
+        );
+        clear_dump_env();
+
+        let dump = single_dump_file(&dir);
+        assert_eq!(
+            dump["uri"], "https://***@api.example/v1/chat",
+            "userinfo and key param must be redacted: {}",
+            dump["uri"]
+        );
+        assert_eq!(dump["status"], 400);
+        assert_eq!(dump["response_body"], "{\"error\":\"boom\"}");
+        assert_eq!(dump["request_body"]["messages"][0]["role"], "user");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dump_failed_request_records_body_parse_errors() {
+        let _env = DUMP_ENV_LOCK.lock().unwrap();
+        let dir = unique_dump_dir("parse");
+        set_dump_env(&dir);
+
+        dump_failed_request(
+            &dump_spec("https://api.example/v1", b"not json at all"),
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "bad",
+        );
+        clear_dump_env();
+
+        let dump = single_dump_file(&dir);
+        assert!(
+            dump["request_body"]["parse_error"].is_string(),
+            "unparseable body must be recorded as a parse error: {dump}"
+        );
+        assert_eq!(dump["status"], 422);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The dump is best-effort forensics: an unwritable dump directory must
+    /// degrade to the tracing note instead of panicking on the failing path.
+    #[cfg(unix)]
+    #[test]
+    fn dump_failed_request_survives_unwritable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = DUMP_ENV_LOCK.lock().unwrap();
+        let dir = unique_dump_dir("locked");
+        set_dump_env(&dir);
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&dir, perms.clone()).unwrap();
+        dump_failed_request(
+            &dump_spec("https://api.example/v1", br#"{"messages":[]}"#),
+            reqwest::StatusCode::BAD_REQUEST,
+            "x",
+        );
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&dir, perms).unwrap();
+        clear_dump_env();
+
+        assert!(
+            std::fs::read_dir(&dir).unwrap().next().is_none(),
+            "no dump file may appear in an unwritable directory"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- loopback HTTP fixture --------------------------------------------
+
+    /// Read one HTTP/1.1 request (headers plus Content-Length body) off a
+    /// raw loopback socket. Local twin of the pool.rs helper: reqwest may
+    /// split a request across TCP segments, so loop until it is whole.
+    async fn read_loopback_request<S: tokio::io::AsyncRead + Unpin>(
+        socket: &mut S,
+    ) -> std::io::Result<String> {
+        use tokio::io::AsyncReadExt;
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            let n = socket.read(&mut chunk).await?;
+            if n == 0 {
+                break buf.len();
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            assert!(
+                buf.len() <= 64 * 1024,
+                "loopback peer never completed HTTP headers"
+            );
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end.min(buf.len())]).to_string();
+        let content_length = head
+            .split("\r\n")
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        let total = head_end + content_length;
+        while buf.len() < total {
+            let n = socket.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(String::from_utf8_lossy(&buf[..total.min(buf.len())]).into_owned())
+    }
+
+    fn loopback_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("loopback reqwest client")
+    }
+
+    /// Transport-level failure (connection refused) maps to rig's
+    /// `HttpError::Instance`, exactly like rig's own reqwest backend.
+    #[tokio::test]
+    async fn execute_maps_transport_failure_to_instance_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // nothing listens any more → connection refused
+
+        let spec = ReplaySpec {
+            method: reqwest::Method::POST,
+            uri: format!("http://{addr}/mcp"),
+            headers: reqwest::header::HeaderMap::new(),
+            body: Bytes::new(),
+        };
+        let err = execute(&loopback_client(), &spec)
+            .await
+            .expect_err("refused connection must fail");
+        assert!(
+            matches!(err, HttpError::Instance(_)),
+            "unexpected error kind: {err:?}"
+        );
+    }
+
+    /// Non-success statuses drain the body into the mapped error message.
+    #[tokio::test]
+    async fn non_success_status_error_drains_body_message() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_loopback_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 418 I'm a teapot\r\nContent-Length: 6\r\nConnection: close\r\n\r\nteapot",
+                )
+                .await
+                .unwrap();
+        });
+
+        let response = loopback_client()
+            .get(format!("http://{addr}/brew"))
+            .send()
+            .await
+            .expect("loopback response");
+        let err = non_success_status_error(response, None).await;
+        assert!(
+            matches!(
+                &err,
+                HttpError::InvalidStatusCodeWithMessage(status, message)
+                    if status.as_u16() == 418 && message == "teapot"
+            ),
+            "unexpected error: {err:?}"
+        );
+        server.abort();
+    }
+
+    /// `HttpClientExt::send` returns the response body through the lazy
+    /// body future and maps non-success statuses to errors (with the dump
+    /// flag guaranteed unset, hence the env lock).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn h2_fallback_client_send_returns_body_and_maps_non_success() {
+        let _env = DUMP_ENV_LOCK.lock().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Ok(request) = read_loopback_request(&mut socket).await else {
+                        return;
+                    };
+                    if request.starts_with("POST /ok ") {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                            )
+                            .await
+                            .unwrap();
+                    } else {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom",
+                            )
+                            .await
+                            .unwrap();
+                    }
+                });
+            }
+        });
+
+        let client = H2FallbackClient::default();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{addr}/ok"))
+            .body(Bytes::from_static(br#"{"ping":1}"#))
+            .unwrap();
+        let response = client.send::<Bytes, Bytes>(request).await.expect("send");
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().await.expect("lazy body");
+        assert_eq!(&body[..], b"{\"ok\":true}");
+
+        // A Vec<u8> request body flows through the same generic path.
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{addr}/err"))
+            .body(Vec::from(&br#"{"ping":2}"#[..]))
+            .unwrap();
+        // `expect_err` needs the Ok side Debug; the lazy body future is not.
+        let err = match client.send::<Vec<u8>, Bytes>(request).await {
+            Err(err) => err,
+            Ok(_) => panic!("500 must map to an error"),
+        };
+        assert!(
+            matches!(
+                &err,
+                HttpError::InvalidStatusCodeWithMessage(status, message)
+                    if status.as_u16() == 500 && message == "boom"
+            ),
+            "unexpected error: {err:?}"
+        );
+
+        server.abort();
+    }
+
+    /// `send_multipart` posts a real multipart/form-data body and reads the
+    /// response body back.
+    #[tokio::test]
+    async fn h2_fallback_client_send_multipart_posts_form() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_server = std::sync::Arc::clone(&seen);
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let seen = std::sync::Arc::clone(&seen_server);
+                tokio::spawn(async move {
+                    let Ok(request) = read_loopback_request(&mut socket).await else {
+                        return;
+                    };
+                    seen.lock().unwrap().push(request);
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nstored")
+                        .await
+                        .unwrap();
+                });
+            }
+        });
+
+        let client = H2FallbackClient::new();
+        let form = MultipartForm::new().text("field", "value");
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{addr}/upload"))
+            .body(form)
+            .unwrap();
+        let response = client
+            .send_multipart::<Bytes>(request)
+            .await
+            .expect("multipart send");
+        assert_eq!(response.status(), 200);
+        let body = response.into_body().await.expect("lazy body");
+        assert_eq!(&body[..], b"stored");
+
+        server.abort();
+        let requests = seen.lock().unwrap();
+        assert!(
+            requests[0]
+                .to_lowercase()
+                .contains("content-type: multipart/form-data; boundary="),
+            "multipart framing missing: {}",
+            requests[0]
+        );
+        assert!(
+            requests[0].contains("field") && requests[0].contains("value"),
+            "form part missing from body: {}",
+            requests[0]
+        );
+    }
+
+    /// `send_streaming` forwards the raw byte stream when usage compat is
+    /// off, and rewrites SSE usage chunks (across split network chunks)
+    /// when the deepseek compat flag is on.
+    #[tokio::test]
+    async fn h2_fallback_client_send_streaming_normalizes_usage_chunks() {
+        let sse_stream = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_loopback_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            // Split the stream mid-usage-line: the normalizer must buffer
+            // the partial line across chunks exactly once.
+            socket.write_all(&sse_stream[..120]).await.unwrap();
+            tokio::task::yield_now().await;
+            socket.write_all(&sse_stream[120..]).await.unwrap();
+        });
+
+        let plain_client = H2FallbackClient::new();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{addr}/chat"))
+            .body(Bytes::from_static(b"{}"))
+            .unwrap();
+        let response = plain_client
+            .send_streaming(request)
+            .await
+            .expect("plain streaming");
+        let mut stream = response.into_body();
+        let mut collected = Vec::new();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            collected.extend_from_slice(&chunk.expect("plain chunk"));
+        }
+        assert_eq!(collected, sse_stream.to_vec());
+        server.abort();
+
+        // Same fixture again with usage compat enabled.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_loopback_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            socket.write_all(&sse_stream[..120]).await.unwrap();
+            tokio::task::yield_now().await;
+            socket.write_all(&sse_stream[120..]).await.unwrap();
+        });
+
+        let compat_client = H2FallbackClient::new().deepseek_usage_compat(true);
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{addr}/chat"))
+            .body(Vec::from(&b"{}"[..]))
+            .unwrap();
+        let response = compat_client
+            .send_streaming(request)
+            .await
+            .expect("compat streaming");
+        let mut stream = response.into_body();
+        let mut text = String::new();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            text.push_str(&String::from_utf8_lossy(&chunk.expect("compat chunk")));
+        }
+        let usage_line = text
+            .lines()
+            .find(|line| line.contains("\"usage\""))
+            .expect("usage line present");
+        let usage: serde_json::Value =
+            serde_json::from_str(usage_line.trim_start_matches("data: ")).unwrap();
+        assert_eq!(usage["usage"]["prompt_cache_hit_tokens"], 0);
+        assert_eq!(usage["usage"]["prompt_cache_miss_tokens"], 0);
+        assert_eq!(usage["usage"]["prompt_tokens"], 3);
+        assert!(
+            text.contains("data: [DONE]"),
+            "sentinel must survive: {text}"
+        );
+        server.abort();
+    }
 }

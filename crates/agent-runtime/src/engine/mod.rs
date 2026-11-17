@@ -4176,3 +4176,55 @@ pub use self::tool_catalog::{
     maybe_hydrate_requested_deferred_tool, preflight_requested_deferred_tool,
     progressive_disclosure_active, tool_search_control_tool, tool_search_loaded_sentinel,
 };
+
+#[cfg(test)]
+mod slop_gate_tests {
+    use super::slop_ledger_gate;
+    use crate::slop_ledger::{SlopBucket, SlopConfidence, SlopEntry, SlopLedger, SlopSeverity};
+
+    /// The completion-gate stat cache: a missing ledger reports nothing, a
+    /// matching cache entry short-circuits the load, and a ledger with open
+    /// entries reports its gate summary (keyed by the file's mtime).
+    #[test]
+    fn slop_ledger_gate_reads_missing_cached_and_open_ledgers() {
+        let _guard = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", dir.path().join("home"));
+
+        // No ledger on disk: no mtime, no block.
+        assert_eq!(slop_ledger_gate(None), (None, None));
+
+        // A cache entry whose mtime matches (both absent) is served as-is —
+        // the load is skipped even when it names a block.
+        assert_eq!(
+            slop_ledger_gate(Some((None, Some("cached block".to_string())))),
+            (None, Some("cached block".to_string()))
+        );
+
+        // A ledger with an open entry loads and reports its gate summary.
+        let mut ledger = SlopLedger::load().expect("fresh ledger at the default path");
+        ledger.append(vec![SlopEntry::new(
+            SlopBucket::StaleDocs,
+            SlopSeverity::Low,
+            SlopConfidence::Certain,
+            "stale pair".to_string(),
+            "docs/CLI.md drifted from its cn twin".to_string(),
+        )]);
+        ledger.save().expect("save ledger");
+
+        let (modified, block) = slop_ledger_gate(None);
+        let modified = modified.expect("the saved ledger has an mtime");
+        let block = block.expect("open entries produce a completion gate block");
+        assert!(block.contains("stale pair"), "{block}");
+
+        // A stale cache (wrong mtime) reloads; a fresh one is served whole.
+        let (cached_mtime, served) =
+            slop_ledger_gate(Some((Some(modified), Some("served".to_string()))));
+        assert_eq!(cached_mtime, Some(modified));
+        assert_eq!(served.as_deref(), Some("served"));
+        let (reloaded_mtime, reloaded) = slop_ledger_gate(Some((None, Some("stale".to_string()))));
+        assert_eq!(reloaded_mtime, Some(modified));
+        assert!(reloaded.unwrap().contains("stale pair"));
+    }
+}

@@ -1810,6 +1810,7 @@ impl Default for ExtensionRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use codesmith_tools::ToolResult;
     use serde_json::json;
     use std::path::Path;
@@ -3424,6 +3425,394 @@ mod tests {
             compose(runner.around_tool_handlers_for(&Scope::AgentType("general".to_string()))),
             "compiled",
             "a dylib-origin around-tool wrapper never wraps a sub-agent dispatch"
+        );
+    }
+
+    // === coverage: handler context surface, mod lifecycle, doubles =========
+
+    /// A handler reading the whole `ExtensionContext` surface through the
+    /// runner's `ScopedContext` wrapper: the sync observations delegate to
+    /// the bound host context, and the async control methods (abort /
+    /// shutdown / compact / get_context_usage) round-trip too. Covers both
+    /// the wrapper's delegations and the test `Ctx` mock's methods.
+    #[tokio::test]
+    async fn handler_context_surface_round_trips() {
+        struct ProbingHandler {
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+        #[async_trait]
+        impl Handler for ProbingHandler {
+            async fn handle(
+                &self,
+                _event: &ExtensionEvent,
+                ctx: &dyn ExtensionContext,
+            ) -> Result<HandlerOutcome, ExtensionError> {
+                // The guard is scoped to the synchronous block: holding a
+                // std MutexGuard across the awaits below makes the
+                // async_trait future non-Send.
+                {
+                    let mut s = self.seen.lock().unwrap();
+                    s.push(format!(
+                        "cwd={:?} mode={:?} idle={} gen={} main={}",
+                        ctx.cwd(),
+                        ctx.mode(),
+                        ctx.is_idle(),
+                        ctx.generation(),
+                        ctx.agent_identity().is_main(),
+                    ));
+                    s.push(format!("cancelled={}", ctx.signal().is_cancelled()));
+                }
+                let (abort, shutdown, compact) = (
+                    ctx.abort().await.is_ok(),
+                    ctx.shutdown().await.is_ok(),
+                    ctx.compact().await.is_ok(),
+                );
+                let usage = ctx.get_context_usage().await;
+                self.seen.lock().unwrap().push(format!(
+                    "abort={abort:?} shutdown={shutdown:?} compact={compact:?} usage_ok={}",
+                    usage.is_ok()
+                ));
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+
+        let runner = ExtensionRunner::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        struct ProbeExt {
+            handler: Arc<dyn Handler>,
+        }
+        #[async_trait]
+        impl Extension for ProbeExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("probe-ctx");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on(self.handler.clone())
+            }
+        }
+        runner
+            .load(&ProbeExt {
+                handler: Arc::new(ProbingHandler { seen: seen.clone() }),
+            })
+            .await
+            .unwrap();
+        runner.bind_core(Arc::new(Ctx { generation: 5 }));
+
+        let _ = runner
+            .emit(ExtensionEvent::TurnStart {
+                turn_id: "t1".into(),
+            })
+            .await;
+        let s = seen.lock().unwrap().clone();
+        assert_eq!(s.len(), 3, "handler recorded every context read");
+        assert!(s[0].contains("gen=5"), "generation delegated: {}", s[0]);
+        assert_eq!(s[1], "cancelled=false");
+        // The slice-1 `Ctx` mock does not implement the async control
+        // surface, so the trait defaults answer `Unimplemented` — the
+        // wrapper still forwarded the call (that is the contract under
+        // test; the values themselves are the mock's).
+        assert_eq!(
+            s[2],
+            "abort=false shutdown=false compact=false usage_ok=false"
+        );
+    }
+
+    fn ephemeral_kv() -> crate::script::ModKvStore {
+        crate::script::ModKvStore::ephemeral()
+    }
+
+    fn runner_hub() -> codesmith_agent::extension::MessageProjectionHubArc {
+        codesmith_agent::extension::MessageProjectionHubArc::new(
+            codesmith_agent::extension::MessageProjectionHub::new(),
+        )
+    }
+
+    /// The per-mod lookup helpers: `loop_mod` (single + the warned
+    /// multi-declaration fallback), `mod_by_id`, `retained_mod_ids`, and
+    /// the compaction-strategy / sweep-rule resolution through the runner.
+    /// Also formats `RhaiMod` / `ScriptCompactionStrategy` /
+    /// `ScriptSweepRule` through their manual `Debug` impls.
+    #[test]
+    fn mod_lifecycle_lookup_helpers_and_debug() {
+        let loop_a = crate::script::rhai_mod::RhaiMod::load_source(
+            "loop-a",
+            "Loop A",
+            "0.1.0",
+            r#"fn main() { 1 } register_loop("main");"#.to_string(),
+            ephemeral_kv(),
+            runner_hub(),
+        )
+        .expect("load loop-a");
+        let loop_b = crate::script::rhai_mod::RhaiMod::load_source(
+            "loop-b",
+            "Loop B",
+            "0.1.0",
+            r#"fn alt() { 1 } register_loop("alt");"#.to_string(),
+            ephemeral_kv(),
+            runner_hub(),
+        )
+        .expect("load loop-b");
+        let strategy_mod = crate::script::rhai_mod::RhaiMod::load_source(
+            "strategy-mod",
+            "Strategy",
+            "0.1.0",
+            r#"
+                register_compaction_strategy("compact-pi", #{
+                    trigger: |snap| false,
+                    plan: |snap| #{ keep_recent_rounds: 1 },
+                });
+                register_sweep_rule("old-results", #{
+                    eligible: |view| view.content_chars > 4000,
+                    placeholder: "[swept]",
+                    keep_head_chars: 8,
+                    keep_tail_chars: 8,
+                });
+            "#
+            .to_string(),
+            ephemeral_kv(),
+            runner_hub(),
+        )
+        .expect("load strategy-mod");
+
+        let runner = ExtensionRunner::new();
+        runner.retain_mod(Arc::new(loop_a));
+        runner.retain_mod(Arc::new(strategy_mod));
+        assert_eq!(
+            runner.retained_mod_ids(),
+            vec!["loop-a".to_string(), "strategy-mod".to_string()]
+        );
+        // Single loop declaration resolves to that mod.
+        assert_eq!(
+            runner.loop_mod().map(|m| m.metadata().id.to_string()),
+            Some("loop-a".into())
+        );
+        assert!(runner.mod_by_id("strategy-mod").is_some());
+        assert!(runner.mod_by_id("no-such-mod").is_none());
+
+        // Strategy + sweep resolution through the runner.
+        let strategy = runner.compaction_strategy("compact-pi").expect("resolves");
+        assert_eq!(strategy.mod_id, "strategy-mod");
+        assert_eq!(strategy.name, "compact-pi");
+        assert_eq!(
+            runner.compaction_strategy_names(),
+            vec!["compact-pi".to_string()]
+        );
+        assert!(runner.compaction_strategy("nope").is_none());
+        let rules = runner.sweep_rules();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "old-results");
+        assert_eq!(rules[0].placeholder, "[swept]");
+        assert!(
+            rules[0]
+                .eligible(&serde_json::json!({"content_chars": 5000}))
+                .expect("bool-answering closure")
+        );
+        assert!(
+            !rules[0]
+                .eligible(&serde_json::json!({"content_chars": 50}))
+                .expect("bool-answering closure")
+        );
+
+        // Manual Debug impls render (RhaiMod / strategy / rule).
+        let dbg = format!("{:?}", runner.mod_by_id("strategy-mod").unwrap());
+        assert!(dbg.contains("strategy-mod"), "{dbg}");
+        let strategy_dbg = format!("{:?}", strategy);
+        assert!(strategy_dbg.contains("compact-pi"), "{strategy_dbg}");
+        let rule_dbg = format!("{:?}", rules[0]);
+        assert!(rule_dbg.contains("old-results"), "{rule_dbg}");
+
+        // A second loop declaration: warned fallback keeps the FIRST mod.
+        runner.retain_mod(Arc::new(loop_b));
+        assert_eq!(
+            runner.loop_mod().map(|m| m.metadata().id.to_string()),
+            Some("loop-a".into()),
+            "first declaration wins the ambiguity"
+        );
+
+        // Eviction + clear drop the slots.
+        assert!(runner.evict_mod("loop-a"));
+        assert!(!runner.evict_mod("loop-a"), "second evict is a no-op");
+        runner.clear_mod_slots();
+        assert!(runner.retained_mod_ids().is_empty());
+    }
+
+    /// Strategy/sweep closures reporting errors or the wrong type surface
+    /// as `Err(String)` — the host's documented "log + fall back" inputs.
+    #[test]
+    fn script_strategy_and_sweep_error_paths() {
+        let m = crate::script::rhai_mod::RhaiMod::load_source(
+            "broken-strategy",
+            "Broken",
+            "0.1.0",
+            r#"
+                register_compaction_strategy("broken", #{
+                    trigger: |snap| 1 / snap.missing_field,
+                    plan: |snap| 1 / snap.missing_field,
+                });
+                register_compaction_strategy("wrong-type", #{
+                    trigger: |snap| "yes",
+                    plan: |snap| "not-a-map",
+                });
+                register_sweep_rule("bad-eligible", #{
+                    eligible: |view| 42,
+                    placeholder: "[swept]",
+                });
+                register_sweep_rule("error-eligible", #{
+                    eligible: |view| 1 / view.missing_field,
+                    placeholder: "[swept]",
+                });
+            "#
+            .to_string(),
+            ephemeral_kv(),
+            runner_hub(),
+        )
+        .expect("load");
+        let runner = ExtensionRunner::new();
+        runner.retain_mod(Arc::new(m));
+
+        let broken = runner.compaction_strategy("broken").unwrap();
+        assert!(broken.call_trigger(&serde_json::json!({})).is_err());
+        assert!(broken.call_plan(&serde_json::json!({})).is_err());
+
+        let wrong = runner.compaction_strategy("wrong-type").unwrap();
+        let err = wrong
+            .call_trigger(&serde_json::json!({}))
+            .expect_err("non-bool trigger");
+        assert!(err.contains("bool"), "{err}");
+        let err = wrong
+            .call_plan(&serde_json::json!({}))
+            .expect_err("non-map plan");
+        assert!(err.contains("map"), "{err}");
+
+        let rules = runner.sweep_rules();
+        let wrong_type = rules.iter().find(|r| r.name == "bad-eligible").unwrap();
+        assert!(wrong_type.eligible(&serde_json::json!({})).is_err());
+        let erroring = rules.iter().find(|r| r.name == "error-eligible").unwrap();
+        assert!(erroring.eligible(&serde_json::json!({})).is_err());
+    }
+
+    /// The replacement views: the main-turn view carries every origin, the
+    /// sub-agent view drops dylib-origin replacements (§F5d).
+    #[test]
+    fn bound_replacements_views_filter_dylib_origin() {
+        struct ReplaceExt;
+        #[async_trait]
+        impl Extension for ReplaceExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("replace-ext");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.replace_tool(Box::new(NopReplace))?;
+                Ok(())
+            }
+        }
+        struct NopReplace;
+        #[async_trait]
+        impl ToolReplacement for NopReplace {
+            fn target(&self) -> &str {
+                "exec_shell"
+            }
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &dyn ExtensionContext,
+            ) -> Result<ReplacementOutcome, ExtensionError> {
+                Ok(ReplacementOutcome::Complete(ToolResult::success(
+                    "replaced",
+                )))
+            }
+        }
+
+        let runner = ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        rt.block_on(runner.load(&ReplaceExt))
+            .expect("load compiled-in");
+        rt.block_on(runner.load_as(&ReplaceExt, RegistrationOrigin::Dylib))
+            .expect("load dylib-stamped");
+        runner.bind_core(Arc::new(Ctx { generation: 1 }));
+
+        let all = runner.bound_replacements();
+        assert_eq!(all.len(), 2, "main-turn view carries both origins");
+        let subagent = runner.bound_replacements_for_subagents();
+        assert_eq!(
+            subagent.len(),
+            1,
+            "dylib-origin replacement never mounts in a sub-agent registry"
+        );
+        runner.clear_replacements();
+        assert!(runner.bound_replacements().is_empty());
+    }
+
+    /// Mock-surface round-trips that production never drives in these
+    /// tests: the runner's manual `Debug` + `Default`, the contributed
+    /// command's `description`, the contributed tool's `execute`, and the
+    /// test provider factory's client surface (`provider_name` / `model` /
+    /// both message constructors) via `shared.resolve(...).build(...)`.
+    #[test]
+    fn debug_default_and_test_double_surfaces() {
+        let runner = ExtensionRunner::new();
+        let default_runner = ExtensionRunner::default();
+        assert_eq!(runner.generation(), default_runner.generation());
+        let dbg = format!("{runner:?}");
+        assert!(dbg.contains("ExtensionRunner"), "{dbg}");
+        assert!(dbg.contains("generation"), "{dbg}");
+
+        // Contributed command description (the catalogue-facing method).
+        assert_eq!(
+            EchoCmd.description(),
+            "Echoes args (clear_commands coverage test)."
+        );
+
+        // Contributed tool execute (the dispatch-facing method).
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let out = rt
+            .block_on(
+                TaggedTool("t", "stamp").execute(serde_json::json!({}), &Ctx { generation: 1 }),
+            )
+            .expect("tool executes");
+        assert_eq!(out.content, "stamp");
+
+        // Provider factory build → client surface (no network: both
+        // message constructors are the mock's immediate errors).
+        let id = codesmith_agent::provider::ProviderId::from("acme-llm");
+        let factory = EchoFactory { id: id.clone() };
+        let client = factory
+            .build(&codesmith_agent::provider::ProviderConfig {
+                provider: id,
+                api_key: "k".into(),
+                base_url: "https://example.test/v1".into(),
+                default_model: "acme-large".into(),
+                retry: codesmith_agent::llm_client::RetryConfig::disabled(),
+                http_headers: std::collections::HashMap::new(),
+            })
+            .expect("factory builds");
+        assert_eq!(client.provider_name(), "echo");
+        assert_eq!(client.model(), "acme-large");
+        let req = codesmith_agent::models::MessageRequest {
+            model: "acme-large".into(),
+            messages: Vec::new(),
+            max_tokens: 16,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+        assert!(
+            rt.block_on(async { client.create_message(req.clone()).await })
+                .is_err(),
+            "mock create_message errors without network"
+        );
+        assert!(
+            rt.block_on(async { client.create_message_stream(req).await })
+                .is_err(),
+            "mock create_message_stream errors without network"
         );
     }
 }

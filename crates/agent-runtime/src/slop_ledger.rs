@@ -1172,7 +1172,17 @@ impl SlopLedger {
 
 #[cfg(test)]
 mod tests {
+    // The env lock (`lock_test_env`) must span the async tool-execution
+    // tests below: `ScopedCodeSmithHome` redirects `CODESMITH_HOME` and the
+    // awaited tool executes read/write the ledger through it, so the guard
+    // is deliberately held across await points. These tests run on
+    // `#[tokio::test]`'s current-thread runtime, so no other task polled on
+    // that thread can contend for the std mutex while it is held.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
+    use crate::test_support::{ScopedCodeSmithHome, lock_test_env};
+    use crate::tools::spec::RuntimeToolServices;
     use tempfile::TempDir;
 
     fn temp_ledger() -> (TempDir, SlopLedger) {
@@ -1466,5 +1476,623 @@ mod tests {
         assert!(summary.contains("stale_docs: 1"));
         assert!(summary.contains("tool_gaps: 1"));
         assert!(summary.contains("accepted_debt: 1"));
+    }
+
+    // ── Enum parsing ──────────────────────────────────────────────────────
+
+    #[test]
+    fn severity_from_str_roundtrips_and_rejects_unknown() {
+        for (s, variant) in [
+            ("critical", SlopSeverity::Critical),
+            ("high", SlopSeverity::High),
+            ("medium", SlopSeverity::Medium),
+            ("low", SlopSeverity::Low),
+            ("info", SlopSeverity::Info),
+        ] {
+            assert_eq!(SlopSeverity::from_str(s), Some(variant), "exact: {s}");
+            assert_eq!(
+                SlopSeverity::from_str(&s.to_uppercase()),
+                Some(variant),
+                "case-insensitive: {s}"
+            );
+            assert_eq!(
+                SlopSeverity::from_str(&format!("  {s}  ")),
+                Some(variant),
+                "trims whitespace: {s}"
+            );
+        }
+        assert_eq!(SlopSeverity::from_str("urgent"), None);
+        assert_eq!(SlopSeverity::from_str(""), None);
+    }
+
+    #[test]
+    fn confidence_from_str_roundtrips_and_rejects_unknown() {
+        for (s, variant) in [
+            ("certain", SlopConfidence::Certain),
+            ("high", SlopConfidence::High),
+            ("medium", SlopConfidence::Medium),
+            ("low", SlopConfidence::Low),
+        ] {
+            assert_eq!(SlopConfidence::from_str(s), Some(variant), "exact: {s}");
+            assert_eq!(
+                SlopConfidence::from_str(&s.to_uppercase()),
+                Some(variant),
+                "case-insensitive: {s}"
+            );
+        }
+        assert_eq!(SlopConfidence::from_str("maybe"), None);
+        assert_eq!(SlopConfidence::from_str(""), None);
+    }
+
+    #[test]
+    fn status_from_str_roundtrips_aliases_and_rejects_unknown() {
+        for (s, variant) in [
+            ("open", SlopEntryStatus::Open),
+            ("in_progress", SlopEntryStatus::InProgress),
+            ("inprogress", SlopEntryStatus::InProgress),
+            ("resolved", SlopEntryStatus::Resolved),
+            ("done", SlopEntryStatus::Resolved),
+            ("accepted", SlopEntryStatus::Accepted),
+            ("wontfix", SlopEntryStatus::WontFix),
+            ("wont_fix", SlopEntryStatus::WontFix),
+        ] {
+            assert_eq!(SlopEntryStatus::from_str(s), Some(variant), "alias: {s}");
+        }
+        assert_eq!(SlopEntryStatus::from_str("closed"), None);
+        assert_eq!(SlopEntryStatus::from_str(""), None);
+    }
+
+    // ── Query-filter parsing ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_enum_filter_absent_valid_invalid_and_non_string() {
+        // Absent key → no filter.
+        assert_eq!(
+            parse_enum_filter(&json!({}), "severity", SlopSeverity::from_str).unwrap(),
+            None
+        );
+        // Valid value parses.
+        assert_eq!(
+            parse_enum_filter(
+                &json!({"severity": "high"}),
+                "severity",
+                SlopSeverity::from_str
+            )
+            .unwrap(),
+            Some(SlopSeverity::High)
+        );
+        // A typo'd value is an error, not a silently-dropped filter that
+        // would widen the query to ALL entries.
+        let err = parse_enum_filter(
+            &json!({"severity": "sevERE"}),
+            "severity",
+            SlopSeverity::from_str,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("invalid value for 'severity'"));
+        // Non-string values are rejected before parsing.
+        let err = parse_enum_filter(&json!({"severity": 3}), "severity", SlopSeverity::from_str)
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("must be a string"));
+    }
+
+    // ── Persistence ───────────────────────────────────────────────────────
+
+    #[test]
+    fn load_at_missing_file_is_empty_and_corrupt_json_fails_loud() {
+        let tmp = TempDir::new().unwrap();
+
+        // A missing ledger file is an empty ledger, not an error.
+        let missing = tmp.path().join("absent.json");
+        let mut ledger = SlopLedger::load_at(&missing).unwrap();
+        assert!(ledger.is_empty());
+        // The loaded ledger keeps the requested path: save() round-trips there.
+        let _ = ledger.append(vec![SlopEntry::new(
+            SlopBucket::StaleDocs,
+            SlopSeverity::Low,
+            SlopConfidence::High,
+            "title".into(),
+            "desc".into(),
+        )]);
+        ledger.save().unwrap();
+        assert!(missing.exists());
+        assert_eq!(SlopLedger::load_at(&missing).unwrap().len(), 1);
+
+        // A corrupt file fails loud with InvalidData instead of answering
+        // an empty ledger (which would read as "everything was resolved").
+        let corrupt = tmp.path().join("corrupt.json");
+        std::fs::write(&corrupt, "{ not json").unwrap();
+        let err = SlopLedger::load_at(&corrupt).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_and_save_roundtrip_through_default_state_dir() {
+        let _guard = lock_test_env();
+        let home = ScopedCodeSmithHome::new();
+
+        // No file yet: load() answers an empty ledger instead of failing.
+        let mut ledger = SlopLedger::load().unwrap();
+        assert!(ledger.is_empty());
+
+        let _ = ledger.append(vec![SlopEntry::new(
+            SlopBucket::NamingDrift,
+            SlopSeverity::Low,
+            SlopConfidence::High,
+            "drift".into(),
+            "desc".into(),
+        )]);
+        ledger.save().unwrap();
+
+        // The file landed under the scoped CODESMITH_HOME, not the real one.
+        let persisted = home.path().join("slop_ledger").join("slop_ledger.json");
+        assert!(persisted.exists());
+
+        let reloaded = SlopLedger::load().unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded.entries[0].title, "drift");
+    }
+
+    // ── Prefix lookup and lifecycle gate ─────────────────────────────────
+
+    #[test]
+    fn find_mut_matches_id_prefix_and_misses_cleanly() {
+        let entry = |id: &str| SlopEntry {
+            id: id.to_string(),
+            ..SlopEntry::new(
+                SlopBucket::NamingDrift,
+                SlopSeverity::Low,
+                SlopConfidence::High,
+                "title".into(),
+                "desc".into(),
+            )
+        };
+        let mut ledger = SlopLedger {
+            entries: vec![entry("slop-aaaa0001"), entry("slop-bbbb0002")],
+            ledger_path: std::path::PathBuf::from("/nonexistent/slop.json"),
+        };
+        assert!(
+            ledger
+                .find_mut("slop-aaaa")
+                .is_some_and(|e| e.id == "slop-aaaa0001")
+        );
+        // The returned reference mutates the stored entry.
+        ledger.find_mut("slop-bbbb").unwrap().title = "renamed".into();
+        assert_eq!(ledger.entries[1].title, "renamed");
+        // No match → None (no panic, no arbitrary first entry).
+        assert!(ledger.find_mut("slop-zzzz").is_none());
+    }
+
+    #[test]
+    fn has_open_entries_tracks_lifecycle_status() {
+        let entry = |status| SlopEntry {
+            status,
+            ..SlopEntry::new(
+                SlopBucket::StaleDocs,
+                SlopSeverity::Low,
+                SlopConfidence::High,
+                "title".into(),
+                "desc".into(),
+            )
+        };
+        let mut ledger = SlopLedger::default();
+        assert!(!ledger.has_open_entries(), "empty ledger passes the gate");
+
+        let _ = ledger.append(vec![entry(SlopEntryStatus::InProgress)]);
+        assert!(ledger.has_open_entries(), "in-progress blocks the gate");
+
+        ledger.entries[0].status = SlopEntryStatus::Open;
+        assert!(ledger.has_open_entries(), "open blocks the gate");
+
+        ledger.entries[0].status = SlopEntryStatus::Resolved;
+        assert!(!ledger.has_open_entries(), "resolved passes the gate");
+
+        let _ = ledger.append(vec![
+            entry(SlopEntryStatus::Accepted),
+            entry(SlopEntryStatus::WontFix),
+        ]);
+        assert!(
+            !ledger.has_open_entries(),
+            "accepted/wont-fix never block the gate"
+        );
+    }
+
+    #[test]
+    fn ledger_io_lock_releases_and_recovers_from_poison() {
+        // Acquire → release → re-acquire without deadlock. The re-acquired
+        // guard must be dropped before the poison phase: the mutex is not
+        // reentrant, so locking it again from this thread would deadlock.
+        {
+            let guard = ledger_io_lock();
+            drop(guard);
+            let _again = ledger_io_lock();
+        }
+
+        // A caller that panics while holding the lock poisons it; the next
+        // acquisition must recover the guard (the documented stance) instead
+        // of panicking here.
+        let panicked = std::panic::catch_unwind(|| {
+            let _held = ledger_io_lock();
+            std::panic::panic_any("poison the slop ledger io lock");
+        });
+        assert!(panicked.is_err());
+        let _recovered = ledger_io_lock();
+    }
+
+    // ── Tool surface ──────────────────────────────────────────────────────
+
+    /// Tool context whose runtime services carry an active task/thread, so
+    /// the append tool's context-attachment branch is observable.
+    fn slop_tool_context() -> ToolContext {
+        let mut ctx = ToolContext::new(std::path::PathBuf::from("/tmp/slop-ledger-test-ws"));
+        ctx.runtime = RuntimeToolServices {
+            active_task_id: Some("task-42".into()),
+            active_thread_id: Some("thread-42".into()),
+            ..RuntimeToolServices::default()
+        };
+        ctx
+    }
+
+    #[test]
+    fn slop_tool_metadata_classifies_write_and_read_tools() {
+        // Append/update write the ledger file; query/export are read-only.
+        // Approval is Auto across the board: the ledger is product-owned
+        // state, not user files.
+        assert_eq!(
+            SlopLedgerAppendTool.capabilities(),
+            vec![ToolCapability::WritesFiles]
+        );
+        assert_eq!(
+            SlopLedgerAppendTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        );
+        assert_eq!(
+            SlopLedgerUpdateTool.capabilities(),
+            vec![ToolCapability::WritesFiles]
+        );
+        assert_eq!(
+            SlopLedgerUpdateTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        );
+        assert!(SlopLedgerQueryTool.capabilities().is_empty());
+        assert_eq!(
+            SlopLedgerQueryTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        );
+        assert!(SlopLedgerExportTool.capabilities().is_empty());
+        assert_eq!(
+            SlopLedgerExportTool.approval_requirement(),
+            ApprovalRequirement::Auto
+        );
+    }
+
+    #[tokio::test]
+    async fn append_tool_persists_entries_with_context_links() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+
+        let result = SlopLedgerAppendTool
+            .execute(
+                json!({
+                    "entries": [{
+                        "bucket": "stale_docs",
+                        "severity": "medium",
+                        "confidence": "high",
+                        "title": "README drift",
+                        "description": "README references removed flags.",
+                        "owner": "docs-team",
+                        "source_links": ["README.md:42"]
+                    }]
+                }),
+                &slop_tool_context(),
+            )
+            .await
+            .expect("append succeeds");
+        assert!(result.success);
+        assert!(
+            result
+                .content
+                .starts_with("Appended 1 slop ledger entry (1 total): "),
+            "{}",
+            result.content
+        );
+
+        let ledger = SlopLedger::load().unwrap();
+        assert_eq!(ledger.len(), 1);
+        let entry = &ledger.entries[0];
+        assert_eq!(entry.bucket, SlopBucket::StaleDocs);
+        assert_eq!(entry.severity, SlopSeverity::Medium);
+        assert_eq!(entry.confidence, SlopConfidence::High);
+        assert_eq!(entry.title, "README drift");
+        assert_eq!(entry.owner.as_deref(), Some("docs-team"));
+        assert_eq!(entry.source_links, vec!["README.md:42".to_string()]);
+        assert_eq!(entry.status, SlopEntryStatus::Open);
+        // Active task/thread context rides the entry.
+        assert_eq!(entry.task_id.as_deref(), Some("task-42"));
+        assert_eq!(entry.thread_id.as_deref(), Some("thread-42"));
+        // The reported short id matches the persisted entry.
+        let reported = result.content.rsplit(": ").next().unwrap();
+        assert_eq!(reported, short_id(&entry.id));
+    }
+
+    #[tokio::test]
+    async fn append_tool_rejects_malformed_entries() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let ctx = slop_tool_context();
+
+        // Missing or empty entries array.
+        for input in [json!({}), json!({"entries": []})] {
+            let err = SlopLedgerAppendTool.execute(input, &ctx).await.unwrap_err();
+            assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+            assert!(err.to_string().contains("non-empty array"), "{err}");
+        }
+
+        let base = json!({
+            "entries": [{
+                "bucket": "stale_docs",
+                "severity": "medium",
+                "confidence": "high",
+                "title": "t",
+                "description": "d"
+            }]
+        });
+        // Unknown enum values fail loud instead of being dropped.
+        for (key, value) in [
+            ("bucket", "mystery"),
+            ("severity", "urgent"),
+            ("confidence", "maybe"),
+        ] {
+            let mut bad = base.clone();
+            bad["entries"].as_array_mut().unwrap()[0]
+                .as_object_mut()
+                .unwrap()
+                .insert(key.to_string(), json!(value));
+            let err = SlopLedgerAppendTool.execute(bad, &ctx).await.unwrap_err();
+            assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+            assert!(err.to_string().contains(key), "{err}");
+        }
+
+        // Missing required field is reported by name (as an invalid-input
+        // error carrying a provided-fields hint).
+        let mut missing = base.clone();
+        missing["entries"].as_array_mut().unwrap()[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("title");
+        let err = SlopLedgerAppendTool
+            .execute(missing, &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("title"), "{err}");
+
+        // Nothing was persisted by the rejected calls.
+        assert!(SlopLedger::load().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn query_tool_filters_counts_and_truncates() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+
+        let mut ledger = SlopLedger::load().unwrap();
+        let _ = ledger.append(vec![
+            SlopEntry::new(
+                SlopBucket::StaleDocs,
+                SlopSeverity::Low,
+                SlopConfidence::Certain,
+                "Outdated README".into(),
+                "mentions removed flags".into(),
+            ),
+            SlopEntry::new(
+                SlopBucket::ToolGaps,
+                SlopSeverity::High,
+                SlopConfidence::Medium,
+                "Missing gap tool".into(),
+                "no coverage for workspaces".into(),
+            ),
+        ]);
+        ledger.save().unwrap();
+
+        let ctx = slop_tool_context();
+
+        // Bucket filter narrows to matching entries.
+        let result = SlopLedgerQueryTool
+            .execute(json!({"bucket": "stale_docs"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result
+                .content
+                .contains("Found 1 matching slop ledger entries"),
+            "{}",
+            result.content
+        );
+        assert!(result.content.contains("Outdated README"));
+        assert!(!result.content.contains("Missing gap tool"));
+
+        // Text search matches titles case-insensitively.
+        let result = SlopLedgerQueryTool
+            .execute(json!({"search": "GAP TOOL"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.content.contains("Missing gap tool"));
+        assert!(!result.content.contains("Outdated README"));
+
+        // Truncation reports the pre-truncation match count.
+        let result = SlopLedgerQueryTool
+            .execute(json!({"limit": 1}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result
+                .content
+                .contains("Found 2 matching slop ledger entries (showing first 1)"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn query_tool_rejects_invalid_filters() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let ctx = slop_tool_context();
+
+        // A typo'd bucket is an error, not a silently-dropped filter.
+        let err = SlopLedgerQueryTool
+            .execute(json!({"bucket": "staledoc"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("invalid value for 'bucket'"));
+
+        // A malformed limit is an error, not a silent fallback to 50.
+        let err = SlopLedgerQueryTool
+            .execute(json!({"limit": "many"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("invalid 'limit'"));
+    }
+
+    #[tokio::test]
+    async fn query_and_export_tools_report_empty_ledger() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let ctx = slop_tool_context();
+
+        let result = SlopLedgerQueryTool.execute(json!({}), &ctx).await.unwrap();
+        assert_eq!(result.content, "Slop ledger is empty.");
+
+        let result = SlopLedgerExportTool.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            result.content.contains("(no entries)"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn update_tool_persists_status_and_reports_unknown_ids() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+
+        let entry = SlopEntry::new(
+            SlopBucket::NamingDrift,
+            SlopSeverity::Low,
+            SlopConfidence::High,
+            "naming issue".into(),
+            "desc".into(),
+        );
+        let id = entry.id.clone();
+        let mut ledger = SlopLedger::load().unwrap();
+        let _ = ledger.append(vec![entry]);
+        ledger.save().unwrap();
+
+        let ctx = slop_tool_context();
+
+        let result = SlopLedgerUpdateTool
+            .execute(
+                json!({
+                    "id": id,
+                    "status": "resolved",
+                    "cleanup_recommendation": "renamed in #10"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.content.contains("→ Resolved"), "{}", result.content);
+        assert!(result.content.contains("naming issue"));
+
+        let ledger = SlopLedger::load().unwrap();
+        assert_eq!(ledger.entries[0].status, SlopEntryStatus::Resolved);
+        assert_eq!(
+            ledger.entries[0].cleanup_recommendation.as_deref(),
+            Some("renamed in #10")
+        );
+
+        // Unknown id: success-shaped guidance pointing at the query tool.
+        let result = SlopLedgerUpdateTool
+            .execute(json!({"id": "deadbeef", "status": "open"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            result
+                .content
+                .contains("No slop ledger entry found matching 'deadbeef'"),
+            "{}",
+            result.content
+        );
+
+        // Invalid status fails loud before touching the persisted ledger.
+        let err = SlopLedgerUpdateTool
+            .execute(json!({"id": id, "status": "closed"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("invalid status"));
+        assert_eq!(
+            SlopLedger::load().unwrap().entries[0].status,
+            SlopEntryStatus::Resolved
+        );
+    }
+
+    #[tokio::test]
+    async fn export_tool_renders_filtered_markdown() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+
+        let mut ledger = SlopLedger::load().unwrap();
+        let _ = ledger.append(vec![
+            SlopEntry::new(
+                SlopBucket::StaleDocs,
+                SlopSeverity::Low,
+                SlopConfidence::Certain,
+                "Outdated README".into(),
+                "mentions removed flags".into(),
+            ),
+            SlopEntry::new(
+                SlopBucket::ToolGaps,
+                SlopSeverity::High,
+                SlopConfidence::Medium,
+                "Missing gap tool".into(),
+                "no coverage for workspaces".into(),
+            ),
+        ]);
+        ledger.save().unwrap();
+
+        let ctx = slop_tool_context();
+
+        // Title + bucket filter: only the matching bucket's entries render.
+        let result = SlopLedgerExportTool
+            .execute(
+                json!({"title": "Handoff Report", "bucket": "stale_docs"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.content.contains("# Handoff Report"),
+            "{}",
+            result.content
+        );
+        assert!(result.content.contains("## stale_docs"));
+        assert!(result.content.contains("Outdated README"));
+        assert!(!result.content.contains("Missing gap tool"));
+
+        // No filter: default title, every bucket present.
+        let result = SlopLedgerExportTool.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            result.content.contains("# Slop Ledger Export"),
+            "{}",
+            result.content
+        );
+        assert!(result.content.contains("Outdated README"));
+        assert!(result.content.contains("Missing gap tool"));
     }
 }

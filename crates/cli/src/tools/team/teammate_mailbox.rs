@@ -856,4 +856,38 @@ mod tests {
         assert!(read_mailbox("worker1", "mb-legacy").is_ok());
         assert!(read_mailbox("Worker1", "mb-legacy").is_err());
     }
+
+    #[test]
+    fn message_without_timestamp_deserializes_with_default() {
+        let raw = r#"{"from":"leader","text":"no stamp","read":false}"#;
+        let msg: TeammateMessage = serde_json::from_str(raw).expect("timestamp defaults");
+        assert_eq!(msg.from, "leader");
+        assert!(!msg.timestamp.is_empty(), "default_timestamp stamps now");
+    }
+
+    #[test]
+    fn read_unread_messages_filters_on_the_read_flag() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team_file("mb-unread")).expect("team");
+
+        write_to_mailbox("worker1", "mb-unread", make_message("leader", "one")).expect("write1");
+        write_to_mailbox("worker1", "mb-unread", make_message("leader", "two")).expect("write2");
+
+        let unread = read_unread_messages("worker1", "mb-unread").expect("unread");
+        assert_eq!(unread.len(), 2, "fresh inbox is all unread");
+
+        mark_messages_as_read("worker1", "mb-unread").expect("mark read");
+        let unread = read_unread_messages("worker1", "mb-unread").expect("unread");
+        assert!(
+            unread.is_empty(),
+            "read messages are filtered out of the unread view"
+        );
+
+        // A new delivery after the read-marking is unread again.
+        write_to_mailbox("worker1", "mb-unread", make_message("leader", "three")).expect("write3");
+        let unread = read_unread_messages("worker1", "mb-unread").expect("unread");
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].text, "three");
+    }
 }

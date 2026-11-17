@@ -300,4 +300,132 @@ mod tests {
             vec!["bash".to_string(), "read".to_string(), "write".to_string()]
         );
     }
+
+    #[test]
+    fn load_merges_scopes_with_workspace_shadowing() {
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+        let global = tempfile::tempdir().expect("tempdir");
+        for (dir, name, body) in [
+            (
+                ws.path().join(".codesmith/commands"),
+                "alpha.md",
+                "workspace alpha",
+            ),
+            (ws.path().join(".claude/commands"), "beta.md", "claude beta"),
+            (
+                ws.path().join(".cursor/commands"),
+                "gamma.md",
+                "cursor gamma",
+            ),
+            (
+                ws.path().join(".codesmith/commands"),
+                "UPPER.md",
+                "upper body",
+            ),
+            (
+                ws.path().join(".codesmith/commands"),
+                "notes.txt",
+                "not a command",
+            ),
+            (global.path().join("commands"), "alpha.md", "global alpha"),
+            (global.path().join("commands"), "delta.md", "global delta"),
+        ] {
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            std::fs::write(dir.join(name), body).expect("write command");
+        }
+        let _guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            global.path(),
+        );
+
+        let loaded = load_user_commands(Some(ws.path()));
+        let names: Vec<&str> = loaded.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["alpha", "beta", "delta", "gamma", "upper"],
+            "sorted, non-md skipped, stems lowercased"
+        );
+        let alpha = loaded
+            .iter()
+            .find(|(n, _, _)| n == "alpha")
+            .expect("alpha loaded");
+        assert_eq!(
+            alpha.1, "workspace alpha",
+            "the workspace copy shadows the global one"
+        );
+        assert!(!alpha.2, "alpha is workspace-scoped");
+        let delta = loaded
+            .iter()
+            .find(|(n, _, _)| n == "delta")
+            .expect("delta loaded");
+        assert!(delta.2, "delta comes from the user's global dir");
+
+        assert_eq!(
+            user_command_names(Some(ws.path())),
+            ["alpha", "beta", "delta", "gamma", "upper"]
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // No workspace: only the global directory is scanned.
+        let global_only = load_user_commands(None);
+        let names: Vec<&str> = global_only.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, ["alpha", "delta"]);
+        assert_eq!(global_only[0].1, "global alpha");
+    }
+
+    #[test]
+    fn load_skips_missing_directories_without_error() {
+        // An empty workspace with no commands dirs and no resolvable global
+        // dir (CODESMITH_HOME pointed at a fresh tempdir) yields nothing.
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+        let global = tempfile::tempdir().expect("tempdir");
+        let _guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            global.path(),
+        );
+        assert!(load_user_commands(Some(ws.path())).is_empty());
+        assert!(user_command_names(None).is_empty());
+    }
+
+    #[test]
+    fn apply_template_is_the_plain_user_command_surface() {
+        assert_eq!(
+            apply_template("run $1 --all $ARGUMENTS", "x y"),
+            "run x --all x y"
+        );
+        assert_eq!(apply_template("no placeholders", "args"), "no placeholders");
+        assert_eq!(apply_template("$SKILL_NAME", ""), "$SKILL_NAME");
+    }
+
+    #[test]
+    fn frontmatter_keys_lowercase_and_tool_lists_keep_quotes() {
+        let content =
+            "---\r\nDescription: \"Notes\"\r\nallowed-tools: \"Bash, Read\"\r\n---\r\nbody here";
+        let (metadata, body) = parse_frontmatter(content);
+        assert_eq!(
+            metadata,
+            vec![
+                ("description".to_string(), "Notes".to_string()),
+                ("allowed-tools".to_string(), "\"Bash, Read\"".to_string()),
+            ],
+            "keys lowercase; the tool list keeps its quotes for parse_allowed_tools"
+        );
+        assert_eq!(body, "body here");
+
+        // No fence at all: the document is the body.
+        let (metadata, body) = parse_frontmatter("just a command body");
+        assert!(metadata.is_empty());
+        assert_eq!(body, "just a command body");
+
+        // A non-`key: value` line inside the fence invalidates it: the whole
+        // document is the body, not a silently truncated metadata block.
+        let broken = "---\ndescription: x\nnot a pair\n---\nbody";
+        let (metadata, body) = parse_frontmatter(broken);
+        assert!(metadata.is_empty());
+        assert_eq!(body, broken);
+    }
 }

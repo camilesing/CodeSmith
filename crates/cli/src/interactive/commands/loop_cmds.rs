@@ -530,4 +530,45 @@ mod tests {
         let err = resolve(&records, "abc").expect_err("too short");
         assert!(err.contains("no loop"), "{err}");
     }
+
+    #[tokio::test]
+    async fn run_without_an_automation_store_refuses_cleanly() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: tmp.path().to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: tmp.path().join("skills"),
+            memory_path: tmp.path().join("memory.md"),
+            mcp_config_path: tmp.path().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+        assert!(state.runtime_services.automations.is_none());
+        run(&mut state, "").await; // list path, store missing
+        run(&mut state, "5m do things").await; // same refusal, before interval parse
+    }
+
+    #[tokio::test]
+    async fn prompt_for_prefers_a_workspace_loop_md() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            prompt_for(tmp.path()).await,
+            MAINTENANCE_PROMPT,
+            "no loop.md -> built-in maintenance prompt"
+        );
+        std::fs::write(tmp.path().join("loop.md"), "  custom cadence prompt  ").expect("write");
+        assert_eq!(
+            prompt_for(tmp.path()).await,
+            "custom cadence prompt",
+            "loop.md content wins, trimmed"
+        );
+    }
 }

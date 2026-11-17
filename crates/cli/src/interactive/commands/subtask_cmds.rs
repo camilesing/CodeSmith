@@ -72,3 +72,46 @@ pub async fn run(state: &mut ReplState, arg: &str) {
         Err(err) => println!("{} could not spawn the sub-agent: {err}", "✗".red()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+
+    fn test_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// The two guards before any spawn: a bare `/subtask` prints usage, and
+    /// a task without a live engine says so instead of panicking. The
+    /// engine-present spawn path needs a running engine (engine integration
+    /// territory), not a unit test.
+    #[tokio::test]
+    async fn empty_tasks_and_missing_engines_are_refused() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let mut state = test_state();
+        assert!(state.engine.is_none(), "a fresh REPL state has no engine");
+
+        run(&mut state, "   ").await; // usage branch
+        run(&mut state, "summarize the todo list").await; // no-engine branch
+        assert!(state.engine.is_none());
+    }
+}

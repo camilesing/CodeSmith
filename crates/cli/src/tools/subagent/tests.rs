@@ -4977,3 +4977,1534 @@ async fn a_child_request_carries_the_provider_derived_max_tokens() {
         "the child derives max_tokens the same way the main turn does"
     );
 }
+
+// === Coverage slice: legacy tool surface + pure helpers ===
+//
+// The tests below exercise the legacy manager tools (agent_result /
+// agent_cancel / resume_agent / agent_list / agent_send_input /
+// agent_assign / agent_wait / agent_close / delegate_to_agent / agent_run)
+// and the small pure helpers around them (nicknames, deprecation notices,
+// item/definition parsing, route/model normalization, forked-message
+// shaping). Children run on the canned mock LLM client — no network, no
+// live engine.
+
+/// A running agent with a live (held-open) input channel, so `send_input`
+/// and `assign` can actually deliver. Drop the receiver to exercise the
+/// closed-channel refusal.
+fn live_agent_with_channel(
+    id: &str,
+    boot: &str,
+    session_name: Option<&str>,
+) -> (SubAgent, mpsc::Receiver<SteerInput>) {
+    let (input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+    let mut agent = SubAgent::new(
+        id.to_string(),
+        SubAgentType::General,
+        "objective".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        boot.to_string(),
+    );
+    if let Some(name) = session_name {
+        agent.session_name = name.to_string();
+    }
+    (agent, input_rx)
+}
+
+fn shared_manager(max_agents: usize) -> Arc<tokio::sync::RwLock<SubAgentManager>> {
+    Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        PathBuf::from("."),
+        max_agents,
+    )))
+}
+
+/// Insert a finished-record agent into a shared manager under its own boot
+/// id (the `#405` current-session classification).
+async fn insert_shared_agent(
+    manager: &Arc<tokio::sync::RwLock<SubAgentManager>>,
+    id: &str,
+    status: SubAgentStatus,
+) {
+    let boot = manager.read().await.session_boot_id().to_string();
+    let mut guard = manager.write().await;
+    insert_prior_session_agent(&mut guard, id, status, &boot);
+}
+
+#[test]
+fn smith_nickname_for_index_wraps_after_the_roster() {
+    assert_eq!(smith_nickname_for_index(0), SMITH_NICKNAMES[0]);
+    let last = SMITH_NICKNAMES.len() - 1;
+    assert_eq!(smith_nickname_for_index(last), SMITH_NICKNAMES[last]);
+    // Second lap through the roster carries a numeric suffix.
+    assert_eq!(
+        smith_nickname_for_index(SMITH_NICKNAMES.len()),
+        format!("{} 2", SMITH_NICKNAMES[0])
+    );
+    assert_eq!(
+        smith_nickname_for_index(SMITH_NICKNAMES.len() * 2 + 1),
+        format!("{} 3", SMITH_NICKNAMES[1])
+    );
+}
+
+#[test]
+fn wait_mode_as_str_labels_both_modes() {
+    assert_eq!(WaitMode::Any.as_str(), "any");
+    assert_eq!(WaitMode::All.as_str(), "all");
+}
+
+#[test]
+fn persisted_state_default_matches_current_schema() {
+    let state = PersistedSubAgentState::default();
+    assert_eq!(state.schema_version, SUBAGENT_STATE_SCHEMA_VERSION);
+    assert!(state.agents.is_empty());
+}
+
+#[test]
+fn deprecation_notice_merges_into_metadata_without_dropping_it() {
+    // Fresh result: the notice is the only metadata.
+    let plain =
+        wrap_with_deprecation_notice(ToolResult::success("ok"), "send_input", "agent_send_input");
+    let metadata = plain.metadata.expect("notice installed");
+    assert_eq!(metadata["_deprecation"]["this_tool"], "send_input");
+    assert_eq!(metadata["_deprecation"]["use_instead"], "agent_send_input");
+    assert_eq!(
+        metadata["_deprecation"]["removed_in"],
+        DEPRECATION_REMOVAL_VERSION
+    );
+
+    // Existing object metadata is preserved as a sibling key.
+    let mut with_status = ToolResult::success("ok");
+    with_status.metadata = Some(json!({ "status": "done", "timed_out": false }));
+    let merged = wrap_with_deprecation_notice(with_status, "a", "b");
+    let metadata = merged.metadata.expect("metadata kept");
+    assert_eq!(metadata["status"], "done");
+    assert_eq!(metadata["timed_out"], false);
+    assert_eq!(metadata["_deprecation"]["this_tool"], "a");
+
+    // Non-object metadata is wrapped, not discarded.
+    let mut odd = ToolResult::success("ok");
+    odd.metadata = Some(json!("scalar"));
+    let wrapped = wrap_with_deprecation_notice(odd, "a", "b");
+    let metadata = wrapped.metadata.expect("metadata kept");
+    assert_eq!(metadata["_original_metadata"], "scalar");
+    assert_eq!(metadata["_deprecation"]["use_instead"], "b");
+}
+
+#[test]
+fn manager_debug_summary_counts_agents_without_draining_the_map() {
+    let mut manager = SubAgentManager::new(PathBuf::from("/tmp/ws-debug"), 3);
+    let formatted = format!("{manager:?}");
+    assert!(formatted.contains("SubAgentManager"), "{formatted}");
+    assert!(formatted.contains("agent_count: 0"), "{formatted}");
+    assert!(formatted.contains("max_agents: 3"), "{formatted}");
+
+    insert_prior_session_agent(&mut manager, "dbg", SubAgentStatus::Completed, "boot");
+    assert!(format!("{manager:?}").contains("agent_count: 1"));
+}
+
+#[test]
+fn runtime_builder_setters_wire_approval_router_and_ticket_store() {
+    let (_tx, rx) = tokio::sync::mpsc::channel::<crate::core::engine::ApprovalDecision>(4);
+    let router = Arc::new(crate::core::engine::ApprovalRouter::new(rx));
+    let runtime = stub_runtime().with_approval_router(Some(router));
+    assert!(runtime.approval_router.is_some());
+    assert!(
+        stub_runtime()
+            .with_approval_router(None)
+            .approval_router
+            .is_none()
+    );
+
+    let store: crate::coordinator::SharedTicketStore = Arc::new(std::sync::Mutex::new(
+        crate::coordinator::tickets::TicketStore::in_memory(),
+    ));
+    let runtime = stub_runtime().with_ticket_store(Some(store));
+    assert!(runtime.ticket_store.is_some());
+    assert!(
+        stub_runtime()
+            .with_ticket_store(None)
+            .ticket_store
+            .is_none()
+    );
+}
+
+/// The whole legacy tool family keeps a well-formed model-facing surface:
+/// stable names, non-empty descriptions, object schemas with their headline
+/// property, and the approval posture each tool promises.
+#[test]
+fn legacy_tool_metadata_stays_well_formed() {
+    let manager = shared_manager(4);
+    let runtime = stub_runtime();
+
+    let tools: Vec<Box<dyn ToolSpec>> = vec![
+        Box::new(AgentResultTool::new(manager.clone())),
+        Box::new(AgentCancelTool::new(manager.clone())),
+        Box::new(AgentResumeTool::new(manager.clone(), runtime.clone())),
+        Box::new(AgentCloseTool::new(manager.clone())),
+        Box::new(AgentListTool::new(manager.clone())),
+        Box::new(AgentSendInputTool::new(manager.clone(), "agent_send_input")),
+        Box::new(AgentAssignTool::new(manager.clone(), "agent_assign")),
+        Box::new(AgentWaitTool::new(manager.clone(), "agent_wait")),
+        Box::new(DelegateToAgentTool::new(manager.clone(), runtime.clone())),
+        Box::new(SubagentRunTool::new(manager.clone(), runtime.clone())),
+    ];
+    let expected_names = [
+        "agent_result",
+        "agent_cancel",
+        "resume_agent",
+        "agent_close",
+        "agent_list",
+        "agent_send_input",
+        "agent_assign",
+        "agent_wait",
+        "delegate_to_agent",
+        "agent_run",
+    ];
+    // (tool index, headline schema property, required?)
+    let headline: [(usize, &str, bool); 10] = [
+        (0, "block", false),
+        (1, "agent_id", true),
+        (2, "id", false),
+        (3, "id", false),
+        (4, "include_archived", false),
+        (5, "message", false),
+        (6, "objective", false),
+        (7, "wait_mode", false),
+        (8, "agent_name", false),
+        (9, "run_in_background", false),
+    ];
+
+    for (tool, name) in tools.iter().zip(expected_names) {
+        assert_eq!(tool.name(), name);
+        assert!(!tool.description().is_empty(), "{name} needs a description");
+        let schema = tool.input_schema();
+        assert_eq!(schema["type"], "object", "{name} schema must be an object");
+        assert!(schema["properties"].is_object(), "{name} needs properties");
+        // Every tool in the family must answer the capability probe without
+        // panicking; read-only tools say so through the probe itself.
+        let _ = tool.capabilities();
+    }
+    for (index, (_, key, required)) in headline.iter().enumerate() {
+        let schema = tools[index].input_schema();
+        assert!(
+            schema["properties"][*key].is_object(),
+            "{} schema is missing {key}",
+            tools[index].name()
+        );
+        if *required {
+            let required_list = schema["required"].as_array().expect("required list");
+            assert!(
+                required_list.iter().any(|v| v.as_str() == Some(key)),
+                "{} must require {key}",
+                tools[index].name()
+            );
+        }
+    }
+
+    // Approval posture: cancel/resume/delegate are operator-gated.
+    assert!(matches!(
+        AgentCancelTool::new(manager.clone()).approval_requirement(),
+        ApprovalRequirement::Required
+    ));
+    assert!(matches!(
+        AgentResumeTool::new(manager.clone(), runtime.clone()).approval_requirement(),
+        ApprovalRequirement::Required
+    ));
+    assert!(matches!(
+        DelegateToAgentTool::new(manager.clone(), runtime.clone()).approval_requirement(),
+        ApprovalRequirement::Required
+    ));
+
+    // Capability sets: result/list/wait are read-only; cancel and delegate
+    // carry the approval marker; send-input declares none.
+    assert!(
+        AgentResultTool::new(manager.clone())
+            .capabilities()
+            .iter()
+            .any(|c| matches!(c, ToolCapability::ReadOnly))
+    );
+    assert!(
+        AgentCancelTool::new(manager.clone())
+            .capabilities()
+            .iter()
+            .any(|c| matches!(c, ToolCapability::RequiresApproval))
+    );
+    assert!(
+        DelegateToAgentTool::new(manager.clone(), runtime.clone())
+            .capabilities()
+            .iter()
+            .any(|c| matches!(c, ToolCapability::RequiresApproval))
+    );
+    assert!(
+        AgentSendInputTool::new(manager.clone(), "agent_send_input")
+            .capabilities()
+            .is_empty()
+    );
+
+    // The delegate wrapper accepts an extension runner without changing its
+    // surface (fork-veto emit rides the spawn tool, not the name).
+    let delegate = DelegateToAgentTool::new(manager, runtime)
+        .with_extension_runner(Arc::new(codesmith_extensions::ExtensionRunner::new()));
+    assert_eq!(delegate.name(), "delegate_to_agent");
+}
+
+#[test]
+fn parse_run_request_resolves_aliases_and_flags() {
+    let request = parse_run_request(&json!({
+        "objective": "ship the patch",
+        "role": "worker",
+        "run_in_background": true,
+        "max_depth": 2,
+        "cwd": "worktrees/fix"
+    }))
+    .expect("run request should parse");
+    assert_eq!(request.prompt, "ship the patch");
+    assert_eq!(request.agent_type, SubAgentType::General);
+    assert_eq!(request.assignment.role.as_deref(), Some("worker"));
+    assert!(request.run_in_background);
+    assert_eq!(request.max_depth, Some(2));
+    assert_eq!(request.cwd, Some(PathBuf::from("worktrees/fix")));
+    assert!(!request.fork_context);
+    assert!(request.memory.is_none());
+
+    let forked = parse_run_request(&json!({
+        "prompt": "continue",
+        "inherit_context": true
+    }))
+    .expect("fork alias should parse");
+    assert!(forked.fork_context);
+}
+
+#[test]
+fn parse_items_text_renders_each_kind_and_rejects_malformed_items() {
+    let with_items = |items: Value| json!({ "items": items });
+
+    // Absent key is not an items payload at all.
+    assert_eq!(
+        parse_items_text(&json!({ "prompt": "x" }), "items").expect("absent is fine"),
+        None
+    );
+
+    // Each structured kind renders to its canonical inline form.
+    let rendered = parse_items_text(
+        &with_items(json!([
+            {"type": "text", "text": "  Analyze module  "},
+            {"type": "mention", "name": "drive", "path": "app://drive"},
+            {"type": "skill", "name": "ocr", "path": "skills/ocr.md"},
+            {"type": "local_image", "path": "screens/shot.png"},
+            {"type": "image", "image_url": "https://example.test/i.png"},
+            {"type": "unknown-kind", "text": "fallback text"},
+            {"type": "unknown-kind"}
+        ])),
+        "items",
+    )
+    .expect("valid items render")
+    .expect("some text");
+    let lines: Vec<&str> = rendered.split('\n').collect();
+    assert_eq!(
+        lines,
+        vec![
+            "Analyze module",
+            "[mention:$drive](app://drive)",
+            "[skill:$ocr](skills/ocr.md)",
+            "[local_image:screens/shot.png]",
+            "[image:https://example.test/i.png]",
+            "fallback text",
+            "[input]",
+        ]
+    );
+
+    // Malformed payloads fail loud with the offending field named.
+    let cases: [(Value, &str); 9] = [
+        (json!({ "items": "nope" }), "'items' must be an array"),
+        (json!({ "items": [] }), "'items' cannot be empty"),
+        (
+            json!({ "items": ["bare string"] }),
+            "each item must be an object",
+        ),
+        (
+            json!({ "items": [{"type": "text", "text": "  "}] }),
+            "text item requires non-empty text",
+        ),
+        (
+            json!({ "items": [{"type": "mention", "name": "n"}] }),
+            "mention item requires path",
+        ),
+        (
+            json!({ "items": [{"type": "skill", "path": "p"}] }),
+            "skill item requires name",
+        ),
+        (
+            json!({ "items": [{"type": "local_image"}] }),
+            "local_image item requires path",
+        ),
+        (
+            json!({ "items": [{"type": "image"}] }),
+            "image item requires image_url",
+        ),
+        (
+            json!({ "items": [{"type": "mention", "name": " ", "path": "p"}] }),
+            "mention item requires name",
+        ),
+    ];
+    for (input, needle) in cases {
+        let err = parse_items_text(&input, "items").expect_err("malformed items must fail");
+        assert!(
+            err.to_string().contains(needle),
+            "expected {needle} in {err} for {input}"
+        );
+    }
+}
+
+#[test]
+fn parse_definition_document_supports_json_markdown_and_frontmatter() {
+    let dir = tempdir().expect("tempdir");
+
+    // JSON definition: full metadata round-trips.
+    let json_path = dir.path().join("scout.json");
+    std::fs::write(
+        &json_path,
+        r#"{"name":"scout","type":"explore","prompt":"map the repo",
+            "allowed_tools":["read_file","search"],"model":"deepseek-v4-flash"}"#,
+    )
+    .expect("write json def");
+    let def = parse_definition_document(&json_path, "fallback").expect("json definition parses");
+    assert_eq!(def.name, "scout");
+    assert_eq!(def.agent_type, Some(SubAgentType::Explore));
+    assert_eq!(def.prompt.as_deref(), Some("map the repo"));
+    assert_eq!(
+        def.allowed_tools,
+        Some(vec!["read_file".to_string(), "search".to_string()])
+    );
+    assert_eq!(def.model.as_deref(), Some("deepseek-v4-flash"));
+
+    // Markdown with frontmatter: keys parsed, body becomes the prompt.
+    let md_path = dir.path().join("writer.md");
+    std::fs::write(
+        &md_path,
+        "---\nname: writer\ntype: implementer\nmodel: deepseek-v4-pro\n---\nWrite the docs.\n",
+    )
+    .expect("write md def");
+    let def =
+        parse_definition_document(&md_path, "fallback").expect("frontmatter definition parses");
+    assert_eq!(def.name, "writer");
+    assert_eq!(def.agent_type, Some(SubAgentType::Implementer));
+    assert!(
+        def.prompt
+            .as_deref()
+            .is_some_and(|p| p.contains("Write the docs."))
+    );
+    assert_eq!(def.model.as_deref(), Some("deepseek-v4-pro"));
+
+    // Plain markdown: whole file is the prompt; the direct call keeps the
+    // caller's fallback name, while the loader derives it from the stem.
+    let plain_path = dir.path().join("plain.md");
+    std::fs::write(&plain_path, "just a prompt\n").expect("write plain md");
+    let def = parse_definition_document(&plain_path, "fallback").expect("plain markdown parses");
+    assert_eq!(def.name, "fallback");
+    assert_eq!(def.agent_type, Some(SubAgentType::Custom));
+    assert_eq!(def.prompt.as_deref(), Some("just a prompt\n"));
+
+    let agents_dir = dir.path().join(".codesmith").join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir");
+    std::fs::write(agents_dir.join("plain.md"), "just a prompt\n").expect("write agent md");
+    let def = load_agent_definition(dir.path(), "plain")
+        .expect("definition loads from the workspace agents dir");
+    assert_eq!(
+        def.name, "plain",
+        "the loader names the agent from the file stem"
+    );
+
+    // Failure modes name the file and the parse stage.
+    let bad_json = dir.path().join("broken.json");
+    std::fs::write(&bad_json, "{nope").expect("write broken json");
+    let err = parse_definition_document(&bad_json, "x").expect_err("broken json");
+    assert!(
+        err.to_string().contains("invalid agent definition JSON"),
+        "{err}"
+    );
+
+    let non_object = dir.path().join("list.json");
+    std::fs::write(&non_object, "[1,2]").expect("write list json");
+    let err = parse_definition_document(&non_object, "x").expect_err("non-object json");
+    assert!(err.to_string().contains("must be a JSON object"), "{err}");
+
+    let err =
+        parse_definition_document(&dir.path().join("missing.md"), "x").expect_err("missing file");
+    assert!(
+        err.to_string().contains("failed to read agent definition"),
+        "{err}"
+    );
+}
+
+#[test]
+fn parse_definition_map_rejects_bad_type_and_memory() {
+    let map = |value: Value| value.as_object().expect("object").clone();
+
+    let err = parse_definition_map(
+        &map(json!({"name": "x", "type": "bogus"})),
+        "fallback",
+        None,
+    )
+    .expect_err("unknown type");
+    assert!(err.to_string().contains("Invalid sub-agent type"), "{err}");
+
+    let err = parse_definition_map(
+        &map(json!({"name": "x", "memory": {"scope": "galactic"}})),
+        "fallback",
+        None,
+    )
+    .expect_err("bad memory scope");
+    assert!(!err.to_string().is_empty());
+
+    let err = parse_definition_map(
+        &map(json!({"name": "x", "memory": {"snapshot": "sometimes"}})),
+        "fallback",
+        None,
+    )
+    .expect_err("bad snapshot mode");
+    assert!(!err.to_string().is_empty());
+
+    // tool alias for allowed_tools + memory object both parse.
+    let def = parse_definition_map(
+        &map(json!({
+            "name": "  keeper  ",
+            "tools": ["read_file", "read_file", "search"],
+            "memory": {"scope": "local", "snapshot": "initialize"}
+        })),
+        "fallback",
+        None,
+    )
+    .expect("valid map parses");
+    assert_eq!(def.name, "keeper");
+    assert_eq!(
+        def.allowed_tools,
+        Some(vec!["read_file".to_string(), "search".to_string()])
+    );
+    let memory = def.memory.expect("memory parsed");
+    assert!(matches!(memory.scope, AgentMemoryScope::Local));
+    assert!(matches!(
+        memory.snapshot,
+        AgentMemorySnapshotMode::Initialize
+    ));
+}
+
+#[test]
+fn merge_allowed_tools_prefers_request_over_definition() {
+    let mut definition = AgentDefinition {
+        name: "scout".to_string(),
+        agent_type: Some(SubAgentType::Explore),
+        prompt: None,
+        allowed_tools: Some(vec!["read_file".to_string()]),
+        model: None,
+        memory: None,
+    };
+    let input = json!({ "allowed_tools": ["search", "search"] });
+    assert_eq!(
+        merge_allowed_tools(&input, Some(&definition)),
+        Some(vec!["search".to_string()])
+    );
+
+    definition.allowed_tools = None;
+    assert_eq!(
+        merge_allowed_tools(&input, Some(&definition)),
+        Some(vec!["search".to_string()])
+    );
+    assert_eq!(
+        merge_allowed_tools(&json!({}), Some(&definition)),
+        None,
+        "no request and no definition list means full inheritance"
+    );
+
+    definition.allowed_tools = Some(vec!["read_file".to_string()]);
+    assert_eq!(
+        merge_allowed_tools(&json!({}), Some(&definition)),
+        Some(vec!["read_file".to_string()])
+    );
+}
+
+#[test]
+fn parse_optional_max_depth_accepts_aliases_within_bounds() {
+    assert_eq!(parse_optional_max_depth(&json!({})).unwrap(), None);
+    assert_eq!(
+        parse_optional_max_depth(&json!({"max_depth": 3})).unwrap(),
+        Some(3)
+    );
+    assert_eq!(
+        parse_optional_max_depth(&json!({"maxDepth": 1})).unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        parse_optional_max_depth(&json!({"max_spawn_depth": 0})).unwrap(),
+        Some(0)
+    );
+    assert!(parse_optional_max_depth(&json!({"max_depth": 4})).is_err());
+    assert!(
+        parse_optional_max_depth(&json!({"max_depth": u64::from(u32::MAX) + 1})).is_err(),
+        "depths beyond u32 must be rejected, not truncated"
+    );
+}
+
+#[test]
+fn resolve_agent_memory_for_spawn_creates_workspace_scoped_dir() {
+    let dir = tempdir().expect("tempdir");
+    let workspace = dir.path().to_path_buf();
+
+    for scope in [AgentMemoryScope::Project, AgentMemoryScope::Local] {
+        let resolved = resolve_agent_memory_for_spawn(
+            &workspace,
+            "general",
+            AgentMemoryRequest {
+                scope,
+                snapshot: AgentMemorySnapshotMode::None,
+            },
+        )
+        .expect("memory resolves");
+        assert!(
+            resolved.dir.starts_with(&workspace),
+            "memory dir must stay inside the workspace: {}",
+            resolved.dir.display()
+        );
+        assert!(resolved.dir.is_dir(), "memory dir is created on demand");
+        assert!(!resolved.prompt.is_empty());
+    }
+
+    // Resolution is idempotent for an already-initialized dir.
+    let again =
+        resolve_agent_memory_for_spawn(&workspace, "general", AgentMemoryRequest::default())
+            .expect("second resolve");
+    assert!(again.dir.is_dir());
+}
+
+#[test]
+fn normalize_requested_subagent_model_rejects_non_deepseek_ids() {
+    assert_eq!(
+        normalize_requested_subagent_model("  deepseek-v4-pro ", "model").unwrap(),
+        "deepseek-v4-pro"
+    );
+    assert_eq!(
+        normalize_requested_subagent_model("deepseek-v4-flash", "model").unwrap(),
+        "deepseek-v4-flash"
+    );
+
+    let blank = normalize_requested_subagent_model("   ", "model").expect_err("blank");
+    assert!(blank.to_string().contains("cannot be blank"), "{blank}");
+
+    let foreign = normalize_requested_subagent_model("gpt-4o", "model").expect_err("foreign id");
+    assert!(
+        foreign.to_string().contains("Invalid model"),
+        "non-DeepSeek ids are refused everywhere: {foreign}"
+    );
+}
+
+#[tokio::test]
+async fn subagent_model_router_is_stubbed_and_system_prompt_honors_cost_saving() {
+    // Under cfg(test) the router short-circuits: no client call, no
+    // recommendation — the heuristic keeps deciding.
+    let recommendation = subagent_model_router(&stub_runtime(), "classify me")
+        .await
+        .expect("test-mode router never errors");
+    assert!(recommendation.is_none());
+
+    let mut runtime = stub_runtime();
+    runtime.auto_route.cost_saving = true;
+    let prompt = subagent_router_system_prompt(&runtime);
+    assert!(
+        prompt.starts_with(SUBAGENT_ROUTER_SYSTEM_PROMPT),
+        "base router prompt stays first"
+    );
+    assert!(
+        prompt.len() > SUBAGENT_ROUTER_SYSTEM_PROMPT.len(),
+        "cost-saving opt-in appends the main-turn addendum"
+    );
+    assert_eq!(
+        subagent_router_system_prompt(&stub_runtime()),
+        SUBAGENT_ROUTER_SYSTEM_PROMPT
+    );
+}
+
+#[test]
+fn message_response_text_joins_text_and_thinking_blocks() {
+    let blocks = vec![
+        ContentBlock::Text {
+            text: "first".to_string(),
+            cache_control: None,
+        },
+        ContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            input: json!({}),
+            caller: None,
+        },
+        ContentBlock::Thinking {
+            thinking: "then".to_string(),
+        },
+    ];
+    assert_eq!(message_response_text(&blocks), "first\nthen");
+    assert_eq!(message_response_text(&[]), "");
+}
+
+#[test]
+fn tool_result_block_text_prefers_content_then_falls_back_to_blocks() {
+    assert_eq!(tool_result_block_text("primary", &None), "primary");
+    assert_eq!(
+        tool_result_block_text(
+            "  ",
+            &Some(vec![
+                json!({"text": "line one"}),
+                json!({"text": "line two"}),
+                json!({"other": true}),
+            ])
+        ),
+        "line one\nline two"
+    );
+    assert_eq!(tool_result_block_text("", &None), "");
+}
+
+#[test]
+fn inline_report_summary_names_the_recovery_pointer() {
+    let mut snapshot = make_snapshot(SubAgentStatus::Completed);
+    snapshot.agent_type = SubAgentType::Explore;
+    snapshot.steps_taken = 4;
+
+    let with_handle =
+        inline_report_summary(&snapshot, true, &Some("agent:t/full_transcript".into()));
+    assert!(
+        with_handle.contains("final report follows"),
+        "{with_handle}"
+    );
+    assert!(
+        with_handle.contains("handle_read 'agent:t/full_transcript'"),
+        "{with_handle}"
+    );
+    assert!(with_handle.contains("explore"), "{with_handle}");
+
+    let missing = inline_report_summary(&snapshot, false, &None);
+    assert!(missing.contains("No final report text"), "{missing}");
+    assert!(missing.contains("agent_eval id 'agent_test'"), "{missing}");
+}
+
+#[test]
+fn build_forked_messages_carves_placeholder_results_for_sibling_calls() {
+    let fork_context = SubAgentForkContext {
+        system: Some(SystemPrompt::Text("parent system".to_string())),
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "parent turn".to_string(),
+                cache_control: None,
+            }],
+        }],
+        structured_state_block: Some("MODE: AGENT".to_string()),
+        current_assistant_text: Some("running a tool".to_string()),
+        current_turn_tool_calls: Some(vec![ForkedToolCall {
+            id: "call_9".to_string(),
+            name: "read_file".to_string(),
+        }]),
+    };
+    let assignment = SubAgentAssignment::new("inspect parser".to_string(), Some("worker".into()));
+    let messages = build_forked_messages(
+        &fork_context,
+        "inspect parser",
+        &assignment,
+        &SubAgentType::General,
+        None,
+    );
+
+    assert_eq!(messages.len(), 5, "{messages:?}");
+    // 1. Parent prefix stays byte-identical and first.
+    assert_eq!(message_text(&messages[0]), "parent turn");
+    // 2. Preserved fork state, then the subagent context overlay.
+    assert_eq!(messages[1].role, "system");
+    assert!(message_text(&messages[1]).contains("<codesmith:fork_state>"));
+    assert!(message_text(&messages[1]).contains("MODE: AGENT"));
+    assert_eq!(messages[2].role, "system");
+    assert!(message_text(&messages[2]).contains("<codesmith:subagent_context>"));
+    // 3. The in-flight assistant turn is reconstructed with a placeholder
+    //    tool_result so the byte prefix survives to the fork point.
+    assert_eq!(messages[3].role, "assistant");
+    assert_eq!(message_text(&messages[3]), "running a tool");
+    match messages[3].content.get(1) {
+        Some(ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        }) => {
+            assert_eq!(tool_use_id, "call_9");
+            assert_eq!(
+                content,
+                "[Result of read_file from parent context — available if needed]"
+            );
+        }
+        other => panic!("expected placeholder tool result, got {other:?}"),
+    }
+    // 4. The child directive lands last as a user message.
+    assert_eq!(messages[4].role, "user");
+    assert!(message_text(&messages[4]).contains("inspect parser"));
+}
+
+/// A journal that records the event labels it was handed.
+#[derive(Debug)]
+struct RecordingJournal(std::sync::Mutex<Vec<String>>);
+
+#[async_trait]
+impl ChildSessionJournal for RecordingJournal {
+    async fn record(&self, event: ChildSessionEvent) {
+        let label = match event {
+            ChildSessionEvent::Started => "started".to_string(),
+            ChildSessionEvent::Finished {
+                status: ChildSessionStatus::Failed(message),
+                ..
+            } => format!("failed:{message}"),
+            ChildSessionEvent::Finished { .. } => "finished:other".to_string(),
+            _ => "other".to_string(),
+        };
+        self.0.lock().unwrap().push(label);
+    }
+}
+
+#[tokio::test]
+async fn close_child_journal_with_failure_records_started_then_failed() {
+    // No journal wired: closing is a no-op, not an error.
+    close_child_journal_with_failure(&None, "spawn refused").await;
+
+    let recorder = Arc::new(RecordingJournal(std::sync::Mutex::new(Vec::new())));
+    let journal: Arc<dyn ChildSessionJournal> = recorder.clone();
+    close_child_journal_with_failure(&Some(journal), "requested unavailable tools").await;
+
+    let events = recorder.0.lock().unwrap();
+    assert_eq!(
+        events.as_slice(),
+        [
+            "started".to_string(),
+            "failed:requested unavailable tools".to_string()
+        ],
+        "a refused spawn still gets a durable Started → Failed pair"
+    );
+}
+
+/// A factory whose journals are always opened — proves the spawn path wires
+/// the journal in before the tool surface is validated.
+#[derive(Debug)]
+struct RecordingJournalFactory;
+
+impl ChildSessionJournalFactory for RecordingJournalFactory {
+    fn open(
+        &self,
+        _descriptor: ChildSessionDescriptor,
+    ) -> Option<std::sync::Arc<dyn ChildSessionJournal>> {
+        Some(Arc::new(RecordingJournal(
+            std::sync::Mutex::new(Vec::new()),
+        )))
+    }
+}
+
+#[tokio::test]
+async fn run_subagent_refuses_unavailable_tools_and_closes_the_journal() {
+    let workspace = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.child_journal_factory = Some(Arc::new(RecordingJournalFactory));
+    let (_input_tx, input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+
+    // A requested tool the registry does not carry refuses the child before
+    // any model call; the opened journal is closed with the terminal
+    // failure so a catalog reader never sees a dangling child.
+    let err = run_subagent(
+        &runtime,
+        "agent_refused".to_string(),
+        SubAgentType::Custom,
+        ChildSessionMode::OneShot,
+        "map the repo".to_string(),
+        make_assignment(),
+        Some(vec!["no_such_tool".to_string()]),
+        false,
+        None,
+        std::time::Instant::now(),
+        DEFAULT_MAX_STEPS,
+        input_rx,
+    )
+    .await
+    .expect_err("unavailable tools must refuse the spawn");
+    assert!(
+        err.to_string()
+            .contains("Sub-agent requested unavailable tools: no_such_tool"),
+        "{err}"
+    );
+}
+
+/// `DelegatedTool` forwards the ToolSpec default probes to the inner tool
+/// unchanged — the wrapper only re-owns approval and execution.
+#[test]
+fn delegated_tool_forwards_spec_default_probes_to_inner() {
+    let inner_registry =
+        make_test_registry(SubAgentType::General, Some(vec!["read_file".to_string()]));
+    let inner = inner_registry
+        .registry
+        .get("read_file")
+        .expect("read_file registered");
+
+    // Wrap it exactly the way `into_surface` does for the shared turn loop.
+    let delegated = DelegatedTool {
+        inner: inner.clone(),
+        policy: Arc::new(DelegationPolicy {
+            agent_id: "agent_fwd".to_string(),
+            agent_type: SubAgentType::General,
+            allowed_tools: Some(vec!["read_file".to_string()]),
+            auto_approve: false,
+            path_ask: None,
+            asks: std::sync::atomic::AtomicU64::new(0),
+            ticket: None,
+        }),
+    };
+
+    let context = ToolContext::new(PathBuf::from("."));
+    let input = json!({ "path": "Cargo.toml" });
+
+    // Identity probes pass straight through to the inner tool.
+    assert_eq!(delegated.name(), inner.name());
+    assert_eq!(delegated.description(), inner.description());
+    assert_eq!(delegated.is_read_only(), inner.is_read_only());
+    assert_eq!(delegated.is_sandboxable(), inner.is_sandboxable());
+    assert_eq!(delegated.output_schema(), inner.output_schema());
+    assert_eq!(
+        delegated.validate_input(&input, &context).is_ok(),
+        inner.validate_input(&input, &context).is_ok()
+    );
+}
+
+#[tokio::test]
+async fn send_input_delivers_to_running_agents_and_refuses_loudly() {
+    let manager = shared_manager(4);
+    let boot = manager.read().await.session_boot_id().to_string();
+
+    // Unknown agent.
+    let err = manager
+        .write()
+        .await
+        .send_input("ghost", "hi".to_string())
+        .expect_err("unknown agent");
+    assert!(err.to_string().contains("not found"), "{err}");
+
+    // Not running.
+    insert_shared_agent(&manager, "agent_done", SubAgentStatus::Completed).await;
+    let err = manager
+        .write()
+        .await
+        .send_input("agent_done", "hi".to_string())
+        .expect_err("completed agent cannot take input");
+    assert!(err.to_string().contains("is not running"), "{err}");
+
+    // Running with a held channel: delivered.
+    let (agent, _rx) = live_agent_with_channel("agent_live", &boot, None);
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_live".to_string(), agent);
+    manager
+        .write()
+        .await
+        .send_input("agent_live", "steer left".to_string())
+        .expect("running agent accepts input");
+
+    // Queue full: the capacity bound is a loud refusal, not a silent drop.
+    let (agent, _rx_full) = live_agent_with_channel("agent_full", &boot, None);
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_full".to_string(), agent);
+    {
+        let mut guard = manager.write().await;
+        for i in 0..CHILD_INPUT_CAPACITY {
+            guard
+                .send_input("agent_full", format!("msg {i}"))
+                .expect("capacity allows this many");
+        }
+        let err = guard
+            .send_input("agent_full", "one too many".to_string())
+            .expect_err("capacity bound must refuse");
+        assert!(
+            err.to_string()
+                .contains(&format!("{CHILD_INPUT_CAPACITY} unread inputs")),
+            "{err}"
+        );
+    }
+
+    // Closed channel (receiver dropped): the child has ended.
+    insert_shared_agent(&manager, "agent_ended", SubAgentStatus::Running).await;
+    let err = manager
+        .write()
+        .await
+        .send_input("agent_ended", "anyone?".to_string())
+        .expect_err("closed channel must refuse");
+    assert!(err.to_string().contains("Failed to send input"), "{err}");
+}
+
+#[tokio::test]
+async fn cancel_transitions_running_agents_and_reports_unknown_ids() {
+    let manager = shared_manager(4);
+    let boot = manager.read().await.session_boot_id().to_string();
+
+    let err = manager
+        .write()
+        .await
+        .cancel("ghost")
+        .expect_err("unknown id");
+    assert!(err.to_string().contains("not found"), "{err}");
+
+    let (agent, _rx) = live_agent_with_channel("agent_live", &boot, None);
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_live".to_string(), agent);
+
+    let snapshot = manager
+        .write()
+        .await
+        .cancel("agent_live")
+        .expect("running agent is cancellable");
+    assert_eq!(snapshot.status, SubAgentStatus::Cancelled);
+
+    // Cancelling a terminal agent is a no-op that still returns the snapshot.
+    let again = manager
+        .write()
+        .await
+        .cancel("agent_live")
+        .expect("idempotent");
+    assert_eq!(again.status, SubAgentStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn resume_errors_refuses_under_capacity_and_restarts_to_completion() {
+    use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(
+        "resumed done",
+    )]));
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.context.auto_approve = true;
+    runtime.client = mock.clone();
+    let manager = runtime.manager.clone();
+    let boot = manager.read().await.session_boot_id().to_string();
+
+    // Unknown agent.
+    let err = manager
+        .write()
+        .await
+        .resume(manager.clone(), runtime.clone(), "ghost")
+        .expect_err("unknown id");
+    assert!(err.to_string().contains("not found"), "{err}");
+
+    // A still-running agent resumes to itself without spawning.
+    let live_id = manager
+        .write()
+        .await
+        .insert_test_live_agent("agent_hot".to_string(), make_assignment());
+    let snapshot = manager
+        .write()
+        .await
+        .resume(manager.clone(), runtime.clone(), &live_id)
+        .expect("running agent returns its snapshot");
+    assert_eq!(snapshot.status, SubAgentStatus::Running);
+
+    // Capacity: a single live agent fills a max-1 manager, so a completed
+    // peer cannot be resumed into it.
+    {
+        let tight = shared_manager(1);
+        let held = tight
+            .write()
+            .await
+            .insert_test_live_agent("agent_slot".to_string(), make_assignment());
+        insert_shared_agent(&tight, "agent_cold", SubAgentStatus::Completed).await;
+        let err = tight
+            .write()
+            .await
+            .resume(tight.clone(), runtime.clone(), "agent_cold")
+            .expect_err("limit reached");
+        assert!(err.to_string().contains("Sub-agent limit reached"), "{err}");
+        tight.write().await.abort_test_agent(&held);
+    }
+
+    // Happy path: a completed agent with memory restarts and finishes on the
+    // canned client.
+    let (input_tx, _input_rx) = mpsc::channel(CHILD_INPUT_CAPACITY);
+    let mut agent = SubAgent::new(
+        "agent_restart".to_string(),
+        SubAgentType::General,
+        "original objective".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        None,
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        boot,
+    );
+    agent.status = SubAgentStatus::Completed;
+    agent.result = Some("first run".to_string());
+    agent.agent_memory = Some(AgentMemoryMetadata {
+        agent_type: "general".to_string(),
+        scope: AgentMemoryScope::Project,
+        dir: workspace.path().join("mem"),
+    });
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_restart".to_string(), agent);
+
+    let snapshot = manager
+        .write()
+        .await
+        .resume(manager.clone(), runtime.clone(), "agent_restart")
+        .expect("completed agent restarts");
+    assert_eq!(snapshot.status, SubAgentStatus::Running);
+
+    let terminal = wait_until_terminal(&manager, "agent_restart").await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+    assert_eq!(terminal.result.as_deref(), Some("resumed done"));
+
+    manager.write().await.abort_test_agent(&live_id);
+}
+
+#[tokio::test]
+async fn wait_for_agents_any_short_circuits_and_all_times_out() {
+    let manager = shared_manager(4);
+    let boot = manager.read().await.session_boot_id().to_string();
+    insert_shared_agent(&manager, "agent_done", SubAgentStatus::Completed).await;
+    let (agent, _rx) = live_agent_with_channel("agent_live", &boot, None);
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_live".to_string(), agent);
+
+    // Any: one terminal agent satisfies the wait immediately.
+    let (snapshots, timed_out) = wait_for_agents(
+        &manager,
+        &["agent_done".to_string(), "agent_live".to_string()],
+        WaitMode::Any,
+        Duration::from_millis(50),
+    )
+    .await
+    .expect("any-mode wait succeeds");
+    assert!(!timed_out);
+    assert_eq!(snapshots[0].status, SubAgentStatus::Completed);
+
+    // All: the still-running agent holds it past the deadline.
+    let (snapshots, timed_out) = wait_for_agents(
+        &manager,
+        &["agent_done".to_string(), "agent_live".to_string()],
+        WaitMode::All,
+        Duration::from_millis(50),
+    )
+    .await
+    .expect("all-mode wait still returns snapshots");
+    assert!(timed_out);
+    assert_eq!(snapshots.len(), 2);
+
+    // A missing id fails the wait instead of hanging on it.
+    let err = wait_for_agents(
+        &manager,
+        &["ghost".to_string()],
+        WaitMode::Any,
+        Duration::from_millis(50),
+    )
+    .await
+    .expect_err("unknown id");
+    assert!(!err.to_string().is_empty());
+}
+
+/// A runtime whose client is a canned mock: children complete in one turn
+/// with `text` as the final answer. No network, no live engine.
+fn mock_child_runtime(text: &str) -> (SubAgentRuntime, tempfile::TempDir) {
+    use codesmith_agent_runtime::test_support::mock_llm::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    let mock = Arc::new(MockLlmClient::new(vec![canned::simple_text_turn(text)]));
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.context.auto_approve = true;
+    runtime.client = mock;
+    (runtime, workspace)
+}
+
+#[tokio::test]
+async fn spawn_background_wrapper_completes_and_assigns_a_smith_name() {
+    let (runtime, _workspace) = mock_child_runtime("background done");
+    let manager_handle = runtime.manager.clone();
+
+    let snapshot = {
+        let mut manager = manager_handle.write().await;
+        manager
+            .spawn_background(
+                manager_handle.clone(),
+                runtime,
+                SubAgentType::Explore,
+                "scan the tree".to_string(),
+                None,
+            )
+            .expect("spawn_background accepts the plain five-arg form")
+    };
+    assert_eq!(snapshot.status, SubAgentStatus::Running);
+    assert!(
+        snapshot.nickname.is_some(),
+        "an un-named spawn gets a deterministic smith nickname"
+    );
+
+    let terminal = wait_until_terminal(&manager_handle, &snapshot.agent_id).await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+    assert_eq!(terminal.result.as_deref(), Some("background done"));
+}
+
+#[tokio::test]
+async fn legacy_manager_tools_execute_against_real_agents() {
+    let manager = shared_manager(8);
+    let boot = manager.read().await.session_boot_id().to_string();
+    insert_shared_agent(&manager, "agent_done", SubAgentStatus::Completed).await;
+    let (agent, _rx) = live_agent_with_channel("agent_live", &boot, None);
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_live".to_string(), agent);
+    let (closer, _closer_rx) = live_agent_with_channel("agent_closer", &boot, Some("close-me"));
+    manager
+        .write()
+        .await
+        .agents
+        .insert("agent_closer".to_string(), closer);
+
+    let context = ToolContext::new(PathBuf::from("."));
+
+    // agent_result: no-block fetch, unknown id, and a block=true timeout on
+    // a running agent.
+    let result_tool = AgentResultTool::new(manager.clone());
+    let result = result_tool
+        .execute(json!({ "id": "agent_done" }), &context)
+        .await
+        .expect("completed agent resolves");
+    assert!(result.content.contains("agent_done"), "{}", result.content);
+    assert!(
+        result_tool
+            .execute(json!({ "agent_id": "ghost" }), &context)
+            .await
+            .is_err(),
+        "unknown id must fail"
+    );
+    let blocked = result_tool
+        .execute(
+            json!({ "agent_id": "agent_live", "block": true, "timeout_ms": 1 }),
+            &context,
+        )
+        .await
+        .expect("blocked wait still returns the snapshot");
+    let metadata = blocked.metadata.expect("timeout metadata");
+    assert_eq!(metadata["timed_out"], true);
+    assert_eq!(
+        metadata["timeout_ms"], 1_000,
+        "tool-level clamp floor is 1s"
+    );
+
+    // agent_send_input: canonical name is clean, alias carries the notice.
+    manager
+        .write()
+        .await
+        .send_input("agent_live", "seed".to_string())
+        .expect("seed message");
+    let canonical = AgentSendInputTool::new(manager.clone(), "agent_send_input");
+    let result = canonical
+        .execute(
+            json!({ "agent_id": "agent_live", "message": "status?" }),
+            &context,
+        )
+        .await
+        .expect("canonical send_input runs");
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .is_none_or(|m| m.get("_deprecation").is_none()),
+        "canonical name carries no deprecation notice"
+    );
+    let alias = AgentSendInputTool::new(manager.clone(), "send_input");
+    let result = alias
+        .execute(
+            json!({ "agent_id": "agent_live", "message": "status?" }),
+            &context,
+        )
+        .await
+        .expect("alias still executes");
+    assert_eq!(
+        result.metadata.expect("notice attached")["_deprecation"]["use_instead"],
+        "agent_send_input"
+    );
+
+    // agent_assign: objective update reaches a running agent.
+    let result = AgentAssignTool::new(manager.clone(), "agent_assign")
+        .execute(
+            json!({ "agent_id": "agent_live", "objective": "refocus on tests" }),
+            &context,
+        )
+        .await
+        .expect("assign runs");
+    assert!(
+        result.content.contains("refocus on tests"),
+        "{}",
+        result.content
+    );
+
+    // agent_wait: named ids resolve to per-id status.
+    let result = AgentWaitTool::new(manager.clone(), "agent_wait")
+        .execute(json!({ "ids": ["agent_done"] }), &context)
+        .await
+        .expect("wait on a terminal id returns immediately");
+    let metadata = result.metadata.expect("wait metadata");
+    assert_eq!(metadata["status"], "Completed");
+    assert_eq!(metadata["wait_mode"], "any");
+    assert_eq!(metadata["status_by_id"]["agent_done"], "completed");
+
+    // agent_cancel: the running agent lands in Cancelled.
+    let result = AgentCancelTool::new(manager.clone())
+        .execute(json!({ "agent_id": "agent_live" }), &context)
+        .await
+        .expect("cancel runs");
+    assert!(result.content.contains("Cancelled"), "{}", result.content);
+    assert!(
+        AgentCancelTool::new(manager.clone())
+            .execute(json!({}), &context)
+            .await
+            .is_err(),
+        "missing agent_id must fail"
+    );
+
+    // agent_list: current-session completed agents stay visible.
+    let result = AgentListTool::new(manager.clone())
+        .execute(json!({ "include_archived": true }), &context)
+        .await
+        .expect("list runs");
+    assert!(result.content.contains("agent_done"), "{}", result.content);
+
+    // agent_close resolves by session name and cancels.
+    let result = AgentCloseTool::new(manager.clone())
+        .execute(json!({ "name": "close-me" }), &context)
+        .await
+        .expect("close by session name");
+    assert!(
+        result.content.contains("agent_closer"),
+        "{}",
+        result.content
+    );
+    let status = manager
+        .read()
+        .await
+        .get_result("agent_closer")
+        .expect("closer");
+    assert_eq!(status.status, SubAgentStatus::Cancelled);
+    assert!(
+        AgentCloseTool::new(manager.clone())
+            .execute(json!({ "name": "no-such-session" }), &context)
+            .await
+            .is_err(),
+        "unknown session name must fail"
+    );
+
+    // agent_wait with no ids and nothing left running: empty wait, mode label.
+    let result = AgentWaitTool::new(manager.clone(), "agent_wait")
+        .execute(json!({}), &context)
+        .await
+        .expect("empty wait succeeds");
+    let metadata = result.metadata.expect("empty-wait metadata");
+    assert_eq!(metadata["waited_ids"].as_array().map(Vec::len), Some(0));
+    assert_eq!(metadata["status"], "Completed");
+    assert_eq!(metadata["wait_mode"], "any");
+
+    // resume_agent: unknown id fails through the tool surface.
+    assert!(
+        AgentResumeTool::new(manager.clone(), stub_runtime())
+            .execute(json!({ "id": "ghost" }), &context)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn subagent_run_tool_runs_foreground_inline_and_background_async() {
+    let (runtime, workspace) = mock_child_runtime("inline report text");
+    let manager = runtime.manager.clone();
+    let tool = SubagentRunTool::new(manager.clone(), runtime.clone());
+    let context = ToolContext::new(workspace.path().to_path_buf());
+
+    // Foreground: blocks until the child finishes and returns its report.
+    let result = tool
+        .execute(json!({ "prompt": "say the line" }), &context)
+        .await
+        .expect("foreground run completes");
+    assert!(
+        result.content.contains("inline report text"),
+        "inline report: {}",
+        result.content
+    );
+    let metadata = result.metadata.expect("provenance metadata");
+    assert_eq!(metadata["report_source"], "child_final_text");
+    assert_eq!(metadata["report_available"], true);
+    assert!(
+        metadata["agent_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+
+    // Background: returns an agent id immediately, finishes async.
+    let (bg_runtime, bg_workspace) = mock_child_runtime("bg report text");
+    let bg_manager = bg_runtime.manager.clone();
+    let bg_tool = SubagentRunTool::new(bg_manager.clone(), bg_runtime);
+    let result = bg_tool
+        .execute(
+            json!({ "prompt": "bg line", "run_in_background": true }),
+            &ToolContext::new(bg_workspace.path().to_path_buf()),
+        )
+        .await
+        .expect("background spawn accepted");
+    let spawned: Value =
+        serde_json::from_str(&result.content).expect("background result is snapshot json");
+    let agent_id = spawned["agent_id"].as_str().expect("agent_id").to_string();
+    let terminal = wait_until_terminal(&bg_manager, &agent_id).await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+    assert_eq!(terminal.result.as_deref(), Some("bg report text"));
+}
+
+#[tokio::test]
+async fn agent_open_and_tool_agent_execute_spawn_real_sessions() {
+    let (runtime, workspace) = mock_child_runtime("open done");
+    let manager = runtime.manager.clone();
+    let context = ToolContext::new(workspace.path().to_path_buf());
+
+    let result = AgentOpenTool::new(manager.clone(), runtime.clone())
+        .execute(json!({ "prompt": "map it" }), &context)
+        .await
+        .expect("agent_open executes");
+    let metadata = result.metadata.expect("projection metadata");
+    assert_eq!(metadata["context_mode"], "fresh");
+    assert_eq!(metadata["terminal"], false);
+    let opened: Value = serde_json::from_str(&result.content).expect("projection json");
+    let open_id = opened["agent_id"].as_str().expect("agent_id").to_string();
+    let terminal = wait_until_terminal(&manager, &open_id).await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+
+    // tool_agent forwards through the same runtime with its type forced.
+    let (ta_runtime, ta_workspace) = mock_child_runtime("fast lane done");
+    let ta_manager = ta_runtime.manager.clone();
+    let result = ToolAgentTool::new(ta_manager.clone(), ta_runtime)
+        .execute(
+            json!({ "prompt": "ocr the chart" }),
+            &ToolContext::new(ta_workspace.path().to_path_buf()),
+        )
+        .await
+        .expect("tool_agent executes");
+    let spawned: Value = serde_json::from_str(&result.content).expect("snapshot json");
+    assert_eq!(spawned["snapshot"]["agent_type"], "tool_agent");
+    let ta_id = spawned["agent_id"].as_str().expect("agent_id").to_string();
+    let terminal = wait_until_terminal(&ta_manager, &ta_id).await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+}
+
+#[tokio::test]
+async fn delegate_to_agent_wraps_a_forked_spawn_in_a_deprecation_notice() {
+    let (runtime, workspace) = mock_child_runtime("delegated done");
+    let manager = runtime.manager.clone();
+    let tool = DelegateToAgentTool::new(manager.clone(), runtime);
+    let context = ToolContext::new(workspace.path().to_path_buf());
+
+    let result = tool
+        .execute(json!({ "objective": "continue this work" }), &context)
+        .await
+        .expect("delegate executes through agent_spawn");
+    let metadata = result.metadata.expect("deprecation notice present");
+    assert_eq!(metadata["_deprecation"]["this_tool"], "delegate_to_agent");
+    assert_eq!(metadata["_deprecation"]["use_instead"], "agent_spawn");
+
+    let spawned: Value = serde_json::from_str(&result.content).expect("snapshot json");
+    assert_eq!(
+        spawned["fork_context"], true,
+        "delegation defaults to a forked child"
+    );
+    let agent_id = spawned["agent_id"].as_str().expect("agent_id").to_string();
+    let terminal = wait_until_terminal(&manager, &agent_id).await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+}
+
+#[tokio::test]
+async fn spawn_team_teammate_requires_an_attached_team_runtime() {
+    let spawn_request = SpawnRequest {
+        session_name: None,
+        prompt: "join the team".to_string(),
+        agent_type: SubAgentType::Team,
+        assignment: make_assignment(),
+        allowed_tools: None,
+        model: None,
+        cwd: None,
+        resident_file: None,
+        fork_context: false,
+        max_depth: None,
+        memory: None,
+        team_name: None,
+    };
+    let manager = shared_manager(2);
+
+    // The dispatcher refuses without a team context, whichever backend the
+    // host environment would pick.
+    let err = spawn_team_teammate(
+        manager.clone(),
+        stub_runtime(),
+        spawn_request.clone(),
+        None,
+        "join the team".to_string(),
+        None,
+    )
+    .await
+    .expect_err("team runtime must be attached");
+    assert!(
+        err.to_string()
+            .contains("AgentTeams runtime is not attached"),
+        "{err}"
+    );
+
+    let err = spawn_team_teammate_in_process(
+        manager.clone(),
+        stub_runtime(),
+        spawn_request.clone(),
+        None,
+        "join the team".to_string(),
+        None,
+    )
+    .await
+    .expect_err("in-process teammate needs a team context");
+    assert!(
+        err.to_string()
+            .contains("AgentTeams runtime is not attached"),
+        "{err}"
+    );
+
+    let err = spawn_team_teammate_in_pane(
+        crate::tools::team::backend::BackendKind::Tmux,
+        stub_runtime(),
+        spawn_request,
+        None,
+        "join the team".to_string(),
+        None,
+    )
+    .await
+    .expect_err("pane teammate needs a team context before any tmux call");
+    assert!(
+        err.to_string()
+            .contains("AgentTeams runtime is not attached"),
+        "{err}"
+    );
+}

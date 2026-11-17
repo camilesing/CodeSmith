@@ -995,6 +995,8 @@ dependencies = [
  "codesmith-state",
  "codesmith-tools",
  "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -1054,6 +1056,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "codesmith-agent-runtime",
  "codesmith-config",
  "codesmith-index",
  "codesmith-tools",
@@ -1093,6 +1096,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "codesmith-agent",
+ "codesmith-agent-runtime",
  "codesmith-config",
  "codesmith-sandbox",
  "codesmith-secrets",
@@ -1165,11 +1169,14 @@ dependencies = [
 name = "codesmith-release"
 version = "0.12.0"
 dependencies = [
+ "codesmith-agent-runtime",
  "reqwest",
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

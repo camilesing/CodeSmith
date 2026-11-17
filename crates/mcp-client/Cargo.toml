@@ -29,5 +29,6 @@ tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 
 [dev-dependencies]
+codesmith-agent-runtime.workspace = true
 tempfile.workspace = true
 tiny_http = "0.12"

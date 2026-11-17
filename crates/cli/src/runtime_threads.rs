@@ -6162,8 +6162,12 @@ mod tests {
     /// Test-only CODESMITH_HOME scoping: the attachment intake stores into
     /// the home it names, so the attachment tests below run against a
     /// scratch home instead of the user's. One global lock — env mutation is
-    /// process-wide; the same idiom config's tests use.
+    /// process-wide; the same idiom config's tests use. The process-wide
+    /// env mutex is held too: these tests await while mounted, and without
+    /// it a concurrently-running team/mailbox test (which holds that mutex
+    /// across its own awaits) could observe this home swap mid-flight.
     struct ScratchHome {
+        _env_lock: std::sync::MutexGuard<'static, ()>,
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
     }
@@ -6175,12 +6179,14 @@ mod tests {
             let lock = HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let env_lock = codesmith_agent_runtime::test_support::lock_test_env();
             let dir = std::env::temp_dir().join(format!("codesmith-home-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             let previous = std::env::var_os("CODESMITH_HOME");
             // Safety: test-only environment mutation guarded by HOME_LOCK.
             unsafe { std::env::set_var("CODESMITH_HOME", &dir) };
             ScratchHome {
+                _env_lock: env_lock,
                 _lock: lock,
                 previous,
             }
@@ -9485,5 +9491,808 @@ mod tests {
             Some("interrupted")
         );
         assert_eq!(detail.turns[0].status, RuntimeTurnStatus::Interrupted);
+    }
+
+    // ---- coverage slice: pure helpers, store happy paths, and manager
+    // surfaces reachable without a real engine (mock-engine or none). ----
+
+    #[test]
+    fn default_schema_version_accessor_tracks_the_constant() {
+        assert_eq!(
+            default_runtime_schema_version(),
+            CURRENT_RUNTIME_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn queued_item_turn_content_composes_text_appendix_or_placeholder() {
+        let base = || QueuedItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: "qitem_abcd1234".to_string(),
+            text: String::new(),
+            appendix: None,
+            image_paths: Vec::new(),
+            attachments_metadata: None,
+            rpc_id: None,
+            input_summary: "s".to_string(),
+            created_at: Utc::now(),
+        };
+        let text_only = QueuedItemRecord {
+            text: "hello".to_string(),
+            ..base()
+        };
+        assert_eq!(text_only.turn_content(), "hello");
+        let with_appendix = QueuedItemRecord {
+            text: "hello".to_string(),
+            appendix: Some("[file: a.png]".to_string()),
+            ..base()
+        };
+        assert_eq!(with_appendix.turn_content(), "hello\n\n[file: a.png]");
+        let appendix_only = QueuedItemRecord {
+            appendix: Some("[file: a.png]".to_string()),
+            ..base()
+        };
+        assert_eq!(appendix_only.turn_content(), "[file: a.png]");
+        let empty_appendix = QueuedItemRecord {
+            appendix: Some(String::new()),
+            ..base()
+        };
+        assert_eq!(empty_appendix.turn_content(), "[image]");
+        assert_eq!(base().turn_content(), "[image]");
+    }
+
+    #[test]
+    fn provider_label_for_model_buckets_known_prefixes() {
+        let cases = [
+            ("deepseek-ai/deepseek-v4", "nvidia-nim"),
+            ("deepseek-chat", "deepseek"),
+            ("openai/gpt-5", "openrouter"),
+            ("anthropic/claude-x", "openrouter"),
+            ("qwen-max", "unknown"),
+        ];
+        for (model, label) in cases {
+            assert_eq!(provider_label_for_model(model), label, "model {model}");
+        }
+    }
+
+    #[test]
+    fn store_round_trips_and_lists_threads_turns_items() -> Result<()> {
+        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+
+        let thread_a = sample_thread("thr_alpha");
+        let mut thread_b = sample_thread("thr_beta");
+        thread_b.updated_at = Utc::now() + chrono::Duration::seconds(5);
+        store.save_thread(&thread_a)?;
+        store.save_thread(&thread_b)?;
+        assert_eq!(store.load_thread("thr_alpha")?.id, "thr_alpha");
+
+        let mut turn_a1 = sample_turn("thr_alpha", "turn_a1", RuntimeTurnStatus::Completed);
+        turn_a1.created_at = Utc::now() - chrono::Duration::seconds(10);
+        let turn_a2 = sample_turn("thr_alpha", "turn_a2", RuntimeTurnStatus::InProgress);
+        let turn_b1 = sample_turn("thr_beta", "turn_b1", RuntimeTurnStatus::Completed);
+        store.save_turn(&turn_a1)?;
+        store.save_turn(&turn_a2)?;
+        store.save_turn(&turn_b1)?;
+        assert_eq!(store.load_turn("turn_a2")?.thread_id, "thr_alpha");
+
+        let item_a1 = sample_item("turn_a1", "item_a1", TurnItemLifecycleStatus::Completed);
+        let item_a2 = sample_item("turn_a2", "item_a2", TurnItemLifecycleStatus::Completed);
+        let item_b1 = sample_item("turn_b1", "item_b1", TurnItemLifecycleStatus::Completed);
+        store.save_item(&item_a1)?;
+        store.save_item(&item_a2)?;
+        store.save_item(&item_b1)?;
+        assert_eq!(store.load_item("item_a1")?.turn_id, "turn_a1");
+
+        // Listing: newest thread first, oldest turn first, items per turn.
+        let threads = store.list_threads()?;
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].id, "thr_beta", "sorted by updated_at desc");
+
+        let alpha_turns = store.list_turns_for_thread("thr_alpha")?;
+        assert_eq!(alpha_turns.len(), 2);
+        assert_eq!(alpha_turns[0].id, "turn_a1", "oldest first");
+
+        let grouped = store.turns_by_thread()?;
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped["thr_beta"].len(), 1);
+
+        let a1_items = store.list_items_for_turn("turn_a1")?;
+        assert_eq!(a1_items.len(), 1);
+        assert_eq!(a1_items[0].id, "item_a1");
+        Ok(())
+    }
+
+    fn goal_tool_item(
+        turn_id: &str,
+        item_id: &str,
+        status: TurnItemLifecycleStatus,
+        summary: &str,
+    ) -> TurnItemRecord {
+        let mut item = sample_item(turn_id, item_id, status);
+        item.summary = summary.to_string();
+        item.detail = Some(json!({ "objective": "ship", "status": "active" }).to_string());
+        item
+    }
+
+    #[test]
+    fn store_goal_items_keeps_completed_goal_items_of_the_thread() -> Result<()> {
+        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+        store.save_thread(&sample_thread("thr_goals"))?;
+        store.save_turn(&sample_turn(
+            "thr_goals",
+            "turn_g1",
+            RuntimeTurnStatus::Completed,
+        ))?;
+        // A turn owned by another thread: its goal items must not leak in.
+        store.save_thread(&sample_thread("thr_other"))?;
+        store.save_turn(&sample_turn(
+            "thr_other",
+            "turn_g9",
+            RuntimeTurnStatus::Completed,
+        ))?;
+
+        store.save_item(&goal_tool_item(
+            "turn_g1",
+            "item_g1",
+            TurnItemLifecycleStatus::Completed,
+            "create_goal: ship it",
+        ))?;
+        store.save_item(&goal_tool_item(
+            "turn_g1",
+            "item_g2",
+            TurnItemLifecycleStatus::Completed,
+            "update_goal: still shipping",
+        ))?;
+        store.save_item(&goal_tool_item(
+            "turn_g1",
+            "item_g3",
+            TurnItemLifecycleStatus::InProgress,
+            "create_goal: in flight",
+        ))?;
+        store.save_item(&goal_tool_item(
+            "turn_g1",
+            "item_g4",
+            TurnItemLifecycleStatus::Completed,
+            "exec_shell: unrelated",
+        ))?;
+        store.save_item(&goal_tool_item(
+            "turn_g9",
+            "item_g5",
+            TurnItemLifecycleStatus::Completed,
+            "create_goal: other thread",
+        ))?;
+
+        let goals = store.goal_items_for_thread("thr_goals")?;
+        assert_eq!(
+            goals
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["item_g1", "item_g2"],
+            "only this thread's completed create/update_goal items, oldest first"
+        );
+
+        // A thread with no turns short-circuits without scanning items.
+        store.save_thread(&sample_thread("thr_goalless"))?;
+        assert!(store.goal_items_for_thread("thr_goalless")?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn store_events_append_replay_and_seq_filtering() -> Result<()> {
+        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+        store.save_thread(&sample_thread("thr_events"))?;
+
+        let first = store
+            .append_event(
+                "thr_events",
+                Some("turn_e1"),
+                Some("item_e1"),
+                "turn.started",
+                json!({ "n": 1 }),
+            )
+            .await?;
+        assert_eq!(first.seq, 1);
+        store
+            .append_event(
+                "thr_events",
+                None,
+                None,
+                "thread.resumed",
+                json!({ "n": 2 }),
+            )
+            .await?;
+        store
+            .append_event(
+                "thr_events",
+                None,
+                None,
+                "turn.completed",
+                json!({ "n": 3 }),
+            )
+            .await?;
+        assert_eq!(store.current_seq().await, 3);
+
+        let all = store.events_since("thr_events", None)?;
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].event, "turn.started");
+        assert_eq!(all[0].turn_id.as_deref(), Some("turn_e1"));
+        assert_eq!(all[0].item_id.as_deref(), Some("item_e1"));
+
+        let tail = store.events_since("thr_events", Some(1))?;
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].event, "thread.resumed");
+
+        let missing = store.events_since("thr_never", None)?;
+        assert!(missing.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn appending_after_a_torn_tail_repairs_the_stream() -> Result<()> {
+        let store = RuntimeThreadStore::open(test_runtime_dir())?;
+        store.save_thread(&sample_thread("thr_torn"))?;
+        store
+            .append_event("thr_torn", None, None, "first", json!({}))
+            .await?;
+
+        // Simulate a crash mid-write: bytes without the closing newline.
+        let path = store.events_path("thr_torn")?;
+        let mut torn = fs::read_to_string(&path)?;
+        torn.push_str("{\"seq\":2,\"event\":\"half-writ");
+        fs::write(&path, torn)?;
+
+        store
+            .append_event("thr_torn", None, None, "second", json!({}))
+            .await?;
+        let events = store.events_since("thr_torn", None)?;
+        assert_eq!(
+            events.len(),
+            2,
+            "the torn fragment is dropped, complete lines stay"
+        );
+        assert_eq!(events[1].event, "second");
+        Ok(())
+    }
+
+    #[test]
+    fn drop_torn_event_tail_cuts_only_the_unterminated_line() -> Result<()> {
+        let dir = test_runtime_dir();
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("events.jsonl");
+
+        // A missing file surfaces loudly.
+        assert!(drop_torn_event_tail(&path).is_err());
+
+        fs::write(&path, "")?;
+        drop_torn_event_tail(&path)?;
+        assert_eq!(fs::read_to_string(&path)?, "");
+
+        fs::write(&path, "{\"a\":1}\n{\"b\":2}\n")?;
+        drop_torn_event_tail(&path)?;
+        assert_eq!(fs::read_to_string(&path)?, "{\"a\":1}\n{\"b\":2}\n");
+
+        fs::write(&path, "{\"a\":1}\n{\"b\":2")?;
+        drop_torn_event_tail(&path)?;
+        assert_eq!(fs::read_to_string(&path)?, "{\"a\":1}\n");
+
+        fs::write(&path, "no newline at all")?;
+        drop_torn_event_tail(&path)?;
+        assert_eq!(fs::read_to_string(&path)?, "");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aggregate_usage_buckets_and_filters_by_time_range() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        let mut alpha = sample_thread("thr_usage_a");
+        alpha.model = "deepseek-chat".to_string();
+        let mut beta = sample_thread("thr_usage_b");
+        beta.model = "openai/gpt-5".to_string();
+        manager.store.save_thread(&alpha)?;
+        manager.store.save_thread(&beta)?;
+
+        let mut old = sample_turn("thr_usage_a", "turn_u1", RuntimeTurnStatus::Completed);
+        old.created_at = Utc::now() - chrono::Duration::days(3);
+        old.usage = Some(Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        });
+        let mut recent_a = sample_turn("thr_usage_a", "turn_u2", RuntimeTurnStatus::Completed);
+        recent_a.usage = Some(Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            prompt_cache_hit_tokens: Some(20),
+            ..Usage::default()
+        });
+        let mut recent_b = sample_turn("thr_usage_b", "turn_u3", RuntimeTurnStatus::Completed);
+        recent_b.usage = Some(Usage {
+            input_tokens: 7,
+            output_tokens: 3,
+            ..Usage::default()
+        });
+        // A turn without usage contributes nothing.
+        manager.store.save_turn(&sample_turn(
+            "thr_usage_a",
+            "turn_u0",
+            RuntimeTurnStatus::Completed,
+        ))?;
+        manager.store.save_turn(&old)?;
+        manager.store.save_turn(&recent_a)?;
+        manager.store.save_turn(&recent_b)?;
+
+        let all = manager
+            .aggregate_usage(None, None, UsageGroupBy::Provider)
+            .await?;
+        assert_eq!(all.totals.turns, 3);
+        assert_eq!(all.totals.input_tokens, 117);
+        assert_eq!(all.totals.cached_tokens, 20);
+        let keys: Vec<&str> = all.buckets.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["deepseek", "openrouter"],
+            "buckets sorted by key"
+        );
+        assert_eq!(all.buckets[0].turns, 2, "alpha's two usage turns");
+        assert_eq!(all.buckets[1].input_tokens, 7);
+
+        let window = manager
+            .aggregate_usage(
+                Some(Utc::now() - chrono::Duration::days(1)),
+                None,
+                UsageGroupBy::Day,
+            )
+            .await?;
+        assert_eq!(window.totals.turns, 2, "the three-day-old turn is outside");
+        assert_eq!(window.group_by, "day");
+
+        let by_thread = manager
+            .aggregate_usage(None, None, UsageGroupBy::Thread)
+            .await?;
+        assert_eq!(by_thread.buckets.len(), 2);
+        let by_model = manager
+            .aggregate_usage(None, None, UsageGroupBy::Model)
+            .await?;
+        assert_eq!(by_model.group_by, "model");
+        assert_eq!(by_model.buckets.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagent_catalog_summarizes_direct_children_in_creation_order() -> Result<()> {
+        let manager = test_manager(test_runtime_dir())?;
+        manager
+            .store
+            .save_thread(&sample_thread("thr_catalog_parent"))?;
+
+        assert!(
+            manager
+                .subagent_catalog("thr_catalog_parent")
+                .await?
+                .is_empty(),
+            "no children yet"
+        );
+
+        let mut child_a = sample_thread("thr_child_a");
+        child_a.origin = Some("subagent".to_string());
+        child_a.parent_id = Some("thr_catalog_parent".to_string());
+        let mut child_b = sample_thread("thr_child_b");
+        child_b.origin = Some("subagent".to_string());
+        child_b.parent_id = Some("thr_catalog_parent".to_string());
+        child_b.title = Some("Reviewer".to_string());
+        child_b.agent_type = Some("review".to_string());
+        child_b.spawn_depth = Some(2);
+        child_b.subagent_mode = Some("one-shot".to_string());
+        child_b.subagent_status = Some("completed".to_string());
+        // An unrelated subagent child of another parent must not appear.
+        let mut stranger = sample_thread("thr_stranger");
+        stranger.origin = Some("subagent".to_string());
+        stranger.parent_id = Some("thr_other_parent".to_string());
+        manager.store.save_thread(&child_a)?;
+        manager.store.save_thread(&child_b)?;
+        manager.store.save_thread(&stranger)?;
+
+        let mut running = sample_turn("thr_child_a", "turn_c1", RuntimeTurnStatus::InProgress);
+        running.usage = Some(Usage {
+            input_tokens: 11,
+            output_tokens: 4,
+            ..Usage::default()
+        });
+        let mut done = sample_turn("thr_child_b", "turn_c2", RuntimeTurnStatus::Completed);
+        done.usage = Some(Usage {
+            input_tokens: 6,
+            output_tokens: 2,
+            ..Usage::default()
+        });
+        manager.store.save_turn(&running)?;
+        manager.store.save_turn(&done)?;
+
+        let catalog = manager.subagent_catalog("thr_catalog_parent").await?;
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog[0].id, "thr_child_a", "creation order");
+        assert_eq!(catalog[0].name, "thr_child_a", "no title falls back to id");
+        assert_eq!(catalog[0].agent_type, "general");
+        assert_eq!(catalog[0].depth, 1);
+        assert!(
+            catalog[0].active.is_some(),
+            "in-progress turn reports activity"
+        );
+        assert!(!catalog[0].last_turn_completed);
+        assert_eq!(
+            catalog[0].usage.as_ref().map(|usage| usage.input_tokens),
+            Some(11)
+        );
+        assert_eq!(catalog[1].name, "Reviewer");
+        assert_eq!(catalog[1].depth, 2);
+        assert_eq!(catalog[1].mode, "one-shot");
+        assert_eq!(catalog[1].status, "completed");
+        assert_eq!(
+            catalog[1].usage.as_ref().map(|usage| usage.input_tokens),
+            Some(6)
+        );
+        assert!(catalog[1].last_turn_completed);
+        assert!(catalog[1].active.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_flag_and_pending_approval_lifecycle() {
+        let manager = test_manager(test_runtime_dir()).unwrap();
+        assert!(!manager.is_shutdown());
+
+        let rx = manager.register_pending_approval_for_test("appr_1");
+        assert_eq!(manager.pending_approvals_count(), 1);
+        assert!(!manager.deliver_external_approval(
+            "appr_missing",
+            ExternalApprovalDecision::Allow { remember: false }
+        ));
+        assert!(manager.deliver_external_approval(
+            "appr_1",
+            ExternalApprovalDecision::Deny { remember: true }
+        ));
+        assert_eq!(
+            manager.pending_approvals_count(),
+            0,
+            "a delivered decision retires the entry"
+        );
+        assert_eq!(
+            rx.await,
+            Ok(ExternalApprovalDecision::Deny { remember: true })
+        );
+
+        // cancel_pending_approval drops the waiter without a decision.
+        let _rx2 = manager.register_pending_approval_for_test("appr_2");
+        manager.cancel_pending_approval("appr_2");
+        assert_eq!(manager.pending_approvals_count(), 0);
+
+        // Shutdown flips the flag and clears parked approvals.
+        let _rx3 = manager.register_pending_approval_for_test("appr_3");
+        manager.shutdown();
+        assert!(manager.is_shutdown());
+        assert_eq!(manager.pending_approvals_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancel_user_input_routes_through_the_loaded_engine() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+
+        // Unknown thread refuses before touching any engine.
+        let err = manager
+            .cancel_user_input("thr_missing", "in_1")
+            .await
+            .expect_err("unknown thread");
+        assert!(err.to_string().contains("not found"), "{err}");
+
+        // The mock engine's user-input mailbox is closed, so the cancel is
+        // reported as dropped — the call still routed through the engine.
+        let err = manager
+            .cancel_user_input(&thread.id, "in_1")
+            .await
+            .expect_err("closed mailbox");
+        assert!(
+            err.to_string().contains("user-input mailbox closed"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn workflow_run_recorder_journals_lifecycle_events() -> Result<()> {
+        use codesmith_agent_runtime::workflow::WorkflowRunEvent;
+
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = sample_thread("thr_wf");
+        manager.store.save_thread(&thread)?;
+        let recorder =
+            RuntimeThreadManager::workflow_run_recorder(manager.store.clone(), thread.id.clone());
+
+        recorder.record(WorkflowRunEvent::RunStart {
+            run_id: "run1".to_string(),
+            name: "cov".to_string(),
+        });
+        recorder.record(WorkflowRunEvent::AgentStart {
+            run_id: "run1".to_string(),
+            seq: 1,
+            label: "l".to_string(),
+            phase: Some("plan".to_string()),
+            child_id: "c1".to_string(),
+        });
+        recorder.record(WorkflowRunEvent::AgentStart {
+            run_id: "run1".to_string(),
+            seq: 2,
+            label: "l2".to_string(),
+            phase: None,
+            child_id: "c2".to_string(),
+        });
+        recorder.record(WorkflowRunEvent::AgentEnd {
+            run_id: "run1".to_string(),
+            seq: 1,
+            outcome: "completed",
+        });
+        recorder.record(WorkflowRunEvent::RunEnd {
+            run_id: "run1".to_string(),
+            stop_reason: "done",
+        });
+
+        // The consumer task appends asynchronously; poll for the tail.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let events = manager.events_since(&thread.id, None)?;
+            if events
+                .iter()
+                .any(|event| event.event == "workflow.run_ended")
+            {
+                assert_eq!(events.len(), 5, "every lifecycle step journaled");
+                let started = &events[1];
+                assert_eq!(started.payload["phase"], "plan", "phase rides the payload");
+                assert!(
+                    events[2].payload.get("phase").is_none(),
+                    "absent phase is omitted, not null"
+                );
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("workflow events never landed in the store");
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_queued_on_watch_drains_a_restored_queue() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+
+        // A restored queue (post-restart) parked on the thread record.
+        let mut stored = manager.get_thread(&thread.id).await?;
+        stored.queue.push(QueuedItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: "qitem_restored".to_string(),
+            text: "queued while away".to_string(),
+            appendix: None,
+            image_paths: Vec::new(),
+            attachments_metadata: None,
+            rpc_id: None,
+            input_summary: "queued while away".to_string(),
+            created_at: Utc::now(),
+        });
+        manager.store.save_thread(&stored)?;
+
+        // An empty-queue thread is a no-op.
+        let other = attachment_thread(&manager).await?;
+        manager.resume_queued_on_watch(&other.id).await?;
+
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+        manager.resume_queued_on_watch(&thread.id).await?;
+
+        match rx_op.recv().await {
+            Some(Op::SendMessage { content, .. }) => assert_eq!(content, "queued while away"),
+            other => panic!("expected the queued item to start a turn, got {other:?}"),
+        }
+        let turn_id = {
+            let active = manager.active.lock().await;
+            active
+                .engines
+                .get(&thread.id)
+                .and_then(|state| state.active_turn.as_ref().map(|turn| turn.turn_id.clone()))
+                .expect("queue drain claimed the turn")
+        };
+
+        // Id-guarded release: a stale id leaves the claim, the matching one clears it.
+        manager.release_claim(&thread.id, "turn_stale").await;
+        {
+            let active = manager.active.lock().await;
+            assert!(
+                active.engines[&thread.id].active_turn.is_some(),
+                "stale id leaves the claim"
+            );
+        }
+        manager.release_claim(&thread.id, &turn_id).await;
+        {
+            let active = manager.active.lock().await;
+            assert!(
+                active.engines[&thread.id].active_turn.is_none(),
+                "matching id releases"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn steer_turn_refuses_unloaded_threads_and_idle_turns() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+
+        let err = manager
+            .steer_turn(
+                "thr_missing",
+                "turn_x",
+                SteerTurnRequest {
+                    prompt: "redirect".to_string(),
+                    attachments: Vec::new(),
+                    rpc_id: None,
+                },
+            )
+            .await
+            .expect_err("no engine");
+        assert!(err.to_string().contains("not loaded"), "{err}");
+
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+        let err = manager
+            .steer_turn(
+                &thread.id,
+                "turn_x",
+                SteerTurnRequest {
+                    prompt: "redirect".to_string(),
+                    attachments: Vec::new(),
+                    rpc_id: None,
+                },
+            )
+            .await
+            .expect_err("no active turn");
+        assert!(err.to_string().contains("No active turn"), "{err}");
+
+        let err = manager
+            .steer_turn(
+                &thread.id,
+                "turn_x",
+                SteerTurnRequest {
+                    prompt: "   ".to_string(),
+                    attachments: Vec::new(),
+                    rpc_id: None,
+                },
+            )
+            .await
+            .expect_err("empty prompt");
+        assert!(err.to_string().contains("prompt is required"), "{err}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn goal_peek_and_goal_actions_drive_the_shared_state() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+
+        // Not loaded: viewing must not spawn an engine.
+        let parked = attachment_thread(&manager).await?;
+        assert_eq!(manager.goal_peek(&parked.id).await?, (false, None));
+
+        let (loaded, view) = manager.goal_peek(&thread.id).await?;
+        assert!(loaded);
+        assert_eq!(view, None, "a fresh engine has no goal");
+
+        let err = manager
+            .apply_goal_action(&thread.id, GoalAction::Pause)
+            .await
+            .expect_err("nothing to pause");
+        assert!(err.to_string().contains("no active goal"), "{err}");
+
+        let view = manager
+            .apply_goal_action(
+                &thread.id,
+                GoalAction::Edit {
+                    objective: "ship coverage".to_string(),
+                    token_budget: Some(4096),
+                },
+            )
+            .await?
+            .expect("edited goal renders a view");
+        assert_eq!(view["objective"], "ship coverage");
+        assert_eq!(view["token_budget"], 4096);
+
+        manager
+            .apply_goal_action(&thread.id, GoalAction::Pause)
+            .await?;
+        manager
+            .apply_goal_action(&thread.id, GoalAction::Resume)
+            .await?;
+        let cleared = manager
+            .apply_goal_action(&thread.id, GoalAction::Clear)
+            .await?;
+        assert!(cleared.is_none(), "cleared goal has no view");
+        assert_eq!(manager.goal_peek(&thread.id).await?, (true, None));
+
+        let err = manager
+            .apply_goal_action(
+                &thread.id,
+                GoalAction::Edit {
+                    objective: "   ".to_string(),
+                    token_budget: None,
+                },
+            )
+            .await
+            .expect_err("blank objective");
+        assert!(err.to_string().contains("cannot be empty"), "{err}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subagent_apis_collects_loaded_engines() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        assert!(manager.subagent_apis().await.is_empty());
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+        assert_eq!(manager.subagent_apis().await.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resume_with_agent_rebind_returns_hints_from_the_event_log() -> Result<()> {
+        let _home = ScratchHome::mount();
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = attachment_thread(&manager).await?;
+        manager
+            .store
+            .append_event(
+                &thread.id,
+                None,
+                None,
+                "agent.spawned",
+                json!({ "agent_id": "ag1" }),
+            )
+            .await?;
+        manager
+            .store
+            .append_event(
+                &thread.id,
+                None,
+                None,
+                "agent.progress",
+                json!({ "agent_id": "ag1" }),
+            )
+            .await?;
+        manager
+            .store
+            .append_event(
+                &thread.id,
+                None,
+                None,
+                "agent.completed",
+                json!({ "agent_id": "ag2" }),
+            )
+            .await?;
+        let _harness = install_mock_engine(&manager, &thread.id).await;
+
+        let (resumed, hints) = manager.resume_thread_with_agent_rebind(&thread.id).await?;
+        assert_eq!(resumed.id, thread.id);
+        assert_eq!(hints.len(), 2, "one hint per distinct agent_id");
+        assert_eq!(
+            hints
+                .iter()
+                .map(|hint| hint.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ag1", "ag2"]
+        );
+        Ok(())
     }
 }

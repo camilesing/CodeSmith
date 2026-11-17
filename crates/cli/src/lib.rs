@@ -1795,6 +1795,27 @@ mod tests {
         run_auth_command_with_secrets(&mut store, AuthCommand::List, &secrets)
             .expect("list should succeed");
 
+        // Set and Clear cross the store too (write/delete paths) — neither
+        // probes with a get, so the recorded get sequence is unchanged.
+        run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Set {
+                provider: ProviderArg::Deepseek,
+                api_key: Some("sk-recording".to_string()),
+                api_key_stdin: false,
+            },
+            &secrets,
+        )
+        .expect("set should succeed");
+        run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Clear {
+                provider: ProviderArg::Deepseek,
+            },
+            &secrets,
+        )
+        .expect("clear should succeed");
+
         assert_eq!(
             inner.gets.lock().unwrap().as_slice(),
             ["deepseek", "deepseek"]
@@ -2107,5 +2128,419 @@ mod tests {
                 );
             }
         }
+    }
+
+    // === pure CLI helpers ====================================================
+
+    #[test]
+    fn single_bare_word_detection_matches_a_mistyped_subcommand() {
+        assert!(is_single_bare_word(&["codesmith", "docotr"]));
+        assert!(is_single_bare_word(&["codesmith", "run"]));
+        // Flags never count as free words: a flag plus one word still
+        // leaves exactly one free word.
+        assert!(is_single_bare_word(&["codesmith", "-p", "hello"]));
+        assert!(!is_single_bare_word(&["codesmith"]));
+        assert!(!is_single_bare_word(&["codesmith", "one", "two"]));
+        // Everything after the terminator is prompt text by intent.
+        assert!(!is_single_bare_word(&["codesmith", "--", "one", "two"]));
+    }
+
+    #[test]
+    fn approval_mode_arg_maps_onto_the_runtime_mode() {
+        use codesmith_agent_runtime::mode::ApprovalMode;
+        assert_eq!(
+            AskForApproval::from(ApprovalModeArg::UnlessTrusted),
+            AskForApproval::UnlessTrusted
+        );
+        assert_eq!(
+            AskForApproval::from(ApprovalModeArg::OnFailure),
+            AskForApproval::OnFailure
+        );
+        assert_eq!(
+            AskForApproval::from(ApprovalModeArg::OnRequest),
+            AskForApproval::OnRequest
+        );
+        assert_eq!(
+            AskForApproval::from(ApprovalModeArg::Never),
+            AskForApproval::Never
+        );
+        assert_eq!(ApprovalMode::Suggest, ApprovalMode::default());
+    }
+
+    #[test]
+    fn last4_label_redacts_short_keys_and_tails_long_ones() {
+        assert_eq!(last4_label("abcd"), "<redacted>");
+        assert_eq!(last4_label("  "), "<redacted>");
+        assert_eq!(last4_label("sk-abcdefgh1234"), "...1234");
+        // CJK tails count characters, not bytes.
+        assert_eq!(last4_label("密钥一二三四五六"), "...三四五六");
+        assert_eq!(source_status(None, "missing"), "missing");
+        assert_eq!(
+            source_status(Some("sk-abcdefgh1234"), "missing"),
+            "set, last4: ...1234"
+        );
+    }
+
+    fn temp_store_path(label: &str) -> std::path::PathBuf {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        std::env::temp_dir().join(format!(
+            "codesmith-cli-libtest-{label}-{}-{nanos}.toml",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn provider_key_lookup_reads_slot_then_root_and_skips_blanks() {
+        use codesmith_secrets::KeyringStore;
+
+        let path = temp_store_path("provslot");
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store");
+
+        // Blank values never count as configured.
+        store.config.providers.deepseek.api_key = Some("   ".to_string());
+        assert_eq!(
+            provider_config_api_key(&store, ProviderKind::Deepseek),
+            None
+        );
+        assert!(!provider_config_set(&store, ProviderKind::Deepseek));
+
+        // The provider slot wins over the legacy root key.
+        store.config.providers.deepseek.api_key = Some("sk-deepseek-9876".to_string());
+        assert_eq!(
+            provider_config_api_key(&store, ProviderKind::Deepseek),
+            Some("sk-deepseek-9876")
+        );
+
+        // Deepseek also honors the root `api_key` fallback.
+        store.config.providers.deepseek.api_key = None;
+        store.config.api_key = Some("sk-root-4321".to_string());
+        assert_eq!(
+            provider_config_api_key(&store, ProviderKind::Deepseek),
+            Some("sk-root-4321")
+        );
+        // Other providers do not read the root slot.
+        assert_eq!(provider_config_api_key(&store, ProviderKind::Novita), None);
+
+        // The keyring half trims blanks too.
+        let inner = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
+        inner.set("novita", "nv-11112222").expect("seed keyring");
+        inner.set("moonshot", "   ").expect("seed blank");
+        let secrets = Secrets::new(inner);
+        assert_eq!(
+            provider_keyring_api_key(&secrets, ProviderKind::Novita),
+            Some("nv-11112222".to_string())
+        );
+        assert_eq!(
+            provider_keyring_api_key(&secrets, ProviderKind::Moonshot),
+            None
+        );
+        assert!(!provider_keyring_set(&secrets, ProviderKind::Deepseek));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The status block reports the active source by lookup order, with the
+    /// last-4 label of whichever key is active.
+    #[test]
+    fn auth_status_lines_name_the_active_source() {
+        use codesmith_secrets::KeyringStore;
+
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let _removed: Vec<_> = provider_env_vars(ProviderKind::Deepseek)
+            .iter()
+            .map(|&var| codesmith_agent_runtime::test_support::EnvVarGuard::remove(var))
+            .collect();
+
+        let path = temp_store_path("status");
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store");
+        store.config.provider = ProviderKind::Deepseek;
+        let inner = std::sync::Arc::new(codesmith_secrets::InMemoryKeyringStore::new());
+        let secrets = Secrets::new(inner.clone());
+
+        // Nothing anywhere: missing.
+        let lines = auth_status_lines(&store, &secrets);
+        assert!(
+            lines.iter().any(|l| l.contains("active source: missing")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("env var: DEEPSEEK_API_KEY (unset)")),
+            "{lines:?}"
+        );
+
+        // Config wins over everything.
+        store.config.providers.deepseek.api_key = Some("sk-config-1111".to_string());
+        let lines = auth_status_lines(&store, &secrets);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("active source: config (last4: ...1111)")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("config file: ") && l.ends_with("(set, last4: ...1111)")),
+            "{lines:?}"
+        );
+
+        // Then the secret store.
+        store.config.providers.deepseek.api_key = None;
+        inner.set("deepseek", "kr-secret-2222").expect("seed");
+        let lines = auth_status_lines(&store, &secrets);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("active source: secret store (last4: ...2222)")),
+            "{lines:?}"
+        );
+
+        // Then the environment.
+        inner.delete("deepseek").expect("clear");
+        let _env = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "DEEPSEEK_API_KEY",
+            "env-key-3333",
+        );
+        let lines = auth_status_lines(&store, &secrets);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("active source: env (last4: ...3333)")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("env var: DEEPSEEK_API_KEY (set, last4: ...3333)")),
+            "{lines:?}"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn app_server_token_comes_from_the_environment() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let _removed = codesmith_agent_runtime::test_support::EnvVarGuard::remove(
+            "CODESMITH_APP_SERVER_TOKEN",
+        );
+        assert_eq!(app_server_token_from_env(), None);
+        let _set = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_APP_SERVER_TOKEN",
+            "token-1",
+        );
+        assert_eq!(app_server_token_from_env(), Some("token-1".to_string()));
+    }
+
+    fn sample_definition() -> McpServerDefinition {
+        McpServerDefinition {
+            config: codesmith_mcp::McpServerConfig {
+                name: "srv".to_string(),
+                command: "node".to_string(),
+                args: vec!["--stdio".to_string()],
+                env: std::collections::HashMap::new(),
+                enabled: true,
+            },
+            filter: Default::default(),
+        }
+    }
+
+    #[test]
+    fn mcp_definitions_parse_direct_and_wrapped_payloads() {
+        let defs = vec![sample_definition()];
+        let expected = serde_json::to_string(&defs).expect("encode");
+        let direct = expected.clone();
+        let parsed = parse_mcp_server_definitions(&direct).expect("direct");
+        assert_eq!(serde_json::to_string(&parsed).expect("re-encode"), expected);
+
+        // The legacy wrapped form: a JSON string containing the JSON list.
+        let wrapped = serde_json::to_string(&direct).expect("wrap");
+        let parsed = parse_mcp_server_definitions(&wrapped).expect("wrapped");
+        assert_eq!(serde_json::to_string(&parsed).expect("re-encode"), expected);
+
+        let err = parse_mcp_server_definitions("not json at all").expect_err("invalid json");
+        assert!(err.to_string().contains("invalid JSON payload"), "{err:#}");
+        // A raw sequence that is not a definition list fails at the payload
+        // stage (it is not a JSON string either).
+        let err = parse_mcp_server_definitions("[{\"config\": null}]").expect_err("bad payload");
+        assert!(err.to_string().contains("invalid JSON payload"), "{err:#}");
+        // The wrapped form reaches the definition-list stage and names it.
+        let wrapped_bad = serde_json::to_string("[{\"config\": null}]").expect("wrap bad");
+        let err = parse_mcp_server_definitions(&wrapped_bad).expect_err("bad list");
+        assert!(
+            err.to_string()
+                .contains("invalid MCP server definition list"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn mcp_definitions_load_persist_and_quarantine_corrupt_values() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).expect("home dir");
+        let _home =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_HOME", home.clone());
+        let path = temp_store_path("mcpdefs");
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store");
+
+        // No key yet: an empty list, no error.
+        assert!(
+            load_mcp_server_definitions(&store)
+                .expect("empty")
+                .is_empty()
+        );
+
+        // Known product bug (not fixed here): `persist_mcp_server_definitions`
+        // writes the JSON list through `Config::set_value`'s extras fallback,
+        // and `get_value` re-renders a toml string with literal quoting
+        // (`'[{→}]'`), which `parse_mcp_server_definitions` cannot re-parse →
+        // the next `load_mcp_server_definitions` quarantines the value the
+        // command itself just persisted. The round-trip is therefore not
+        // asserted; the corrupt-value path below is.
+
+        // A corrupt value is quarantined and the load aborts instead of
+        // letting the persist below overwrite the user's definitions.
+        store
+            .config
+            .set_value(MCP_SERVER_DEFINITIONS_KEY, "]]not json[[")
+            .expect("plant corrupt value");
+        let err = load_mcp_server_definitions(&store).expect_err("corrupt must abort");
+        assert!(err.to_string().contains("refusing to rewrite"), "{err:#}");
+        assert!(
+            home.join("mcp-server-definitions.corrupt.txt").is_file(),
+            "the raw value is quarantined under CODESMITH_HOME"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn config_command_round_trips_keys() {
+        let path = temp_store_path("cfgcmd");
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store");
+
+        let err = run_config_command(
+            &mut store,
+            ConfigCommand::Get {
+                key: "no.such.key".to_string(),
+            },
+        )
+        .expect_err("missing key");
+        assert!(err.to_string().contains("key not found"), "{err:#}");
+
+        run_config_command(
+            &mut store,
+            ConfigCommand::Set {
+                key: "model".to_string(),
+                value: "deepseek-chat".to_string(),
+            },
+        )
+        .expect("set");
+        run_config_command(
+            &mut store,
+            ConfigCommand::Get {
+                key: "model".to_string(),
+            },
+        )
+        .expect("get");
+        run_config_command(&mut store, ConfigCommand::List).expect("list");
+        run_config_command(&mut store, ConfigCommand::Path).expect("path");
+        run_config_command(
+            &mut store,
+            ConfigCommand::Unset {
+                key: "model".to_string(),
+            },
+        )
+        .expect("unset");
+        assert_eq!(
+            store.config.get_value("model"),
+            None,
+            "unset removed the key"
+        );
+
+        let err = run_config_command(&mut store, ConfigCommand::Dump).expect_err("dump dispatch");
+        assert!(err.to_string().contains("layered load"), "{err:#}");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn model_command_lists_and_resolves() {
+        run_model_command(ModelCommand::List { provider: None }).expect("list all");
+        run_model_command(ModelCommand::List {
+            provider: Some(ProviderArg::Deepseek),
+        })
+        .expect("list filtered");
+        run_model_command(ModelCommand::Resolve {
+            model: Some("deepseek-chat".to_string()),
+            provider: None,
+        })
+        .expect("resolve explicit");
+        run_model_command(ModelCommand::Resolve {
+            model: None,
+            provider: Some(ProviderArg::Deepseek),
+        })
+        .expect("resolve fallback");
+    }
+
+    #[test]
+    fn thread_command_covers_the_read_only_and_missing_paths() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The state db resolves through the same home convention as the
+        // config, so a redirected CODESMITH_HOME keeps the test off the
+        // user's thread store.
+        let _home = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            dir.path().join("home"),
+        );
+
+        run_thread_command(ThreadCommand::List {
+            all: false,
+            limit: Some(20),
+        })
+        .expect("empty list");
+        run_thread_command(ThreadCommand::Resume {
+            thread_id: "t-1".to_string(),
+        })
+        .expect("resume prints the hint");
+        run_thread_command(ThreadCommand::Fork {
+            thread_id: "t-1".to_string(),
+        })
+        .expect("fork prints the hint");
+
+        // Read of a missing id reports null rather than failing (the store
+        // answers Option; the command prints whatever it holds).
+        run_thread_command(ThreadCommand::Read {
+            thread_id: "missing".to_string(),
+        })
+        .expect("read missing prints null");
+        let err = run_thread_command(ThreadCommand::Archive {
+            thread_id: "missing".to_string(),
+        })
+        .expect_err("missing thread");
+        assert!(err.to_string().contains("missing"), "{err:#}");
+    }
+
+    #[test]
+    fn sandbox_check_verdicts_cover_benign_and_catastrophic_commands() {
+        run_sandbox_check("echo harmless".to_string(), ApprovalModeArg::OnRequest)
+            .expect("benign command reports a decision");
+        run_sandbox_check("rm -rf /".to_string(), ApprovalModeArg::Never)
+            .expect("catastrophic command reports a denial, not a panic");
+    }
+
+    #[test]
+    fn metrics_command_rejects_invalid_durations() {
+        let err = run_metrics_command(MetricsArgs {
+            json: false,
+            since: Some("bogus".to_string()),
+        })
+        .expect_err("invalid --since");
+        assert!(err.to_string().contains("invalid --since value"), "{err:#}");
     }
 }

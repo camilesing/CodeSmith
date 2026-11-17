@@ -525,3 +525,232 @@ fn truncate_for_display(text: &str, max_chars: usize) -> String {
     let truncated: String = text.chars().take(max_chars).collect();
     format!("{truncated}…")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_state::SessionState;
+    use crate::models::{ContentBlock, Message};
+
+    fn test_repl_state() -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn assistant_message(text: &str) -> Message {
+        Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn readouts_print_across_telemetry_states() {
+        // Empty session and a populated one both render without panicking;
+        // the values feed terminal output, not assertions.
+        let mut state = test_repl_state();
+        tokens(&state);
+        usage(&state);
+        cost(&state);
+        tools(&state);
+        system_prompt(&state);
+        context(&state, None);
+        context(&state, Some("all"));
+        edit(&state);
+        cache(&state, None);
+
+        state.session = SessionState {
+            last_prompt_tokens: Some(120),
+            last_completion_tokens: Some(30),
+            total_tokens: 900,
+            total_cache_hit_tokens: 400,
+            total_cache_miss_tokens: 500,
+            session_cost: 0.5,
+            session_cost_cny: 3.5,
+            subagent_cost: 0.25,
+            subagent_cost_cny: 1.75,
+            ..SessionState::default()
+        };
+        state.system_prompt = Some(crate::models::SystemPrompt::Text("be helpful".to_string()));
+        state.api_messages = Arc::new(vec![user_message("hello"), assistant_message("hi")]);
+        tokens(&state);
+        usage(&state);
+        context(&state, Some("all"));
+        edit(&state);
+    }
+
+    #[test]
+    fn system_prompt_handles_blocks_and_truncation() {
+        let mut state = test_repl_state();
+        state.system_prompt = Some(crate::models::SystemPrompt::Blocks(vec![
+            crate::models::SystemBlock {
+                block_type: "text".to_string(),
+                text: "block one".to_string(),
+                cache_control: None,
+            },
+            crate::models::SystemBlock {
+                block_type: "text".to_string(),
+                text: "block two".to_string(),
+                cache_control: None,
+            },
+        ]));
+        system_prompt(&state);
+
+        let long = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state.system_prompt = Some(crate::models::SystemPrompt::Text(long));
+        system_prompt(&state);
+    }
+
+    #[test]
+    fn cache_table_rejects_non_numeric_arg_and_prints_history() {
+        let mut state = test_repl_state();
+        state.session.turn_cache_history = std::collections::VecDeque::from(vec![
+            crate::app_state::TurnCacheRecord {
+                model: "test-model".to_string(),
+                input_tokens: 100,
+                output_tokens: 20,
+                cache_hit_tokens: Some(80),
+                cache_miss_tokens: Some(20),
+            },
+            crate::app_state::TurnCacheRecord {
+                model: "unknown-pricing-model".to_string(),
+                input_tokens: 50,
+                output_tokens: 5,
+                cache_hit_tokens: None,
+                cache_miss_tokens: None,
+            },
+        ]);
+        cache(&state, Some("not-a-number"));
+        cache(&state, Some("1"));
+        cache(&state, None);
+    }
+
+    #[test]
+    fn diff_reports_failure_outside_a_git_repository() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = test_repl_state();
+        state.workspace = tmp.path().to_path_buf();
+        // A plain tempdir is not a git worktree: both git invocations exit
+        // non-zero and the handler must say so instead of "no changes".
+        diff(&state);
+    }
+
+    #[test]
+    fn diff_reports_clean_tree_inside_an_empty_repository() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let git_ok = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(tmp.path())
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if !git_ok {
+            return; // git unavailable in this environment
+        }
+        let mut state = test_repl_state();
+        state.workspace = tmp.path().to_path_buf();
+        diff(&state);
+    }
+
+    #[test]
+    fn edit_prints_last_user_message_only_when_nonempty() {
+        let mut state = test_repl_state();
+        state.api_messages = Arc::new(vec![
+            user_message("first question"),
+            assistant_message("answer"),
+            user_message("   "),
+        ]);
+        edit(&state); // last user turn is blank → "no previous message"
+        state.api_messages = Arc::new(vec![user_message("real question")]);
+        edit(&state);
+    }
+
+    #[tokio::test]
+    async fn undo_without_user_turn_reports_nothing_to_undo() {
+        let mut state = test_repl_state();
+        state.api_messages = Arc::new(vec![assistant_message("only assistant")]);
+        undo(&mut state).await;
+        assert_eq!(
+            state.api_messages.len(),
+            1,
+            "a history with no user turn must not be drained"
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_drops_last_exchange_locally_when_engine_is_unavailable() {
+        let mut state = test_repl_state();
+        state.api_messages = Arc::new(vec![
+            user_message("question one"),
+            assistant_message("answer one"),
+            user_message("question two"),
+            assistant_message("answer two"),
+        ]);
+        undo(&mut state).await;
+        assert_eq!(
+            state.api_messages.len(),
+            2,
+            "the last exchange (user + assistant) is removed"
+        );
+        assert_eq!(state.api_messages[0].role, "user");
+    }
+
+    #[tokio::test]
+    async fn undo_on_empty_history_is_a_noop() {
+        let mut state = test_repl_state();
+        undo(&mut state).await;
+        assert!(state.api_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retry_without_previous_request_reports_and_keeps_history() {
+        let mut state = test_repl_state();
+        retry(&mut state).await;
+        assert!(state.api_messages.is_empty());
+
+        state.api_messages = Arc::new(vec![user_message("   ")]);
+        retry(&mut state).await; // whitespace-only user turn → nothing to retry
+        assert_eq!(state.api_messages.len(), 1);
+    }
+
+    #[test]
+    fn truncate_for_display_cuts_long_text_with_ellipsis() {
+        assert_eq!(truncate_for_display("short", 10), "short");
+        let long = "x".repeat(60);
+        let truncated = truncate_for_display(&long, 50);
+        assert_eq!(truncated.chars().count(), 51);
+        assert!(truncated.ends_with('…'));
+    }
+}

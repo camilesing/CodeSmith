@@ -2336,4 +2336,577 @@ mod tests {
             "a turn that started before the prompt is not the prompt's turn"
         );
     }
+
+    // === protocol encode/decode and pure mapping ============================
+
+    /// The negotiated version is the client's capped at ours; a client that
+    /// omits the field hears our version.
+    #[test]
+    fn initialize_version_is_capped_at_the_server_version() {
+        assert_eq!(initialize_result(None)["protocolVersion"], json!(1));
+        assert_eq!(initialize_result(Some(5))["protocolVersion"], json!(1));
+        assert_eq!(initialize_result(Some(1))["protocolVersion"], json!(1));
+    }
+
+    #[test]
+    fn extract_prompt_text_accepts_string_and_rejects_empty_block_lists() {
+        assert_eq!(
+            extract_prompt_text(Some(&json!("plain text"))),
+            Some("plain text".to_string())
+        );
+        // Blocks that carry no text produce no prompt text at all.
+        assert_eq!(
+            extract_prompt_text(Some(&json!([{ "type": "image", "data": "…" }]))),
+            None
+        );
+        assert_eq!(extract_prompt_text(None), None);
+        assert_eq!(extract_prompt_text(Some(&json!(42))), None);
+    }
+
+    #[test]
+    fn content_blocks_read_both_resource_link_spellings() {
+        // The v1 camelCase alias must resolve like the snake_case form.
+        let camel = json!([{ "type": "resourceLink", "uri": "file:///tmp/a.rs" }]);
+        assert_eq!(
+            extract_prompt_text(Some(&camel)),
+            Some("@file:///tmp/a.rs".to_string())
+        );
+        // A resource with no text falls back to its uri as a link.
+        let bare = json!([{ "type": "resource", "resource": { "uri": "file:///tmp/b.rs" } }]);
+        assert_eq!(
+            extract_prompt_text(Some(&bare)),
+            Some("@file:///tmp/b.rs".to_string())
+        );
+        // A resource's own uri is found through the `/resource/uri`
+        // pointer shape when it carries no text of its own.
+        let nested = json!([{ "type": "resource", "resource": { "uri": "file:///c.rs" } }]);
+        assert_eq!(
+            extract_prompt_text(Some(&nested)),
+            Some("@file:///c.rs".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn jsonrpc_response_ids_keep_strings_and_stringify_the_rest() {
+        let mut out = Vec::new();
+        write_jsonrpc_result(&mut out, json!("zed-1"), json!(null))
+            .await
+            .expect("write");
+        let line = String::from_utf8(out).expect("utf8");
+        let value: Value = serde_json::from_str(line.trim()).expect("json");
+        assert_eq!(value["id"], "zed-1", "string ids stay strings");
+
+        let mut out = Vec::new();
+        write_jsonrpc_error(&mut out, Some(json!(true)), -1, "x")
+            .await
+            .expect("write");
+        let line = String::from_utf8(out).expect("utf8");
+        let value: Value = serde_json::from_str(line.trim()).expect("json");
+        assert_eq!(value["id"], "true", "non-string ids are stringified");
+    }
+
+    /// The prompt is answered per outcome: success and interruption map to
+    /// ACP stop reasons, a failure to a JSON-RPC error carrying the cause.
+    #[tokio::test]
+    async fn answer_completed_prompt_maps_every_outcome() {
+        // No id (a notification-shaped prompt): nothing is written.
+        answer_completed_prompt(
+            &mut Vec::new(),
+            None,
+            &PromptOutcome {
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tokens: 0,
+            },
+        )
+        .await
+        .expect("no id, no reply");
+
+        for (status, stop_reason) in [
+            (TurnOutcomeStatus::Completed, "end_turn"),
+            (TurnOutcomeStatus::Interrupted, "cancelled"),
+        ] {
+            let mut out = Vec::new();
+            answer_completed_prompt(
+                &mut out,
+                Some(json!(9)),
+                &PromptOutcome {
+                    status,
+                    error: None,
+                    tokens: 7,
+                },
+            )
+            .await
+            .expect("write");
+            let value: Value =
+                serde_json::from_str(String::from_utf8(out).expect("utf8").trim()).expect("json");
+            assert_eq!(value["id"], "9");
+            assert_eq!(value["result"]["stopReason"], stop_reason);
+        }
+
+        let mut out = Vec::new();
+        answer_completed_prompt(
+            &mut out,
+            Some(json!(10)),
+            &PromptOutcome {
+                status: TurnOutcomeStatus::Failed,
+                error: Some("rate limited".to_string()),
+                tokens: 0,
+            },
+        )
+        .await
+        .expect("write");
+        let value: Value =
+            serde_json::from_str(String::from_utf8(out).expect("utf8").trim()).expect("json");
+        assert_eq!(value["error"]["code"], -32603);
+        assert_eq!(value["error"]["message"], "rate limited");
+    }
+
+    #[tokio::test]
+    async fn prompt_requests_validate_session_id_and_prompt_text() {
+        let (_tmp, store) = temp_store();
+        let mut server = server_over(store);
+        let writer = sink();
+
+        let missing_id = server
+            .handle_request(
+                "session/prompt",
+                json!({ "prompt": "hi" }),
+                Some(json!(1)),
+                writer.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(missing_id.code, -32602);
+        assert!(
+            missing_id.message.contains("sessionId"),
+            "{}",
+            missing_id.message
+        );
+
+        let unknown = server
+            .handle_request(
+                "session/prompt",
+                json!({ "sessionId": "ghost", "prompt": "hi" }),
+                Some(json!(2)),
+                writer.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            unknown.message.contains("unknown sessionId"),
+            "{}",
+            unknown.message
+        );
+
+        let blank = server
+            .handle_request(
+                "session/prompt",
+                json!({ "sessionId": "ghost", "prompt": "   " }),
+                Some(json!(3)),
+                writer,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            blank.message.contains("text content"),
+            "a whitespace-only prompt is empty: {}",
+            blank.message
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_methods_and_missing_close_ids_are_protocol_errors() {
+        let (_tmp, store) = temp_store();
+        let mut server = server_over(store);
+        let writer = sink();
+
+        let unknown = server
+            .handle_request("session/nothing", json!({}), Some(json!(1)), writer.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(unknown.code, -32601);
+        assert!(unknown.message.contains("session/nothing"));
+
+        let missing = server
+            .handle_request("session/close", json!({}), Some(json!(2)), writer)
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code, -32602);
+        assert!(missing.message.contains("sessionId is required"));
+    }
+
+    /// `session/cancel` reaches the live engine's cancel path; the saved
+    /// record and the session entry are untouched.
+    #[tokio::test]
+    async fn cancel_session_cancels_the_live_engine_only() {
+        let (tmp, store) = temp_store();
+        let mut server = server_over(store);
+        let cwd = tmp.path().join("proj");
+        open_session(&mut server, "acp-cancel", &cwd);
+        let mock = crate::core::engine::mock_engine_handle();
+        {
+            let mut sessions = lock_sessions(&server.shared.sessions);
+            sessions.get_mut("acp-cancel").expect("session").engine = Some(mock.handle.clone());
+        }
+
+        server.cancel_session("acp-cancel");
+
+        assert!(
+            mock.cancel_token.is_cancelled(),
+            "the engine's shared cancel token must fire"
+        );
+        assert!(
+            lock_sessions(&server.shared.sessions).contains_key("acp-cancel"),
+            "cancel is not close — the session stays live"
+        );
+    }
+
+    /// A prompt against a session that is not live fails loud (and frees its
+    /// slot) instead of hanging on the completion channel.
+    #[tokio::test]
+    async fn run_turn_fails_loud_on_an_unknown_session() {
+        let (_tmp, store) = temp_store();
+        let shared = AcpShared::default();
+        let (_tx, rx) = oneshot::channel::<PromptOutcome>();
+        let request = TurnRequest {
+            config: Config::default(),
+            settings: Settings::default(),
+            model: "test-model".to_string(),
+            store,
+            session_id: "ghost".to_string(),
+            prompt: "hello".to_string(),
+            generation: 1,
+        };
+
+        let err = match run_turn(request, rx, &shared, sink()).await {
+            Err(err) => err,
+            Ok(_) => panic!("a prompt against an unknown session must fail loud"),
+        };
+        assert!(
+            err.to_string().contains("unknown sessionId"),
+            "got: {err:#}"
+        );
+    }
+
+    /// A writer that refuses every write, standing in for a closed pipe.
+    struct FailingWriter;
+
+    impl tokio::io::AsyncWrite for FailingWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> std::task::Poll<std::result::Result<usize, std::io::Error>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("pipe closed")))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("pipe closed")))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Once stdout is gone the pump must say so and drop the pending prompt's
+    /// slot (the waiter resolves as Interrupted instead of hanging).
+    #[tokio::test]
+    async fn pump_emit_reports_dead_writers_and_frees_the_prompt_slot() {
+        let (tmp, _store) = temp_store();
+        let mut server = server_over(FileSessionStore::new(tmp.path().join("s")).unwrap());
+        open_session(&mut server, "acp-dead", tmp.path());
+        let shared = server.shared.clone();
+        let (slot_tx, _slot_rx) = oneshot::channel::<PromptOutcome>();
+        lock_sessions(&shared.sessions)
+            .get_mut("acp-dead")
+            .expect("session")
+            .pending_prompt = Some(slot_tx);
+
+        let writer: SharedWriter<FailingWriter> = Arc::new(tokio::sync::Mutex::new(FailingWriter));
+        let ok = pump_emit(
+            &writer,
+            &shared,
+            "acp-dead",
+            chunk_update("agent_message_chunk", "x".into()),
+        )
+        .await;
+        assert!(!ok, "a failed write must report failure");
+        assert!(
+            lock_sessions(&shared.sessions)["acp-dead"]
+                .pending_prompt
+                .is_none(),
+            "the pending prompt is released, not parked forever"
+        );
+
+        // A healthy writer reports success.
+        let healthy: SharedWriter<Vec<u8>> = sink();
+        assert!(
+            pump_emit(
+                &healthy,
+                &shared,
+                "acp-dead",
+                chunk_update("agent_message_chunk", "x".into())
+            )
+            .await
+        );
+    }
+
+    /// Tool calls stream as `tool_call` / `tool_call_update` chunks and both
+    /// outcomes (ok, failed) reach the completion status.
+    #[tokio::test]
+    async fn pump_streams_tool_call_lifecycle_updates() {
+        let outcome = pump_scenario(vec![
+            Event::ToolCallStarted {
+                id: "c1".to_string(),
+                name: "read_file".to_string(),
+                input: json!({ "path": "a.rs" }),
+            },
+            Event::ToolCallProgress {
+                id: "c1".to_string(),
+                output: "halfway".to_string(),
+            },
+            Event::ToolCallComplete {
+                id: "c1".to_string(),
+                name: "read_file".to_string(),
+                result: Ok(codesmith_tools::ToolResult::success("body")),
+            },
+            Event::ToolCallComplete {
+                id: "c2".to_string(),
+                name: "exec_shell".to_string(),
+                result: Err(codesmith_tools::ToolError::execution_failed(
+                    "exit 1".to_string(),
+                )),
+            },
+            Event::TurnStarted {
+                turn_id: "t".to_string(),
+                synthesized: false,
+            },
+            completed_turn(),
+        ])
+        .await;
+        assert_eq!(
+            outcome.expect("the turn completes the prompt").status,
+            TurnOutcomeStatus::Completed
+        );
+    }
+
+    /// Path access, sandbox elevation, and ask-user gates have no protocol
+    /// channel: the pump must refuse them (fail closed), never wave them
+    /// through on a stuck writer.
+    #[tokio::test]
+    async fn pump_refuses_gates_that_have_no_protocol_channel() {
+        let (tmp, _store) = temp_store();
+        let mut server = server_over(FileSessionStore::new(tmp.path().join("s")).unwrap());
+        open_session(&mut server, "acp-gates", tmp.path());
+        let mock = crate::core::engine::mock_engine_handle();
+        {
+            let mut sessions = lock_sessions(&server.shared.sessions);
+            sessions.get_mut("acp-gates").expect("session").engine = Some(mock.handle.clone());
+        }
+        let shared = server.shared.clone();
+
+        let pump = tokio::spawn(pump_events(
+            mock.handle.clone(),
+            shared.clone(),
+            "acp-gates".to_string(),
+            sink(),
+        ));
+        mock.tx_event
+            .send(Event::PathAccessRequired {
+                id: "p1".to_string(),
+                tool_name: "read_file".to_string(),
+                path: PathBuf::from("/etc/hosts"),
+            })
+            .await
+            .expect("event");
+        mock.tx_event
+            .send(Event::ElevationRequired {
+                tool_id: "e1".to_string(),
+                tool_name: "exec_shell".to_string(),
+                command: Some("rm -rf /".to_string()),
+                denial_reason: "sandbox denied write".to_string(),
+                blocked_network: false,
+                blocked_write: true,
+            })
+            .await
+            .expect("event");
+        mock.tx_event
+            .send(Event::UserInputRequired {
+                id: "u1".to_string(),
+                request: codesmith_agent_runtime::user_input::UserInputRequest {
+                    questions: vec![codesmith_agent_runtime::user_input::UserInputQuestion {
+                        header: "pick".to_string(),
+                        id: "q1".to_string(),
+                        question: "which?".to_string(),
+                        options: Vec::new(),
+                    }],
+                },
+            })
+            .await
+            .expect("event");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        pump.abort();
+
+        // Both tool gates were denied through the engine's approval channel.
+        let mut mock = mock;
+        let mut denials = 0;
+        while let Ok(Some(event)) = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            mock.recv_approval_event(),
+        )
+        .await
+        {
+            if matches!(event, crate::core::engine::MockApprovalEvent::Denied { .. }) {
+                denials += 1;
+            }
+        }
+        assert_eq!(denials, 2, "path access and elevation must both be denied");
+    }
+
+    /// A session "always" grant answers the approval without asking the
+    /// client again.
+    #[tokio::test]
+    async fn a_session_always_grant_answers_the_gate_without_asking() {
+        let (tmp, _store) = temp_store();
+        let mut server = server_over(FileSessionStore::new(tmp.path().join("s")).unwrap());
+        open_session(&mut server, "acp-always", tmp.path());
+        let mut mock = crate::core::engine::mock_engine_handle();
+        {
+            let mut sessions = lock_sessions(&server.shared.sessions);
+            let session = sessions.get_mut("acp-always").expect("session");
+            session.engine = Some(mock.handle.clone());
+            session
+                .approved_keys
+                .insert("shell:cargo build".to_string());
+        }
+        let shared = server.shared.clone();
+
+        let pump = tokio::spawn(pump_events(
+            mock.handle.clone(),
+            shared,
+            "acp-always".to_string(),
+            sink(),
+        ));
+        mock.tx_event
+            .send(Event::ApprovalRequired {
+                id: "a1".to_string(),
+                tool_name: "exec_shell".to_string(),
+                description: "Run a shell command.".to_string(),
+                input: json!({ "command": "cargo build" }),
+                approval_key: "shell:exec_shell:deadbeef".to_string(),
+                approval_grouping_key: "shell:cargo build".to_string(),
+                intent_summary: None,
+            })
+            .await
+            .expect("event");
+        let approved = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            mock.recv_approval_event(),
+        )
+        .await
+        .expect("the gate must be answered promptly")
+        .expect("an approval decision arrived");
+        pump.abort();
+        assert!(matches!(
+            approved,
+            crate::core::engine::MockApprovalEvent::Approved { .. }
+        ));
+    }
+
+    fn session_entry() -> AcpSession {
+        AcpSession {
+            created_at: Instant::now(),
+            generation: 0,
+            workspace: PathBuf::from("/tmp/w"),
+            history: Arc::new(Vec::new()),
+            system_prompt: None,
+            engine: None,
+            pump_task: None,
+            pending_prompt: None,
+            prompt_turn_live: false,
+            prompt_generation: 0,
+            approved_keys: HashSet::new(),
+        }
+    }
+
+    /// Beyond `MAX_ACP_SESSIONS` the oldest tracked session is evicted
+    /// (engine shut down, pump aborted) before a new one is inserted.
+    #[tokio::test]
+    async fn evict_oldest_if_full_releases_the_oldest_session() {
+        let mut sessions = HashMap::new();
+        for index in 0..MAX_ACP_SESSIONS {
+            sessions.insert(format!("s{index}"), session_entry());
+        }
+        // The oldest entry is identifiable by its creation stamp.
+        sessions.insert(
+            "oldest".to_string(),
+            AcpSession {
+                created_at: Instant::now() - std::time::Duration::from_secs(600),
+                ..session_entry()
+            },
+        );
+
+        evict_oldest_if_full(&mut sessions);
+        assert_eq!(sessions.len(), MAX_ACP_SESSIONS);
+        assert!(!sessions.contains_key("oldest"), "the oldest entry goes");
+
+        // Below the cap nothing is evicted.
+        let mut small = HashMap::new();
+        small.insert("only".to_string(), session_entry());
+        evict_oldest_if_full(&mut small);
+        assert_eq!(small.len(), 1);
+    }
+
+    /// Releasing a session aborts its pump and shuts its engine down through
+    /// the op channel (detached — the caller does not wait).
+    #[tokio::test]
+    async fn release_shuts_the_engine_down_and_aborts_the_pump() {
+        let mut mock = crate::core::engine::mock_engine_handle();
+        let pump = tokio::spawn(async {});
+        let session = AcpSession {
+            pump_task: Some(pump.abort_handle()),
+            engine: Some(mock.handle.clone()),
+            ..session_entry()
+        };
+
+        release(session);
+
+        let shutdown = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            loop {
+                if let Ok(op) = mock.rx_op.try_recv() {
+                    return op;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the engine must receive a shutdown op");
+        assert!(matches!(shutdown, Op::Shutdown));
+    }
+
+    /// A store whose sessions directory is unusable surfaces as an internal
+    /// error, not an empty list (a missing listing reads as "no sessions").
+    #[tokio::test]
+    async fn list_sessions_maps_a_broken_store_to_an_internal_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let store = FileSessionStore::new(sessions_dir.clone()).expect("store");
+        // Replace the directory with a plain file: every read of the store's
+        // listing now fails.
+        std::fs::remove_dir_all(&sessions_dir).expect("remove dir");
+        std::fs::write(&sessions_dir, "not a directory").expect("plant file");
+
+        let mut server = server_over(store);
+        let err = server
+            .handle_request("session/list", json!({}), Some(json!(1)), sink())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32603, "an unreadable store is internal: {err:?}");
+    }
 }

@@ -2012,4 +2012,47 @@ mod tests {
             other => panic!("expected Failed, got {other:?}"),
         }
     }
+
+    #[test]
+    fn default_cache_skills_dir_follows_home() {
+        let _env = crate::test_support::lock_test_env();
+        let home = tempfile::TempDir::new().unwrap();
+        let _guard = crate::test_support::EnvVarGuard::set("HOME", home.path());
+        assert_eq!(
+            default_cache_skills_dir(),
+            home.path().join(".codesmith").join("cache").join("skills")
+        );
+    }
+
+    #[test]
+    fn uninstall_and_trust_round_trip_through_marker_gates() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("skills");
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        std::fs::write(
+            dir.join("demo").join("SKILL.md"),
+            "---\nname: demo\ndescription: d\n---\nbody",
+        )
+        .unwrap();
+
+        // Not installed by us: both operations refuse via the marker gate.
+        let err = uninstall("demo", &dir).unwrap_err();
+        assert!(err.to_string().contains("installed-from"), "{err:#}");
+        let err = trust("demo", &dir).unwrap_err();
+        assert!(err.to_string().contains("installed-from"), "{err:#}");
+
+        // Missing entirely: a different refusal.
+        let err = uninstall("ghost", &dir).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err:#}");
+        let err = trust("ghost", &dir).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "{err:#}");
+
+        // With the marker: trust writes the marker, uninstall removes the dir.
+        std::fs::write(dir.join("demo").join(INSTALLED_FROM_MARKER), "registry").unwrap();
+        trust("demo", &dir).unwrap();
+        assert!(dir.join("demo").join(TRUSTED_MARKER).is_file());
+        trust("demo", &dir).unwrap(); // idempotent
+        uninstall("demo", &dir).unwrap();
+        assert!(!dir.join("demo").exists());
+    }
 }

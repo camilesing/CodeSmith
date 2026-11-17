@@ -1408,4 +1408,37 @@ mod prebuilt_source_tests {
             format!("dylib.{}", std::env::consts::DLL_EXTENSION)
         );
     }
+
+    #[test]
+    fn local_path_source_fetch_reports_canonical_provenance() {
+        let src = tempfile::tempdir().expect("tempdir");
+        std::fs::write(src.path().join("lib.rs"), "// ext").expect("write");
+        std::fs::create_dir(src.path().join("nested")).expect("mkdir");
+        std::fs::write(src.path().join("nested").join("dep.rs"), "// dep").expect("write");
+
+        let source = LocalPathSource::new(src.path().to_path_buf());
+        let dest = tempfile::tempdir().expect("tempdir");
+        let artifact = source.fetch(dest.path()).expect("local fetch");
+        assert!(artifact.provenance.starts_with("path:"), "{artifact:?}");
+        // copy_dir_recursive ran during the fetch chain of the installer;
+        // exercise it directly for the recursive case.
+        let copied = tempfile::tempdir().expect("tempdir");
+        copy_dir_recursive(src.path(), &copied.path().join("tree")).expect("recursive copy");
+        assert!(
+            copied
+                .path()
+                .join("tree")
+                .join("nested")
+                .join("dep.rs")
+                .is_file()
+        );
+        // Copying from a missing source fails loudly.
+        assert!(
+            copy_dir_recursive(
+                std::path::Path::new("/definitely/not/here"),
+                &copied.path().join("x")
+            )
+            .is_err()
+        );
+    }
 }

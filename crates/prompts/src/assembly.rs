@@ -1666,3 +1666,43 @@ mod locale_family_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_boost_tests {
+    use super::*;
+
+    #[test]
+    fn translation_output_instruction_targets_supported_locales() {
+        for (tag, language) in [
+            ("zh-Hans", "简体中文"),
+            ("hi", "हिन्दी"),
+            ("es-419", "Español"),
+        ] {
+            let instruction = translation_output_instruction(tag)
+                .unwrap_or_else(|| panic!("{tag} must carry an instruction"));
+            assert!(instruction.contains(language), "{tag}: {instruction}");
+        }
+        assert!(translation_output_instruction("en").is_none());
+        assert!(translation_output_instruction("klingon").is_none());
+    }
+
+    #[test]
+    fn mode_prompt_composition_covers_the_ring() {
+        for mode in [AppMode::Agent, AppMode::Plan, AppMode::Yolo] {
+            let basic = compose_mode_prompt(mode);
+            let with_approval = compose_mode_prompt_with_approval(mode, ApprovalMode::Auto);
+            assert!(!basic.is_empty());
+            assert!(!with_approval.is_empty());
+            let prompt = system_prompt_for_mode(mode);
+            match prompt {
+                SystemPrompt::Text(text) => assert!(!text.is_empty()),
+                SystemPrompt::Blocks(blocks) => assert!(!blocks.is_empty()),
+            }
+            let with_personality = system_prompt_for_mode_with_personality(mode, Personality::Calm);
+            assert!(matches!(
+                with_personality,
+                SystemPrompt::Text(ref t) if !t.is_empty()
+            ));
+        }
+    }
+}

@@ -958,4 +958,611 @@ mod tests {
                 .any(|msg| msg.text.contains("shutdown_approved"))
         );
     }
+
+    // ---- coverage slice: metadata surface, input guards, and the
+    // protocol branches not exercised above. ----
+
+    fn make_wide_team(name: &str) -> TeamFile {
+        let mut team = make_team(name);
+        team.members.push(TeamMember {
+            agent_id: "worker2@t".to_string(),
+            name: "worker2".to_string(),
+            agent_type: None,
+            model: None,
+            prompt: None,
+            color: None,
+            joined_at: 1234567890,
+            cwd: "/tmp".to_string(),
+            worktree_path: None,
+            session_id: None,
+            is_active: true,
+        });
+        team.members.push(TeamMember {
+            agent_id: "worker3@t".to_string(),
+            name: "worker3".to_string(),
+            agent_type: None,
+            model: None,
+            prompt: None,
+            color: None,
+            joined_at: 1234567890,
+            cwd: "/tmp".to_string(),
+            worktree_path: None,
+            session_id: None,
+            is_active: false,
+        });
+        team
+    }
+
+    #[test]
+    fn send_message_metadata_surface() {
+        let team_context = crate::tools::team::new_shared_team_context();
+        let tool = SendMessageTool::new(team_context);
+        assert_eq!(tool.name(), "send_message");
+        assert!(tool.description().contains("broadcast"));
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required");
+        assert!(required.contains(&json!("to")));
+        assert!(required.contains(&json!("message")));
+        assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
+        assert_eq!(tool.capabilities(), vec![ToolCapability::WritesFiles]);
+        assert!(!tool.supports_parallel());
+        assert!(!tool.is_read_only());
+    }
+
+    #[tokio::test]
+    async fn execute_guards_reject_bad_input_before_any_delivery() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        // Feature gate: a default context has agent_teams off.
+        let err = tool
+            .execute(
+                json!({"to": "worker1", "message": "hi"}),
+                &ToolContext::new("/tmp"),
+            )
+            .await
+            .expect_err("feature disabled");
+        assert!(err.to_string().contains("agent_teams"), "{err}");
+
+        let sender = context_with_sender(Some("worker1".to_string()));
+
+        let err = tool
+            .execute(json!({"message": "hi"}), &sender)
+            .await
+            .expect_err("missing to");
+        assert!(err.to_string().contains("to"), "{err}");
+
+        let err = tool
+            .execute(json!({"to": "worker1"}), &sender)
+            .await
+            .expect_err("missing message");
+        assert!(err.to_string().contains("message"), "{err}");
+
+        let err = tool
+            .execute(json!({"to": "worker1", "message": 42}), &sender)
+            .await
+            .expect_err("message must be string or object");
+        assert!(err.to_string().contains("string or object"), "{err}");
+
+        let err = tool
+            .execute(
+                json!({"to": "worker1", "message": {"reason": "x"}}),
+                &sender,
+            )
+            .await
+            .expect_err("missing type");
+        assert!(err.to_string().contains("type in message object"), "{err}");
+
+        let err = tool
+            .execute(
+                json!({"to": "worker1", "message": {"type": "made_up"}}),
+                &sender,
+            )
+            .await
+            .expect_err("unknown protocol type");
+        assert!(err.to_string().contains("Unknown protocol type"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn execute_without_a_team_context_refuses() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        let team_context = crate::tools::team::new_shared_team_context();
+        let tool = SendMessageTool::new(team_context);
+
+        let err = tool
+            .execute(
+                json!({"to": "worker1", "message": "hi"}),
+                &context_with_sender(Some("worker1".to_string())),
+            )
+            .await
+            .expect_err("no team");
+        assert!(err.to_string().contains("Not in a team"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn mode_set_request_delivers_and_requires_permission_mode() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+        let lead = context_with_sender(Some(team_lead_name().to_string()));
+
+        let err = tool
+            .execute(
+                json!({"to": "worker1", "message": {"type": "mode_set_request"}}),
+                &lead,
+            )
+            .await
+            .expect_err("permission_mode required");
+        assert!(err.to_string().contains("permission_mode"), "{err}");
+
+        let result = tool
+            .execute(
+                json!({
+                    "to": "worker1",
+                    "summary": "mode flip",
+                    "message": {"type": "mode_set_request", "permission_mode": "plan"}
+                }),
+                &lead,
+            )
+            .await
+            .expect("lead-only action from the lead delivers");
+        assert!(
+            result
+                .content
+                .contains("Mode set request sent to worker1: plan"),
+            "{}",
+            result.content
+        );
+        let mailbox = read_mailbox("worker1", "auth-test").expect("mailbox");
+        let delivered = mailbox
+            .iter()
+            .find(|msg| msg.text.contains("mode_set_request"))
+            .expect("protocol message delivered");
+        assert_eq!(delivered.from, team_lead_name());
+        assert!(delivered.text.contains("\"permission_mode\":\"plan\""));
+        assert!(delivered.text.contains("timestamp"), "payload carries one");
+
+        // mode_set_request is lead-only: a member sender is refused.
+        let err = tool
+            .execute(
+                json!({
+                    "to": "worker1",
+                    "message": {"type": "mode_set_request", "permission_mode": "plan"}
+                }),
+                &context_with_sender(Some("worker1".to_string())),
+            )
+            .await
+            .expect_err("member cannot set modes");
+        assert!(err.to_string().contains("lead-only"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn team_permission_update_delivers_allowed_and_denied_lists() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+        let sender = context_with_sender(Some(team_lead_name().to_string()));
+
+        let result = tool
+            .execute(
+                json!({
+                    "to": "worker1",
+                    "message": {
+                        "type": "team_permission_update",
+                        "allowed_tools": ["read_file", "web_search"],
+                        "denied_tools": ["exec_shell"]
+                    }
+                }),
+                &sender,
+            )
+            .await
+            .expect("lead-only action from the lead delivers");
+        assert!(
+            result.content.contains("Permission update sent to worker1"),
+            "{}",
+            result.content
+        );
+        let mailbox = read_mailbox("worker1", "auth-test").expect("mailbox");
+        let delivered = mailbox
+            .iter()
+            .find(|msg| msg.text.contains("team_permission_update"))
+            .expect("protocol message delivered");
+        assert!(delivered.text.contains("read_file"));
+        assert!(delivered.text.contains("exec_shell"));
+
+        // Missing arrays default to empty lists, not an error.
+        tool.execute(
+            json!({"to": "worker1", "message": {"type": "team_permission_update"}}),
+            &sender,
+        )
+        .await
+        .expect("arrays are optional");
+    }
+
+    #[tokio::test]
+    async fn lead_forwards_sandbox_permission_responses() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let result = tool
+            .execute(
+                json!({
+                    "to": "worker1",
+                    "message": {
+                        "type": "sandbox_permission_response",
+                        "request_id": "req-77",
+                        "subtype": "allow"
+                    }
+                }),
+                &context_with_sender(Some(team_lead_name().to_string())),
+            )
+            .await
+            .expect("lead may exercise the response type");
+        assert!(
+            result
+                .content
+                .contains("Sandbox permission sandbox_permission_response sent to worker1"),
+            "{}",
+            result.content
+        );
+        let mailbox = read_mailbox("worker1", "auth-test").expect("mailbox");
+        let delivered = mailbox
+            .iter()
+            .find(|msg| msg.text.contains("sandbox_permission_response"))
+            .expect("forwarded protocol message");
+        assert!(
+            delivered.text.contains("\"from\":\"team-lead\""),
+            "the runtime identity is stamped on the forward: {}",
+            delivered.text
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcast_delivers_to_active_members_only() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_wide_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        let result = tool
+            .execute(
+                json!({
+                    "to": "*",
+                    "summary": "standup",
+                    "message": "standup time"
+                }),
+                &context_with_sender(None),
+            )
+            .await
+            .expect("broadcast delivers");
+        let payload: serde_json::Value =
+            serde_json::from_str(&result.content).expect("broadcast json");
+        assert_eq!(payload["broadcast"], true);
+        let delivered = payload["delivered_to"].as_array().expect("delivered");
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|v| v.as_str().expect("name"))
+                .collect::<Vec<_>>(),
+            vec!["worker1", "worker2"],
+            "active non-lead members only, roster order"
+        );
+        assert!(payload.get("failed").is_none());
+
+        for member in ["worker1", "worker2"] {
+            let mailbox = read_mailbox(member, "auth-test").expect("mailbox");
+            assert!(
+                mailbox.iter().any(|msg| msg.text == "standup time"),
+                "{member} got the broadcast"
+            );
+        }
+        let inactive = read_mailbox("worker3", "auth-test").expect("mailbox");
+        assert!(inactive.is_empty(), "inactive member skipped");
+        let lead = read_mailbox(team_lead_name(), "auth-test").expect("mailbox");
+        assert!(lead.is_empty(), "the lead is not a broadcast target");
+    }
+
+    #[tokio::test]
+    async fn unknown_recipient_and_broadcast_protocol_refuse() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+        let sender = context_with_sender(Some("worker1".to_string()));
+
+        let err = tool
+            .execute(json!({"to": "typo-name", "message": "hello?"}), &sender)
+            .await
+            .expect_err("unknown DM recipient");
+        assert!(err.to_string().contains("not an active member"), "{err}");
+
+        let err = tool
+            .execute(
+                json!({"to": "*", "message": {"type": "sandbox_permission_request", "tool_name": "t"}}),
+                &sender,
+            )
+            .await
+            .expect_err("protocol broadcast refused");
+        assert!(
+            err.to_string().contains("only supported for plain text"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_approval_guards_missing_request_id_and_wrong_recipient() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+        let sender = context_with_sender(Some("worker1".to_string()));
+
+        let err = tool
+            .execute(
+                json!({"to": team_lead_name(), "message": {"type": "shutdown_approved"}}),
+                &sender,
+            )
+            .await
+            .expect_err("request_id required");
+        assert!(err.to_string().contains("request_id"), "{err}");
+
+        let err = tool
+            .execute(
+                json!({
+                    "to": "worker1",
+                    "message": {"type": "shutdown_approved", "request_id": "req-x"}
+                }),
+                &sender,
+            )
+            .await
+            .expect_err("approval must be addressed to the lead");
+        assert!(
+            err.to_string().contains("addressed to the team lead"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejection_delivers_then_refuses_replay() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+
+        // Lead issues the shutdown request to worker1 first.
+        let request = tool
+            .execute(
+                shutdown_request_input(),
+                &context_with_sender(Some(team_lead_name().to_string())),
+            )
+            .await
+            .expect("lead must be allowed");
+        let request_id = serde_json::from_str::<serde_json::Value>(&request.content)
+            .expect("request result json")["request_id"]
+            .as_str()
+            .expect("request_id")
+            .to_string();
+        let sender = context_with_sender(Some("worker1".to_string()));
+
+        let err = tool
+            .execute(
+                json!({"to": team_lead_name(), "message": {"type": "shutdown_rejected"}}),
+                &sender,
+            )
+            .await
+            .expect_err("request_id required");
+        assert!(err.to_string().contains("request_id"), "{err}");
+
+        let result = tool
+            .execute(
+                json!({
+                    "to": team_lead_name(),
+                    "message": {
+                        "type": "shutdown_rejected",
+                        "request_id": request_id,
+                        "reason": "still working"
+                    }
+                }),
+                &sender,
+            )
+            .await
+            .expect("rejection bound to the pending request delivers");
+        assert!(
+            result.content.contains("Shutdown rejected for team-lead"),
+            "{}",
+            result.content
+        );
+        let lead_inbox = read_mailbox(team_lead_name(), "auth-test").expect("lead mailbox");
+        assert!(
+            lead_inbox
+                .iter()
+                .any(|msg| msg.text.contains("shutdown_rejected")
+                    && msg.text.contains("still working")),
+            "the rejection lands in the lead's mailbox with the reason"
+        );
+
+        // A request may be answered at most once.
+        let err = tool
+            .execute(
+                json!({
+                    "to": team_lead_name(),
+                    "message": {"type": "shutdown_rejected", "request_id": request_id}
+                }),
+                &sender,
+            )
+            .await
+            .expect_err("already answered");
+        assert!(err.to_string().contains("already answered"), "{err}");
+    }
+
+    /// Seed the lead's mailbox with an outstanding plan approval request
+    /// from `owner` (a teammate that submitted a plan), the way the
+    /// plan-approval flow does.
+    fn seed_plan_approval_request(owner: &str, request_id: &str) {
+        let protocol = StructuredProtocolMessage::PlanApprovalRequest {
+            from: owner.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            plan_file_path: "/tmp/plan.md".to_string(),
+            request_id: request_id.to_string(),
+        };
+        let text = serde_json::to_string(&protocol).expect("serialize");
+        write_to_mailbox(
+            team_lead_name(),
+            "auth-test",
+            TeammateMessage {
+                from: owner.to_string(),
+                text,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                read: false,
+                color: None,
+                summary: Some("plan approval request".to_string()),
+            },
+        )
+        .expect("seed request");
+    }
+
+    #[tokio::test]
+    async fn plan_approval_guards_require_a_bound_request_and_decision_fields() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_wide_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+        let sender = context_with_sender(Some(team_lead_name().to_string()));
+
+        let err = tool
+            .execute(
+                json!({"to": "worker2", "message": {"type": "plan_approval_response"}}),
+                &sender,
+            )
+            .await
+            .expect_err("request_id required");
+        assert!(err.to_string().contains("request_id"), "{err}");
+
+        seed_plan_approval_request("worker2", "req-plan-1");
+        let err = tool
+            .execute(
+                json!({
+                    "to": "worker2",
+                    "message": {"type": "plan_approval_response", "request_id": "req-plan-1"}
+                }),
+                &sender,
+            )
+            .await
+            .expect_err("approve field required");
+        assert!(err.to_string().contains("approve"), "{err}");
+
+        let err = tool
+            .execute(
+                json!({
+                    "to": "worker2",
+                    "message": {
+                        "type": "plan_approval_response",
+                        "request_id": "req-plan-fabricated",
+                        "approve": true
+                    }
+                }),
+                &sender,
+            )
+            .await
+            .expect_err("unbound request id");
+        assert!(
+            err.to_string()
+                .contains("No outstanding plan approval request"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_approval_approve_and_reject_deliver_and_refuse_replay() {
+        let _guard = lock_test_env();
+        let _home = ScopedCodeSmithHome::new();
+        create_team_file(&make_wide_team("auth-test")).expect("team");
+        let (tool, _ctx) = setup().await;
+        let sender = context_with_sender(Some(team_lead_name().to_string()));
+
+        // Approve: worker2 submitted a plan, the lead answers.
+        seed_plan_approval_request("worker2", "req-plan-ok");
+        let result = tool
+            .execute(
+                json!({
+                    "to": "worker2",
+                    "message": {
+                        "type": "plan_approval_response",
+                        "request_id": "req-plan-ok",
+                        "approve": true,
+                        "permission_mode": "yolo"
+                    }
+                }),
+                &sender,
+            )
+            .await
+            .expect("approval delivers");
+        assert!(
+            result.content.contains("Plan approved for worker2"),
+            "{}",
+            result.content
+        );
+        let owner_inbox = read_mailbox("worker2", "auth-test").expect("owner mailbox");
+        let approved = owner_inbox
+            .iter()
+            .find(|msg| msg.text.contains("plan_approval_response"))
+            .expect("response lands in the plan owner's mailbox");
+        assert!(approved.text.contains("\"approved\":true"));
+        assert!(approved.text.contains("yolo"));
+
+        // Replay of the same request id refuses.
+        let err = tool
+            .execute(
+                json!({
+                    "to": "worker2",
+                    "message": {
+                        "type": "plan_approval_response",
+                        "request_id": "req-plan-ok",
+                        "approve": false
+                    }
+                }),
+                &sender,
+            )
+            .await
+            .expect_err("already answered");
+        assert!(err.to_string().contains("already answered"), "{err}");
+
+        // Reject with feedback.
+        seed_plan_approval_request("worker2", "req-plan-no");
+        let result = tool
+            .execute(
+                json!({
+                    "to": "worker2",
+                    "message": {
+                        "type": "plan_approval_response",
+                        "request_id": "req-plan-no",
+                        "approve": false,
+                        "feedback": "needs tests"
+                    }
+                }),
+                &sender,
+            )
+            .await
+            .expect("rejection delivers");
+        assert!(
+            result.content.contains("Plan rejected for worker2"),
+            "{}",
+            result.content
+        );
+        let owner_inbox = read_mailbox("worker2", "auth-test").expect("owner mailbox");
+        assert!(
+            owner_inbox
+                .iter()
+                .any(|msg| msg.text.contains("plan_approval_response")
+                    && msg.text.contains("needs tests")),
+            "rejection carries the feedback"
+        );
+    }
 }

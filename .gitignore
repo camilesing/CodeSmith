@@ -145,3 +145,6 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/ui/public/plugins/
 docs/superpowers/
+default.profraw
+*.profraw
+target-cov/

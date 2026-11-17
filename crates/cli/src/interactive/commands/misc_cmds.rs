@@ -1512,6 +1512,9 @@ pub(crate) fn quick_memory_entry(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex (via scratch_env) across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::{ReplState, attach, changelog_sections, quick_memory_entry};
 
     /// Round-3 TODO-41: `/attach` must reject media the wire layer cannot
@@ -1600,5 +1603,379 @@ mod tests {
             !sections[0].1.contains("intro"),
             "prose before the first heading belongs to no section"
         );
+    }
+
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    fn scratch_env() -> (
+        tempfile::TempDir,
+        std::sync::MutexGuard<'static, ()>,
+        EnvVarGuard,
+        EnvVarGuard,
+    ) {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        let config_guard =
+            EnvVarGuard::set("CODESMITH_CONFIG_PATH", codesmith_home.join("config.toml"));
+        (home, lock, home_guard, config_guard)
+    }
+
+    fn state_in(workspace: &std::path::Path) -> ReplState {
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: workspace.to_path_buf(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: workspace.join("skills"),
+            memory_path: workspace.join("memory.md"),
+            mcp_config_path: workspace.join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        ReplState::new(options, &crate::config::Config::default())
+    }
+
+    #[test]
+    fn hooks_command_covers_subcommands() {
+        let _env = scratch_env();
+        let state = state_in(&std::env::temp_dir());
+        hooks(&state, None);
+        hooks(&state, Some("list"));
+        hooks(&state, Some("EVENTS"));
+        hooks(&state, Some("explode"));
+    }
+
+    #[test]
+    fn network_command_reports_and_validates() {
+        let _env = scratch_env();
+        network(None);
+        network(Some("list"));
+        network(Some("deny"));
+        network(Some("bogus subcommand"));
+    }
+
+    #[test]
+    fn readouts_cover_provider_and_empty_states() {
+        let _env = scratch_env();
+        let mut state = state_in(&std::env::temp_dir());
+        jobs(&state);
+        balance(&state);
+        state.api_provider = crate::config::ApiProvider::Deepseek;
+        balance(&state);
+        links(&state);
+        home(&state);
+        queue(&state);
+        verify(None);
+        verify(Some("stats"));
+        verify(Some("everything"));
+        stash();
+        cycles();
+        relay();
+        restore();
+        change();
+        rlm();
+        terminal_setup();
+    }
+
+    #[test]
+    fn links_cover_every_provider_family() {
+        let _env = scratch_env();
+        let mut state = state_in(&std::env::temp_dir());
+        for provider in [
+            crate::config::ApiProvider::Deepseek,
+            crate::config::ApiProvider::Openai,
+            crate::config::ApiProvider::Anthropic,
+            crate::config::ApiProvider::Moonshot,
+            crate::config::ApiProvider::Openrouter,
+            crate::config::ApiProvider::Novita,
+            crate::config::ApiProvider::Siliconflow,
+            crate::config::ApiProvider::Fireworks,
+            crate::config::ApiProvider::Vllm,
+            crate::config::ApiProvider::Sglang,
+            crate::config::ApiProvider::Ollama,
+            crate::config::ApiProvider::NvidiaNim,
+        ] {
+            state.api_provider = provider;
+            links(&state);
+        }
+    }
+
+    #[test]
+    fn profile_and_workspace_commands() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = state_in(tmp.path());
+
+        profile(&state, None);
+        profile(&state, Some("work"));
+
+        workspace(&state, None);
+        workspace(&state, Some(tmp.path().to_str().expect("utf8")));
+        workspace(&state, Some("definitely-not-a-dir"));
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        workspace(&state, Some("sub")); // relative to workspace
+        workspace(&state, None);
+
+        let mut state = state_in(tmp.path());
+        translate(&mut state);
+        assert!(state.translation_enabled);
+        translate(&mut state);
+        assert!(!state.translation_enabled);
+    }
+
+    #[test]
+    fn anchor_command_full_cycle() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = state_in(tmp.path());
+        let anchors = tmp.path().join(".codesmith").join("anchors.md");
+
+        anchor(&state, None); // usage
+        anchor(&state, Some("   "));
+        anchor(&state, Some("list")); // empty
+        anchor(&state, Some("first anchor"));
+        anchor(&state, Some("second anchor"));
+        anchor(&state, Some("list"));
+        assert!(
+            std::fs::read_to_string(&anchors)
+                .expect("anchors written")
+                .contains("first anchor")
+        );
+        anchor(&state, Some("remove 1"));
+        anchor(&state, Some("remove 9")); // out of range
+        anchor(&state, Some("remove x")); // not a number
+        anchor(&state, Some("rm 1"));
+        assert!(
+            std::fs::read_to_string(&anchors)
+                .expect("anchors readable")
+                .trim()
+                .is_empty(),
+            "both anchors removed"
+        );
+    }
+
+    #[test]
+    fn note_command_full_cycle() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = state_in(tmp.path());
+        let notes = tmp.path().join(".codesmith").join("notes.md");
+
+        note(&state, None); // usage
+        note(&state, Some("list")); // empty
+        note(&state, Some("write the release notes"));
+        note(&state, Some("follow up on the flaky test"));
+        note(&state, Some("list"));
+        note(&state, Some("show 1"));
+        note(&state, Some("show 9")); // out of range
+        note(&state, Some("show x")); // not a number
+        note(&state, Some("remove 1"));
+        note(&state, Some("remove 9"));
+        note(&state, Some("path"));
+        note(&state, Some("help"));
+        note(&state, Some("clear"));
+        assert!(
+            std::fs::read_to_string(&notes)
+                .expect("notes cleared")
+                .trim()
+                .is_empty()
+        );
+        note(&state, Some("unknown-subcommand value"));
+    }
+
+    #[test]
+    fn attach_command_usage_and_missing_files() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        attach(&mut state, None); // usage
+        attach(&mut state, Some("   "));
+        attach(&mut state, Some("no/such/file.bin"));
+        assert!(
+            state.pending_attachments.is_empty(),
+            "a missing file is refused, not queued"
+        );
+    }
+
+    #[test]
+    fn output_style_command_toggles_and_validates() {
+        let _env = scratch_env();
+        let mut state = state_in(&std::env::temp_dir());
+        output_style(&mut state, "");
+        assert!(!state.is_simple);
+        output_style(&mut state, "concise");
+        assert!(state.is_simple);
+        output_style(&mut state, "status");
+        output_style(&mut state, "default");
+        assert!(!state.is_simple);
+        output_style(&mut state, "explanatory");
+        output_style(&mut state, "fancy");
+    }
+
+    #[test]
+    fn release_notes_pick_sections() {
+        let _env = scratch_env();
+        let state = state_in(&std::env::temp_dir());
+        release_notes(&state, None);
+        release_notes(&state, Some("1"));
+        release_notes(&state, Some("latest"));
+        release_notes(&state, Some("0.1.0")); // version substring
+        release_notes(&state, Some("999")); // out of range
+        release_notes(&state, Some("no-such-version"));
+    }
+
+    #[test]
+    fn reload_skills_tracks_baseline_changes() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        reload_skills(&mut state); // establishes the baseline
+        let skill_dir = tmp.path().join("skills").join("fresh-skill");
+        std::fs::create_dir_all(&skill_dir).expect("mkdir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: fresh-skill\ndescription: Appeared later\n---\nBody",
+        )
+        .expect("write");
+        reload_skills(&mut state); // + fresh-skill
+        std::fs::remove_dir_all(&skill_dir).expect("remove");
+        reload_skills(&mut state); // - fresh-skill
+    }
+
+    #[test]
+    fn memory_command_subcommands_on_scratch_files() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = state_in(tmp.path());
+
+        memory(&state, None); // show (missing file)
+        memory(&state, Some("show"));
+        memory(&state, Some("path"));
+        memory(&state, Some("help"));
+        memory(&state, Some("edit"));
+        memory(&state, Some("clear"));
+        memory(&state, Some("auto"));
+        memory(&state, Some("auto on")); // persists to isolated config.toml
+        memory(&state, Some("auto off"));
+        memory(&state, Some("bogus"));
+    }
+
+    #[test]
+    fn queue_lists_queued_messages() {
+        let _env = scratch_env();
+        let mut state = state_in(&std::env::temp_dir());
+        queue(&state);
+        state.queued_messages = vec!["first queued".to_string(), "second".to_string()];
+        queue(&state);
+    }
+
+    #[test]
+    fn hunt_budget_parser_handles_marker_boundaries() {
+        let (objective, budget) = parse_hunt_budget("fix the login bug budget: 5000");
+        assert_eq!(objective, "fix the login bug");
+        assert_eq!(budget, Some(5000));
+        let (objective, budget) = parse_hunt_budget("plain objective");
+        assert_eq!(objective, "plain objective");
+        assert_eq!(budget, None);
+        // `overbudget:` is not a marker (word boundary).
+        let (objective, budget) = parse_hunt_budget("fix overbudget: 5 tokens");
+        assert_eq!(objective, "fix overbudget: 5 tokens");
+        assert_eq!(budget, None);
+        // Unparseable marker rejects instead of leaking into the quarry.
+        let (objective, budget) = parse_hunt_budget("fix auth budget: ten");
+        assert_eq!(objective, "");
+        assert_eq!(budget, None);
+    }
+
+    #[tokio::test]
+    async fn goal_command_state_transitions() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let mut state = state_in(tmp.path());
+        goal(&mut state, None).await; // no active hunt
+        goal(&mut state, Some("done")).await; // nothing to close
+        goal(&mut state, Some("wound")).await;
+        goal(&mut state, Some("escaped")).await;
+        goal(&mut state, Some("clear")).await;
+
+        let mut state = state_in(tmp.path());
+        state.hunt.quarry = Some("the flaky test".to_string());
+        state.hunt.token_budget = Some(10_000);
+        state.hunt.verdict = HuntVerdict::Hunting;
+        goal(&mut state, None).await; // status with budget
+        goal(&mut state, Some("done")).await;
+        assert_eq!(state.hunt.verdict, HuntVerdict::Hunted);
+        goal(&mut state, Some("clear")).await;
+        assert!(state.hunt.quarry.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_command_without_manager_reports_unavailable() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        assert!(
+            state.task_manager.is_none(),
+            "ReplState::new starts without a task manager"
+        );
+        task(&mut state, "").await;
+        task(&mut state, "list").await;
+        task(&mut state, "add do something").await;
+        task(&mut state, "show t-1").await;
+        task(&mut state, "cancel t-1").await;
+        task(&mut state, "bogus").await;
+    }
+
+    #[tokio::test]
+    async fn stop_without_engine_reports_cleanly() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        stop(&mut state).await; // no engine → says so without panicking
+    }
+
+    #[tokio::test]
+    async fn share_without_confirmation_only_previews() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        share(&mut state, None).await; // preview, no upload
+        share(&mut state, Some("preview only")).await;
+    }
+
+    #[tokio::test]
+    async fn recap_needs_two_messages() {
+        let _env = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut state = state_in(tmp.path());
+        recap(&state).await; // nothing to recap
+        state.api_messages = std::sync::Arc::new(vec![
+            crate::models::Message {
+                role: "user".to_string(),
+                content: vec![crate::models::ContentBlock::Text {
+                    text: "hello".to_string(),
+                    cache_control: None,
+                }],
+            },
+            crate::models::Message {
+                role: "assistant".to_string(),
+                content: vec![crate::models::ContentBlock::Text {
+                    text: "hi there".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ]);
+        recap(&state).await; // attempts a one-shot; fails cleanly engine-less
     }
 }

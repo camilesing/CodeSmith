@@ -572,3 +572,342 @@ impl ToolSpec for TaskV2ListTool {
         Ok(ToolResult::success(lines.join("\n")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
+    use super::*;
+    use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+    /// `TaskV2Manager` persists under `codesmith_home()/tasks/{list_id}` —
+    /// redirect `CODESMITH_HOME` into a scratch dir so no test touches the
+    /// real user state. The env lock serializes env-mutating tests.
+    struct ScratchEnv {
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_guard: EnvVarGuard,
+    }
+
+    fn scratch_env() -> ScratchEnv {
+        let lock = lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard = EnvVarGuard::set("CODESMITH_HOME", &codesmith_home);
+        ScratchEnv {
+            _home: home,
+            _lock: lock,
+            _home_guard: home_guard,
+        }
+    }
+
+    /// One fresh manager per test: a unique list id keeps task files from
+    /// colliding even if two managers ever coexist under the same home.
+    fn scratch_manager(label: &str) -> SharedTaskV2Manager {
+        let list_id = format!("v2-test-{label}-{}", std::process::id());
+        new_shared_task_v2_manager(&list_id).expect("shared task v2 manager")
+    }
+
+    /// None of the Task V2 tools touch the workspace in a hook-less,
+    /// mailbox-less context — a throwaway path keeps the context hermetic.
+    fn scratch_context() -> ToolContext {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        ToolContext::new(tmp.keep())
+    }
+
+    #[test]
+    fn task_v2_tool_surfaces_name_schema_and_capabilities() {
+        let _env = scratch_env();
+        let manager = scratch_manager("surface");
+
+        let create = TaskV2CreateTool::new(manager.clone());
+        let update = TaskV2UpdateTool::new(manager.clone());
+        let get = TaskV2GetTool::new(manager.clone());
+        let list = TaskV2ListTool::new(manager.clone());
+
+        assert_eq!(create.name(), "task_create_v2");
+        assert_eq!(update.name(), "task_update_v2");
+        assert_eq!(get.name(), "task_get_v2");
+        assert_eq!(list.name(), "task_list_v2");
+
+        let create_schema = create.input_schema();
+        assert_eq!(create_schema["required"][0], "subject");
+        assert_eq!(create_schema["required"][1], "description");
+        assert!(
+            create_schema["properties"]["blocked_by"].is_object(),
+            "create schema declares dependencies: {create_schema}"
+        );
+        let update_schema = update.input_schema();
+        assert_eq!(update_schema["required"][0], "task_id");
+        assert!(
+            update_schema["properties"]["status"]["enum"]
+                .as_array()
+                .expect("status enum")
+                .iter()
+                .any(|v| v == "deleted"),
+            "update schema advertises the deleted special case"
+        );
+        let get_schema = get.input_schema();
+        assert_eq!(get_schema["required"][0], "task_id");
+        assert!(
+            list.input_schema()["properties"]
+                .as_object()
+                .unwrap()
+                .is_empty(),
+            "list takes no properties"
+        );
+
+        // Persistence tools write files; read tools stay read-only.
+        assert!(create.capabilities().contains(&ToolCapability::WritesFiles));
+        assert!(update.capabilities().contains(&ToolCapability::WritesFiles));
+        assert!(get.capabilities().contains(&ToolCapability::ReadOnly));
+        assert!(list.capabilities().contains(&ToolCapability::ReadOnly));
+
+        // Auto-approved: task tracking is conversation-scoped bookkeeping.
+        assert!(matches!(
+            create.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+        assert!(matches!(
+            update.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+        assert!(matches!(
+            get.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+        assert!(matches!(
+            list.approval_requirement(),
+            ApprovalRequirement::Auto
+        ));
+
+        assert!(create.description().contains("pending -> in_progress"));
+        assert!(update.description().contains("deleted"));
+        assert!(!get.description().is_empty());
+        assert!(!list.description().is_empty());
+    }
+
+    #[tokio::test]
+    async fn task_v2_create_update_get_round_trip() {
+        let _env = scratch_env();
+        let manager = scratch_manager("roundtrip");
+        let ctx = scratch_context();
+
+        let create = TaskV2CreateTool::new(manager.clone());
+        let created = create
+            .execute(
+                json!({
+                    "subject": "Land the parser fix",
+                    "description": "Fix the off-by-one in tokenize()",
+                    "active_form": "Landing the parser fix",
+                    "status": "in_progress",
+                    "owner": "worker-1",
+                    "blocked_by": ["9"],
+                    "blocks": ["3"],
+                    "metadata": {"priority": "high"}
+                }),
+                &ctx,
+            )
+            .await
+            .expect("create should succeed");
+        assert_eq!(created.content, "Created task 1: Land the parser fix");
+
+        let record = manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_task("1")
+            .expect("task persisted");
+        assert_eq!(record.subject, "Land the parser fix");
+        assert_eq!(record.status, TaskV2Status::InProgress);
+        assert_eq!(record.owner.as_deref(), Some("worker-1"));
+        assert_eq!(record.blocked_by, vec!["9".to_string()]);
+        assert_eq!(record.blocks, vec!["3".to_string()]);
+        assert_eq!(record.metadata["priority"], "high");
+        assert!(record.started_at.is_some(), "in_progress stamps started_at");
+
+        // Update to completed; the success line reports the new status.
+        let update = TaskV2UpdateTool::new(manager.clone());
+        let updated = update
+            .execute(
+                json!({
+                    "task_id": "1",
+                    "status": "completed",
+                    "metadata": {"priority": "high", "verified": true}
+                }),
+                &ctx,
+            )
+            .await
+            .expect("update should succeed");
+        assert!(updated.content.contains("completed"), "{}", updated.content);
+        let record = manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_task("1")
+            .expect("task still present");
+        assert_eq!(record.status, TaskV2Status::Completed);
+        assert!(record.completed_at.is_some());
+        assert_eq!(record.metadata["verified"], true, "metadata merges");
+
+        // Get returns the full serialized record.
+        let get = TaskV2GetTool::new(manager.clone());
+        let fetched = get
+            .execute(json!({"task_id": "1"}), &ctx)
+            .await
+            .expect("get should succeed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fetched.content).expect("get content is JSON");
+        assert_eq!(parsed["subject"], "Land the parser fix");
+        assert_eq!(parsed["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn task_v2_create_requires_subject() {
+        let _env = scratch_env();
+        let manager = scratch_manager("missing-subject");
+        let ctx = scratch_context();
+        let err = TaskV2CreateTool::new(manager)
+            .execute(json!({"description": "no subject"}), &ctx)
+            .await
+            .expect_err("subject is required");
+        assert!(err.to_string().contains("subject"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_v2_update_requires_task_id() {
+        let _env = scratch_env();
+        let manager = scratch_manager("missing-task-id");
+        let ctx = scratch_context();
+        let err = TaskV2UpdateTool::new(manager)
+            .execute(json!({"status": "completed"}), &ctx)
+            .await
+            .expect_err("task_id is required");
+        assert!(err.to_string().contains("task_id"), "{err}");
+        let err = TaskV2GetTool::new(scratch_manager("get-no-id"))
+            .execute(json!({}), &ctx)
+            .await
+            .expect_err("get also requires task_id");
+        assert!(err.to_string().contains("task_id"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_v2_update_delete_removes_task_and_cleans_up() {
+        let _env = scratch_env();
+        let manager = scratch_manager("delete");
+        let ctx = scratch_context();
+
+        TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({"subject": "temporary", "description": "gone soon"}),
+                &ctx,
+            )
+            .await
+            .expect("create");
+        let deleted = TaskV2UpdateTool::new(manager.clone())
+            .execute(json!({"task_id": "1", "status": "deleted"}), &ctx)
+            .await
+            .expect("delete should succeed");
+        assert_eq!(deleted.content, "Task 1 deleted and references cleaned up");
+        assert!(
+            manager
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .list_tasks()
+                .expect("list")
+                .is_empty(),
+            "soft-deleted tasks disappear from the listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_v2_get_unknown_task_fails() {
+        let _env = scratch_env();
+        let manager = scratch_manager("get-unknown");
+        let ctx = scratch_context();
+        let err = TaskV2GetTool::new(manager)
+            .execute(json!({"task_id": "404"}), &ctx)
+            .await
+            .expect_err("unknown task id");
+        assert!(err.to_string().contains("404"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_v2_list_renders_statuses_deps_and_empty_state() {
+        let _env = scratch_env();
+        let manager = scratch_manager("list");
+        let ctx = scratch_context();
+
+        let list = TaskV2ListTool::new(manager.clone());
+        let empty = list.execute(json!({}), &ctx).await.expect("empty list");
+        assert_eq!(empty.content, "No tasks.");
+
+        TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({
+                    "subject": "blocked work",
+                    "description": "waits on task 2",
+                    "blocked_by": ["2"],
+                    "owner": "worker-9"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("create blocked task");
+        TaskV2CreateTool::new(manager.clone())
+            .execute(
+                json!({
+                    "subject": "in flight",
+                    "description": "running now",
+                    "status": "in_progress"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("create in-progress task");
+
+        let rendered = list.execute(json!({}), &ctx).await.expect("list");
+        // One line per task, sorted by id, with status glyph + deps + owner.
+        let lines: Vec<&str> = rendered.content.lines().collect();
+        assert_eq!(lines.len(), 2, "{}", rendered.content);
+        assert!(lines[0].contains("○"), "task 1 pending: {}", lines[0]);
+        assert!(lines[0].contains("blocked by: 2"), "{}", lines[0]);
+        assert!(lines[0].contains("worker-9"), "{}", lines[0]);
+        assert!(lines[1].contains("◎"), "task 2 in progress: {}", lines[1]);
+        assert!(lines[1].contains("unassigned"), "{}", lines[1]);
+    }
+
+    #[tokio::test]
+    async fn task_v2_update_adds_dependency_links() {
+        let _env = scratch_env();
+        let manager = scratch_manager("deps");
+        let ctx = scratch_context();
+
+        for subject in ["first", "second"] {
+            TaskV2CreateTool::new(manager.clone())
+                .execute(
+                    json!({"subject": subject, "description": "dep fixture"}),
+                    &ctx,
+                )
+                .await
+                .expect("create");
+        }
+        TaskV2UpdateTool::new(manager.clone())
+            .execute(json!({"task_id": "2", "add_blocks": ["1"]}), &ctx)
+            .await
+            .expect("link");
+        let record = manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_task("2")
+            .expect("task 2");
+        assert_eq!(record.blocks, vec!["1".to_string()]);
+        // The reverse edge lands on task 1's blocked_by.
+        let record = manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_task("1")
+            .expect("task 1");
+        assert_eq!(record.blocked_by, vec!["2".to_string()]);
+    }
+}

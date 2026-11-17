@@ -2744,4 +2744,437 @@ mod tests {
         assert_eq!(percent_decode("%41%42"), "AB");
         assert_eq!(percent_decode("a+b%20c"), "a b c");
     }
+
+    // === API provider pure helpers (baidu / volcengine) ==================
+
+    #[test]
+    fn baidu_error_message_reads_code_and_message_aliases() {
+        assert_eq!(baidu_error_message(&json!({"code": 0})), None);
+        assert_eq!(baidu_error_message(&json!({"references": []})), None);
+        let err = baidu_error_message(&json!({"error_code": 17, "error_msg": "quota exceeded"}))
+            .expect("error_code/error_msg pair is an error");
+        assert!(err.contains("code 17"), "got `{err}`");
+        assert!(err.contains("quota exceeded"), "got `{err}`");
+        let bare = baidu_error_message(&json!({"code": 5})).expect("code alone is an error");
+        assert!(bare.contains("unknown error"), "got `{bare}`");
+    }
+
+    #[test]
+    fn volcengine_search_payload_constrains_model_output_to_json() {
+        let payload = volcengine_search_payload("rust async", 3);
+        assert_eq!(payload.get("stream").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(payload["tools"][0]["type"], json!("web_search"));
+        let text = payload["input"][0]["content"][0]["text"]
+            .as_str()
+            .expect("prompt text");
+        assert!(text.contains("Search the web for: rust async"));
+        assert!(text.contains("1-3 most relevant pages"));
+        assert!(text.contains("\"results\""));
+    }
+
+    #[test]
+    fn volcengine_error_message_reports_code_and_message() {
+        let err = volcengine_error_message(&json!({
+            "error": {"code": "QuotaExceeded", "message": "limit reached"}
+        }))
+        .expect("error envelope is an error");
+        assert!(err.contains("QuotaExceeded") && err.contains("limit reached"));
+        let bare = volcengine_error_message(&json!({"error": {}}))
+            .expect("empty error object is still an error");
+        assert!(bare.contains("unknown") && bare.contains("no details"));
+        assert_eq!(volcengine_error_message(&json!({"output": []})), None);
+    }
+
+    #[test]
+    fn parse_volcengine_results_accepts_fenced_and_plain_model_output() {
+        let fenced = "prose before\n```json\n{\"results\":[{\"title\":\"Rust\",\"url\":\"https://rust-lang.org\",\"snippet\":\"systems lang\"},{\"title\":\"No URL\",\"snippet\":\"dropped\"}]}\n```\nprose after";
+        let hits = parse_volcengine_results(fenced, 5);
+        assert_eq!(hits.len(), 1, "entries without a url are dropped");
+        assert_eq!(hits[0].url, "https://rust-lang.org");
+        assert_eq!(hits[0].snippet.as_deref(), Some("systems lang"));
+
+        let plain = "here you go {\"results\":[{\"title\":\"a\",\"url\":\"https://a.example\"},{\"title\":\"b\",\"url\":\"https://b.example\"}]} done";
+        assert_eq!(
+            parse_volcengine_results(plain, 1).len(),
+            1,
+            "max_results caps the hit count"
+        );
+
+        assert!(
+            parse_volcengine_results("not json at all", 5).is_empty(),
+            "unparseable model output yields an empty result set"
+        );
+    }
+
+    #[test]
+    fn extract_json_block_variants() {
+        assert_eq!(
+            extract_json_block("```json\n{\"a\":1}\n```"),
+            Some("{\"a\":1}")
+        );
+        assert_eq!(
+            extract_json_block("x {\"a\":{\"b\":2}} y"),
+            Some("{\"a\":{\"b\":2}}")
+        );
+        // An unterminated fence falls through to the brace scan.
+        assert_eq!(extract_json_block("```json {\"a\":1}"), Some("{\"a\":1}"));
+        assert_eq!(extract_json_block("no json here"), None);
+    }
+
+    #[test]
+    fn find_quoted_field_unescapes_common_escapes() {
+        let repr = r#"{'title': 'line1\nline2\ttabbed', 'link': 'https://x.example'}"#;
+        assert_eq!(
+            find_quoted_field(repr, "title", 0).map(|(_, value)| value),
+            Some("line1\nline2\ttabbed".to_string())
+        );
+        assert_eq!(
+            find_quoted_field(r#"{"link": "https://quoted.example"}"#, "link", 0)
+                .map(|(_, value)| value),
+            Some("https://quoted.example".to_string())
+        );
+        assert_eq!(find_quoted_field(repr, "missing", 0), None);
+    }
+
+    #[test]
+    fn provider_native_error_message_accepts_numeric_codes() {
+        let msg = provider_native_error_message(&json!({
+            "error": {"code": 1113, "message": "insufficient balance"}
+        }))
+        .expect("a numeric error code is still an error");
+        assert_eq!(
+            msg,
+            "Provider-native web search error (1113): insufficient balance"
+        );
+    }
+
+    #[test]
+    fn response_headers_redacts_session_and_auth_material() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "set-cookie",
+            reqwest::header::HeaderValue::from_static("session=secret"),
+        );
+        headers.insert(
+            "www-authenticate",
+            reqwest::header::HeaderValue::from_static("Bearer realm=x"),
+        );
+        headers.insert(
+            "content-type",
+            reqwest::header::HeaderValue::from_static("text/html"),
+        );
+        let map = response_headers(&headers);
+        assert!(!map.contains_key("set-cookie"));
+        assert!(!map.contains_key("www-authenticate"));
+        assert_eq!(
+            map.get("content-type").map(String::as_str),
+            Some("text/html")
+        );
+    }
+
+    #[test]
+    fn prompt_decider_copies_both_lists() {
+        // Non-empty allow and deny lists exercise the list-copy closures;
+        // the decider must then answer for both sides.
+        let decider = prompt_decider(&["allowed.example"], &["denied.example"]);
+        check_policy(Some(&decider), "allowed.example", "fetch_url")
+            .expect("allow-listed host passes");
+        let err = check_policy(Some(&decider), "denied.example", "fetch_url")
+            .expect_err("deny-listed host fails");
+        assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
+    }
+
+    // === SERP HTML scrape parsing =========================================
+
+    // r##-delimited: the HTML contains `href="#"`, whose `"#` would end an
+    // r#"..."# literal mid-string.
+    const DDG_HTML: &str = r##"
+        <html><body>
+        <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Title One</a>
+        <a class="result__snippet" href="#">Snippet one</a>
+        <a class="result__a" href="/second">Title <b>Two</b></a>
+        <div class="result__snippet">Second snippet</div>
+        <a class="result__a" href="https://plain.example/c"></a>
+        </body></html>
+    "##;
+
+    #[test]
+    fn parse_duckduckgo_results_pairs_titles_snippets_and_uddg_urls() {
+        let results = parse_duckduckgo_results(DDG_HTML, 10);
+        assert_eq!(results.len(), 2, "empty-title anchors are skipped");
+        assert_eq!(results[0].title, "Title One");
+        assert_eq!(results[0].url, "https://example.com/a");
+        assert_eq!(results[0].snippet.as_deref(), Some("Snippet one"));
+        assert_eq!(results[1].title, "Title Two", "tags strip from titles");
+        assert_eq!(results[1].url, "https://duckduckgo.com/second");
+        assert_eq!(results[1].snippet.as_deref(), Some("Second snippet"));
+    }
+
+    #[test]
+    fn parse_duckduckgo_results_drops_spam_batches() {
+        let mut html = String::new();
+        for i in 0..5 {
+            html.push_str(&format!(
+                r#"<a class="result__a" href="https://sub{i}.forumgratuit.org/p{i}">Post {i}</a>"#
+            ));
+        }
+        assert!(
+            parse_duckduckgo_results(&html, 10).is_empty(),
+            "a single-domain batch is treated as no results (#964)"
+        );
+    }
+
+    #[test]
+    fn is_duckduckgo_challenge_matches_both_markers() {
+        assert!(is_duckduckgo_challenge(
+            "<div class='anomaly-modal'>x</div>"
+        ));
+        assert!(is_duckduckgo_challenge(
+            "Unfortunately, bots use DuckDuckGo too"
+        ));
+        assert!(!is_duckduckgo_challenge("<html>clean</html>"));
+    }
+
+    #[test]
+    fn parse_bing_results_decodes_ckurl_and_optional_snippets() {
+        let html = concat!(
+            r#"<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&amp;&amp;u=a1aHR0cHM6Ly9ydXN0LWxhbmcub3JnLw&amp;ntb=1">Rust</a></h2>"#,
+            r#"<div class="b_caption"><p>Rust programming language</p></div></li>"#,
+            r#"<li class="b_algo"><h2><a href="https://docs.rs/tokio">Tokio docs</a></h2></li>"#,
+        );
+        let results = parse_bing_results(html, 10);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "https://rust-lang.org/");
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("Rust programming language")
+        );
+        assert_eq!(results[1].url, "https://docs.rs/tokio");
+        assert_eq!(results[1].snippet, None);
+    }
+
+    #[test]
+    fn normalize_url_unwraps_uddg_and_qualifies_relative_hrefs() {
+        assert_eq!(
+            normalize_url("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fx"),
+            "https://example.org/x"
+        );
+        assert_eq!(
+            normalize_url("//cdn.example.com/y"),
+            "https://cdn.example.com/y"
+        );
+        assert_eq!(
+            normalize_url("/just/a/path"),
+            "https://duckduckgo.com/just/a/path"
+        );
+        assert_eq!(
+            normalize_url("https://plain.example/z"),
+            "https://plain.example/z"
+        );
+    }
+
+    #[test]
+    fn normalize_text_strips_decodes_and_collapses() {
+        assert_eq!(
+            normalize_text("<b>Hello</b> &amp;   world\tnext"),
+            "Hello & world next"
+        );
+    }
+
+    // === scrape providers fail closed on policy-denied hosts =============
+
+    fn policy_denying(host: &str) -> NetworkPolicyDecider {
+        NetworkPolicyDecider::new(
+            codesmith_agent_runtime::network_policy::NetworkPolicy {
+                default: Decision::Allow.into(),
+                allow: Vec::new(),
+                deny: vec![host.to_string()],
+                proxy: Vec::new(),
+                audit: false,
+            },
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn scrape_search_fails_closed_on_denied_hosts_before_any_request() {
+        // Bing provider: the primary host is checked before the request.
+        let err = HttpWebService::new(SearchProvider::Bing, None)
+            .search(SearchRequest::new("q").with_policy(Some(policy_denying(BING_HOST))))
+            .await
+            .expect_err("denied primary host must fail the search");
+        assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
+        assert!(err.to_string().contains("www.bing.com"));
+
+        // DuckDuckGo provider: same fail-closed behavior for its host.
+        let err = HttpWebService::new(SearchProvider::DuckDuckGo, None)
+            .search(SearchRequest::new("q").with_policy(Some(policy_denying(DUCKDUCKGO_HOST))))
+            .await
+            .expect_err("denied host must fail the search");
+        assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
+        assert!(err.to_string().contains("html.duckduckgo.com"));
+    }
+
+    // === provider-native transport against a loopback endpoint ===========
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn native_service(base_url: String) -> HttpWebService {
+        HttpWebService::new(SearchProvider::ProviderNative, None).with_native_search(
+            NativeSearchConfig {
+                base_url,
+                api_key: "test-key".to_string(),
+                model: "glm-5.3".to_string(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn provider_native_search_round_trips_against_local_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [
+                    {"type": "tool_result", "content":
+                        "[{'title': 'Rust', 'link': 'https://rust-lang.org', 'content': 'a systems language'}]"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let outcome = native_service(server.uri())
+            .search(SearchRequest::new("rust"))
+            .await
+            .expect("native search over loopback");
+        assert_eq!(outcome.source, "provider_native");
+        assert_eq!(outcome.results.len(), 1);
+        assert_eq!(outcome.results[0].url, "https://rust-lang.org");
+        assert_eq!(
+            outcome.results[0].snippet.as_deref(),
+            Some("a systems language")
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_native_search_maps_endpoint_failures() {
+        // HTTP 401: the keyed message names the provider API key.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("denied"))
+            .mount(&server)
+            .await;
+        let err = native_service(server.uri())
+            .search(SearchRequest::new("q"))
+            .await
+            .expect_err("401 must fail");
+        assert_eq!(err.kind(), WebErrorKind::Status(401));
+        assert!(
+            err.to_string().contains("rejected the provider API key"),
+            "got `{err}`"
+        );
+
+        // HTTP 500 with a long body: the preview is truncated.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("x".repeat(700)))
+            .mount(&server)
+            .await;
+        let err = native_service(server.uri())
+            .search(SearchRequest::new("q"))
+            .await
+            .expect_err("500 must fail");
+        assert!(err.to_string().contains("HTTP 500"));
+        assert!(err.to_string().contains("..."), "preview is truncated");
+
+        // HTTP 200 with a non-JSON body: a Body parse error.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .mount(&server)
+            .await;
+        let err = native_service(server.uri())
+            .search(SearchRequest::new("q"))
+            .await
+            .expect_err("non-JSON body must fail");
+        assert_eq!(err.kind(), WebErrorKind::Body);
+        assert!(err.to_string().contains("Failed to parse"));
+    }
+
+    #[tokio::test]
+    async fn provider_native_search_surfaces_business_errors_and_empty_results() {
+        // Envelope error with a numeric code.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "error": {"code": 1113, "message": "insufficient balance"}
+            })))
+            .mount(&server)
+            .await;
+        let err = native_service(server.uri())
+            .search(SearchRequest::new("q"))
+            .await
+            .expect_err("business error must fail");
+        assert_eq!(err.kind(), WebErrorKind::Status(200));
+        assert!(err.to_string().contains("(1113)"));
+
+        // Valid JSON without parseable results.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type": "text", "text": "no tool result here"}]
+            })))
+            .mount(&server)
+            .await;
+        let err = native_service(server.uri())
+            .search(SearchRequest::new("q"))
+            .await
+            .expect_err("no results must fail");
+        assert_eq!(err.kind(), WebErrorKind::Body);
+        assert!(
+            err.to_string().contains("no parseable results"),
+            "got `{err}`"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_native_connection_failure_is_a_transport_error() {
+        // Grab a loopback port then close it: the connect is refused.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        let err = native_service(format!("http://127.0.0.1:{port}"))
+            .search(SearchRequest::new("q"))
+            .await
+            .expect_err("connection refused must fail");
+        assert_eq!(err.kind(), WebErrorKind::Transport);
+        assert!(err.to_string().contains("request failed"), "got `{err}`");
+    }
+
+    #[tokio::test]
+    async fn provider_native_policy_deny_blocks_before_any_request() {
+        // No mock is mounted: a request that escaped the policy gate would
+        // answer 404 and fail the kind assertion below.
+        let server = MockServer::start().await;
+        let deny_loopback = NetworkPolicyDecider::new(
+            codesmith_agent_runtime::network_policy::NetworkPolicy {
+                default: Decision::Allow.into(),
+                allow: Vec::new(),
+                deny: vec!["127.0.0.1".to_string()],
+                proxy: Vec::new(),
+                audit: false,
+            },
+            None,
+        );
+        let err = native_service(server.uri())
+            .search(SearchRequest::new("q").with_policy(Some(deny_loopback)))
+            .await
+            .expect_err("policy deny must fail");
+        assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
+    }
 }

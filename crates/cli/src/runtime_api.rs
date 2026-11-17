@@ -2842,7 +2842,8 @@ mod tests {
             },
             Arc::new(MockExecutor),
         )
-        .await?;
+        .await
+        .unwrap();
         let mut config = base_config.unwrap_or_default();
         config.capacity = Some(crate::config::CapacityConfig {
             enabled: Some(false),
@@ -2971,10 +2972,12 @@ mod tests {
             let detail: serde_json::Value = client
                 .get(format!("http://{addr}/v1/threads/{thread_id}"))
                 .send()
-                .await?
+                .await
+                .unwrap()
                 .error_for_status()?
                 .json()
-                .await?;
+                .await
+                .unwrap();
             let status = detail["turns"]
                 .as_array()
                 .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
@@ -2997,7 +3000,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_and_tasks_endpoints_work() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3005,29 +3008,35 @@ mod tests {
         let health: serde_json::Value = client
             .get(format!("http://{addr}/health"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(health["status"], "ok");
 
         let created: serde_json::Value = client
             .post(format!("http://{addr}/v1/tasks"))
             .json(&json!({ "prompt": "hello task" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let id = created["id"].as_str().expect("task id").to_string();
 
         let listed: serde_json::Value = client
             .get(format!("http://{addr}/v1/tasks"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             listed["tasks"]
                 .as_array()
@@ -3037,19 +3046,23 @@ mod tests {
         let detail: serde_json::Value = client
             .get(format!("http://{addr}/v1/tasks/{id}"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(detail["id"], id);
 
         let _cancelled: serde_json::Value = client
             .post(format!("http://{addr}/v1/tasks/{id}/cancel"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
 
         handle.abort();
         Ok(())
@@ -3057,7 +3070,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_goal_route_creates_pauses_and_clears_a_goal() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3065,10 +3078,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let id = created["id"].as_str().expect("thread id").to_string();
         let goal_url = format!("http://{addr}/v1/threads/{id}/goal");
 
@@ -3077,10 +3092,12 @@ mod tests {
         let peek: serde_json::Value = client
             .get(&goal_url)
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(peek["loaded"], false);
         assert!(peek["goal"].is_null());
 
@@ -3090,10 +3107,12 @@ mod tests {
             .post(&goal_url)
             .json(&json!({ "action": "edit", "objective": "ship it", "token_budget": 300 }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(edited["goal"]["objective"], "ship it");
         assert_eq!(edited["goal"]["status"], "active");
         assert_eq!(edited["goal"]["token_budget"], 300);
@@ -3102,10 +3121,12 @@ mod tests {
         let peek: serde_json::Value = client
             .get(&goal_url)
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(peek["loaded"], true);
         assert_eq!(peek["goal"]["objective"], "ship it");
 
@@ -3113,30 +3134,36 @@ mod tests {
             .post(&goal_url)
             .json(&json!({ "action": "pause" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(paused["goal"]["status"], "paused");
 
         let resumed: serde_json::Value = client
             .post(&goal_url)
             .json(&json!({ "action": "resume" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resumed["goal"]["status"], "active");
 
         let cleared: serde_json::Value = client
             .post(&goal_url)
             .json(&json!({ "action": "clear" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(cleared["goal"].is_null());
 
         handle.abort();
@@ -3149,7 +3176,9 @@ mod tests {
         let sessions_dir = root.join("sessions");
         let token = "local-test-token".to_string();
         let Some((addr, _runtime_threads, handle)) =
-            spawn_test_server_with_root_and_token(root, sessions_dir, Some(token.clone())).await?
+            spawn_test_server_with_root_and_token(root, sessions_dir, Some(token.clone()))
+                .await
+                .unwrap()
         else {
             return Ok(());
         };
@@ -3158,21 +3187,24 @@ mod tests {
         let health = client
             .get(format!("http://{addr}/health"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
         assert_eq!(health.status(), StatusCode::OK);
 
         let unauthorized = client
             .get(format!("http://{addr}/v1/threads/summary"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
         let bearer = client
             .get(format!("http://{addr}/v1/threads/summary"))
             .bearer_auth(&token)
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
         assert_eq!(bearer.status(), StatusCode::OK);
 
@@ -3182,7 +3214,8 @@ mod tests {
         let query_token = client
             .get(format!("http://{addr}/v1/threads/summary?token={token}"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(query_token.status(), StatusCode::UNAUTHORIZED);
 
         handle.abort();
@@ -3191,7 +3224,7 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_and_automation_endpoints_work() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3199,10 +3232,12 @@ mod tests {
         let workspace: serde_json::Value = client
             .get(format!("http://{addr}/v1/workspace/status"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(workspace.get("workspace").is_some());
 
         let created: serde_json::Value = client
@@ -3214,10 +3249,12 @@ mod tests {
                 "status": "active"
             }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let automation_id = created["id"]
             .as_str()
             .context("missing automation id")?
@@ -3226,10 +3263,12 @@ mod tests {
         let listed: serde_json::Value = client
             .get(format!("http://{addr}/v1/automations"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             listed
                 .as_array()
@@ -3239,10 +3278,12 @@ mod tests {
         let run_now: serde_json::Value = client
             .post(format!("http://{addr}/v1/automations/{automation_id}/run"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(run_now["automation_id"], automation_id);
 
         let paused: serde_json::Value = client
@@ -3250,10 +3291,12 @@ mod tests {
                 "http://{addr}/v1/automations/{automation_id}/pause"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(paused["status"], "paused");
 
         let resumed: serde_json::Value = client
@@ -3261,10 +3304,12 @@ mod tests {
                 "http://{addr}/v1/automations/{automation_id}/resume"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resumed["status"], "active");
 
         let updated: serde_json::Value = client
@@ -3274,10 +3319,12 @@ mod tests {
                 "rrule": "FREQ=WEEKLY;BYDAY=MO,WE;BYHOUR=10;BYMINUTE=15"
             }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(updated["name"], "Smoke automation edited");
 
         let runs: serde_json::Value = client
@@ -3285,10 +3332,12 @@ mod tests {
                 "http://{addr}/v1/automations/{automation_id}/runs?limit=5"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             runs.as_array().is_some_and(|items| !items.is_empty()),
             "expected at least one run entry"
@@ -3297,15 +3346,18 @@ mod tests {
         let _deleted: serde_json::Value = client
             .delete(format!("http://{addr}/v1/automations/{automation_id}"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
 
         let missing_status = client
             .get(format!("http://{addr}/v1/automations/{automation_id}"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .status();
         assert_eq!(missing_status, StatusCode::NOT_FOUND);
 
@@ -3315,7 +3367,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_requires_prompt() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3324,7 +3376,8 @@ mod tests {
             .post(format!("http://{addr}/v1/stream"))
             .json(&json!({ "prompt": "" }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         handle.abort();
         Ok(())
@@ -3332,7 +3385,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
-        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3341,10 +3394,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let thread_id = created["id"]
             .as_str()
             .context("missing thread id")?
@@ -3354,20 +3409,24 @@ mod tests {
             .patch(format!("http://{addr}/v1/threads/{thread_id}"))
             .json(&json!({ "archived": true }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(archived["id"], thread_id);
         assert_eq!(archived["archived"], true);
 
         let listed: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             listed
                 .as_array()
@@ -3379,10 +3438,12 @@ mod tests {
                 "http://{addr}/v1/threads/summary?include_archived=true&limit=100"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             listed_all
                 .as_array()
@@ -3393,51 +3454,61 @@ mod tests {
             .patch(format!("http://{addr}/v1/threads/{thread_id}"))
             .json(&json!({ "archived": false }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(unarchived["archived"], false);
 
         let invalid_patch = client
             .patch(format!("http://{addr}/v1/threads/{thread_id}"))
             .json(&json!({}))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(invalid_patch.status(), StatusCode::BAD_REQUEST);
 
         let missing_patch = client
             .patch(format!("http://{addr}/v1/threads/thr_missing"))
             .json(&json!({ "archived": true }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(missing_patch.status(), StatusCode::NOT_FOUND);
 
         let detail: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads/{thread_id}"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(detail["thread"]["id"], thread_id);
 
         let resumed: serde_json::Value = client
             .post(format!("http://{addr}/v1/threads/{thread_id}/resume"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resumed["id"], thread_id);
 
         let forked: serde_json::Value = client
             .post(format!("http://{addr}/v1/threads/{thread_id}/fork"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let forked_id = forked["id"].as_str().context("missing forked id")?;
         assert_ne!(forked_id, thread_id);
 
@@ -3447,7 +3518,8 @@ mod tests {
         let harness = crate::core::engine::mock_engine_handle();
         runtime_threads
             .install_test_engine(&thread_id, harness.handle.clone())
-            .await?;
+            .await
+            .unwrap();
         let mut rx_op = harness.rx_op;
         let tx_event = harness.tx_event;
         tokio::spawn(async move {
@@ -3514,10 +3586,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
             .json(&json!({ "prompt": "thread endpoint test" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let turn_id = turn_start["turn"]["id"]
             .as_str()
             .context("missing turn id")?
@@ -3530,7 +3604,8 @@ mod tests {
             &turn_id,
             Duration::from_secs(2),
         )
-        .await?;
+        .await
+        .unwrap();
 
         let steer_resp = client
             .post(format!(
@@ -3538,7 +3613,8 @@ mod tests {
             ))
             .json(&json!({ "prompt": "late steer" }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(steer_resp.status(), StatusCode::CONFLICT);
 
         let interrupt_resp = client
@@ -3546,17 +3622,20 @@ mod tests {
                 "http://{addr}/v1/threads/{thread_id}/turns/{turn_id}/interrupt"
             ))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(interrupt_resp.status(), StatusCode::CONFLICT);
 
         let compact_start: serde_json::Value = client
             .post(format!("http://{addr}/v1/threads/{thread_id}/compact"))
             .json(&json!({ "reason": "test manual compact" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(compact_start["thread"]["id"], thread_id);
 
         let events_resp = client
@@ -3564,7 +3643,8 @@ mod tests {
                 "http://{addr}/v1/threads/{thread_id}/events?since_seq=0"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
         let content_type = events_resp
             .headers()
@@ -3573,7 +3653,7 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(content_type.starts_with("text/event-stream"));
-        let chunk_text = read_first_sse_frame(events_resp).await?;
+        let chunk_text = read_first_sse_frame(events_resp).await.unwrap();
         assert!(
             chunk_text.contains("event:"),
             "expected SSE event chunk, got: {chunk_text}"
@@ -3609,7 +3689,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
-        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3618,10 +3698,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let thread_id = created["id"]
             .as_str()
             .context("missing thread id")?
@@ -3631,7 +3713,8 @@ mod tests {
         let harness = crate::core::engine::mock_engine_handle();
         runtime_threads
             .install_test_engine(&thread_id, harness.handle.clone())
-            .await?;
+            .await
+            .unwrap();
         let mut rx_op = harness.rx_op;
         let tx_event = harness.tx_event;
         tokio::spawn(async move {
@@ -3671,10 +3754,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
             .json(&json!({ "prompt": "cursor replay test" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let turn_id = started["turn"]["id"]
             .as_str()
             .context("missing turn id")?
@@ -3687,16 +3772,18 @@ mod tests {
             &turn_id,
             Duration::from_secs(2),
         )
-        .await?;
+        .await
+        .unwrap();
 
         let resp_a = client
             .get(format!(
                 "http://{addr}/v1/threads/{thread_id}/events?since_seq=0"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
-        let frame_a = read_first_sse_frame(resp_a).await?;
+        let frame_a = read_first_sse_frame(resp_a).await.unwrap();
         let (event_a, payload_a) = parse_sse_frame(&frame_a)?;
         assert_eq!(event_a, "thread.started");
         assert!(payload_a.get("turn_id").is_some());
@@ -3716,9 +3803,10 @@ mod tests {
                 "http://{addr}/v1/threads/{thread_id}/events?since_seq={seq_a}"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
-        let frame_b = read_first_sse_frame(resp_b).await?;
+        let frame_b = read_first_sse_frame(resp_b).await.unwrap();
         let (_event_b, payload_b) = parse_sse_frame(&frame_b)?;
         assert!(payload_b.get("schema_version").is_some());
         assert_eq!(payload_b["event"], payload_b["kind"]);
@@ -3738,7 +3826,7 @@ mod tests {
 
     #[tokio::test]
     async fn steer_and_interrupt_endpoints_work_on_active_turn() -> Result<()> {
-        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3747,10 +3835,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let thread_id = created["id"]
             .as_str()
             .context("missing thread id")?
@@ -3759,7 +3849,8 @@ mod tests {
         let harness = crate::core::engine::mock_engine_handle();
         runtime_threads
             .install_test_engine(&thread_id, harness.handle.clone())
-            .await?;
+            .await
+            .unwrap();
         let mut rx_op = harness.rx_op;
         let mut rx_steer = harness.rx_steer;
         let tx_event = harness.tx_event;
@@ -3808,10 +3899,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
             .json(&json!({ "prompt": "active controls" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let turn_id = turn_start["turn"]["id"]
             .as_str()
             .context("missing turn id")?
@@ -3836,10 +3929,12 @@ mod tests {
                 }],
             }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(steer_resp["id"], turn_id);
         assert_eq!(steer_resp["steer_count"], 1);
 
@@ -3848,10 +3943,12 @@ mod tests {
                 "http://{addr}/v1/threads/{thread_id}/turns/{turn_id}/interrupt"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(interrupt_resp["id"], turn_id);
 
         let terminal = wait_for_terminal_turn_status(
@@ -3861,7 +3958,8 @@ mod tests {
             &turn_id,
             Duration::from_secs(3),
         )
-        .await?;
+        .await
+        .unwrap();
         assert_eq!(terminal, "interrupted");
 
         let events = runtime_threads.events_since(&thread_id, None)?;
@@ -3912,8 +4010,9 @@ mod tests {
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(mapped);
         };
-        let body =
-            axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX).await?;
+        let body = axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("event: message.delta"));
         assert!(text.contains("\"content\":\"hello\""));
@@ -3934,8 +4033,9 @@ mod tests {
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(mapped);
         };
-        let body =
-            axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX).await?;
+        let body = axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("event: tool.started"));
 
@@ -3960,8 +4060,9 @@ mod tests {
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(mapped);
         };
-        let body =
-            axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX).await?;
+        let body = axum::body::to_bytes(Sse::new(stream).into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("event: tool.completed"));
         assert!(text.contains("\"success\":true"));
@@ -3985,7 +4086,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_endpoint_remains_backward_compatible() -> Result<()> {
-        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -3995,10 +4096,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let thread_id = created["id"]
             .as_str()
             .context("missing thread id")?
@@ -4007,7 +4110,8 @@ mod tests {
         let harness = crate::core::engine::mock_engine_handle();
         runtime_threads
             .install_test_engine(&thread_id, harness.handle.clone())
-            .await?;
+            .await
+            .unwrap();
         let mut rx_op = harness.rx_op;
         let tx_event = harness.tx_event;
         tokio::spawn(async move {
@@ -4054,10 +4158,12 @@ mod tests {
             .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
             .json(&json!({ "prompt": "compatibility stream" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let turn_id = turn_start["turn"]["id"]
             .as_str()
             .context("missing turn id")?
@@ -4070,7 +4176,8 @@ mod tests {
             &turn_id,
             Duration::from_secs(2),
         )
-        .await?;
+        .await
+        .unwrap();
 
         // Verify that the persisted events include the expected turn lifecycle events.
         let events = runtime_threads.events_since(&thread_id, None)?;
@@ -4089,7 +4196,8 @@ mod tests {
                 "http://{addr}/v1/threads/{thread_id}/events?since_seq=0"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
         let content_type = events_resp
             .headers()
@@ -4105,7 +4213,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_get_returns_404_for_missing_id() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4113,7 +4221,8 @@ mod tests {
         let resp = client
             .get(format!("http://{addr}/v1/sessions/nonexistent_id"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
         handle.abort();
@@ -4122,7 +4231,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_endpoints_reject_invalid_id() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4130,7 +4239,8 @@ mod tests {
         let get_resp = client
             .get(format!("http://{addr}/v1/sessions/invalid%20id"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(get_resp.status(), StatusCode::BAD_REQUEST);
 
         let resume_resp = client
@@ -4139,13 +4249,15 @@ mod tests {
             ))
             .json(&json!({}))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resume_resp.status(), StatusCode::BAD_REQUEST);
 
         let delete_resp = client
             .delete(format!("http://{addr}/v1/sessions/invalid%20id"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(delete_resp.status(), StatusCode::BAD_REQUEST);
 
         handle.abort();
@@ -4154,7 +4266,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_resume_thread_returns_404_for_missing_session() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4165,7 +4277,8 @@ mod tests {
             ))
             .json(&json!({}))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
         handle.abort();
@@ -4199,17 +4312,19 @@ mod tests {
             false,
             Some(config),
         )
-        .await?
-        else {
+        .await
+        .unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
         let models: Vec<serde_json::Value> = client
             .get(format!("http://{addr}/v1/models"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .json()
-            .await?;
+            .await
+            .unwrap();
         let configured = models
             .iter()
             .find(|model| model["id"] == json!("claude-sonnet-4-5"))
@@ -4232,9 +4347,11 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&serde_json::json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(
             thread["model"],
             json!("claude-sonnet-4-5"),
@@ -4280,7 +4397,9 @@ mod tests {
         )?;
 
         let Some((addr, _runtime_threads, handle)) =
-            spawn_test_server_with_root(root.clone(), sessions_dir.clone()).await?
+            spawn_test_server_with_root(root.clone(), sessions_dir.clone())
+                .await
+                .unwrap()
         else {
             return Ok(());
         };
@@ -4292,9 +4411,10 @@ mod tests {
             ))
             .json(&json!({ "model": "deepseek-v4-pro" }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let resumed: serde_json::Value = resp.json().await?;
+        let resumed: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(resumed["session_id"], "sess_test_resume");
         assert_eq!(resumed["message_count"], 2);
 
@@ -4304,10 +4424,12 @@ mod tests {
         let detail: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads/{thread_id}"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(detail["thread"]["id"], thread_id);
         assert_eq!(detail["turns"].as_array().map_or(0, Vec::len), 1);
         assert_eq!(detail["items"].as_array().map_or(0, Vec::len), 2);
@@ -4318,14 +4440,15 @@ mod tests {
 
     #[tokio::test]
     async fn session_delete_returns_404_for_missing_id() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
         let resp = client
             .delete(format!("http://{addr}/v1/sessions/nonexistent-id"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         handle.abort();
         Ok(())
@@ -4364,7 +4487,8 @@ mod tests {
             .header("Origin", "http://localhost:5173")
             .header("Access-Control-Request-Method", "GET")
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(
             resp.headers()
                 .get("access-control-allow-origin")
@@ -4378,7 +4502,8 @@ mod tests {
             .header("Origin", "http://localhost:1420")
             .header("Access-Control-Request-Method", "GET")
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(
             resp.headers()
                 .get("access-control-allow-origin")
@@ -4393,11 +4518,23 @@ mod tests {
             .header("Origin", "http://malicious.example")
             .header("Access-Control-Request-Method", "GET")
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             resp.headers().get("access-control-allow-origin").is_none(),
             "non-allowed origin must not be echoed back"
         );
+
+        // A plain (non-preflight) GET from an allowed origin passes the
+        // layer and reaches the route handler.
+        let resp = client
+            .get(format!("http://{addr}/probe"))
+            .header("Origin", "http://localhost:5173")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "ok");
 
         handle.abort();
         Ok(())
@@ -4423,7 +4560,7 @@ mod tests {
     /// `title` / `system_prompt` back to None.
     #[tokio::test]
     async fn patch_thread_accepts_extended_field_set() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4435,10 +4572,12 @@ mod tests {
                 "mode": "agent"
             }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let thread_id = created["id"]
             .as_str()
             .context("missing thread id")?
@@ -4457,10 +4596,12 @@ mod tests {
                 "system_prompt": "You are a useful assistant."
             }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
 
         assert_eq!(patched["allow_shell"], true);
         assert_eq!(patched["trust_mode"], true);
@@ -4475,10 +4616,12 @@ mod tests {
             .patch(format!("http://{addr}/v1/threads/{thread_id}"))
             .json(&json!({ "title": "" }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             cleared["title"].is_null() || !cleared.as_object().unwrap().contains_key("title"),
             "empty title must serialize as None: {cleared:?}"
@@ -4489,7 +4632,8 @@ mod tests {
             .patch(format!("http://{addr}/v1/threads/{thread_id}"))
             .json(&json!({}))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
 
         // Empty model is rejected (validation).
@@ -4497,7 +4641,8 @@ mod tests {
             .patch(format!("http://{addr}/v1/threads/{thread_id}"))
             .json(&json!({ "model": "  " }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(bad_model.status(), StatusCode::BAD_REQUEST);
 
         handle.abort();
@@ -4509,7 +4654,7 @@ mod tests {
     /// returns both.
     #[tokio::test]
     async fn list_threads_archived_only_filter_matches_only_archived() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4519,37 +4664,44 @@ mod tests {
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let active_id = active["id"].as_str().unwrap().to_string();
 
         let archived: serde_json::Value = client
             .post(format!("http://{addr}/v1/threads"))
             .json(&json!({}))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let archived_id = archived["id"].as_str().unwrap().to_string();
 
         client
             .patch(format!("http://{addr}/v1/threads/{archived_id}"))
             .json(&json!({ "archived": true }))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
 
         // Default (active only) → only the unarchived one.
         let active_list: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let ids: Vec<&str> = active_list
             .as_array()
             .unwrap()
@@ -4563,10 +4715,12 @@ mod tests {
         let archived_list: serde_json::Value = client
             .get(format!("http://{addr}/v1/threads?archived_only=true"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let ids: Vec<&str> = archived_list
             .as_array()
             .unwrap()
@@ -4581,10 +4735,12 @@ mod tests {
                 "http://{addr}/v1/threads?include_archived=true&archived_only=true"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let ids: Vec<&str> = archived_list
             .as_array()
             .unwrap()
@@ -4599,10 +4755,12 @@ mod tests {
                 "http://{addr}/v1/threads/summary?archived_only=true&limit=10"
             ))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         let summary_ids: Vec<&str> = summary
             .as_array()
             .unwrap()
@@ -4620,7 +4778,7 @@ mod tests {
     /// zero with empty buckets (never a 404).
     #[tokio::test]
     async fn usage_endpoint_returns_empty_aggregation_for_fresh_store() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4628,10 +4786,12 @@ mod tests {
         let body: serde_json::Value = client
             .get(format!("http://{addr}/v1/usage"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(body["group_by"], "day");
         assert_eq!(body["totals"]["input_tokens"], 0);
         assert_eq!(body["totals"]["output_tokens"], 0);
@@ -4645,7 +4805,8 @@ mod tests {
         let bad_group = client
             .get(format!("http://{addr}/v1/usage?group_by=galaxy"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(bad_group.status(), StatusCode::BAD_REQUEST);
 
         // Each accepted group_by value succeeds.
@@ -4653,7 +4814,8 @@ mod tests {
             let resp = client
                 .get(format!("http://{addr}/v1/usage?group_by={gb}"))
                 .send()
-                .await?;
+                .await
+                .unwrap();
             assert!(resp.status().is_success(), "group_by={gb} failed: {resp:?}");
         }
 
@@ -4661,7 +4823,8 @@ mod tests {
         let bad_since = client
             .get(format!("http://{addr}/v1/usage?since=not-a-date"))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(bad_since.status(), StatusCode::BAD_REQUEST);
 
         // since > until rejected.
@@ -4670,7 +4833,8 @@ mod tests {
                 "http://{addr}/v1/usage?since=2030-01-02T00:00:00Z&until=2030-01-01T00:00:00Z"
             ))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(inverted.status(), StatusCode::BAD_REQUEST);
 
         handle.abort();
@@ -4679,17 +4843,19 @@ mod tests {
 
     #[tokio::test]
     async fn models_endpoint_lists_registry() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
         let models: serde_json::Value = client
             .get(format!("http://{addr}/v1/models"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert!(
             models.as_array().is_some_and(|a| !a.is_empty()),
             "registry must list at least one model"
@@ -4711,17 +4877,19 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_info_reports_bind_state() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
         let info: serde_json::Value = client
             .get(format!("http://{addr}/v1/runtime/info"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(info["bind_host"], "127.0.0.1");
         assert_eq!(info["auth_required"], false);
         assert!(info["version"].is_string());
@@ -4741,26 +4909,33 @@ mod tests {
             None,
             false,
         )
-        .await?
-        else {
+        .await
+        .unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
-        let disabled = client.get(format!("http://{addr}/mobile")).send().await?;
+        let disabled = client
+            .get(format!("http://{addr}/mobile"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(disabled.status(), StatusCode::NOT_FOUND);
         handle.abort();
 
         let Some((addr, _runtime_threads, handle)) =
-            spawn_test_server_with_root_token_and_mobile(root, sessions_dir, None, true).await?
+            spawn_test_server_with_root_token_and_mobile(root, sessions_dir, None, true)
+                .await
+                .unwrap()
         else {
             return Ok(());
         };
         let enabled = client
             .get(format!("http://{addr}/mobile"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
-        let html = enabled.text().await?;
+        let html = enabled.text().await.unwrap();
         assert!(html.contains("CodeSmith Mobile"));
         assert!(html.contains("/v1/approvals/"));
 
@@ -4780,30 +4955,36 @@ mod tests {
             Some(token.clone()),
             true,
         )
-        .await?
-        else {
+        .await
+        .unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
 
-        let unauthorized = client.get(format!("http://{addr}/mobile")).send().await?;
+        let unauthorized = client
+            .get(format!("http://{addr}/mobile"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
         let encoded = url_query_component(&token);
         let query = client
             .get(format!("http://{addr}/mobile?token={encoded}"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
-        assert!(query.text().await?.contains("CodeSmith Mobile"));
+        assert!(query.text().await.unwrap().contains("CodeSmith Mobile"));
 
         let bearer = client
             .get(format!("http://{addr}/mobile"))
             .bearer_auth(&token)
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
-        assert!(bearer.text().await?.contains("CodeSmith Mobile"));
+        assert!(bearer.text().await.unwrap().contains("CodeSmith Mobile"));
 
         handle.abort();
         Ok(())
@@ -4815,7 +4996,9 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let sessions_dir = root.join("sessions");
         let Some((addr, _runtime_threads, handle)) =
-            spawn_test_server_with_root_token_and_mobile(root, sessions_dir, None, true).await?
+            spawn_test_server_with_root_token_and_mobile(root, sessions_dir, None, true)
+                .await
+                .unwrap()
         else {
             return Ok(());
         };
@@ -4824,14 +5007,16 @@ mod tests {
         let page = client
             .get(format!("http://{addr}/mobile"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
-        assert!(page.text().await?.contains("CodeSmith Mobile"));
+        assert!(page.text().await.unwrap().contains("CodeSmith Mobile"));
 
         let summary = client
             .get(format!("http://{addr}/v1/threads/summary"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?;
         assert_eq!(summary.status(), StatusCode::OK);
 
@@ -4841,7 +5026,7 @@ mod tests {
 
     #[tokio::test]
     async fn decide_approval_404s_when_nothing_pending() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4849,7 +5034,8 @@ mod tests {
             .post(format!("http://{addr}/v1/approvals/no_such_id"))
             .json(&json!({ "decision": "allow" }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
         handle.abort();
@@ -4858,7 +5044,7 @@ mod tests {
 
     #[tokio::test]
     async fn decide_approval_400s_on_bad_decision() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4866,7 +5052,8 @@ mod tests {
             .post(format!("http://{addr}/v1/approvals/whatever"))
             .json(&json!({ "decision": "yolo" }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         handle.abort();
@@ -4875,7 +5062,7 @@ mod tests {
 
     #[tokio::test]
     async fn decide_approval_delivers_to_runtime() -> Result<()> {
-        let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4885,14 +5072,17 @@ mod tests {
             .post(format!("http://{addr}/v1/approvals/ext_id"))
             .json(&json!({ "decision": "allow", "remember": false }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body: serde_json::Value = resp.json().await?;
+        let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["ok"], true);
         assert_eq!(body["decision"], "allow");
         assert_eq!(body["delivered"], true);
 
-        let received = tokio::time::timeout(Duration::from_secs(1), rx).await??;
+        let received = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .unwrap()?;
         assert_eq!(
             received,
             ExternalApprovalDecision::Allow { remember: false }
@@ -4904,17 +5094,19 @@ mod tests {
 
     #[tokio::test]
     async fn skills_endpoint_includes_enabled_field() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
         let body: serde_json::Value = client
             .get(format!("http://{addr}/v1/skills"))
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status()?
             .json()
-            .await?;
+            .await
+            .unwrap();
         if let Some(skills) = body["skills"].as_array() {
             for skill in skills {
                 assert!(skill.get("enabled").is_some());
@@ -4927,7 +5119,7 @@ mod tests {
 
     #[tokio::test]
     async fn skill_toggle_endpoint_404s_for_unknown_skill() -> Result<()> {
-        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server().await.unwrap() else {
             return Ok(());
         };
         let client = reqwest::Client::new();
@@ -4935,7 +5127,8 @@ mod tests {
             .post(format!("http://{addr}/v1/skills/no-such-skill"))
             .json(&json!({ "enabled": false }))
             .send()
-            .await?;
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
         handle.abort();
@@ -5067,5 +5260,676 @@ mod tests {
             config.skills_dir(),
             "with no valid in-workspace skills dir, resolution should fall back to config"
         );
+    }
+
+    // ── Pure helpers (function-coverage slice, no server bind) ─────────────
+
+    #[test]
+    fn runtime_api_options_defaults() {
+        let options = RuntimeApiOptions::default();
+        assert_eq!(options.host, "127.0.0.1");
+        assert_eq!(options.port, 7878);
+        assert_eq!(options.workers, 2);
+        assert!(options.cors_origins.is_empty());
+        assert_eq!(options.auth_token, None);
+        assert!(!options.insecure_no_auth);
+        assert!(!options.mobile);
+        assert!(!options.show_qr);
+    }
+
+    #[test]
+    fn parse_bind_addr_handles_ips_brackets_and_rejects_hostnames() {
+        let v4 = parse_bind_addr("127.0.0.1", 8080).expect("ipv4");
+        assert_eq!(v4.ip().to_string(), "127.0.0.1");
+        assert_eq!(v4.port(), 8080);
+
+        let bare_v6 = parse_bind_addr("::1", 8787).expect("bare ipv6");
+        assert_eq!(bare_v6.ip().to_string(), "::1");
+
+        let bracketed = parse_bind_addr("[::1]", 8787).expect("bracketed ipv6");
+        assert_eq!(bracketed.ip().to_string(), "::1");
+
+        assert_eq!(parse_bind_addr("localhost", 8080), None);
+        assert_eq!(parse_bind_addr("", 8080), None);
+    }
+
+    #[test]
+    fn bracketed_host_port_brackets_only_bare_ipv6() {
+        assert_eq!(bracketed_host_port("::1", 7878), "[::1]:7878");
+        assert_eq!(bracketed_host_port("[::1]", 7878), "[::1]:7878");
+        assert_eq!(bracketed_host_port("127.0.0.1", 7878), "127.0.0.1:7878");
+    }
+
+    #[test]
+    fn truncate_text_appends_ellipsis_only_beyond_the_limit() {
+        assert_eq!(truncate_text("abcd", 4), "abcd");
+        assert_eq!(truncate_text("abc", 4), "abc");
+        assert_eq!(truncate_text("abcde", 4), "a...");
+        assert_eq!(truncate_text("ééééé", 3), "..."); // 3-3=0 chars kept
+    }
+
+    #[test]
+    fn error_mappers_classify_status_codes() {
+        assert_eq!(
+            map_task_err(anyhow!("task 42 not found")).status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            map_task_err(anyhow!("bad payload")).status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            map_thread_err(anyhow!("thread already has an active turn")).status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            map_automation_err(anyhow!("Failed to read automation x")).status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ApiError::internal("boom").status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn map_session_store_err_classifies_io_error_kinds() {
+        let not_found = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(
+            map_session_store_err("s1", &not_found, "read").status,
+            StatusCode::NOT_FOUND
+        );
+
+        // Wrapped io error: classification walks the error chain.
+        let wrapped = not_found.context("reading session store directory");
+        assert_eq!(
+            map_session_store_err("s2", &wrapped, "read").status,
+            StatusCode::NOT_FOUND
+        );
+
+        let bad_data = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        assert_eq!(
+            map_session_store_err("s3", &bad_data, "parse").status,
+            StatusCode::BAD_REQUEST
+        );
+
+        let bad_input = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        assert_eq!(
+            map_session_store_err("s4", &bad_input, "open").status,
+            StatusCode::BAD_REQUEST
+        );
+
+        let other = anyhow::Error::new(std::io::Error::other("disk on fire"));
+        assert_eq!(
+            map_session_store_err("s5", &other, "read").status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn load_mcp_config_or_default_accepts_missing_and_empty_configs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = load_mcp_config_or_default(&tmp.path().join("nope.json"));
+        assert!(missing.is_ok(), "missing MCP config resolves to default");
+
+        let empty = tmp.path().join("mcp.json");
+        fs::write(&empty, "{}").unwrap();
+        let config = load_mcp_config_or_default(&empty).expect("empty object parses");
+        assert!(config.servers.is_empty());
+    }
+
+    #[test]
+    fn request_has_runtime_token_accepts_both_header_forms() {
+        let expected = "sekrit";
+        let bearer = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer sekrit")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        assert!(request_has_runtime_token(&bearer, expected));
+
+        let custom = Request::builder()
+            .header("x-codesmith-runtime-token", "sekrit")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        assert!(request_has_runtime_token(&custom, expected));
+
+        let wrong = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer nope")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        assert!(!request_has_runtime_token(&wrong, expected));
+
+        let bare = Request::builder()
+            .body(axum::body::Body::empty())
+            .expect("request");
+        assert!(!request_has_runtime_token(&bare, expected));
+    }
+
+    #[test]
+    fn parse_sse_frame_helper_parses_event_and_data() {
+        let (event, payload) =
+            parse_sse_frame("event: turn.completed\ndata: {\"a\":1}").expect("frame");
+        assert_eq!(event, "turn.completed");
+        assert_eq!(payload, json!({ "a": 1 }));
+
+        // Multi-line data joins with newlines before parsing.
+        let (_, joined) = parse_sse_frame("event: x\ndata: {\"a\":\ndata: 1}").expect("frame");
+        assert_eq!(joined, json!({ "a": 1 }));
+
+        // No data lines parse to an empty object.
+        let (_, empty) = parse_sse_frame("event: x").expect("frame");
+        assert_eq!(empty, json!({}));
+
+        assert!(parse_sse_frame("data: {}").is_err(), "missing event field");
+        assert!(
+            parse_sse_frame("event: x\ndata: not-json").is_err(),
+            "invalid data payload"
+        );
+    }
+
+    #[test]
+    fn detect_lan_ip_returns_without_sending_traffic() {
+        // UDP connect only selects the outbound interface; no packet leaves.
+        let _ = detect_lan_ip();
+    }
+
+    #[test]
+    fn print_mobile_urls_renders_loopback_and_qr_branches() {
+        let addr: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+        print_mobile_urls(addr, Some("tok en+"), true, false);
+        print_mobile_urls(addr, Some("tok"), true, true);
+        print_mobile_urls(addr, None, false, false);
+    }
+
+    fn compat_record(event: &str, payload: Value) -> RuntimeEventRecord {
+        RuntimeEventRecord {
+            schema_version: 1,
+            seq: 1,
+            timestamp: Utc::now(),
+            thread_id: "thr".to_string(),
+            turn_id: Some("turn".to_string()),
+            item_id: None,
+            event: event.to_string(),
+            payload,
+        }
+    }
+
+    #[test]
+    fn map_compat_stream_event_covers_remaining_event_arms() {
+        // tool_call delta → tool.progress with the delta output.
+        let tool_delta = compat_record(
+            "item.delta",
+            json!({ "kind": "tool_call", "delta": "running" }),
+        );
+        assert!(map_compat_stream_event(&tool_delta).is_some());
+
+        // Other delta kinds map to nothing.
+        assert!(
+            map_compat_stream_event(&compat_record(
+                "item.delta",
+                json!({ "kind": "context_compaction", "delta": "x" })
+            ))
+            .is_none()
+        );
+
+        // item.started without a tool payload maps to nothing.
+        assert!(map_compat_stream_event(&compat_record("item.started", json!({}))).is_none());
+
+        // status item with detail → status message.
+        let status = compat_record(
+            "item.completed",
+            json!({ "item": { "kind": "status", "detail": "working" } }),
+        );
+        assert!(map_compat_stream_event(&status).is_some());
+
+        // status item without detail falls back to the summary.
+        let status_summary = compat_record(
+            "item.completed",
+            json!({ "item": { "kind": "status", "summary": "summarized" } }),
+        );
+        assert!(map_compat_stream_event(&status_summary).is_some());
+
+        // error item with detail and with summary fallback.
+        assert!(
+            map_compat_stream_event(&compat_record(
+                "item.failed",
+                json!({ "item": { "kind": "error", "detail": "boom" } })
+            ))
+            .is_some()
+        );
+        assert!(
+            map_compat_stream_event(&compat_record(
+                "item.failed",
+                json!({ "item": { "kind": "error", "summary": "soft boom" } })
+            ))
+            .is_some()
+        );
+
+        // command_execution item without detail uses the summary (the
+        // unwrap_or_else fallback in the tool.completed arm).
+        let summary_only = compat_record(
+            "item.completed",
+            json!({ "item": { "kind": "command_execution", "summary": "ls" } }),
+        );
+        assert!(map_compat_stream_event(&summary_only).is_some());
+
+        // Unmapped item kinds inside completed map to nothing.
+        assert!(
+            map_compat_stream_event(&compat_record(
+                "item.completed",
+                json!({ "item": { "kind": "note" } })
+            ))
+            .is_none()
+        );
+
+        // Approval / sandbox events pass the payload through.
+        for event in [
+            "approval.required",
+            "approval.decided",
+            "approval.timeout",
+            "sandbox.denied",
+        ] {
+            assert!(
+                map_compat_stream_event(&compat_record(event, json!({ "x": 1 }))).is_some(),
+                "{event} must map"
+            );
+        }
+
+        // turn.completed extracts the nested usage object.
+        let completed = compat_record(
+            "turn.completed",
+            json!({ "turn": { "usage": { "input_tokens": 4 } } }),
+        );
+        assert!(map_compat_stream_event(&completed).is_some());
+        // turn.completed without a turn payload still maps (null usage).
+        assert!(map_compat_stream_event(&compat_record("turn.completed", json!({}))).is_some());
+
+        // Unknown event names map to nothing.
+        assert!(map_compat_stream_event(&compat_record("who.knows", json!({}))).is_none());
+    }
+
+    // ── Handlers called directly with constructed state (no bind) ─────────
+
+    /// A RuntimeApiState over a tempdir root — the same construction the
+    /// bind-based harness uses, minus the listener.
+    async fn direct_state(root: PathBuf, sessions_dir: PathBuf) -> Result<RuntimeApiState> {
+        fs::create_dir_all(&sessions_dir)?;
+        let manager = TaskManager::start_with_executor(
+            TaskManagerConfig {
+                data_dir: root.join("tasks"),
+                worker_count: 1,
+                default_workspace: root.clone(),
+                default_model: DEFAULT_TEXT_MODEL.to_string(),
+                default_mode: "agent".to_string(),
+                allow_shell: false,
+                trust_mode: false,
+                max_subagents: 2,
+            },
+            Arc::new(MockExecutor),
+        )
+        .await
+        .unwrap();
+        let mut config = Config::default();
+        config.capacity = Some(crate::config::CapacityConfig {
+            enabled: Some(false),
+            low_risk_max: None,
+            medium_risk_max: None,
+            severe_min_slack: None,
+            severe_violation_ratio: None,
+            refresh_cooldown_turns: None,
+            replan_cooldown_turns: None,
+            max_replay_per_turn: None,
+            min_turns_before_guardrail: None,
+            profile_window: None,
+            deepseek_v3_2_chat_prior: None,
+            deepseek_v3_2_reasoner_prior: None,
+            deepseek_v4_pro_prior: None,
+            deepseek_v4_flash_prior: None,
+            fallback_default_prior: None,
+        });
+        let runtime_threads: SharedRuntimeThreadManager = Arc::new(RuntimeThreadManager::open(
+            config.clone(),
+            root.clone(),
+            RuntimeThreadManagerConfig::from_task_data_dir(root.join("runtime")),
+        )?);
+        runtime_threads.attach_task_manager(manager.clone());
+        let automations = Arc::new(Mutex::new(AutomationManager::open(
+            root.join("automations"),
+        )?));
+        runtime_threads.attach_automation_manager(automations.clone());
+
+        Ok(RuntimeApiState {
+            config,
+            workspace: root.clone(),
+            task_manager: manager,
+            runtime_threads,
+            cors_origins: Vec::new(),
+            sessions: std::sync::Arc::new(codesmith_session::store::FileSessionStore::new(
+                sessions_dir,
+            )?),
+            mcp_config_path: root.join("mcp.json"),
+            automations,
+            runtime_token: None,
+            skill_state: Arc::new(Mutex::new(
+                SkillStateStore::load_from(root.join("skills_state.toml")).unwrap_or_default(),
+            )),
+            auth_required: false,
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 7878,
+            mobile_enabled: false,
+        })
+    }
+
+    fn root() -> PathBuf {
+        std::env::temp_dir().join(format!("codesmith-runtime-api-direct-{}", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn health_and_runtime_info_handlers_answer_directly() {
+        let health_json = health().await;
+        assert_eq!(health_json.status, "ok");
+        assert_eq!(health_json.service, "deepseek-runtime-api");
+
+        let root = root();
+        let state = direct_state(root.clone(), root.join("sessions"))
+            .await
+            .expect("state");
+        let info = runtime_info(State(state)).await;
+        assert_eq!(info.bind_host, "127.0.0.1");
+        assert_eq!(info.port, 7878);
+        assert!(!info.auth_required);
+    }
+
+    #[tokio::test]
+    async fn read_only_handlers_serve_an_empty_store() -> Result<()> {
+        let root = root();
+        let state = direct_state(root.clone(), root.join("sessions"))
+            .await
+            .unwrap();
+
+        // Sessions list + missing detail.
+        let sessions = list_sessions(
+            State(state.clone()),
+            Query(SessionsQuery {
+                limit: Some(10),
+                search: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(sessions.sessions.is_empty());
+        let missing = get_session(State(state.clone()), Path("nope".to_string())).await;
+        assert_eq!(
+            missing.expect_err("missing session").status,
+            StatusCode::NOT_FOUND
+        );
+
+        // Threads: create, list, summary, detail.
+        let created = create_thread(
+            State(state.clone()),
+            Json(serde_json::from_value(json!({}))?),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.1.model, DEFAULT_TEXT_MODEL);
+        let thread_id = created.1.id.clone();
+
+        let threads = list_threads(
+            State(state.clone()),
+            Query(ThreadsQuery {
+                limit: Some(50),
+                include_archived: Some(true),
+                archived_only: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(threads.0.len(), 1);
+
+        let summary = list_threads_summary(
+            State(state.clone()),
+            Query(ThreadSummaryQuery {
+                limit: Some(50),
+                search: Some("zzz-no-match".to_string()),
+                include_archived: None,
+                archived_only: Some(false),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(summary.0.is_empty());
+
+        let detail = get_thread(State(state.clone()), Path(thread_id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(detail.0.thread.id, thread_id);
+
+        // Sub-agent catalog is read-only and empty for a fresh thread.
+        let catalog = list_subagent_catalog(State(state.clone()), Path(thread_id.clone()))
+            .await
+            .unwrap();
+        assert!(catalog.0.is_empty());
+
+        // Skills: empty registry, unknown skill toggle → 404.
+        let skills = list_skills(State(state.clone())).await.unwrap();
+        // The bundled skills are always part of the registry; a fresh store
+        // merely has no user-installed ones.
+        assert!(!skills.skills.is_empty(), "bundled skills present");
+        let toggle = set_skill_enabled(
+            State(state.clone()),
+            Path("nope-skill".to_string()),
+            Json(SetSkillEnabledRequest { enabled: true }),
+        )
+        .await;
+        assert_eq!(
+            toggle.expect_err("unknown skill").status,
+            StatusCode::NOT_FOUND
+        );
+
+        // MCP endpoints over a missing config: default, zero servers/tools.
+        let servers = list_mcp_servers(State(state.clone())).await.unwrap();
+        assert!(servers.servers.is_empty());
+        let tools = list_mcp_tools(State(state.clone()), Query(McpToolsQuery { server: None }))
+            .await
+            .unwrap();
+        assert!(tools.tools.is_empty());
+
+        // Usage aggregation across every group_by, plus validation errors.
+        for group in ["day", "model", "provider", "thread"] {
+            let usage = get_usage(
+                State(state.clone()),
+                Query(UsageQuery {
+                    since: Some("2026-01-01T00:00:00Z".to_string()),
+                    until: Some("2026-01-02T00:00:00Z".to_string()),
+                    group_by: Some(group.to_string()),
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(usage.0.is_object());
+        }
+        let bad_group = get_usage(
+            State(state.clone()),
+            Query(UsageQuery {
+                since: None,
+                until: None,
+                group_by: Some("bogus".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(
+            bad_group.expect_err("bad group_by").status,
+            StatusCode::BAD_REQUEST
+        );
+        let bad_since = get_usage(
+            State(state.clone()),
+            Query(UsageQuery {
+                since: Some("not-a-date".to_string()),
+                until: None,
+                group_by: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            bad_since.expect_err("bad since").status,
+            StatusCode::BAD_REQUEST
+        );
+        let inverted = get_usage(
+            State(state.clone()),
+            Query(UsageQuery {
+                since: Some("2026-01-02T00:00:00Z".to_string()),
+                until: Some("2026-01-01T00:00:00Z".to_string()),
+                group_by: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            inverted.expect_err("since > until").status,
+            StatusCode::BAD_REQUEST
+        );
+
+        // Tasks: empty prompt refused, list empty, unknown task 404.
+        let empty_task = create_task(
+            State(state.clone()),
+            Json(serde_json::from_value(json!({ "prompt": "  " }))?),
+        )
+        .await;
+        assert_eq!(
+            empty_task.expect_err("empty prompt").status,
+            StatusCode::BAD_REQUEST
+        );
+        let tasks = list_tasks(State(state.clone()), Query(TasksQuery { limit: None }))
+            .await
+            .unwrap();
+        assert!(tasks.tasks.is_empty());
+        let missing_task = get_task(State(state.clone()), Path("t-nope".to_string())).await;
+        assert_eq!(
+            missing_task.expect_err("missing task").status,
+            StatusCode::NOT_FOUND
+        );
+
+        // Workspace status over a non-git tempdir.
+        let status = workspace_status(State(state.clone())).await.unwrap();
+        assert!(!status.git_repo);
+        assert_eq!(status.workspace, root);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mutation_handlers_reject_unknown_ids_with_mapped_errors() -> Result<()> {
+        let root = root();
+        let state = direct_state(root.clone(), root.join("sessions"))
+            .await
+            .unwrap();
+
+        // Sub-agent input extraction: text, message, and content-array forms
+        // all yield text; none of it delivers to a bogus child.
+        for body in [
+            json!({ "text": "hi" }),
+            json!({ "message": "hi" }),
+            json!({ "content": [ { "type": "text", "text": "a" }, { "type": "x" } ] }),
+        ] {
+            let err = send_subagent_input(
+                State(state.clone()),
+                Path("child-nope".to_string()),
+                Json(body),
+            )
+            .await
+            .expect_err("unknown child");
+            assert_eq!(err.status, StatusCode::NOT_FOUND);
+        }
+        let no_text = send_subagent_input(
+            State(state.clone()),
+            Path("child-nope".to_string()),
+            Json(json!({ "text": "   " })),
+        )
+        .await;
+        assert_eq!(
+            no_text.expect_err("blank text").status,
+            StatusCode::BAD_REQUEST
+        );
+
+        // Cancelling an absent/terminal child is an accepted no-op.
+        let cancelled = cancel_subagent(State(state.clone()), Path("child-nope".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(cancelled.0["accepted"], json!(true));
+
+        // User-input delivery to an unknown thread maps to an error.
+        let input = submit_user_input(
+            State(state.clone()),
+            Path(("thread-nope".to_string(), "input-nope".to_string())),
+            Json(SubmitUserInputBody { answers: vec![] }),
+        )
+        .await;
+        assert!(input.is_err());
+
+        // Queue mutations on unknown threads map to errors.
+        let enqueue = enqueue_thread_item(
+            State(state.clone()),
+            Path("thread-nope".to_string()),
+            Json(serde_json::from_value(json!({ "prompt": "hi" }))?),
+        )
+        .await;
+        assert_eq!(
+            enqueue.expect_err("unknown thread").status,
+            StatusCode::NOT_FOUND
+        );
+        let edit = edit_thread_queue_item(
+            State(state.clone()),
+            Path(("thread-nope".to_string(), "item-nope".to_string())),
+            Json(serde_json::from_value(json!({ "prompt": "hi" }))?),
+        )
+        .await;
+        assert!(edit.is_err());
+        let remove = remove_thread_queue_item(
+            State(state.clone()),
+            Path(("thread-nope".to_string(), "item-nope".to_string())),
+        )
+        .await;
+        assert!(remove.is_err());
+        let steer = steer_thread_queue_item(
+            State(state.clone()),
+            Path(("thread-nope".to_string(), "item-nope".to_string())),
+        )
+        .await;
+        assert!(steer.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn automation_handlers_list_create_and_read() -> Result<()> {
+        let root = root();
+        let state = direct_state(root.clone(), root.join("sessions"))
+            .await
+            .unwrap();
+
+        let listed = list_automations(State(state.clone())).await.unwrap();
+        assert!(listed.0.is_empty());
+
+        let create_req: CreateAutomationRequest = serde_json::from_value(json!({
+            "name": "nightly",
+            "prompt": "run the checks",
+            "rrule": "FREQ=HOURLY;INTERVAL=24",
+        }))?;
+        let created = create_automation(State(state.clone()), Json(create_req))
+            .await
+            .unwrap();
+        let id = created.1.id.clone();
+        assert_eq!(created.1.name, "nightly");
+
+        let listed = list_automations(State(state.clone())).await.unwrap();
+        assert_eq!(listed.0.len(), 1);
+
+        let fetched = get_automation(State(state.clone()), Path(id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(fetched.0.id, id);
+        let missing = get_automation(State(state.clone()), Path("nope".to_string())).await;
+        assert!(missing.is_err());
+
+        Ok(())
     }
 }

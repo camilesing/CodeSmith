@@ -338,4 +338,97 @@ mod tests {
         assert!(out.contains("api.example.com"));
         assert!(out.contains("default = deny"));
     }
+
+    #[test]
+    fn deny_then_remove_moves_the_host_across_lists() {
+        let _env = lock_test_env();
+        let (_guard, _dir, _path) = scoped_config("[network]\nallow = [\"api.example.com\"]\n");
+
+        network_inner(Some("deny api.example.com")).expect("deny");
+        let out = network_inner(Some("list")).expect("list");
+        assert!(out.contains("deny = [api.example.com]"), "{out}");
+        assert!(out.contains("allow = []"), "deny removes from allow: {out}");
+
+        network_inner(Some("remove api.example.com")).expect("remove");
+        let out = network_inner(Some("list")).expect("list");
+        assert!(out.contains("allow = []"), "{out}");
+        assert!(out.contains("deny = []"), "{out}");
+    }
+
+    #[test]
+    fn urls_and_host_spellings_normalize_to_one_entry() {
+        let _env = lock_test_env();
+        let (_guard, _dir, _path) = scoped_config("");
+
+        // A URL argument contributes its host (scheme and host case folded).
+        network_inner(Some("allow https://GitHub.COM/owner/repo")).expect("url allow");
+        // The bare host and the FQDN form normalize onto the same entry.
+        network_inner(Some("ALLOW GitHub.com.")).expect("bare allow");
+
+        let out = network_inner(Some("list")).expect("list");
+        assert!(
+            out.matches("github.com").count() == 1,
+            "one normalized entry, not one per spelling: {out}"
+        );
+    }
+
+    #[test]
+    fn host_arguments_that_are_not_hosts_are_refused() {
+        let _env = lock_test_env();
+        let (_guard, _dir, _path) = scoped_config("");
+        let err = network_inner(Some("allow repo/repo")).expect_err("a URL path is not a host");
+        assert!(err.to_string().contains("host like"), "{err}");
+        assert!(
+            network_inner(Some("allow ftp://mirror")).is_err(),
+            "a non-http URL is refused as a path too"
+        );
+        assert!(
+            network_inner(Some("allow https://")).is_err(),
+            "a URL without a host is refused"
+        );
+    }
+
+    #[test]
+    fn usage_errors_are_rejected_up_front() {
+        let _env = lock_test_env();
+        let (_guard, _dir, _path) = scoped_config("");
+        for arg in [
+            "allow",              // missing host
+            "deny host extra",    // extra word
+            "remove a b",         // extra word
+            "forget",             // missing host
+            "default",            // missing value
+            "default allow deny", // extra word
+            "default maybe",      // not a policy
+            "teleport host",      // unknown subcommand
+        ] {
+            assert!(network_inner(Some(arg)).is_err(), "{arg:?} must be refused");
+        }
+        // Unadvertised aliases still normalize to the canonical policy.
+        network_inner(Some("default block")).expect("block → deny");
+        let out = network_inner(Some("list")).expect("list");
+        assert!(out.contains("default = deny"), "{out}");
+        network_inner(Some("default ask")).expect("ask → prompt");
+        let out = network_inner(Some("list")).expect("list");
+        assert!(out.contains("default = prompt"), "{out}");
+        // Bare and case-insensitive list forms.
+        assert!(
+            network_inner(None)
+                .expect("bare list")
+                .contains("Network policy")
+        );
+        assert!(
+            network_inner(Some("LIST"))
+                .expect("case-insensitive list")
+                .contains("Network policy")
+        );
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_an_error_not_a_silent_reset() {
+        let _env = lock_test_env();
+        let (_guard, _dir, _path) = scoped_config("this is not [ valid toml");
+        assert!(network_inner(Some("list")).is_err());
+        assert!(network_inner(Some("allow x.com")).is_err());
+    }
 }

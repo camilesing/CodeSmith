@@ -187,4 +187,33 @@ mod tests {
         ]);
         assert_eq!(detect_backend_kind_from_env(&e), BackendKind::Tmux);
     }
+
+    /// The live-process entry points (cached + uncached) resolve against the
+    /// managed environment: the terminal env does not change mid-test-run,
+    /// so both agree. `TERM_PROGRAM` is pinned to a non-iTerm value so the
+    /// assertion holds regardless of the host running the suite.
+    #[test]
+    fn live_detection_resolves_under_managed_env() {
+        use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+        let _guard = lock_test_env();
+        let _backend = EnvVarGuard::remove("CODESMITH_TEAM_BACKEND");
+        let _tmux = EnvVarGuard::remove("TMUX");
+        let _term = EnvVarGuard::set("TERM_PROGRAM", "Apple_Terminal");
+
+        assert_eq!(detect_backend_kind_uncached(), BackendKind::InProcess);
+        assert_eq!(detect_backend_kind(), BackendKind::InProcess);
+    }
+
+    #[test]
+    fn live_uncached_detection_honors_tmux_env() {
+        use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
+
+        let _guard = lock_test_env();
+        let _backend = EnvVarGuard::remove("CODESMITH_TEAM_BACKEND");
+        let _tmux = EnvVarGuard::set("TMUX", "/tmp/tmux-1000/default,123,0");
+        let _term = EnvVarGuard::set("TERM_PROGRAM", "Apple_Terminal");
+
+        assert_eq!(detect_backend_kind_uncached(), BackendKind::Tmux);
+    }
 }

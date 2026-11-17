@@ -4196,7 +4196,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex, OnceLock};
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// The process-wide test-env lock shared with every other crate
+    /// (`codesmith_agent_runtime::test_support`): a crate-local lock let
+    /// env-mutating tests elsewhere flip HOME mid-test, which once made
+    /// `mark`/`load` below resolve different auth-cache paths.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        codesmith_agent_runtime::test_support::lock_test_env()
+    }
 
     async fn lock_mcp_loopback_tests() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -4350,7 +4356,7 @@ mod tests {
 
     #[test]
     fn websocket_headers_reject_protocol_overrides_and_add_claude_bearer() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_lock();
         let previous = std::env::var_os("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN");
         unsafe {
             std::env::set_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN", "test-token");
@@ -5244,7 +5250,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn auth_failures_are_cached_as_needs_auth() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_lock();
         let home = tempfile::tempdir().unwrap();
         let previous_home = std::env::var_os("HOME");
         let previous_userprofile = std::env::var_os("USERPROFILE");
@@ -5257,17 +5263,26 @@ mod tests {
         config.url = Some("https://user:secret@example.invalid/mcp".to_string());
         config.transport = Some("ws".to_string());
         McpAuthCache::mark("remote", &config, "401 Unauthorized");
-        let cache = McpAuthCache::load();
-        let entry = cache
-            .fresh_entry("remote")
-            .expect("auth entry should be fresh");
+        // The mark→load disk round-trip is timing-flaky when the whole suite
+        // runs at full parallelism (observed green at --test-threads=2,
+        // flaky at 8): poll briefly instead of requiring instant visibility.
+        let mut entry = None;
+        for _ in 0..20 {
+            let cache = McpAuthCache::load();
+            if let Some(found) = cache.fresh_entry("remote") {
+                entry = Some(found.clone());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let entry = entry.expect("auth entry should be fresh");
         assert_eq!(
             entry.url.as_deref(),
             Some("https://***:***@example.invalid/mcp")
         );
         assert_eq!(entry.transport.as_deref(), Some("ws"));
         assert!(
-            needs_auth_error("remote", entry)
+            needs_auth_error("remote", &entry)
                 .to_string()
                 .contains("needs-auth")
         );
@@ -5294,7 +5309,7 @@ mod tests {
 
     #[test]
     fn connect_tasks_respect_env_batch_size_defaults() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_lock();
         let previous = std::env::var_os("MCP_SERVER_CONNECTION_BATCH_SIZE");
         unsafe {
             std::env::remove_var("MCP_SERVER_CONNECTION_BATCH_SIZE");
@@ -7125,5 +7140,1383 @@ mod tests {
             header_seen.load(AtomicOrdering::SeqCst),
             "GET preflight must include user-configured custom headers"
         );
+    }
+
+    // === Coverage: pure helpers ========================================
+
+    #[test]
+    fn parse_mcp_tool_model_name_parses_and_rejects() {
+        assert_eq!(
+            parse_mcp_tool_model_name("mcp__files__read").unwrap(),
+            ("files", "read")
+        );
+        assert!(parse_mcp_tool_model_name("read_file").is_err());
+        assert!(parse_mcp_tool_model_name("mcp__files__").is_err());
+    }
+
+    #[test]
+    fn is_tool_enabled_respects_enabled_and_disabled_lists() {
+        let mut config = test_server_config();
+        config.enabled_tools = vec!["alpha".to_string(), "beta".to_string()];
+        config.disabled_tools = vec!["beta".to_string()];
+        assert!(config.is_tool_enabled("alpha"));
+        assert!(!config.is_tool_enabled("beta"), "deny wins over allow");
+        assert!(
+            !config.is_tool_enabled("gamma"),
+            "allow-list excludes others"
+        );
+
+        let mut unfiltered = test_server_config();
+        unfiltered.disabled_tools = vec!["nope".to_string()];
+        assert!(unfiltered.is_tool_enabled("anything"));
+    }
+
+    #[test]
+    fn is_streamable_http_incompatible_status_matrix() {
+        for status in [
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::NOT_ACCEPTABLE,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            StatusCode::NOT_IMPLEMENTED,
+        ] {
+            assert!(is_streamable_http_incompatible_status(status), "{status}");
+        }
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(!is_streamable_http_incompatible_status(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn is_mcp_auth_error_text_matches_status_and_keywords() {
+        for text in [
+            "MCP Streamable HTTP rejected (transport=http url=x status=401 Unauthorized)",
+            "MCP SSE POST rejected (transport=sse endpoint=y status=403 Forbidden): no",
+            "server said: 401 please log in",
+            "needs-auth (cached for 900s)",
+            "step-up authentication required",
+            "step up your auth",
+        ] {
+            assert!(is_mcp_auth_error_text(text), "must match: {text}");
+            assert!(is_mcp_auth_error(&anyhow::anyhow!("{text}")), "err: {text}");
+        }
+        for text in ["operation timed out", "invalid dns name", "status=500"] {
+            assert!(!is_mcp_auth_error_text(text), "must NOT match: {text}");
+        }
+    }
+
+    #[test]
+    fn validate_mcp_transport_option_accepts_and_rejects() {
+        assert!(validate_mcp_transport_option(None).is_ok());
+        assert!(validate_mcp_transport_option(Some("sse")).is_ok());
+        assert!(validate_mcp_transport_option(Some(" WebSocket ")).is_ok());
+        assert!(validate_mcp_transport_option(Some("carrier-pigeon")).is_err());
+    }
+
+    // === Coverage: Claude.ai access-token plumbing =====================
+
+    #[test]
+    fn configured_claude_access_token_reads_headers_when_env_unset() {
+        let _guard = env_lock();
+        let previous = std::env::var_os("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN");
+        unsafe {
+            std::env::remove_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN");
+        }
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer header-token".to_string(),
+        );
+        assert_eq!(
+            configured_claude_access_token(&headers).as_deref(),
+            Some("header-token")
+        );
+
+        let mut basic = HashMap::new();
+        basic.insert("Authorization".to_string(), "Basic dXNlcg==".to_string());
+        assert_eq!(configured_claude_access_token(&basic), None);
+
+        assert_eq!(configured_claude_access_token(&HashMap::new()), None);
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN", value),
+                None => std::env::remove_var("CODESMITH_MCP_CLAUDE_ACCESS_TOKEN"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn refresh_claude_access_token_command_outcomes() {
+        let _guard = env_lock();
+        let previous = std::env::var_os("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND");
+        let set = |value: Option<&str>| unsafe {
+            match value {
+                Some(v) => std::env::set_var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND", v),
+                None => std::env::remove_var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND"),
+            }
+        };
+
+        set(None);
+        assert_eq!(refresh_claude_access_token().await.unwrap(), None);
+        set(Some(""));
+        assert_eq!(refresh_claude_access_token().await.unwrap(), None);
+        set(Some("   "));
+        assert_eq!(refresh_claude_access_token().await.unwrap(), None);
+        // A comment-only command shellsplits to zero words — nothing to run.
+        set(Some("# codesmith comment only"));
+        assert_eq!(refresh_claude_access_token().await.unwrap(), None);
+
+        // Successful command with stdout → fresh token.
+        set(Some("printf refreshed-token"));
+        assert_eq!(
+            refresh_claude_access_token().await.unwrap().as_deref(),
+            Some("refreshed-token")
+        );
+        // Successful command with empty stdout → nothing to use.
+        set(Some("true"));
+        assert_eq!(refresh_claude_access_token().await.unwrap(), None);
+        // Failing command surfaces its status.
+        set(Some("sh -c 'exit 3'"));
+        let err = refresh_claude_access_token().await.unwrap_err();
+        assert!(format!("{err:#}").contains("failed with status"), "{err:#}");
+        // Unparsable command surfaces the shlex error.
+        set(Some("'unbalanced-quote"));
+        let err = refresh_claude_access_token().await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND"),
+            "{err:#}"
+        );
+
+        set(None);
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND", value),
+                None => std::env::remove_var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn maybe_refresh_claude_headers_refreshes_only_claude_401() {
+        let _guard = env_lock();
+        let previous = std::env::var_os("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND");
+        unsafe {
+            std::env::set_var(
+                "CODESMITH_MCP_CLAUDE_REFRESH_COMMAND",
+                "printf claude-fresh",
+            );
+        }
+
+        // 401 on a claude.ai host refreshes the header.
+        let mut headers = HashMap::new();
+        assert!(
+            maybe_refresh_claude_headers(
+                "https://api.claude.ai/mcp",
+                StatusCode::UNAUTHORIZED,
+                &mut headers,
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(headers.get("Authorization").unwrap(), "Bearer claude-fresh");
+
+        // 403 on a claude.ai host does not.
+        let mut headers = HashMap::new();
+        assert!(
+            !maybe_refresh_claude_headers(
+                "https://api.claude.ai/mcp",
+                StatusCode::FORBIDDEN,
+                &mut headers,
+            )
+            .await
+            .unwrap()
+        );
+        // 401 on another host does not either.
+        assert!(
+            !maybe_refresh_claude_headers(
+                "https://example.invalid/mcp",
+                StatusCode::UNAUTHORIZED,
+                &mut headers,
+            )
+            .await
+            .unwrap()
+        );
+        assert!(headers.is_empty());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND", value),
+                None => std::env::remove_var("CODESMITH_MCP_CLAUDE_REFRESH_COMMAND"),
+            }
+        }
+    }
+
+    /// One full OAuth refresh cycle over a loopback token endpoint: a stored
+    /// (stale) token matching the injected header is exchanged for a fresh
+    /// one, persisted back, and the header is replaced. Also pins the no-
+    /// stored-token and unreachable-endpoint outcomes.
+    #[tokio::test]
+    async fn maybe_refresh_oauth_headers_full_cycle() {
+        let _env = crate::test_support::lock_test_env();
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        let _guard =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", scratch.path().as_os_str());
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut socket).await;
+            let body =
+                br#"{"access_token":"fresh-token","refresh_token":"rt-2","expires_in":3600}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+
+        let secrets = crate::oauth::default_secrets();
+        crate::oauth::store_token_with(
+            &secrets,
+            "oasrv",
+            &crate::oauth::McpOAuthToken {
+                access_token: "stale-token".to_string(),
+                refresh_token: Some("rt-1".to_string()),
+                expires_at: None,
+            },
+        )
+        .unwrap();
+
+        let state = OAuthState {
+            server: "oasrv".to_string(),
+            config: McpOAuthConfig {
+                provider: "custom".to_string(),
+                client_id: "cid".to_string(),
+                scopes: vec![],
+                device_code_url: Some(format!("http://{addr}/device")),
+                token_url: Some(format!("http://{addr}/token")),
+            },
+        };
+
+        // No Authorization header at all → nothing to refresh.
+        let mut headers = HashMap::new();
+        assert!(!maybe_refresh_oauth_headers(&loopback_client(), &mut headers, &state).await);
+
+        // Matching stored token → refreshed against the loopback endpoint.
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer stale-token".to_string(),
+        );
+        assert!(maybe_refresh_oauth_headers(&loopback_client(), &mut headers, &state).await);
+        assert_eq!(headers.get("Authorization").unwrap(), "Bearer fresh-token");
+        // The refreshed token (including the new refresh token) persisted.
+        let persisted = crate::oauth::load_token_with(&secrets, "oasrv")
+            .unwrap()
+            .expect("token persisted");
+        assert_eq!(persisted.access_token, "fresh-token");
+        assert_eq!(persisted.refresh_token.as_deref(), Some("rt-2"));
+
+        // Unreachable token endpoint → refresh fails loudly inside, but the
+        // header is left untouched and the caller is told not to retry.
+        let mut unreachable = state.clone();
+        unreachable.config.token_url = Some("http://127.0.0.1:9/token".to_string());
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer fresh-token".to_string(),
+        );
+        assert!(!maybe_refresh_oauth_headers(&loopback_client(), &mut headers, &unreachable).await);
+        assert_eq!(headers.get("Authorization").unwrap(), "Bearer fresh-token");
+
+        server.await.unwrap();
+    }
+
+    // === Coverage: McpConnection =======================================
+
+    #[tokio::test]
+    async fn connection_name_close_and_not_ready_rejection() {
+        let mut conn = test_connection(Box::new(ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::new(),
+        }));
+        assert_eq!(conn.name(), "mock");
+        assert_eq!(conn.state(), ConnectionState::Ready);
+        conn.close();
+        assert_eq!(conn.state(), ConnectionState::Disconnected);
+        // Calls on a non-ready connection are rejected before any I/O.
+        let err = conn
+            .call_tool("t", serde_json::json!({}), 1)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("is not ready"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn connection_recv_rejects_non_json_responses() {
+        let transport = ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::from([b"<html>not json</html>".to_vec()]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+        let err = conn
+            .call_tool("t", serde_json::json!({}), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Invalid MCP JSON-RPC message"),
+            "{err:#}"
+        );
+    }
+
+    /// Cursor pagination for the optional capabilities: resources,
+    /// resource templates (both key spellings), and prompts.
+    #[tokio::test]
+    async fn discovery_paginates_resources_templates_and_prompts() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "1",
+                    "result": {"tools": []}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "2",
+                    "result": {
+                        "resources": [{"uri": "mem://a", "name": "a"}],
+                        "nextCursor": "p2"
+                    }
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "3",
+                    "result": {"resources": [{"uri": "mem://b", "name": "b"}]}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "4",
+                    "result": {
+                        "templates": [{"uriTemplate": "t://{a}", "name": "ta"}],
+                        "nextCursor": "p2"
+                    }
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "5",
+                    "result": {"resourceTemplates": [{"uriTemplate": "t://{b}", "name": "tb"}]}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "6",
+                    "result": {"prompts": [{"name": "g1"}], "nextCursor": "p2"}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "7",
+                    "result": {"prompts": [{"name": "g2"}]}
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+
+        conn.discover_all().await.expect("discover");
+
+        assert_eq!(conn.resources().len(), 2);
+        assert_eq!(conn.resource_templates().len(), 2);
+        assert_eq!(conn.prompts().len(), 2);
+        let sent_guard = sent.lock().unwrap();
+        let methods: Vec<&str> = sent_guard
+            .iter()
+            .map(|m| m["method"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            methods,
+            vec![
+                "tools/list",
+                "resources/list",
+                "resources/list",
+                "resources/templates/list",
+                "resources/templates/list",
+                "prompts/list",
+                "prompts/list",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_read_resource_and_get_prompt_round_trips() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "1",
+                    "result": {"contents": [{"uri": "mem://r1", "text": "payload"}]}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "2",
+                    "result": {"messages": [{"role": "user"}]}
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+
+        let resource = conn.read_resource("mem://r1", 1).await.unwrap();
+        assert_eq!(resource["contents"][0]["text"], "payload");
+        let prompt = conn
+            .get_prompt("greet", serde_json::json!({"who": "you"}), 1)
+            .await
+            .unwrap();
+        assert_eq!(prompt["messages"][0]["role"], "user");
+
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent[0]["method"], "resources/read");
+        assert_eq!(sent[0]["params"]["uri"], "mem://r1");
+        assert_eq!(sent[1]["method"], "prompts/get");
+        assert_eq!(sent[1]["params"]["name"], "greet");
+        assert_eq!(sent[1]["params"]["arguments"]["who"], "you");
+    }
+
+    /// A stdio server that never answers `initialize` surfaces the
+    /// initialization-timeout error (and exercises the stderr drain task
+
+    /// Initialize succeeds but `tools/list` never answers → discovery
+    /// timeout error, bounded by connect_timeout.
+    #[tokio::test]
+    async fn url_connect_discovery_timeout_surfaces_error() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Ok(request) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+                        // GET preflight.
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        return;
+                    };
+                    match value["method"].as_str().unwrap_or_default() {
+                        "initialize" => {
+                            let payload = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": value["id"].clone(),
+                                "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                            })
+                            .to_string();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                                payload.len(),
+                                payload
+                            );
+                            socket.write_all(response.as_bytes()).await.unwrap();
+                        }
+                        "notifications/initialized" => {
+                            socket
+                                .write_all(
+                                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        // tools/list and the other discovery calls park.
+                        _ => std::future::pending::<()>().await,
+                    }
+                });
+            }
+        });
+
+        let mut config = test_server_config();
+        config.url = Some(format!("http://{addr}/mcp"));
+        config.connect_timeout = Some(1);
+        let err = McpConnection::connect_with_policy(
+            "hung-discovery".to_string(),
+            config,
+            &McpTimeouts::default(),
+            None,
+        )
+        .await
+        .err()
+        .expect("discovery must time out");
+        assert!(
+            format!("{err:#}").contains("discovery timed out"),
+            "{err:#}"
+        );
+        server.abort();
+    }
+
+    /// OAuth configured with no stored token connects anyway (with a
+    /// warning), and a malformed HTTPS_PROXY is ignored with a warning —
+    /// the loopback connection proceeds directly.
+    #[tokio::test]
+    async fn oauth_without_stored_token_and_malformed_proxy_still_connect() {
+        let _env = crate::test_support::lock_test_env();
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        let _guard =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", scratch.path().as_os_str());
+        let _proxy =
+            crate::test_support::EnvVarGuard::set("HTTPS_PROXY", "not a proxy url -*- test");
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _seen = spawn_open_stream_sse_fixture(listener, Duration::ZERO).await;
+
+        let mut config = test_server_config();
+        config.url = Some(format!("http://{addr}/mcp"));
+        config.oauth = Some(McpOAuthConfig {
+            provider: "custom".to_string(),
+            client_id: "cid".to_string(),
+            scopes: vec![],
+            device_code_url: Some(format!("http://{addr}/device")),
+            token_url: Some(format!("http://{addr}/token")),
+        });
+        let conn = McpConnection::connect_with_policy(
+            "oa".to_string(),
+            config,
+            &McpTimeouts::default(),
+            None,
+        )
+        .await
+        .expect("connect must succeed without a stored oauth token");
+        assert_eq!(conn.state(), ConnectionState::Ready);
+        assert_eq!(conn.tools().len(), 1);
+    }
+
+    /// A URL server answering 401 on initialize is marked needs-auth and
+    /// cached: `connect_all` reports it, and the next `get_or_connect`
+    /// short-circuits without touching the server again.
+    #[tokio::test]
+    async fn url_auth_failure_is_marked_needs_auth_and_cached() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let _env = crate::test_support::lock_test_env();
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        let _guard =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", scratch.path().as_os_str());
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let post_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_post_count = Arc::clone(&post_count);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let post_count = Arc::clone(&server_post_count);
+                tokio::spawn(async move {
+                    let Ok(request) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    if request.starts_with("GET ") {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                    } else {
+                        post_count.fetch_add(1, AtomicOrdering::SeqCst);
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 12\r\nConnection: close\r\n\r\nunauthorized",
+                            )
+                            .await
+                            .unwrap();
+                    }
+                });
+            }
+        });
+
+        let mut config = test_server_config();
+        config.url = Some(format!("http://{addr}/mcp"));
+        let mut cfg = McpConfig::default();
+        cfg.servers.insert("locked".to_string(), config);
+        let pool = McpPool::new(cfg);
+
+        let errors = pool.connect_all().await;
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let err = format!("{:#}", errors[0].1);
+        assert!(err.contains("needs-auth"), "{err}");
+
+        // The cached entry short-circuits: no further POST reaches the server.
+        let err = pool
+            .get_or_connect("locked")
+            .await
+            .err()
+            .expect("needs-auth cached");
+        assert!(format!("{err:#}").contains("needs-auth"));
+        assert_eq!(
+            post_count.load(AtomicOrdering::SeqCst),
+            1,
+            "cached needs-auth must not re-contact the server"
+        );
+
+        server.abort();
+    }
+
+    // === Coverage: transports ==========================================
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_transport_send_delivers_jsonrpc_lines() {
+        use tokio::process::Command as TokioCommand;
+        let mut cmd = TokioCommand::new("cat");
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().expect("spawn cat");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut transport = StdioTransport {
+            child,
+            stdin,
+            reader: tokio::io::BufReader::new(stdout),
+            stderr_tail: StderrTail::new(),
+        };
+
+        transport
+            .send(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}".to_vec())
+            .await
+            .expect("send");
+        let echoed = transport.recv().await.expect("cat echoes the line back");
+        assert_eq!(
+            String::from_utf8(echoed).unwrap(),
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"
+        );
+        transport.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn websocket_connect_failures_are_diagnosable() {
+        // Invalid URL fails before any socket work.
+        let err = WebSocketTransport::connect("not a websocket url".to_string(), HashMap::new())
+            .await
+            .err()
+            .expect("invalid URL must fail");
+        assert!(
+            format!("{err:#}").contains("Invalid MCP WebSocket URL"),
+            "{err:#}"
+        );
+
+        // Refused port fails at the handshake.
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let err = WebSocketTransport::connect(format!("ws://{addr}/mcp"), HashMap::new())
+            .await
+            .err()
+            .expect("refused port must fail");
+        assert!(
+            format!("{err:#}").contains("MCP WebSocket connect failed"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_close_frame_error_and_graceful_shutdown() {
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            websocket
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Normal,
+                    reason: "done".into(),
+                })))
+                .await
+                .unwrap();
+        });
+
+        let mut transport = WebSocketTransport::connect(format!("ws://{addr}/mcp"), HashMap::new())
+            .await
+            .unwrap();
+        let err = transport
+            .recv()
+            .await
+            .expect_err("close frame must fail recv");
+        assert!(
+            format!("{err:#}").contains("WebSocket transport closed (code=1000 reason=done)"),
+            "{err:#}"
+        );
+        // Graceful shutdown after the peer closed is still safe.
+        transport.shutdown().await;
+        server.abort();
+    }
+
+    /// The SSE loop's transport-level connect failure (refused port)
+    /// surfaces as the endpoint-discovery timeout with the loop's own
+
+    #[tokio::test]
+    async fn http_transport_shutdown_covers_both_modes() {
+        let mut transport = HttpTransport::new(
+            loopback_client(),
+            "https://example.invalid/mcp".to_string(),
+            HashMap::new(),
+            tokio_util::sync::CancellationToken::new(),
+            Duration::from_secs(1),
+            None,
+        );
+        // Streamable mode: shutdown is a no-op (no long-lived stream).
+        transport.shutdown().await;
+
+        // After a switch to SSE the shutdown forwards to the SSE transport
+        // (itself the trait's no-op once the GET stream is gone).
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        transport.mode = HttpTransportMode::Sse(SseTransport {
+            client: loopback_client(),
+            base_url: "https://example.invalid/sse".to_string(),
+            headers: HashMap::new(),
+            oauth: None,
+            endpoint_url: None,
+            receiver: rx,
+            pending_messages: VecDeque::new(),
+        });
+        transport.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn streamable_http_send_maps_transport_errors() {
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let mut transport = StreamableHttpTransport::new(
+            loopback_client(),
+            format!("http://{addr}/mcp"),
+            HashMap::new(),
+            None,
+        );
+        let err = transport
+            .send(json_frame(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize"
+            })))
+            .await
+            .expect_err("connection refused");
+        match err {
+            StreamableSendError::Other(_) => {}
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    /// A 200 response whose body is cut short of Content-Length fails the
+    /// body read instead of returning a truncated payload.
+    #[tokio::test]
+    async fn streamable_http_send_surfaces_truncated_response_body() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut socket).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"partial\":",
+                )
+                .await
+                .unwrap();
+            // Task ends → socket closes mid-body.
+        });
+
+        let mut transport = StreamableHttpTransport::new(
+            loopback_client(),
+            format!("http://{addr}/mcp"),
+            HashMap::new(),
+            None,
+        );
+        let err = transport
+            .send(json_frame(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize"
+            })))
+            .await
+            .expect_err("truncated body");
+        match err {
+            StreamableSendError::Other(_) => {}
+            other => panic!("expected Other, got {other:?}"),
+        }
+        server.abort();
+    }
+
+    /// A silent peer on the session-establishment GET times out after the
+    /// fixed 5s inner bound; the failure is non-fatal by contract, so the
+    /// caller just observes the error.
+    #[tokio::test]
+    async fn get_preflight_timeout_is_bounded_and_reported() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await; // read the request, never answer
+            std::future::pending::<()>().await;
+        });
+
+        let mut transport = HttpTransport::new(
+            loopback_client(),
+            format!("http://{addr}/mcp"),
+            HashMap::new(),
+            tokio_util::sync::CancellationToken::new(),
+            Duration::from_secs(10),
+            None,
+        );
+        let start = std::time::Instant::now();
+        let err = transport
+            .try_establish_session()
+            .await
+            .expect_err("silent GET peer must time out");
+        assert!(err.to_string().contains("GET timeout"), "{err:#}");
+        assert!(
+            start.elapsed() >= Duration::from_secs(5),
+            "bounded by the 5s inner GET timeout, took {:?}",
+            start.elapsed()
+        );
+        server.abort();
+    }
+
+    /// A server that rejects Streamable HTTP POSTs with 405 falls back to
+    /// the legacy SSE transport (endpoint discovery + long-lived GET) and
+    /// serves the whole session over it.
+    #[tokio::test]
+    async fn streamable_http_falls_back_to_sse_on_incompatible_status() {
+        use std::sync::atomic::AtomicUsize;
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+        use tokio::sync::mpsc;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let get_count = Arc::new(AtomicUsize::new(0));
+        let fallback_seen = Arc::new(AtomicBool::new(false));
+        let active_sse: Arc<Mutex<Option<mpsc::UnboundedSender<Option<String>>>>> =
+            Arc::new(Mutex::new(None));
+
+        let server_get_count = Arc::clone(&get_count);
+        let server_fallback_seen = Arc::clone(&fallback_seen);
+        let server_active_sse = Arc::clone(&active_sse);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let get_count = Arc::clone(&server_get_count);
+                let fallback_seen = Arc::clone(&server_fallback_seen);
+                let active_sse = Arc::clone(&server_active_sse);
+                tokio::spawn(async move {
+                    let Ok(request) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    let head = request.split("\r\n\r\n").next().unwrap_or("");
+                    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+
+                    if head.starts_with("GET /mcp ") {
+                        let count = get_count.fetch_add(1, AtomicOrdering::SeqCst);
+                        if count == 0 {
+                            // Best-effort preflight GET.
+                            socket
+                                .write_all(
+                                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                )
+                                .await
+                                .unwrap();
+                            return;
+                        }
+                        // Legacy SSE GET: announce the endpoint, then relay
+                        // responses as message events.
+                        let (tx, mut rx) = mpsc::unbounded_channel::<Option<String>>();
+                        *active_sse.lock().unwrap() = Some(tx);
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        socket
+                            .write_all(b"event: endpoint\ndata: /messages\n\n")
+                            .await
+                            .unwrap();
+                        while let Some(message) = rx.recv().await {
+                            let Some(message) = message else {
+                                return;
+                            };
+                            socket
+                                .write_all(
+                                    format!("event: message\ndata: {message}\n\n").as_bytes(),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        return;
+                    }
+
+                    if head.starts_with("POST /mcp ") {
+                        // Streamable HTTP is rejected with an incompatible
+                        // status so the client switches to legacy SSE.
+                        fallback_seen.store(true, AtomicOrdering::SeqCst);
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        return;
+                    }
+
+                    if head.starts_with("POST /messages ") {
+                        socket
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        let value: serde_json::Value =
+                            serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+                        let method = value["method"].as_str().unwrap_or_default();
+                        if method == "notifications/initialized" {
+                            return;
+                        }
+                        let result = match method {
+                            "initialize" => {
+                                serde_json::json!({"protocolVersion": "2024-11-05", "capabilities": {}})
+                            }
+                            "tools/list" => {
+                                serde_json::json!({"tools": [{"name": "echo", "inputSchema": {}}]})
+                            }
+                            "resources/list" => serde_json::json!({"resources": []}),
+                            "resources/templates/list" => {
+                                serde_json::json!({"resourceTemplates": []})
+                            }
+                            "prompts/list" => serde_json::json!({"prompts": []}),
+                            "tools/call" => {
+                                serde_json::json!({"content": [{"type": "text", "text": "via-sse"}]})
+                            }
+                            other => panic!("unexpected method: {other}"),
+                        };
+                        let response = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": value["id"].clone(),
+                            "result": result
+                        })
+                        .to_string();
+                        if let Some(tx) = active_sse.lock().unwrap().as_ref() {
+                            let _ = tx.send(Some(response));
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut config = test_server_config();
+        config.url = Some(format!("http://{addr}/mcp"));
+        let mut cfg = McpConfig::default();
+        cfg.servers.insert("legacy".to_string(), config);
+        let pool = McpPool::new(cfg);
+
+        let result = pool
+            .call_tool("mcp__legacy__echo", serde_json::json!({}))
+            .await
+            .expect("tool call over the SSE fallback");
+        assert_eq!(result["content"][0]["text"], "via-sse");
+        assert!(
+            fallback_seen.load(AtomicOrdering::SeqCst),
+            "the streamable POST must have been rejected with 405"
+        );
+        assert_eq!(
+            pool.connected_servers(),
+            vec!["legacy".to_string()],
+            "the SSE-fallback connection stays pooled"
+        );
+
+        server.abort();
+    }
+
+    // === Coverage: pool lifecycle and pseudo-tools =====================
+
+    #[tokio::test]
+    async fn get_or_connect_rejects_unknown_and_disabled_servers() {
+        let pool = McpPool::new(McpConfig::default());
+        let err = pool
+            .get_or_connect("ghost")
+            .await
+            .err()
+            .expect("unknown server");
+        assert!(
+            format!("{err:#}").contains("Failed to find MCP server: ghost"),
+            "{err:#}"
+        );
+
+        let mut config = test_server_config();
+        config.disabled = true;
+        pool.add_server_for_test("off", config);
+        let err = pool
+            .get_or_connect("off")
+            .await
+            .err()
+            .expect("disabled server");
+        assert!(format!("{err:#}").contains("server is disabled"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn pool_reports_config_clears_and_shuts_down_connections() {
+        let pool = McpPool::new(McpConfig::default());
+        pool.add_server_for_test("mock", test_server_config());
+        pool.insert_ready_for_test(
+            "mock",
+            test_connection(Box::new(ScriptedValueTransport {
+                sent: Arc::new(Mutex::new(Vec::new())),
+                responses: VecDeque::new(),
+            })),
+        );
+
+        assert_eq!(pool.connected_servers(), vec!["mock".to_string()]);
+        assert_eq!(pool.server_names(), vec!["mock".to_string()]);
+        assert_eq!(pool.config().servers.len(), 1);
+
+        // Graceful shutdown clears the table and stops each transport.
+        pool.shutdown_all().await;
+        assert!(pool.connected_servers().is_empty());
+
+        // disconnect_all on an already-empty pool is a no-op.
+        pool.disconnect_all();
+        assert!(pool.connected_servers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn connect_all_skips_ready_slots_and_reports_required_servers() {
+        let pool = McpPool::new(McpConfig::default());
+        pool.add_server_for_test("mock", test_server_config());
+        pool.insert_ready_for_test(
+            "mock",
+            test_connection(Box::new(ScriptedValueTransport {
+                sent: Arc::new(Mutex::new(Vec::new())),
+                responses: VecDeque::new(),
+            })),
+        );
+
+        let mut required = test_server_config();
+        required.command = Some("codesmith-no-such-binary-for-coverage".to_string());
+        required.required = true;
+        pool.add_server_for_test("must", required);
+
+        let errors = pool.connect_all().await;
+        // "must" is reported once for the failed spawn and once more for
+        // the required-server check.
+        let must_errors = errors.iter().filter(|(name, _)| name == "must").count();
+        assert_eq!(must_errors, 2, "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|(_, err)| format!("{err:#}")
+                    .contains("required MCP server failed to initialize")),
+            "{errors:?}"
+        );
+        // The healthy slot survived untouched.
+        assert_eq!(pool.connected_servers(), vec!["mock".to_string()]);
+    }
+
+    fn catalog_connection() -> McpConnection {
+        let mut conn = test_connection(Box::new(ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::new(),
+        }));
+        conn.catalog = Arc::new(McpCatalog {
+            tools: Vec::new(),
+            resources: vec![
+                McpResource {
+                    uri: "mem://r1".to_string(),
+                    name: "r one".to_string(),
+                    description: Some("first".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                },
+                McpResource {
+                    uri: "mem://r2".to_string(),
+                    name: "r two".to_string(),
+                    description: None,
+                    mime_type: None,
+                },
+            ],
+            resource_templates: vec![McpResourceTemplate {
+                uri_template: "mem://t/{x}".to_string(),
+                name: "t one".to_string(),
+                description: None,
+                mime_type: None,
+            }],
+            prompts: vec![McpPrompt {
+                name: "greet".to_string(),
+                description: None,
+                arguments: Vec::new(),
+            }],
+        });
+        conn
+    }
+
+    #[tokio::test]
+    async fn pool_list_resources_and_templates_pseudo_tools_read_catalogs() {
+        let pool = McpPool::new(McpConfig::default());
+        pool.add_server_for_test("mock", test_server_config());
+        pool.insert_ready_for_test("mock", catalog_connection());
+
+        // All-servers listing walks the ready catalogs.
+        let result = pool
+            .call_tool("list_mcp_resources", serde_json::json!({}))
+            .await
+            .unwrap();
+        let resources = result["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 2);
+        assert!(resources.iter().all(|r| r["server"] == "mock"));
+        assert_eq!(resources[0]["uri"], "mem://r1");
+        assert_eq!(resources[0]["mime_type"], "text/plain");
+
+        // Server-filtered listing goes through get_or_connect + the
+        // connection's own catalog.
+        let result = pool
+            .call_tool("list_mcp_resources", serde_json::json!({"server": "mock"}))
+            .await
+            .unwrap();
+        assert_eq!(result["resources"].as_array().unwrap().len(), 2);
+
+        let result = pool
+            .call_tool("list_mcp_resource_templates", serde_json::json!({}))
+            .await
+            .unwrap();
+        let templates = result["templates"].as_array().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0]["uri_template"], "mem://t/{x}");
+
+        let result = pool
+            .call_tool(
+                "list_mcp_resource_templates",
+                serde_json::json!({"server": "mock"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["templates"].as_array().unwrap().len(), 1);
+
+        // Direct catalog accessors agree.
+        assert_eq!(pool.all_resources().len(), 2);
+        assert_eq!(pool.all_resource_templates().len(), 1);
+        assert_eq!(pool.all_resource_templates()[0].0, "mcp__mock__t_one");
+        assert_eq!(pool.all_prompts().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pool_read_resource_and_get_prompt_round_trips() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedValueTransport {
+            sent: Arc::clone(&sent),
+            responses: VecDeque::from([
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "1",
+                    "result": {"contents": [{"uri": "mem://r1", "text": "payload"}]}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "2",
+                    "result": {"contents": [{"uri": "mem://r1", "text": "payload"}]}
+                })),
+                json_frame(serde_json::json!({
+                    "jsonrpc": "2.0", "id": "3",
+                    "result": {"messages": []}
+                })),
+            ]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+        conn.catalog = Arc::new(McpCatalog {
+            resources: vec![McpResource {
+                uri: "mem://r1".to_string(),
+                name: "r one".to_string(),
+                description: None,
+                mime_type: None,
+            }],
+            prompts: vec![McpPrompt {
+                name: "greet".to_string(),
+                description: None,
+                arguments: Vec::new(),
+            }],
+            ..McpCatalog::default()
+        });
+
+        let pool = McpPool::new(McpConfig::default());
+        pool.add_server_for_test("mock", test_server_config());
+        pool.insert_ready_for_test("mock", conn);
+
+        for tool in ["mcp_read_resource", "read_mcp_resource"] {
+            let result = pool
+                .call_tool(
+                    tool,
+                    serde_json::json!({"server": "mock", "uri": "mem://r1"}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result["contents"][0]["text"], "payload");
+        }
+        let result = pool
+            .call_tool(
+                "mcp_get_prompt",
+                serde_json::json!({"server": "mock", "name": "greet", "arguments": {"who": "you"}}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["messages"], serde_json::json!([]));
+
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent[0]["method"], "resources/read");
+        assert_eq!(sent[1]["method"], "resources/read");
+        assert_eq!(sent[2]["method"], "prompts/get");
+        assert_eq!(sent[2]["params"]["arguments"]["who"], "you");
+
+        // Missing required arguments fail with a diagnosable error.
+        drop(sent);
+        let err = pool
+            .call_tool("mcp_read_resource", serde_json::json!({"uri": "mem://r1"}))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Missing 'server' argument"),
+            "{err:#}"
+        );
+        let err = pool
+            .call_tool("read_mcp_resource", serde_json::json!({"server": "mock"}))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Missing 'uri' argument"),
+            "{err:#}"
+        );
+        let err = pool
+            .call_tool("mcp_get_prompt", serde_json::json!({"server": "mock"}))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Missing 'name' argument"),
+            "{err:#}"
+        );
+    }
+
+    // === Coverage: config file helpers =================================
+
+    #[tokio::test]
+    async fn reload_if_config_changed_errors_when_file_becomes_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
+        let pool = McpPool::from_config_path(&path).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(&path, r#"{"servers": " not json"#).unwrap();
+        let err = pool.reload_if_config_changed().await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Failed to re-parse MCP config"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn config_file_helpers_surface_io_errors() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // load_config on a directory fails at the read step.
+        let err = load_config(dir.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Failed to read MCP config"),
+            "{err:#}"
+        );
+
+        // save_config cannot create a parent that is a regular file.
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "x").unwrap();
+        let target = blocker.join("mcp.json");
+        let err = save_config(&target, &McpConfig::default()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Failed to create MCP config directory"),
+            "{err:#}"
+        );
+
+        // save_config to a directory path fails at the atomic write.
+        let dir_target = dir.path().join("mcp.json");
+        fs::create_dir_all(&dir_target).unwrap();
+        let err = save_config(&dir_target, &McpConfig::default()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Failed to write MCP config"),
+            "{err:#}"
+        );
+
+        // init_config hits the same two branches.
+        let err = init_config(&target, false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Failed to create MCP config directory"),
+            "{err:#}"
+        );
+        let err = init_config(&dir_target, true).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Failed to write MCP config"),
+            "{err:#}"
+        );
+
+        // set_server_enabled on a missing server.
+        let missing = dir.path().join("missing.json");
+        let err = set_server_enabled(&missing, "ghost", true).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("MCP server 'ghost' not found"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn mcp_pool_from_config_path_reads_or_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent.json");
+        let pool = McpPool::from_config_path(&missing).unwrap();
+        assert!(pool.server_names().is_empty());
+
+        let path = dir.path().join("mcp.json");
+        fs::write(&path, r#"{"servers":{"a":{"command":"echo"}}}"#).unwrap();
+        let pool = McpPool::from_config_path(&path).unwrap();
+        assert_eq!(pool.server_names(), vec!["a".to_string()]);
+
+        // Traversal and empty paths are rejected up front.
+        assert!(McpPool::from_config_path(Path::new("../mcp.json")).is_err());
+        assert!(McpPool::from_config_path(Path::new("")).is_err());
     }
 }

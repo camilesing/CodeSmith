@@ -419,4 +419,49 @@ mod tests {
         assert_eq!(record.excerpt, "first answer");
         assert_eq!(record.session_id, None, "unsaved session has no id yet");
     }
+
+    #[test]
+    fn excerpts_flatten_whitespace_and_cap_length() {
+        assert_eq!(excerpt("  one   two\nthree\tfour  "), "one two three four");
+        let short = "x".repeat(EXCERPT_CHARS);
+        assert_eq!(excerpt(&short), short, "exactly at the cap is not cut");
+        let cut = excerpt(&"word ".repeat(40)); // > EXCERPT_CHARS once flattened
+        assert_eq!(cut.chars().count(), EXCERPT_CHARS + 1, "cap plus ellipsis");
+        assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn usage_and_out_of_range_never_write_a_ledger() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = codesmith_agent_runtime::test_support::ScopedCodeSmithHome::new();
+        let options = crate::app_state::InteractiveOptions {
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+        assert!(state.api_messages.is_empty());
+
+        feedback(&state, "sideways"); // not up/down → usage
+        feedback(&state, "up 0"); // reply #0 does not exist → usage
+        feedback(&state, "up"); // valid rating, but no replies yet → addressed error
+        state.api_messages = std::sync::Arc::new(vec![text("user", "q"), text("assistant", "a")]);
+        feedback(&state, "up 9 too far"); // reply #9 does not exist → addressed error
+
+        assert!(
+            !home.path().join("feedback").join("feedback.jsonl").exists(),
+            "refused ratings must not touch the ledger"
+        );
+    }
 }
