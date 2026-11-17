@@ -1762,9 +1762,41 @@ mod coverage_tests {
         ReplState::new(options, &crate::config::Config::default())
     }
 
-    fn scratch_env() {
-        // hold the process-wide env lock and redirect the settings home
-        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+    /// Redirect HOME, CODESMITH_HOME, and CODESMITH_CONFIG_PATH (settings
+    /// persistence resolves through it) into a scratch dir, holding the
+    /// process-wide env lock for the whole test — `/statusline` persists
+    /// unconditionally, so without this the test would rewrite the
+    /// developer's real settings file.
+    struct ScratchEnv {
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_guard: codesmith_agent_runtime::test_support::EnvVarGuard,
+        _smith_home_guard: codesmith_agent_runtime::test_support::EnvVarGuard,
+        _config_guard: codesmith_agent_runtime::test_support::EnvVarGuard,
+    }
+
+    fn scratch_env() -> ScratchEnv {
+        let lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let codesmith_home = home.path().join(".codesmith");
+        std::fs::create_dir_all(&codesmith_home).expect("create codesmith home");
+        let home_guard =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("HOME", home.path());
+        let smith_home_guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            &codesmith_home,
+        );
+        let config_guard = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_CONFIG_PATH",
+            codesmith_home.join("config.toml"),
+        );
+        ScratchEnv {
+            _home: home,
+            _lock: lock,
+            _home_guard: home_guard,
+            _smith_home_guard: smith_home_guard,
+            _config_guard: config_guard,
+        }
     }
 
     #[test]
