@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+pub mod config_edit;
 pub mod presets;
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
