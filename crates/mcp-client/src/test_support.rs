@@ -1,12 +1,13 @@
 //! Test-only helpers (per-crate twins of the engine's test support).
 
+/// The process-wide test env lock shared with every other crate
+/// (`codesmith_agent_runtime::test_support`): a crate-local lock let
+/// env-mutating tests in other binaries' crates flip CODESMITH_HOME/HOME
+/// mid-test, which once made auth-cache `mark`/`load` resolve different
+/// paths.
 #[cfg(test)]
 pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    match LOCK.get_or_init(|| std::sync::Mutex::new(())).lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    codesmith_agent_runtime::test_support::lock_test_env()
 }
 
 #[cfg(test)]
