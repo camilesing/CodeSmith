@@ -920,7 +920,11 @@ impl Runtime {
             }
             ThreadRequest::Resume(params) => {
                 let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                if let Some(new) = self
+                // Bind the result before the `if let`: a MutexGuard temporary
+                // in the scrutinee lives to the end of the whole `if let`
+                // expression, and `persisted_thread_data` below re-locks the
+                // same mutex — a self-deadlock on every store-backed resume.
+                let resumed = self
                     .thread_manager
                     .lock()
                     .unwrap()
@@ -928,8 +932,8 @@ impl Runtime {
                         &params,
                         &fallback_cwd,
                         self.config.provider.as_str().to_string(),
-                    )?
-                {
+                    )?;
+                if let Some(new) = resumed {
                     let mut response = thread_response_from_new("resumed", new);
                     response.data = self.persisted_thread_data(&response.thread_id)?;
                     Ok(response)
@@ -951,12 +955,14 @@ impl Runtime {
             }
             ThreadRequest::Fork(params) => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                if let Some(new) = self
+                // Same guard-scoping fix as the Resume arm above: the fork
+                // response reads persisted history, which re-locks.
+                let forked = self
                     .thread_manager
                     .lock()
                     .unwrap()
-                    .fork_thread(&params, &cwd)?
-                {
+                    .fork_thread(&params, &cwd)?;
+                if let Some(new) = forked {
                     let mut response = thread_response_from_new("forked", new);
                     response.data = self.persisted_thread_data(&response.thread_id)?;
                     Ok(response)
@@ -2379,5 +2385,800 @@ mod tests {
         assert_eq!(entry.status, JobStatus::Running);
         assert_eq!(entry.progress, Some(50));
         assert_eq!(entry.detail.as_deref(), Some("working"));
+    }
+
+    // ── ThreadManager / persistence (scratch StateStore per test) ──────
+
+    use codesmith_protocol::{LocalShellParams, ThreadStartParams};
+    use codesmith_tools::ToolCallSource;
+
+    fn scratch_state_store() -> (tempfile::TempDir, StateStore) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store =
+            StateStore::open(Some(tmp.path().join("state.db"))).expect("open scratch state store");
+        (tmp, store)
+    }
+
+    fn resume_params(thread_id: &str) -> ThreadResumeParams {
+        ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            history: None,
+            path: None,
+            model: None,
+            model_provider: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            config: None,
+            base_instructions: None,
+            developer_instructions: None,
+            personality: None,
+            persist_extended_history: false,
+        }
+    }
+
+    fn fork_params(thread_id: &str) -> ThreadForkParams {
+        ThreadForkParams {
+            thread_id: thread_id.to_string(),
+            path: None,
+            model: None,
+            model_provider: None,
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            config: None,
+            base_instructions: None,
+            developer_instructions: None,
+            persist_extended_history: false,
+        }
+    }
+
+    #[test]
+    fn spawn_persists_thread_readable_via_list_and_read() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let new = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn");
+        assert_eq!(new.model, "auto");
+        assert_eq!(new.thread.model_provider, "openai");
+        assert_eq!(new.thread.status, ThreadStatus::Running);
+        assert!(
+            new.thread.ephemeral,
+            "persist_extended_history=false → ephemeral thread"
+        );
+
+        let listed = tm
+            .list_threads(&ThreadListParams {
+                include_archived: false,
+                limit: None,
+            })
+            .expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, new.thread.id);
+
+        let read = tm
+            .read_thread(&ThreadReadParams {
+                thread_id: new.thread.id.clone(),
+            })
+            .expect("read")
+            .expect("thread present");
+        assert_eq!(read.preview, "New conversation");
+    }
+
+    #[test]
+    fn spawn_with_forked_history_persists_items_and_preview() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let history = vec![
+            json!({"role": "user", "content": "hello fork"}),
+            json!({"role": "assistant", "content": "hi"}),
+        ];
+        let new = tm
+            .spawn_thread_with_history(
+                "p".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::Forked(history),
+                true,
+            )
+            .expect("spawn");
+        assert!(!new.thread.ephemeral);
+        assert!(
+            new.thread.preview.contains("hello fork"),
+            "preview derives from the first forked item: {}",
+            new.thread.preview
+        );
+        let messages = tm
+            .state_store()
+            .list_messages(&new.thread.id, None)
+            .expect("list messages");
+        assert_eq!(messages.len(), 2, "both forked items persisted");
+        assert!(messages[0].content.contains("hello fork"));
+    }
+
+    #[test]
+    fn resume_of_running_thread_without_history_returns_cached_entry() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let spawned = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn");
+        let mut params = resume_params(&spawned.thread.id);
+        params.model = Some("custom-model".to_string());
+        params.cwd = Some(PathBuf::from("/tmp/override"));
+        let resumed = tm
+            .resume_thread_with_history(&params, Path::new("/fallback"), "fallback".to_string())
+            .expect("resume")
+            .expect("thread");
+        assert_eq!(resumed.thread.id, spawned.thread.id);
+        assert_eq!(resumed.model, "custom-model");
+        assert_eq!(resumed.cwd, PathBuf::from("/tmp/override"));
+    }
+
+    #[test]
+    fn resume_after_restart_loads_thread_from_store() {
+        let (tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let spawned = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn");
+        tm.touch_message(&spawned.thread.id, "persisted prompt")
+            .expect("touch");
+        drop(tm);
+
+        // A fresh manager on the same database simulates a process restart.
+        let store2 = StateStore::open(Some(tmp.path().join("state.db"))).expect("reopen");
+        let mut tm2 = ThreadManager::new(store2);
+        let mut params = resume_params(&spawned.thread.id);
+        params.cwd = Some(PathBuf::from("/tmp/restarted"));
+        let resumed = tm2
+            .resume_thread_with_history(&params, Path::new("/fallback"), "p".to_string())
+            .expect("resume")
+            .expect("thread loaded from store");
+        assert_eq!(resumed.thread.id, spawned.thread.id);
+        assert_eq!(resumed.cwd, PathBuf::from("/tmp/restarted"));
+        assert_eq!(resumed.thread.status, ThreadStatus::Running);
+        let messages = tm2
+            .state_store()
+            .list_messages(&spawned.thread.id, None)
+            .expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "persisted prompt");
+    }
+
+    #[test]
+    fn resume_unknown_thread_returns_none() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let resumed = tm
+            .resume_thread_with_history(
+                &resume_params("thread-missing"),
+                Path::new("/fallback"),
+                "p".to_string(),
+            )
+            .expect("resume dispatch");
+        assert!(resumed.is_none());
+    }
+
+    #[test]
+    fn fork_thread_copies_history_and_appends_provenance_marker() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let parent = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn parent");
+        // `touch_message` persists a user turn with `item = None`, the shape
+        // fork must synthesize a history entry for.
+        tm.touch_message(&parent.thread.id, "original question")
+            .expect("touch");
+
+        let forked = tm
+            .fork_thread(&fork_params(&parent.thread.id), Path::new("/fallback"))
+            .expect("fork")
+            .expect("parent found");
+        assert_ne!(forked.thread.id, parent.thread.id);
+        assert_eq!(forked.thread.model_provider, "openai", "provider inherited");
+
+        let messages = tm
+            .state_store()
+            .list_messages(&forked.thread.id, None)
+            .expect("messages");
+        assert_eq!(messages.len(), 2, "parent turn + fork marker");
+        assert!(messages[0].content.contains("original question"));
+        assert!(messages[1].content.contains("\"from_thread_id\""));
+        assert!(
+            forked.thread.preview.contains("original question"),
+            "fork preview derives from the first real item, not the marker: {}",
+            forked.thread.preview
+        );
+    }
+
+    #[test]
+    fn fork_unknown_thread_returns_none() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let forked = tm
+            .fork_thread(&fork_params("thread-missing"), Path::new("/fallback"))
+            .expect("fork dispatch");
+        assert!(forked.is_none());
+    }
+
+    #[test]
+    fn set_thread_name_updates_metadata() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let spawned = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn");
+        let updated = tm
+            .set_thread_name(&ThreadSetNameParams {
+                thread_id: spawned.thread.id.clone(),
+                name: "my thread".to_string(),
+            })
+            .expect("set name")
+            .expect("thread");
+        assert_eq!(updated.name.as_deref(), Some("my thread"));
+
+        let renamed = tm
+            .set_thread_name(&ThreadSetNameParams {
+                thread_id: "thread-missing".to_string(),
+                name: "x".to_string(),
+            })
+            .expect("set name dispatch");
+        assert!(renamed.is_none());
+    }
+
+    #[test]
+    fn archive_and_unarchive_toggle_thread_listing() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let spawned = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn");
+
+        tm.archive_thread(&spawned.thread.id).expect("archive");
+        let active = tm
+            .list_threads(&ThreadListParams {
+                include_archived: false,
+                limit: None,
+            })
+            .expect("list");
+        assert!(active.is_empty(), "archived thread hidden by default");
+        let with_archived = tm
+            .list_threads(&ThreadListParams {
+                include_archived: true,
+                limit: None,
+            })
+            .expect("list");
+        assert_eq!(with_archived.len(), 1);
+        assert_eq!(with_archived[0].status, ThreadStatus::Archived);
+
+        tm.unarchive_thread(&spawned.thread.id).expect("unarchive");
+        let active = tm
+            .list_threads(&ThreadListParams {
+                include_archived: false,
+                limit: None,
+            })
+            .expect("list");
+        assert_eq!(active.len(), 1, "unarchived thread listed again");
+    }
+
+    #[test]
+    fn touch_message_updates_preview_appends_user_message_and_checkpoint() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let spawned = tm
+            .spawn_thread_with_history(
+                "openai".to_string(),
+                PathBuf::from("/tmp/ws"),
+                InitialHistory::New,
+                false,
+            )
+            .expect("spawn");
+        tm.touch_message(&spawned.thread.id, "hello world")
+            .expect("touch");
+
+        let read = tm
+            .read_thread(&ThreadReadParams {
+                thread_id: spawned.thread.id.clone(),
+            })
+            .expect("read")
+            .expect("thread");
+        assert_eq!(read.preview, "hello world");
+
+        let messages = tm
+            .state_store()
+            .list_messages(&spawned.thread.id, None)
+            .expect("messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "hello world");
+
+        let checkpoint = tm
+            .state_store()
+            .load_checkpoint(&spawned.thread.id, None)
+            .expect("checkpoint")
+            .expect("latest checkpoint written by touch_message");
+        assert_eq!(checkpoint.state["reason"], "thread_message");
+        assert_eq!(checkpoint.state["role"], "user");
+    }
+
+    #[test]
+    fn touch_message_unknown_thread_fails_loud() {
+        let (_tmp, store) = scratch_state_store();
+        let mut tm = ThreadManager::new(store);
+        let err = tm
+            .touch_message("thread-missing", "input")
+            .expect_err("unknown thread must fail, not acknowledge");
+        assert!(
+            err.to_string().contains("thread-missing"),
+            "error names the missing thread"
+        );
+    }
+
+    // ── JobManager: store round-trips ──────────────────────────────────
+
+    #[test]
+    fn persist_all_and_load_from_store_round_trip() {
+        let (_tmp, store) = scratch_state_store();
+        let mut jm = JobManager::default();
+        let job = jm.enqueue("persisted-job");
+        jm.set_running(&job.id);
+        jm.fail(&job.id, "transient failure");
+        jm.persist_all(&store).expect("persist all");
+
+        let mut reloaded = JobManager::default();
+        reloaded.load_from_store(&store).expect("load");
+        let restored = reloaded
+            .list()
+            .into_iter()
+            .find(|j| j.id == job.id)
+            .expect("job reloaded");
+        assert_eq!(restored.status, JobStatus::Failed);
+        assert_eq!(restored.detail.as_deref(), Some("transient failure"));
+        assert_eq!(
+            restored.retry.attempt, 1,
+            "retry schedule survives the round trip"
+        );
+        assert!(
+            !restored.history.is_empty(),
+            "history is encoded in the persisted detail"
+        );
+    }
+
+    #[test]
+    fn load_from_store_falls_back_when_detail_unparsable() {
+        let (_tmp, store) = scratch_state_store();
+        store
+            .upsert_job(&JobStateRecord {
+                id: "job-legacy".to_string(),
+                name: "legacy".to_string(),
+                status: JobStateStatus::Running,
+                progress: Some(42),
+                detail: Some("plain text, not json".to_string()),
+                created_at: 1_000,
+                updated_at: 2_000,
+            })
+            .expect("seed job");
+
+        let mut jm = JobManager::default();
+        jm.load_from_store(&store).expect("load");
+        let job = jm
+            .list()
+            .into_iter()
+            .find(|j| j.id == "job-legacy")
+            .expect("legacy job loaded");
+        assert_eq!(job.status, JobStatus::Running, "status from the column");
+        assert_eq!(job.detail.as_deref(), Some("plain text, not json"));
+        assert_eq!(job.retry.attempt, 0, "default retry when detail unparsable");
+        assert!(job.history.is_empty());
+    }
+
+    #[test]
+    fn persist_job_unknown_id_is_a_noop() {
+        let (_tmp, store) = scratch_state_store();
+        let jm = JobManager::default();
+        jm.persist_job(&store, "job-missing").expect("noop ok");
+    }
+
+    // ── Runtime: construction + thread/job surface ─────────────────────
+
+    fn test_runtime(store: StateStore) -> Runtime {
+        Runtime::new(
+            ConfigToml::default(),
+            ModelRegistry::default(),
+            store,
+            Arc::new(ToolRegistry::default()),
+            Arc::new(McpManager::default()),
+            ExecPolicyEngine::new(Vec::new(), Vec::new()),
+            HookDispatcher::default(),
+        )
+    }
+
+    fn runtime_with_scratch_store() -> (tempfile::TempDir, Runtime) {
+        let (tmp, store) = scratch_state_store();
+        let runtime = test_runtime(store);
+        (tmp, runtime)
+    }
+
+    #[test]
+    fn runtime_new_requeues_persisted_pending_jobs() {
+        let (tmp, store) = scratch_state_store();
+        {
+            let mut runtime = test_runtime(store);
+            let job = runtime.enqueue_job("stuck-job").expect("enqueue");
+            runtime.set_job_running(&job.id).expect("running");
+        }
+        // A persisted Running job with no executor must come back Queued.
+        let store2 = StateStore::open(Some(tmp.path().join("state.db"))).expect("reopen");
+        let runtime = test_runtime(store2);
+        let job = runtime
+            .jobs
+            .list()
+            .into_iter()
+            .find(|j| j.name == "stuck-job")
+            .expect("persisted job reloaded");
+        assert_eq!(job.status, JobStatus::Queued, "resume_pending on load");
+    }
+
+    #[test]
+    fn runtime_job_wrappers_drive_manager_and_persist() {
+        let (tmp, runtime) = runtime_with_scratch_store();
+        let mut runtime = runtime;
+        let job = runtime.enqueue_job("wrapper-job").expect("enqueue");
+        runtime.set_job_running(&job.id).expect("running");
+        runtime
+            .update_job_progress(&job.id, 60, Some("step 1".to_string()))
+            .expect("progress");
+        runtime.complete_job(&job.id).expect("complete");
+        drop(runtime);
+
+        let store2 = StateStore::open(Some(tmp.path().join("state.db"))).expect("reopen");
+        let runtime = test_runtime(store2);
+        let job = runtime
+            .jobs
+            .list()
+            .into_iter()
+            .find(|j| j.id == job.id)
+            .expect("wrapper job persisted");
+        assert_eq!(job.status, JobStatus::Completed);
+        assert_eq!(job.progress, Some(100));
+        assert!(
+            runtime
+                .job_history(&job.id)
+                .iter()
+                .any(|e| e.phase == "progress_updated"),
+            "history includes the progress transition"
+        );
+    }
+
+    #[test]
+    fn runtime_fail_cancel_pause_resume_jobs() {
+        let (_tmp, mut runtime) = runtime_with_scratch_store();
+        let failed = runtime.enqueue_job("f").expect("enqueue");
+        runtime.fail_job(&failed.id, "boom").expect("fail");
+        let paused = runtime.enqueue_job("p").expect("enqueue");
+        runtime.set_job_running(&paused.id).expect("running");
+        runtime.pause_job(&paused.id, None).expect("pause");
+        runtime.resume_job(&paused.id, None).expect("resume");
+        let cancelled = runtime.enqueue_job("c").expect("enqueue");
+        runtime.cancel_job(&cancelled.id).expect("cancel");
+
+        let by_id = |runtime: &Runtime, id: &str| {
+            runtime
+                .jobs
+                .list()
+                .into_iter()
+                .find(|j| j.id == id)
+                .expect("job")
+        };
+        assert_eq!(by_id(&runtime, &failed.id).status, JobStatus::Failed);
+        assert_eq!(by_id(&runtime, &paused.id).status, JobStatus::Running);
+        assert_eq!(by_id(&runtime, &cancelled.id).status, JobStatus::Cancelled);
+    }
+
+    #[test]
+    fn app_status_reports_job_history_as_events() {
+        let (_tmp, mut runtime) = runtime_with_scratch_store();
+        let job = runtime.enqueue_job("status-job").expect("enqueue");
+        runtime.complete_job(&job.id).expect("complete");
+
+        let status = runtime.app_status();
+        assert!(status.ok);
+        assert_eq!(status.data["jobs"].as_array().expect("jobs array").len(), 1);
+        assert_eq!(status.data["jobs"][0]["name"], "status-job");
+        assert!(
+            !status.events.is_empty(),
+            "job transitions surface as response-delta events"
+        );
+    }
+
+    #[test]
+    fn provider_default_returns_configured_provider() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        assert_eq!(runtime.provider_default(), ConfigToml::default().provider);
+    }
+
+    #[tokio::test]
+    async fn save_and_load_thread_checkpoint_round_trip() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        assert!(
+            runtime
+                .load_thread_checkpoint("thread-missing", None)
+                .unwrap()
+                .is_none(),
+            "no checkpoint for an unknown thread"
+        );
+        // Checkpoints are FK-scoped to their thread: create one first.
+        let created = runtime
+            .handle_thread(ThreadRequest::Create {
+                metadata: json!({}),
+            })
+            .await
+            .expect("create");
+        runtime
+            .save_thread_checkpoint(&created.thread_id, "named", &json!({"step": 3}))
+            .expect("save");
+        let loaded = runtime
+            .load_thread_checkpoint(&created.thread_id, Some("named"))
+            .expect("load")
+            .expect("checkpoint");
+        assert_eq!(loaded["step"], 3);
+    }
+
+    #[tokio::test]
+    async fn handle_thread_full_lifecycle() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+
+        let created = runtime
+            .handle_thread(ThreadRequest::Create {
+                metadata: json!({}),
+            })
+            .await
+            .expect("create");
+        assert_eq!(created.status, "created");
+        let thread_id = created.thread_id.clone();
+        assert!(
+            created.data["history"].as_array().is_some(),
+            "Create returns persisted thread data"
+        );
+
+        let accepted = runtime
+            .handle_thread(ThreadRequest::Message {
+                thread_id: thread_id.clone(),
+                input: "hello runtime".to_string(),
+            })
+            .await
+            .expect("message");
+        assert_eq!(accepted.status, "accepted");
+        assert_eq!(accepted.events.len(), 3);
+
+        let read = runtime
+            .handle_thread(ThreadRequest::Read(ThreadReadParams {
+                thread_id: thread_id.clone(),
+            }))
+            .await
+            .expect("read");
+        let history = read.data["history"].as_array().expect("history").clone();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["role"], "user");
+
+        let named = runtime
+            .handle_thread(ThreadRequest::SetName(ThreadSetNameParams {
+                thread_id: thread_id.clone(),
+                name: "renamed".to_string(),
+            }))
+            .await
+            .expect("set name");
+        assert_eq!(
+            named.thread.expect("thread").name.as_deref(),
+            Some("renamed")
+        );
+
+        let forked = runtime
+            .handle_thread(ThreadRequest::Fork(fork_params(&thread_id)))
+            .await
+            .expect("fork");
+        assert_eq!(forked.status, "forked");
+        assert_ne!(forked.thread_id, thread_id);
+
+        let archived = runtime
+            .handle_thread(ThreadRequest::Archive {
+                thread_id: thread_id.clone(),
+            })
+            .await
+            .expect("archive");
+        assert_eq!(archived.status, "archived");
+
+        let listed = runtime
+            .handle_thread(ThreadRequest::List(ThreadListParams {
+                include_archived: false,
+                limit: None,
+            }))
+            .await
+            .expect("list");
+        assert_eq!(listed.threads.len(), 1, "only the fork remains active");
+
+        let unarchived = runtime
+            .handle_thread(ThreadRequest::Unarchive {
+                thread_id: thread_id.clone(),
+            })
+            .await
+            .expect("unarchive");
+        assert_eq!(unarchived.status, "unarchived");
+
+        let resumed = runtime
+            .handle_thread(ThreadRequest::Resume(resume_params(&thread_id)))
+            .await
+            .expect("resume");
+        assert_eq!(resumed.status, "resumed");
+        assert_eq!(resumed.thread.expect("thread").id, thread_id);
+    }
+
+    #[tokio::test]
+    async fn handle_thread_resume_and_fork_missing_report_missing() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        let resumed = runtime
+            .handle_thread(ThreadRequest::Resume(resume_params("thread-missing")))
+            .await
+            .expect("resume dispatch");
+        assert_eq!(resumed.status, "missing");
+        assert_eq!(resumed.data["error"], "thread not found");
+
+        let forked = runtime
+            .handle_thread(ThreadRequest::Fork(fork_params("thread-missing")))
+            .await
+            .expect("fork dispatch");
+        assert_eq!(forked.status, "missing");
+    }
+
+    #[tokio::test]
+    async fn handle_thread_start_uses_explicit_cwd_and_provider() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        let started = runtime
+            .handle_thread(ThreadRequest::Start(ThreadStartParams {
+                model: None,
+                model_provider: Some("anthropic".to_string()),
+                cwd: Some(PathBuf::from("/tmp/explicit")),
+                persist_extended_history: true,
+            }))
+            .await
+            .expect("start");
+        assert_eq!(started.status, "started");
+        let thread = started.thread.expect("thread");
+        assert_eq!(thread.model_provider, "anthropic");
+        assert_eq!(thread.cwd, PathBuf::from("/tmp/explicit"));
+        assert!(!thread.ephemeral, "persist_extended_history honored");
+    }
+
+    #[tokio::test]
+    async fn invoke_tool_denied_by_prefix_reports_denied() {
+        let (_tmp, store) = scratch_state_store();
+        let runtime = Runtime::new(
+            ConfigToml::default(),
+            ModelRegistry::default(),
+            store,
+            Arc::new(ToolRegistry::default()),
+            Arc::new(McpManager::default()),
+            ExecPolicyEngine::new(Vec::new(), vec!["denied-cmd".to_string()]),
+            HookDispatcher::default(),
+        );
+        let call = ToolCall {
+            name: "exec_shell".to_string(),
+            payload: ToolPayload::LocalShell {
+                params: LocalShellParams {
+                    command: "denied-cmd --flag".to_string(),
+                    cwd: None,
+                    timeout_ms: None,
+                },
+            },
+            source: ToolCallSource::Direct,
+            raw_tool_call_id: None,
+        };
+        let result = runtime
+            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"), true)
+            .await
+            .expect("invoke dispatches");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["status"], "denied");
+        assert!(
+            result["error"]
+                .as_str()
+                .expect("error string")
+                .contains("denied prefix"),
+            "denial reason surfaces: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_tool_unknown_tool_reports_failure_without_erroring() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        let call = ToolCall {
+            name: "no_such_tool".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+            source: ToolCallSource::Direct,
+            raw_tool_call_id: None,
+        };
+        // OnFailure allows the dispatch (approval comes after a failure), so
+        // the empty registry rejects the unknown name — the Err arm under
+        // test. OnRequest would stop at "approval_required".
+        let result = runtime
+            .invoke_tool(call, AskForApproval::OnFailure, Path::new("/tmp"), true)
+            .await
+            .expect("invoke_tool itself must not hard-error");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["status"], "failed");
+    }
+
+    #[tokio::test]
+    async fn mcp_startup_with_no_servers_completes_empty() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        let summary = runtime.mcp_startup().await;
+        assert!(summary.ready.is_empty());
+        assert!(summary.failed.is_empty());
+        assert!(summary.cancelled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invoke_tool_untrusted_command_requests_approval() {
+        let (_tmp, runtime) = runtime_with_scratch_store();
+        let call = ToolCall {
+            name: "exec_shell".to_string(),
+            payload: ToolPayload::LocalShell {
+                params: LocalShellParams {
+                    command: "cargo build".to_string(),
+                    cwd: None,
+                    timeout_ms: None,
+                },
+            },
+            source: ToolCallSource::Direct,
+            raw_tool_call_id: None,
+        };
+        // No trusted prefixes and OnRequest: the policy stops the call at the
+        // approval gate — nothing is dispatched, an approval id is returned.
+        let result = runtime
+            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"), true)
+            .await
+            .expect("invoke dispatches");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["status"], "approval_required");
+        assert!(
+            result["approval_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "an approval id names the pending decision: {result}"
+        );
     }
 }
