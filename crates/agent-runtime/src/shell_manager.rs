@@ -2418,9 +2418,8 @@ mod manager_tests {
         control.disable_raw_mode();
         control.enable_raw_mode();
         assert!(!control.raw_mode_enabled());
-        assert_eq!(
-            default_terminal_control().raw_mode_enabled(),
-            false,
+        assert!(
+            !default_terminal_control().raw_mode_enabled(),
             "the default shared controller is the no-op"
         );
     }
