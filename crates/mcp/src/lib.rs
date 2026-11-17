@@ -2087,8 +2087,4 @@ mod tests {
         assert_eq!(parse_server_from_uri("mcp://srv"), Some("srv".to_string()));
         assert_eq!(parse_server_from_uri("mcp://"), None);
     }
-
-    // ── run_stdio_server end-to-end over a piped child ────────────────
-
-    const STDIO_CHILD_ENV: &str = "CODESMITH_MCP_TEST_STDIO_CHILD";
 }
