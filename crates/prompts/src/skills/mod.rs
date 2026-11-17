@@ -1362,6 +1362,14 @@ mod tests {
     #[test]
     fn render_with_registered_shows_mod_attribution() {
         let tmpdir = TempDir::new().unwrap();
+        // Hermetic: redirect HOME so the dev machine's own global skills
+        // cannot crowd the rendered catalogue — with ~87 real skills
+        // installed, the prompt-budget truncation dropped the very
+        // mod-registered entry this test asserts on (and the truncation
+        // footer note made the failure look like a rendering bug).
+        let home = TempDir::new().unwrap();
+        let _env = crate::test_support::lock_test_env();
+        let _home_guard = crate::test_support::EnvVarGuard::set("HOME", home.path());
         // Empty filesystem catalogue: a registered-only set still renders.
         let rendered = super::render_available_skills_context_with_registered(
             tmpdir.path(),
