@@ -45,10 +45,12 @@ Each iteration:
 1. Read `eval/ratchet_log.jsonl` if present; do not repeat approaches that
    were reverted.
 2. Run the full improve-from-traces pipeline with two modifications:
-   auto-approve Stage 5 (write `Mode: ratchet` into the decision file), and
-   apply fixes directly on the ratchet branch — no nested `ri/improve-*`
-   branch. Skip insight work `eval/skillbook.json` already covers; metrics
-   always re-run on fresh records.
+   auto-approve Stage 5 by writing `Mode: ratchet` into
+   `eval/gate_decision.md` (the receipt improve-from-traces Stage 5 defines
+   for a pre-consented gate), and apply fixes directly on the ratchet
+   branch — no nested `ri/improve-*` branch. Skip insight work
+   `eval/skillbook.json` already covers; metrics always re-run on fresh
+   records.
 3. Clear the new-record window and run the agent command. A failed run or
    no new records → log `skip`, continue.
 4. Re-run the metrics command into a fresh JSON; compute the weighted score

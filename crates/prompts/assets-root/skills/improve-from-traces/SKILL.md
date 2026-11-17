@@ -104,7 +104,10 @@ the user's decision:
 - **[B]** approve with modifications — walk each fix
 - **[C]** reject with feedback
 
-Never auto-approve; never proceed on silence.
+Never auto-approve; never proceed on silence. The one override is the
+ratchet skill, with the user's explicit prior consent recorded as
+`Mode: ratchet` in `eval/gate_decision.md` — that file is the receipt an
+unattended loop leaves in place of this conversation.
 
 ## Stage 6 — Implement on a branch
 
