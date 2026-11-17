@@ -34,6 +34,9 @@ const BUILTIN_ROWS = [
   // The subagent catalog reads `subagentCatalog`/`subagentTiming` and opens
   // a child through `uiWorkspace.openSession(address)`.
   { id: '@codesmith/desktop-subagent-catalog', entry: 'client.js', inject: [], immediately: false },
+  // The preset center registers the Settings modal's「Presets」section over
+  // the bridged agentPresets/describe|apply endpoints.
+  { id: '@codesmith/desktop-preset-center', entry: 'client.js', inject: [], immediately: false },
 ]
 
 /**

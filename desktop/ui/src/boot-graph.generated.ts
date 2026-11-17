@@ -62,6 +62,7 @@ export const BOOT_ENTRIES: BootEntry[] = [
   { id: "@codesmith/desktop-brand", url: "plugins/??@codesmith/desktop-brand/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV },
   { id: "@codesmith/desktop-ticket-board", url: "plugins/??@codesmith/desktop-ticket-board/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV },
   { id: "@codesmith/desktop-subagent-catalog", url: "plugins/??@codesmith/desktop-subagent-catalog/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV },
+  { id: "@codesmith/desktop-preset-center", url: "plugins/??@codesmith/desktop-preset-center/client.js&rev=8bd073392eef6f54e921a093b95076248eb08cbb", rev: BOOT_REV },
 ]
 export function buildBootGraph() {
   const bootstrap = [MODULES_ID]

@@ -7,6 +7,7 @@ import { AppWebEntry } from '@codesmith/client-web'
 import * as brandModule from './brand-plugin'
 import { buildBootGraph } from './boot-graph.generated'
 import { installHostDropBridge } from './host-drop'
+import { create as createPresetCenter } from './preset-center-plugin'
 import { create as createSubagentCatalog } from './subagent-catalog-plugin'
 import { create as createTicketBoard } from './ticket-board-plugin'
 import { bridgeUrl, initTransport, installApiRouteRedirect } from './transport'
@@ -75,6 +76,12 @@ const g = globalThis as {
     id: '@codesmith/desktop-subagent-catalog',
     factory: load => createSubagentCatalog(load ?? (() => {
       throw new Error('codesmith desktop: subagent catalog requires the client module table')
+    })),
+  })
+  loader.__ModuleLoader__?.load?.({
+    id: '@codesmith/desktop-preset-center',
+    factory: load => createPresetCenter(load ?? (() => {
+      throw new Error('codesmith desktop: preset center requires the client module table')
     })),
   })
 }
