@@ -758,6 +758,7 @@ mod tests {
         format!("http://{addr}")
     }
 
+    #[cfg(feature = "blocking")] // the fns under test are feature-gated
     #[test]
     fn fetch_release_json_blocking_reads_a_local_mock() {
         let base = local_http_mock(vec![r#"{"tag_name":"v9.9.9"}"#.to_string()]);
@@ -766,6 +767,7 @@ mod tests {
         assert_eq!(latest_tag_from_release_json(&body).expect("tag"), "v9.9.9");
     }
 
+    #[cfg(feature = "blocking")] // the fn under test is feature-gated
     #[test]
     fn fetch_release_json_blocking_maps_http_404_to_a_typed_error() {
         use std::io::{Read as _, Write as _};
@@ -797,6 +799,7 @@ mod tests {
         assert_eq!(tag, "v0.2.0-beta");
     }
 
+    #[cfg(feature = "blocking")] // the fn under test is feature-gated
     #[test]
     fn latest_release_tag_blocking_pinned_mirror_avoids_the_network() {
         let _env = codesmith_agent_runtime::test_support::lock_test_env();
