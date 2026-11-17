@@ -2397,6 +2397,7 @@ mod manager_tests {
 
     /// Poll `task_id` (unlocked sleeps between polls) until it leaves the
     /// Running state, or panic after `deadline_ms`.
+    #[cfg(unix)]
     fn settle(manager: &mut ShellManager, task_id: &str, deadline_ms: u64) {
         let deadline = Instant::now() + Duration::from_millis(deadline_ms);
         loop {
@@ -2426,6 +2427,8 @@ mod manager_tests {
 
     /// ESRCH tolerance: killing a group whose leader is long gone, a
     /// non-positive pgid, and `None` are all best-effort no-ops.
+    #[cfg(unix)] // kill_process_group_of is unix-only; /usr/bin/true is not a
+    // Windows path.
     #[test]
     fn kill_process_group_helpers_tolerate_missing_targets() {
         kill_process_group_of_opt(None);
@@ -2608,6 +2611,7 @@ mod manager_tests {
         assert_eq!(via_terminal.default_workspace(), tmp.path());
     }
 
+    #[cfg(unix)] // spawns /bin/echo
     #[test]
     fn sync_execution_runs_a_short_command_and_reports_completion() {
         let (_tmp, mut manager) = temp_manager();
@@ -2621,6 +2625,7 @@ mod manager_tests {
         assert!(result.task_id.is_none(), "sync runs have no job id");
     }
 
+    #[cfg(unix)] // cat / sleep under the platform shell
     #[test]
     fn sync_execution_feeds_stdin_and_clamps_timeouts() {
         let (_tmp, mut manager) = temp_manager();
@@ -2653,6 +2658,7 @@ mod manager_tests {
         );
     }
 
+    #[cfg(unix)] // unix command string
     #[test]
     fn tty_sync_execution_is_rejected_with_the_remedy() {
         let (_tmp, mut manager) = temp_manager();
@@ -2668,6 +2674,7 @@ mod manager_tests {
 
     /// Interactive execution inherits the test process's stdio — a command
     /// that produces no output and exits 0 is observable through the result.
+    #[cfg(unix)] // spawns /usr/bin/true
     #[test]
     fn interactive_execution_runs_to_completion_through_all_wrappers() {
         let (_tmp, mut manager) = temp_manager();
@@ -2691,6 +2698,7 @@ mod manager_tests {
         assert!(with_env.duration_ms > 0);
     }
 
+    #[cfg(unix)] // spawns /bin/echo
     #[test]
     fn background_job_lifecycle_covers_poll_output_delta_and_listing() {
         let (_tmp, mut manager) = temp_manager();
@@ -2738,6 +2746,7 @@ mod manager_tests {
         assert!(err.to_string().contains("not found"), "{err:#}");
     }
 
+    #[cfg(unix)] // spawns cat
     #[test]
     fn write_stdin_streams_into_a_running_job_and_kill_stops_it() {
         let (_tmp, mut manager) = temp_manager();
@@ -2771,6 +2780,7 @@ mod manager_tests {
     }
 
     /// A running job is killed wholesale and reported.
+    #[cfg(unix)] // spawns sleep 30
     #[test]
     fn kill_running_takes_out_every_running_job() {
         let (_tmp, mut manager) = temp_manager();
@@ -2794,6 +2804,7 @@ mod manager_tests {
 
     /// Output beyond the truncation threshold is head+tail with the
     /// omission accounting filled in.
+    #[cfg(unix)] // yes | head pipeline
     #[test]
     fn oversized_output_is_truncated_with_metadata() {
         let (_tmp, mut manager) = temp_manager();
@@ -2862,6 +2873,7 @@ mod manager_tests {
     /// The host bridge covers the same surface hosts call: blocking waits
     /// settle through `wait_until_settled`, and every delegating method
     /// round-trips.
+    #[cfg(unix)] // spawns /bin/echo and /usr/bin/true
     #[test]
     fn shell_manager_host_bridge_delegates_the_whole_surface() {
         let tmp = tempfile::tempdir().expect("tempdir");
