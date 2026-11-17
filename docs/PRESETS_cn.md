@@ -247,6 +247,18 @@ MCP 工具以 `mcp__<server>__<tool>` 的形式暴露（双下划线；旧的单
 
 参见 `MCP.md`。
 
+## 桌面端暴露
+
+桌面应用的设置弹窗有「Presets」区（见 `DESKTOP.md`），暴露档位与其管辖的
+全部 config.toml 键：档位卡片切换选择，每个拨盘显示生效值、来源
+（基线 / 显式配置 / 默认）与各档基线，修改经 `toml_edit` 外科手术式写入
+`~/.codesmith/config.toml`（注释与未知键保留）。桌面端写的是 config.toml
+中的 `preset` 键，优先级高于 REPL `/preset` 命令持久化在 settings.toml 的
+选择——从桌面切换档位后，REPL 跟随 config.toml 键，直到该键被清除。任何
+显式值偏离都会像启动时一样把有效档位报告为 `diy`，并有横幅与一键
+“恢复基线”（仅文件层覆盖可恢复）。修改在下次启动应用后生效；运行中的
+会话保持其启动时的折叠结果。
+
 ## 相关 CLI 参数
 
 运行 `codesmith --help` 获取权威列表。常见参数：

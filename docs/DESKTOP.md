@@ -362,9 +362,25 @@ Known limitations of the current implementation:
   in the OS default application (the settings header's document action). The
   upstream plugin/account settings sections remain absent: CodeSmith has no
   plugin system or hosted account, so those pages would have no backend. That
-  is the final shape of this settings document — General, Models, shortcuts
-  and the font/theme overrides are the whole scope; adding plugin or account
-  pages needs an explicit product decision to also add those backends.
+  is the final shape of this settings document — General, Models, Presets,
+  shortcuts and the font/theme overrides are the whole scope; adding plugin
+  or account pages needs an explicit product decision to also add those
+  backends.
+- The Presets settings section (`desktop/ui/src/preset-center-plugin.ts`,
+  the fourth first-party plugin row) is the config center: tier cards for
+  `simple`/`middle`/`all`/`experiment`/`plan` plus user/project presets, the
+  diy deviation banner with per-key reset, grouped dials with source badges
+  (baseline / explicit / default), the feature-flag matrix, and a read-only
+  view of the remaining config.toml tree (unknown keys included, secrets
+  masked). `agentPresets/describe|apply` forward to the runtime's
+  `GET/POST /v1/presets[/apply]` (`crates/cli/src/preset_center.rs`); edits
+  are surgical `toml_edit` writes validated by a whole-document `Config`
+  round-trip, so the file never lands invalid and comments survive.
+  Save-on-interact with optimistic rollback; `restartPending` flags edits
+  the running serve process has not folded yet (they apply on the next
+  launch). Providers render read-only here — the Models page owns that
+  table. The vendored per-session roster (`agentPresets/list`) stays empty:
+  CodeSmith selects launch presets, not a per-session agent composition.
 - Plan mode is a full desktop surface (`client-ui-plan`): the composer plan
   chip reads the `plan` projection (`active` = thread mode `plan`), `/plan
   off` leaves the mode, and a submitted plan renders as a turn-tail card plus
@@ -672,7 +688,8 @@ Known limitations of the current implementation:
   plugin manager/market and the settings plugin inventory (the Cordis/JS
   plugin system has no CodeSmith equivalent), per-session agent presets
   (`agentPresets/list` answers an empty roster; CodeSmith selects
-  configuration presets at launch, not an agent composition per session),
+  configuration presets at launch — the launch-preset config center is the
+  Presets section above — not an agent composition per session),
   sidebar browser tabs (no user-visible browser session; the terminal tabs
   ARE bridged — see their bullet), and plugin entry customization. Their
   plugins stay out of the boot roster or answer

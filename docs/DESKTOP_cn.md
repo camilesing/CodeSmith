@@ -293,9 +293,21 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
   `settings/openSettingsDocument` 在文档不存在时创建它，并用系统默认应用
   打开 `~/.codesmith/desktop/settings.json`（设置头的文档动作）。上游的
   插件/账户设置区仍缺席：CodeSmith 没有插件系统或托管账户，这些页面没有
-  后端可接；这也是本设置文档的最终形态——General、Models、快捷键与
-  字体/主题覆盖即是全部范围，新增插件/账户页需要先明确决定同时补上对应
-  后端。
+  后端可接；这也是本设置文档的最终形态——General、Models、Presets、
+  快捷键与字体/主题覆盖即是全部范围，新增插件/账户页需要先明确决定同时
+  补上对应后端。
+- Presets 设置区（`desktop/ui/src/preset-center-plugin.ts`，第四个一方
+  插件行）即配置中心：`simple`/`middle`/`all`/`experiment`/`plan` 与
+  用户/项目自定义档的档位卡片、带逐键恢复的 diy 偏离横幅、带来源徽标
+  （基线 / 显式 / 默认）的分组拨盘、功能开关矩阵，以及其余 config.toml
+  树的只读视图（含未知键，密钥脱敏）。`agentPresets/describe|apply`
+  转发到运行时的 `GET/POST /v1/presets[/apply]`
+  （`crates/cli/src/preset_center.rs`）；修改是经整文档 `Config` 往返校验
+  的 `toml_edit` 外科手术式写入，文件不会落到无效状态，注释保留。逐操作
+  即时保存、乐观回滚；`restartPending` 标记运行中的 serve 进程尚未折叠的
+  修改（下次启动生效）。Providers 在此只读——该表归 Models 页所有。
+  vendored 的逐会话名册（`agentPresets/list`）保持为空：CodeSmith 选择的是
+  启动 preset，而非逐会话的 agent 组合。
 - 计划模式是完整的桌面面（`client-ui-plan`）：composer 的计划 chip 读
   `plan` 投影（`active` = 线程 mode 为 `plan`），`/plan off` 退出，提交的
   计划渲染为 turn 尾部卡片与右侧栏计划标签页。运行时的 `exit_plan_mode`
@@ -527,7 +539,8 @@ fail-loud 并附构建指引；`[desktop] enabled = false` 显式退出。被拉
 - 上游独有概念不仿真：账户/余额与账户设置区（`account/*` 返回未登录形态
   或 null）、插件管理器/市场与设置里的插件清单（Cordis/JS 插件体系在
   CodeSmith 没有对应物）、逐会话 agent presets（`agentPresets/list` 返回
-  空名册；CodeSmith 在启动时选择配置 preset，而不是逐会话的 agent 组合）、
+  空名册；CodeSmith 在启动时选择配置 preset——启动 preset 的配置中心即上文
+  的 Presets 区——而非逐会话的 agent 组合）、
   右侧栏浏览器标签页（没有用户可见的浏览器会话；终端标签页**已**桥接
   ——见其条目）以及插件条目定制。对应插件不进 boot roster
   或返回空态。workflow-run 面板**已**有数据源：运行时把 `workflow` 工具的

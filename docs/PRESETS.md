@@ -245,6 +245,21 @@ MCP tools are exposed as `mcp__<server>__<tool>` (double underscore; the old sin
 
 See `MCP.md`.
 
+## Desktop Exposure
+
+The desktop app's Settings modal has a「Presets」section (see `DESKTOP.md`)
+that exposes the tiers plus every `config.toml` key they govern: tier cards
+switch the selection, each dial shows its effective value, source
+(`baseline` / explicit config / `default`) and per-tier baselines, and edits
+are written surgically into `~/.codesmith/config.toml` (`toml_edit`;
+comments and unknown keys survive). The desktop writes the `preset` key in
+config.toml, which outranks the REPL `/preset` command's persisted selection
+in `settings.toml` — after switching tiers from the desktop, the REPL
+follows the config.toml key until it is unset. Any explicit value that
+deviates reports the effective tier `diy` exactly as at launch, with a
+banner and one-click "reset to baseline" for file-owned overrides. Edits
+apply on the next app launch; running sessions keep their startup fold.
+
 ## Related CLI Flags
 
 Run `codesmith --help` for the canonical list. Common flags:
