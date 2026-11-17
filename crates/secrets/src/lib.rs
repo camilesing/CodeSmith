@@ -1523,6 +1523,10 @@ mod tests {
         let _ = store.probe();
     }
 
+    // Writes to the developer's real OS keyring (repo policy: tests never
+    // poke real platform credential stores) — opt in explicitly with
+    // `cargo test -- --ignored`.
+    #[ignore = "writes to the real OS keyring"]
     #[test]
     fn system_keyring_store_round_trips_when_available() {
         let service = format!("codesmith-coverage-test-{}", std::process::id());
