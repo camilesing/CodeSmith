@@ -620,6 +620,8 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/usage", get(get_usage))
         .route("/v1/models", get(list_models))
+        .route("/v1/presets", get(preset_snapshot))
+        .route("/v1/presets/apply", post(preset_apply))
         // Authenticated like the rest of /v1/*: it echoes the bind host,
         // port, and auth mode, which is exactly the recon an unauthenticated
         // caller must not get for free.
@@ -1406,6 +1408,52 @@ struct ModelEntry {
     /// can render context occupancy without hard-coding model tables.
     #[serde(skip_serializing_if = "Option::is_none")]
     context_window: Option<u32>,
+}
+
+/// `GET /v1/presets` — the preset-center snapshot: tier catalog, selection
+/// and diy deviation, every catalog key's effective value/source/baselines,
+/// and the raw config.toml tree (secrets masked). The desktop's Presets
+/// settings section renders exactly this; see `preset_center`.
+async fn preset_snapshot(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<crate::preset_center::PresetSnapshot>, ApiError> {
+    let config = state.config.clone();
+    let workspace = state.workspace.clone();
+    let config_path = codesmith_config::resolve_config_path(None)
+        .map_err(|err| ApiError::internal(format!("config path: {err}")))?;
+    let snapshot = tokio::task::spawn_blocking(move || {
+        crate::preset_center::snapshot(&config, &workspace, &config_path)
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("preset snapshot task: {err}")))?
+    .map_err(|err| ApiError::internal(format!("preset snapshot: {err}")))?;
+    Ok(Json(snapshot))
+}
+
+/// `POST /v1/presets/apply` — a batch of preset-center ops (selectPreset /
+/// set / unset) written surgically into the user's config.toml. Rejects the
+/// whole batch (400, `[code] message`) on any unknown key, bad value, or
+/// non-resettable unset; a rejected batch leaves the file untouched.
+async fn preset_apply(
+    State(state): State<RuntimeApiState>,
+    Json(ops): Json<Vec<crate::preset_center::PresetOp>>,
+) -> Result<Json<crate::preset_center::PresetSnapshot>, ApiError> {
+    if ops.is_empty() {
+        return preset_snapshot(State(state)).await;
+    }
+    let config = state.config.clone();
+    let workspace = state.workspace.clone();
+    let config_path = codesmith_config::resolve_config_path(None)
+        .map_err(|err| ApiError::internal(format!("config path: {err}")))?;
+    let snapshot = tokio::task::spawn_blocking(move || {
+        crate::preset_center::apply(&ops, &config, &workspace, &config_path)
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("preset apply task: {err}")))?
+    .map_err(|err| {
+        ApiError::bad_request(format!("[{}] {}", err.code, err.message))
+    })?;
+    Ok(Json(snapshot))
 }
 
 /// `GET /v1/models` — the model registry with the effective default flagged,

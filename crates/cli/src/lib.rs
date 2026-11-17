@@ -43,6 +43,7 @@ mod models;
 mod notifications;
 mod onboarding;
 mod presets;
+mod preset_center;
 mod prompts;
 mod purge;
 pub mod repl;
