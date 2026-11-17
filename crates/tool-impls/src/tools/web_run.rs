@@ -1970,9 +1970,11 @@ mod tests {
         // by oldest last_access (staggered so "oldest" is deterministic).
         with_state(|state| {
             for i in 0..=MAX_WEB_RUN_SESSIONS {
-                let mut fresh = WebRunSessionState::default();
-                fresh.last_access =
-                    Instant::now() - Duration::from_secs((MAX_WEB_RUN_SESSIONS - i + 1) as u64);
+                let fresh = WebRunSessionState {
+                    last_access: Instant::now()
+                        - Duration::from_secs((MAX_WEB_RUN_SESSIONS - i + 1) as u64),
+                    ..WebRunSessionState::default()
+                };
                 state.sessions.insert(format!("ns-{i}"), fresh);
             }
         });
@@ -2104,7 +2106,7 @@ mod tests {
             content.push_str(&format!("({line}) Tj\nT*\n"));
         }
         content.push_str("ET\n");
-        let objects = vec![
+        let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_string(),
