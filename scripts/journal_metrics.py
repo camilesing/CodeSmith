@@ -73,8 +73,10 @@ def load_snapshot(path: Path) -> dict:
         "id": meta.get("id", path.stem),
         "messages": data.get("messages", []),
         "metadata": meta,
-        # The journal size this snapshot covers (SavedSession field).
+        # The journal size this snapshot covers, and the failed attempts the
+        # store persists alongside it (SavedSession fields).
         "journal_bytes": data.get("journal_bytes"),
+        "failed_rounds": len(data.get("failed_attempts") or []),
     }
 
 
