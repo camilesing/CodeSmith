@@ -73,7 +73,25 @@ def load_snapshot(path: Path) -> dict:
         "id": meta.get("id", path.stem),
         "messages": data.get("messages", []),
         "metadata": meta,
+        # The journal size this snapshot covers (SavedSession field).
+        "journal_bytes": data.get("journal_bytes"),
     }
+
+
+def load_pair(snapshot: Path, journal: Path) -> dict:
+    """Snapshot + journal pair, mirroring `FileSessionStore::load_session`:
+    the snapshot is a cache stamped with the journal size it covers, so a
+    journal that has grown past the stamp (a crash between journal append
+    and snapshot write) is folded for the transcript — the snapshot then
+    contributes only its metadata."""
+    session = load_snapshot(snapshot)
+    stamped = session.pop("journal_bytes", None)
+    if stamped is None or journal.stat().st_size > stamped:
+        folded = fold_journal(journal)
+        folded["id"] = session["id"]
+        folded["metadata"] = session["metadata"]
+        return folded
+    return session
 
 
 def fold_journal(path: Path) -> dict:
@@ -132,41 +150,57 @@ def collect_sessions(args: argparse.Namespace) -> list[dict]:
             journal = sessions_dir / f"{sid}.journal.jsonl"
             snapshot = sessions_dir / f"{sid}.json"
             try:
-                if snapshot.exists():
+                if snapshot.exists() and journal.exists():
+                    picked.append(load_pair(snapshot, journal))
+                elif snapshot.exists():
                     picked.append(load_snapshot(snapshot))
                 elif journal.exists():
                     picked.append(fold_journal(journal))
                 else:
                     fail(f"no session record for id {sid} in {sessions_dir}")
-            except ValueError as exc:
+            except (ValueError, OSError) as exc:
                 fail(str(exc))  # explicitly requested: hard failure
     else:
-        # One record per session id: the snapshot wins when both exist (it
-        # carries the metadata the workspace filter needs). Foreign .json
-        # files in the dir (e.g. a baseline written here) are ignored.
-        candidates: dict[str, Path] = {}
-        for jpath in glob.glob(str(sessions_dir / "*.journal.jsonl")):
-            candidates[journalless_id(Path(jpath))] = Path(jpath)
+        # One record per session id. When both exist the pair is loaded
+        # through `load_pair` (journal folded when it outgrew the snapshot
+        # stamp; the snapshot still carries the metadata the workspace
+        # filter needs). Foreign .json files in the dir (e.g. a baseline
+        # written here) are ignored.
+        journals: dict[str, Path] = {
+            journalless_id(Path(p)): Path(p)
+            for p in glob.glob(str(sessions_dir / "*.journal.jsonl"))
+        }
+        snapshots: dict[str, Path] = {}
         for spath in glob.glob(str(sessions_dir / "*.json")):
             path = Path(spath)
             if looks_like_snapshot(path):
-                candidates[journalless_id(path)] = path
+                snapshots[journalless_id(path)] = path
         entries = sorted(
-            candidates.values(),
-            key=lambda p: json_meta_field(p, "updated_at")
-            or datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat(),
+            journals.keys() | snapshots.keys(),
+            key=lambda sid: (
+                json_meta_field(snapshots.get(sid) or journals[sid], "updated_at")
+                or datetime.fromtimestamp(
+                    (snapshots.get(sid) or journals[sid]).stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            ),
             reverse=True,
         )
-        for path in entries:
+        for sid in entries:
+            snapshot, journal = snapshots.get(sid), journals.get(sid)
+            path = snapshot or journal
             try:
-                if path.suffix == ".json":
-                    session = load_snapshot(path)
+                if snapshot is not None and journal is not None:
+                    session = load_pair(snapshot, journal)
+                    if workspace and session["metadata"].get("workspace") not in workspace_variants:
+                        continue
+                elif snapshot is not None:
+                    session = load_snapshot(snapshot)
                     if workspace and session["metadata"].get("workspace") not in workspace_variants:
                         continue
                 else:
                     if workspace:
                         continue  # journal-only session: no workspace metadata
-                    session = fold_journal(path)
+                    session = fold_journal(journal)
             except (ValueError, OSError, json.JSONDecodeError) as exc:
                 print(f"journal_metrics: skipping unreadable record: {exc}", file=sys.stderr)
                 skipped.append(str(path))
