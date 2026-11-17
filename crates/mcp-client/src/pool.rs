@@ -7366,6 +7366,7 @@ mod tests {
     /// one, persisted back, and the header is replaced. Also pins the no-
     /// stored-token and unreachable-endpoint outcomes.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env guard intentionally spans the awaits
     async fn maybe_refresh_oauth_headers_full_cycle() {
         let _env = crate::test_support::lock_test_env();
         let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
@@ -7587,9 +7588,6 @@ mod tests {
         assert_eq!(sent[1]["params"]["arguments"]["who"], "you");
     }
 
-    /// A stdio server that never answers `initialize` surfaces the
-    /// initialization-timeout error (and exercises the stderr drain task
-
     /// Initialize succeeds but `tools/list` never answers → discovery
     /// timeout error, bounded by connect_timeout.
     #[tokio::test]
@@ -7673,6 +7671,7 @@ mod tests {
     /// warning), and a malformed HTTPS_PROXY is ignored with a warning —
     /// the loopback connection proceeds directly.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env guard intentionally spans the awaits
     async fn oauth_without_stored_token_and_malformed_proxy_still_connect() {
         let _env = crate::test_support::lock_test_env();
         let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
@@ -7711,6 +7710,7 @@ mod tests {
     /// cached: `connect_all` reports it, and the next `get_or_connect`
     /// short-circuits without touching the server again.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env guard intentionally spans the awaits
     async fn url_auth_failure_is_marked_needs_auth_and_cached() {
         use tokio::io::AsyncWriteExt;
         use tokio::net::TcpListener;
@@ -7878,9 +7878,6 @@ mod tests {
         transport.shutdown().await;
         server.abort();
     }
-
-    /// The SSE loop's transport-level connect failure (refused port)
-    /// surfaces as the endpoint-discovery timeout with the loop's own
 
     #[tokio::test]
     async fn http_transport_shutdown_covers_both_modes() {
@@ -8401,14 +8398,15 @@ mod tests {
             .unwrap();
         assert_eq!(result["messages"], serde_json::json!([]));
 
-        let sent = sent.lock().unwrap();
-        assert_eq!(sent[0]["method"], "resources/read");
-        assert_eq!(sent[1]["method"], "resources/read");
-        assert_eq!(sent[2]["method"], "prompts/get");
-        assert_eq!(sent[2]["params"]["arguments"]["who"], "you");
+        {
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent[0]["method"], "resources/read");
+            assert_eq!(sent[1]["method"], "resources/read");
+            assert_eq!(sent[2]["method"], "prompts/get");
+            assert_eq!(sent[2]["params"]["arguments"]["who"], "you");
+        }
 
         // Missing required arguments fail with a diagnosable error.
-        drop(sent);
         let err = pool
             .call_tool("mcp_read_resource", serde_json::json!({"uri": "mem://r1"}))
             .await
