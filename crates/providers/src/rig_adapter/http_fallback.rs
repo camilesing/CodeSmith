@@ -344,11 +344,8 @@ fn wire_message_summary(msg: &serde_json::Value) -> serde_json::Value {
     }
     if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
         tool_result_id = Some(id);
-        chars += msg
-            .get("content")
-            .and_then(|v| v.as_str())
-            .map(str::len)
-            .unwrap_or(0);
+        // The content was already counted above (string branch or per block
+        // of the array branch) — do not count it a second time here.
     }
     let has_reasoning_content = msg.get("reasoning_content").is_some();
 
@@ -991,9 +988,9 @@ mod tests {
             "content": "result body"
         }));
         assert_eq!(summary["tool_result_id"], "call-1");
-        // The tool branch counts the content twice (String branch once, the
-        // tool_call_id branch once more) — pin the product behavior.
-        assert_eq!(summary["chars"], 22);
+        // "result body" is 11 chars, counted once — the tool_call_id branch
+        // must not re-add content the content match already counted.
+        assert_eq!(summary["chars"], 11);
     }
 
     #[test]
