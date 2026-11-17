@@ -809,10 +809,8 @@ mod tests {
             "CODESMITH_RELEASE_BASE_URL",
             home.path().join("mirror").to_string_lossy().into_owned(),
         );
-        let _g2 = codesmith_agent_runtime::test_support::EnvVarGuard::set(
-            "CODESMITH_VERSION",
-            "1.2.3".to_string(),
-        );
+        let _g2 =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_VERSION", "1.2.3");
         // update_version_from_env strips a leading `v` and rejects blanks.
         assert_eq!(update_version_from_env(), Some("1.2.3".to_string()));
         let tag = latest_release_tag_blocking(ReleaseChannel::Stable).expect("mirror tag");
