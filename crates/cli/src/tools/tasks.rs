@@ -1380,7 +1380,7 @@ mod tests {
 
     use crate::task_manager::{
         CURRENT_TASK_SCHEMA_VERSION, ExecutionTask, TaskExecutionEvent, TaskExecutionResult,
-        TaskExecutor, TaskManager, TaskManagerConfig, TaskStatus,
+        TaskExecutor, TaskManager, TaskStatus,
     };
     use tokio::sync::mpsc;
 
@@ -1430,19 +1430,6 @@ mod tests {
                 result_text: None,
                 error: None,
             }
-        }
-    }
-
-    fn test_task_config(root: std::path::PathBuf) -> TaskManagerConfig {
-        TaskManagerConfig {
-            data_dir: root,
-            worker_count: 1,
-            default_workspace: PathBuf::from("."),
-            default_model: "deepseek-v4-flash".to_string(),
-            default_mode: "agent".to_string(),
-            allow_shell: false,
-            trust_mode: false,
-            max_subagents: 2,
         }
     }
 
@@ -1957,22 +1944,6 @@ mod tests {
         ] {
             assert!(err.to_string().contains("Attempt not found"), "{err}");
         }
-    }
-
-    /// Run one git command inside `dir`, failing the test with its output.
-    fn git_in(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .expect("spawn git");
-        assert!(
-            out.status.success(),
-            "git {:?} failed: {}{}",
-            args,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
     }
 
     #[tokio::test]

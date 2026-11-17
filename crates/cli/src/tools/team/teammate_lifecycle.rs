@@ -1084,6 +1084,9 @@ pub fn poll_leader_inbox(team_name: &str) -> anyhow::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
 
     fn update(from: &str, allowed: &[&str], denied: &[&str]) -> TeamPermissionUpdateEntry {

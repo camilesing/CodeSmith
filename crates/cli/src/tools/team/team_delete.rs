@@ -217,6 +217,9 @@ mod tests {
 
     #[cfg(test)]
     mod execute_tests {
+        // Async tests hold the test-env mutex across awaits.
+        #![allow(clippy::await_holding_lock)]
+
         use crate::tools::spec::{RuntimeToolServices, ToolContext, ToolSpec};
         use crate::tools::task_v2::new_shared_task_v2_manager;
         use crate::tools::team::team_file::{

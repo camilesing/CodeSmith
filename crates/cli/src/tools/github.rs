@@ -788,6 +788,9 @@ fn sanitize_filename(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use crate::tools::spec::ToolSpec;
 

@@ -226,6 +226,9 @@ impl ToolSpec for TeamCreateTool {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use crate::tools::spec::{RuntimeToolServices, ToolSpec};
     use codesmith_agent_runtime::test_support::{ScopedCodeSmithHome, lock_test_env};

@@ -1515,9 +1515,11 @@ mod tests {
 
     #[test]
     fn print_human_and_json_render_a_populated_rollup() {
-        let mut rollup = Rollup::default();
-        rollup.earliest_ts = Some("2026-01-01T00:00:00Z".parse().unwrap());
-        rollup.latest_ts = Some("2026-02-01T00:00:00Z".parse().unwrap());
+        let mut rollup = Rollup {
+            earliest_ts: Some("2026-01-01T00:00:00Z".parse().unwrap()),
+            latest_ts: Some("2026-02-01T00:00:00Z".parse().unwrap()),
+            ..Rollup::default()
+        };
 
         let mut busy = ToolStats {
             calls: 9,

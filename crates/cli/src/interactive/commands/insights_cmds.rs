@@ -497,6 +497,9 @@ fn render_html(rollup: &Rollup, window: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
 
     #[test]

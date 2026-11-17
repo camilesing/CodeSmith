@@ -11262,8 +11262,10 @@ context_window = 200000
         apply_requirements(&mut config).expect("both policies allowed");
 
         // No requirements file → no-op.
-        let mut bare = Config::default();
-        bare.requirements_path = Some(tmp.path().join("nope.toml").display().to_string());
+        let mut bare = Config {
+            requirements_path: Some(tmp.path().join("nope.toml").display().to_string()),
+            ..Config::default()
+        };
         apply_requirements(&mut bare).expect("missing requirements file is a no-op");
     }
 

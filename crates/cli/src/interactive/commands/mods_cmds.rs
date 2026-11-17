@@ -260,6 +260,9 @@ pub(super) async fn reload_note(state: &ReplState) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use codesmith_agent_runtime::test_support::{EnvVarGuard, lock_test_env};
 

@@ -2335,6 +2335,9 @@ async fn handle_elevation(
 
 #[cfg(test)]
 mod tests {
+    // Async tests hold the test-env mutex across awaits.
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use std::sync::Arc;
     use unicode_width::UnicodeWidthStr;
