@@ -1031,7 +1031,14 @@ impl ConfigToml {
                     }
                 }
             }
-            _ => self.extras.get(key).map(toml::Value::to_string),
+            // `set_value`'s extras fallback stores plain strings as
+            // `Value::String`; a stored string must read back verbatim, not
+            // re-rendered as TOML source with quotes (which broke the
+            // persist→load round-trip for JSON blob values).
+            _ => self.extras.get(key).map(|value| match value {
+                toml::Value::String(inner) => inner.clone(),
+                other => other.to_string(),
+            }),
         }
     }
 

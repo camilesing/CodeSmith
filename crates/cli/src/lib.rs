@@ -2394,13 +2394,26 @@ mod tests {
                 .is_empty()
         );
 
-        // Known product bug (not fixed here): `persist_mcp_server_definitions`
-        // writes the JSON list through `Config::set_value`'s extras fallback,
-        // and `get_value` re-renders a toml string with literal quoting
-        // (`'[{→}]'`), which `parse_mcp_server_definitions` cannot re-parse →
-        // the next `load_mcp_server_definitions` quarantines the value the
-        // command itself just persisted. The round-trip is therefore not
-        // asserted; the corrupt-value path below is.
+        // Persist → load round-trips, including through a fresh store load:
+        // `get_value` returns extras strings verbatim, so the JSON the
+        // command wrote is exactly what the next run parses.
+        let defs = vec![sample_definition()];
+        persist_mcp_server_definitions(&mut store, &defs).expect("persist");
+        let reloaded = load_mcp_server_definitions(&store).expect("reload from live store");
+        assert_eq!(
+            serde_json::to_string(&reloaded).expect("re-encode"),
+            serde_json::to_string(&defs).expect("encode"),
+            "a persisted non-empty definition list must survive reload"
+        );
+        let reloaded = load_mcp_server_definitions(
+            &ConfigStore::load(Some(path.clone())).expect("reload store"),
+        )
+        .expect("reload from disk");
+        assert_eq!(
+            serde_json::to_string(&reloaded).expect("re-encode"),
+            serde_json::to_string(&defs).expect("encode"),
+            "the definitions must survive a store save→load cycle"
+        );
 
         // A corrupt value is quarantined and the load aborts instead of
         // letting the persist below overwrite the user's definitions.
