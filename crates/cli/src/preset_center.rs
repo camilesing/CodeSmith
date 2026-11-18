@@ -22,9 +22,11 @@
 //! - No cross-window CAS or push — last writer wins (file writes are
 //!   atomic).
 //! - The curated catalog is addable from the UI; arbitrary *new* keys are
-//!   not (only keys already present in the file may be edited generically),
-//!   so the UI cannot conjure typo keys. `app_mode` and `memory_level` are
-//!   preset-file/session dials, not config.toml keys, and are not cataloged.
+//!   not (only leaf values already present in the file may be edited
+//!   generically — whole-table set/unset is refused so a section's keys
+//!   cannot be destroyed), so the UI cannot conjure typo keys. `app_mode`
+//!   and `memory_level` are preset-file/session dials, not config.toml
+//!   keys, and are not cataloged.
 //! - The REPL's `/preset` persists to settings.toml, which the `preset`
 //!   key written here outranks — switching tiers from the desktop masks
 //!   the REPL selection until the key is unset.
@@ -532,11 +534,14 @@ fn doc_walk<'a>(doc: &'a DocumentMut, path: &str) -> Option<Walked<'a>> {
     fn walk_table<'a>(table: &'a toml_edit::Table, segments: &[&str]) -> Option<Walked<'a>> {
         let (head, rest) = segments.split_first()?;
         match table.get(head)? {
+            // `rest.is_empty()` first: a path may legitimately end on a
+            // table — returning it (not recursing into nothing) is what
+            // lets whole-table targets be seen and refused by `apply`.
+            item if rest.is_empty() => Some(Walked::Item(item)),
             toml_edit::Item::Table(nested) => walk_table(nested, rest),
             toml_edit::Item::Value(toml_edit::Value::InlineTable(inline)) => {
                 walk_inline(inline, rest)
             }
-            item if rest.is_empty() => Some(Walked::Item(item)),
             _ => None,
         }
     }
@@ -569,6 +574,24 @@ fn doc_lookup_json(doc: &DocumentMut, path: &str) -> Option<Json> {
 /// Whether a dotted path exists in the document.
 fn doc_has(doc: &DocumentMut, path: &str) -> bool {
     doc_walk(doc, path).is_some()
+}
+
+/// Refuse ops whose target addresses a whole table (real table or array of
+/// tables): a set would overwrite every key under it with one value, an
+/// unset would drop them all. Cataloged tables (`rhai_loop`, `providers`)
+/// and unknown sections alike — generic edits and resets touch leaves only.
+fn refuse_table_target(doc: &DocumentMut, path: &str) -> Result<(), ApplyError> {
+    if matches!(
+        doc_walk(doc, path),
+        Some(Walked::Item(toml_edit::Item::Table(_)))
+            | Some(Walked::Item(toml_edit::Item::ArrayOfTables(_)))
+    ) {
+        return Err(ApplyError::new(
+            "read_only",
+            format!("{path:?} addresses a whole table; edit its keys individually"),
+        ));
+    }
+    Ok(())
 }
 
 /// Render a document table as a JSON tree for the generic editor, masking
@@ -970,10 +993,12 @@ fn snapshot_with(
         }
         // Secrets compare as "always pending" against their masked value —
         // skip them; a secret change needs a restart either way and the
-        // notice is already up after any edit batch.
+        // notice is already up after any edit batch. Whole-table rows are
+        // read-only passthroughs: their presence in the file is not a
+        // pending change.
         if file_raw_present
             && file_value.as_ref() != Some(&value)
-            && !matches!(entry.kind, KeyKind::Secret)
+            && !matches!(entry.kind, KeyKind::Secret | KeyKind::Table)
         {
             restart_pending = true;
         }
@@ -1156,6 +1181,7 @@ pub fn apply(
             PresetOp::Set { path, value } => {
                 if value.is_null() {
                     // `set: null` reads as unset — keeps the UI single-op.
+                    refuse_table_target(&doc, path)?;
                     doc_unset(&mut doc, path).map_err(|err| ApplyError::new("bad_value", err))?;
                     continue;
                 }
@@ -1173,8 +1199,9 @@ pub fn apply(
                         })?;
                     }
                     None => {
-                        // Not curated: only keys already present in the file
-                        // may be edited (no conjuring new keys from the UI).
+                        // Not curated: only leaf values already present in
+                        // the file may be edited (no conjuring new keys from
+                        // the UI, no overwriting whole sections either).
                         if !doc_has(&doc, path) {
                             return Err(ApplyError::new(
                                 "unknown_key",
@@ -1183,6 +1210,7 @@ pub fn apply(
                                 ),
                             ));
                         }
+                        refuse_table_target(&doc, path)?;
                     }
                 }
                 let toml_value = json_to_toml(value).ok_or_else(|| {
@@ -1198,14 +1226,9 @@ pub fn apply(
                         format!("{path:?} is not set in config.toml"),
                     ));
                 }
-                if catalog().iter().any(|entry| {
-                    entry.path == path.as_str() && matches!(entry.kind, KeyKind::Table)
-                }) {
-                    return Err(ApplyError::new(
-                        "read_only",
-                        format!("{path:?} is a whole-table key; edit it on its dedicated page"),
-                    ));
-                }
+                // Whole tables — cataloged (`rhai_loop`, `providers`) or not
+                // — are never unset: removing one drops every key under it.
+                refuse_table_target(&doc, path)?;
                 doc_unset(&mut doc, path).map_err(|err| ApplyError::new("bad_value", err))?;
             }
         }
@@ -1480,6 +1503,87 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, "io");
+    }
+
+    #[test]
+    fn whole_table_targets_are_refused_not_destroyed() {
+        // Set/unset on a table path — cataloged or not, null-set included —
+        // must refuse rather than overwrite/drop every key under the
+        // section.
+        let (_dir, path) = temp_config("[network]\nallow = [\"a\"]\ndeny = [\"b\"]\n");
+        let startup = folded_startup();
+        let ws = Path::new("/nonexistent-workspace");
+        let before = std::fs::read_to_string(&path).expect("read");
+
+        let set_table = apply(
+            &[PresetOp::Set {
+                path: "network".to_string(),
+                value: Json::Bool(true),
+            }],
+            &startup,
+            ws,
+            &path,
+        )
+        .unwrap_err();
+        assert_eq!(set_table.code, "read_only");
+
+        let null_set_table = apply(
+            &[PresetOp::Set {
+                path: "network".to_string(),
+                value: Json::Null,
+            }],
+            &startup,
+            ws,
+            &path,
+        )
+        .unwrap_err();
+        assert_eq!(null_set_table.code, "read_only");
+
+        let unset_table = apply(
+            &[PresetOp::Unset {
+                path: "network".to_string(),
+            }],
+            &startup,
+            ws,
+            &path,
+        )
+        .unwrap_err();
+        assert_eq!(unset_table.code, "read_only");
+
+        // Cataloged table unset keeps refusing through the same shape check.
+        let (_d2, p2) = temp_config("[rhai_loop]\nheartbeat_s = 1\n");
+        let err = apply(
+            &[PresetOp::Unset {
+                path: "rhai_loop".to_string(),
+            }],
+            &startup,
+            ws,
+            &p2,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "read_only");
+
+        // An array-of-tables target is a whole table too: this is the one
+        // shape the old leaf-only walk did see, so an unset here really
+        // would have dropped every [[providers.custom]] entry.
+        let (_d3, p3) = temp_config(
+            "[providers.openai]\napi_key = \"sk\"\n\n[[providers.custom]]\nid = \"mine\"\n",
+        );
+        let err = apply(
+            &[PresetOp::Unset {
+                path: "providers.custom".to_string(),
+            }],
+            &startup,
+            ws,
+            &p3,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "read_only");
+        let after = std::fs::read_to_string(&p3).expect("read back");
+        assert!(after.contains("[[providers.custom]]"), "{after}");
+
+        // Rejected batches leave the file untouched.
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
     }
 
     #[test]
