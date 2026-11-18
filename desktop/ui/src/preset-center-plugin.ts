@@ -425,15 +425,15 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         )
       }
 
-      function KeyRow(props: { entry: KeyState; onSet: (path: string, value: unknown) => void; onUnset: (path: string) => void }) {
+      function KeyRow(props: { entry: KeyState; deviated: boolean; onSet: (path: string, value: unknown) => void; onUnset: (path: string) => void }) {
         const entry = props.entry
         const zh = isZh()
         const label = zh ? entry.labelZh : entry.labelEn
         const desc = zh ? entry.descZh : entry.descEn
-        const deviated =
-          entry.presetGoverned && entry.source === 'explicit-file' &&
-          entry.baselines.length > 0 &&
-          entry.baselines.some(baseline => baseline.tier === selectionTier && baseline.value !== entry.value)
+        // Deviation shading rides the server's deviation list — the same
+        // list the diy banner's chips enumerate (file value vs the selected
+        // tier's baseline), so a row is shaded exactly when its chip shows.
+        const deviated = props.deviated
 
         const control = (() => {
           if (entry.readOnly || entry.kind === 'table') {
@@ -554,9 +554,6 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
         )
       }
 
-      // Selected tier captured at render scope for the deviation shading.
-      let selectionTier = 'middle'
-
       function Section() {
         const [snap, setSnap] = useState(null as Snapshot | null)
         const [error, setError] = useState(null as string | null)
@@ -606,7 +603,9 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
             if (snap === null) return
             void run(
               [{ op: 'selectPreset', name }],
-              { ...snap, selection: { ...snap.selection, selected: name } },
+              // A tier gesture usually moves the next launch off the running
+              // fold; the fresh snapshot corrects a same-tier re-click back.
+              { ...snap, selection: { ...snap.selection, selected: name }, restartPending: true },
             )
           },
           [snap, run],
@@ -639,8 +638,8 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
           return React.createElement('div', { className: 'cds-pc-section' }, React.createElement('p', { className: 'cds-pc-notice' }, t('loading')))
         }
 
-        selectionTier = snap.selection.selected
         const zh = isZh()
+        const deviatedPaths = new Set(snap.selection.deviated)
         const groups: { id: string; title: string }[] = [
           { id: 'session', title: t('groupSession') },
           { id: 'safety', title: t('groupSafety') },
@@ -720,7 +719,7 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
               React.createElement('h4', { className: 'cds-pc-group-title' }, group.title),
               ...snap.keys
                 .filter((key: KeyState) => key.group === group.id)
-                .map((key: KeyState) => React.createElement(KeyRow, { key: key.path, entry: key, onSet, onUnset })),
+                .map((key: KeyState) => React.createElement(KeyRow, { key: key.path, entry: key, deviated: deviatedPaths.has(key.path), onSet, onUnset })),
             ),
           ),
           Object.keys(extraTree).length > 0

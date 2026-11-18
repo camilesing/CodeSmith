@@ -911,7 +911,15 @@ fn snapshot_with(
 
     let mut keys = Vec::new();
     let mut deviated = Vec::new();
-    let mut restart_pending = false;
+    // The presented view folds the file-selected tier; the running process
+    // keeps its startup selection until the next launch. That divergence is
+    // restart-pending exactly like a dial whose file value differs from the
+    // running fold — the fold above makes `view.preset` equal the file
+    // selection, so the per-key comparison below cannot see it on its own.
+    let startup_tier = canonicalize_preset_name(startup.preset_selection().unwrap_or("middle"))
+        .map(|(name, _)| name)
+        .unwrap_or_else(|_| "middle".to_string());
+    let mut restart_pending = selection != startup_tier;
     for entry in catalog() {
         // File value stays unmasked for comparisons (source, deviation,
         // restart); display masking happens per-path in `file_tree` and via
@@ -1316,6 +1324,21 @@ mod tests {
         assert_eq!(index.value, Json::Bool(true));
         assert_eq!(index.source, KeySource::Baseline);
         assert_eq!(snap.selection.effective, "middle");
+        assert!(!snap.restart_pending, "the startup tier is what runs");
+    }
+
+    #[test]
+    fn tier_switch_from_running_selection_is_restart_pending() {
+        // The presented view folds the file-selected tier, but the running
+        // serve process keeps its startup selection until the next launch —
+        // a differing tier is restart-pending like any deviating dial,
+        // re-selecting the startup tier is not.
+        let (_dir, path) = temp_config("preset = \"all\"\n");
+        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        assert!(snap.restart_pending, "all selected while running middle");
+        std::fs::write(&path, "preset = \"middle\"\n").expect("rewrite fixture");
+        let snap = snapshot_with(&Config::default(), &path, &builtin_catalog()).expect("snapshot");
+        assert!(!snap.restart_pending, "the startup tier re-selected");
     }
 
     #[test]
