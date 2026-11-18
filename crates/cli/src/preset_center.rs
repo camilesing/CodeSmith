@@ -472,6 +472,18 @@ impl ApplyError {
 // Snapshot
 // ---------------------------------------------------------------------------
 
+/// Read the config file, treating an absent file as empty. Any other IO
+/// error (permissions, EIO, a directory at the path) fails loud: silently
+/// proceeding would present a phantom empty file — and in `apply`, write
+/// ops applied to that phantom back over the real one.
+fn read_config_or_empty(config_path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(config_path) {
+        Ok(text) => Ok(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(err),
+    }
+}
+
 fn edit_to_json(item: &toml_edit::Item, secret: bool) -> Json {
     use toml_edit::Item;
     match item {
@@ -863,7 +875,8 @@ fn snapshot_with(
     config_path: &Path,
     preset_catalog: &PresetCatalog,
 ) -> anyhow::Result<PresetSnapshot> {
-    let raw = std::fs::read_to_string(config_path).unwrap_or_default();
+    let raw = read_config_or_empty(config_path)
+        .map_err(|err| anyhow::anyhow!("read config.toml: {err}"))?;
     let doc: DocumentMut = raw
         .parse()
         .map_err(|err| anyhow::anyhow!("config.toml parse error: {err}"))?;
@@ -1112,7 +1125,8 @@ pub fn apply(
     workspace: &Path,
     config_path: &Path,
 ) -> Result<PresetSnapshot, ApplyError> {
-    let raw = std::fs::read_to_string(config_path).unwrap_or_default();
+    let raw = read_config_or_empty(config_path)
+        .map_err(|err| ApplyError::new("io", format!("read config.toml: {err}")))?;
     let mut doc: DocumentMut = raw.parse().map_err(|err| {
         ApplyError::new("invalid_file", format!("config.toml parse error: {err}"))
     })?;
@@ -1442,6 +1456,30 @@ mod tests {
             snap.file_tree.pointer("/providers/openai/base_url"),
             Some(&Json::String("https://x".to_string()))
         );
+    }
+
+    #[test]
+    fn unreadable_config_fails_loud_not_as_empty() {
+        // A directory at the config path reads as an IO error, not NotFound:
+        // snapshot must fail rather than present a phantom empty file, and
+        // apply must refuse rather than write ops applied to that phantom
+        // back over the real path.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bogus = dir.path().join("config.toml");
+        std::fs::create_dir_all(&bogus).expect("make dir at config path");
+        let startup = folded_startup();
+        assert!(snapshot_with(&startup, &bogus, &builtin_catalog()).is_err());
+        let err = apply(
+            &[PresetOp::Set {
+                path: "model".to_string(),
+                value: Json::String("x".to_string()),
+            }],
+            &startup,
+            Path::new("/nonexistent-workspace"),
+            &bogus,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "io");
     }
 
     #[test]
