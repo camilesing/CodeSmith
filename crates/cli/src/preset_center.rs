@@ -585,9 +585,12 @@ fn table_to_json(table: &toml_edit::Table, prefix: &str) -> Json {
     Json::Object(map)
 }
 
-/// Paths whose file-tree values are masked (they are secrets).
+/// Paths whose file-tree values are masked (they are secrets). Any leaf
+/// named `api_key` masks — provider credentials live at
+/// `providers.<id>.api_key` and inside `[[providers.custom]]` entries, not
+/// just at the root.
 fn is_secret_path(path: &str) -> bool {
-    path == "api_key" || path == "sandbox_api_key"
+    path == "sandbox_api_key" || path == "api_key" || path.ends_with(".api_key")
 }
 
 /// The selected preset's baseline value for a governed path, if the tier
@@ -1412,6 +1415,32 @@ mod tests {
         assert_eq!(
             snap.file_tree.get("api_key"),
             Some(&Json::String("•••".to_string()))
+        );
+    }
+
+    #[test]
+    fn provider_api_keys_are_masked_in_the_file_tree() {
+        // Credentials live at `providers.<id>.api_key` and inside
+        // `[[providers.custom]]` entries — every leaf named `api_key` must
+        // mask in the served file tree, not just the root slot.
+        let (_dir, path) = temp_config(
+            "[providers.openai]\napi_key = \"sk-live\"\nbase_url = \"https://x\"\n\n\
+             [[providers.custom]]\nid = \"mine\"\napi_key = \"sk-custom\"\n",
+        );
+        let startup = folded_startup();
+        let snap = snapshot_with(&startup, &path, &builtin_catalog()).expect("snapshot");
+        assert_eq!(
+            snap.file_tree.pointer("/providers/openai/api_key"),
+            Some(&Json::String("•••".to_string()))
+        );
+        assert_eq!(
+            snap.file_tree.pointer("/providers/custom/0/api_key"),
+            Some(&Json::String("•••".to_string()))
+        );
+        // Non-secret neighbors stay readable.
+        assert_eq!(
+            snap.file_tree.pointer("/providers/openai/base_url"),
+            Some(&Json::String("https://x".to_string()))
         );
     }
 
