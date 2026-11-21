@@ -825,6 +825,99 @@ mod tests {
             .block_on(future)
     }
 
+    /// Full wiring E2E through the real `ShellManager`: backend-routed
+    /// background jobs, settled results, denial classification, and the
+    /// kill path — the same path the engine wires per turn.
+    #[test]
+    fn docker_backend_joins_shell_manager_jobs_end_to_end() {
+        use codesmith_agent_runtime::shell_manager::ShellManager;
+        use codesmith_agent_runtime::tools::shell_types::ShellStatus;
+
+        let backend = Arc::new(ContainerCliBackend::docker(DEFAULT_IMAGE.to_string()));
+        if backend.prepare().is_err() {
+            eprintln!("skipping: docker daemon or image {DEFAULT_IMAGE} not available locally");
+            return;
+        }
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend));
+
+        // Background job settles with output and the backend id stamped.
+        let spawned = manager
+            .execute_with_options_env(
+                "printf mgr-hello",
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn");
+        let task_id = spawned.task_id.expect("task id");
+        assert_eq!(spawned.status, ShellStatus::Running);
+        assert_eq!(spawned.sandbox_backend.as_deref(), Some("docker"));
+        let mut settled = None;
+        for _ in 0..100 {
+            if !manager.poll_task_running(&task_id).unwrap_or(false) {
+                settled = Some(manager.get_output(&task_id, false, 0).expect("settled"));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let settled = settled.expect("job settled");
+        assert_eq!(settled.status, ShellStatus::Completed);
+        assert_eq!(settled.exit_code, Some(0));
+        assert!(settled.stdout.contains("mgr-hello"), "{}", settled.stdout);
+
+        // A write outside the writable roots is denied and classified.
+        let denied = manager
+            .execute_with_options_env(
+                "touch /etc/probe",
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn");
+        let denied_id = denied.task_id.expect("task id");
+        let mut denied_settled = None;
+        for _ in 0..100 {
+            if !manager.poll_task_running(&denied_id).unwrap_or(false) {
+                denied_settled = Some(manager.get_output(&denied_id, false, 0).expect("settled"));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let denied_settled = denied_settled.expect("denied job settled");
+        assert_eq!(denied_settled.status, ShellStatus::Failed);
+        assert!(
+            denied_settled.sandbox_denied,
+            "denial must be classified: {}",
+            denied_settled.stderr
+        );
+
+        // Kill path: a long-running job dies through the task plane.
+        let long = manager
+            .execute_with_options_env(
+                "sleep 30",
+                None,
+                60_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn");
+        let long_id = long.task_id.expect("task id");
+        let killed = manager.kill(&long_id).expect("kill");
+        assert_eq!(killed.status, ShellStatus::Killed);
+    }
+
     /// `Path::is_absolute` sanity for the mount-spelling assumption.
     #[test]
     fn cwd_mounts_use_absolute_paths() {

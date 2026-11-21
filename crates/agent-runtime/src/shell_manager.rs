@@ -580,9 +580,10 @@ impl BackgroundShell {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        // Backend output is one combined stream riding the stdout buffer;
-        // classify against it.
-        let (combined, ..) = self.full_output();
+        // Classify against BOTH streams: docker-style backends separate
+        // stderr (where a denial usually lands), others may combine.
+        let (stdout_full, stderr_full, ..) = self.full_output();
+        let combined = format!("{stdout_full}\n{stderr_full}");
         self.backend_denial = Some(self.backend_task.as_ref().is_some_and(|task| {
             task.backend
                 .classify_denial(exit_code.unwrap_or(-1), &combined)
