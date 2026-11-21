@@ -1742,15 +1742,25 @@ pub fn build_engine(
             .map(std::sync::Arc::from);
     // Startup probe (daemon reachability, runtime registration, orphan
     // sweep): fail construction loudly — a configured-but-unreachable
-    // backend must never degrade to local execution.
-    if let Some(backend) = sandbox_backend.as_ref()
-        && let Err(err) = backend.prepare()
-    {
-        panic!(
-            "sandbox backend '{}' failed its startup check: {err:#}; refusing to build the \
-             engine — fix the backend (install/start it) or set sandbox_backend = \"none\"",
-            backend.id()
-        );
+    // backend must never degrade to local execution. The probe wraps
+    // short-lived control-plane subprocesses that can block for seconds on
+    // a wedged daemon, so get it off the async worker when we are on one
+    // (tests and non-runtime callers run it inline).
+    if let Some(backend) = sandbox_backend.as_ref() {
+        let probe = || backend.prepare();
+        let probe = match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(probe)
+            }
+            _ => probe(),
+        };
+        if let Err(err) = probe {
+            panic!(
+                "sandbox backend '{}' failed its startup check: {err:#}; refusing to build the \
+                 engine — fix the backend (install/start it) or set sandbox_backend = \"none\"",
+                backend.id()
+            );
+        }
     }
 
     let bg_registry_api: Arc<dyn BgRegistryApi> = Arc::new(runtime_traits::BgRegistryHost {
