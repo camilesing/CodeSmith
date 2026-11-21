@@ -215,11 +215,22 @@ impl GondolinInner {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let keeper = cmd
+        let mut keeper = cmd
             .spawn()
             .context("failed to boot gondolin session VM (is QEMU installed?)")?;
         let keeper_pid = keeper.id();
-        let session_id = self.discover_session_id(keeper_pid)?;
+        let session_id = match self.discover_session_id(keeper_pid) {
+            Ok(id) => id,
+            Err(err) => {
+                // The VM never registered: dropping a `Child` does not stop
+                // it, and the keeper (`sleep infinity`) would leak the
+                // process and its VM for good — every retry would leak
+                // another. Kill it before propagating.
+                let _ = keeper.kill();
+                let _ = keeper.wait();
+                return Err(err);
+            }
+        };
         sessions.insert(
             spec.clone(),
             SessionVm {
