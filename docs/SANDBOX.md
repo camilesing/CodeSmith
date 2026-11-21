@@ -274,9 +274,13 @@ Semantics shared by every backend:
   when the effective policy would actually confine; a
   `danger-full-access` policy never rides the sandbox auto-allow even
   with a backend set.
-- **Orphan hygiene.** Task containers carry a `codesmith.engine` label; a
-  crashed CLI's leftovers are swept at the next startup of the same
-  engine label.
+- **Orphan hygiene.** Task containers carry a per-engine `codesmith.engine`
+  label plus a stable `codesmith.sandbox` product label. Engine shutdown
+  sweeps this instance's own containers (running tasks included);
+  `prepare()` reaps *exited* product-labelled containers left behind by
+  crashed CLIs — the exited-only filter never touches another running
+  instance's live tasks, and a dead CLI's still-running leftovers are
+  reaped once they finish.
 
 Known limitations of the container family: network is all-or-nothing
 (`--network none`; no per-host policy, so `allow_managed_domains_only`

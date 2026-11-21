@@ -27,9 +27,11 @@
 //! - interactive use (tty allocation, stdin writes) is not supported —
 //!   `docker run -d` cannot accept stdin after detach;
 //! - containers have no parent-death signal: a SIGKILLed CLI leaves them
-//!   running. `prepare()` sweeps this engine label's leftovers at startup
-//!   and `stop()` at engine shutdown; the manager's drop path kills each
-//!   live task individually.
+//!   behind. `stop()` sweeps this engine's own label at engine shutdown and
+//!   the manager's drop path kills each live task individually; `prepare()`
+//!   reaps *exited* product-labelled corpses left by crashed instances
+//!   (still-running leftovers of a dead CLI finish their command first and
+//!   are reaped by the next startup).
 //! - denial classification recognizes only `Read-only file system`; a bare
 //!   `Permission denied` inside a container may be a real permission error
 //!   (image user/ownership) and is deliberately not classified.
@@ -59,8 +61,16 @@ use codesmith_sandbox::runtime::{
 /// `[sandbox.docker] image` for a toolchain-carrying image.
 pub const DEFAULT_IMAGE: &str = "ubuntu:24.04";
 
-/// Docker label marking this engine's task containers (orphan sweep).
+/// Docker label marking this engine's task containers (engine-shutdown
+/// teardown; unique per build, so it can never match another instance's
+/// containers).
 const ENGINE_LABEL_KEY: &str = "codesmith.engine";
+
+/// Stable product label marking every container-family task container.
+/// The crash-orphan sweep keys on it: the engine label is a fresh uuid at
+/// each build, so it can only ever match this instance's own containers,
+/// never a crashed predecessor's leftovers.
+const PRODUCT_LABEL: &str = "codesmith.sandbox=container";
 
 /// Exit code docker reports for a SIGKILLed container (`docker kill`).
 const DOCKER_KILL_EXIT_CODE: i32 = 137;
@@ -105,9 +115,9 @@ impl ContainerEngine {
 
     /// Functional startup probes (a version check would miss "installed
     /// but the daemon refuses"): daemon reachable, runtime registered,
-    /// image present. Then sweep this engine label's leftovers —
-    /// containers have no parent-death signal, so a crashed CLI leaves
-    /// them behind.
+    /// image present. Then reap the crash-orphan corpses (see
+    /// [`Self::sweep_exited_corpses`]) — containers have no parent-death
+    /// signal, so a crashed CLI leaves them behind.
     fn prepare(&self) -> Result<()> {
         let info = self
             .docker_output(&["info".to_string(), "--format".into(), "{{json .}}".into()])
@@ -151,18 +161,19 @@ impl ContainerEngine {
                 self.image
             );
         }
-        self.sweep_labelled_containers();
+        self.sweep_exited_corpses();
         Ok(())
     }
 
-    /// `docker rm -f` every container carrying this engine's label — used
-    /// both as the crash-orphan sweep (`prepare`) and the engine-shutdown
-    /// teardown (`stop`).
-    fn sweep_labelled_containers(&self) {
-        let filter = format!("{ENGINE_LABEL_KEY}={}", self.engine_label);
-        let listed =
-            self.docker_output(&["ps".to_string(), "-aq".into(), "--filter".into(), filter]);
-        let Ok(out) = listed else {
+    /// `docker rm -f` every container matching the filters. Best-effort:
+    /// listing failures are ignored (the exec probes above surface them).
+    fn rm_matching_containers(&self, filters: &[String]) {
+        let mut args = vec!["ps".to_string(), "-aq".into()];
+        for filter in filters {
+            args.push("--filter".into());
+            args.push(filter.clone());
+        }
+        let Ok(out) = self.docker_output(&args) else {
             return; // sweep is best-effort; exec failures surface at prepare
         };
         if !out.status.success() {
@@ -171,6 +182,24 @@ impl ContainerEngine {
         for id in String::from_utf8_lossy(&out.stdout).split_whitespace() {
             let _ = self.docker_output(&["rm".into(), "-f".into(), id.to_string()]);
         }
+    }
+
+    /// `docker rm -f` every container carrying this engine's label — the
+    /// engine-shutdown teardown (`stop`): this instance's own tasks,
+    /// running ones included.
+    fn sweep_labelled_containers(&self) {
+        self.rm_matching_containers(&[format!("{ENGINE_LABEL_KEY}={}", self.engine_label)]);
+    }
+
+    /// Reap *exited* containers carrying the stable product label — crash
+    /// leftovers from any CodeSmith instance (the per-engine label is a
+    /// fresh uuid at each build, so only this stable label can see a
+    /// crashed predecessor's containers). Exited-only keeps a concurrently
+    /// running instance's live tasks untouched; a dead CLI's still-running
+    /// leftovers finish their command, become exited, and are reaped by
+    /// the next startup.
+    fn sweep_exited_corpses(&self) {
+        self.rm_matching_containers(&[PRODUCT_LABEL.to_string(), "status=exited".to_string()]);
     }
 
     /// Full task output (no follow) — used by the one-shot `exec` combo.
@@ -285,12 +314,16 @@ fn build_run_args(
     }
     if let Some(name) = task_name {
         // Detached, named, labelled background task (no --rm: the logs stay
-        // readable until cleanup removes the container).
+        // readable until cleanup removes the container). Two labels: the
+        // per-engine one scopes the engine-shutdown teardown to this
+        // instance, the stable product one keys the crash-orphan sweep.
         args.push("-d".into());
         args.push("--name".into());
         args.push(name.to_string());
         args.push("--label".into());
         args.push(format!("{ENGINE_LABEL_KEY}={engine_label}"));
+        args.push("--label".into());
+        args.push(PRODUCT_LABEL.to_string());
     } else {
         // One-shot foreground run: auto-remove at exit.
         args.push("--rm".into());
@@ -655,10 +688,17 @@ mod tests {
         assert_eq!(find_flag_value(&args, "--network"), Some("none"));
         assert_eq!(find_flag_value(&args, "--runtime"), None);
         assert_eq!(find_flag_value(&args, "--name"), Some("codesmith-shell-1"));
-        // label ties the container to this engine for orphan sweeping
+        // Both labels ride on named task containers: the per-engine one
+        // scopes the engine-shutdown teardown, the stable product one keys
+        // the crash-orphan sweep (which the fresh engine uuid alone can
+        // never match).
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "--label" && w[1] == "codesmith.engine=eng1")
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--label" && w[1] == PRODUCT_LABEL)
         );
         // command tail
         let tail: Vec<&str> = args.iter().map(String::as_str).collect();

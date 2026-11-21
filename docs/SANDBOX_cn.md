@@ -236,8 +236,11 @@ microVM 会话——某形状的第一条命令支付 VM 启动开销（数秒�
 - **免审批诚实。** `auto_allow_bash_if_sandboxed` 只在生效策略确实
   会约束时授予 Auto；即使配置了后端，`danger-full-access` 策略也
   绝不搭沙箱免审批的车。
-- **孤儿清理。** 任务容器携带 `codesmith.engine` 标签；CLI 崩溃的
-  残留在同一引擎标签下次启动时被清扫。
+- **孤儿清理。** 任务容器携带逐引擎的 `codesmith.engine` 标签和一个
+  稳定的 `codesmith.sandbox` 产品标签。引擎关闭时清扫本实例自己的
+  容器（含运行中的任务）；`prepare()` 清除崩溃 CLI 留下的、带产品
+  标签且已退出的容器——只按已退出过滤，绝不触碰其他运行中实例的
+  活任务；已死 CLI 仍在运行的任务在其结束后由下次启动清除。
 
 容器家族的已知限制：网络只有全开/全关（`--network none`；无逐主机
 策略，因此 `allow_managed_domains_only` 保持网络关闭）；镜像必须
