@@ -1614,10 +1614,13 @@ impl RuntimeThreadManager {
         use std::collections::BTreeMap;
 
         let mut buckets: BTreeMap<String, UsageBucket> = BTreeMap::new();
-        let mut totals = UsageTotals::default();
+        let mut totals: UsageTotals = Default::default();
 
+        // One pass over the turns directory, not one full scan per thread
+        // (same shape as the subagent listing above).
+        let mut turns_by_thread = self.store.turns_by_thread()?;
         for thread in self.store.list_threads()? {
-            let turns = self.store.list_turns_for_thread(&thread.id)?;
+            let turns = turns_by_thread.remove(&thread.id).unwrap_or_default();
             for turn in turns {
                 if let Some(s) = since
                     && turn.created_at < s
@@ -4828,9 +4831,15 @@ impl RuntimeThreadManager {
 
     fn recover_interrupted_state(&self) -> Result<()> {
         let now = Utc::now();
+        // One pass over the turns directory, not one full scan per thread:
+        // the per-thread listing re-parses every turn file each call, so a
+        // store with many threads spent the whole startup budget re-parsing
+        // the same records before the server bound — the desktop's 10s
+        // health wait expired first.
+        let mut turns_by_thread = self.store.turns_by_thread()?;
         for mut thread in self.store.list_threads()? {
             let mut thread_changed = false;
-            for mut turn in self.store.list_turns_for_thread(&thread.id)? {
+            for mut turn in turns_by_thread.remove(&thread.id).unwrap_or_default() {
                 if !matches!(
                     turn.status,
                     RuntimeTurnStatus::Queued | RuntimeTurnStatus::InProgress
