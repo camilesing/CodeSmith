@@ -25,6 +25,7 @@ codesmith fork <SESSION_ID>                       # fork a saved session into a 
 codesmith serve --http                            # HTTP/SSE API server
 codesmith serve --mobile                          # LAN mobile control page; token-gated by default
 codesmith serve --acp                             # ACP stdio adapter for Zed/custom agents
+codesmith ui                                      # desktop dev stack from this checkout (vite + shell; `codes ui` too)
 codesmith pr <N>                                  # fetch PR and pre-seed review prompt
 codesmith mcp list                                # list configured MCP servers
 codesmith mcp validate                            # validate MCP config/connectivity
@@ -265,6 +266,12 @@ launch (also overridable per run with the `CODESMITH_DESKTOP_APP` env var);
 `codesmith_path` overrides which `codesmith` binary the app spawns. The app
 is looked up in `app_path`, `$CODESMITH_HOME/desktop/codesmith-desktop`, and
 the platform install location.
+
+`codesmith ui` (or `codes ui`) is the developer entry for the same UI: run
+from inside a checkout, it starts the dev stack — vite on :1420 (spawned
+unless something already serves there) plus the Tauri shell in the
+foreground — and the shell spawns the backend as above. An installed app
+still opens via preset `all`; `ui` needs the checkout.
 
 ## Model selection
 

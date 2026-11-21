@@ -75,6 +75,15 @@ live in `ui/vendor/THIRD_PARTY_NOTICES.md`.
 Requirements: Rust (repo toolchain), Node + pnpm, and a built `codesmith`
 binary (`cargo build -p codesmith-cli`).
 
+One command from anywhere inside the checkout runs the dev stack (steps 2–3
+below; reuses a vite already serving on :1420, installs first when
+node_modules is missing, and defaults the backend to the `codesmith` that
+ran it — `[desktop] codesmith_path` overrides):
+
+```sh
+codesmith ui        # or: codes ui
+```
+
 ```sh
 # 1. vendor + boot graph. Re-run whenever either side drifts: ui/public/plugins
 #    (the staged bundles) is gitignored, so a vendor tree can be current while

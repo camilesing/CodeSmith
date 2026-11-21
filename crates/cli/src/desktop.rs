@@ -5,14 +5,23 @@
 //! its own `codesmith serve --http` backend) and exits; the terminal REPL is
 //! reachable by any other preset or `[desktop] enabled = false`.
 //!
+//! `codesmith ui` (the `Ui` subcommand, `codes ui` through the alias) is the
+//! developer entry: from inside a checkout it starts the dev stack — vite on
+//! :1420 (spawned unless something already serves there) plus the Tauri
+//! shell in the foreground — so one command replaces the two-terminal dance.
+//!
 //! Known limitations: the decision reads the *resolved* preset name, so an
 //! `all` selection whose explicit keys deviate (reported as `diy`) still
 //! opens the desktop; the app is spawned detached and its lifecycle is not
 //! monitored (the app fails loud on its own missing backend); app discovery
-//! checks file existence only, not that the file is the right binary.
+//! checks file existence only, not that the file is the right binary. The
+//! `ui` subcommand is checkout-scoped — an installed app still opens via
+//! preset `all` — and its :1420 readiness check is a bare TCP probe, so
+//! another listener on the port is reused as if it were vite.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
@@ -136,6 +145,143 @@ pub fn maybe_launch_desktop(preset: &str, config: &Config) -> Result<()> {
     }
 }
 
+// === `codesmith ui` — the dev-stack launcher ===============================
+
+/// The dev stack's vite port (desktop/ui/vite.config.ts `server.port`; the
+/// Tauri shell's `devUrl` points here too).
+const DEV_UI_PORT: u16 = 1420;
+
+/// Walk up from `start` to the checkout root owning
+/// `desktop/src-tauri/tauri.conf.json`; `None` outside a checkout.
+fn find_repo_root(start: PathBuf) -> Option<PathBuf> {
+    let mut dir = start;
+    loop {
+        if dir
+            .join("desktop")
+            .join("src-tauri")
+            .join("tauri.conf.json")
+            .is_file()
+        {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Whether something already accepts connections on the dev UI port. A bare
+/// TCP probe: whatever answers is assumed to be vite (see known limitations).
+async fn port_serving(port: u16) -> bool {
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_ok()
+}
+
+/// `codesmith ui` — start the desktop dev stack from the enclosing checkout
+/// and stay in the foreground: vite on :1420 (spawned unless something
+/// already serves there — the two-terminal habit keeps working), then the
+/// Tauri shell, which spawns its own `codesmith serve --http` backend. The
+/// backend binary is `[desktop] codesmith_path`, else this very binary (the
+/// same precedence the preset-`all` launch uses). A vite process this
+/// command started is killed when the shell exits; one it reused is left
+/// alone. Ctrl-C in the terminal reaches all three (they share the
+/// foreground process group).
+pub async fn run_dev_ui(config: &Config) -> Result<()> {
+    let cwd = std::env::current_dir().context("read the current directory")?;
+    let repo = find_repo_root(cwd).with_context(|| {
+        "codesmith ui runs the desktop dev stack and needs a CodeSmith checkout \
+         (it looks for desktop/src-tauri walking up from the current directory). \
+         Run it from inside the repository, or see docs/DESKTOP.md; an \
+         installed app opens with preset `all` instead."
+    })?;
+    let ui_dir = repo.join("desktop").join("ui");
+
+    let mut vite = if port_serving(DEV_UI_PORT).await {
+        println!("codesmith ui: :{DEV_UI_PORT} already serving — reusing it");
+        None
+    } else {
+        Some(start_vite(&ui_dir).await?)
+    };
+
+    let codesmith_path = config
+        .desktop
+        .as_ref()
+        .and_then(|d| d.codesmith_path.as_deref())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .context("resolve the codesmith binary for the desktop backend")?;
+    let tauri_manifest = repo.join("desktop").join("src-tauri").join("Cargo.toml");
+    println!(
+        "codesmith ui: starting the desktop shell (backend {})",
+        codesmith_path.display()
+    );
+    // Foreground with inherited stdio: the shell's and backend's logs belong
+    // in this terminal, and the exit code is the command's.
+    let status = tokio::process::Command::new("cargo")
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&tauri_manifest)
+        .env("CODESMITH_DESKTOP_CODESMITH", &codesmith_path)
+        .status()
+        .await
+        .with_context(|| format!("cargo run {}", tauri_manifest.display()))?;
+
+    if let Some(child) = vite.as_mut() {
+        let _ = child.start_kill();
+    }
+    if !status.success() {
+        bail!("desktop shell exited with {status}");
+    }
+    Ok(())
+}
+
+/// Spawn `pnpm --dir <ui> dev` (installing first when node_modules is
+/// absent) and wait until :1420 answers or the child dies.
+async fn start_vite(ui_dir: &Path) -> Result<tokio::process::Child> {
+    if !ui_dir
+        .join("node_modules")
+        .join(".bin")
+        .join("vite")
+        .exists()
+    {
+        println!("codesmith ui: desktop/ui has no node_modules — pnpm install first");
+        let install = tokio::process::Command::new("pnpm")
+            .arg("--dir")
+            .arg(ui_dir)
+            .arg("install")
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .with_context(|| format!("pnpm install in {}", ui_dir.display()))?;
+        if !install.success() {
+            bail!("pnpm install failed with {install} — see docs/DESKTOP.md");
+        }
+    }
+    // kill_on_drop is the secondary cleanup for unusual exit paths; the
+    // normal one is the explicit start_kill after the shell exits.
+    let mut child = tokio::process::Command::new("pnpm")
+        .arg("--dir")
+        .arg(ui_dir)
+        .arg("dev")
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("spawn pnpm dev in {}", ui_dir.display()))?;
+    println!("codesmith ui: vite starting on :{DEV_UI_PORT}");
+    for _ in 0..60 {
+        if port_serving(DEV_UI_PORT).await {
+            return Ok(child);
+        }
+        if let Some(status) = child.try_wait()? {
+            bail!("vite exited before serving ({status})");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let _ = child.start_kill();
+    bail!("vite did not serve on :{DEV_UI_PORT} within 30s");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +343,30 @@ mod tests {
             }
             other => panic!("expected Fail, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn find_repo_root_walks_up_to_the_checkout() {
+        let root = std::env::temp_dir().join(format!("csm-repo-{}", std::process::id()));
+        let marker = root
+            .join("desktop")
+            .join("src-tauri")
+            .join("tauri.conf.json");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "{}").unwrap();
+        assert_eq!(find_repo_root(root.clone()), Some(root.clone()));
+        assert_eq!(
+            find_repo_root(root.join("crates").join("cli").join("src")),
+            Some(root.clone())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_repo_root_finds_nothing_outside_a_checkout() {
+        let elsewhere = std::env::temp_dir().join(format!("csm-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert_eq!(find_repo_root(elsewhere.clone()), None);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 }

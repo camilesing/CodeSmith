@@ -24,6 +24,7 @@ codesmith fork <SESSION_ID>                       # fork a saved session into a 
 codesmith serve --http                            # HTTP/SSE API server
 codesmith serve --mobile                          # LAN mobile control page; token-gated by default
 codesmith serve --acp                             # ACP stdio adapter for Zed/custom agents
+codesmith ui                                      # 从本 checkout 拉起桌面开发栈（vite + 壳；也可 `codes ui`）
 codesmith pr <N>                                  # fetch PR and pre-seed review prompt
 codesmith mcp list                                # list configured MCP servers
 codesmith mcp validate                            # validate MCP config/connectivity
@@ -211,6 +212,11 @@ REPL。找不到应用时启动 fail-loud，错误信息带构建指引（在 `d
 环境变量按次覆盖）；`codesmith_path` 覆盖应用拉起的 `codesmith` 二进制。
 应用查找顺序：`app_path`、`$CODESMITH_HOME/desktop/codesmith-desktop`、
 平台安装位置。
+
+`codesmith ui`（或 `codes ui`）是同一 UI 的开发者入口：在 checkout 内
+执行，拉起开发栈——:1420 上的 vite（已有服务在听则复用）加前台 Tauri
+壳——壳按上述方式自行 spawn 后端。已安装应用仍走 preset `all`；`ui`
+需要 checkout。
 
 ## 模型选择
 

@@ -213,6 +213,10 @@ The command prints the completion script to stdout; redirect it to a path your s
     },
     /// Create default AGENTS.md in current directory
     Init,
+    /// Start the desktop dev stack from this checkout: vite on :1420
+    /// (started if not already serving) plus the Tauri shell in the
+    /// foreground. `codes ui` through the alias.
+    Ui,
     /// Save a DeepSeek API key to the shared user config
     Login {
         /// API key to store (otherwise read from stdin)
@@ -1243,6 +1247,10 @@ pub(crate) async fn real_main() -> Result<()> {
                 } else {
                     unreachable!("server mode count checked above")
                 }
+            }
+            Commands::Ui => {
+                let config = load_config_from_cli(&cli)?;
+                crate::desktop::run_dev_ui(&config).await
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;

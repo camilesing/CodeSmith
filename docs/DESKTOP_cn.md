@@ -69,6 +69,14 @@ LICENSE 原样拷贝；MIT 声明与署名保留在 `ui/vendor/THIRD_PARTY_NOTIC
 依赖：Rust（仓库 toolchain）、Node + pnpm、已构建的 `codesmith` 二进制
 （`cargo build -p codesmith-cli`）。
 
+在 checkout 内任意位置一条命令拉起开发栈（即下面的 2–3 步；:1420 已有
+vite 在听则复用、缺 node_modules 时先 install、后端默认用执行命令的
+`codesmith` 本体——`[desktop] codesmith_path` 可覆盖）：
+
+```sh
+codesmith ui        # 或：codes ui
+```
+
 ```sh
 # 1. vendor + boot 图。两侧任一漂移都要重跑：ui/public/plugins（暂存的
 #    bundle）是 gitignore 的，vendor 树可能已最新而暂存是旧的——缺的
