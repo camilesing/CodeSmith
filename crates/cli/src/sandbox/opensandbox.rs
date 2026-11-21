@@ -13,7 +13,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::backend::{SandboxBackend, SandboxExecRequest, SandboxOutput};
+use super::backend::{
+    FsIsolation, NetworkControl, SandboxBackend, SandboxBackendCapabilities, SandboxExecRequest,
+    SandboxOutput,
+};
 
 /// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
 type SandboxRunRequest = SandboxExecRequest;
@@ -114,6 +117,23 @@ impl OpenSandboxBackend {
 
 #[async_trait]
 impl SandboxBackend for OpenSandboxBackend {
+    fn id(&self) -> &'static str {
+        "opensandbox"
+    }
+
+    fn capabilities(&self) -> SandboxBackendCapabilities {
+        // Honesty table: isolation is the remote service's contract, network
+        // is all-or-nothing through the policy flag it receives, and there
+        // is no task plane — background/interactive/TTY are refused by the
+        // tool layer's one-shot contract.
+        SandboxBackendCapabilities {
+            fs_isolation: FsIsolation::RemoteService,
+            network: NetworkControl::OnOff,
+            requires_linux_host: false,
+            interactive: false,
+        }
+    }
+
     async fn exec(&self, request_body: SandboxRunRequest) -> Result<SandboxOutput> {
         // Honor the per-command budget plus transport overhead — the
         // client-wide default used to abort long-running commands

@@ -1730,15 +1730,28 @@ pub fn build_engine(
     // `.ok()` degraded a configured-but-broken backend to `None`, which is
     // indistinguishable from "unconfigured" downstream — tool gating cannot
     // fail closed on a state it cannot see.
-    let sandbox_backend = crate::sandbox::backend::create_backend(api_config)
-        .unwrap_or_else(|e| {
-            panic!(
-                "sandbox backend from config is invalid: {e}; refusing to build the engine \
+    let sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>> =
+        crate::sandbox::backend::create_backend(api_config)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "sandbox backend from config is invalid: {e}; refusing to build the engine \
                  with an unconfigured-looking backend — fix sandbox_backend/sandbox_url or \
                  set sandbox_backend = \"none\" (Config::validate rejects this at load)"
-            );
-        })
-        .map(std::sync::Arc::from);
+                )
+            })
+            .map(std::sync::Arc::from);
+    // Startup probe (daemon reachability, runtime registration, orphan
+    // sweep): fail construction loudly — a configured-but-unreachable
+    // backend must never degrade to local execution.
+    if let Some(backend) = sandbox_backend.as_ref()
+        && let Err(err) = backend.prepare()
+    {
+        panic!(
+            "sandbox backend '{}' failed its startup check: {err:#}; refusing to build the \
+             engine — fix the backend (install/start it) or set sandbox_backend = \"none\"",
+            backend.id()
+        );
+    }
 
     let bg_registry_api: Arc<dyn BgRegistryApi> = Arc::new(runtime_traits::BgRegistryHost {
         registry: Arc::new(tokio::sync::Mutex::new(
@@ -1752,6 +1765,23 @@ pub fn build_engine(
     host.bg_registry_api = bg_registry_api;
 
     host.shell_manager = Some(shell_manager.clone());
+    // Route the manager through the configured backend: replaced-world
+    // execution for every command the manager runs (task-plane backends
+    // join the background-job machinery; one-shot backends fail closed
+    // there — the exec tool gives them their synchronous path).
+    if let Some(backend) = sandbox_backend.as_ref() {
+        match shell_manager.lock() {
+            Ok(mut manager) => {
+                manager.set_sandbox_backend(Some(std::sync::Arc::clone(backend)));
+            }
+            Err(poisoned) => {
+                tracing::error!("shell manager lock poisoned; wiring sandbox backend anyway");
+                poisoned
+                    .into_inner()
+                    .set_sandbox_backend(Some(std::sync::Arc::clone(backend)));
+            }
+        }
+    }
     host.subagent_manager = subagent_manager;
     // Refresh the pre-erased api view to mirror the manager assigned just
     // above — `build_engine` is the only site that ever reassigns it.

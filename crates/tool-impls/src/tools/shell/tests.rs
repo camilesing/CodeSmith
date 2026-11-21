@@ -75,8 +75,28 @@ fn make_shared_shell_manager(workspace: std::path::PathBuf) -> SharedShellManage
 #[derive(Debug)]
 struct StubSandboxBackend;
 
+/// Shared capability table for the stub backends: a one-shot, on/off-network
+/// remote service shape.
+fn stub_capabilities() -> codesmith_sandbox::runtime::SandboxBackendCapabilities {
+    use codesmith_sandbox::runtime::{FsIsolation, NetworkControl};
+    codesmith_sandbox::runtime::SandboxBackendCapabilities {
+        fs_isolation: FsIsolation::RemoteService,
+        network: NetworkControl::OnOff,
+        requires_linux_host: false,
+        interactive: false,
+    }
+}
+
 #[async_trait::async_trait]
 impl codesmith_sandbox::runtime::SandboxBackend for StubSandboxBackend {
+    fn id(&self) -> &'static str {
+        "stub"
+    }
+
+    fn capabilities(&self) -> codesmith_sandbox::runtime::SandboxBackendCapabilities {
+        stub_capabilities()
+    }
+
     async fn exec(
         &self,
         _request: codesmith_sandbox::runtime::SandboxExecRequest,
@@ -210,6 +230,22 @@ fn exec_shell_auto_allows_only_when_sandbox_would_enforce() {
     assert_eq!(
         tool.approval_requirement_for_input(&input, &external),
         ApprovalRequirement::Auto
+    );
+
+    // DangerFullAccess must NOT ride the sandbox auto-allow even with a
+    // backend configured: the backend runs it unconfined, so a predicted
+    // "sandboxed" would be an over-claim granting approval the sandbox
+    // never justifies.
+    let full_access = ToolContext::new(tmp.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess)
+        .with_sandbox_backend(std::sync::Arc::new(StubSandboxBackend))
+        .with_sandbox_runtime(SandboxRuntimeConfig {
+            auto_allow_bash_if_sandboxed: true,
+            ..SandboxRuntimeConfig::default()
+        });
+    assert_eq!(
+        tool.approval_requirement_for_input(&input, &full_access),
+        ApprovalRequirement::Required
     );
 }
 
@@ -1808,6 +1844,9 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
     fn set_sandbox_runtime(&self, _runtime: codesmith_sandbox::runtime::SandboxRuntimeConfig) {
         unimplemented!("spill test only")
     }
+    fn sandbox_backend_id(&self) -> Option<String> {
+        unimplemented!("spill test only")
+    }
     fn execute_with_options_env(
         &self,
         _command: &str,
@@ -2025,6 +2064,9 @@ struct ScriptedManager {
 impl codesmith_agent_runtime::host_services::ShellManagerApi for ScriptedManager {
     fn clear_foreground_background_request(&self) {}
     fn set_sandbox_runtime(&self, _runtime: codesmith_sandbox::runtime::SandboxRuntimeConfig) {}
+    fn sandbox_backend_id(&self) -> Option<String> {
+        None
+    }
     fn execute_with_options_env(
         &self,
         _command: &str,
@@ -2599,16 +2641,31 @@ async fn exec_shell_records_execpolicy_decision_in_metadata() {
 
 /// Stub backend answering `exec` with a fixed output (or an error) — the
 /// external-sandbox rendering path needs a result without a real sandbox.
+/// `denial` makes `classify_denial` claim a policy denial on non-zero exits.
 #[derive(Debug)]
 struct StubExecBackend {
     stdout: String,
     stderr: String,
     exit_code: i32,
     fail: bool,
+    denial: bool,
 }
 
 #[async_trait::async_trait]
 impl codesmith_sandbox::runtime::SandboxBackend for StubExecBackend {
+    fn id(&self) -> &'static str {
+        "stub-exec"
+    }
+
+    fn capabilities(&self) -> codesmith_sandbox::runtime::SandboxBackendCapabilities {
+        stub_capabilities()
+    }
+
+    fn classify_denial(&self, exit_code: i32, stderr: &str) -> Option<String> {
+        let _ = stderr;
+        (self.denial && exit_code != 0).then(|| "stub policy denied".to_string())
+    }
+
     async fn exec(
         &self,
         _request: codesmith_sandbox::runtime::SandboxExecRequest,
@@ -2635,6 +2692,7 @@ async fn sandbox_backend_result_renders_and_spills_large_output() {
             stderr: String::new(),
             exit_code: 0,
             fail: false,
+            denial: false,
         }));
     let result = ExecShellTool
         .execute(json!({"command": "printf big"}), &ctx)
@@ -2654,7 +2712,8 @@ async fn sandbox_backend_result_renders_and_spills_large_output() {
     let meta = result.metadata.expect("metadata");
     assert_eq!(
         meta.get("sandbox_backend").and_then(Value::as_str),
-        Some("opensandbox")
+        Some("stub-exec"),
+        "backend id must come from the backend, not a hardcoded string"
     );
     assert!(meta.get("spillover_ref").is_some());
 }
@@ -2671,6 +2730,7 @@ async fn sandbox_backend_errors_and_mode_limits_surface() {
             stderr: String::new(),
             exit_code: 0,
             fail: true,
+            denial: false,
         }));
     let result = tool
         .execute(json!({"command": "printf x"}), &ctx)
@@ -2711,6 +2771,126 @@ async fn sandbox_backend_errors_and_mode_limits_surface() {
             result.content
         );
     }
+}
+
+/// A backend-classified denial must surface as the cross-tool hint prefix
+/// (prepended, never replacing the raw stderr) plus the metadata flag.
+#[tokio::test]
+async fn sandbox_backend_denial_prefixes_hint_and_keeps_stderr() {
+    let _guard = env_lock();
+    let tmp = tempdir().expect("tempdir");
+    // Isolate CODESMITH_HOME: `execute` loads execpolicy from it, and a
+    // concurrent writer (see `execpolicy_ask_user_is_enforced_not_recorded`)
+    // would otherwise race this read.
+    let _restore = EnvRestore::new(&["CODESMITH_HOME"]);
+    // SAFETY: held under env_lock; restored by EnvRestore on drop.
+    unsafe { std::env::set_var("CODESMITH_HOME", tmp.path()) };
+    let ctx =
+        ToolContext::new(tmp.path()).with_sandbox_backend(std::sync::Arc::new(StubExecBackend {
+            stdout: String::new(),
+            stderr: "touch: /etc/x: Read-only file system".to_string(),
+            exit_code: 1,
+            fail: false,
+            denial: true,
+        }));
+    let result = ExecShellTool
+        .execute(json!({"command": "touch /etc/x"}), &ctx)
+        .await
+        .expect("denied run");
+    assert!(!result.success);
+    assert!(
+        result.content.starts_with("[sandbox:"),
+        "denial hint must lead the output: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("Read-only file system"),
+        "raw stderr must stay attached: {}",
+        result.content
+    );
+    let meta = result.metadata.expect("metadata");
+    assert_eq!(
+        meta.get("sandbox_denied").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        meta.get("sandbox_backend").and_then(Value::as_str),
+        Some("stub-exec")
+    );
+}
+
+/// Task-plane stub: declares a task plane so the tool takes the
+/// manager-routing fall-through. The wiring guard fires before anything
+/// spawns — the default manager carries no backend.
+#[derive(Debug)]
+struct StubTaskPlaneBackend;
+
+#[async_trait::async_trait]
+impl codesmith_sandbox::runtime::SandboxBackend for StubTaskPlaneBackend {
+    fn id(&self) -> &'static str {
+        "stub-plane"
+    }
+
+    fn capabilities(&self) -> codesmith_sandbox::runtime::SandboxBackendCapabilities {
+        stub_capabilities()
+    }
+
+    fn task_plane(&self) -> Option<&dyn codesmith_sandbox::runtime::SandboxTaskPlane> {
+        Some(self)
+    }
+
+    async fn exec(
+        &self,
+        _request: codesmith_sandbox::runtime::SandboxExecRequest,
+    ) -> anyhow::Result<codesmith_sandbox::runtime::SandboxOutput> {
+        unimplemented!("routing goes through the manager task plane")
+    }
+}
+
+impl codesmith_sandbox::runtime::SandboxTaskPlane for StubTaskPlaneBackend {
+    fn spawn(
+        &self,
+        _request: codesmith_sandbox::runtime::SandboxExecRequest,
+    ) -> anyhow::Result<codesmith_sandbox::runtime::SandboxTaskSpawn> {
+        unimplemented!("wiring guard fires before spawn")
+    }
+
+    fn status(&self, _task: &str) -> anyhow::Result<codesmith_sandbox::runtime::SandboxTaskStatus> {
+        unimplemented!("wiring guard fires before status")
+    }
+
+    fn kill(&self, _task: &str) -> anyhow::Result<()> {
+        unimplemented!("wiring guard fires before kill")
+    }
+
+    fn cleanup(&self, _task: &str) -> anyhow::Result<()> {
+        unimplemented!("wiring guard fires before cleanup")
+    }
+}
+
+/// A task-plane backend on an unwired manager must refuse, never run the
+/// command locally while a backend is configured.
+#[tokio::test]
+async fn task_plane_backend_with_unwired_manager_refuses() {
+    let _guard = env_lock();
+    let tmp = tempdir().expect("tempdir");
+    let _restore = EnvRestore::new(&["CODESMITH_HOME"]);
+    // SAFETY: held under env_lock; restored by EnvRestore on drop.
+    unsafe { std::env::set_var("CODESMITH_HOME", tmp.path()) };
+    let ctx = ToolContext::new(tmp.path())
+        .with_sandbox_backend(std::sync::Arc::new(StubTaskPlaneBackend));
+    let result = ExecShellTool
+        .execute(json!({"command": "printf x"}), &ctx)
+        .await
+        .expect("guard error result");
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("'stub-plane' is configured but the shell manager is not wired to it"),
+        "{}",
+        result.content
+    );
 }
 
 // === note tool ============================================================

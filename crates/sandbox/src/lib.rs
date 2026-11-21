@@ -32,6 +32,8 @@ pub mod shell_dispatcher;
 mod test_support;
 
 pub use runtime::{
-    CommandSpec, ExecEnv, SandboxBackend, SandboxDecision, SandboxExecRequest, SandboxKind,
-    SandboxManager, SandboxOutput, SandboxPolicy, SandboxRuntimeConfig, SandboxType, WritableRoot,
+    CommandSpec, ExecEnv, FsIsolation, NetworkControl, SandboxBackend, SandboxBackendCapabilities,
+    SandboxDecision, SandboxExecRequest, SandboxKind, SandboxManager, SandboxOutput, SandboxPolicy,
+    SandboxRuntimeConfig, SandboxTaskPlane, SandboxTaskSpawn, SandboxTaskStatus, SandboxType,
+    WritableRoot,
 };

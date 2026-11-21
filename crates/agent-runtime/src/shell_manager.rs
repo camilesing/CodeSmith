@@ -49,8 +49,9 @@ use crate::tools::shell_types::{
 };
 use codesmith_sandbox::child_env;
 use codesmith_sandbox::runtime::{
-    CommandSpec, ExecEnv, SandboxDecision, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy,
-    SandboxRuntimeConfig, SandboxType,
+    CommandSpec, ExecEnv, SandboxBackend, SandboxDecision, SandboxExecRequest, SandboxManager,
+    SandboxPolicy as ExecutionSandboxPolicy, SandboxRuntimeConfig, SandboxTaskPlane,
+    SandboxTaskStatus, SandboxType,
 };
 
 /// Terminal raw-mode control for shell execution.
@@ -448,6 +449,14 @@ pub fn install_sandbox_preexec(exec_env: &ExecEnv, cmd: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 pub fn install_sandbox_preexec(_exec_env: &ExecEnv, _cmd: &mut Command) {}
 
+/// A live task on a replaced-world backend (`SandboxBackend::task_plane`):
+/// the backend handle (for status/kill/classify calls) plus the
+/// backend-local task id.
+struct BackendTask {
+    backend: Arc<dyn SandboxBackend>,
+    task: String,
+}
+
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
@@ -468,6 +477,15 @@ pub struct BackgroundShell {
     pub child: Option<ShellChild>,
     pub stdout_thread: Option<std::thread::JoinHandle<()>>,
     pub stderr_thread: Option<std::thread::JoinHandle<()>>,
+    /// Replaced-world backend task this job rides (`None` for locally
+    /// spawned children). When set, `child` is `None`, the output stream
+    /// comes from the plane's reader, and terminal state comes from
+    /// `status` polls.
+    backend_task: Option<BackendTask>,
+    /// Backend-classified denial captured at the terminal transition
+    /// (`Some` once a backend task finished; `None` for local children,
+    /// which use `SandboxManager::was_denied` instead).
+    backend_denial: Option<bool>,
 }
 
 impl BackgroundShell {
@@ -475,6 +493,10 @@ impl BackgroundShell {
     pub fn poll(&mut self) -> bool {
         if self.status != ShellStatus::Running {
             return true;
+        }
+
+        if self.backend_task.is_some() {
+            return self.poll_backend_task();
         }
 
         if let Some(ref mut child) = self.child {
@@ -501,6 +523,99 @@ impl BackgroundShell {
         } else {
             true
         }
+    }
+
+    /// Poll a replaced-world backend task. Output is drained by the reader
+    /// thread (`SandboxTaskSpawn`'s stream closes at task end); this only
+    /// resolves the terminal state.
+    fn poll_backend_task(&mut self) -> bool {
+        let Some(task) = self.backend_task.as_ref() else {
+            return true;
+        };
+        let Some(plane) = task.backend.task_plane() else {
+            // A spawned task always has a plane; a vanished one is terminal.
+            self.finish_backend_task(None, ShellStatus::Failed);
+            return true;
+        };
+        match plane.status(&task.task) {
+            Ok(SandboxTaskStatus::Running) => false,
+            Ok(SandboxTaskStatus::Exited(code)) => {
+                let status = if code == 0 {
+                    ShellStatus::Completed
+                } else {
+                    ShellStatus::Failed
+                };
+                self.finish_backend_task(Some(code), status);
+                true
+            }
+            Ok(SandboxTaskStatus::Gone) => {
+                self.finish_backend_task(None, ShellStatus::Failed);
+                true
+            }
+            Err(err) => {
+                // Transient control-plane error (daemon hiccup): one failed
+                // probe must not declare the task dead. The next poll
+                // retries; residual tasks are swept by the backend's
+                // engine-shutdown stop() if the plane stays broken.
+                tracing::debug!(
+                    "sandbox backend status probe failed for {}: {err:#}",
+                    task.task
+                );
+                false
+            }
+        }
+    }
+
+    /// Move a backend task to its terminal state: record the exit, wait for
+    /// the output follower to drain (it closes at task end — bounded wait so
+    /// the final bytes land in the buffer before the first post-exit
+    /// snapshot reads it), classify the denial, and release the backend's
+    /// resources.
+    fn finish_backend_task(&mut self, exit_code: Option<i32>, status: ShellStatus) {
+        if let Some(thread) = self.stdout_thread.as_ref()
+            && !thread.is_finished()
+        {
+            let deadline = Instant::now() + Duration::from_millis(1000);
+            while !thread.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // Backend output is one combined stream riding the stdout buffer;
+        // classify against it.
+        let (combined, ..) = self.full_output();
+        self.backend_denial = Some(self.backend_task.as_ref().is_some_and(|task| {
+            task.backend
+                .classify_denial(exit_code.unwrap_or(-1), &combined)
+                .is_some()
+        }));
+        if let Some(task) = self.backend_task.take()
+            && let Some(plane) = task.backend.task_plane()
+            && let Err(err) = plane.cleanup(&task.task)
+        {
+            tracing::warn!(
+                "sandbox backend task cleanup failed for {}: {err:#}",
+                task.task
+            );
+        }
+        drop(self.stdout_thread.take());
+        drop(self.stderr_thread.take());
+        self.stdin = None;
+        self.exit_code = exit_code;
+        self.status = status;
+        self.finished_at.get_or_insert_with(Instant::now);
+    }
+
+    /// Kill a backend task through its plane and mark it Killed.
+    fn kill_backend_task(&mut self) -> Result<()> {
+        if let Some(task) = self.backend_task.as_ref()
+            && let Some(plane) = task.backend.task_plane()
+        {
+            plane
+                .kill(&task.task)
+                .with_context(|| format!("Failed to kill sandbox backend task {}", task.task))?;
+        }
+        self.finish_backend_task(None, ShellStatus::Killed);
+        Ok(())
     }
 
     /// Collect output from the background threads
@@ -610,6 +725,9 @@ impl BackgroundShell {
         if matches!(self.status, ShellStatus::Running) {
             return false;
         }
+        if let Some(denied) = self.backend_denial {
+            return denied;
+        }
         let stderr_full = self.stderr_output();
         SandboxManager::was_denied(
             self.sandbox_type,
@@ -620,6 +738,9 @@ impl BackgroundShell {
 
     /// Kill the process
     fn kill(&mut self) -> Result<()> {
+        if self.backend_task.is_some() {
+            return self.kill_backend_task();
+        }
         if let Some(ref mut child) = self.child {
             child.kill().context("Failed to kill process")?;
             let _ = child.wait();
@@ -711,9 +832,25 @@ impl BackgroundShell {
 
 impl Drop for BackgroundShell {
     fn drop(&mut self) {
-        if self.status == ShellStatus::Running
-            && let Some(ref mut child) = self.child
+        if self.status != ShellStatus::Running {
+            return;
+        }
+        if let Some(task) = self.backend_task.as_ref()
+            && let Some(plane) = task.backend.task_plane()
         {
+            // Fire-and-forget kill: drop must not wait on the control plane
+            // (the bounded drain belongs to finish_backend_task). A container
+            // that survives a failed drop-kill is swept by the backend's
+            // engine-shutdown stop() / next-start prepare().
+            if let Err(err) = plane.kill(&task.task) {
+                tracing::warn!(
+                    "failed to kill sandbox backend task {} on drop: {err:#}",
+                    task.task
+                );
+            }
+            return;
+        }
+        if let Some(ref mut child) = self.child {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -891,6 +1028,52 @@ pub fn decide_sandbox(
     codesmith_sandbox::runtime::SandboxDecision::enforcing(policy, sandbox_type)
 }
 
+/// Decide the confinement claim for a command routed to a replaced-world
+/// backend, and the policy the backend should compile. Routing itself is
+/// total (the backend replaces local execution); this computes what the
+/// decision reports and what confinement the backend applies:
+///
+/// - `DangerFullAccess` runs in the backend unconfined, reported as
+///   unsandboxed;
+/// - every other policy confines — `ExternalSandbox` *delegates*
+///   confinement to the backend (its honesty table is the authority on
+///   what is actually enforced), `ReadOnly` / `WorkspaceWrite` are
+///   compiled by the backend into its own dialect;
+/// - `runtime.enabled = false` drops confinement (unconfined in the
+///   backend), reported as disabled — the same meaning as the local plane;
+/// - the exclusion list drops confinement, *not* containerization: there
+///   is no local execution to unsandbox to, so the command still runs in
+///   the backend with no confinement flags, reported as excluded.
+///
+/// Platform enablement is a local-OS concept and deliberately not consulted.
+fn decide_backend_sandbox(
+    backend: &dyn SandboxBackend,
+    runtime: &SandboxRuntimeConfig,
+    policy: &ExecutionSandboxPolicy,
+    command: &str,
+    program: &str,
+) -> (SandboxDecision, ExecutionSandboxPolicy) {
+    if matches!(policy, ExecutionSandboxPolicy::DangerFullAccess) {
+        return (SandboxDecision::unsandboxed(policy), policy.clone());
+    }
+    if !runtime.enabled {
+        return (
+            SandboxDecision::disabled(policy, "sandbox disabled by configuration"),
+            ExecutionSandboxPolicy::DangerFullAccess,
+        );
+    }
+    if runtime.command_is_excluded(program, command) {
+        return (
+            SandboxDecision::excluded(policy, program.to_string()),
+            ExecutionSandboxPolicy::DangerFullAccess,
+        );
+    }
+    (
+        SandboxDecision::enforcing_backend(policy, backend.id()),
+        policy.clone(),
+    )
+}
+
 /// Manages background shell processes with optional sandboxing.
 pub struct ShellManager {
     pub processes: HashMap<String, BackgroundShell>,
@@ -900,6 +1083,13 @@ pub struct ShellManager {
     sandbox_policy: ExecutionSandboxPolicy,
     sandbox_runtime: SandboxRuntimeConfig,
     foreground_background_requested: bool,
+    /// Replaced-world sandbox backend (engine lifetime). When set, every
+    /// execute routes through it — the backend replaces local execution
+    /// entirely (see `execute_via_backend`); the local OS plane is
+    /// bypassed. Task-plane backends join the background-job machinery;
+    /// one-shot backends fail closed here (the tool layer runs them
+    /// through the synchronous request/response path).
+    sandbox_backend: Option<Arc<dyn SandboxBackend>>,
     /// Terminal raw-mode controller. The CLI injects a crossterm-backed
     /// implementation; non-CLI hosts (tests) get a no-op. Trait-erased so
     /// `ShellManager` can live in the terminal-agnostic runtime crate.
@@ -933,6 +1123,7 @@ impl ShellManager {
             sandbox_policy: ExecutionSandboxPolicy::default(),
             sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
+            sandbox_backend: None,
             terminal: default_terminal_control(),
         }
     }
@@ -948,6 +1139,7 @@ impl ShellManager {
             sandbox_policy: policy,
             sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
+            sandbox_backend: None,
             terminal: default_terminal_control(),
         }
     }
@@ -968,6 +1160,7 @@ impl ShellManager {
             sandbox_policy: ExecutionSandboxPolicy::default(),
             sandbox_runtime: SandboxRuntimeConfig::default(),
             foreground_background_requested: false,
+            sandbox_backend: None,
             terminal,
         }
     }
@@ -997,6 +1190,19 @@ impl ShellManager {
     pub fn set_sandbox_runtime(&mut self, runtime: SandboxRuntimeConfig) {
         self.sandbox_manager.set_prefer_bwrap(runtime.prefer_bwrap);
         self.sandbox_runtime = runtime;
+    }
+
+    /// Install (or clear) the replaced-world sandbox backend. Wired once at
+    /// engine build, engine lifetime; the backend's availability was proven
+    /// by its `prepare()` there, so the exec path never falls back to local
+    /// execution.
+    pub fn set_sandbox_backend(&mut self, backend: Option<Arc<dyn SandboxBackend>>) {
+        self.sandbox_backend = backend;
+    }
+
+    /// The routed backend's id, or `None` for the local execution plane.
+    pub fn sandbox_backend_id(&self) -> Option<String> {
+        self.sandbox_backend.as_ref().map(|b| b.id().to_string())
     }
 
     /// Request that the active foreground shell wait detach and leave its
@@ -1114,6 +1320,15 @@ impl ShellManager {
         let mut env = extra_env;
         merge_git_scrub_env(&mut env);
 
+        // Replaced-world routing: a configured backend replaces local
+        // execution entirely (foreground and background alike). Fail-closed
+        // for backends without a task plane — never a silent local run.
+        if let Some(backend) = self.sandbox_backend.clone() {
+            return self.execute_via_backend(
+                &backend, command, &work_dir, policy, env, timeout_ms, background, stdin_data, tty,
+            );
+        }
+
         // Create command spec and prepare sandboxed environment
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
             .with_policy(policy.clone())
@@ -1187,6 +1402,199 @@ impl ShellManager {
         }
     }
 
+    /// Route an execution through a replaced-world backend (see
+    /// [`SandboxBackend`](codesmith_sandbox::runtime::SandboxBackend)).
+    ///
+    /// Routing is total: the command runs in the backend whether the policy
+    /// demands confinement or not. What this computes is the *confinement
+    /// claim* (`decide_backend_sandbox`) and the policy the backend
+    /// compiles; see that function for the enabled/excluded semantics. A
+    /// backend without a task plane, or one that does not declare
+    /// interactive support while tty/stdin was requested, fails closed —
+    /// the tool layer gives one-shot backends their synchronous path, so
+    /// reaching those refusals here means a non-tool caller.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_via_backend(
+        &mut self,
+        backend: &Arc<dyn SandboxBackend>,
+        original_command: &str,
+        working_dir: &Path,
+        policy: ExecutionSandboxPolicy,
+        env: HashMap<String, String>,
+        timeout_ms: u64,
+        background: bool,
+        stdin_data: Option<&str>,
+        tty: bool,
+    ) -> Result<ShellResult> {
+        let refused = |reason: String| {
+            let decision = SandboxDecision::unavailable(&policy, reason.clone(), true);
+            Ok(sandbox_refusal_result(&decision, reason))
+        };
+        let Some(plane) = backend.task_plane() else {
+            return refused(format!(
+                "SANDBOX_UNAVAILABLE: sandbox backend '{}' has no background-task plane, so it \
+                 cannot serve this execution path (the exec tool routes one-shot backends through \
+                 its synchronous path); refusing to run the command locally while a backend is \
+                 configured",
+                backend.id()
+            ));
+        };
+        if (tty || stdin_data.is_some()) && !backend.capabilities().interactive {
+            return refused(format!(
+                "SANDBOX_UNAVAILABLE: sandbox backend '{}' does not support tty/stdin execution \
+                 (its capabilities declare interactive = false); rerun without tty/stdin",
+                backend.id()
+            ));
+        }
+
+        // Program detection for the exclusion check — same dispatcher the
+        // local path uses.
+        let spec = CommandSpec::shell(
+            original_command,
+            working_dir.to_path_buf(),
+            Duration::from_millis(timeout_ms),
+        );
+        let (decision, exec_policy) = decide_backend_sandbox(
+            backend.as_ref(),
+            &self.sandbox_runtime,
+            &policy,
+            original_command,
+            &spec.program,
+        );
+        if !decision.allows_execution() {
+            return Ok(sandbox_refusal_result(
+                &decision,
+                decision
+                    .sandbox_unavailable_reason
+                    .clone()
+                    .unwrap_or_else(|| "sandbox unavailable".to_string()),
+            ));
+        }
+        let request = SandboxExecRequest {
+            cmd: original_command.to_string(),
+            env,
+            cwd: working_dir.to_path_buf(),
+            timeout_ms,
+            stdin: None,
+            policy: exec_policy,
+        };
+        let spawned = self.spawn_backend_task(
+            backend,
+            plane,
+            original_command,
+            working_dir,
+            request,
+            decision,
+        )?;
+        if background {
+            return Ok(spawned);
+        }
+        // Sync foreground for callers that do not drive the background poll
+        // loop themselves (the exec tool always spawns background + polls):
+        // wait up to the timeout, then hand back the settled snapshot.
+        let task_id = spawned
+            .task_id
+            .clone()
+            .ok_or_else(|| anyhow!("backend spawn did not return a task id"))?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let running = self.poll_task_running(&task_id).unwrap_or(false);
+            if !running {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let mut result = self.kill(&task_id)?;
+                result.status = ShellStatus::TimedOut;
+                return Ok(result);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.get_output(&task_id, false, 0)
+    }
+
+    /// Spawn a background job on a backend task plane. The job joins the
+    /// same registry / delta / kill machinery as local children: the
+    /// plane's output stream feeds the standard reader thread, terminal
+    /// state comes from `status` polls, and kill/cleanup route through the
+    /// plane. Combined output (stdout+stderr interleaved, the shape the
+    /// container CLIs give) rides the stdout buffer, mirroring the local
+    /// tty path.
+    fn spawn_backend_task(
+        &mut self,
+        backend: &Arc<dyn SandboxBackend>,
+        plane: &dyn SandboxTaskPlane,
+        original_command: &str,
+        working_dir: &Path,
+        request: SandboxExecRequest,
+        decision: SandboxDecision,
+    ) -> Result<ShellResult> {
+        let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
+        let spawned = plane
+            .spawn(request)
+            .with_context(|| format!("Failed to spawn on sandbox backend '{}'", backend.id()))?;
+
+        let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buffer = None;
+        let stdout_thread = Some(spawn_reader_thread(
+            spawned.stdout,
+            Arc::clone(&stdout_buffer),
+        ));
+
+        let bg_shell = BackgroundShell {
+            id: task_id.clone(),
+            command: original_command.to_string(),
+            working_dir: working_dir.to_path_buf(),
+            status: ShellStatus::Running,
+            exit_code: None,
+            started_at: Instant::now(),
+            finished_at: None,
+            sandbox_type: SandboxType::None,
+            sandbox_decision: decision.clone(),
+            linked_task_id: None,
+            stdout_buffer,
+            stderr_buffer,
+            stdout_cursor: 0,
+            stderr_cursor: 0,
+            stdin: None,
+            child: None,
+            stdout_thread,
+            stderr_thread: None,
+            backend_task: Some(BackendTask {
+                backend: Arc::clone(backend),
+                task: spawned.task,
+            }),
+            backend_denial: None,
+        };
+        self.processes.insert(task_id.clone(), bg_shell);
+
+        let mut result = ShellResult {
+            task_id: Some(task_id),
+            status: ShellStatus::Running,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            stdout_len: 0,
+            stderr_len: 0,
+            stdout_omitted: 0,
+            stderr_omitted: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            sandboxed: decision.sandbox_effective,
+            sandbox_type: None,
+            sandbox_denied: false,
+            sandbox_requested: false,
+            sandbox_effective: false,
+            sandbox_backend: None,
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        };
+        apply_shell_result_decision_metadata(&mut result, &decision);
+        Ok(result)
+    }
+
     /// Execute a shell command interactively (stdin/stdout/stderr inherit from terminal).
     #[allow(dead_code)]
     pub fn execute_interactive(
@@ -1227,6 +1635,21 @@ impl ShellManager {
         codesmith_sandbox::shell_dispatcher::ShellDispatcher::log_exec(command);
 
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
+
+        // Interactive execution needs a local terminal; a replaced-world
+        // backend has none. Fail closed rather than spawning locally while
+        // a backend is configured.
+        if let Some(backend) = self.sandbox_backend.as_ref() {
+            let reason = format!(
+                "SANDBOX_UNAVAILABLE: sandbox backend '{}' cannot serve interactive execution; \
+                 rerun as a regular (non-interactive) command",
+                backend.id()
+            );
+            let mut policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
+            apply_runtime_filesystem_policy(&mut policy, &self.sandbox_runtime);
+            let decision = SandboxDecision::unavailable(&policy, reason.clone(), true);
+            return Ok(sandbox_refusal_result(&decision, reason));
+        }
 
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
         let mut policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
@@ -1756,6 +2179,8 @@ impl ShellManager {
             child: Some(child),
             stdout_thread,
             stderr_thread,
+            backend_task: None,
+            backend_denial: None,
         };
 
         if let Some(input) = stdin_data {
@@ -2173,6 +2598,11 @@ impl ShellManagerApi for ShellManagerHost {
     fn set_sandbox_runtime(&self, runtime: SandboxRuntimeConfig) {
         let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
         guard.set_sandbox_runtime(runtime);
+    }
+
+    fn sandbox_backend_id(&self) -> Option<String> {
+        let guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.sandbox_backend_id()
     }
 
     fn execute_with_options_env(
@@ -2946,5 +3376,361 @@ mod manager_tests {
             .get_output("shell_missing", true, 1000)
             .expect_err("unknown id must surface");
         assert!(err.to_string().contains("not found"), "{err:#}");
+    }
+}
+
+#[cfg(test)]
+mod backend_task_tests {
+    use super::*;
+    use codesmith_sandbox::runtime::{
+        FsIsolation, NetworkControl, SandboxBackendCapabilities, SandboxTaskSpawn,
+    };
+
+    /// In-memory task-plane backend for the lifecycle tests: `spawn` hands
+    /// out a fixed output script; `status` stays `Running` until a task has
+    /// been polled `exit_on_poll` times, then reports `Exited(0)` (or the
+    /// configured exit code).
+    #[derive(Debug)]
+    struct StubPlaneBackend {
+        state: std::sync::Mutex<StubState>,
+        denial: bool,
+    }
+
+    #[derive(Debug, Default)]
+    struct StubState {
+        spawn_count: usize,
+        polls: HashMap<String, usize>,
+        killed: Vec<String>,
+        cleaned: Vec<String>,
+        last_policy: Option<String>,
+        /// `usize::MAX` never exits (kill tests).
+        exit_on_poll: usize,
+        exit_code: i32,
+    }
+
+    impl StubPlaneBackend {
+        fn exiting(exit_code: i32) -> Self {
+            Self {
+                state: std::sync::Mutex::new(StubState {
+                    exit_on_poll: 1,
+                    exit_code,
+                    ..StubState::default()
+                }),
+                denial: false,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxBackend for StubPlaneBackend {
+        fn id(&self) -> &'static str {
+            "stub-plane"
+        }
+
+        fn capabilities(&self) -> SandboxBackendCapabilities {
+            SandboxBackendCapabilities {
+                fs_isolation: FsIsolation::Container,
+                network: NetworkControl::OnOff,
+                requires_linux_host: false,
+                interactive: false,
+            }
+        }
+
+        fn classify_denial(&self, exit_code: i32, _output: &str) -> Option<String> {
+            (self.denial && exit_code != 0).then(|| "stub policy denied".to_string())
+        }
+
+        fn task_plane(&self) -> Option<&dyn codesmith_sandbox::runtime::SandboxTaskPlane> {
+            Some(self)
+        }
+
+        async fn exec(
+            &self,
+            _request: SandboxExecRequest,
+        ) -> Result<codesmith_sandbox::runtime::SandboxOutput> {
+            unimplemented!("stub plane routes through the task plane, not exec")
+        }
+    }
+
+    impl codesmith_sandbox::runtime::SandboxTaskPlane for StubPlaneBackend {
+        fn spawn(&self, request: SandboxExecRequest) -> Result<SandboxTaskSpawn> {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.spawn_count += 1;
+            state.last_policy = Some(request.policy.name().to_string());
+            let task = format!("stubtask-{}", state.spawn_count);
+            Ok(SandboxTaskSpawn {
+                task,
+                stdout: Box::new(std::io::Cursor::new(b"stub output\n".to_vec())),
+            })
+        }
+
+        fn status(&self, task: &str) -> Result<codesmith_sandbox::runtime::SandboxTaskStatus> {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let polls = state.polls.entry(task.to_string()).or_insert(0);
+            *polls += 1;
+            if *polls >= state.exit_on_poll {
+                Ok(codesmith_sandbox::runtime::SandboxTaskStatus::Exited(
+                    state.exit_code,
+                ))
+            } else {
+                Ok(codesmith_sandbox::runtime::SandboxTaskStatus::Running)
+            }
+        }
+
+        fn kill(&self, task: &str) -> Result<()> {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .killed
+                .push(task.to_string());
+            Ok(())
+        }
+
+        fn cleanup(&self, task: &str) -> Result<()> {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cleaned
+                .push(task.to_string());
+            Ok(())
+        }
+    }
+
+    /// One-shot backend (no task plane) for the fail-closed refusal test.
+    #[derive(Debug)]
+    struct StubOneShotBackend;
+
+    #[async_trait::async_trait]
+    impl SandboxBackend for StubOneShotBackend {
+        fn id(&self) -> &'static str {
+            "stub-oneshot"
+        }
+
+        fn capabilities(&self) -> SandboxBackendCapabilities {
+            SandboxBackendCapabilities {
+                fs_isolation: FsIsolation::RemoteService,
+                network: NetworkControl::OnOff,
+                requires_linux_host: false,
+                interactive: false,
+            }
+        }
+
+        async fn exec(
+            &self,
+            _request: SandboxExecRequest,
+        ) -> Result<codesmith_sandbox::runtime::SandboxOutput> {
+            Err(anyhow!(
+                "one-shot exec must not be reached from the manager"
+            ))
+        }
+    }
+
+    fn settle(manager: &mut ShellManager, task_id: &str) -> ShellResult {
+        for _ in 0..100 {
+            if !manager.poll_task_running(task_id).unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        manager.get_output(task_id, false, 0).expect("settled")
+    }
+
+    #[test]
+    fn backend_task_lifecycle_completes_and_cleans_up() {
+        let backend = Arc::new(StubPlaneBackend::exiting(0));
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend.clone()));
+
+        let spawned = manager
+            .execute_with_options_env(
+                "echo hi",
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn via backend");
+        let task_id = spawned.task_id.expect("task id");
+        assert_eq!(spawned.status, ShellStatus::Running);
+        assert!(spawned.sandbox_effective, "backend enforcing decision");
+        assert_eq!(spawned.sandbox_backend.as_deref(), Some("stub-plane"));
+        // The decision's backend id is authoritative for both stamps.
+        assert_eq!(spawned.sandbox_type.as_deref(), Some("stub-plane"));
+
+        let settled = settle(&mut manager, &task_id);
+        assert_eq!(settled.status, ShellStatus::Completed);
+        assert_eq!(settled.exit_code, Some(0));
+        assert!(settled.stdout.contains("stub output"), "{}", settled.stdout);
+        assert!(!settled.sandbox_denied);
+
+        let state = backend.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(state.spawn_count, 1, "exactly one backend task");
+        assert_eq!(
+            state.cleaned.len(),
+            1,
+            "finished task resources released (docker rm)"
+        );
+        assert!(state.killed.is_empty(), "completed task is not killed");
+        assert_eq!(state.last_policy.as_deref(), Some("workspace-write"));
+    }
+
+    #[test]
+    fn backend_foreground_waits_for_settlement() {
+        let backend = Arc::new(StubPlaneBackend::exiting(0));
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend));
+
+        let result = manager
+            .execute_with_options_env(
+                "echo fg",
+                None,
+                5_000,
+                false,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("foreground via backend");
+        assert_eq!(result.status, ShellStatus::Completed);
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("stub output"));
+    }
+
+    #[test]
+    fn backend_denial_classification_surfaces_on_the_result() {
+        let mut stub = StubPlaneBackend::exiting(1);
+        stub.denial = true;
+        let backend = Arc::new(stub);
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend));
+
+        let spawned = manager
+            .execute_with_options_env(
+                "touch /etc/x",
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn");
+        let task_id = spawned.task_id.expect("task id");
+        let settled = settle(&mut manager, &task_id);
+        assert_eq!(settled.status, ShellStatus::Failed);
+        assert_eq!(settled.exit_code, Some(1));
+        assert!(
+            settled.sandbox_denied,
+            "backend-classified denial must reach the result"
+        );
+    }
+
+    #[test]
+    fn backend_kill_routes_through_the_plane() {
+        let backend = Arc::new(StubPlaneBackend {
+            state: std::sync::Mutex::new(StubState {
+                exit_on_poll: usize::MAX,
+                ..StubState::default()
+            }),
+            denial: false,
+        });
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend.clone()));
+
+        let spawned = manager
+            .execute_with_options_env(
+                "sleep 60",
+                None,
+                60_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn");
+        let task_id = spawned.task_id.expect("task id");
+        let killed = manager.kill(&task_id).expect("kill");
+        assert_eq!(killed.status, ShellStatus::Killed);
+        let state = backend.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(state.killed.len(), 1, "kill delivered to the plane");
+        assert_eq!(state.cleaned.len(), 1, "killed task cleaned up");
+    }
+
+    #[test]
+    fn one_shot_backend_fails_closed_on_the_manager_path() {
+        let backend = Arc::new(StubOneShotBackend);
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend));
+
+        let result = manager
+            .execute_with_options_env(
+                "echo hi",
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("refusal result, not an error");
+        assert_eq!(result.status, ShellStatus::Failed);
+        assert!(result.sandbox_fail_closed, "must fail closed");
+        assert!(
+            result.stderr.contains("no background-task plane"),
+            "{}",
+            result.stderr
+        );
+        assert!(result.task_id.is_none(), "nothing may spawn while refusing");
+    }
+
+    #[test]
+    fn backend_excluded_command_runs_unconfined_in_the_backend() {
+        let backend = Arc::new(StubPlaneBackend::exiting(0));
+        let mut manager = ShellManager::new(std::env::temp_dir());
+        manager.set_sandbox_backend(Some(backend.clone()));
+        let runtime = SandboxRuntimeConfig {
+            excluded_commands: vec!["echo".to_string()],
+            ..SandboxRuntimeConfig::default()
+        };
+        manager.set_sandbox_runtime(runtime);
+
+        let spawned = manager
+            .execute_with_options_env(
+                "echo hi",
+                None,
+                5_000,
+                true,
+                None,
+                false,
+                None,
+                HashMap::new(),
+            )
+            .expect("spawn");
+        let task_id = spawned.task_id.expect("still routed through the backend");
+        assert!(
+            !spawned.sandbox_effective,
+            "exclusion drops the confinement claim"
+        );
+        // The decision reports the excluded *program* (the dispatcher's
+        // shell path, e.g. `/bin/zsh`) — same shape as the local plane.
+        assert!(
+            spawned.sandbox_excluded_command.is_some(),
+            "exclusion is reported"
+        );
+        let settled = settle(&mut manager, &task_id);
+        assert_eq!(settled.status, ShellStatus::Completed);
+        let state = backend.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            state.last_policy.as_deref(),
+            Some("danger-full-access"),
+            "exclusion drops confinement flags, not containerization"
+        );
     }
 }

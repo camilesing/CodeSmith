@@ -16,7 +16,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use crate::audit::log_sensitive_event;
 use crate::hooks::HooksConfig;
 use crate::sandbox::{
-    SandboxBackendKind, SandboxFilesystemConfig, SandboxNetworkConfig, SandboxRuntimeConfig,
+    SandboxBackendKind, SandboxFilesystemConfig, SandboxKind, SandboxNetworkConfig,
+    SandboxRuntimeConfig,
 };
 use codesmith_agent_runtime::features::{Features, FeaturesToml, is_known_feature_key};
 
@@ -3003,11 +3004,15 @@ impl Config {
     pub fn sandbox_runtime_config(&self) -> SandboxRuntimeConfig {
         let mut runtime = SandboxRuntimeConfig::default();
         if let Some(backend) = self.sandbox_backend.as_deref() {
-            runtime.backend = if backend.trim().eq_ignore_ascii_case("opensandbox") {
-                SandboxBackendKind::OpenSandbox
-            } else {
-                SandboxBackendKind::Local
-            };
+            // Map the configured id through the closed kind set; an unknown
+            // id is rejected loudly by the backend factory at engine build
+            // (Config::validate calls the same factory), never silently
+            // degraded to local execution.
+            if let Some(kind) = SandboxKind::parse(backend)
+                && kind != SandboxKind::None
+            {
+                runtime.backend = SandboxBackendKind::External(kind);
+            }
         }
         runtime.prefer_bwrap = self.prefer_bwrap.unwrap_or(false);
 
@@ -11151,7 +11156,7 @@ context_window = 200000
         assert_eq!(runtime.filesystem.writable_roots, [PathBuf::from("/tmp/w")]);
         assert_eq!(
             runtime.backend,
-            crate::sandbox::SandboxBackendKind::OpenSandbox
+            crate::sandbox::SandboxBackendKind::External(crate::sandbox::SandboxKind::OpenSandbox)
         );
 
         let default = Config::default().sandbox_runtime_config();

@@ -13,7 +13,8 @@
 use anyhow::Result;
 
 pub use codesmith_sandbox::runtime::{
-    SandboxBackend, SandboxExecRequest, SandboxKind, SandboxOutput,
+    FsIsolation, NetworkControl, SandboxBackend, SandboxBackendCapabilities, SandboxExecRequest,
+    SandboxKind, SandboxOutput,
 };
 
 use crate::config::Config;

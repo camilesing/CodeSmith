@@ -56,10 +56,16 @@ fn command_would_be_sandboxed(context: &ToolContext, command: &str) -> bool {
         .with_policy(policy.clone());
 
     if context.sandbox_backend.is_some()
+        && !matches!(policy, ExecutionSandboxPolicy::DangerFullAccess)
         && runtime.enabled
         && runtime.platform_enabled()
         && !runtime.command_is_excluded(&spec.program, command)
     {
+        // A backend confines everything except full access: ReadOnly /
+        // WorkspaceWrite are compiled by the backend, ExternalSandbox
+        // delegates confinement to it. DangerFullAccess must NOT ride the
+        // auto-allow — the backend would run it unconfined while the
+        // prediction claimed sandboxing.
         return true;
     }
 
@@ -793,22 +799,50 @@ impl ToolSpec for ExecShellTool {
             std::collections::HashMap::new()
         };
 
-        // Route through external sandbox backend when configured.
-        if let Some(backend) = &context.sandbox_backend {
+        // Task-plane backends that declare no interactive support must
+        // refuse tty/stdin honestly at the tool boundary (the manager
+        // enforces the same refusal for non-tool callers). One-shot hosted
+        // backends keep their own refusal below.
+        if let Some(backend) = context.sandbox_backend.as_ref()
+            && backend.task_plane().is_some()
+            && !backend.capabilities().interactive
+            && (tty || combined_output || interactive || stdin_data.is_some())
+        {
+            return Ok(ToolResult::error(format!(
+                "Interactive/TTY/stdin execution is not supported by sandbox backend '{}' — \
+                 rerun without tty/interactive/stdin (pipe input inside the command instead, \
+                 e.g. `printf ... | cmd`).",
+                backend.id()
+            )));
+        }
+
+        // Route through a one-shot external sandbox backend when configured.
+        // Task-plane backends (containers, VMs) do NOT take this path: they
+        // fall through to the shell-manager path, which routes them through
+        // the backend's task plane — background tasks, wait/cancel, spill,
+        // and the foreground poll loop all work unchanged.
+        if let Some(backend) = context
+            .sandbox_backend
+            .as_ref()
+            .filter(|backend| backend.task_plane().is_none())
+        {
             if interactive {
-                return Ok(ToolResult::error(
-                    "Interactive mode is not supported with external sandbox backends.",
-                ));
+                return Ok(ToolResult::error(format!(
+                    "Interactive mode is not supported with sandbox backend '{}' (one-shot, no task plane).",
+                    backend.id()
+                )));
             }
             if background {
-                return Ok(ToolResult::error(
-                    "Background mode is not supported with external sandbox backends.",
-                ));
+                return Ok(ToolResult::error(format!(
+                    "Background mode is not supported with sandbox backend '{}' (one-shot, no task plane); a task-plane backend (e.g. docker) supports background tasks.",
+                    backend.id()
+                )));
             }
             if tty {
-                return Ok(ToolResult::error(
-                    "TTY mode is not supported with external sandbox backends.",
-                ));
+                return Ok(ToolResult::error(format!(
+                    "TTY mode is not supported with sandbox backend '{}' (one-shot, no task plane).",
+                    backend.id()
+                )));
             }
 
             let started = std::time::Instant::now();
@@ -845,6 +879,13 @@ impl ToolSpec for ExecShellTool {
                 Ok(mut output) => {
                     let (stdout, stdout_meta) = truncate_with_meta(&output.stdout);
                     let (stderr, stderr_meta) = truncate_with_meta(&output.stderr);
+                    // Denial classification is the backend's own dialect
+                    // table; a None only forgoes the hint (raw stderr always
+                    // rides along below).
+                    let denied = backend
+                        .classify_denial(output.exit_code, &output.stderr)
+                        .is_some();
+                    let backend_id = backend.id().to_string();
                     let mut result = ShellResult {
                         task_id: None,
                         status: if output.exit_code == 0 {
@@ -864,18 +905,18 @@ impl ToolSpec for ExecShellTool {
                         stdout_truncated: stdout_meta.truncated,
                         stderr_truncated: stderr_meta.truncated,
                         sandboxed: true,
-                        sandbox_type: Some("opensandbox".to_string()),
-                        sandbox_denied: false,
+                        sandbox_type: Some(backend_id.clone()),
+                        sandbox_denied: denied,
                         sandbox_requested: true,
                         sandbox_effective: true,
-                        sandbox_backend: Some("opensandbox".to_string()),
+                        sandbox_backend: Some(backend_id.clone()),
                         sandbox_unavailable_reason: None,
                         sandbox_fallback_allowed: false,
                         sandbox_excluded_command: None,
                         sandbox_fail_closed: false,
                     };
-                    result.sandbox_type = Some("opensandbox".to_string());
-                    result.sandbox_backend = Some("opensandbox".to_string());
+                    result.sandbox_type = Some(backend_id.clone());
+                    result.sandbox_backend = Some(backend_id);
                     // P0-2: external-sandbox runs bypass the shell manager
                     // (no task id), so spill the full backend output under a
                     // fresh id — the elided middle stays retrievable. The
@@ -911,21 +952,24 @@ impl ToolSpec for ExecShellTool {
             } else {
                 stdout_summary.clone()
             };
-            let output = if result.stdout.is_empty() && result.stderr.is_empty() {
+            let mut output = if result.stdout.is_empty() && result.stderr.is_empty() {
                 "(no output)".to_string()
             } else if result.stderr.is_empty() {
                 result.stdout.clone()
             } else {
                 format!("{}\n\nSTDERR:\n{}", result.stdout, result.stderr)
             };
+            if let Some(hint) = sandbox_denied_hint(&result) {
+                output = format!("{hint}\n\n{output}");
+            }
 
             let mut metadata = json!({
             "exit_code": result.exit_code,
             "status": format!("{:?}", result.status),
             "duration_ms": result.duration_ms,
             "sandboxed": true,
-            "sandbox_type": "opensandbox",
-            "sandbox_denied": false,
+            "sandbox_type": backend.id(),
+            "sandbox_denied": result.sandbox_denied,
             "task_id": result.task_id,
             "stdout_len": result.stdout_len,
             "stderr_len": result.stderr_len,
@@ -939,7 +983,7 @@ impl ToolSpec for ExecShellTool {
             "safety_level": format!("{:?}", safety.level),
             "interactive": false,
             "canceled": false,
-                "sandbox_backend": "opensandbox",
+                "sandbox_backend": backend.id(),
                 "sandbox_requested": result.sandbox_requested,
                 "sandbox_effective": result.sandbox_effective,
                 "sandbox_unavailable_reason": result.sandbox_unavailable_reason,
@@ -959,6 +1003,24 @@ impl ToolSpec for ExecShellTool {
                 attach_spill_to_result(&mut tool_result, spill);
             }
             return Ok(tool_result);
+        }
+
+        // Wiring-consistency guard for task-plane backends: the fall-through
+        // below routes through `context.shell_manager`, which must carry the
+        // SAME backend. A host that sets `sandbox_backend` on the context
+        // without wiring the manager (default manager) would silently run
+        // locally — refuse that loudly instead.
+        if let Some(backend) = context.sandbox_backend.as_ref()
+            && backend.task_plane().is_some()
+            && context.shell_manager.sandbox_backend_id().as_deref() != Some(backend.id())
+        {
+            return Ok(ToolResult::error(format!(
+                "Sandbox backend '{}' is configured but the shell manager is not wired to it \
+                 (manager backend: {:?}); refusing to run the command locally while a backend \
+                 is configured.",
+                backend.id(),
+                context.shell_manager.sandbox_backend_id(),
+            )));
         }
 
         // P2-6: set when a foreground command's captured cwd was folded into

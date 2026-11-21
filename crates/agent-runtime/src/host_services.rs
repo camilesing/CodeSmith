@@ -294,6 +294,11 @@ pub trait ShellManagerApi: Send + Sync {
     fn clear_foreground_background_request(&self);
     /// Install the session's resolved sandbox runtime config prior to an exec.
     fn set_sandbox_runtime(&self, runtime: SandboxRuntimeConfig);
+    /// The id of the replaced-world backend the manager routes through, or
+    /// `None` for the local execution plane. Lets callers verify their own
+    /// backend handle and the manager's wiring agree — a mismatch must fail
+    /// closed, never run locally by accident.
+    fn sandbox_backend_id(&self) -> Option<String>;
     /// Execute a shell command (background or foreground) with stdin/TTY
     /// options, a sandbox-policy override, and an extra env-var map merged
     /// into the spawned process environment. Mirrors

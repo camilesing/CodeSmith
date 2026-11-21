@@ -2,9 +2,9 @@
 //!
 //! The runtime-config types (`SandboxRuntimeConfig`, `SandboxBackendKind`, …)
 //! were extracted from `crates/tui/src/sandbox/runtime.rs`. The portable
-//! policy/backend data types (`SandboxPolicy`, `WritableRoot`,
-//! `SandboxExecRequest`, `SandboxOutput`, `SandboxKind`, `SandboxBackend`
-//! trait) were extracted from `crates/tui/src/sandbox/{policy,backend}.rs` —
+//! policy data types (`SandboxPolicy`, `WritableRoot`) and the
+//! replaced-world backend seam (`SandboxBackend`, `SandboxTaskPlane` — see
+//! [`backend`]) were extracted from `crates/tui/src/sandbox/{policy,backend}.rs` —
 //! they carry no platform-coupled state, so they can live here and cross the
 //! `Arc<dyn HostServices>` boundary. The command-spec and sandbox-decision
 //! types (`CommandSpec`, `ExecEnv`, `SandboxType`, `SandboxDecision`) were
@@ -27,7 +27,6 @@
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use anyhow::Result;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -44,6 +43,8 @@ pub mod bwrap;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
+
+pub mod backend;
 
 /// Runtime sandbox configuration after merging legacy top-level keys, the
 /// `[sandbox]` table, environment overrides, and per-mode policy.
@@ -169,9 +170,12 @@ pub struct SandboxNetworkConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxBackendKind {
+    /// No replaced-world backend: commands run locally, confined (when a
+    /// policy demands it) by the OS plane.
     #[default]
     Local,
-    OpenSandbox,
+    /// A configured [`SandboxBackend`] replaces local execution entirely.
+    External(backend::SandboxKind),
 }
 
 impl SandboxBackendKind {
@@ -179,7 +183,7 @@ impl SandboxBackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
-            Self::OpenSandbox => "opensandbox",
+            Self::External(kind) => kind.as_str(),
         }
     }
 }
@@ -613,73 +617,14 @@ pub(crate) fn normalize_for_containment(path: &Path) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Portable sandbox backend types (extracted from tui sandbox/backend.rs)
+// Portable sandbox backend types — see `backend.rs` (the replaced-world seam:
+// one trait family for containers, microVMs, and remote execution services).
 // ---------------------------------------------------------------------------
 
-/// Request sent to a sandbox backend execution service.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SandboxExecRequest {
-    pub cmd: String,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    pub cwd: PathBuf,
-    pub timeout_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stdin: Option<String>,
-    pub policy: SandboxPolicy,
-}
-
-/// Output from a sandbox backend execution.
-#[derive(Debug, Clone)]
-pub struct SandboxOutput {
-    /// Standard output from the command.
-    pub stdout: String,
-    /// Standard error from the command.
-    pub stderr: String,
-    /// Exit code (0 for success).
-    pub exit_code: i32,
-}
-
-/// The kind of external sandbox backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxKind {
-    /// No external sandbox — execute commands locally.
-    None,
-    /// Alibaba OpenSandbox remote execution.
-    OpenSandbox,
-}
-
-impl SandboxKind {
-    /// Parse a sandbox backend name from config (case-insensitive).
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "none" | "" => Some(Self::None),
-            "opensandbox" | "open-sandbox" | "open_sandbox" => Some(Self::OpenSandbox),
-            _ => None,
-        }
-    }
-
-    /// Human-readable label.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::OpenSandbox => "opensandbox",
-        }
-    }
-}
-
-/// Abstract interface for an external sandbox backend.
-///
-/// Implementations send commands to a remote execution environment and return
-/// structured output. The trait is `Send + Sync` so it can be stored in an
-/// `Arc` and shared across async tasks.
-#[async_trait]
-pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
-    /// Execute a shell command and return its output.
-    async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
-}
+pub use backend::{
+    FsIsolation, NetworkControl, SandboxBackend, SandboxBackendCapabilities, SandboxExecRequest,
+    SandboxKind, SandboxOutput, SandboxTaskPlane, SandboxTaskSpawn, SandboxTaskStatus,
+};
 
 // ---------------------------------------------------------------------------
 // Command spec, execution env, and sandbox decision
@@ -1003,6 +948,22 @@ impl SandboxDecision {
             sandbox_effective: true,
             sandbox_policy: policy.name().to_string(),
             sandbox_backend: Some(backend.to_string()),
+            sandbox_unavailable_reason: None,
+            sandbox_fallback_allowed: false,
+            sandbox_excluded_command: None,
+            sandbox_fail_closed: false,
+        }
+    }
+
+    /// Enforcing decision credited to a replaced-world backend: confinement
+    /// is the backend's own policy compilation, so the stamp is its id.
+    #[must_use]
+    pub fn enforcing_backend(policy: &SandboxPolicy, backend_id: &str) -> Self {
+        Self {
+            sandbox_requested: true,
+            sandbox_effective: true,
+            sandbox_policy: policy.name().to_string(),
+            sandbox_backend: Some(backend_id.to_string()),
             sandbox_unavailable_reason: None,
             sandbox_fallback_allowed: false,
             sandbox_excluded_command: None,

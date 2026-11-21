@@ -35,7 +35,7 @@ construct it, consumers take it by value).
 | `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers`, `tool-impls` | `agent`, `agent-runtime` |
 | `OpenTicketsNote` | `agent-runtime` | `cli` | `agent-runtime` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
-| `SandboxBackend` | `sandbox` | `cli` | `agent-runtime`, `cli` |
+| `SandboxBackend` | `sandbox` | `agent-runtime`, `cli` | `agent-runtime`, `cli` |
 | `ScriptCompactionStrategy` (data) | `extensions` | `extensions` | `agent-runtime`, `extensions` |
 | `SessionJournal` | `session` | `session` | `agent-runtime`, `cli` |
 | `SessionStore` | `session` | `session` | `cli` |
