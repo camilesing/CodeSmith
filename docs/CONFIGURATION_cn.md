@@ -902,7 +902,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   明确可见。
 - `sandbox_backend` / `sandbox_url` / `sandbox_api_key`（可选）：换世界
   沙箱后端——完全替换本地执行。`sandbox_backend` 为 `none`（默认）、
-  `docker`、`gvisor`（别名 `runsc`）、`firecracker`（别名 `kata-fc`）
+  `docker`、`gvisor`（别名 `runsc`）、`firecracker`（别名 `kata-fc`）、
+  `gondolin`（QEMU microVM，主机白名单出网）
   或 `opensandbox`。容器家族（`docker`/`gvisor`/`firecracker`）经
   docker CLI 以策略编译的挂载运行每条命令，并支持后台任务；
   `opensandbox` 把命令路由到 `POST {sandbox_url}/v1/sandbox/run`（默认

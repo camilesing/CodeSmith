@@ -45,7 +45,7 @@ pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>
     let Some(kind) = SandboxKind::parse(raw) else {
         anyhow::bail!(
             "unknown sandbox_backend {raw:?}: expected \"none\", \"docker\", \"gvisor\", \
-             \"firecracker\" (alias kata-fc), or \"opensandbox\""
+             \"firecracker\" (alias kata-fc), \"gondolin\", or \"opensandbox\""
         );
     };
 
@@ -60,6 +60,7 @@ pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>
         SandboxKind::Firecracker => Ok(Some(Box::new(
             super::docker::ContainerCliBackend::firecracker(container_image(config)),
         ))),
+        SandboxKind::Gondolin => Ok(Some(Box::new(super::gondolin::GondolinBackend::new()))),
         SandboxKind::OpenSandbox => {
             // The documented default is kept, but never silently: the user
             // asked for a remote sandbox, and routing every command to
@@ -107,7 +108,14 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown sandbox_backend"), "{err}");
-        for id in ["none", "docker", "gvisor", "firecracker", "opensandbox"] {
+        for id in [
+            "none",
+            "docker",
+            "gvisor",
+            "firecracker",
+            "gondolin",
+            "opensandbox",
+        ] {
             assert!(err.contains(id), "message must list {id}: {err}");
         }
     }

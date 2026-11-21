@@ -202,7 +202,18 @@ backend）则整个替换命令的运行位置：设置了 `sandbox_backend` 后
 | `docker` | OS 容器（docker CLI，默认 runtime） | 容器（与守护进程宿主/VM 共享内核） | 开/关 | 任意 docker 宿主，含 macOS Docker Desktop | 支持 |
 | `gvisor` | gVisor 用户态内核（`--runtime runsc`） | 用户态内核 | 开/关 | 注册了 runsc 的 Linux 宿主 | 支持 |
 | `firecracker` | 经 Kata `kata-fc` handler 的 Firecracker microVM（`--runtime kata-fc`） | 硬件虚拟化 microVM | 开/关 | 安装了 Kata 的 Linux 宿主 | 支持 |
+| `gondolin` | Gondolin microVM（QEMU；[earendil-works/gondolin](https://github.com/earendil-works/gondolin)） | 硬件虚拟化 microVM | 主机白名单（HTTP/HTTPS 出网） | 任何 QEMU 可运行处（含 macOS） | 支持 |
 | `opensandbox` | 远程执行服务（HTTP） | 服务自身契约 | 开/关 | 任意 | 不支持（单发） |
+
+`gondolin` 后端按编译出的策略形状（挂载 + 网络白名单）各保持一个
+microVM 会话——某形状的第一条命令支付 VM 启动开销（数秒；有史以来
+第一次运行还会下载约 200MB 的 guest 资产，由 gondolin 自理）。命令以
+`gondolin exec --sock` 子进程运行，输出流与退出码即该子进程自身的。
+其已知限制：不支持交互/TTY/stdin；被杀命令在 guest 侧是否随之终止
+取决于 gondolin 的 socket 模式行为（VM 在引擎关停时停止）；网络"开"
+映射为 `--allow-host '*'`（CodeSmith 的词汇只有开/关——把
+`[sandbox.network] allow` 映射到 gondolin 的逐主机白名单是后续工作）。
+安装：`npm install -g @earendil-works/gondolin`（需要 QEMU）。
 
 所有后端共享的语义：
 
@@ -274,7 +285,7 @@ allow = []
 deny = []
 
 # 换世界沙箱后端 —— 完全替换本地执行
-sandbox_backend = "none"          # none | docker | gvisor | firecracker (别名: kata-fc) | opensandbox
+sandbox_backend = "none"          # none | docker | gvisor | firecracker (别名: kata-fc) | gondolin | opensandbox
 sandbox_url = "http://localhost:8080"     # 仅 opensandbox
 sandbox_api_key = "YOUR_API_KEY"          # 仅 opensandbox
 

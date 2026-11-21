@@ -231,7 +231,20 @@ through it and nothing executes locally.
 | `docker` | OS containers (docker CLI, default runtime) | container (kernel shared with the daemon host/VM) | on/off | any docker host, incl. Docker Desktop on macOS | yes |
 | `gvisor` | gVisor userspace kernel (`--runtime runsc`) | userspace kernel | on/off | Linux host with runsc registered | yes |
 | `firecracker` | Firecracker microVM via Kata's `kata-fc` handler (`--runtime kata-fc`) | hardware-virtualized microVM | on/off | Linux host with Kata installed | yes |
+| `gondolin` | Gondolin microVMs (QEMU; [earendil-works/gondolin](https://github.com/earendil-works/gondolin)) | hardware-virtualized microVM | host allowlist (HTTP/HTTPS egress) | anywhere QEMU runs (macOS incl.) | yes |
 | `opensandbox` | remote execution service (HTTP) | the service's contract | on/off | anywhere | no (one-shot) |
+
+The `gondolin` backend keeps one microVM session per compiled policy shape
+(mounts + network allowlist) — the first command for a shape pays the VM
+boot (seconds; the very first run ever also downloads ~200 MB of guest
+assets, handled by gondolin). Commands run as `gondolin exec --sock`
+subprocesses, so output streams and exit codes are the subprocess's own.
+Its known limitations: interactive/tty/stdin unsupported; a killed
+command's guest-side survival is gondolin's socket-mode behavior (the VM
+stops at engine shutdown); network "on" maps to `--allow-host '*'` (the
+CodeSmith vocabulary is on/off — mapping `[sandbox.network] allow` onto
+gondolin's per-host allowlist is a follow-up). Install via
+`npm install -g @earendil-works/gondolin` (QEMU required).
 
 Semantics shared by every backend:
 
@@ -313,7 +326,7 @@ allow = []
 deny = []
 
 # Replaced-world sandbox backend — replaces local execution entirely
-sandbox_backend = "none"          # none | docker | gvisor | firecracker (alias: kata-fc) | opensandbox
+sandbox_backend = "none"          # none | docker | gvisor | firecracker (alias: kata-fc) | gondolin | opensandbox
 sandbox_url = "http://localhost:8080"     # opensandbox only
 sandbox_api_key = "YOUR_API_KEY"          # opensandbox only
 

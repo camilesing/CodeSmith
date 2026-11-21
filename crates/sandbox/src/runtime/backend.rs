@@ -83,6 +83,10 @@ pub enum SandboxKind {
     /// Firecracker microVMs via Kata Containers' `kata-fc` runtime handler.
     #[serde(rename = "firecracker")]
     Firecracker,
+    /// Gondolin microVMs (earendil-works/gondolin, QEMU-based) with
+    /// host-side network egress policy.
+    #[serde(rename = "gondolin")]
+    Gondolin,
 }
 
 impl SandboxKind {
@@ -95,6 +99,7 @@ impl SandboxKind {
             "docker" => Some(Self::Docker),
             "gvisor" | "runsc" => Some(Self::Gvisor),
             "firecracker" | "kata-fc" | "kata" => Some(Self::Firecracker),
+            "gondolin" => Some(Self::Gondolin),
             _ => None,
         }
     }
@@ -108,6 +113,7 @@ impl SandboxKind {
             Self::Docker => "docker",
             Self::Gvisor => "gvisor",
             Self::Firecracker => "firecracker",
+            Self::Gondolin => "gondolin",
         }
     }
 }

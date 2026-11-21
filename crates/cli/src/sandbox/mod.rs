@@ -13,6 +13,7 @@
 
 pub mod backend;
 pub mod docker;
+pub mod gondolin;
 pub mod opensandbox;
 pub mod policy;
 pub mod runtime;

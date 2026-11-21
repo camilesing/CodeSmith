@@ -998,7 +998,8 @@ and the capacity controller remains disabled unless configured.
 - `sandbox_backend` / `sandbox_url` / `sandbox_api_key` (optional):
   replaced-world sandbox backend — replaces local execution entirely.
   `sandbox_backend` is `none` (default), `docker`, `gvisor` (alias
-  `runsc`), `firecracker` (alias `kata-fc`), or `opensandbox`. The
+  `runsc`), `firecracker` (alias `kata-fc`), `gondolin` (QEMU
+  microVMs, host-allowlist egress), or `opensandbox`. The
   container family (`docker`/`gvisor`/`firecracker`) runs every command
   through the docker CLI with policy-compiled mounts and supports
   background tasks; `opensandbox` routes commands through
