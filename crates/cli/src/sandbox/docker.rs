@@ -211,7 +211,18 @@ impl ContainerEngine {
         drop(spawned.stderr);
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
-            match self.status(&task)? {
+            let status = match self.status(&task) {
+                Ok(status) => status,
+                Err(err) => {
+                    // A failed probe must not strand the task: the container
+                    // would run unbounded and the logs follower (stored in
+                    // `followers`) would zombie. Best-effort teardown.
+                    let _ = self.kill(&task);
+                    let _ = self.cleanup(&task);
+                    return Err(err);
+                }
+            };
+            match status {
                 SandboxTaskStatus::Exited(code) => {
                     let (stdout, stderr) = self.task_output(&task)?;
                     self.cleanup(&task).ok();
@@ -222,6 +233,9 @@ impl ContainerEngine {
                     });
                 }
                 SandboxTaskStatus::Gone => {
+                    // Reap the follower even though the container is gone,
+                    // so it never zombies.
+                    let _ = self.cleanup(&task);
                     bail!("container task {task} vanished before exiting");
                 }
                 SandboxTaskStatus::Running => {
