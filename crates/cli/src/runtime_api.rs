@@ -1454,9 +1454,9 @@ async fn preset_apply(
     Ok(Json(snapshot))
 }
 
-/// `GET /v1/models` — the model registry with the effective default flagged,
-/// so a GUI can render its model catalog (read-only; selection stays per
-/// thread/turn).
+/// `GET /v1/models` — the active provider's model catalog with the effective
+/// default flagged, so a GUI can render its model picker (read-only;
+/// selection stays per thread/turn).
 async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntry>> {
     let registry = ModelRegistry::default();
     // The default a client should offer is the model a new session actually
@@ -1466,9 +1466,16 @@ async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntr
     // wrong default and carry no row for the configured one — and the
     // desktop bridge's model seat reads exactly this catalog.
     let default_model = state.config.default_model();
+    // Only the active provider's rows are routable: every other builtin's
+    // models would be offered with no key and no base URL to serve them.
+    // Known limitation: the active provider's registry rows are listed even
+    // when the user's gateway serves a different set; the configured default
+    // row is always present, whatever the registry knows.
+    let active_provider = state.config.api_provider().as_str();
     let mut entries: Vec<ModelEntry> = registry
         .list()
         .into_iter()
+        .filter(|m| m.provider.as_str() == active_provider)
         .map(|m| ModelEntry {
             default: m.id == default_model,
             context_window: codesmith_agent::models::context_window_for_model(&m.id),
@@ -4385,6 +4392,16 @@ mod tests {
                 .count(),
             1,
             "exactly one default: {models:?}"
+        );
+        // The catalog is scoped to the active provider: no other builtin's
+        // rows (they would be offered with no key or base URL to serve
+        // them). The static registry has no anthropic rows, so the
+        // configured default is the catalog's only entry.
+        assert!(
+            models
+                .iter()
+                .all(|model| model["provider"] == json!("anthropic")),
+            "catalog must not list other providers' models: {models:?}"
         );
         // A thread created without an explicit model takes the same
         // configured default (the desktop bridge's session/create posts no
