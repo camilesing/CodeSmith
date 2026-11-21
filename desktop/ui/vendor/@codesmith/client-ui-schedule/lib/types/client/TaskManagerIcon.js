@@ -12,4 +12,3 @@ import { IconClockOutlineRegular } from '@codesmith/client-ui-primitives';
 export function TaskManagerIcon({ size }) {
     return _jsx(IconClockOutlineRegular, { size: size });
 }
-//# sourceMappingURL=TaskManagerIcon.js.map

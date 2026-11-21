@@ -422,4 +422,3 @@ export class DraftEditorRuntime {
         this.editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
     }
 }
-//# sourceMappingURL=runtime.js.map

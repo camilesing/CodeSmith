@@ -31,4 +31,3 @@ export const sessionReferenceRule = {
         return undefined;
     },
 };
-//# sourceMappingURL=session-reference-rule.js.map

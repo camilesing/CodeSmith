@@ -12,4 +12,3 @@ export function resolveActiveView(tabs, selectedId) {
     const selected = selectedId === null ? undefined : tabs.find(view => view.id === selectedId);
     return selected ?? tabs.find(view => view.id === DEFAULT_VIEW_ID);
 }
-//# sourceMappingURL=view-selection.js.map

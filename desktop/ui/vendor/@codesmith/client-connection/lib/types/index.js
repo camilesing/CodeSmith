@@ -82,4 +82,3 @@ export async function apply(ctx, config) {
         assertImageBodyCapacity(attachmentCtx, maxRequestBodyBytes);
     });
 }
-//# sourceMappingURL=index.js.map

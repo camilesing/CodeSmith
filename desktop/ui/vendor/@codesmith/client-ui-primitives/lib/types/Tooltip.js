@@ -249,4 +249,3 @@ export function Tooltip({ label, shortcutKeys, side = 'right', align = 'center',
                 onBlur: (e) => { children.props.onBlur?.(e); triggers.current.focus = false; hide(); },
             }), portal ? (content !== false && createPortal(content, document.body)) : content] }));
 }
-//# sourceMappingURL=Tooltip.js.map

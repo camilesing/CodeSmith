@@ -28,4 +28,3 @@ export function ScheduleCreateCard({ block, toolName, openTaskDetail, t, current
                         ? (_jsx(Button, { variant: "outline", size: "sm", className: css.openButton, onClick: () => { openTaskDetail(task.id); }, children: t('card.open') }))
                         : null] }), task === undefined && model.output !== null ? _jsx("pre", { className: css.fallback, children: model.output }) : null] }));
 }
-//# sourceMappingURL=ScheduleCreateCard.js.map

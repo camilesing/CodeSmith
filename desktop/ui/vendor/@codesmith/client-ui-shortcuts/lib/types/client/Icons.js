@@ -14,4 +14,3 @@ export function ShortcutIcon({ kind, className }) {
     const size = kind === 'edit' ? 12 : 16;
     return _jsx("svg", { width: size, height: size, viewBox: `0 0 ${size} ${size}`, fill: "currentColor", className: className, "aria-hidden": "true", children: artwork[kind] });
 }
-//# sourceMappingURL=Icons.js.map

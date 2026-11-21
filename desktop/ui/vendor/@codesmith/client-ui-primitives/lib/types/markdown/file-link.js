@@ -49,4 +49,3 @@ export function parseFileLink(value) {
         return { path };
     return { path, line };
 }
-//# sourceMappingURL=file-link.js.map

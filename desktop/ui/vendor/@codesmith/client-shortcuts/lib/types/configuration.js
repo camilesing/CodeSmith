@@ -237,4 +237,3 @@ export function parseShortcutDefinitions(value) {
     }
     return definitions;
 }
-//# sourceMappingURL=configuration.js.map

@@ -135,4 +135,3 @@ export class PresentedOpenController {
         return { kind: 'failed', failure: action === 'reveal' ? 'revealError' : 'openError' };
     }
 }
-//# sourceMappingURL=present-open.js.map

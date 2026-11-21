@@ -17,4 +17,3 @@ export function SettingsDocumentAction({ controller, useSnapshot, t }) {
         return null;
     return (_jsxs("div", { className: css.action, children: [state.error === null ? null : _jsx("span", { className: css.error, role: "alert", children: t('openDocument.error') }), _jsx(Button, { variant: "outline", size: "sm", disabled: state.opening, onClick: () => { void controller.open(); }, children: t('openDocument') })] }));
 }
-//# sourceMappingURL=SettingsDocumentAction.js.map

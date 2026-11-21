@@ -10,4 +10,3 @@ import clsx from 'clsx';
 export function ShortcutKeys({ keys, variant = 'plain', className }) {
     return _jsx("span", { className: clsx(css.keys, variant === 'tooltip' && css.tooltip, variant === 'tooltip' && keys.includes('+') && css.joined, className), children: keys.map((key, index) => _jsx("kbd", { className: key === '+' ? css.separator : css.key, children: key }, index)) });
 }
-//# sourceMappingURL=ShortcutKeys.js.map

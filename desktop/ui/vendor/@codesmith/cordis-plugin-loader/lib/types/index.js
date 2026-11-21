@@ -156,4 +156,3 @@ export class Loader extends EntryTree {
     }
 }
 export default Loader;
-//# sourceMappingURL=index.js.map

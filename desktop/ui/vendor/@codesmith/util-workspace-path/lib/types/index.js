@@ -126,4 +126,3 @@ export function fileMediaUrl(base, path) {
         return undefined;
     return new URL(`api/file?path=${encodeURIComponent(path)}`, base).href;
 }
-//# sourceMappingURL=index.js.map

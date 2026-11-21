@@ -14,4 +14,3 @@ export const LocaleSettingsFields = {
 };
 /** Schema for the shared locale preference. */
 export const LocaleSettingsSchema = z.object(LocaleSettingsFields);
-//# sourceMappingURL=locale-settings.js.map

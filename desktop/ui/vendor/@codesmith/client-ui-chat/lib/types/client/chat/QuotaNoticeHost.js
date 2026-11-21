@@ -21,4 +21,3 @@ export function QuotaNoticeHost({ useNotice, dismissNotice, keepNoticeOpen, rend
             fallback: _jsx(Toast, { text: owner.message, icon: _jsx(IconWarningOutlineRegular, { size: 18 }), onDone: dismissNotice }),
         }) }, `quota-notice-${String(notice.seq)}`));
 }
-//# sourceMappingURL=QuotaNoticeHost.js.map

@@ -8,4 +8,3 @@
  * @module @codesmith/client-ui-message-feedback/client/slots
  */
 export {};
-//# sourceMappingURL=slots.js.map

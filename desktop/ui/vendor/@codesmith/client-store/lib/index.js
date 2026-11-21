@@ -177,4 +177,3 @@ function defineStore(decl) {
 //#endregion
 export { createSnapshotStore, defineStore, notifySubscribers, shallowEqual };
 
-//# sourceMappingURL=index.js.map

@@ -30,4 +30,3 @@ export const searchToolview = {
         });
     },
 };
-//# sourceMappingURL=search-row.js.map

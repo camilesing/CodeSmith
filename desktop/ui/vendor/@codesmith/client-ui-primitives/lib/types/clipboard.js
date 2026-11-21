@@ -48,4 +48,3 @@ export async function writeClipboard(text) {
     }
     /* oxlint-enable typescript/no-deprecated */
 }
-//# sourceMappingURL=clipboard.js.map

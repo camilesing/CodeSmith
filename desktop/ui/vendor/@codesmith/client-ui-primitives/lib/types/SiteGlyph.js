@@ -88,4 +88,3 @@ export function siteGlyph({ href, size, className }) {
         return undefined;
     return (_jsx("svg", { width: size, height: size, className: className, viewBox: "-2 -2 28 28", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": true, children: _jsx("path", { d: icon.path, fill: "currentColor" }) }));
 }
-//# sourceMappingURL=SiteGlyph.js.map

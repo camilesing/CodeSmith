@@ -73,4 +73,3 @@ function acceptIncrement(accept, frame) {
 function assertNever(value) {
     throw new Error(`unreachable Workspace increment: ${JSON.stringify(value)}`);
 }
-//# sourceMappingURL=index.js.map

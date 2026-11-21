@@ -192,4 +192,3 @@ export function apply(ctx) {
         };
     }, 'ui-skill: source');
 }
-//# sourceMappingURL=index.js.map

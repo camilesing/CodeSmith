@@ -10,4 +10,3 @@ export * from "./string.js";
 export * from "./time.js";
 /** Immutable config references shared by schema validators and runtimes. */
 export * from "./volatile.js";
-//# sourceMappingURL=index.js.map

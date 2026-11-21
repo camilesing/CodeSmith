@@ -28,4 +28,3 @@ export function SessionScheduleMark({ sessionId, useCatalog, t, }) {
         // own click target; the row keeps every other cell as its activation area.
         onClick: (event) => { event.stopPropagation(); }, children: [_jsx(IconClockOutlineRegular, { size: 14 }), _jsx("span", { className: css.visuallyHidden, children: t('mark.aria', { count: facts.records.length }) })] }));
 }
-//# sourceMappingURL=SessionScheduleMark.js.map

@@ -46,4 +46,3 @@ export function createInitialState(minter, makeInitialTab, mode = 'push') {
         mode,
     };
 }
-//# sourceMappingURL=initial.js.map

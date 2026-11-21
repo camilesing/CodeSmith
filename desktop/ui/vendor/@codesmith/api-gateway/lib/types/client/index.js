@@ -676,4 +676,3 @@ async function* normalizeConnectionStream(source) {
         throw error;
     }
 }
-//# sourceMappingURL=index.js.map

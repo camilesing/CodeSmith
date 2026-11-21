@@ -63,4 +63,3 @@ export function attachmentRailLabels(t) {
         scrollRight: t('attachment.scrollRight'),
     };
 }
-//# sourceMappingURL=labels.js.map

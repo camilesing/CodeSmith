@@ -71,4 +71,3 @@ function activityLine(entry, t) {
         default: return t(`archive.confirm.other.${plural}`, { kind: entry.kind, n });
     }
 }
-//# sourceMappingURL=ArchiveSession.js.map

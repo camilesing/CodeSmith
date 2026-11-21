@@ -66,4 +66,3 @@ export function createWorkspaceViewStore() {
         },
     });
 }
-//# sourceMappingURL=stores.js.map

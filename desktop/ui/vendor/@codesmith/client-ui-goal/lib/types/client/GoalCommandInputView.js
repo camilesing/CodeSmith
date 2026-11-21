@@ -17,4 +17,3 @@ export const GoalCommandInputView = memo(function GoalCommandInputView({ node, t
                     interactive: false,
                 }) }) }) }));
 });
-//# sourceMappingURL=GoalCommandInputView.js.map

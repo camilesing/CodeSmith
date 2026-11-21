@@ -36,4 +36,3 @@ export function OpenInAppToast({ useToast, dismiss, t }) {
     }
     return _jsx(Toast, { text: t(toast.kind === 'opened' ? 'path.opened' : 'path.revealed'), tone: "success", onDone: dismiss }, key);
 }
-//# sourceMappingURL=open-toast.js.map

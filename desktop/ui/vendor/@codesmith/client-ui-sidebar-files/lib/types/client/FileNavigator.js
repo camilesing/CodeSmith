@@ -117,4 +117,3 @@ export function FileNavigator({ useTabInfo, page, onOpen, sessionId, useSessions
                     ? _jsx("p", { className: css.note, "data-files-row": "loading", children: t('loading') })
                     : renderFactorySlot('sidebar.files.tree', { ...view, entries, directories, current: location?.current, currentRef }) })] }));
 }
-//# sourceMappingURL=FileNavigator.js.map

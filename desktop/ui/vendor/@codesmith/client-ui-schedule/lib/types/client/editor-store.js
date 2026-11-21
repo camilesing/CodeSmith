@@ -16,4 +16,3 @@ export function createEditorStore() {
         actions: editorActions,
     });
 }
-//# sourceMappingURL=editor-store.js.map

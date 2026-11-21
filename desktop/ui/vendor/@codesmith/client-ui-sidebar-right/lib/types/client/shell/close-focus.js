@@ -31,4 +31,3 @@ export function closeWithPaneFocus(document, sessionId, paneId, close) {
         return;
     visibleSidebarPane(document, sessionId, paneId)?.focus({ preventScroll: true });
 }
-//# sourceMappingURL=close-focus.js.map

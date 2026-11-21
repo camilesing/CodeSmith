@@ -7,4 +7,3 @@ import { jsx as _jsx } from "react/jsx-runtime";
 export function FoldToggle({ className, expanded, hidden, labels, onToggle, }) {
     return (_jsx("button", { type: "button", className: className, "aria-expanded": expanded, "aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden), onClick: onToggle, children: expanded ? labels.collapse : labels.expand(hidden) }));
 }
-//# sourceMappingURL=FoldToggle.js.map

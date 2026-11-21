@@ -95,4 +95,3 @@ export class Notifier {
         notifySubscribers(this.listeners, '[session-controller]');
     }
 }
-//# sourceMappingURL=notifier.js.map

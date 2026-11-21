@@ -173,4 +173,3 @@ function revokeUrl(url) {
     if (url.startsWith('blob:'))
         URL.revokeObjectURL(url);
 }
-//# sourceMappingURL=historical-images.js.map

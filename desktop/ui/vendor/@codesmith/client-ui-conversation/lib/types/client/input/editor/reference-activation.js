@@ -25,4 +25,3 @@ export function registerReferenceActivation(editor, open) {
         return node instanceof TextRefNode && open(undefined, { ref: node.getTextContent() });
     }, COMMAND_PRIORITY_LOW);
 }
-//# sourceMappingURL=reference-activation.js.map

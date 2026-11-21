@@ -30,4 +30,3 @@ export class ConversationGroupRegistry extends ConversationDefinitionRegistry {
         return this.definitions.get(target);
     }
 }
-//# sourceMappingURL=group-registry.js.map

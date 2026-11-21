@@ -51,4 +51,3 @@ export function attachmentErrorText(t, reason, limits) {
     }
     return t('image.sendFailed', { reason });
 }
-//# sourceMappingURL=image-labels.js.map

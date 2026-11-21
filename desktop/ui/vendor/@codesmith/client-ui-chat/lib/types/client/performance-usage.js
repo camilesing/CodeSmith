@@ -31,4 +31,3 @@ export class PerformanceUsagePolicy {
         void this.host.set('performanceUsage', mode);
     }
 }
-//# sourceMappingURL=performance-usage.js.map

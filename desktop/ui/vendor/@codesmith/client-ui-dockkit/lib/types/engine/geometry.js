@@ -215,4 +215,3 @@ export function floatRectAt(x, y, size) {
 }
 /** How far the new panel's origin sits above and left of the drop point. */
 const GRAB_OFFSET = { x: 60, y: 14 };
-//# sourceMappingURL=geometry.js.map

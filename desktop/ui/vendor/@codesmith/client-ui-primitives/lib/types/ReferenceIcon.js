@@ -29,4 +29,3 @@ export function ReferenceIconRegular(props) {
 export function ReferenceIconMedium(props) {
     return _jsx(ReferenceIconArtwork, { ...props, strokeWidth: ICON_MEDIUM_STROKE });
 }
-//# sourceMappingURL=ReferenceIcon.js.map

@@ -17,4 +17,3 @@ export function ConfigField(props) {
                     ? _jsx("input", { id: id, type: "password", autoComplete: "new-password", value: props.value, disabled: props.disabled, "aria-invalid": props.invalid, onChange: (event) => { props.onChange(event.target.value); } })
                     : _jsx("textarea", { id: id, value: props.value, disabled: props.disabled, "aria-invalid": props.invalid, rows: Math.min(8, Math.max(1, props.value.split('\n').length)), onChange: (event) => { props.onChange(event.target.value); } }), props.invalid ? _jsx("p", { role: "status", children: props.labels.invalid }) : null] });
 }
-//# sourceMappingURL=ConfigField.js.map

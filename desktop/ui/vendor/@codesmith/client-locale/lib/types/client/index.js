@@ -479,4 +479,3 @@ export async function apply(ctx) {
         inject: injected,
     }, LanguageRow));
 }
-//# sourceMappingURL=index.js.map

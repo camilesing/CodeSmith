@@ -20,4 +20,3 @@ export const quoteRule = {
         return undefined;
     },
 };
-//# sourceMappingURL=quote-rule.js.map

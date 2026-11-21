@@ -94,4 +94,3 @@ export function apply(ctx) {
         }),
     }, PlanChip));
 }
-//# sourceMappingURL=index.js.map

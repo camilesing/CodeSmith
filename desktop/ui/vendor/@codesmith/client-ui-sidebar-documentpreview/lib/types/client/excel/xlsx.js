@@ -253,4 +253,3 @@ function themeColors(workbook) {
 function record(value) {
     return typeof value === 'object' && value !== null ? value : {};
 }
-//# sourceMappingURL=xlsx.js.map

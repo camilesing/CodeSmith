@@ -400,4 +400,3 @@ function isNotTextRefusal(error) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === 'FS_NOT_TEXT';
 }
 export default WorkspaceFiles;
-//# sourceMappingURL=index.js.map

@@ -144,4 +144,3 @@ export class AnimatedRows extends Component {
         return _jsxs(_Fragment, { children: [_jsx("div", { ref: this.list, className: this.props.className, role: this.props.role, "aria-label": this.props.label, onPointerDownCapture: () => { this.armed = true; }, onKeyDownCapture: () => { this.armed = true; }, children: this.props.children }), _jsx("div", { ref: this.overlay, className: css.exits, "aria-hidden": "true" })] });
     }
 }
-//# sourceMappingURL=AnimatedRows.js.map

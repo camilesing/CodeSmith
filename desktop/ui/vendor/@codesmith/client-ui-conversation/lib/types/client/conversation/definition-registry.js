@@ -59,4 +59,3 @@ export class ConversationDefinitionRegistry {
         notifySubscribers(this.listeners, '[ui-conversation] definition registry');
     }
 }
-//# sourceMappingURL=definition-registry.js.map

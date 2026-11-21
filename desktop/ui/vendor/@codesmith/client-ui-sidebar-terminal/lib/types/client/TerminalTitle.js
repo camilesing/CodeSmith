@@ -53,4 +53,3 @@ export function TerminalTitle({ useTabInfo, useTerminal, view, t }) {
                 } })
                 : _jsx("span", { ref: label, className: css.title, children: title })] });
 }
-//# sourceMappingURL=TerminalTitle.js.map

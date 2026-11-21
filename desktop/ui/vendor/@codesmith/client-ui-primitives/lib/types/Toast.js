@@ -70,4 +70,3 @@ export function Toast({ text, icon, tone, anchor, holdMs = HOLD_MS, actions, onD
                 ? _jsx("span", { className: `${css.icon} ${css.success}`, "aria-hidden": true, children: _jsx(IconCheckCircleOutlineRegular, {}) })
                 : icon !== undefined && _jsx("span", { className: css.icon, "aria-hidden": true, children: icon }), _jsxs("span", { className: css.text, children: [text, actions?.map(action => (_jsxs(Fragment, { children: [action.prefix, _jsx("button", { type: "button", className: css.action, onClick: action.onClick, children: action.label })] }, action.label)))] })] }), document.body);
 }
-//# sourceMappingURL=Toast.js.map

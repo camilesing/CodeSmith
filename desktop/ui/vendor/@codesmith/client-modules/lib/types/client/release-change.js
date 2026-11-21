@@ -70,4 +70,3 @@ export class ReleaseChangeGate {
         notifySubscribers(this.listeners, 'release change');
     }
 }
-//# sourceMappingURL=release-change.js.map

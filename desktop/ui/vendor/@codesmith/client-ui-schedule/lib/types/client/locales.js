@@ -165,4 +165,3 @@ export const pt = {
     'mark.aria': '{count} tarefas de automação',
     'hover.more': '{count} mais',
 };
-//# sourceMappingURL=locales.js.map

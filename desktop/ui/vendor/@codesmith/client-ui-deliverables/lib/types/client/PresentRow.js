@@ -39,4 +39,3 @@ function StartedPresentRow({ block, inspect, t }) {
     const [expanded, setExpanded] = useState(false);
     return _jsx("div", { "data-tool": "present", "data-state": state, children: _jsxs(DisclosureRow, { title: t('row.title'), icon: _jsx(IconDeliverDocRegular, { size: 14 }), open: expanded && details !== '', expandable: details !== '', expandOnRowClick: true, keepContentWhenOpen: true, onToggle: () => { setExpanded(value => !value); }, collapsedContent: _jsxs("span", { className: css.summary, children: [_jsx("span", { children: t(`row.${state}`) }), _jsx("span", { className: css.paths, children: fileNames(args) })] }), children: [_jsx("pre", { className: css.output, children: details }), inspect && _jsx("button", { type: "button", className: css.inspect, onClick: inspect, children: t('row.inspect') })] }) });
 }
-//# sourceMappingURL=PresentRow.js.map

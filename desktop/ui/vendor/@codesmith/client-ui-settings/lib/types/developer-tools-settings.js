@@ -8,4 +8,3 @@ export const DeveloperToolsSettingsFields = {
 };
 /** Schema for shared configuration values. */
 export const DeveloperToolsSettingsSchema = z.object(DeveloperToolsSettingsFields);
-//# sourceMappingURL=developer-tools-settings.js.map

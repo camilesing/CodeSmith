@@ -326,4 +326,3 @@ export function apply(ctx) {
         return answerQuestion(ctx, this, request, next, cards);
     });
 }
-//# sourceMappingURL=index.js.map

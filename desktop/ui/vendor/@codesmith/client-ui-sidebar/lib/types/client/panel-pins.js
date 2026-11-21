@@ -19,4 +19,3 @@ export function createPanelPins() {
         },
     };
 }
-//# sourceMappingURL=panel-pins.js.map

@@ -21,4 +21,3 @@ export function encodeText(text) {
     }
     return btoa(chunks.join(''));
 }
-//# sourceMappingURL=bytes.js.map

@@ -14,4 +14,3 @@ export function apply(ctx) {
         name: 'conversation.user.text.node', key: 'secret', priority: 100, locale: NS,
     }, SecretText));
 }
-//# sourceMappingURL=index.js.map

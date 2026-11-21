@@ -300,4 +300,3 @@ function fileNotStaged() {
     return new RemoteError('session/attachment-invalid', 'File was not uploaded for this session.', { reason: 'FILE_NOT_STAGED' });
 }
 export default FileUploads;
-//# sourceMappingURL=index.js.map

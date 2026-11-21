@@ -31,4 +31,3 @@ export function matchedSuffixLength(name, extensions) {
         .filter(extension => name.endsWith(`.${extension}`))
         .map(extension => extension.length));
 }
-//# sourceMappingURL=suffix.js.map

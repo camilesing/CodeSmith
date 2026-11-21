@@ -26,4 +26,3 @@ export const RunningStatus = memo(function RunningStatus({ startTime, paused, ho
     });
     return (_jsxs("div", { className: css.running, "data-chat-running": true, "data-holding": holding ? '' : undefined, "aria-hidden": holding || undefined, children: [holding ? null : (_jsx("span", { className: a11yCss.visuallyHidden, role: "status", "aria-live": "polite", "aria-atomic": "true", children: t('chat.deepDiving') })), _jsx("span", { className: css.runningDivider, "aria-hidden": "true" }), _jsxs("span", { className: css.runningContent, children: [_jsx(RunningWhaleTail, {}), _jsx(TextShimmer, { active: !holding, className: css.runningText, children: label })] })] }));
 });
-//# sourceMappingURL=RunningStatus.js.map

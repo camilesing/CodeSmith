@@ -12,4 +12,3 @@ export function CodeBody({ resourceAddress, content, wrap, scrollportRef, t }) {
     const language = languageForPath(file.path);
     return (_jsx("div", { className: css.renderer, "data-code-preview": true, "data-wrap": wrap, children: _jsx(CodeBlock, { className: css.code, contentRef: scrollportRef, code: content.text, lang: language, streaming: !content.eof, wrap: wrap, lineNumbers: true, copyLabel: t('copy'), copiedLabel: t('copied'), toolbarLabels: { codeLabel: t('codeBlock.title'), wrapLabel: t('codeBlock.wrap'), unwrapLabel: t('codeBlock.unwrap') } }) }));
 }
-//# sourceMappingURL=CodeBody.js.map

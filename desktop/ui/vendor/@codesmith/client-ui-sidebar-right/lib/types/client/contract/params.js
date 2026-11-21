@@ -16,4 +16,3 @@
  * constituent. The indexed access names the same union without the pair.
  */
 export {};
-//# sourceMappingURL=params.js.map

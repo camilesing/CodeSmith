@@ -8,4 +8,3 @@ import { ReferenceChip } from '@codesmith/client-ui-primitives';
 export function SkillReference({ node, raw, interactive, openSkill }) {
     return _jsx(ReferenceChip, { appearance: "skill", label: `/${node.data.name}`, title: raw, ...(interactive ? { onActivate: () => { openSkill(node.data.name); } } : {}) });
 }
-//# sourceMappingURL=SkillReference.js.map

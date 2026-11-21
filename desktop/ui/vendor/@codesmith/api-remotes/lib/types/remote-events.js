@@ -46,4 +46,3 @@ export const API_REMOTE_FORWARDED_EVENTS = [
     { event: 'user-questions/request', mode: 'waterfall' },
     { event: 'web/providers-changed', mode: 'emit' },
 ];
-//# sourceMappingURL=remote-events.js.map

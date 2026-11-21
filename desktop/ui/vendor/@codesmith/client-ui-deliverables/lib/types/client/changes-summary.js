@@ -25,4 +25,3 @@ export class ChangesSummaryStore extends HostReadStore {
         return this.loadUrl(changesSummaryUrl(sessionId, seq));
     }
 }
-//# sourceMappingURL=changes-summary.js.map

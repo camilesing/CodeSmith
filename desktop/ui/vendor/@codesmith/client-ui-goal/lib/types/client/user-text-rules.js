@@ -21,4 +21,3 @@ export const goalCommandReferenceRule = {
         return best;
     },
 };
-//# sourceMappingURL=user-text-rules.js.map

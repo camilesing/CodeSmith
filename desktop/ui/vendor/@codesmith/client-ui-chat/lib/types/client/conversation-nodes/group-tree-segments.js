@@ -89,4 +89,3 @@ export class GroupTreeSegments {
         return next;
     }
 }
-//# sourceMappingURL=group-tree-segments.js.map

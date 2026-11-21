@@ -15,4 +15,3 @@ export function ApprovalPanel(props) {
         onReject: () => approval.answer('rejected'),
     });
 }
-//# sourceMappingURL=ApprovalPanel.js.map

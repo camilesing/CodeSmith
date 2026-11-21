@@ -83,4 +83,3 @@ export function webBlockLabels(t) {
         markdown: markdownLabels(t),
     };
 }
-//# sourceMappingURL=primitive-labels.js.map

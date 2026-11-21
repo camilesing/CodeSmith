@@ -147,6 +147,11 @@ VERBATIM_NAMES = ("LICENSE", "LICENSE.md")
 TEXT_SUFFIXES = {".js", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".json", ".css",
                  ".html", ".svg", ".md", ".txt", ".yaml", ".yml"}
 
+# Trailing sourceMappingURL comment on a built bundle. `.map` files are never
+# vendored (collect_files skips them), so the trailer would dangle — vite's
+# dev transform logs an ENOENT for every served module that carries one.
+SOURCEMAP_TRAILER = re.compile(rb"//[#@] sourceMappingURL=\S+\s*\Z")
+
 # npm publish metadata pointing at the upstream repository; provenance lives
 # in VENDOR.json instead.
 PUBLISH_FIELDS = ("repository", "publishConfig", "homepage", "bugs")
@@ -397,7 +402,10 @@ def collect_files(src: Path) -> dict[str, bytes]:
                 if filename.endswith((".map", ".tsbuildinfo")):
                     continue
                 f = Path(dirpath) / filename
-                files[str(f.relative_to(src))] = f.read_bytes()
+                data = f.read_bytes()
+                if filename.endswith((".js", ".mjs", ".cjs")):
+                    data = SOURCEMAP_TRAILER.sub(b"", data)
+                files[str(f.relative_to(src))] = data
     return files
 
 

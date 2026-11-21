@@ -151,4 +151,3 @@ export const pt = {
     'time.months': '{n} mês',
     'time.years': '{n}s',
 };
-//# sourceMappingURL=locales.js.map

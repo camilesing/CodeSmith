@@ -1716,4 +1716,3 @@ export function TrajectoryTable({ watchToolResult, t, stringWrapping, renderSlot
                                                     : _jsx(ProgramOutput, { record: selected, stringWrapping: stringWrapping, t: t })] })] })
                                 : _jsx(RecordPayload, { record: selected, direction: "output", renderSlot: renderSlot, loadImage: loadImage, stringWrapping: stringWrapping, t: t })), !promptSelected && selected !== undefined && activeTab === 'schema' && (_jsx(RecordSchema, { record: selected, stringWrapping: stringWrapping, t: t })), !promptSelected && selected !== undefined && activeTab === 'timing' && (_jsx(RecordTiming, { record: selected, t: t }))] })] }))] }));
 }
-//# sourceMappingURL=TrajectoryTable.js.map

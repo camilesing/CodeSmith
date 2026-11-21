@@ -2,4 +2,3 @@
 // substructure references. Stable node and location stores make old snapshots
 // live readers rather than time-point views.
 export {};
-//# sourceMappingURL=records.js.map

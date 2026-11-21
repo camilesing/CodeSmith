@@ -26,4 +26,3 @@ export const unknownFallbackDefinition = {
 export function registerUnknownConversationFallback(ctx) {
     ctx.uiConversation.events.registerFallback(unknownFallbackDefinition);
 }
-//# sourceMappingURL=fallback.js.map

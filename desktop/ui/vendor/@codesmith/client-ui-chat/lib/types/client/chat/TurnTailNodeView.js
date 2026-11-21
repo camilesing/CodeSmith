@@ -52,4 +52,3 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({ node, openFile,
                     ? _jsx(TurnUsagePanel, { usage: data.tokenUsage, t: t })
                     : null, t: t })] }));
 });
-//# sourceMappingURL=TurnTailNodeView.js.map

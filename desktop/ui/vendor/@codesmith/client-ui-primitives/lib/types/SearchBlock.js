@@ -145,4 +145,3 @@ export function SearchBlock(props) {
                 ? _jsx("div", { className: css.empty, children: props.labels.noResults })
                 : (_jsxs("div", { className: css.body, children: [head.map(row => (_jsx("div", { children: renderRow(row) }, rowKey(row)))), hidden > 0 && (_jsx("button", { type: "button", className: css.expand, "aria-expanded": expanded, "aria-label": expanded ? props.labels.collapseAria : props.labels.expandAria(hidden), onClick: onToggle, children: expanded ? props.labels.collapse : props.labels.expand(hidden) })), tailHeader !== undefined && (_jsx("div", { children: renderRow(tailHeader) }, `tailHeader:${rowKey(tailHeader)}`)), tail.map(row => (_jsx("div", { children: renderRow(row) }, rowKey(row))))] }))] }));
 }
-//# sourceMappingURL=SearchBlock.js.map

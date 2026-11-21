@@ -8,4 +8,3 @@ export { ConversationDefinitionRegistry } from "./conversation/definition-regist
 export { ConversationEventRegistry } from "./conversation/event-registry.js";
 export { ConversationLocationIndex } from "./conversation/location-index.js";
 export { ConversationViewRegistry } from "./conversation/view-registry.js";
-//# sourceMappingURL=index.js.map

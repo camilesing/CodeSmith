@@ -26,4 +26,3 @@ export const runNativeCommand = (command, args, signal, window) => new Promise((
         resolve({ stdout, stderr });
     });
 });
-//# sourceMappingURL=runner.js.map

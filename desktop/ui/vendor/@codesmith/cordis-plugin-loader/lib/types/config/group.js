@@ -85,4 +85,3 @@ export class Group extends EntryGroup {
         await this.update(this.config);
     }
 }
-//# sourceMappingURL=group.js.map

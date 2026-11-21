@@ -35,4 +35,3 @@ export const APP_LABEL_KEY = {
     gnometerminal: 'app.gnometerminal',
     konsole: 'app.konsole',
 };
-//# sourceMappingURL=applications.js.map

@@ -23,4 +23,3 @@ export function apply(ctx) {
         registerFileMenus(child, actions, child.locale.bind('fileActions'));
     });
 }
-//# sourceMappingURL=index.js.map

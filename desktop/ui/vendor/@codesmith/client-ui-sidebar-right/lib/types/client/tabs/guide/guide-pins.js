@@ -27,4 +27,3 @@ export function createGuidePins() {
         },
     };
 }
-//# sourceMappingURL=guide-pins.js.map

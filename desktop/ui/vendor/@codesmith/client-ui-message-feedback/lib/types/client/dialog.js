@@ -100,4 +100,3 @@ export class FeedbackDialogController {
         this.state.set({ ...CLOSED, toast: 0 });
     }
 }
-//# sourceMappingURL=dialog.js.map

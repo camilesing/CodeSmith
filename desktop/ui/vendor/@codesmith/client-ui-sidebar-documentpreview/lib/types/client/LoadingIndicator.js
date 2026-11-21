@@ -9,4 +9,3 @@ import css from './LoadingIndicator.module.css';
 export function LoadingIndicator({ label, inline = false }) {
     return _jsxs("span", { className: clsx(css.loading, inline && css.inline), role: "status", "aria-label": label, "data-document-loading": true, children: [_jsx(StateDot, { state: "ongoing", size: inline ? 14 : 28 }), !inline && _jsx("span", { children: label })] });
 }
-//# sourceMappingURL=LoadingIndicator.js.map

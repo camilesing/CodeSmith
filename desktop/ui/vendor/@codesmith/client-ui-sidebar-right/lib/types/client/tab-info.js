@@ -40,4 +40,3 @@ export const tabInfoFactory = (standard, context) => {
  * @returns the same reader for the replacement.
  */
 export const guideTabInfoFactory = (_standard, useTabInfo) => useTabInfo;
-//# sourceMappingURL=tab-info.js.map

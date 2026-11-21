@@ -431,4 +431,3 @@ export class Cron {
         return Object.freeze(nextScheduledAt === undefined ? { occurrenceAt } : { occurrenceAt, nextScheduledAt });
     }
 }
-//# sourceMappingURL=cron.js.map

@@ -7,4 +7,3 @@ export function buildRenderApp(deps) {
     const { ctx } = deps;
     return () => ctx.slots.renderSlot('root', {});
 }
-//# sourceMappingURL=app.js.map

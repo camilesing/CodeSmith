@@ -32,4 +32,3 @@ export function FileReference({ node, raw, interactive, openFile, resolveFilePat
 export function FolderReference({ node, raw }) {
     return _jsx(ReferenceChip, { appearance: "folder", label: node.data.label, title: raw });
 }
-//# sourceMappingURL=FileReference.js.map

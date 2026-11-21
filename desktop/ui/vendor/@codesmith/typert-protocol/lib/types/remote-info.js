@@ -140,4 +140,3 @@ class ResultValue {
         return this.projection.value;
     }
 }
-//# sourceMappingURL=remote-info.js.map

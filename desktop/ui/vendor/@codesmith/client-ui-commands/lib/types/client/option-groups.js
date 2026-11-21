@@ -16,4 +16,3 @@ export function groupOptions(options) {
     }
     return [...groups.values()];
 }
-//# sourceMappingURL=option-groups.js.map

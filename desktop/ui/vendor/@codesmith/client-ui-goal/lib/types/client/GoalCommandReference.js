@@ -8,4 +8,3 @@ import { ReferenceChip } from '@codesmith/client-ui-primitives';
 export function GoalCommandReference({ node, raw }) {
     return _jsx(ReferenceChip, { appearance: "command", label: `/${node.data.name}`, title: raw });
 }
-//# sourceMappingURL=GoalCommandReference.js.map

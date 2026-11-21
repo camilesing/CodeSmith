@@ -179,4 +179,3 @@ function withGrant(snapshot, grant, remove = false) {
 function assertNever(value) {
     throw new Error(`unreachable access frame: ${JSON.stringify(value)}`);
 }
-//# sourceMappingURL=state.js.map

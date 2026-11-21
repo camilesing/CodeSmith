@@ -302,4 +302,3 @@ export function firstDockPaneId(state) {
 export function topRightPaneId(state) {
     return descend(state, split => (split.axis === 'row' ? split.children.at(-1) : split.children[0]));
 }
-//# sourceMappingURL=tree.js.map

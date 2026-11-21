@@ -95,4 +95,3 @@ export function extractMarkdownPlainText(markdown, options = {}) {
             return findFirstParagraph(root) ?? all.split('\n').find(line => line !== '') ?? '';
     }
 }
-//# sourceMappingURL=plain-text.js.map

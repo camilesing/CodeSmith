@@ -132,4 +132,3 @@ export function observeSidebarFocus(document) {
         document.defaultView?.removeEventListener('focus', capture);
     };
 }
-//# sourceMappingURL=focus.js.map

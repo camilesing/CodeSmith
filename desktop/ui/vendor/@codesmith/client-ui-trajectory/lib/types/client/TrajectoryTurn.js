@@ -9,4 +9,3 @@ import css from './TrajectoryTurn.module.css';
 export function TrajectoryTurn({ turn, children, t }) {
     return (_jsxs("section", { className: css.root, "data-turn": turn, children: [_jsx(TrajectoryTurnHeader, { turn: turn, t: t }), _jsx("div", { className: css.body, children: children })] }));
 }
-//# sourceMappingURL=TrajectoryTurn.js.map

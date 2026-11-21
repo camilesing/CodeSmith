@@ -40,4 +40,3 @@ export function assertSessionWireEvent(value) {
     validateSurfaceMetadata(current);
     validateSessionEventData(current, subject);
 }
-//# sourceMappingURL=session-wire-event.js.map

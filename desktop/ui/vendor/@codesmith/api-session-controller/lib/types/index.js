@@ -688,4 +688,3 @@ let SessionController = (() => {
 })();
 export { SessionController };
 export default SessionController;
-//# sourceMappingURL=index.js.map

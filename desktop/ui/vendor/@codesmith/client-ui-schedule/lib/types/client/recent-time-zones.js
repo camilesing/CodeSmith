@@ -45,4 +45,3 @@ export function rememberTimeZone(recent, zone) {
     }
     return next;
 }
-//# sourceMappingURL=recent-time-zones.js.map

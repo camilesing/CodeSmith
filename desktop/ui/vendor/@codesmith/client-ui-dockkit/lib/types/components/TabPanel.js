@@ -312,4 +312,3 @@ export function TabPanel({ state, pane, callbacks }) {
                         ? _jsx("p", { className: css.empty, children: callbacks.labels.emptyPane })
                         : _jsx(TabBody, { tab: active, renderTab: callbacks.renderTab }), _jsx(PaneDropHints, { pane: pane, callbacks: callbacks })] })] }));
 }
-//# sourceMappingURL=TabPanel.js.map

@@ -47,4 +47,3 @@ export class SidebarTabInventory {
             this.snapshot.set(next);
     }
 }
-//# sourceMappingURL=tab-inventory.js.map

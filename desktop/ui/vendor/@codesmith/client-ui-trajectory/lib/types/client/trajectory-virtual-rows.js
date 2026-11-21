@@ -50,4 +50,3 @@ export function groupTrajectoryVirtualRows(records) {
     }
     return rows;
 }
-//# sourceMappingURL=trajectory-virtual-rows.js.map

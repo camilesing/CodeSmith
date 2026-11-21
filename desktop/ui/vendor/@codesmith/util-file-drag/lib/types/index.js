@@ -39,4 +39,3 @@ export function resolveDragFileName(request) {
     const extensionTail = truncate(tail, 32);
     return `${truncate(finalDot < 0 ? clean : clean.slice(0, finalDot), 255 - encoder.encode(extensionTail).length)}${extensionTail}`;
 }
-//# sourceMappingURL=index.js.map

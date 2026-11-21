@@ -3,4 +3,3 @@
  * @module @codesmith/api-gateway/types
  */
 export {};
-//# sourceMappingURL=types.js.map

@@ -513,4 +513,3 @@ export const frequencyPt = {
     'frequency.hostZone': '{rule} ({timeZone})',
     'frequency.hostCustom': 'Personalizado',
 };
-//# sourceMappingURL=frequency-locales.js.map

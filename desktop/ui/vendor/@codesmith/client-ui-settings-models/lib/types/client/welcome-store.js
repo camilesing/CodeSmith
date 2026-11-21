@@ -100,4 +100,3 @@ export class WelcomeNoticeStore {
         }
     }
 }
-//# sourceMappingURL=welcome-store.js.map

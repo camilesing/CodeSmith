@@ -13,4 +13,3 @@ export function splitFrontmatter(text) {
         return undefined;
     return { source: match[1] ?? '', body: text.slice(match[0].length) };
 }
-//# sourceMappingURL=frontmatter.js.map

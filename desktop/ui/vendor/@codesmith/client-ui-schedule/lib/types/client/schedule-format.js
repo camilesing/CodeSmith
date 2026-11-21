@@ -444,4 +444,3 @@ export function orderScheduleRecords(records, now) {
         return leftTime - rightTime || left.index - right.index;
     }).map(({ record }) => record);
 }
-//# sourceMappingURL=schedule-format.js.map

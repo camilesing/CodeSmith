@@ -14,4 +14,3 @@
  * @module @codesmith/api-workspace-files/types
  */
 export {};
-//# sourceMappingURL=types.js.map

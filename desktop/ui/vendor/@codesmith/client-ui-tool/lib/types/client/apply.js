@@ -42,4 +42,3 @@ export function apply(ctx) {
     ctx.plugin(detailsToolview);
     ctx.plugin(askQuestionToolview);
 }
-//# sourceMappingURL=apply.js.map

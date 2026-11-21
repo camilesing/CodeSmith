@@ -20,4 +20,3 @@ export function messageQuoteRanges(text) {
     }
     return ranges;
 }
-//# sourceMappingURL=quote-text.js.map

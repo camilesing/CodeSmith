@@ -7,4 +7,3 @@
 export function formatQuoteText(text) {
     return text.replace(/\r\n?/gu, '\n').split('\n').map(line => `> ${line}`).join('\n');
 }
-//# sourceMappingURL=quote-text.js.map

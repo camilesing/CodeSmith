@@ -1989,4 +1989,3 @@ async function* normalizeConnectionStream(source) {
 //#endregion
 export { RemoteJournalStream, RemoteSnapshotStream, RemoteStream, RemoteStreamCarrierError, apply, cancelledFailure, carrierFailure, inject, isRemoteFailure };
 
-//# sourceMappingURL=client.node.js.map

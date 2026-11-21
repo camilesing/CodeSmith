@@ -602,4 +602,3 @@ export function highlightLines(code, lang) {
         : tokens;
     return lines.map(line => line.map(token => ({ text: token.content, style: { color: token.color } })));
 }
-//# sourceMappingURL=highlight.js.map

@@ -16,4 +16,3 @@ export function fileSizeText(bytes) {
     const gb = mb / 1024;
     return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)}GB`;
 }
-//# sourceMappingURL=file-size.js.map

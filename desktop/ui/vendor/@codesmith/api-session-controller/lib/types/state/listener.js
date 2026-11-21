@@ -109,4 +109,3 @@ function createDeferredSignal() {
     const promise = new Promise((settle) => { resolve = settle; });
     return { promise, resolve };
 }
-//# sourceMappingURL=listener.js.map

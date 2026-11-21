@@ -114,4 +114,3 @@ export function mapXlsWorkbook(workbook, limits) {
     });
     return { sheets, missingResults, unsupportedFeatures: [] };
 }
-//# sourceMappingURL=xls.js.map

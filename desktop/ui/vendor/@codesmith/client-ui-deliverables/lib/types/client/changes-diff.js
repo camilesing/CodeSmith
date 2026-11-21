@@ -28,4 +28,3 @@ export class ChangesDiffStore extends HostReadStore {
         return this.loadUrl(changesDiffUrl(sessionId, seq, index));
     }
 }
-//# sourceMappingURL=changes-diff.js.map

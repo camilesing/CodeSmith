@@ -9,4 +9,3 @@ export const inject = ['remote'];
 export function apply(ctx) {
     ctx.plugin(FileUploadRuntime);
 }
-//# sourceMappingURL=index.js.map

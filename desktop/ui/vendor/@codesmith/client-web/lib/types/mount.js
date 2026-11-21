@@ -14,4 +14,3 @@ export async function mountClient(ctx, container) {
     });
     await mounted;
 }
-//# sourceMappingURL=mount.js.map

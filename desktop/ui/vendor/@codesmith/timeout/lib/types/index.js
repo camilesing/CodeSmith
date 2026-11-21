@@ -165,4 +165,3 @@ export function timeoutOf(x, code) {
         return undefined;
     return code === undefined || reason.code === code ? reason : undefined;
 }
-//# sourceMappingURL=index.js.map

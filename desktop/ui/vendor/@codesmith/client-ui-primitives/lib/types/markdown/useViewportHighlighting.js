@@ -63,4 +63,3 @@ export function useViewportHighlighting(target, lang) {
     }, [activate, activated, supported, target]);
     return activated && supported;
 }
-//# sourceMappingURL=useViewportHighlighting.js.map

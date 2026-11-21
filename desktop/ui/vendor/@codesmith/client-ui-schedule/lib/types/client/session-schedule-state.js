@@ -49,4 +49,3 @@ function sameSessionScheduleFacts(left, right) {
 export function useSessionScheduleFacts(useCatalog, sessionId) {
     return useCatalog(snapshot => selectSessionScheduleFacts(snapshot, sessionId), sameSessionScheduleFacts);
 }
-//# sourceMappingURL=session-schedule-state.js.map

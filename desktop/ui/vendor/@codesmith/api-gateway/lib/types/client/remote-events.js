@@ -247,4 +247,3 @@ function privateEvents(ctx) {
 function toError(reason, message) {
     return reason instanceof Error ? reason : new Error(message, { cause: reason });
 }
-//# sourceMappingURL=remote-events.js.map

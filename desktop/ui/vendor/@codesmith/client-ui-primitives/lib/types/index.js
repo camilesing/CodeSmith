@@ -74,4 +74,3 @@ export { GuideArtworkBrowser, GuideArtworkFiles } from "./guide-artwork.js";
 export { ImageLightbox } from "./ImageLightbox.js";
 export { QuotePreview } from "./QuotePreview.js";
 export { formatQuoteText } from "./markdown/quote-text.js";
-//# sourceMappingURL=index.js.map

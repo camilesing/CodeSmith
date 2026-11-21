@@ -95,4 +95,3 @@ export function webFetchHref(block) {
         return undefined;
     }
 }
-//# sourceMappingURL=web-card-model.js.map

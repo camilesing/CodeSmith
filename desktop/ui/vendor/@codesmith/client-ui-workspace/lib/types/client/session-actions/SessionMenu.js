@@ -10,4 +10,3 @@ export function SessionMenu({ target, dismiss, renderSlot }) {
         hookContext,
     });
 }
-//# sourceMappingURL=SessionMenu.js.map

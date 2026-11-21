@@ -8,4 +8,3 @@ import { FileOpenTarget } from "./OpenPathAction.js";
 export function OpenPathEmptyAction(props) {
     return _jsx(FileOpenTarget, { ...props, empty: true });
 }
-//# sourceMappingURL=OpenPathEmptyAction.js.map

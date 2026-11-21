@@ -87,4 +87,3 @@ export class Deque {
         this.head = 0;
     }
 }
-//# sourceMappingURL=index.js.map

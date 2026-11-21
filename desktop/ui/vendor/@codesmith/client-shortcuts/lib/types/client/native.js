@@ -45,4 +45,3 @@ export function installNativeKeyboard(window, keyboard, registry, snapshot, rese
         registry.dispatch({ ...input, composing: false, defaultPrevented: false }, { ...context, source: 'iframe' }, () => { });
     });
 }
-//# sourceMappingURL=native.js.map

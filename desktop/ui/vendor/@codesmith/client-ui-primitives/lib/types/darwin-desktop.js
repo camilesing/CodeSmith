@@ -8,4 +8,3 @@
 export function isDarwinDesktop() {
     return document.documentElement.dataset.platform === 'darwin';
 }
-//# sourceMappingURL=darwin-desktop.js.map

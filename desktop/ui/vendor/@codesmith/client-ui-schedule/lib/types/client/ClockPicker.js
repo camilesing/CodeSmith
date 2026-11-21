@@ -142,4 +142,3 @@ export function ClockPicker({ open, anchorRef, value, onPick, onClose, seconds =
                         refs.current.set(key, element);
                 }, role: "option", "aria-selected": option === picked[at], tabIndex: (cursor.column === at ? cursor.index : columnIndices[at]) === index ? 0 : -1, className: clsx(css.option, option === picked[at] && css.selected), onClick: () => { pick(at, option, index); }, onKeyDown: (event) => { onOptionKeyDown(event, at, index, option, column.options.length); }, children: _jsx("span", { className: css.optionLabel, children: option }) }, option))) }, column.label))) });
 }
-//# sourceMappingURL=ClockPicker.js.map

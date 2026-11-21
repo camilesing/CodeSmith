@@ -35,4 +35,3 @@ export function createModelsOperations(ctx) {
         },
     };
 }
-//# sourceMappingURL=operations.js.map

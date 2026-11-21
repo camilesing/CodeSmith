@@ -44,4 +44,3 @@ export function TerminalGuide({ title, description, kind, useTabInfo, loadShells
                                     tab.actions.openTab('terminal', { replaceTab: true, params: { shellPath: path } });
                                 }, anchor: _jsx(Button, { variant: "ghost", className: css.trigger, "aria-label": t('shell'), "aria-haspopup": "menu", "aria-expanded": open, onClick: () => { setState({ phase: 'loading' }); setOpen(value => !value); }, children: _jsx(IconChevronDownOutlineRegular, {}) }) })] }), description !== undefined && _jsx("span", { className: css.description, "aria-hidden": "true", children: description })] }), shortcut !== undefined && shortcut.keys.length > 0 && _jsx(ShortcutKeys, { keys: shortcut.keys, className: css.shortcut })] });
 }
-//# sourceMappingURL=TerminalGuide.js.map

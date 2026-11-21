@@ -24,4 +24,3 @@ export function AppearanceRow({ t, setTheme, useStore }) {
     const preference = useStore(s => s.preference);
     return (_jsxs("div", { className: css.group, children: [_jsx("div", { className: css.title, children: t('appearance.title') }), _jsx("div", { className: css.cubeRow, children: CUBES.map(({ id, labelKey, Icon }) => (_jsxs("button", { type: "button", className: clsx(css.themeCube, preference === id && css.selected), "aria-pressed": preference === id, onClick: () => { setTheme(id); }, children: [_jsx(Icon, {}), t(labelKey)] }, id))) })] }));
 }
-//# sourceMappingURL=AppearanceRow.js.map

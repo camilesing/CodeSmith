@@ -184,4 +184,3 @@ export function createTextStore() {
         },
     });
 }
-//# sourceMappingURL=store.js.map

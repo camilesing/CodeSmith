@@ -3839,4 +3839,3 @@ function DockLayout(props) {
 //#endregion
 export { DOCK_EDGE_FRACTION, DOCK_ZONES, DRAG_THRESHOLD, DockController, DockLayout, DockSurface, EMPTY_HISTORY, FLOAT_DEFAULT_SIZE, FLOAT_MIN_SIZE, FloatLayer, MAX_DOCK_PANES, MIN_PANE_FRACTION, SPLIT_MINIMUMS, Sequencer, activeDockPaneId, applyOp, canSplit, canStepBack, canStepForward, clampSizes, containsPoint, createIdMinter, createInitialState, dividerSizes, dockPaneCount, dockPaneIds, findContentTab, findPaneContentTab, findParent, findTabPane, floatRectAt, getNode, getPane, getSplit, getTab, halvesFit, insertionIndex, isFocusOp, movedRect, passedThreshold, planAddTab, planDropTab, planDuplicateTab, planFloatTab, planOpenContent, planPlaceTab, planResizeSplit, planSetExpanded, planSetMode, planSettle, planSplitPane, planUnfloatPane, record, recordedOps, replay, resizedRect, stepBack, stepForward, topRightPaneId, zoneAt, zoneInRect, zoneSplit };
 
-//# sourceMappingURL=index.js.map

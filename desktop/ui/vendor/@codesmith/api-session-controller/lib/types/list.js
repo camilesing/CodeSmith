@@ -341,4 +341,3 @@ function listFields(header) {
         ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
     };
 }
-//# sourceMappingURL=list.js.map

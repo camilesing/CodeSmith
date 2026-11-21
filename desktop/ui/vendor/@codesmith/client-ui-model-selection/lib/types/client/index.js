@@ -150,4 +150,3 @@ export function apply(ctx) {
         }, ModelSelect));
     });
 }
-//# sourceMappingURL=index.js.map

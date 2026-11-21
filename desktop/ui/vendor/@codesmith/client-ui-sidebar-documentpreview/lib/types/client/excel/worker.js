@@ -4,4 +4,3 @@ import { ExcelPreviewError } from "./error.js";
 globalThis.onmessage = (event) => {
     void convertExcel(event.data.bytes, event.data.format, event.data.limits).then((value) => { globalThis.postMessage({ ok: true, value }); }, (error) => { globalThis.postMessage({ ok: false, code: error instanceof ExcelPreviewError ? error.code : 'invalid' }); });
 };
-//# sourceMappingURL=worker.js.map

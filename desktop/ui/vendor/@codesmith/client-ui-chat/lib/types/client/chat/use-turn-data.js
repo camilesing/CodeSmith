@@ -13,4 +13,3 @@ export function useTurnDataValue(data, key) {
     const source = data?.source(key) ?? EMPTY_SOURCE;
     return useSyncExternalStore(source.subscribe, source.getSnapshot);
 }
-//# sourceMappingURL=use-turn-data.js.map

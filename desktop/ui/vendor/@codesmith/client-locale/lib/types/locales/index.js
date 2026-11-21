@@ -10,4 +10,3 @@ export { fr } from "./fr.js";
 export { de } from "./de.js";
 export { ru } from "./ru.js";
 export { pt } from "./pt.js";
-//# sourceMappingURL=index.js.map

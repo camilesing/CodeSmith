@@ -92,4 +92,3 @@ export function TabMenu({ labels, anchor, onClose, onDismiss, extras }) {
         // a click would focus it, and a middle click would close it.
         onPointerDown: (event) => { event.stopPropagation(); }, onClick: (event) => { event.stopPropagation(); }, onAuxClick: (event) => { event.stopPropagation(); }, children: [onClose !== undefined && (_jsx("button", { type: "button", role: "menuitem", className: css.menuItem, "data-dockkit-menu-close": true, onClick: onClose, children: labels.closeTab })), extras] }), document.body);
 }
-//# sourceMappingURL=TabMenu.js.map

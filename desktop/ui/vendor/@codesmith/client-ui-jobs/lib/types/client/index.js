@@ -24,4 +24,3 @@ export function apply(ctx) {
         }),
     }, JobListAction));
 }
-//# sourceMappingURL=index.js.map

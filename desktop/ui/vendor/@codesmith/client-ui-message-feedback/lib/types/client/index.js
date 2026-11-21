@@ -92,4 +92,3 @@ export function apply(ctx) {
         }), 'ui-message-feedback: /feedback decoration');
     });
 }
-//# sourceMappingURL=index.js.map

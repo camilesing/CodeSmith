@@ -36,4 +36,3 @@ export function turnProcessAlwaysOpen(node) {
     const reason = location.turn.end?.data.reason.kind;
     return location.turn.status === 'open' || reason === 'aborted' || reason === 'interrupted' || reason === 'error';
 }
-//# sourceMappingURL=turn-process.js.map

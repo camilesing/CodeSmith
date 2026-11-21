@@ -26,4 +26,3 @@ function exitDestination(token) {
 export function windowsPathDestinations() {
     return { exit: { resourceDestinationString: exitDestination, definitionDestinationString: exitDestination } };
 }
-//# sourceMappingURL=windows-path-destinations.js.map

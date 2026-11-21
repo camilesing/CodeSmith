@@ -119,4 +119,3 @@ export const pt = {
     'action.edit': 'Editar meta',
     'action.clear': 'Objetivo claro',
 };
-//# sourceMappingURL=locales.js.map

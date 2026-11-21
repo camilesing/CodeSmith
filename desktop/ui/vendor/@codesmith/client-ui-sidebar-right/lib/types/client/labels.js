@@ -31,4 +31,3 @@ export function dockLabels(t, split, close) {
         },
     };
 }
-//# sourceMappingURL=labels.js.map

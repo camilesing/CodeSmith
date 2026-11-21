@@ -95,4 +95,3 @@ export function ImageGallery({ images, load, align, compact = false, thumbnail =
     const variant = thumbnail ? 'thumbnail' : compact || images.length > 1 ? 'tile' : 'single';
     return (_jsx("div", { className: css.gallery, "data-align": align, children: images.map((image, index) => (_jsx(MessageImage, { image: image, load: load, variant: variant, fileDrag: fileDrag, labels: labels, getTriggerProps: getTriggerProps }, `${'attachment' in image ? image.attachment.attachmentId : image.preview.url}:${index}`))) }));
 }
-//# sourceMappingURL=MessageImage.js.map

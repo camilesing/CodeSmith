@@ -151,4 +151,3 @@ export function DiffBlock({ diffs, labels, maxLines = DEFAULT_DIFF_MAX_LINES, cl
     const tail = capped ? rows.slice(rows.length - tailLines) : [];
     return (_jsxs("div", { className: clsx(cardCss.card, css.block, className), "data-diff": "", "data-code-wrap": wrapped, children: [_jsx(CodeToolbar, { lang: language, labels: labels, copyLabel: labels.copy, copiedLabel: labels.copied, copied: copied, wrapped: wrapped, onCopy: onCopy, onWrap: () => { setWrapped(value => !value); } }), _jsxs("div", { className: css.body, children: [head.map((row, index) => (_jsx("div", { className: clsx(css.line, ROW_CLASS[row.kind]), children: row.text }, index))), hidden > 0 && (_jsx(FoldToggle, { className: css.expand, expanded: expanded, hidden: hidden, labels: labels, onToggle: onToggle })), tail.map((row, index) => (_jsx("div", { className: clsx(css.line, ROW_CLASS[row.kind]), children: row.text }, index)))] })] }));
 }
-//# sourceMappingURL=DiffBlock.js.map

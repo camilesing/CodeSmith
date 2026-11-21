@@ -22,4 +22,3 @@ export function localizeAutoReviewDenial(denial, t) {
         output: t('tool.autoReviewNotExecuted', { reason }),
     };
 }
-//# sourceMappingURL=auto-review-denial.js.map

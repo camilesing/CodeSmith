@@ -103,4 +103,3 @@ export function observeStickyMenuGroups(viewport) {
         }
     };
 }
-//# sourceMappingURL=MenuGroup.js.map

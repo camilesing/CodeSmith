@@ -116,4 +116,3 @@ export function clearSidebarLayout(sessionId) {
     }
     catch (_storageUnavailable) { /* The invalid layout is still excluded from this window. */ }
 }
-//# sourceMappingURL=persistence.js.map

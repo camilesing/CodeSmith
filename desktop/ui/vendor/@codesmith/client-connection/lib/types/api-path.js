@@ -4,4 +4,3 @@
  */
 /** Route prefix owning every api request (`/api` and `/api/<anything>`). */
 export const API_PATH = '/api';
-//# sourceMappingURL=api-path.js.map

@@ -254,4 +254,3 @@ function stringProperty(value, key) {
     const candidate = Reflect.get(value, key);
     return typeof candidate === 'string' ? candidate : undefined;
 }
-//# sourceMappingURL=stream-protocol.js.map

@@ -82,4 +82,3 @@ function BasicHtmlFrame({ data, frameName, t }) {
         return _jsx("p", { className: css.status, role: "alert", children: t('failed') });
     return _jsx("iframe", { name: frameName, className: css.frame, srcDoc: html, sandbox: "", title: t('frame'), "data-html-preview": true });
 }
-//# sourceMappingURL=HtmlBody.js.map

@@ -31,4 +31,3 @@ export const AssistantNodeView = memo(function AssistantNodeView({ node, groupPa
     const revealProcess = useCallback(() => { turnProcess?.setOpen(true); }, [turnProcess]);
     return (_jsx(AssistantMarkdown, { blocks: data.blocks, groupPart: groupPart, useDisclosure: useDisclosure, streaming: data.status === 'running', textInteractionSource: data.status === 'settled' && data.finalNode?.messageId !== undefined, interrupted: data.status === 'interrupted', loadImage: loadImage, reasoningHidden: reasoningHidden, useGroupAction: useGroupAction, usePresentation: usePresentation, renderSlot: renderSlot, revealProcess: revealProcess, mentions: mentions, t: t }));
 });
-//# sourceMappingURL=AssistantNodeView.js.map

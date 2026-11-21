@@ -36,4 +36,3 @@ export function formatDurationMillis(milliseconds, t) {
 export function formatElapsedSeconds(seconds, t) {
     return formatDurationMillis(seconds === null ? null : seconds * 1000, t);
 }
-//# sourceMappingURL=trajectory-record.js.map

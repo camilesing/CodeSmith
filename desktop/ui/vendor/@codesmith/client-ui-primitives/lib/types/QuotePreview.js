@@ -42,4 +42,3 @@ export function QuotePreview({ text, removal }) {
                 : (_jsxs("button", { type: "button", className: css.remove, "aria-label": removal.label, onPointerDown: (event) => { event.preventDefault(); event.stopPropagation(); }, onKeyDown: (event) => { event.stopPropagation(); }, onClick: remove, children: [_jsx(QuoteMarkIcon, { className: css.quoteMark }), _jsx(IconCloseOutlineRegular, { size: 12, className: css.closeMark })] })), _jsx("span", { ref: sourceRef, className: css.source, "data-quote-preview-text": "", children: text })] }));
     return (_jsx(HoverCard, { inline: true, grouped: true, fitContent: true, openDelayMs: 0, disabled: !truncated, anchor: preview, content: _jsx("span", { className: css.popoverText, "data-quote-popover": "", "aria-hidden": "true", children: text }) }));
 }
-//# sourceMappingURL=QuotePreview.js.map

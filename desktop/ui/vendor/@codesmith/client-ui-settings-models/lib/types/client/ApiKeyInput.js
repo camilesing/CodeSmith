@@ -18,4 +18,3 @@ export function ApiKeyInput({ value, t, ...props }) {
                     props.onChange?.(event);
                 } }), value.length === 0 ? null : _jsx("button", { type: "button", className: styles['keyToggle'], "aria-label": t(revealed ? 'keyHide' : 'keyReveal'), "aria-pressed": revealed, disabled: props.disabled, onClick: () => { setRevealedValue(revealed ? undefined : value); }, children: _jsx("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.3, strokeLinecap: "round", "aria-hidden": "true", children: _jsx("path", { d: revealed ? EYE_OFF_PATH : EYE_PATH }) }) })] }));
 }
-//# sourceMappingURL=ApiKeyInput.js.map

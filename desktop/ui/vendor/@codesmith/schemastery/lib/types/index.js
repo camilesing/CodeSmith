@@ -761,4 +761,3 @@ defineMethod('intersect', ['list'], ({ list }) => {
 });
 defineMethod('transform', ['inner', 'callback', 'preserve'], ({ inner }, isInner) => inner.toString(isInner));
 export default Schema;
-//# sourceMappingURL=index.js.map

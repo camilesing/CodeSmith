@@ -30,4 +30,3 @@ export function useTaskTabTarget(sessionId, tab, taskBindings) {
     }, [taskBindings, sessionId, tab.id, tab.kind, tab.contentId, navigated, tab.navigation.revision]);
     return { navigated, navigation, recovered, params: navigation ?? recovered };
 }
-//# sourceMappingURL=task-tab-target.js.map

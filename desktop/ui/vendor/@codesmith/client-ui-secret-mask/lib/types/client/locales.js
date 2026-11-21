@@ -41,4 +41,3 @@ export const pt = {
     'secret.reveal': 'Mostrar segredo',
     'secret.hide': 'Ocultar segredo',
 };
-//# sourceMappingURL=locales.js.map

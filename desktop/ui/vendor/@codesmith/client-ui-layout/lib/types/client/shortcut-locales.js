@@ -16,4 +16,3 @@ export const de = { toggle: 'Linke Seitenleiste umschalten' };
 export const ru = { toggle: 'Переключить левую боковую панель' };
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = { toggle: 'Alternar barra lateral esquerda' };
-//# sourceMappingURL=shortcut-locales.js.map

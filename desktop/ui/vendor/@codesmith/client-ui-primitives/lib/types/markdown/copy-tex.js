@@ -56,4 +56,3 @@ export function copyKatexAsTex(event, root) {
     }
     event.preventDefault();
 }
-//# sourceMappingURL=copy-tex.js.map

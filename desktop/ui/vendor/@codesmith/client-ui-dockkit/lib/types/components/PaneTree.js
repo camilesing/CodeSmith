@@ -18,4 +18,3 @@ export function PaneTree({ state, nodeId, callbacks, preview }) {
     const sizes = preview !== undefined && preview.splitId === node.id ? preview.sizes : node.sizes;
     return (_jsx("div", { className: clsx(css.split, node.axis === 'row' ? css.splitRow : css.splitColumn), "data-dockkit-split": node.id, children: node.children.map((childId, index) => (_jsxs(Fragment, { children: [index > 0 && (_jsx("div", { className: css.divider, "data-dockkit-divider": `${node.id}:${index - 1}`, onPointerDown: (event) => { callbacks.onDividerPressed(node.id, index - 1, event); } })), _jsx("div", { className: css.splitCell, "data-dockkit-cell": `${node.id}:${index}`, style: { flexGrow: sizes[index] }, children: _jsx(PaneTree, { state: state, nodeId: childId, callbacks: callbacks, preview: preview }) })] }, childId))) }));
 }
-//# sourceMappingURL=PaneTree.js.map

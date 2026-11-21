@@ -75,4 +75,3 @@ export function updateVolatile(target, source) {
     ;
     target[write](source.get());
 }
-//# sourceMappingURL=volatile.js.map

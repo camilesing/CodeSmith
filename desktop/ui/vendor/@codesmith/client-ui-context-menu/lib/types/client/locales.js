@@ -9,4 +9,3 @@ export const dictionaries = {
     ru: { failed: 'Не удалось выполнить действие. Повторите попытку.' },
     pt: { failed: 'Não foi possível concluir a ação. Tente novamente.' },
 };
-//# sourceMappingURL=locales.js.map

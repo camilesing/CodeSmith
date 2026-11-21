@@ -27,4 +27,3 @@ export function OpenInAppAction(props) {
             return outcome;
         } }, absolutePath));
 }
-//# sourceMappingURL=OpenInAppAction.js.map

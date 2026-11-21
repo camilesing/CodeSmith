@@ -180,4 +180,3 @@ class WorkspaceFollower {
         });
     }
 }
-//# sourceMappingURL=feed.js.map

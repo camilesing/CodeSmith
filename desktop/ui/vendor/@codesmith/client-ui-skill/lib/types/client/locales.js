@@ -89,4 +89,3 @@ export const pt = {
     'row.inspect': 'Inspecionar',
     'menu.userOnly': 'somente usuário',
 };
-//# sourceMappingURL=locales.js.map

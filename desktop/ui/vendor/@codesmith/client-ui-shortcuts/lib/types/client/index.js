@@ -57,4 +57,3 @@ export function apply(ctx) {
         return () => { disposeCommand(); disposeSlot(); };
     });
 }
-//# sourceMappingURL=index.js.map

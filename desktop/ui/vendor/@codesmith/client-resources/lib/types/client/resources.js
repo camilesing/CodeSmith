@@ -165,4 +165,3 @@ export class ResourceRegistry {
         }
     }
 }
-//# sourceMappingURL=resources.js.map

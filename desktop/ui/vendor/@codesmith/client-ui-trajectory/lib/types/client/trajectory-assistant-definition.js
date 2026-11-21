@@ -382,4 +382,3 @@ export function registerTrajectoryAssistantDefinition(ctx) {
     ctx.uiConversation.events.register(trajectoryAssistantDefinition);
     ctx.uiConversation.events.register(trajectoryTurnEndDefinition);
 }
-//# sourceMappingURL=trajectory-assistant-definition.js.map

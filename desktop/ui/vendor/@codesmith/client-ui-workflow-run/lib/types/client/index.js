@@ -17,4 +17,3 @@ export function apply(ctx) {
         }),
     }, WorkflowRunPanel));
 }
-//# sourceMappingURL=index.js.map

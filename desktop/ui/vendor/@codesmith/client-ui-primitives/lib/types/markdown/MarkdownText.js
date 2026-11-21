@@ -190,4 +190,3 @@ export const MarkdownText = memo(function MarkdownText({ text, streaming = false
     }, [text, streaming, labels, fileMentions, pathImages, omitHtml]);
     return _jsx("div", { className: clsx(css.markdown, variant === 'compact' && css.compact), "data-text-interaction-source": textInteractionSource ? '' : undefined, "data-markdown-variant": variant === 'compact' ? variant : undefined, onCopy: (event) => { copyKatexAsTex(event.nativeEvent, event.currentTarget); }, children: children });
 });
-//# sourceMappingURL=MarkdownText.js.map

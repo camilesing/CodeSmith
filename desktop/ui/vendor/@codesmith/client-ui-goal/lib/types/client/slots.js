@@ -7,4 +7,3 @@
  * activation hook source.
  */
 export {};
-//# sourceMappingURL=slots.js.map

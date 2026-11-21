@@ -219,4 +219,3 @@ export function DockSurface(props) {
 export function DockLayout(props) {
     return _jsx(Surface, { ...props, draw: (callbacks, preview) => _jsx(TabLayout, { ...props, callbacks: callbacks, preview: preview }) });
 }
-//# sourceMappingURL=DockSurface.js.map

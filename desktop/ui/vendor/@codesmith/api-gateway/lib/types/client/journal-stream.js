@@ -395,4 +395,3 @@ export class RemoteJournalStream {
         }
     }
 }
-//# sourceMappingURL=journal-stream.js.map

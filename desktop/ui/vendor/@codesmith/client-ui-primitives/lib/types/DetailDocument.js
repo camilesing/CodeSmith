@@ -55,4 +55,3 @@ export function DetailDocument({ state, labels, images, onRetry }) {
     }
     return (_jsx("section", { className: css.section, "data-detail-document": true, children: body }));
 }
-//# sourceMappingURL=DetailDocument.js.map

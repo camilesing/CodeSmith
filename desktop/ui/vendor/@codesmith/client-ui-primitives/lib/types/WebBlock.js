@@ -97,4 +97,3 @@ function WebFetchBlock({ url, statusCode, truncated, labels, className }) {
 export function WebBlock(props) {
     return props.kind === 'search' ? _jsx(WebSearchBlock, { ...props }) : _jsx(WebFetchBlock, { ...props });
 }
-//# sourceMappingURL=WebBlock.js.map

@@ -11,4 +11,3 @@ export function excelFormat(path) {
         return suffix;
     throw new ExcelPreviewError('invalid');
 }
-//# sourceMappingURL=format.js.map

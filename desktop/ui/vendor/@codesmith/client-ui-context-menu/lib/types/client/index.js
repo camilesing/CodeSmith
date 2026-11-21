@@ -152,4 +152,3 @@ export function apply(ctx, config = Config({})) {
             } }),
     }, MenuOverlay));
 }
-//# sourceMappingURL=index.js.map

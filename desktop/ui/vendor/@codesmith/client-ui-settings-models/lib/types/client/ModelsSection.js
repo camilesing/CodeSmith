@@ -402,4 +402,3 @@ function Loaded({ injected, renderSlot }) {
                                 ? ''
                                 : providerCopy(deleting ? t('deleting') : t('deleteConfirm'), deleteTarget) })] })), children: deleteFailure === undefined ? null : _jsx("p", { className: styles['error'], children: deleteFailure }) })] }));
 }
-//# sourceMappingURL=ModelsSection.js.map

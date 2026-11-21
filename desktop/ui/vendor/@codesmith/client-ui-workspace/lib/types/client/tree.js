@@ -430,4 +430,3 @@ export function owningParentFolder(path, parents) {
     }
     return owner;
 }
-//# sourceMappingURL=tree.js.map

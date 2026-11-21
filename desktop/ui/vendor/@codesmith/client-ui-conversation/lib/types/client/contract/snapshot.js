@@ -15,4 +15,3 @@ export function conversationPhase(session, conversation) {
         || session.running;
     return active ? 'active' : session.promptAttempted ? 'engaging' : 'blank';
 }
-//# sourceMappingURL=snapshot.js.map

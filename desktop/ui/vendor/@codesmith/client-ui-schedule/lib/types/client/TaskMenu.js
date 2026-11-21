@@ -260,4 +260,3 @@ export function TaskMenu({ open, anchor, items = [], selectedId, onSelect, onClo
         }, children: [header !== undefined && _jsx("div", { className: css.header, role: "presentation", children: header }), _jsx("div", { className: css.viewport, role: "presentation", children: items.map(renderEntry) })] }));
     return (_jsxs("span", { ref: rootRef, className: clsx(css.root, className), children: [anchor, portal ? (list !== false && createPortal(list, document.body)) : list] }));
 }
-//# sourceMappingURL=TaskMenu.js.map

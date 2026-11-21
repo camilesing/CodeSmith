@@ -116,4 +116,3 @@ function copyReference(reference) {
         ...(reference.invalid === undefined ? {} : { invalid: reference.invalid }),
     };
 }
-//# sourceMappingURL=draft.js.map

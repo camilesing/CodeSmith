@@ -442,4 +442,3 @@ export function Menu({ open, anchor, items = [], children, selectedId, selectedI
     return (_jsxs("span", { ref: rootRef, className: clsx(css.root, className), onPointerEnter: closeOnPointerLeave ? cancelClose : undefined, onPointerLeave: closeOnPointerLeave ? () => { if (open)
             armClose(); } : undefined, children: [anchor, portal ? (list !== false && createPortal(list, document.body)) : list] }));
 }
-//# sourceMappingURL=Menu.js.map

@@ -32,4 +32,3 @@ export function apply(ctx) {
         }, PopupSelectView));
     });
 }
-//# sourceMappingURL=index.js.map

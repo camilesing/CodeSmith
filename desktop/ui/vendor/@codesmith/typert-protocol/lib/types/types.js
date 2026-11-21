@@ -4,4 +4,3 @@
  * @module @codesmith/typert-protocol/types
  */
 export {};
-//# sourceMappingURL=types.js.map

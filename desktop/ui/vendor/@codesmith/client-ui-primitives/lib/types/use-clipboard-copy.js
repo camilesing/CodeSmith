@@ -37,4 +37,3 @@ export function useClipboardCopy(text) {
     }, [copied, text]);
     return { copied, onCopy };
 }
-//# sourceMappingURL=use-clipboard-copy.js.map

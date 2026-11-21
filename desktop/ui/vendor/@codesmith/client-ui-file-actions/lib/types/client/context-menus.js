@@ -97,4 +97,3 @@ export function registerFileMenus(ctx, actions, t) {
         },
     }), 'file actions: image menu');
 }
-//# sourceMappingURL=context-menus.js.map

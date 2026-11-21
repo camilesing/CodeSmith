@@ -36,4 +36,3 @@ export function PlanReviewOpen({ review, requestKey, openReview, useSidebarMount
     }, [identity, opened, mounted, openReview, review, requestKey, actions]);
     return _jsxs("button", { type: "button", className: css.reviewLink, title: t('preview.open'), "aria-label": t('preview.open'), onClick: () => { openReview(review, requestKey); }, children: [t('preview.full'), _jsx(IconChevronRightOutlineRegular, { size: 14 })] });
 }
-//# sourceMappingURL=PlanCard.js.map

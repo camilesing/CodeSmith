@@ -17,4 +17,3 @@ export function apply(ctx, limits) {
         name: 'sidebar.right.tab.document', key: id, locale: 'sidebarExcel', inject: () => ({ limits }),
     }, LazyExcelBody)));
 }
-//# sourceMappingURL=index.js.map

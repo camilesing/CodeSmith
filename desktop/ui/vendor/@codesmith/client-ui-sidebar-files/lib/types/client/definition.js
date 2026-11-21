@@ -24,4 +24,3 @@ export function filesDefinition(t) {
             }],
     };
 }
-//# sourceMappingURL=definition.js.map

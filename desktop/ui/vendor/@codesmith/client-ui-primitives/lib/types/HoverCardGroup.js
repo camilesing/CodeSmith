@@ -64,4 +64,3 @@ export function HoverCardGroup({ children, className, as: Container = 'div' }) {
                     group.leave();
             }, children: children }) }));
 }
-//# sourceMappingURL=HoverCardGroup.js.map

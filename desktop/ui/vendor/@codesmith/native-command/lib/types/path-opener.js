@@ -265,4 +265,3 @@ export async function revealNativePath(path, signal, internals = {}) {
     }
     throw new Error(`native file manager is unsupported on ${platform}`);
 }
-//# sourceMappingURL=path-opener.js.map

@@ -271,4 +271,3 @@ export const pt = {
     'plan.decline': 'Recusar',
     'plan.discuss': 'Solicitar alterações',
 };
-//# sourceMappingURL=locales.js.map

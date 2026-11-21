@@ -16,4 +16,3 @@ export function isLoopbackHostname(hostname) {
         && parts[0] === '127'
         && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
-//# sourceMappingURL=loopback-hostname.js.map

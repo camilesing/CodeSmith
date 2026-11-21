@@ -21,4 +21,3 @@ export function processTitle(summary, t) {
     const title = [first, ...labels.slice(1).map(continuation)].join(t('message.stepProcess.comma'));
     return summary.counts.length > 3 ? t('message.stepProcess.more', { title }) : title;
 }
-//# sourceMappingURL=step-process.js.map

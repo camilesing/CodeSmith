@@ -153,4 +153,3 @@ export function selectedText(selection) {
     const text = projection.text.slice(start, end).trim();
     return text === '' ? null : text;
 }
-//# sourceMappingURL=text-selection.js.map

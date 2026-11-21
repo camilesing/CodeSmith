@@ -37,4 +37,3 @@ export function TabTitle({ children }) {
     }, []);
     return _jsx("span", { ref: span, className: css.tabTitle, "data-dockkit-tab-title": true, children: children });
 }
-//# sourceMappingURL=TabTitle.js.map

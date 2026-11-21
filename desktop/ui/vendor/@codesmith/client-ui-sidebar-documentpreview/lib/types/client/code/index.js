@@ -18,4 +18,3 @@ export function apply(ctx) {
     }));
     ctx.effect(() => ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({ name: 'sidebar.right.tab.document', key: ID, locale: NS }, CodeBody)));
 }
-//# sourceMappingURL=index.js.map

@@ -10,4 +10,3 @@ export function FilesTitle({ useTabInfo }) {
     const { tab } = useTabInfo();
     return (_jsxs(_Fragment, { children: [_jsx(FileTypeIcon, { kind: "folder", size: 16, className: css.titleIcon }), tab.title] }));
 }
-//# sourceMappingURL=FilesTitle.js.map

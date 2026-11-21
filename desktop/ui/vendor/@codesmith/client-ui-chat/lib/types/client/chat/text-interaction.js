@@ -304,4 +304,3 @@ export function useTextInteraction(rootRef, surfaceRef, dispatchInteraction, reg
     }, [active, place, rootRef, surfaceRef]);
     return { active, dismiss, readText, clearSelection };
 }
-//# sourceMappingURL=text-interaction.js.map

@@ -83,4 +83,3 @@ export function ReviewTab({ useTabInfo, sessionId, useSessions, useStore, action
                                 onAction: (action, application) => openChanged(sessionId, seq, index, action, application),
                             })] })] }), summaryState === 'loading' && _jsx("p", { className: diffCss.status, role: "status", children: t('diff.loading') }), summaryState === 'missing' && _jsx("p", { className: diffCss.status, children: t('diff.missing') }), file !== undefined && _jsx(FileDiff, { state: diffState, split: split, wrap: wrap, t: t, retry: () => { void loadChangesDiff(sessionId, seq, index); } })] }));
 }
-//# sourceMappingURL=ReviewTab.js.map

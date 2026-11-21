@@ -69,4 +69,3 @@ export class ComposerSubmissionPolicy {
         this.busyEnter.set(section.busyEnter);
     }
 }
-//# sourceMappingURL=submission-policy.js.map

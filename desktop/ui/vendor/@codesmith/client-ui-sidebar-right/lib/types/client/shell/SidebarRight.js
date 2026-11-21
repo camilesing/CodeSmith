@@ -238,4 +238,3 @@ export function RightbarSeat({ sessionId, width, viewportWidth, canShow, useStor
     };
     return _jsx(SidebarPanel, { ...panel, width: width, panelRef: panelRef });
 }
-//# sourceMappingURL=SidebarRight.js.map

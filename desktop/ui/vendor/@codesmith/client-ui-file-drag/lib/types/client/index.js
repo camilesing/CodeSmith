@@ -25,4 +25,3 @@ export function apply(ctx) {
         inject: () => ({ hooks: { failure }, dismiss }),
     }, FileDragFeedback));
 }
-//# sourceMappingURL=index.js.map

@@ -430,4 +430,3 @@ export function applyOp(state, op) {
 export function replay(state, ops) {
     return ops.reduce((current, op) => applyOp(current, op).state, state);
 }
-//# sourceMappingURL=operations.js.map

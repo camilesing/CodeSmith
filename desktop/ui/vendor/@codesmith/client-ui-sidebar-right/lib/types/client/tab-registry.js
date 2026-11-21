@@ -235,4 +235,3 @@ export class SidebarRightTabRegistry {
         notifySubscribers(this.listeners, '[ui-sidebar-right] tab registry');
     }
 }
-//# sourceMappingURL=tab-registry.js.map

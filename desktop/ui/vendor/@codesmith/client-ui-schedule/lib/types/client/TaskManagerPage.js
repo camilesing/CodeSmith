@@ -173,4 +173,3 @@ export function TaskManagerPage(props) {
                 onClose: () => { if (!clearing)
                     setClearConfirm(false); }, footer: _jsxs("div", { className: css.confirmActions, children: [_jsx(Button, { variant: "outline", disabled: clearing, onClick: () => { setClearConfirm(false); }, children: t('delete.cancel') }), _jsx(Button, { variant: "outline", className: css.deleteButton, "aria-disabled": clearing, onClick: confirmClearEnded, children: t(clearing ? 'clear.pending' : 'clear.confirm') })] }) })] }));
 }
-//# sourceMappingURL=TaskManagerPage.js.map

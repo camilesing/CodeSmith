@@ -27,4 +27,3 @@ export function brandString(value) {
 export function brandNumber(value) {
     return value;
 }
-//# sourceMappingURL=index.js.map

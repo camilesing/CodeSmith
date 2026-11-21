@@ -419,4 +419,3 @@ export class PendingQuestion {
         return settlePendingComposer(() => { waterfall.reject('ASK_CANCELLED'); }, 'pending question cancellation failed');
     }
 }
-//# sourceMappingURL=slots.js.map

@@ -176,4 +176,3 @@ export function processActivity(nodes) {
         ...preparing ? { preparing: true } : {},
     };
 }
-//# sourceMappingURL=process-activity.js.map

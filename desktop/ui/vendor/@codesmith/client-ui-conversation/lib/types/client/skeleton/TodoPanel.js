@@ -60,4 +60,3 @@ export const todoDockEntry = {
         ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({ name: 'conversation.input.dock', id: 'todo', order: 0, locale: NS }, TodoDock));
     },
 };
-//# sourceMappingURL=TodoPanel.js.map

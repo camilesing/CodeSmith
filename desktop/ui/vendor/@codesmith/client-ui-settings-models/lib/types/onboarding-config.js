@@ -6,4 +6,3 @@ export const Config = z.object({
 });
 /** Page-global key carrying only the public onboarding options. */
 export const ONBOARDING_CONFIG_GLOBAL = '__CODESMITH_MODELS_ONBOARDING__';
-//# sourceMappingURL=onboarding-config.js.map

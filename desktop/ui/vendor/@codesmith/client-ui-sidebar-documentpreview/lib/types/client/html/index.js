@@ -30,4 +30,3 @@ export function apply(ctx) {
         }),
     }, HtmlBody)));
 }
-//# sourceMappingURL=index.js.map

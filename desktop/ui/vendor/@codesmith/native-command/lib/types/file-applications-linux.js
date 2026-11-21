@@ -67,4 +67,3 @@ export async function linuxFileApplications(path, signal, run, env) {
     }
     return applications;
 }
-//# sourceMappingURL=file-applications-linux.js.map

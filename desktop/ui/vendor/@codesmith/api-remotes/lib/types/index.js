@@ -122,4 +122,3 @@ function assertJsonArgs(event, args) {
     }
     return args;
 }
-//# sourceMappingURL=index.js.map

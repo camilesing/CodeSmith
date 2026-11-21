@@ -153,4 +153,3 @@ export function inspectionItems(value, t, depth = 0) {
 export function detailList(items, summary, t) {
     return { items, summary, caption: t('detail.recordedResult'), empty: t('detail.empty') };
 }
-//# sourceMappingURL=detail-model-shared.js.map

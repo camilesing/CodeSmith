@@ -302,4 +302,3 @@ export const pt = {
     empty: 'Nenhum atalho correspondente',
     move: 'Mover seleção de menu', select: 'Selecione o item do menu', dismiss: 'Fechar menu ou caixa de diálogo superior',
 };
-//# sourceMappingURL=locales.js.map

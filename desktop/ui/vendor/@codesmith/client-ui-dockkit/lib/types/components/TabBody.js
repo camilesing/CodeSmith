@@ -9,4 +9,3 @@ import { memo } from 'react';
 export const TabBody = memo(function TabBody({ tab, renderTab }) {
     return renderTab(tab);
 });
-//# sourceMappingURL=TabBody.js.map

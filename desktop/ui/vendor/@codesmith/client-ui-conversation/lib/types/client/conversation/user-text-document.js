@@ -229,4 +229,3 @@ function equalJson(left, right) {
     return keys.every(key => Object.hasOwn(right, key)
         && equalJson(Reflect.get(left, key), Reflect.get(right, key)));
 }
-//# sourceMappingURL=user-text-document.js.map

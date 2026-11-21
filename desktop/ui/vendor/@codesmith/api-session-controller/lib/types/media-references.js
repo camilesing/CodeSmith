@@ -82,4 +82,3 @@ export const SessionMediaReferences = {
         }), 'session-controller: /api/file');
     },
 };
-//# sourceMappingURL=media-references.js.map

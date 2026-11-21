@@ -73,4 +73,3 @@ export function HeroShell({ t, renderSlot, children }) {
                                     fallback: _jsx(HeroFish, { hovering: hovering }),
                                 }) }), _jsxs("span", { className: css.titleGroup, children: [_jsx("span", { children: t('hero.headline') }), _jsx("span", { className: css.previewBadge, children: t('hero.preview') })] })] }), _jsx("div", { className: css.body })] }), children] }));
 }
-//# sourceMappingURL=EmptyHero.js.map

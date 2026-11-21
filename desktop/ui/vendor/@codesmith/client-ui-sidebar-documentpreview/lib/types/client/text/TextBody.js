@@ -13,4 +13,3 @@ export function TextBody({ content, useTabInfo }) {
                 return (_jsxs("div", { className: css.line, "data-textpreview-line": number, ...number === target ? { 'data-textpreview-target': number } : {}, children: [text, '\n'] }, number));
             }) }, page.offset))) }));
 }
-//# sourceMappingURL=TextBody.js.map

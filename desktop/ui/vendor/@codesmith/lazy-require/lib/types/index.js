@@ -20,4 +20,3 @@ export function createLazyRequire(specifier, parentURL) {
         return value;
     };
 }
-//# sourceMappingURL=index.js.map

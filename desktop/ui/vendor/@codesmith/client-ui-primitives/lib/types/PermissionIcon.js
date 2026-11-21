@@ -76,4 +76,3 @@ export function PermissionIconAutoReviewRegular(props) {
 export function PermissionIconAutoReviewMedium(props) {
     return _jsx(AutoReviewArtwork, { ...props, strokeWidth: ICON_MEDIUM_STROKE });
 }
-//# sourceMappingURL=PermissionIcon.js.map

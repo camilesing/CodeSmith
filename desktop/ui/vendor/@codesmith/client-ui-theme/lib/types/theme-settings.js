@@ -111,4 +111,3 @@ export function normalizeFontFamily(value) {
 export function isThemePreference(value) {
     return THEME_PREFERENCES.some(preference => preference === value);
 }
-//# sourceMappingURL=theme-settings.js.map

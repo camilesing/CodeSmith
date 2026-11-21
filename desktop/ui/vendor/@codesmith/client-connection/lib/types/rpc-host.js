@@ -314,4 +314,3 @@ function assertFetchRoute(route) {
         throw new Error(`connection: exact Fetch route ${JSON.stringify(route.path)} repeats a method`);
     }
 }
-//# sourceMappingURL=rpc-host.js.map

@@ -121,4 +121,3 @@ export class CredentialMasks {
         return masked + this.marks(count);
     }
 }
-//# sourceMappingURL=credential-masks.js.map

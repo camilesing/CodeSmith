@@ -119,4 +119,3 @@ function resolvePart(owner, target) {
     }
     return parts.join('/');
 }
-//# sourceMappingURL=xlsx-archive.js.map

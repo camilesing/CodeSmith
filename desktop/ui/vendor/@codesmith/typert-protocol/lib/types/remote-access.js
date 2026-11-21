@@ -6,4 +6,3 @@
  * @module @codesmith/typert-protocol/remote-access
  */
 export {};
-//# sourceMappingURL=remote-access.js.map

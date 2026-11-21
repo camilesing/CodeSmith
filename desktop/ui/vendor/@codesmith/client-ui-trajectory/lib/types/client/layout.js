@@ -949,4 +949,3 @@ function previewContentProperty(content) {
     const previewMarkdown = previewContent(content);
     return previewMarkdown === undefined ? {} : { previewMarkdown };
 }
-//# sourceMappingURL=layout.js.map

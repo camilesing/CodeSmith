@@ -24,4 +24,3 @@ export function registerSessionReveal(ctx, controller, t, report) {
         },
     }), 'open-in-app: Session directory menu');
 }
-//# sourceMappingURL=session-reveal.js.map

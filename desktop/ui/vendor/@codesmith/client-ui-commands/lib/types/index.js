@@ -7,4 +7,3 @@
  */
 /** Host plugin body — no host-side behavior for the command UI plugin. */
 export function apply() { }
-//# sourceMappingURL=index.js.map

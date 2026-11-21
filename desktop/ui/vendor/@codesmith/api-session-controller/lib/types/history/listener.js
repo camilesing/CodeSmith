@@ -294,4 +294,3 @@ export class ListenerBuffer {
             dispose();
     }
 }
-//# sourceMappingURL=listener.js.map

@@ -291,4 +291,3 @@ export function resolveHistoryRequest(request) {
     validateHistoryWindow(request);
     return { ...request, maxMessages: request.maxMessages ?? DEFAULT_MAX_MESSAGES };
 }
-//# sourceMappingURL=controller.js.map

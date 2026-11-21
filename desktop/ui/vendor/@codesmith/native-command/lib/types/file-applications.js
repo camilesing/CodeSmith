@@ -188,4 +188,3 @@ async function desktopTarget(path, signal, internals) {
     }
     return { platform, path };
 }
-//# sourceMappingURL=file-applications.js.map

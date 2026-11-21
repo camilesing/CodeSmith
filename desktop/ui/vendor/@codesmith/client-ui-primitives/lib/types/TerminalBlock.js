@@ -129,4 +129,3 @@ export function TerminalBlock({ command, cwd, home, output, exitCode, signal, ru
                 ? _jsx("div", { className: css.empty, children: copy.noOutput })
                 : (_jsxs("div", { className: css.output, children: [(capped ? lines.slice(0, headLines) : lines).map((line, index) => (_jsx("div", { className: css.line, children: renderLine(line) }, index))), hidden > 0 && (_jsx("button", { type: "button", className: css.expand, "aria-expanded": expanded, "aria-label": expanded ? copy.collapseAria : copy.expandAria(hidden), onClick: onToggle, children: expanded ? copy.collapse : copy.expand(hidden) })), capped && lines.slice(lines.length - tailLines).map((line, index) => (_jsx("div", { className: css.line, children: renderLine(line) }, index)))] })))] }));
 }
-//# sourceMappingURL=TerminalBlock.js.map

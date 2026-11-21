@@ -13,4 +13,3 @@ export function Pill({ active = false, className, children, onClick, ...rest }) 
     }
     return (_jsx("button", { type: "button", className: clsx(css.pill, css.interactive, active && css.active, className), onClick: onClick, ...rest, children: children }));
 }
-//# sourceMappingURL=Pill.js.map

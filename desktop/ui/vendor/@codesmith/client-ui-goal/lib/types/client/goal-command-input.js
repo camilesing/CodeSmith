@@ -46,4 +46,3 @@ export const goalCommandInputDefinition = {
         };
     },
 };
-//# sourceMappingURL=goal-command-input.js.map

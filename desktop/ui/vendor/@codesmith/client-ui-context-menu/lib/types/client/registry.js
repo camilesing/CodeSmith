@@ -184,4 +184,3 @@ export class MenuRegistry {
         this.providers.clear();
     }
 }
-//# sourceMappingURL=registry.js.map

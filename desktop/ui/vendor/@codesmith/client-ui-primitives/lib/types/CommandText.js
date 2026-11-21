@@ -29,4 +29,3 @@ export function CommandText({ text, label, className }) {
     }, [text]);
     return (_jsx("span", { ref: ref, className: clsx(css.text, className), "data-command-text": true, tabIndex: overflow ? 0 : undefined, role: overflow ? 'group' : undefined, "aria-label": overflow ? label : undefined, children: text }));
 }
-//# sourceMappingURL=CommandText.js.map

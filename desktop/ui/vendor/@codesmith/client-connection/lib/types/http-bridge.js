@@ -105,4 +105,3 @@ export async function bridge(req, res, apiHandler, peer, maxRequestBodyBytes = D
     if (requestUnread)
         req.destroy();
 }
-//# sourceMappingURL=http-bridge.js.map

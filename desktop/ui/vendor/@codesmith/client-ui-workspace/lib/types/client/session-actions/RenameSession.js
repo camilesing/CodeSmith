@@ -52,4 +52,3 @@ function RenameForm({ request, renameSession, onSettle, t }) {
                     }
                 } }), error !== null && _jsx("div", { className: css.renameError, role: "alert", children: error })] }));
 }
-//# sourceMappingURL=RenameSession.js.map

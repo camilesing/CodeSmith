@@ -54,4 +54,3 @@ export function ModelRow(props) {
                                 : null] }))
                     : null] }) }));
 }
-//# sourceMappingURL=ModelRow.js.map

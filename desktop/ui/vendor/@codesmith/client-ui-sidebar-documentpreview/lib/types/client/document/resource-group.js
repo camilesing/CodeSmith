@@ -50,4 +50,3 @@ export class ResourceGroup {
         this.set([]);
     }
 }
-//# sourceMappingURL=resource-group.js.map

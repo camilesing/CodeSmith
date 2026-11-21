@@ -10,4 +10,3 @@ export function renderSessionArea(binding, { empty, children }) {
         return _jsx(_Fragment, { children: empty?.() ?? null });
     return _jsx(_Fragment, { children: children });
 }
-//# sourceMappingURL=session-provider.js.map

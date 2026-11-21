@@ -11,4 +11,3 @@ export function fixedCommands(t) {
     ];
     return rows.map(row => ({ ...row, id: `fixed.${row.id}`, label: () => t(row.id) }));
 }
-//# sourceMappingURL=fixed.js.map

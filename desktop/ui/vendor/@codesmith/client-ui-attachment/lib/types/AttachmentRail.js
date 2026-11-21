@@ -115,4 +115,3 @@ export function AttachmentRail({ items, labels, renderItem }) {
     };
     return (_jsxs("div", { className: css.root, children: [edges.left && (_jsx("button", { type: "button", className: clsx(css.arrow, css.arrowLeft), "aria-label": labels.scrollLeft, onClick: () => { page(-1); }, children: _jsx(IconChevronLeftOutlineRegular, {}) })), _jsx("div", { ref: railRef, className: css.rail, role: "group", "aria-label": labels.group, onScroll: updateEdges, children: items.map(item => (_jsx("div", { className: css.item, children: renderItem(item) }, item.id))) }), edges.right && (_jsx("button", { type: "button", className: clsx(css.arrow, css.arrowRight), "aria-label": labels.scrollRight, onClick: () => { page(1); }, children: _jsx(IconChevronRightOutlineRegular, {}) }))] }));
 }
-//# sourceMappingURL=AttachmentRail.js.map

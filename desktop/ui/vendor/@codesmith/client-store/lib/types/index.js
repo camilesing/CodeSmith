@@ -187,4 +187,3 @@ export function defineStore(decl) {
         },
     };
 }
-//# sourceMappingURL=index.js.map

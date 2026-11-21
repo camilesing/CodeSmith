@@ -32,4 +32,3 @@ export function placeTooltip(input) {
     const position = positions[side];
     return { left: clampX(position.left), top: clampY(position.top), side, width, height, overflow: true };
 }
-//# sourceMappingURL=tooltip-placement.js.map

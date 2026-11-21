@@ -39,4 +39,3 @@ export class StopSequence {
         return false;
     }
 }
-//# sourceMappingURL=stop-sequence.js.map

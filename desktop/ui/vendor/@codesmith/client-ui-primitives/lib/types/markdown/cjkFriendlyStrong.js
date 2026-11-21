@@ -69,4 +69,3 @@ const cjkFriendlyStrongExtension = {
 export function cjkFriendlyStrong() {
     return cjkFriendlyStrongExtension;
 }
-//# sourceMappingURL=cjkFriendlyStrong.js.map

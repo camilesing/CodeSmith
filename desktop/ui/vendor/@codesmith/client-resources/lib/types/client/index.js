@@ -18,4 +18,3 @@ export function apply(ctx) {
         keyedHooks: { resource: address => resources.source(address) },
     });
 }
-//# sourceMappingURL=index.js.map

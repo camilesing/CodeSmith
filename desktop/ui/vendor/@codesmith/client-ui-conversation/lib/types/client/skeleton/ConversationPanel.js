@@ -6,4 +6,3 @@
 export function ConversationPanel({ renderSlot }) {
     return renderSlot('main.conversation', {});
 }
-//# sourceMappingURL=ConversationPanel.js.map

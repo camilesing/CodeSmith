@@ -56,4 +56,3 @@ export function useFileApplications(target, query, enabled) {
     const refresh = useCallback(() => { readers.get(query)?.get(target)?.refresh(); }, [query, target]);
     return { ...state, refresh };
 }
-//# sourceMappingURL=file-applications.js.map

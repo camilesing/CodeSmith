@@ -80,4 +80,3 @@ export class SettingsDocumentStore {
         });
     }
 }
-//# sourceMappingURL=settings-document-store.js.map

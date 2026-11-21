@@ -51,4 +51,3 @@ export function FrontmatterFields({ source, fallback }) {
         return null;
     return (_jsx("dl", { className: css.fields, children: fields.map((field, index) => (_jsxs("div", { className: css.field, children: [_jsx("dt", { className: css.key, children: field.key }), _jsx("dd", { className: field.block ? css.block : css.value, children: field.value })] }, index))) }));
 }
-//# sourceMappingURL=frontmatter-fields.js.map

@@ -92,4 +92,3 @@ export function $createQuoteNode(text, labels) {
 export function $isQuoteNode(node) {
     return node instanceof QuoteNode;
 }
-//# sourceMappingURL=QuoteNode.js.map

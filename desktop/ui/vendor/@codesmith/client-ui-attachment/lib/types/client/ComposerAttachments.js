@@ -52,4 +52,3 @@ export function ComposerAttachments({ attachments, canAcceptDrop, onAddFiles, on
                                             : { width: `${String(Math.min(1, upload.loaded / upload.total) * 100)}%` } }) })), _jsx("button", { type: "button", className: css.remove, "aria-label": t('image.remove', { name }), onClick: () => { onRemoveAttachment(attachment.id); }, children: _jsx(IconCloseFillRegular, { size: 12 }) })] }));
                     } }) })), preview !== null && (_jsx(ImageLightbox, { src: preview.previewUrl, alt: preview.file.name || t('image.original'), labels: lightboxLabels(t), onClose: closePreview }))] }));
 }
-//# sourceMappingURL=ComposerAttachments.js.map

@@ -123,4 +123,3 @@ export function MenuView({ menu, headers, onPick, onCrumb, onHover, onDismiss, t
                                                                 }, children: _jsx(IconChevronRightOutlineRegular, { size: 12 }) })] }))] })] }, optionId(group.source, index)));
                                 })] }, group.source))) })] }));
 }
-//# sourceMappingURL=MenuView.js.map

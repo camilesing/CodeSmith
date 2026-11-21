@@ -79,4 +79,3 @@ export const detectTrigger = (draft, caret, guard) => {
     }
     return null;
 };
-//# sourceMappingURL=detect.js.map

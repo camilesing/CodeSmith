@@ -38,4 +38,3 @@ export function mergeOrderedBaseline(current, baseline, keyOf) {
     }
     return merged;
 }
-//# sourceMappingURL=ordered-baseline.js.map

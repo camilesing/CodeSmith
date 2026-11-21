@@ -30,4 +30,3 @@ export function ApprovalCommand({ callId, useChat }) {
     });
     return command ?? null;
 }
-//# sourceMappingURL=ApprovalCommand.js.map

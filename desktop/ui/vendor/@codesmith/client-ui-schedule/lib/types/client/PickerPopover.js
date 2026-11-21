@@ -29,4 +29,3 @@ export function PickerPopover({ open, anchorRef, label, className, onClose, chil
         // opened it: React bubbles portal events through the React tree.
         onClick: (event) => { event.stopPropagation(); }, children: children }), document.body);
 }
-//# sourceMappingURL=PickerPopover.js.map

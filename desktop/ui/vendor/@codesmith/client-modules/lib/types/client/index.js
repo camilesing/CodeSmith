@@ -34,4 +34,3 @@ export function apply(ctx) {
     }
     ctx.reflect.provide('modules', modules);
 }
-//# sourceMappingURL=index.js.map

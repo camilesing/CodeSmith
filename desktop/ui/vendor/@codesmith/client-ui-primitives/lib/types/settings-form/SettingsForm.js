@@ -27,4 +27,3 @@ export function SettingsForm(props) {
     const blocked = !state.dirty || state.invalid || state.saving;
     return (_jsxs("div", { className: css.form, children: [!state.writable ? _jsx("p", { className: css.readOnly, role: "status", children: labels.readOnly }) : null, props.children, _jsxs("div", { className: css.footer, children: [state.failed ? _jsx("p", { className: css.failed, role: "status", children: labels.saveFailed }) : null, _jsx("button", { type: "button", className: css.save, disabled: blocked, onClick: props.onSave, children: state.saving ? labels.saving : labels.save })] })] }));
 }
-//# sourceMappingURL=SettingsForm.js.map

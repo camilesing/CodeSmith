@@ -86,4 +86,3 @@ export class Duration {
         });
     }
 }
-//# sourceMappingURL=duration.js.map

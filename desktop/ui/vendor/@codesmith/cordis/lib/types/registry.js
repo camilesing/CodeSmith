@@ -215,4 +215,3 @@ export class RegistryService {
         return wrapped;
     }
 }
-//# sourceMappingURL=registry.js.map

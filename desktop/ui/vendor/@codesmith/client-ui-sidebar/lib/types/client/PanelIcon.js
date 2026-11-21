@@ -6,4 +6,3 @@
 export function PanelIcon({ id, size, active, renderSlot }) {
     return renderSlot('sidebar.panellist', { size, active }, { only: id });
 }
-//# sourceMappingURL=PanelIcon.js.map

@@ -45,4 +45,3 @@ export function convertDelimited(bytes, format, limits) {
         unsupportedFeatures: [],
     };
 }
-//# sourceMappingURL=delimited.js.map

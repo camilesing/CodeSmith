@@ -33,4 +33,3 @@ const NavigatorToggleSeat = memo(function NavigatorToggleSeat({ useTabInfo, rend
 export function PreviewFrame({ path, pathTrigger, banner, tools, handoff, children, useTabInfo, renderFactorySlot, ...data }) {
     return (_jsxs("div", { className: css.preview, ...data, children: [banner, _jsxs("div", { className: css.header, children: [_jsx(PathLabel, { path: path, className: css.path, "data-textpreview-path": true, ...pathTrigger }), tools, handoff, _jsx(NavigatorToggleSeat, { useTabInfo: useTabInfo, renderFactorySlot: renderFactorySlot })] }), _jsxs("div", { className: css.content, "data-textpreview-content": true, children: [children, _jsx(NavigatorSeat, { useTabInfo: useTabInfo, renderFactorySlot: renderFactorySlot })] })] }));
 }
-//# sourceMappingURL=PreviewFrame.js.map

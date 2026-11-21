@@ -27,4 +27,3 @@ export function DecoratorPortals({ editor }) {
             return el === null ? null : createPortal(jsx, el, key);
         }) }));
 }
-//# sourceMappingURL=DecoratorPortals.js.map

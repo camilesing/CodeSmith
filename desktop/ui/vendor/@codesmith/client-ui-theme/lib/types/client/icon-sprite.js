@@ -49,4 +49,3 @@ export function installIconSprite(ctx, icons) {
     }, 'ui-theme: icon sprite');
     ctx.on('theme/change', (snapshot) => { apply(snapshot.active.icons); });
 }
-//# sourceMappingURL=icon-sprite.js.map

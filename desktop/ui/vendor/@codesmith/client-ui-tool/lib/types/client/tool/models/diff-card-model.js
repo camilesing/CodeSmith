@@ -115,4 +115,3 @@ export function diffCardModel(block) {
     const path = recordedAbsolutePath(block.meta, 'path');
     return { card: { diffs: applied.map(diff => diff.path === path ? { ...diff, path: intended.diff.path } : diff) } };
 }
-//# sourceMappingURL=diff-card-model.js.map

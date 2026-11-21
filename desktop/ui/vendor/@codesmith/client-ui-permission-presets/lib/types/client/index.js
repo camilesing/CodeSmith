@@ -124,4 +124,3 @@ export function apply(ctx) {
         },
     }), 'ui-permission: /permission decoration');
 }
-//# sourceMappingURL=index.js.map

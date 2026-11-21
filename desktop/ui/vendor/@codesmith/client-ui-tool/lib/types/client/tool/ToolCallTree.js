@@ -53,4 +53,3 @@ export function ToolCallTree({ renderSlot, node, cwd, openFile, inspectCall, loa
     const home = useHostInfo(info => info.home);
     return (_jsx(ToolCallBranch, { renderSlot: renderSlot, block: node.data.root, cwd: cwd, home: home, openFile: openFile, renderFallback: renderFallback, inspectCall: inspectCall, useDisclosure: useDisclosure, loadImage: loadImage }));
 }
-//# sourceMappingURL=ToolCallTree.js.map

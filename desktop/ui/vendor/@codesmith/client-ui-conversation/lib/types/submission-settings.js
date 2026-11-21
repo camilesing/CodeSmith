@@ -14,4 +14,3 @@ export const ConversationSettingsFields = {
 };
 /** Schema for shared configuration values. */
 export const ConversationSettingsSchema = z.object(ConversationSettingsFields);
-//# sourceMappingURL=submission-settings.js.map

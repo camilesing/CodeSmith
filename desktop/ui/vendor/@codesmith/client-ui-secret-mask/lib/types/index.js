@@ -6,4 +6,3 @@
  */
 /** Host plugin body — no host-side behavior for this display plugin. */
 export function apply() { }
-//# sourceMappingURL=index.js.map

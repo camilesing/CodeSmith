@@ -27,4 +27,3 @@ export function removeOwnedStyles(id) {
             el.remove();
     }
 }
-//# sourceMappingURL=entry-lifecycle.js.map

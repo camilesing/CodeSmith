@@ -99,4 +99,3 @@ export const pt = {
     'crumbs.aria': 'Navegação de pastas',
     'suggestions.aria': 'Sugestões de gatilho',
 };
-//# sourceMappingURL=locales.js.map

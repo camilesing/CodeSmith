@@ -128,4 +128,3 @@ export class SessionEventStream extends RemoteJournalStream {
         };
     }
 }
-//# sourceMappingURL=transport.js.map

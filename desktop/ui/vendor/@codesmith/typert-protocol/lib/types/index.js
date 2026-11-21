@@ -206,4 +206,3 @@ function validateName(subject, value) {
         throw new TypeError(`typert-protocol: ${subject} must contain only RPC endpoint segment characters`);
     }
 }
-//# sourceMappingURL=index.js.map

@@ -51,4 +51,3 @@ export function apply(ctx) {
         },
     });
 }
-//# sourceMappingURL=index.js.map

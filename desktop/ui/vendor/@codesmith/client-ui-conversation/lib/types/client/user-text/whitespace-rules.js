@@ -38,4 +38,3 @@ export const trimWhitespaceRule = {
         return start === text.length || start < from ? undefined : replacement(text, start, text.length, '');
     },
 };
-//# sourceMappingURL=whitespace-rules.js.map

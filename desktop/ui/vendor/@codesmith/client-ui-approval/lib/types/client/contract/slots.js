@@ -113,4 +113,3 @@ export class PendingApproval {
         settle();
     }
 }
-//# sourceMappingURL=slots.js.map

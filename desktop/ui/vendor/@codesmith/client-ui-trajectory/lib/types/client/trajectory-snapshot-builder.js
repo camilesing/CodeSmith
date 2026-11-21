@@ -264,4 +264,3 @@ export const trajectoryViewDefinition = {
 export function registerTrajectoryConversationView(ctx) {
     ctx.uiConversation.views.register(trajectoryViewDefinition);
 }
-//# sourceMappingURL=trajectory-snapshot-builder.js.map

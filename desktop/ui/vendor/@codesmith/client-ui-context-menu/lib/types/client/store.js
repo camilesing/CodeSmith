@@ -23,4 +23,3 @@ export function createMenuStore() {
         },
     });
 }
-//# sourceMappingURL=store.js.map

@@ -191,4 +191,3 @@ export class Sequencer {
         return true;
     }
 }
-//# sourceMappingURL=sequence.js.map

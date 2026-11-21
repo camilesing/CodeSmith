@@ -666,4 +666,3 @@ export class PartialArguments {
         this.#current = null;
     }
 }
-//# sourceMappingURL=partial-json.js.map

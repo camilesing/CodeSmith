@@ -19,4 +19,3 @@ export function createPdfBinaryDataFactory(assets = __CODESMITH_PDFJS_ASSETS__) 
         }
     };
 }
-//# sourceMappingURL=assets.js.map

@@ -34,4 +34,3 @@ export function registerConversationNodes(ctx) {
     registerChatConversationView(ctx);
     ctx.uiConversation.groups.register(processGroupDefinition);
 }
-//# sourceMappingURL=register.js.map

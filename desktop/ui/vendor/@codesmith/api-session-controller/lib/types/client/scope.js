@@ -44,4 +44,3 @@ export function scopeOf(ctx) {
 export function scopeIdentityOf(ctx) {
     return ctx[kScope];
 }
-//# sourceMappingURL=scope.js.map

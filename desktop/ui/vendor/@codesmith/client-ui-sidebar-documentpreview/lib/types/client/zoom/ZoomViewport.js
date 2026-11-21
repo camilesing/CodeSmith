@@ -189,4 +189,3 @@ export function ZoomViewport(props) {
 }
 /** Shared surface class for actual-size and fit-width layout. */
 export const zoomSurfaceClass = css.surface;
-//# sourceMappingURL=ZoomViewport.js.map

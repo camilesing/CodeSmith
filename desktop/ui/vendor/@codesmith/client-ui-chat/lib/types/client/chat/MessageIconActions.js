@@ -20,4 +20,3 @@ export function MessageIconActions({ text, time, clock, onBranch, branchUnavaila
                 ? _jsxs("span", { className: css.endInfo, children: [usageAction, clockEl] })
                 : usageAction] }));
 }
-//# sourceMappingURL=MessageIconActions.js.map

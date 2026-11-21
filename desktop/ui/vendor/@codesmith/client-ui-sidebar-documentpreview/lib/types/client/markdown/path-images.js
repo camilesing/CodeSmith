@@ -29,4 +29,3 @@ export function markdownImageUrl(base, documentPath, destination) {
     }
     return fileMediaUrl(base, path);
 }
-//# sourceMappingURL=path-images.js.map

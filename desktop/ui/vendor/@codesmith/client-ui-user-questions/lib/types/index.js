@@ -8,4 +8,3 @@
  */
 /** Host plugin body — the model-facing tool is composed per preset, not here. */
 export function apply() { }
-//# sourceMappingURL=index.js.map

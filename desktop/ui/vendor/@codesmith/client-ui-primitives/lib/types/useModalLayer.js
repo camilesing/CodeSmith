@@ -110,4 +110,3 @@ export function useModalLayer(dialog, open, onClose) {
         };
     }, [dialog, open]);
 }
-//# sourceMappingURL=useModalLayer.js.map

@@ -34,4 +34,3 @@ export function ArchiveToastEntry(props) {
 export function WorkspaceToast({ seq, text, tone, holdMs, actions, onDone }) {
     return _jsx(Toast, { text: text, onDone: onDone, ...tone === 'success' ? { tone: 'success' } : {}, ...tone === 'warning' ? { icon: _jsx(IconWarningOutlineRegular, {}) } : {}, ...holdMs === undefined ? {} : { holdMs }, ...actions === undefined ? {} : { actions } }, seq);
 }
-//# sourceMappingURL=Toast.js.map

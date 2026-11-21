@@ -13,4 +13,3 @@ import css from './Input.module.css';
 export const Input = forwardRef(function Input({ icon, className, ...rest }, ref) {
     return (_jsxs("span", { className: clsx(css.wrap, className), children: [icon != null && _jsx("span", { className: css.icon, children: icon }), _jsx("input", { ref: ref, className: css.input, ...rest })] }));
 });
-//# sourceMappingURL=Input.js.map

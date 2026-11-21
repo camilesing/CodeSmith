@@ -289,4 +289,3 @@ const backslashMath = {
 export function mathCompatibility() {
     return backslashMath;
 }
-//# sourceMappingURL=mathCompatibility.js.map

@@ -61,4 +61,3 @@ export function chatNode(context, kind, anchorSeq, data, options = {}) {
 export function coordinate(value) {
     return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
-//# sourceMappingURL=common.js.map

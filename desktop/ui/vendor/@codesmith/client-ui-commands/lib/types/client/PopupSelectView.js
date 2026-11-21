@@ -125,4 +125,3 @@ export function PopupSelectView({ popup, t }) {
                             ? _jsx(Fragment, { children: groupRows.map(option => renderOption(option, optionIndex++)) }, "ungrouped")
                             : _jsx(MenuGroup, { label: group.label, children: groupRows.map(option => renderOption(option, optionIndex++)) }, `group:${group.name}`)) }))] })), confirmation !== undefined && (_jsx(RiskConfirmation, { open: true, title: confirmation.title, description: confirmation.description, acknowledgeLabel: confirmation.acknowledgeLabel, cancelLabel: confirmation.cancelLabel, closeLabel: t('close'), confirmLabel: confirmation.confirmLabel, acknowledged: state.acknowledged, onAcknowledgedChange: (value) => { popup.acknowledge(value); }, onCancel: () => { popup.cancelConfirmation(); }, onConfirm: () => { void popup.confirm(); } }))] }));
 }
-//# sourceMappingURL=PopupSelectView.js.map

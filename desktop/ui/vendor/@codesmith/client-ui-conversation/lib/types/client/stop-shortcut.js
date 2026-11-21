@@ -69,4 +69,3 @@ export function installStopShortcut(shortcuts, sessions, openTurn, uiSession, ca
     });
     return () => { off(); reset(); };
 }
-//# sourceMappingURL=stop-shortcut.js.map

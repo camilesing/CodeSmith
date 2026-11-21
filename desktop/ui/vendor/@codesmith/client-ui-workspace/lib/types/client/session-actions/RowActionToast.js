@@ -9,4 +9,3 @@ export function RowActionToast({ useToast, dismissToast, renderSlot }) {
         return null;
     return renderSlot('workspace.toast', { ...notice, dismissToast }, { entryKey: notice.kind });
 }
-//# sourceMappingURL=RowActionToast.js.map

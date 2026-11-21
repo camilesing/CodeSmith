@@ -150,4 +150,3 @@ export function entryFor(event) {
 export function pageRecords(events) {
     return events.map(entryFor);
 }
-//# sourceMappingURL=history.js.map

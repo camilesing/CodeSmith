@@ -249,4 +249,3 @@ export function cronPreview(parsed, t, locale) {
     const time = cronTimeText(parsed, t);
     return day.everyDay && time.interval ? time.text : [day.text, time.joined].join(t('cron.part.join'));
 }
-//# sourceMappingURL=task-cron.js.map

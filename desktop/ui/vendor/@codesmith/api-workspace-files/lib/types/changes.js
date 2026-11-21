@@ -166,4 +166,3 @@ class ChangeFollower {
             throw this.error;
     }
 }
-//# sourceMappingURL=changes.js.map

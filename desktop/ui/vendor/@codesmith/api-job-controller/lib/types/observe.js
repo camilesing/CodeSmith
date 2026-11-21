@@ -104,4 +104,3 @@ function* outputFrames(chunks, next, lossy, maxFrameBytes) {
         };
     }
 }
-//# sourceMappingURL=observe.js.map

@@ -19,4 +19,3 @@ export function apply(ctx) {
         };
     }, 'workspace-files: file resource provider');
 }
-//# sourceMappingURL=index.js.map

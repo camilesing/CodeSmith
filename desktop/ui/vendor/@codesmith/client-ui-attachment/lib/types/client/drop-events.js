@@ -97,4 +97,3 @@ export function installDocumentDropEvents(canAcceptDrop, onAddFiles, dragDepth, 
         window.removeEventListener('dragend', reset);
     };
 }
-//# sourceMappingURL=drop-events.js.map

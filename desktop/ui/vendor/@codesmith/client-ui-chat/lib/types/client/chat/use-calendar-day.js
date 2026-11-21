@@ -21,4 +21,3 @@ export function useCalendarDay() {
     }, []);
     return day;
 }
-//# sourceMappingURL=use-calendar-day.js.map

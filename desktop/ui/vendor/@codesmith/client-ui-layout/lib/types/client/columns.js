@@ -54,4 +54,3 @@ export function computeColumns(viewport, sidebar, rightbar, collapsedWidth = SID
         : Math.min(available, clampWidth(rightbar, RIGHTBAR_MIN, viewport * RIGHTBAR_MAX_RATIO));
     return { sidebar: s, center: Math.max(0, viewport - s - r), rightbar: r };
 }
-//# sourceMappingURL=columns.js.map

@@ -12,4 +12,3 @@ export const DraggableImage = forwardRef(function DraggableImage({ fileDrag, src
     const drag = useImageDrag(fileDrag, src, name, original, resourceAddress);
     return _jsx("img", { ...props, ...drag, src: src, ref: ref, draggable: true });
 });
-//# sourceMappingURL=DraggableImage.js.map

@@ -75,4 +75,3 @@ export class OpenInAppPathController {
         this.desktop.set(available);
     }
 }
-//# sourceMappingURL=open-path.js.map

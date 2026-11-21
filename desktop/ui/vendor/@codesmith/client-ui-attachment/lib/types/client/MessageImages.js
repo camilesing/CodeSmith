@@ -25,4 +25,3 @@ export function MessageImages({ images, loadImage, align, compact, thumbnail, re
         ...thumbnail === undefined ? {} : { thumbnail },
     });
 }
-//# sourceMappingURL=MessageImages.js.map

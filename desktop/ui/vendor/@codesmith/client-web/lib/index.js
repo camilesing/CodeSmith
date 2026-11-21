@@ -683,4 +683,3 @@ async function applyIndexInjections(rows, loadScript) {
 //#endregion
 export { AppWebEntry, PLATFORM_MODULES, PRELOADED_CLIENT_EXTERNALS, applyIndexInjections, getStaticModules };
 
-//# sourceMappingURL=index.js.map

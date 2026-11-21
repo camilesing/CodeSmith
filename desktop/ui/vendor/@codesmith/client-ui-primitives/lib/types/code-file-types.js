@@ -317,4 +317,3 @@ export function classifyCodeFileType(name, extension, context) {
     }
     return EXTENSION_TYPES[extension] ?? null;
 }
-//# sourceMappingURL=code-file-types.js.map

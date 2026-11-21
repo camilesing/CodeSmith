@@ -18,4 +18,3 @@ export function guideDefinition(t) {
         title: () => t('tab.guide.title'),
     };
 }
-//# sourceMappingURL=definition.js.map

@@ -54,4 +54,3 @@ export const pt = {
     loading: 'Renderizando documento...',
     failed: 'Este documento HTML não pôde ser visualizado.',
 };
-//# sourceMappingURL=locales.js.map

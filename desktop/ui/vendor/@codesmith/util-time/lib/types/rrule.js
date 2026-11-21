@@ -575,4 +575,3 @@ export class RRule {
         return Object.freeze(nextScheduledAt === undefined ? { occurrenceAt } : { occurrenceAt, nextScheduledAt });
     }
 }
-//# sourceMappingURL=rrule.js.map

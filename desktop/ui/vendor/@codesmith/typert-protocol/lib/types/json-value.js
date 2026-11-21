@@ -58,4 +58,3 @@ function visitJsonValue(value, ancestors) {
         ancestors.delete(value);
     }
 }
-//# sourceMappingURL=json-value.js.map

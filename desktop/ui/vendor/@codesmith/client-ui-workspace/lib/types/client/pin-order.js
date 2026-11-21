@@ -28,4 +28,3 @@ export function pinOrderSource(workspaces, list, rowState) {
 export function pinOrderAccounts(workspaces, sessionId) {
     return [owningGroupKey(workspaces, sessionId), FLAT_SESSION_ORDER_KEY];
 }
-//# sourceMappingURL=pin-order.js.map

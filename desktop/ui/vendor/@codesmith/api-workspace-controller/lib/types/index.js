@@ -272,4 +272,3 @@ function assertNever(value) {
     throw new Error(`unreachable Workspace follow frame: ${JSON.stringify(value)}`);
 }
 export default WorkspaceController;
-//# sourceMappingURL=index.js.map

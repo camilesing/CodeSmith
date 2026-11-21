@@ -30,4 +30,3 @@ export function observeComposition(document) {
         },
     };
 }
-//# sourceMappingURL=keyboard-composition.js.map

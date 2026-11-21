@@ -483,4 +483,3 @@ function remoteStreamUrl() {
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     return url.href;
 }
-//# sourceMappingURL=stream-client.js.map

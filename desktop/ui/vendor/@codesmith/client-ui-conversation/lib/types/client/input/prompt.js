@@ -85,4 +85,3 @@ export function serializeDraftPrompt(draft, serializeReference) {
         token: { kind: 'text', text: await serializeReference(reference.source, reference.ref) },
     }))).then(build);
 }
-//# sourceMappingURL=prompt.js.map

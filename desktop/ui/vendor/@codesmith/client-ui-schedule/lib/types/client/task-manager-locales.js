@@ -1279,4 +1279,3 @@ export const pt = {
     'status.ended': 'Concluída',
     'status.paused': 'Pausada',
 };
-//# sourceMappingURL=task-manager-locales.js.map

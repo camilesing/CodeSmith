@@ -11,4 +11,3 @@ export function TrajectoryGroupHeader({ title, description }) {
                 ? _jsx("span", { className: css.description, children: description })
                 : null] }));
 }
-//# sourceMappingURL=TrajectoryGroupHeader.js.map

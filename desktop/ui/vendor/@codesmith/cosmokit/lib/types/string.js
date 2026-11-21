@@ -76,4 +76,3 @@ export function sanitize(source) {
         source = '/' + source;
     return trimSlash(source);
 }
-//# sourceMappingURL=string.js.map

@@ -23,4 +23,3 @@ export function retainDocumentTabs(ctx) {
         signal.addEventListener('abort', forget, { once: true });
     };
 }
-//# sourceMappingURL=tab-lifetime.js.map

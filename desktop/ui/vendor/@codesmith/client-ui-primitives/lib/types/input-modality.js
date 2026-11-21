@@ -53,4 +53,3 @@ if (typeof window !== 'undefined') {
     }, true);
     window.addEventListener('blur', () => { keyFocusOrigin = undefined; });
 }
-//# sourceMappingURL=input-modality.js.map

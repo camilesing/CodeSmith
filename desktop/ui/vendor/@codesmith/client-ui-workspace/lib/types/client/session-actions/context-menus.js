@@ -50,4 +50,3 @@ export function registerSessionMenus(ctx, actions) {
             }];
     });
 }
-//# sourceMappingURL=context-menus.js.map

@@ -98,4 +98,3 @@ export var Time;
     }
     Time.template = template;
 })(Time || (Time = {}));
-//# sourceMappingURL=time.js.map

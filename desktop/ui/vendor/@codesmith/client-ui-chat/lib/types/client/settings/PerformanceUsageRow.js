@@ -16,4 +16,3 @@ export function PerformanceUsageRow({ usePerformanceUsage, setPerformanceUsage, 
         : 'settings.performance.compact';
     return (_jsx(PreferenceRow, { title: t('settings.performance.title'), description: t('settings.performance.description'), value: mode, selectedLabel: t(selectedLabel), options: OPTIONS.map(option => ({ id: option.id, label: t(option.label) })), onSelect: (value) => { setPerformanceUsage(value); } }));
 }
-//# sourceMappingURL=PerformanceUsageRow.js.map

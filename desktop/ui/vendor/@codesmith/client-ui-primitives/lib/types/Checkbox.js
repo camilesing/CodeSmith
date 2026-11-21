@@ -16,4 +16,3 @@ import css from './Checkbox.module.css';
 export function Checkbox({ checked, onChange, label, disabled = false, title, className, modalAutofocus = false }) {
     return (_jsxs("label", { className: clsx(css.checkbox, className), title: title, children: [_jsx("input", { type: "checkbox", checked: checked, disabled: disabled, "data-modal-autofocus": modalAutofocus || undefined, onChange: (event) => { onChange(event.target.checked); } }), _jsx("span", { children: label })] }));
 }
-//# sourceMappingURL=Checkbox.js.map

@@ -19,4 +19,3 @@ export function createBasicHtmlDocument(data) {
     parsed.head.prepend(policy);
     return `<!doctype html>${parsed.documentElement.outerHTML}`;
 }
-//# sourceMappingURL=basic-document.js.map

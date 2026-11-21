@@ -84,4 +84,3 @@ export function renderTexToReact(value, displayMode) {
     const parsed = new DOMParser().parseFromString(html, 'text/html');
     return [...parsed.body.childNodes].map(domToReact);
 }
-//# sourceMappingURL=katex.js.map

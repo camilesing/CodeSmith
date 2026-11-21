@@ -223,4 +223,3 @@ function parseCandidate(value) {
         return undefined;
     return JSON.parse(value);
 }
-//# sourceMappingURL=index.js.map

@@ -31,4 +31,3 @@ export function DesktopChannelToast({ useChannel, dismiss, openConfiguration, t 
     return _jsx(Toast, { text: t(`desktop.channel.result.${notice.outcome}`), ...notice.outcome === 'configuration' ? { holdMs: 10_000,
             actions: [{ label: t('desktop.channel.details'), onClick: openConfiguration }] } : {}, onDone: () => { dismiss(notice.sequence); }, ...notice.outcome === 'applied' ? { tone: 'success' } : { icon: _jsx(IconWarningOutlineRegular, {}) } }, notice.sequence);
 }
-//# sourceMappingURL=DesktopChannelRow.js.map

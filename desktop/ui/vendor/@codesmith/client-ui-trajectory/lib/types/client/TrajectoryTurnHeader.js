@@ -12,4 +12,3 @@ const COLUMN_LABEL_KEYS = [
 export function TrajectoryTurnHeader({ turn, t }) {
     return (_jsx("div", { className: css.root, children: _jsxs("div", { className: css.inner, children: [_jsx("span", { className: css.title, children: t('turn.label', { turn }) }), _jsx("div", { className: css.columns, "aria-hidden": "true", children: COLUMN_LABEL_KEYS.map(key => (_jsx("span", { className: css.column, children: t(key) }, key))) })] }) }));
 }
-//# sourceMappingURL=TrajectoryTurnHeader.js.map

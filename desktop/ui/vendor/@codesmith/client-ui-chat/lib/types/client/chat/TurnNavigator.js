@@ -204,4 +204,3 @@ function TurnNavigatorRail({ items, activeTurn, busyTurn, onNavigate, t }, ref) 
  * a stationary pointer.
  */
 export const TurnNavigator = memo(forwardRef(TurnNavigatorRail));
-//# sourceMappingURL=TurnNavigator.js.map

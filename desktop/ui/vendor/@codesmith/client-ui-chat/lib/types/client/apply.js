@@ -314,4 +314,3 @@ export function apply(ctx) {
     });
     ctx.slots.inject('conversation.approval.detail', () => ctx.slots.register({ name: 'conversation.approval.detail' }, ApprovalCommand));
 }
-//# sourceMappingURL=apply.js.map

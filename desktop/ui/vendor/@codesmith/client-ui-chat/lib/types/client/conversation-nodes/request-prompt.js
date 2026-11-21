@@ -125,4 +125,3 @@ export function registerRequestPromptConversationNode(ctx) {
     ctx.uiConversation.events.register(systemMessageDefinition((previous, event) => ctx.uiConversation.inspectSystemPrompt(previous, event)));
     ctx.uiConversation.events.register(requestPromptDefinition((previous, event, system) => ctx.uiConversation.inspectRequestPrompt(previous, event, system)));
 }
-//# sourceMappingURL=request-prompt.js.map

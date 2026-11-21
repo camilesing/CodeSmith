@@ -13,4 +13,3 @@ export function hasAssistantReplyContent(blocks) {
         return true;
     });
 }
-//# sourceMappingURL=assistant-content.js.map

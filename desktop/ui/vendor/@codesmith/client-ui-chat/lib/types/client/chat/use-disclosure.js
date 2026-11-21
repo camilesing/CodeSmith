@@ -29,4 +29,3 @@ export function bindDisclosure(reset) {
         return useDisclosure(version);
     };
 }
-//# sourceMappingURL=use-disclosure.js.map

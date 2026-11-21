@@ -27,4 +27,3 @@ export function PinSessionRowButton(props) {
         return null;
     return (_jsx(Tooltip, { label: t(pinned ? 'actions.unpin' : 'actions.pin'), side: "bottom", align: "end", delayMs: 500, portal: true, children: _jsx("button", { type: "button", className: clsx(css.iconButton, pinned && css.pinnedAction), "aria-label": t(pinned ? 'menu.unpinSession' : 'menu.pinSession'), onClick: () => { (pinned ? unpinSession : pinSession)(sessionId); }, children: pinned ? _jsx(IconPinFillRegular, { size: 14 }) : _jsx(IconPinOutlineRegular, { size: 14 }) }) }));
 }
-//# sourceMappingURL=PinSession.js.map

@@ -12,4 +12,3 @@ export function LazyPdfBody(props) {
     const loading = _jsx(LoadingIndicator, { label: props.t('loading') });
     return _jsx(Suspense, { fallback: loading, children: _jsx(LoadedPdfBody, { ...props, loading: loading }) });
 }
-//# sourceMappingURL=LazyPdfBody.js.map

@@ -621,4 +621,3 @@ function apply(ctx) {
 //#endregion
 export { RpcId, apply, inject, installConnection, transportError };
 
-//# sourceMappingURL=client.node.js.map

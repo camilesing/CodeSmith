@@ -8,4 +8,3 @@ export function createTrajectoryStringWrappingStore() {
         persist: { name: 'cds.trajectory.jsonStringWrapping' },
     });
 }
-//# sourceMappingURL=string-wrapping-store.js.map

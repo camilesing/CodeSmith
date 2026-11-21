@@ -39,4 +39,3 @@ function equal(a, b, schema, ancestors) {
 export function equalExceptVolatile(previous, next, schema) {
     return isSchemastery(schema) ? equal(previous, next, schema, new Set()) : deepEqual(previous, next, true);
 }
-//# sourceMappingURL=diff.js.map

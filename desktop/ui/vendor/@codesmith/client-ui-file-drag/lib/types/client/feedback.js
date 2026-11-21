@@ -10,4 +10,3 @@ export function FileDragFeedback({ useFailure, dismiss }) {
     const failure = useFailure(value => value);
     return failure === null ? null : _jsx(Toast, { text: failure.text, onDone: dismiss }, failure.sequence);
 }
-//# sourceMappingURL=feedback.js.map

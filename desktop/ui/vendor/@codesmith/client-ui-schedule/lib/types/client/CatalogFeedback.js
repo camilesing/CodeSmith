@@ -17,4 +17,3 @@ export function CatalogFeedback({ status, populated, onRetry, t }) {
                 ? _jsxs("div", { className: css.notice, children: [_jsx("p", { role: "alert", children: t('list.error') }), _jsx(Button, { variant: "outline", size: "sm", onClick: () => { void onRetry(); }, children: t('list.retry') })] })
                 : _jsxs("div", { className: css.empty, children: [_jsx(IconWarningOutlineRegular, { size: 24, className: css.emptyGlyph }), _jsx("p", { role: "alert", className: css.emptyTitle, children: t('list.error') }), _jsx(Button, { variant: "outline", className: css.emptyAction, onClick: () => { void onRetry(); }, children: t('list.retry') })] }))] });
 }
-//# sourceMappingURL=CatalogFeedback.js.map

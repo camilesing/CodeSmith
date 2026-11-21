@@ -111,4 +111,3 @@ export function openPdf(data, signal, reportFailure) {
     });
     return { document, dispose };
 }
-//# sourceMappingURL=runtime.js.map

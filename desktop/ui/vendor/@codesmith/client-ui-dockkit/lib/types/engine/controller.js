@@ -239,4 +239,3 @@ export class DockController {
         return dockedActivePane(this.state);
     }
 }
-//# sourceMappingURL=controller.js.map

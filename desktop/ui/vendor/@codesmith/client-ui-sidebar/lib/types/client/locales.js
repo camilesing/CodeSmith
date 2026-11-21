@@ -103,4 +103,3 @@ export const pt = {
     'panels.more': 'Mais',
     'version.copied': 'Versão copiada',
 };
-//# sourceMappingURL=locales.js.map

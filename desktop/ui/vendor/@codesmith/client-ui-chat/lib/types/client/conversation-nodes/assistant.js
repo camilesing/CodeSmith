@@ -322,4 +322,3 @@ export function registerAssistantConversationNode(ctx) {
         },
     });
 }
-//# sourceMappingURL=assistant.js.map

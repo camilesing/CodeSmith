@@ -72,4 +72,3 @@ function isRequest(value) {
         && typeof request.id === 'string' && /^[\w-]{1,128}$/u.test(request.id)
         && typeof request.title === 'string';
 }
-//# sourceMappingURL=close-requests.js.map

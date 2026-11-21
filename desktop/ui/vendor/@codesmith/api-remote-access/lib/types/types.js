@@ -4,4 +4,3 @@
  * @module @codesmith/api-remote-access/types
  */
 export {};
-//# sourceMappingURL=types.js.map

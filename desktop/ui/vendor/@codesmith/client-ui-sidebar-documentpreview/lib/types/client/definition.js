@@ -40,4 +40,3 @@ export function textDefinition() {
         title: basenameOf,
     };
 }
-//# sourceMappingURL=definition.js.map

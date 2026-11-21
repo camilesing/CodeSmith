@@ -20,4 +20,3 @@ export function TerminalRecovery({ restore, t }) {
     }, [restore, attempt]);
     return error === undefined ? null : _jsx("button", { type: "button", title: t('recoveryFailed', { message: error }), onClick: () => { setError(undefined); setAttempt(value => value + 1); }, children: t('retryRecovery') });
 }
-//# sourceMappingURL=TerminalRecovery.js.map

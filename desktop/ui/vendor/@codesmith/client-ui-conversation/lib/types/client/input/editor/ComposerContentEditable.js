@@ -31,4 +31,3 @@ export function ComposerContentEditable({ editor, editable, ...rest }) {
         // renders it, and setEditable above keeps the editor's own gate in step.
         contentEditable: editor !== null && editable, suppressContentEditableWarning: true, role: "textbox", "aria-multiline": "true", "data-composer-input": true, ...rest }));
 }
-//# sourceMappingURL=ComposerContentEditable.js.map

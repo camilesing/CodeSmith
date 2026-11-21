@@ -170,4 +170,3 @@ export function useScrollFollow(initial, threshold) {
     const [follow] = useState(() => new ScrollFollow(initial, threshold));
     return follow;
 }
-//# sourceMappingURL=use-scroll-follow.js.map

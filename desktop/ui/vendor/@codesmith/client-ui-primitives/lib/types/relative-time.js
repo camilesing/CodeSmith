@@ -29,4 +29,3 @@ export function relativeTime(at, now) {
         return { unit: 'months', n: Math.floor(diff / (30 * DAY)) };
     return { unit: 'years', n: Math.floor(diff / (365 * DAY)) };
 }
-//# sourceMappingURL=relative-time.js.map

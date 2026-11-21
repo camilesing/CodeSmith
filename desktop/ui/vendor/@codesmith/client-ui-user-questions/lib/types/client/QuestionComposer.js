@@ -406,4 +406,3 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }) {
                                                 ? t('submitting')
                                                 : index === questions.length - 1 ? t('submit') : t('action.next') })] }))] })] }))] }) }));
 }
-//# sourceMappingURL=QuestionComposer.js.map

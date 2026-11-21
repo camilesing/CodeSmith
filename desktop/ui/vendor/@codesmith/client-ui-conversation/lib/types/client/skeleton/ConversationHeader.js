@@ -19,4 +19,3 @@ export function ConversationHeader({ sessionId, useSession, useConversation, ren
                 ? _jsx("div", { className: css.titleRow })
                 : renderSlot('conversation.session.header', { hideChrome: blank })] }));
 }
-//# sourceMappingURL=ConversationHeader.js.map

@@ -63,4 +63,3 @@ export function ReadBlock({ label, labels, lines, totalLines, lang, maxLines = D
                 // Empty files must not replace the clipboard with empty text.
                 onCopy: lines.length > 0 ? onCopy : undefined, onWrap: () => { setWrapped(value => !value); } }), _jsxs("div", { className: cardCss.body, children: [rows(capped ? paired.slice(0, headLines) : paired), hidden > 0 && (_jsx(FoldToggle, { className: css.expand, expanded: expanded, hidden: hidden, labels: labels, onToggle: onToggle })), capped && rows(paired.slice(paired.length - tailLines))] })] }));
 }
-//# sourceMappingURL=ReadBlock.js.map

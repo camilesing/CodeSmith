@@ -170,4 +170,3 @@ function isSameAuthorityOrigin(origin, host) {
     const hostUrl = parseAuthority(host, scheme);
     return hostUrl !== undefined && originUrl.host === hostUrl.host;
 }
-//# sourceMappingURL=api-request-trust.js.map

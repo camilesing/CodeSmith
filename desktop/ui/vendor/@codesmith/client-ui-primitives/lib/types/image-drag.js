@@ -93,4 +93,3 @@ export function useImageDrag(actions, src, name, original, resourceAddress) {
     }, []);
     return { onPointerEnter: intent, onPointerDown, onPointerLeave, onDragStart, onDragEnd: release, onClickCapture };
 }
-//# sourceMappingURL=image-drag.js.map

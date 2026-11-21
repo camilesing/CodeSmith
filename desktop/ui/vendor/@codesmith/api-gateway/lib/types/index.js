@@ -1358,4 +1358,3 @@ function isObject(value) {
     return (typeof value === 'object' && value !== null) || typeof value === 'function';
 }
 export default TypertGatewayService;
-//# sourceMappingURL=index.js.map

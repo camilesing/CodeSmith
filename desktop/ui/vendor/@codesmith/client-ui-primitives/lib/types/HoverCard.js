@@ -309,4 +309,3 @@ export function HoverCard({ anchor, content, openDelayMs = 500, disabled = false
                 armClose();
         }, onPointerDownCapture: dismissFromAnchor, onClickCapture: dismissFromAnchor, children: [anchor, open && copyable && _jsx("span", { className: css.status, role: "status", children: copied ? copiedLabel : '' }), card !== false && createPortal(_jsxs("span", { ref: portalRef, className: css.portal, children: [pos.bridge !== undefined && _jsx("span", { className: css.bridge, style: pos.bridge, "data-hovercard-bridge": "", "aria-hidden": true }), card] }), document.body)] }));
 }
-//# sourceMappingURL=HoverCard.js.map

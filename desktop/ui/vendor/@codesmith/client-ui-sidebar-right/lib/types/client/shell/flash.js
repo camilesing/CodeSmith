@@ -28,4 +28,3 @@ export function flashPane(root, flash) {
     pane.addEventListener('animationcancel', end);
     return clear;
 }
-//# sourceMappingURL=flash.js.map

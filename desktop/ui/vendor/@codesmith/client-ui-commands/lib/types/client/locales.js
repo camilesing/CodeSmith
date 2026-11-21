@@ -253,4 +253,3 @@ export const pt = {
     'listbox.aria': '/{command} correspondências',
     'notice.attachmentsUnsupported': '/{command} não aceita anexos; remova-os primeiro',
 };
-//# sourceMappingURL=locales.js.map

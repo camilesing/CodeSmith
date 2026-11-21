@@ -30,4 +30,3 @@ export function createReadHtmlRelative(readRelated, address, lifetime, addResour
         return result.value;
     };
 }
-//# sourceMappingURL=read-relative.js.map

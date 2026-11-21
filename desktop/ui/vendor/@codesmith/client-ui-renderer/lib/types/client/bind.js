@@ -22,4 +22,3 @@ export function bindSnapshotSelector(w) {
         return useSyncExternalStoreWithSelector(subscribe, getSnapshot, undefined, sel, eq);
     };
 }
-//# sourceMappingURL=bind.js.map

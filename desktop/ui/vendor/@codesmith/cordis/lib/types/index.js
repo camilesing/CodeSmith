@@ -12,4 +12,3 @@ export * from "./registry.js";
 export * from "./service.js";
 /** Shared internal helpers used by context, services, and plugin fibers. */
 export * from "./utils.js";
-//# sourceMappingURL=index.js.map

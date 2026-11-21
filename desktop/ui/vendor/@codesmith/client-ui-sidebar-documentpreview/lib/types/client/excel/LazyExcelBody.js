@@ -15,4 +15,3 @@ export function LazyExcelBody(props) {
     const loading = _jsx(LoadingIndicator, { label: props.t('loading') });
     return _jsx(Suspense, { fallback: loading, children: _jsx(LoadedExcelBody, { ...props, format: format, loading: loading }) });
 }
-//# sourceMappingURL=LazyExcelBody.js.map

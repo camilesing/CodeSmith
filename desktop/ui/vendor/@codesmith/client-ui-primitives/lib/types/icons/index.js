@@ -412,4 +412,3 @@ export const IconAppsAddOutlineMedium = appsAddIcon('medium');
 export const IconSaveOutlineRegular = productIcon('save-outline', 'regular');
 /** Medium floppy-disk save action. */
 export const IconSaveOutlineMedium = productIcon('save-outline', 'medium');
-//# sourceMappingURL=index.js.map

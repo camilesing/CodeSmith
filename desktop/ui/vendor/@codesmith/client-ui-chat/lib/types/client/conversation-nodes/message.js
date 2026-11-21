@@ -124,4 +124,3 @@ export function registerMessageConversationNode(ctx) {
     ctx.uiConversation.events.register(messageDefinition);
     ctx.uiConversation.events.register(developerMessageDefinition);
 }
-//# sourceMappingURL=message.js.map

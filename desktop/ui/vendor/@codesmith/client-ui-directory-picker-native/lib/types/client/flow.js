@@ -56,4 +56,3 @@ export function NativeDirectoryFlow(props) {
     }, [open, pick]);
     return null;
 }
-//# sourceMappingURL=flow.js.map

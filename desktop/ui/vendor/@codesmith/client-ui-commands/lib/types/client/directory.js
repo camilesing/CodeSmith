@@ -163,4 +163,3 @@ function notifyWaiters(entry) {
 function abortReason(signal) {
     return signal.reason instanceof Error ? signal.reason : new Error('command directory wait aborted');
 }
-//# sourceMappingURL=directory.js.map

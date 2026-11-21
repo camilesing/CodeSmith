@@ -434,4 +434,3 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRenameRequest,
                         }, children: _jsx(IconEllipsisOutlineRegular, {}) }), _jsx("span", { className: css.rowQuickActions, children: renderSlot('sidebar.workspaces.session.row.action', { sessionId: node.id, displayTitle: row.title }) })] }))] }));
     return (_jsx(HoverCard, { anchor: ownRow, content: _jsx(SessionHoverContent, { node: node, cwd: row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home), now: now, renderSlot: renderSlot, t: t }), openDelayMs: 800, grouped: true, disabled: menuOpen || drag?.active === true, copyText: row.blank || row.title === '' ? undefined : row.title, copyLabel: t('copy'), copiedLabel: t('hover.copied') }));
 }
-//# sourceMappingURL=Rows.js.map

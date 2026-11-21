@@ -291,4 +291,3 @@ export function toolRowModel(toolName, block, cwd, home) {
         state,
     };
 }
-//# sourceMappingURL=tool-call-model.js.map

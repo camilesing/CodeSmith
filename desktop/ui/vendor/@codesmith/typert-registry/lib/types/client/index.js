@@ -9,4 +9,3 @@ export const inject = [];
 export function apply(ctx) {
     new TypertRegistry(ctx);
 }
-//# sourceMappingURL=index.js.map

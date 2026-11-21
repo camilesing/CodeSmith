@@ -88,4 +88,3 @@ export class DocumentPreviewRegistry {
         notifySubscribers(this.listeners, '[document-previews] registry');
     }
 }
-//# sourceMappingURL=registry.js.map

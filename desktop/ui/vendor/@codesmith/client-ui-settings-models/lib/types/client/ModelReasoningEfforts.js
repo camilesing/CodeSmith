@@ -130,4 +130,3 @@ export function ModelReasoningEfforts({ model, levels, position, disabled, t, on
                             ? _jsx("p", { className: styles['error'], children: t('modelReasoningValueRequired') })
                             : missingLevel ? _jsx("p", { className: styles['error'], children: t('modelReasoningNeedsLevel') }) : null, _jsxs("button", { type: "button", className: styles['addModelButton'], disabled: disabled || levels.every(level => used.includes(level)), onClick: () => { addLevel(entries); }, children: [_jsx(IconPlusOutlineRegular, { size: 14 }), t('modelReasoningAdd')] })] }))] }));
 }
-//# sourceMappingURL=ModelReasoningEfforts.js.map

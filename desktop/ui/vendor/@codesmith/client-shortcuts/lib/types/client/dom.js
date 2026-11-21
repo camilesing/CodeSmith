@@ -110,4 +110,3 @@ export function installKeyboard(window, shortcuts, fixed, native = false) {
         window.removeEventListener('blur', blur);
     };
 }
-//# sourceMappingURL=dom.js.map

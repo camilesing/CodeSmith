@@ -74,4 +74,3 @@ export function apply(ctx) {
         return answerApproval(ctx, this, request, next, registerPendingInteraction);
     });
 }
-//# sourceMappingURL=index.js.map

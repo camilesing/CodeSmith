@@ -64,4 +64,3 @@ export function hostFrequencyKind(task) {
         return 'monthly';
     return 'custom';
 }
-//# sourceMappingURL=task-record.js.map

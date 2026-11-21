@@ -76,4 +76,3 @@ export async function desktopApplicationIcon(name, directories) {
     }
     return null;
 }
-//# sourceMappingURL=desktop-entry.js.map

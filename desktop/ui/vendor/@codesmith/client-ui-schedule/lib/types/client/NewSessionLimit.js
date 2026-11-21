@@ -28,4 +28,3 @@ export function NewSessionLimit({ load, t }) {
     const label = new Intl.NumberFormat(t('time.locale'), { style: 'unit', unit, unitDisplay: 'long' }).format(value);
     return _jsx("p", { className: css.saveNotice, children: t('host.newSessionInterval', { interval: label }) });
 }
-//# sourceMappingURL=NewSessionLimit.js.map

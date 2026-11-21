@@ -34,4 +34,3 @@ const UNVIEWABLE_BINARY_EXTENSIONS = [
 export function unviewableBinaryPath(path) {
     return matchedSuffixLength(documentFileName(path), UNVIEWABLE_BINARY_EXTENSIONS) > 0;
 }
-//# sourceMappingURL=unviewable.js.map

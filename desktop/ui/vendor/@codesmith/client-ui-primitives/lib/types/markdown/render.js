@@ -538,4 +538,3 @@ export function renderFootnoteSection(context) {
         return null;
     return (_jsxs("section", { "data-footnotes": true, className: "footnotes", children: [_jsx("h2", { id: "footnote-label", className: "sr-only", children: context.labels.footnotes }), _jsx("ol", { children: items })] }, "footnotes"));
 }
-//# sourceMappingURL=render.js.map

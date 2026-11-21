@@ -47,4 +47,3 @@ export function useRelativeClock(periodMs = RELATIVE_CLOCK_PERIOD_MS, wakeAt) {
     }, [wakeAt]);
     return now;
 }
-//# sourceMappingURL=relative-clock.js.map

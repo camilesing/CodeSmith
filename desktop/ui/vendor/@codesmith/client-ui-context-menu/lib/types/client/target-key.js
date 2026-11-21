@@ -10,4 +10,3 @@ export function menuTargetKey(target) {
         return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)));
     });
 }
-//# sourceMappingURL=target-key.js.map

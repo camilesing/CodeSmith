@@ -151,4 +151,3 @@ export const pt = {
     'chip.on.title': 'Modo de planejamento ativado – clique para desligar (/plan off)',
     'chip.exitFailed': 'Falha ao sair do modo de plano',
 };
-//# sourceMappingURL=locales.js.map

@@ -119,4 +119,3 @@ export const pt = {
     'menu.downloaded': 'Download concluído',
     'path.revealError': 'Não foi possível mostrar o local do arquivo. Tente novamente.',
 };
-//# sourceMappingURL=locales.js.map

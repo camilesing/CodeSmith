@@ -21,4 +21,3 @@ export const STATE_LABELS = {
     [FIBER_STATE.DISPOSED]: 'disposed',
     [FIBER_STATE.UNLOADING]: 'unloading',
 };
-//# sourceMappingURL=loader-status.js.map

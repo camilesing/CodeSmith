@@ -10,4 +10,3 @@ export function apply(ctx, config) {
     });
 }
 /* jscpd:ignore-end */
-//# sourceMappingURL=index.js.map

@@ -180,4 +180,3 @@ export class ShortcutRegistry {
         return { status: 'handled', commandId: command.id };
     }
 }
-//# sourceMappingURL=registry.js.map

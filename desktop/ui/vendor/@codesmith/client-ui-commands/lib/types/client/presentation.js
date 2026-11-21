@@ -54,4 +54,3 @@ export function sectionRows(rows, t) {
         .map(row => ({ ...row, section: t('section.commands') }));
     return [...add, ...commands];
 }
-//# sourceMappingURL=presentation.js.map

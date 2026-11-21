@@ -9,4 +9,3 @@
  * @module @codesmith/api-remotes/types
  */
 export {};
-//# sourceMappingURL=types.js.map

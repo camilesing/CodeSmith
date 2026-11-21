@@ -67,4 +67,3 @@ export function launchVelocity(position, target, velocity, reach) {
 export function springSettled(axis, target) {
     return Math.abs(axis.position - target) <= REST_DISTANCE && Math.abs(axis.velocity) <= REST_SPEED;
 }
-//# sourceMappingURL=spring.js.map

@@ -101,4 +101,3 @@ export function searchCardModel(block) {
         return null;
     return { recovery, card: { kind: 'paths', paths: [...meta.paths], ...common } };
 }
-//# sourceMappingURL=search-card-model.js.map

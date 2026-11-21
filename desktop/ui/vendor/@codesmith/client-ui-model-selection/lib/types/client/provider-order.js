@@ -8,4 +8,3 @@ export function orderModelProviders(groups) {
     return groups.toSorted((left, right) => (left.id === 'codesmith-account' ? 0 : left.id === 'codesmith-official' ? 1 : 2)
         - (right.id === 'codesmith-account' ? 0 : right.id === 'codesmith-official' ? 1 : 2));
 }
-//# sourceMappingURL=provider-order.js.map

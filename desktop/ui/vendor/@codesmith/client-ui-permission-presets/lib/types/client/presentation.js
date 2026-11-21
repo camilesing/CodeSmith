@@ -37,4 +37,3 @@ export function displayPermissionPreset(value, name, t) {
     }
     return displayPresetName(name);
 }
-//# sourceMappingURL=presentation.js.map

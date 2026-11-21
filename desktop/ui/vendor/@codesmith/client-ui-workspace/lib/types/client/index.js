@@ -309,4 +309,3 @@ function activeSessionRefusal(reason) {
     const { rpcError } = reason;
     return rpcError.code === 'workspace/session-active' ? rpcError.details.activity : undefined;
 }
-//# sourceMappingURL=index.js.map

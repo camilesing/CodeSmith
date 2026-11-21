@@ -17,4 +17,3 @@ export function RightbarRoot({ usePanelInfo, useViews, ...props }) {
     const views = useViews(value => value);
     return _jsx(_Fragment, { children: views.map(view => _jsx(SessionView, { ...props, view: view, visible: visible }, view.sessionId)) });
 }
-//# sourceMappingURL=RightbarRoot.js.map

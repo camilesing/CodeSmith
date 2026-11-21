@@ -5,4 +5,3 @@
  * restated: a browser consumer reads the very declaration the backend answers.
  */
 export {};
-//# sourceMappingURL=types.js.map

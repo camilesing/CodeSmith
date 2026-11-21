@@ -79,4 +79,3 @@ export const pt = {
     allowOnce: 'Permitir uma vez',
     allowAlways: 'Sempre permitir',
 };
-//# sourceMappingURL=locales.js.map

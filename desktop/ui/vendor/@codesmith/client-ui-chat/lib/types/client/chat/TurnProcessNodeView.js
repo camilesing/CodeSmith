@@ -35,4 +35,3 @@ export const TurnProcessNodeView = memo(function TurnProcessNodeView({ node, tur
                     turnProcess.setOpen(!open);
                 }, children: [_jsxs("span", { className: css.label, children: [label, duration?.map((part, index) => (_jsx("span", { className: part.numeric ? css.durationNumber : undefined, children: part.text }, index)))] }), canCollapse && _jsx(IconChevronDownOutlineRegular, { className: css.chevron })] })] }));
 });
-//# sourceMappingURL=TurnProcessNodeView.js.map

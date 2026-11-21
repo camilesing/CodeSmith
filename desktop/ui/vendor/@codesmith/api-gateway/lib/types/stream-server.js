@@ -425,4 +425,3 @@ export function rejectRemoteStreamUpgrade(socket, status) {
         body,
     ].join('\r\n'));
 }
-//# sourceMappingURL=stream-server.js.map

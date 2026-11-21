@@ -41,4 +41,3 @@ export function PlanChip({ useProjection, locked, exitPlanMode, t }) {
     };
     return (_jsxs("span", { className: css.wrap, children: [_jsxs("button", { type: "button", className: css.chip, "aria-label": t('chip.on.aria'), title: t('chip.on.title'), disabled: locked || leaving, onClick: off, children: [_jsxs("span", { className: css.glyph, "aria-hidden": true, children: [_jsx(IconPlanOutlineRegular, { className: css.restGlyph, size: 14 }), _jsx(IconCloseCircleFillRegular, { className: css.hoverGlyph, size: 14 })] }), t('chip.label')] }), error !== null && _jsx("span", { className: css.error, role: "status", title: error, children: t('chip.exitFailed') })] }));
 }
-//# sourceMappingURL=PlanModeControl.js.map

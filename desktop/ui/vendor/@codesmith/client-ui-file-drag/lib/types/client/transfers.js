@@ -174,4 +174,3 @@ export class FileTransfers {
             release();
     }
 }
-//# sourceMappingURL=transfers.js.map

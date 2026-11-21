@@ -29,4 +29,3 @@ export function GuideTitle({ useTabInfo }) {
     const { tab } = useTabInfo();
     return (_jsxs(_Fragment, { children: [_jsx(CompassGlyph, { className: css.titleIcon }), tab.title] }));
 }
-//# sourceMappingURL=GuideTitle.js.map

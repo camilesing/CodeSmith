@@ -81,4 +81,3 @@ export function DesktopUpdateBadge({ useDesktopUpdate, useConnectionState, t }) 
     const label = failed ? retryLabel : copy.label;
     return _jsx(Tooltip, { label: failed ? label : copy.detail, side: "right", children: _jsx("span", { role: "img", "aria-label": label, className: css.badge }) });
 }
-//# sourceMappingURL=DesktopUpdateIndicator.js.map

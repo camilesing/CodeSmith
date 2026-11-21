@@ -236,4 +236,3 @@ export function ModelListEditor(props) {
                         ? _jsx("p", { className: styles['candidateEmpty'], role: "status", children: t('fetchNoMatches') })
                         : (_jsx("ul", { className: styles['candidateList'], children: visibleCandidates.map(candidate => (_jsx("li", { className: styles['candidate'], children: _jsxs("label", { className: styles['candidateLabel'], children: [_jsx("input", { type: "checkbox", checked: isPicked(candidate.id), onChange: () => { toggle(candidate.id); } }), _jsx("span", { className: styles['candidateId'], title: candidate.name ?? candidate.id, children: candidate.id })] }) }, candidate.id))) }))] })] }));
 }
-//# sourceMappingURL=ModelListEditor.js.map

@@ -20,4 +20,3 @@ export function HeaderLeadingControls({ toggleSidebar, startSession, trackEntryC
                         startSession();
                     }, children: _jsx(IconNewChatOutlineRegular, { size: 16 }) }) }))] }));
 }
-//# sourceMappingURL=HeaderLeadingControls.js.map

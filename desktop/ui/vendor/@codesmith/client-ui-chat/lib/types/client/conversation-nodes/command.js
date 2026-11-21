@@ -184,4 +184,3 @@ export function registerCommandConversationNode(ctx) {
 }
 /** Shared structural checkpoint recognizer for automatic compaction. */
 export { compactSource, compactSummary };
-//# sourceMappingURL=command.js.map

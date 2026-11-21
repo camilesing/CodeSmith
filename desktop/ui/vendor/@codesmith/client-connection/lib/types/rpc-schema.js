@@ -37,4 +37,3 @@ export const rpcMessageSchema = z.discriminatedUnion('type', [
     clientRequestSchema,
     serverResponseSchema,
 ]);
-//# sourceMappingURL=rpc-schema.js.map

@@ -59,4 +59,3 @@ export function codeProgram(cell) {
         language: recordedLanguage(cell.schemaDetail),
     };
 }
-//# sourceMappingURL=code-program.js.map

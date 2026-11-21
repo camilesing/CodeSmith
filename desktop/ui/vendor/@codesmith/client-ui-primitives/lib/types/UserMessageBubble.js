@@ -9,4 +9,3 @@ import css from './UserMessageBubble.module.css';
 export function UserMessageBubble({ className, ...props }) {
     return _jsx("div", { ...props, className: clsx(css.bubble, className) });
 }
-//# sourceMappingURL=UserMessageBubble.js.map

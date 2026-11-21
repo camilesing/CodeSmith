@@ -190,4 +190,3 @@ function workspaceNotFound(workspaceId) {
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
-//# sourceMappingURL=commands.js.map

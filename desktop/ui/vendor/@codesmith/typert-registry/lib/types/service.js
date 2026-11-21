@@ -680,4 +680,3 @@ function validateNonempty(subject, value) {
         throw new Error(`typert: invalid ${subject} — must be nonempty`);
 }
 export default TypertRegistry;
-//# sourceMappingURL=service.js.map

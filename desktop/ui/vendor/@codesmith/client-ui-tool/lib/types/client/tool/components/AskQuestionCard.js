@@ -13,4 +13,3 @@ export function AskQuestionCard({ card }) {
                         ? _jsx("span", { className: css.skipped, children: card.skippedLabel })
                         : question.answers.map((answer, index) => (_jsx("span", { className: css.answerLine, children: answer }, `${question.id}-${String(index)}`))) })] }, question.id))) }));
 }
-//# sourceMappingURL=AskQuestionCard.js.map

@@ -76,4 +76,3 @@ export function registerChatNodeRenderers(ctx, performanceUsage, presentation) {
     }, TurnTailNodeView));
     ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({ name: 'conversation.chat.node', key: 'unknown', locale: NS }, UnknownNodeView));
 }
-//# sourceMappingURL=register-node-renderers.js.map

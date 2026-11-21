@@ -44,4 +44,3 @@ export function SettingsValueField(props) {
 export function SettingsSecretField(props) {
     return (_jsxs("div", { className: css.field, children: [_jsxs("div", { className: css.head, children: [_jsx("label", { className: css.label, htmlFor: props.id, children: props.label }), _jsx("span", { className: css.badges, children: _jsx(Tag, { tone: props.configured ? 'neutral' : 'quiet', children: props.stateLabel }) })] }), _jsx("input", { id: props.id, className: css.input, type: "password", autoComplete: "new-password", value: props.text, disabled: props.disabled, onChange: (event) => { props.onEdit(event.target.value); } }), _jsx("p", { className: css.hint, children: props.hint })] }));
 }
-//# sourceMappingURL=fields.js.map

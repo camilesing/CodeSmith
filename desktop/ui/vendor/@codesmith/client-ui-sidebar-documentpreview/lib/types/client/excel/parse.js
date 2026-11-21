@@ -76,4 +76,3 @@ function validPreview(value) {
         && value.sheets.every((sheet) => typeof sheet === 'object' && sheet !== null && 'name' in sheet && typeof sheet.name === 'string'
             && 'celldata' in sheet && Array.isArray(sheet.celldata));
 }
-//# sourceMappingURL=parse.js.map

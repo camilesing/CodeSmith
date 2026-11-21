@@ -12,4 +12,3 @@ export function parseLocaleBootstrap(value) {
     }
     return { languages: value.languages, preference: value.preference };
 }
-//# sourceMappingURL=bootstrap.js.map

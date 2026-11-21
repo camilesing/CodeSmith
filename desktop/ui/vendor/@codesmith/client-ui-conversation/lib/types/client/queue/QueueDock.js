@@ -168,4 +168,3 @@ export const queueDockEntry = {
         }, QueueDock));
     },
 };
-//# sourceMappingURL=QueueDock.js.map

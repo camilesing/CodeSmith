@@ -228,4 +228,3 @@ export function detailsCardModel(block, t, locale) {
         default: return null;
     }
 }
-//# sourceMappingURL=details-card-model.js.map

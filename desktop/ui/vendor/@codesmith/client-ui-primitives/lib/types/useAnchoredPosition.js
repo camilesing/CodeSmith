@@ -97,4 +97,3 @@ export function useAnchoredPosition(options) {
     }, [open, anchorRef, panelRef, side, align, gap, margin, getAnchorRect, layoutKey, minWidthFromAnchor, frameClearance]);
     return position;
 }
-//# sourceMappingURL=useAnchoredPosition.js.map

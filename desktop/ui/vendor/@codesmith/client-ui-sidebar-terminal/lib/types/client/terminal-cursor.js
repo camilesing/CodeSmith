@@ -57,4 +57,3 @@ function opaqueColor(color, background) {
     const rgb = channels.slice(0, 3).map((channel, index) => Math.round(channel * alpha + surface[index] * (1 - alpha)));
     return `rgb(${rgb.join(', ')})`;
 }
-//# sourceMappingURL=terminal-cursor.js.map

@@ -185,4 +185,3 @@ export function CustomProviderCard(props) {
                     ? 'customBaseUrlInvalid'
                     : keyFailure === 'keyBlank' ? 'keyBlankNew' : keyFailure, operations: operations, t: t, disabled: profileDisabled, onBusyChange: setListBusy }), failure !== undefined ? _jsx("p", { className: styles['error'], children: failure }) : null, hint === undefined ? null : _jsx("p", { className: styles['advancedHint'], children: hint }), _jsx(EditorFooter, { t: t, busy: busy, submitDisabled: disabled || !ready, submitLabelKey: "create", submitBusyLabelKey: "creating", onCancel: () => { props.onClose(committed); }, onSubmit: () => { void create(); } })] }));
 }
-//# sourceMappingURL=CustomProviderCard.js.map

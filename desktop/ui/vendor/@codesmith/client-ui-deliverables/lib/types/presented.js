@@ -65,4 +65,3 @@ export function basename(path) {
     const at = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
     return at === -1 ? path : path.slice(at + 1);
 }
-//# sourceMappingURL=presented.js.map

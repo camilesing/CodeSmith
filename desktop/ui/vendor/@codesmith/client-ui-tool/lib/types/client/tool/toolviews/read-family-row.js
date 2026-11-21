@@ -18,4 +18,3 @@ export function readFamilyRow({ toolName, block, cwd, home, openFile, resolveFil
                 ...(card.filePathLine === undefined ? {} : { line: card.filePathLine }) },
         })), useDisclosure: useDisclosure, t: t, variant: model.variant, toolName: toolName, icon: _jsx(IconBrowseOutlineRegular, { size: 14 }), title: t(model.titleKey), summary: model.summary, bodyRaw: null, output: model.output, errorSummary: model.errorSummary, ...card, state: model.state, filePath: model.filePath, onOpenFile: openFile, inspect: inspect }));
 }
-//# sourceMappingURL=read-family-row.js.map

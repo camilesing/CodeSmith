@@ -946,4 +946,3 @@ export function useChatViewport() {
     }, [viewport]);
     return { viewport, listRef, columnRef };
 }
-//# sourceMappingURL=use-chat-viewport.js.map

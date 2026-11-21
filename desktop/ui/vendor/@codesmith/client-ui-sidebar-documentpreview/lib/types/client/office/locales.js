@@ -142,4 +142,3 @@ export const pt = {
     busy: 'A visualização do Office está ocupada. Tente novamente em breve.',
     changed: 'O arquivo foi alterado durante a leitura. Reabra a visualização.',
 };
-//# sourceMappingURL=locales.js.map

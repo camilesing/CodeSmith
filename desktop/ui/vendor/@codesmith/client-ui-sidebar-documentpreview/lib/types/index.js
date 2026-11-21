@@ -9,4 +9,3 @@ export function apply(ctx, config) {
         table.push({ kind: 'global', name: '__CODESMITH_DOCUMENT_PREVIEW_CONFIG__', value: config });
     });
 }
-//# sourceMappingURL=index.js.map

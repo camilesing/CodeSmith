@@ -70,4 +70,3 @@ export const zoomPt = {
     zoomFitWidth: 'Ajustar largura',
     zoomValue: '{percent}%',
 };
-//# sourceMappingURL=locales.js.map

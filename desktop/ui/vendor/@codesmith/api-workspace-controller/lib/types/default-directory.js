@@ -62,4 +62,3 @@ export async function defaultWorkspaceDirectory(documentsDirectory, signal, inte
     signal.throwIfAborted();
     return paths.join(directory, 'codesmith', DEFAULT_WORKSPACE_DIRECTORY);
 }
-//# sourceMappingURL=default-directory.js.map

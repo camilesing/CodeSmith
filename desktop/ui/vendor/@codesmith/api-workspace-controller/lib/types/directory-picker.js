@@ -176,4 +176,3 @@ function cancellableFailure(error, signal, cancelled, failed) {
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
-//# sourceMappingURL=directory-picker.js.map

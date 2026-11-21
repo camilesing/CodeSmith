@@ -79,4 +79,3 @@ function alternation(literals) {
         ? escape(head + tails.join(''))
         : `${escape(head)}(?:${alternation(tails)})`).join('|');
 }
-//# sourceMappingURL=format-tables.js.map

@@ -100,4 +100,3 @@ export class InputTriggerService extends Service {
         return sessions;
     }
 }
-//# sourceMappingURL=service.js.map

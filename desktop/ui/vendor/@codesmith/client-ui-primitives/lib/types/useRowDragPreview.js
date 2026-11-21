@@ -69,4 +69,3 @@ export function useRowDragPreview(className, inheritedProperties) {
     useEffect(() => () => { preview.clear(); }, [preview]);
     return preview;
 }
-//# sourceMappingURL=useRowDragPreview.js.map

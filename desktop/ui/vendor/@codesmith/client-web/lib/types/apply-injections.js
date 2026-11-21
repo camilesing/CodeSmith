@@ -38,4 +38,3 @@ export async function applyIndexInjections(rows, loadScript) {
         }
     }
 }
-//# sourceMappingURL=apply-injections.js.map

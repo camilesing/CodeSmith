@@ -26,4 +26,3 @@ export function recoverLocalImages(root, source) {
     visit(root);
     return root;
 }
-//# sourceMappingURL=local-image-syntax.js.map

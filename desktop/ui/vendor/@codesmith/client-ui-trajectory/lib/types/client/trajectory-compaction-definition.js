@@ -114,4 +114,3 @@ export function registerTrajectoryCompactionDefinitions(ctx) {
     ctx.uiConversation.events.register(trajectoryCompactionDefinition);
     ctx.uiConversation.events.register(trajectorySessionEndDefinition);
 }
-//# sourceMappingURL=trajectory-compaction-definition.js.map

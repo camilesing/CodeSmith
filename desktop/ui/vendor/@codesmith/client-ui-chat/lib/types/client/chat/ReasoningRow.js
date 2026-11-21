@@ -59,4 +59,3 @@ export const ReasoningRow = memo(function ReasoningRow({ text: rawText, running,
         return null;
     return (_jsxs("div", { className: css.root, "data-variant": "think", "data-state": running ? 'running' : 'ok', "data-expanded": expanded || undefined, "data-preview": preview || undefined, children: [running && _jsx("span", { className: a11yCss.visuallyHidden, children: t('row.running') }), _jsx(DisclosureRow, { rowClassName: css.row, leadingClassName: css.leading, titleClassName: css.title, icon: THINK_ICON, title: t('message.think'), running: running, open: expanded, expandable: true, expandOnRowClick: true, onToggle: toggle, collapsedContent: collapsedContent, children: content })] }));
 });
-//# sourceMappingURL=ReasoningRow.js.map

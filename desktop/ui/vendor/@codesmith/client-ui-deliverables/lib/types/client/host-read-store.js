@@ -60,4 +60,3 @@ export class HostReadStore {
             this.state.update((state) => { state[url] = next; });
     }
 }
-//# sourceMappingURL=host-read-store.js.map

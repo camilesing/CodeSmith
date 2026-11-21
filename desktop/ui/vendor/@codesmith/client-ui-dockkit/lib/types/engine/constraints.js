@@ -97,4 +97,3 @@ export function clampSizes(sizes, minimum = MIN_PANE_FRACTION) {
         shares = shares.map((share, index) => (pinned.has(index) ? floor : (share / freeTotal) * remainder));
     }
 }
-//# sourceMappingURL=constraints.js.map

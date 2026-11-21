@@ -333,4 +333,3 @@ export const pt = {
     'tab.guide.more': 'Mais ferramentas',
     'tab.unavailable': 'Nada aqui pode visualizar esse tipo de conteúdo ainda.',
 };
-//# sourceMappingURL=locales.js.map

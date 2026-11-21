@@ -76,4 +76,3 @@ export async function createResolve(baseUrl) {
         return;
     return await (cache[scope] ??= _createResolve(scope));
 }
-//# sourceMappingURL=resolve.js.map

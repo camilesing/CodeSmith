@@ -60,4 +60,3 @@ export async function packHtml(data, readRelative, signal) {
     }
     return { data, assets };
 }
-//# sourceMappingURL=pack.js.map

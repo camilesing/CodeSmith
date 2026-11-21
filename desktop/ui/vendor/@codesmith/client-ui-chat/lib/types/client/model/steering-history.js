@@ -45,4 +45,3 @@ export class SteeringHistory {
             this.claimedNextStep.add(identity.id);
     }
 }
-//# sourceMappingURL=steering-history.js.map

@@ -40,4 +40,3 @@ export async function* streamJobRows(registry, request, options, signal) {
         unsubscribe();
     }
 }
-//# sourceMappingURL=rows.js.map

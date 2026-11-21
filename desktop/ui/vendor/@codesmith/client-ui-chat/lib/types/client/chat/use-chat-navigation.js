@@ -191,4 +191,3 @@ export function useChatNavigation(viewport, reading, input) {
     useLayoutEffect(() => () => { navigation.dispose(); }, [navigation]);
     return { navigation, busyTurn };
 }
-//# sourceMappingURL=use-chat-navigation.js.map

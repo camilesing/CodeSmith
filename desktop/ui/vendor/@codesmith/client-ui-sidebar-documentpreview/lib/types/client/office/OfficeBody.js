@@ -44,4 +44,3 @@ export function OfficeBody(props) {
             addResource: props.addResource, setResources: props.setResources,
         }, { entryKey: '@codesmith/client-ui-sidebar-documentpreview/office', hookContext: props.useTabInfo }) });
 }
-//# sourceMappingURL=OfficeBody.js.map

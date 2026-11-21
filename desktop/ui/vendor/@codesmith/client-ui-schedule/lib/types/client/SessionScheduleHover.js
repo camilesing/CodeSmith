@@ -39,4 +39,3 @@ export function SessionScheduleHover({ sessionId, useCatalog, t, }) {
                 return (_jsxs("div", { className: css.task, "data-session-schedule-task": "", children: [_jsx("span", { className: css.taskIcon, "aria-hidden": "true", children: _jsx(IconClockOutlineRegular, { size: 12 }) }), _jsxs("span", { className: css.taskBody, children: [_jsx("span", { className: css.taskName, children: taskName(record) }), _jsxs("span", { className: css.taskTiming, children: [`${formatScheduleFrequency(record, t)} · `, _jsx("time", { dateTime: nextRunAt, children: nextRun.absolute }), ' ', _jsx("span", { className: css.taskRelative, children: nextRun.relative })] })] })] }, record.id));
             }), omitted > 0 && _jsx("div", { className: css.omitted, children: t('hover.more', { count: omitted }) })] }));
 }
-//# sourceMappingURL=SessionScheduleHover.js.map

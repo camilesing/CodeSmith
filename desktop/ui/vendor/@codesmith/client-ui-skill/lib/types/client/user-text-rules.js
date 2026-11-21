@@ -21,4 +21,3 @@ export const skillReferenceRule = {
         return undefined;
     },
 };
-//# sourceMappingURL=user-text-rules.js.map

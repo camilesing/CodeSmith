@@ -320,4 +320,3 @@ export class IncrementalMarkdownParser {
         return this.cached;
     }
 }
-//# sourceMappingURL=incremental.js.map

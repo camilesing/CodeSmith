@@ -127,4 +127,3 @@ export function apply(ctx) {
         name: 'deliverables.review.file.actions', id: 'open-in-app', locale: NS, inject: routeInjected,
     }, FileRouteAction));
 }
-//# sourceMappingURL=index.js.map

@@ -50,4 +50,3 @@ export const ZoomControls = forwardRef(function ZoomControls({ zoom, fit, classN
                         onZoom(Number(selected));
                 } }), _jsx(Tooltip, { label: labels.into, side: "top", children: _jsx("span", { className: css.controlAnchor, children: _jsx(Button, { size: "sm", className: css.zoomButton, "aria-label": labels.into, disabled: displayZoom >= DOCUMENT_ZOOM.maximum, onMouseDown: (event) => { event.preventDefault(); }, onClick: () => { onZoom(steppedZoom(displayZoom, 1)); }, children: _jsx(IconPlusOutlineRegular, { size: 14 }) }) }) })] });
 });
-//# sourceMappingURL=ZoomControls.js.map

@@ -24,4 +24,3 @@ export const TextShimmer = memo(function TextShimmer({ children, active = false,
     const content = typeof children === 'string' ? _jsx(TextContent, { children: children }) : children;
     return (_jsxs("span", { className: clsx(css.root, className), "data-shimmer": active || undefined, children: [_jsx(DecorativeCopy.Provider, { value: false, children: _jsx("span", { className: clsx(css.content, contentClassName), children: content }) }), active && (_jsx("span", { className: css.decoration, "aria-hidden": "true", inert: '', children: _jsx("span", { className: css.sweep, children: _jsx(DecorativeCopy.Provider, { value: true, children: _jsx("span", { className: clsx(css.content, css.highlight, contentClassName), children: content }) }) }) }))] }));
 });
-//# sourceMappingURL=TextShimmer.js.map

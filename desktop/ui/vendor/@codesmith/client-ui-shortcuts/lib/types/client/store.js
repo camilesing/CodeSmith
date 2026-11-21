@@ -14,4 +14,3 @@ export function createShortcutsStore() {
         },
     });
 }
-//# sourceMappingURL=store.js.map

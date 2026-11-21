@@ -30,4 +30,3 @@ export const MenuSurface = forwardRef(function MenuSurface({ compact = false, ph
     };
     return _jsxs(_Fragment, { children: [_jsxs("div", { ...props, ref: ref, "data-menu-material": "translucent", "data-menu-phase": phase, className: clsx(css.surface, compact && css.compact, className), style: { ...style, ...anchorStyle }, children: [_jsx("div", { "aria-hidden": "true", className: css.material }), children] }), createPortal(_jsx("div", { ref: backingRef, "aria-hidden": "true", "data-menu-backing": "", "data-menu-phase": phase, className: clsx(css.backing, compact && css.compact), style: { ...anchorStyle, visibility: style?.visibility } }), document.body)] });
 });
-//# sourceMappingURL=MenuSurface.js.map

@@ -41,4 +41,3 @@ export function useAnchoredMaxHeight(ref, cap, signal, margin = MARGIN) {
     }, [ref, cap, signal, margin]);
     return maxHeight;
 }
-//# sourceMappingURL=useAnchoredMaxHeight.js.map

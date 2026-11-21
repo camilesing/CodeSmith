@@ -17,4 +17,3 @@ export function trajectoryNode(context, anchorSeq, data) {
         data,
     };
 }
-//# sourceMappingURL=trajectory-definition-common.js.map

@@ -102,4 +102,3 @@ export function registerSidebarShortcuts(shortcuts, sidebar, t, closeWindow) {
     return () => { for (const dispose of disposers.reverse())
         dispose(); };
 }
-//# sourceMappingURL=shortcuts.js.map

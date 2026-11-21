@@ -91,4 +91,3 @@ export function formatCacheHitPercent(cacheReadTokens, promptTokens, decimalPlac
     }
     return `99.${'9'.repeat(distinguishingPlaces - 1)}${10 - roundedLoss}`;
 }
-//# sourceMappingURL=token-format.js.map

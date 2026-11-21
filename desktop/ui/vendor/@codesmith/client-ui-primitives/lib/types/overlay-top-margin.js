@@ -16,4 +16,3 @@ export function overlayTopMargin(min, anchor, gap = 0) {
     const cap = anchor !== undefined && anchor.top >= 0 ? anchor.bottom + gap : Number.POSITIVE_INFINITY;
     return Math.max(min, Math.min((root.hasAttribute('data-fullscreen') ? 0 : clearance) + 20, cap));
 }
-//# sourceMappingURL=overlay-top-margin.js.map

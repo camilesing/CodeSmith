@@ -71,4 +71,3 @@ export function whenAllowed(ctx, answer, callback, label) {
     }, label);
     return () => { void disposeController(); };
 }
-//# sourceMappingURL=when-allowed.js.map

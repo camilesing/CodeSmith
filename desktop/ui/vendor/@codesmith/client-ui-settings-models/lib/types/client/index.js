@@ -117,4 +117,3 @@ export function apply(ctx) {
         inject: codesmithOnboardingInjected,
     }, CodeSmithOnboardingDialog));
 }
-//# sourceMappingURL=index.js.map

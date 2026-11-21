@@ -51,4 +51,3 @@ export class ConversationInteractionRegistry extends ConversationDefinitionRegis
         super.refresh();
     }
 }
-//# sourceMappingURL=interaction-registry.js.map

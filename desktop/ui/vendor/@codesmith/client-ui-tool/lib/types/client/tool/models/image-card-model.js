@@ -184,4 +184,3 @@ export function imageCardModel(block) {
         extraText: extraTexts(block.content),
     };
 }
-//# sourceMappingURL=image-card-model.js.map

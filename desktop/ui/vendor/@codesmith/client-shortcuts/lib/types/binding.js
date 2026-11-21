@@ -84,4 +84,3 @@ export function isWebBindingAllowed(binding, platform) {
         { code: 'Period', modifiers: ['primary', 'shift'] },
     ].some(candidate => bindingKey(binding) === bindingKey(normalizeBinding(candidate, platform)));
 }
-//# sourceMappingURL=binding.js.map

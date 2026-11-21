@@ -19,4 +19,3 @@ export function DocumentTitle({ useSessions, usePanelInfo, productTitle }) {
     }, [productTitle, title]);
     return null;
 }
-//# sourceMappingURL=DocumentTitle.js.map

@@ -405,4 +405,3 @@ export function parseAnsiLines(text) {
     }
     return lines;
 }
-//# sourceMappingURL=ansi.js.map

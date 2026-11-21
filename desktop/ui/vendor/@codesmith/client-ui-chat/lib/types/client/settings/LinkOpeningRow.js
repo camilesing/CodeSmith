@@ -15,4 +15,3 @@ export function LinkOpeningRow({ useLinkOpening, useBrowserAvailable, setLinkOpe
             { id: 'new-tab', label: t('settings.links.newTab') },
         ], onSelect: (value) => { setLinkOpening(value); } }));
 }
-//# sourceMappingURL=LinkOpeningRow.js.map

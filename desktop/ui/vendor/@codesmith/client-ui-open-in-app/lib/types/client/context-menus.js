@@ -125,4 +125,3 @@ export function registerContextMenus(ctx, paths, t, directories, report) {
 export function ContextMenuApplicationIcon({ icon }) {
     return icon.src ? _jsx("img", { src: icon.src, width: 14, height: 14, alt: "" }) : _jsx(IconRightUpOutlineRegular, {});
 }
-//# sourceMappingURL=context-menus.js.map

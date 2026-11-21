@@ -135,4 +135,3 @@ export function ConversationContent(props) {
     const composerSeat = (_jsx("div", { ref: seatResizeRef, className: css.composerSeat, "data-composer-seat": "", "data-conversation-region": "composer", children: composer }));
     return (_jsxs("div", { ref: setBody, className: clsx(css.body, props.variant === 'embedded' && css.embeddedBody), "data-conversation-content": "", "data-conversation-session": sessionId, "data-conversation-region": "chat", "data-content-phase": phase, children: [_jsxs("div", { className: css.scrollBody, "data-conversation-scroll": "", children: [sessionId === undefined ? null : _jsx(Views, {}), composerSeat] }), _jsx(WidthControls, { container: body, phase: phase })] }));
 }
-//# sourceMappingURL=ConversationContent.js.map

@@ -80,4 +80,3 @@ export class SidebarSessionView {
         this.reference.release();
     }
 }
-//# sourceMappingURL=session-view.js.map

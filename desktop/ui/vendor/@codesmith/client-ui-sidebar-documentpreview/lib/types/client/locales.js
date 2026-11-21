@@ -205,4 +205,3 @@ export const pt = {
     'error.unavailable': 'Falha na leitura: {message}',
     retry: 'Tentar novamente',
 };
-//# sourceMappingURL=locales.js.map

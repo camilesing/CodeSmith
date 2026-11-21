@@ -62,4 +62,3 @@ export function installThemeStyles(ctx) {
         }, `ui-theme: ${name} stylesheet`);
     }
 }
-//# sourceMappingURL=styles.js.map

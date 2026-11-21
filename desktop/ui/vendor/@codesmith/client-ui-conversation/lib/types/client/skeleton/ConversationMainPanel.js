@@ -38,4 +38,3 @@ export function ConversationMainPanel(props) {
                 slots: CONTENT_SLOTS,
             })] }));
 }
-//# sourceMappingURL=ConversationMainPanel.js.map

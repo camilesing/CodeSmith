@@ -7,4 +7,3 @@
  * @returns the hook the entry calls.
  */
 export const menuOpenStateFactory = (_standard, state) => () => state;
-//# sourceMappingURL=slots.js.map

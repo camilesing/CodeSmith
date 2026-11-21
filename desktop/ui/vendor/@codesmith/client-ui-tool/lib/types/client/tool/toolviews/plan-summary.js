@@ -32,4 +32,3 @@ export function planSummary(todos) {
         activeExtra: named ? active.length - 1 : 0,
     };
 }
-//# sourceMappingURL=plan-summary.js.map

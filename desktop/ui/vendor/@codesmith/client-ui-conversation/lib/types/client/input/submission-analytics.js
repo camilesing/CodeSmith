@@ -31,4 +31,3 @@ export function reportMessageSubmission(ctx, submission) {
         ...state.agentPreset === undefined ? {} : { agent_preset: analyticsPreset(state.agentPreset) },
     }, timestamp);
 }
-//# sourceMappingURL=submission-analytics.js.map

@@ -408,4 +408,3 @@ export function JobListAction({ sessionId, useJobs, watchRows, observe, killJob,
                                 : null, settledExpanded ? settledRows.map(item) : null] }) }), document.body)
                 : null] }));
 }
-//# sourceMappingURL=JobListAction.js.map

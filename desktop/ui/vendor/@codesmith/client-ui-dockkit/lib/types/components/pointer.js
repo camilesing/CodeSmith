@@ -88,4 +88,3 @@ export function useGesture(reset) {
         };
     };
 }
-//# sourceMappingURL=pointer.js.map

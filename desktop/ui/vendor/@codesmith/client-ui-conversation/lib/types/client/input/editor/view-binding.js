@@ -146,4 +146,3 @@ export function keepDraftFocus(event, editor) {
     event.preventDefault();
     editor?.getRootElement()?.focus({ preventScroll: true });
 }
-//# sourceMappingURL=view-binding.js.map

@@ -9,4 +9,3 @@ export function claimToken(descriptor, t) {
     const name = builtinCommandName(descriptor);
     return name === undefined ? descriptor.name : t(`token.${name}`);
 }
-//# sourceMappingURL=resolution.js.map

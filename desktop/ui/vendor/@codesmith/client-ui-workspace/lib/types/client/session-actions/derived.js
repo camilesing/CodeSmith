@@ -21,4 +21,3 @@ export function derive(source, project) {
         subscribe: listener => source.subscribe(listener),
     };
 }
-//# sourceMappingURL=derived.js.map

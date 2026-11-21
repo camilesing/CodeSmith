@@ -106,4 +106,3 @@ export function apply(ctx) {
     //   }),
     // }, TerminalCleanup)), 'ui-sidebar-terminal.cleanup')
 }
-//# sourceMappingURL=index.js.map

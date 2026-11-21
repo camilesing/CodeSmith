@@ -10,4 +10,3 @@ const LoadedTerminalBody = lazy(async () => ({ default: (await import("./termina
 export function LazyTerminalBody(props) {
     return _jsx(Suspense, { fallback: null, children: _jsx(LoadedTerminalBody, { ...props }) });
 }
-//# sourceMappingURL=LazyTerminalBody.js.map

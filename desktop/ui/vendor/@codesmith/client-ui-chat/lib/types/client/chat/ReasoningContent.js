@@ -20,4 +20,3 @@ export const ReasoningContent = memo(function ReasoningContent({ text, running, 
 export function DefaultReasoningBody({ text, running, renderFactorySlot }) {
     return renderFactorySlot('conversation.chat.reasoning.content', { text, running });
 }
-//# sourceMappingURL=ReasoningContent.js.map

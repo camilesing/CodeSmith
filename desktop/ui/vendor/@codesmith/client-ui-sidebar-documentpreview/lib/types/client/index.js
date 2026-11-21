@@ -60,4 +60,3 @@ export function apply(ctx) {
     registerExcel(ctx, config.excel);
     registerCode(ctx);
 }
-//# sourceMappingURL=index.js.map

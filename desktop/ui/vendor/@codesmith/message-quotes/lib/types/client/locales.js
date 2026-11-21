@@ -33,4 +33,3 @@ export const ru = {
 export const pt = {
     'quote.add': 'Citação de texto',
 };
-//# sourceMappingURL=locales.js.map

@@ -10,4 +10,3 @@ import css from './ExitCodeBadge.module.css';
 export function ExitCodeBadge({ label }) {
     return (_jsxs(Tag, { tone: "neutral", className: css.badge, children: [_jsx("span", { className: css.dot, "aria-hidden": true }), label] }));
 }
-//# sourceMappingURL=ExitCodeBadge.js.map

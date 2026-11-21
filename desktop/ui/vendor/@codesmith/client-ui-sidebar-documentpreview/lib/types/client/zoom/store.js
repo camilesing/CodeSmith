@@ -19,4 +19,3 @@ export function createZoomStore() {
 }
 /** Default zoom value for a tab without retained state. */
 export const DEFAULT_ZOOM = FIT_WIDTH;
-//# sourceMappingURL=store.js.map

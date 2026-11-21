@@ -134,4 +134,3 @@ export function ConversationSessionHeader({ sessionId, hideChrome, useSessions, 
 export function ConversationSession(props) {
     return _jsx(DefaultConversationViews, { ...props });
 }
-//# sourceMappingURL=ConversationSession.js.map

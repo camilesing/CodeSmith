@@ -34,4 +34,3 @@ export function webShortcutStorage(window, platform, publish) {
 export function desktopShortcutStorage(window) {
     return window.cdsDesktop?.shortcuts;
 }
-//# sourceMappingURL=storage.js.map

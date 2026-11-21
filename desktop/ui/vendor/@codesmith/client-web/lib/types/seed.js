@@ -39,4 +39,3 @@ export function getStaticModules() {
         '@codesmith/client-ui-dockkit': UiDockkit,
     };
 }
-//# sourceMappingURL=seed.js.map

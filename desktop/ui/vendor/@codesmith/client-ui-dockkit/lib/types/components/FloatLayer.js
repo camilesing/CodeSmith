@@ -274,4 +274,3 @@ export function FloatLayer({ state, intents, labels, renderTab, renderTabTitle, 
                 }, onPointerDown: () => { raise(paneId); }, children: [_jsx(FloatHeader, { paneId, tab, labels, intents, renderTabTitle, canCloseTab, drag }), _jsx("div", { className: css.floatBody, children: _jsx(TabBody, { tab: tab, renderTab: renderTab }) }), _jsx("div", { className: css.floatResize, "data-dockkit-float-resize": paneId, onPointerDown: (event) => { drag('resize', paneId, event); } })] }, paneId));
         }) }));
 }
-//# sourceMappingURL=FloatLayer.js.map

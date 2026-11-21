@@ -1617,4 +1617,3 @@ export const pt = {
     'layout.systemPromptAndToolsUpdated': 'Prompt do sistema e ferramentas atualizadas',
     'layout.compactionInterrupted': 'A compactação foi interrompida antes da conclusão.',
 };
-//# sourceMappingURL=locales.js.map

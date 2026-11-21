@@ -67,4 +67,3 @@ export function Deliverables({ matched, openFile, useContextMenu, t, sessionId, 
                                 onAction: (action, application) => openPresented(sessionId, file.seq, file.index, action, application),
                             }) }, `${file.seq}:${file.index}`)) }), collapsible && _jsxs("button", { type: "button", className: css.toggle, "aria-expanded": expanded, "aria-label": t(expanded ? 'presented.collapseAria' : 'presented.expandAria', { count: matched.presented.length }), onClick: () => { setExpanded(value => !value); }, children: [_jsx("span", { children: t(expanded ? 'presented.collapse' : 'presented.all', { count: matched.presented.length }) }), expanded ? _jsx(IconChevronUpOutlineRegular, {}) : _jsx(IconChevronDownOutlineRegular, {})] })] })] });
 }
-//# sourceMappingURL=Deliverables.js.map

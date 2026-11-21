@@ -268,4 +268,3 @@ export class UiConversation extends Service {
             record.disposeScope();
     }
 }
-//# sourceMappingURL=assembly.js.map

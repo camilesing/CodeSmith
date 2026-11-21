@@ -229,4 +229,3 @@ function TaskDetailView(props) {
                                 });
                             }, children: t('delete.confirm') })] }), children: _jsx("p", { className: css.confirmPrompt, children: task.prompt }) })] });
 }
-//# sourceMappingURL=TaskDetail.js.map

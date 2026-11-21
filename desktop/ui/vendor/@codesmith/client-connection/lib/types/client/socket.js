@@ -14,4 +14,3 @@ export function openConnectionWebSocket(path, factory = url => new WebSocket(url
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     return factory(url.href);
 }
-//# sourceMappingURL=socket.js.map

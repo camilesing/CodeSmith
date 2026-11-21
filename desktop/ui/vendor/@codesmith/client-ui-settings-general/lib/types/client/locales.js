@@ -543,4 +543,3 @@ export const pt = {
     'hostRelease.reload': 'Recarregue para carregar a nova versão',
     'hostRelease.later': 'Agora não',
 };
-//# sourceMappingURL=locales.js.map

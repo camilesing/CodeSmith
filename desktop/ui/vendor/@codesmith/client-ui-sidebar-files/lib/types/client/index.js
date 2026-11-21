@@ -131,4 +131,3 @@ export function apply(ctx) {
     }, FilesBody)), 'ui-sidebar-files: files tab body');
     ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({ name: 'sidebar.right.pane.tab.title', key: FILES_ID }, FilesTitle)), 'ui-sidebar-files: files tab title');
 }
-//# sourceMappingURL=index.js.map

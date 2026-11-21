@@ -256,4 +256,3 @@ export const inject = ['remote', 'remote.terminal', 'connection'];
 export function apply(ctx) {
     new ClientTerminals(ctx, ctx.remote.terminal);
 }
-//# sourceMappingURL=index.js.map

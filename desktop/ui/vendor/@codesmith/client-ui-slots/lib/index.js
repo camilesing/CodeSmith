@@ -574,4 +574,3 @@ var SlotCore = class {
 //#endregion
 export { SlotCore, SlotOwnershipError, StaleAuthorizationError, resolveSlotLabel, standardHookPropName };
 
-//# sourceMappingURL=index.js.map

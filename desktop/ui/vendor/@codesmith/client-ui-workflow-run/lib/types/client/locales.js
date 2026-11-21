@@ -169,4 +169,3 @@ export const pt = {
     'status.cancelled': 'Cancelado',
     'status.interrupted': 'Interrompido',
 };
-//# sourceMappingURL=locales.js.map

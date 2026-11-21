@@ -31,4 +31,3 @@ if(bundle.assets.length){
 document.open();document.write(html);document.close();
 })()</script>`;
 }
-//# sourceMappingURL=bootstrap.js.map

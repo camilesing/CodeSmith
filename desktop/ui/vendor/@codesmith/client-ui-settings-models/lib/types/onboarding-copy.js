@@ -7,4 +7,3 @@ export const WELCOME_NOTICE_ACK_FIELD = 'welcomeNoticeVersion';
  * again. The acknowledgement is compared for exact equality.
  */
 export const WELCOME_NOTICE_VERSION = '2026-09-28.1';
-//# sourceMappingURL=onboarding-copy.js.map

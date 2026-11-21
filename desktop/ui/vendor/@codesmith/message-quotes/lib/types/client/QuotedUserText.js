@@ -9,4 +9,3 @@ import { QuotePreview } from '@codesmith/client-ui-primitives';
 export function QuotedUserText({ node }) {
     return _jsx(QuotePreview, { text: node.data.text });
 }
-//# sourceMappingURL=QuotedUserText.js.map

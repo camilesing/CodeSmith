@@ -10,4 +10,3 @@ export function markdownLabels(t) {
         footnotes: t('markdown.footnotes'),
     };
 }
-//# sourceMappingURL=markdown-labels.js.map

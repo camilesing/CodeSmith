@@ -185,4 +185,3 @@ export const UnknownNodeView = memo(function UnknownNodeView({ node, t }) {
     const data = node.data;
     return (_jsx("div", { className: css.contextRow, children: _jsx(JsonBlock, { label: t('message.unknownSurface', { type: data.type }), payload: data.data, truncatedLabel: total => t('json.truncated', { total }) }) }));
 });
-//# sourceMappingURL=MessageItem.js.map

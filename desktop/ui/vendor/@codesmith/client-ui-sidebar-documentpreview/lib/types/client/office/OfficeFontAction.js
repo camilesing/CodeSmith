@@ -12,4 +12,3 @@ export function OfficeFontAction({ content, useTabInfo, useStore, t }) {
         return null;
     return _jsx(FontNotice, { fonts: held.file.missingFonts, t: t }, content.revision);
 }
-//# sourceMappingURL=OfficeFontAction.js.map

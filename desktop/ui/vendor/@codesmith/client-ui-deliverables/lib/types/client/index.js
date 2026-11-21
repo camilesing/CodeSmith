@@ -83,4 +83,3 @@ export function apply(ctx) {
     };
     ctx.provide('chatFileMentions', mentions);
 }
-//# sourceMappingURL=index.js.map

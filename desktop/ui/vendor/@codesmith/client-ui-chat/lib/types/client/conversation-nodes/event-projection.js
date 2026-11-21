@@ -157,4 +157,3 @@ export function isTokenDelta(chunk) {
     }
 }
 /* jscpd:ignore-end */
-//# sourceMappingURL=event-projection.js.map

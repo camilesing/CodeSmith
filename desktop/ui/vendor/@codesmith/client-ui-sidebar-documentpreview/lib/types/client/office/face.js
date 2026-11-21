@@ -32,4 +32,3 @@ export function officeFace(read, describeFailure) {
         },
     });
 }
-//# sourceMappingURL=face.js.map

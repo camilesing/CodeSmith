@@ -84,4 +84,3 @@ export class DesktopChannelSource {
     /** Detach the shell subscription and ignore late IPC responses. */
     dispose() { this.live = false; this.unsubscribe(); }
 }
-//# sourceMappingURL=desktop-channel-source.js.map

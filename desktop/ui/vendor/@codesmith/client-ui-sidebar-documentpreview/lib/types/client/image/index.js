@@ -42,4 +42,3 @@ export function apply(ctx) {
         }),
     }, ImageBody)), 'document-image: body');
 }
-//# sourceMappingURL=index.js.map

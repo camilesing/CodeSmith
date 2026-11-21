@@ -190,4 +190,3 @@ export function inspectionDetails(name, args, text, json, t, locale) {
         default: return null;
     }
 }
-//# sourceMappingURL=inspection-details-model.js.map

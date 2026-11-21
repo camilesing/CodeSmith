@@ -81,4 +81,3 @@ export function WorkspaceDialogs({ request, workspaces, renameWorkspace, deleteW
                     ? {}
                     : { description: t('delete.desc', { name: deleteTarget.displayTitle }) }, footer: (_jsxs(_Fragment, { children: [_jsx(Button, { variant: "outline", disabled: deleting, onClick: closeDelete, children: t('cancel') }), _jsx(Button, { variant: "outline", className: css.deleteAction, disabled: deleting, onClick: confirmDelete, children: t('delete.workspace') })] })), children: [deleting && _jsx("div", { className: css.deleteStatus, role: "status", children: t('delete.pending') }), deleteError !== null && _jsx("div", { className: css.renameError, role: "alert", children: deleteError })] })] });
 }
-//# sourceMappingURL=WorkspaceDialogs.js.map

@@ -13,4 +13,3 @@ export function CodeFileIcon({ type, size = 20, className }) {
     // static table. Per-instance ids keep gradients and clip paths independent.
     return (_jsx("svg", { width: size, height: size, className: className, viewBox: "0 0 20 20", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": true, dangerouslySetInnerHTML: { __html: artwork } }));
 }
-//# sourceMappingURL=CodeFileIcon.js.map

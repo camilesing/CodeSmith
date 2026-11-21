@@ -21,4 +21,3 @@ export function JsonBlock({ label, payload, defaultOpen = false, truncatedLabel 
     }, [open, payload, truncatedLabel]);
     return (_jsxs("div", { className: css.root, children: [_jsxs("button", { type: "button", className: css.toggle, onClick: () => { setOpen(v => !v); }, children: [open ? '▾' : '▸', " ", label] }), open && _jsx("pre", { className: css.body, children: body })] }));
 }
-//# sourceMappingURL=JsonBlock.js.map

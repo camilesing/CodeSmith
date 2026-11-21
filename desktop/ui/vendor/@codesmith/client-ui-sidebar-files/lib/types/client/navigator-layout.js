@@ -3,4 +3,3 @@
 export const FILL_BELOW = 400;
 /** Matches the right Sidebar's fullscreen viewport and FilesBody.module.css. */
 export const FULLSCREEN_QUERY = '(width < 768px)';
-//# sourceMappingURL=navigator-layout.js.map

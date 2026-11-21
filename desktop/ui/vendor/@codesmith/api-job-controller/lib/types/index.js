@@ -147,4 +147,3 @@ let JobController = (() => {
 })();
 export { JobController };
 export default JobController;
-//# sourceMappingURL=index.js.map

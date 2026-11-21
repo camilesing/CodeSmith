@@ -44,4 +44,3 @@ export const zh = {
     'number.thousand': '{value}K',
     'number.million': '{value}M',
 };
-//# sourceMappingURL=zh.js.map

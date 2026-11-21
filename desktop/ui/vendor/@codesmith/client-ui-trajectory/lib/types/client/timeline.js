@@ -139,4 +139,3 @@ export function trajectoryTimelineFocusIndexes(turns, range, mode = 'sequence') 
         .filter(span => span.start <= range.end && span.end >= range.start)
         .map(span => span.index));
 }
-//# sourceMappingURL=timeline.js.map

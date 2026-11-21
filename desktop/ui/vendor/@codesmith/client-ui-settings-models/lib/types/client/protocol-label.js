@@ -21,4 +21,3 @@ export function protocolLabel(t, protocol) {
     const key = PROTOCOL_LABEL_KEYS[protocol];
     return key === undefined ? protocol : t(key);
 }
-//# sourceMappingURL=protocol-label.js.map

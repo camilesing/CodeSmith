@@ -15,4 +15,3 @@ export function trajectoryPreviewText(text) {
         ? `${preview}…`
         : preview;
 }
-//# sourceMappingURL=trajectory-preview.js.map

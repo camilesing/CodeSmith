@@ -244,4 +244,3 @@ export class PopupSelectController {
         this.state.set(CLOSED);
     }
 }
-//# sourceMappingURL=popup.js.map

@@ -8,4 +8,3 @@ export { RpcId, transportError } from "../rpc.js";
 export function resultOf(response) {
     return response.result;
 }
-//# sourceMappingURL=api.js.map

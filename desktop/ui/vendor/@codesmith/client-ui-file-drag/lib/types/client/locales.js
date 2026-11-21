@@ -14,4 +14,3 @@ export const de = { failed: 'Ziehen ist fehlgeschlagen. Versuchen Sie es erneut.
 export const ru = { failed: 'Перетащить не удалось. Попробуйте еще раз.' };
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = { failed: 'Falha ao arrastar. Tente novamente.' };
-//# sourceMappingURL=locales.js.map

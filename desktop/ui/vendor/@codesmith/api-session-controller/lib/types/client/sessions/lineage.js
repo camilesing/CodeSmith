@@ -53,4 +53,3 @@ export function flattenLineage(summaries) {
     }
     return out;
 }
-//# sourceMappingURL=lineage.js.map

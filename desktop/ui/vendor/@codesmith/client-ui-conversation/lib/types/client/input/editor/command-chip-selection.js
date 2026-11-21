@@ -90,4 +90,3 @@ export function registerCommandChipSelection(editor) {
         paint(touching ? current : null);
     }), () => { paint(null); });
 }
-//# sourceMappingURL=command-chip-selection.js.map

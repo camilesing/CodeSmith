@@ -45,4 +45,3 @@ export class LayoutController {
         this.panels.closeRightbar();
     }
 }
-//# sourceMappingURL=service.js.map

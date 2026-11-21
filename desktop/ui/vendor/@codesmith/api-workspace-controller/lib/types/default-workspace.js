@@ -26,4 +26,3 @@ export const DEFAULT_WORKSPACE_DIRECTORY = 'default-workspace';
 export function workspaceDisplayTitle(title, localizedDefault) {
     return title === DEFAULT_WORKSPACE_DIRECTORY ? localizedDefault : title;
 }
-//# sourceMappingURL=default-workspace.js.map

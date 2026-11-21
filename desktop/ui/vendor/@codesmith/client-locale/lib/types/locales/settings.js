@@ -31,4 +31,3 @@ export const ru = {
 export const pt = {
     'language.title': 'Idioma',
 };
-//# sourceMappingURL=settings.js.map

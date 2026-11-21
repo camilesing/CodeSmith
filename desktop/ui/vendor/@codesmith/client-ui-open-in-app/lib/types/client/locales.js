@@ -290,4 +290,3 @@ export const pt = {
     'app.filemanager': 'Arquivos',
     'app.terminal': 'Terminais',
 };
-//# sourceMappingURL=locales.js.map

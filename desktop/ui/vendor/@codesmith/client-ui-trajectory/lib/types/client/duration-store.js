@@ -8,4 +8,3 @@ export function createTrajectoryDurationStore() {
         persist: { name: 'cds.trajectory.duration' },
     });
 }
-//# sourceMappingURL=duration-store.js.map

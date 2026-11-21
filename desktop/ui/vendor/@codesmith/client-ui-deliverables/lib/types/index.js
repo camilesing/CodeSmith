@@ -13,4 +13,3 @@ export const inject = ['connection', 'sessionQuery', 'sessionController', 'works
 export function apply(ctx) {
     registerPresentOpen(ctx);
 }
-//# sourceMappingURL=index.js.map

@@ -19,4 +19,3 @@ export function createViewPins() {
         },
     };
 }
-//# sourceMappingURL=view-pins.js.map

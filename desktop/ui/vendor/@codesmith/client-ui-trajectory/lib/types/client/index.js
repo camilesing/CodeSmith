@@ -80,4 +80,3 @@ export function apply(ctx) {
         },
     }, TrajectoryView));
 }
-//# sourceMappingURL=index.js.map

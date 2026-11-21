@@ -114,4 +114,3 @@ export class BrowserFileActions {
         this.downloadUrl = undefined;
     }
 }
-//# sourceMappingURL=files.js.map

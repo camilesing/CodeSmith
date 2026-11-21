@@ -44,4 +44,3 @@ export function ImageLightbox({ src, alt, labels, onClose, contextMenuProps }) {
     }, [onClose]);
     return createPortal(_jsx("div", { className: css.backdrop, role: "dialog", "aria-modal": "true", "aria-label": labels.dialog, children: _jsxs("div", { className: css.stage, children: [_jsx("div", { className: css.mask, "aria-hidden": "true", onMouseDown: onClose }), _jsx("img", { className: css.image, src: src, alt: alt, ...contextMenuProps }), _jsx("button", { ref: closeRef, type: "button", className: css.close, "aria-label": labels.close, onClick: onClose, children: _jsx(IconCloseOutlineRegular, { size: 16 }) })] }) }), document.body);
 }
-//# sourceMappingURL=ImageLightbox.js.map

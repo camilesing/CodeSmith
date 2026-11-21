@@ -86,4 +86,3 @@ export class TerminalFollower {
         }
     }
 }
-//# sourceMappingURL=stream.js.map

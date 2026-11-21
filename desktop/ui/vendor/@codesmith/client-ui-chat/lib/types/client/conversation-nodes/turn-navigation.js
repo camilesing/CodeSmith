@@ -82,4 +82,3 @@ export function turnNavigationItem(turn, locations, nodes) {
         response: response === undefined ? '' : responseText(response),
     };
 }
-//# sourceMappingURL=turn-navigation.js.map

@@ -58,4 +58,3 @@ export async function renderPdfPage(document, pageNumber, canvas, signal, pixelR
         page.cleanup();
     }
 }
-//# sourceMappingURL=document.js.map

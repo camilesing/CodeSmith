@@ -5,4 +5,3 @@
  */
 /** `globalThis` property an index injection row assigns to the page's opening baseline. */
 export const REMOTE_ACCESS_SNAPSHOT_KEY = '__CODESMITH_REMOTE_ACCESS__';
-//# sourceMappingURL=snapshot.js.map

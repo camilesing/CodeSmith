@@ -22,4 +22,3 @@ export function parseNativeFileApplications(value) {
     }
     return applications;
 }
-//# sourceMappingURL=types.js.map

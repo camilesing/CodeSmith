@@ -507,4 +507,3 @@ export function apply(ctx) {
         },
     }, FontSettingsGroup));
 }
-//# sourceMappingURL=index.js.map

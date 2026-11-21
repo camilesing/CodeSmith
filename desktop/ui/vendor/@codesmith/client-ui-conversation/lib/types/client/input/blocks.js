@@ -37,4 +37,3 @@ export class ComposerBlockRegistry {
         this.stores.delete(sessionId);
     }
 }
-//# sourceMappingURL=blocks.js.map

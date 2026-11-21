@@ -335,4 +335,3 @@ export class BrowserAuth {
             : 'codesmith web authentication required; reopen the URL printed by codesmith web.\n');
     }
 }
-//# sourceMappingURL=browser-auth.js.map

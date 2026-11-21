@@ -150,4 +150,3 @@ function fitScreen(xterm, fit, state, model) {
     xterm.resize(cols, rows);
     model.resize(cols, rows);
 }
-//# sourceMappingURL=terminal.js.map

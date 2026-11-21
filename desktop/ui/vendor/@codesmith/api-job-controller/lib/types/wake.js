@@ -56,4 +56,3 @@ export function sleep(ms, signal) {
         signal.addEventListener('abort', done, { once: true });
     });
 }
-//# sourceMappingURL=wake.js.map

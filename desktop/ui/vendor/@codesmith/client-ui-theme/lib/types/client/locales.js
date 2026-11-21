@@ -223,4 +223,3 @@ export const pt = {
     'fontFamily.placeholder': 'Padrão',
     'fontSize.more': 'Mais configurações de fonte',
 };
-//# sourceMappingURL=locales.js.map

@@ -82,4 +82,3 @@ export function installWorkspaceShortcuts(ctx, navigation, controls, archiveSess
                 } };
     });
 }
-//# sourceMappingURL=shortcuts.js.map

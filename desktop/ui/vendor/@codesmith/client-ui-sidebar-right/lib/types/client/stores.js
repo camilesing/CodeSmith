@@ -429,4 +429,3 @@ export function createSidebarRightStore(seed) {
             return { ...instance, clearPersisted: () => { clearSidebarLayout(scopeKey); } };
         } };
 }
-//# sourceMappingURL=stores.js.map

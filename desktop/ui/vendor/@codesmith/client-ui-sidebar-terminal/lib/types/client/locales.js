@@ -148,4 +148,3 @@ export const pt = {
     invalidOutput: 'A tela do terminal não pôde ser recebida. Reconecte para recuperá-lo.',
     terminalLimit: 'O limite terminal foi atingido. Feche os terminais não utilizados e tente novamente. Os terminais encerrados também contam para o limite.',
 };
-//# sourceMappingURL=locales.js.map

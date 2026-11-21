@@ -205,4 +205,3 @@ export function routeJournal(journal, data, patches, warn) {
     }
     return patched;
 }
-//# sourceMappingURL=patch.js.map

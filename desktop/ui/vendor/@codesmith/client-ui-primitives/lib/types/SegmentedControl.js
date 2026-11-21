@@ -79,4 +79,3 @@ export function SegmentedControl({ id, value, options, onChange, label, disabled
                         onChange(option.value); }, onKeyDown: onKeyDown, children: option.label }, option.value));
             })] }));
 }
-//# sourceMappingURL=SegmentedControl.js.map

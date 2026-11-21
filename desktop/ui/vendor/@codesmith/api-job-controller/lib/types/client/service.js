@@ -179,4 +179,3 @@ export class ClientJobs extends Service {
         return entry;
     }
 }
-//# sourceMappingURL=service.js.map

@@ -28,4 +28,3 @@ export function FileOpenTarget(props) {
 export function OpenPathAction(props) {
     return _jsx(FileOpenTarget, { ...props });
 }
-//# sourceMappingURL=OpenPathAction.js.map

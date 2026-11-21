@@ -76,4 +76,3 @@ export function formatMessageClock(time, t, now = Date.now()) {
     const md = d.getFullYear() === n.getFullYear() ? t('clock.md', params) : t('clock.ymd', params);
     return `${md} ${clock}`;
 }
-//# sourceMappingURL=message-chrome.js.map

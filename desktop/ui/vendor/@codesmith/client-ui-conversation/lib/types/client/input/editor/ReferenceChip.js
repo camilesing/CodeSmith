@@ -18,4 +18,3 @@ export function ReferenceChip({ label, appearance, invalid }) {
                 ? _jsx("span", { className: css.marker, "aria-hidden": true, children: "@" })
                 : _jsx(ReferenceIconRegular, { kind: appearance, size: 14, className: css.icon }), _jsx("span", { className: css.label, children: label })] }));
 }
-//# sourceMappingURL=ReferenceChip.js.map

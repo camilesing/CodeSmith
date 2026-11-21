@@ -28,4 +28,3 @@ export function QuoteSelectionAction({ dismiss, readText, clearSelection, inputA
             dismiss();
         }, children: t('quote.add') });
 }
-//# sourceMappingURL=QuoteSelection.js.map

@@ -67,4 +67,3 @@ export class SidebarSessionViews {
         })));
     }
 }
-//# sourceMappingURL=session-views.js.map

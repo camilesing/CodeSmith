@@ -267,4 +267,3 @@ export function useChatReading(viewport, store, initialTurn) {
     useLayoutEffect(() => () => { reading.dispose(); }, [reading]);
     return { reading, state };
 }
-//# sourceMappingURL=use-chat-reading.js.map

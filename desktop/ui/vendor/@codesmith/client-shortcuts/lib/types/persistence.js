@@ -124,4 +124,3 @@ export class ShortcutPersistence {
         return this.snapshot;
     }
 }
-//# sourceMappingURL=persistence.js.map

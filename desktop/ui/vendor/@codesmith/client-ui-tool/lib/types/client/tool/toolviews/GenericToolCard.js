@@ -41,4 +41,3 @@ export function GenericToolCard({ toolName, block, cwd, home, openFile, getFileT
         // single-file AND carries a card, so the card expands under the path link.
         bodyRaw: singleFile || autoReview !== null ? null : model.bodyRaw, output: autoReview?.output ?? model.output, errorSummary: autoReview?.summary ?? model.errorSummary, terminal: terminal, diff: diff, read: read, search: search, web: web, state: state, filePath: model.filePath, onOpenFile: singleFile ? openFile : undefined, inspect: inspect }));
 }
-//# sourceMappingURL=GenericToolCard.js.map

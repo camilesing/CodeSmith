@@ -12,4 +12,3 @@ export function sessionFilePath(ctx, sessionId) {
         return resolveWorkspacePath(current ?? cwd, path);
     };
 }
-//# sourceMappingURL=file-path.js.map

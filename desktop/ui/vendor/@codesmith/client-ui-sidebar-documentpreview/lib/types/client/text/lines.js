@@ -83,4 +83,3 @@ export function markLine(body, row, line) {
 export function clearLineMark(body) {
     body.querySelector(':scope > [data-textpreview-mark]')?.remove();
 }
-//# sourceMappingURL=lines.js.map

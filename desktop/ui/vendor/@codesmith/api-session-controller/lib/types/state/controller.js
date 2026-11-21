@@ -286,4 +286,3 @@ function queueItems(agent) {
         ...agent.inbox.nextStep.map(message => item(message, message.source.kind === 'user' ? 'steering' : 'context')),
     ];
 }
-//# sourceMappingURL=controller.js.map

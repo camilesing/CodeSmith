@@ -21,4 +21,3 @@ export const planDefinition = {
         };
     },
 };
-//# sourceMappingURL=plan-definition.js.map

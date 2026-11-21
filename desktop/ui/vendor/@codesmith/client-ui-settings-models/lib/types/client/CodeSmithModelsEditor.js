@@ -158,4 +158,3 @@ export function CodeSmithModelsEditor(props) {
                                 update(index, 'id', trimmed);
                         }, onChange: (next) => { props.onChange(props.models.map((row, at) => at === index ? next : row)); }, onToggle: () => { rowState.toggle(index); }, onRemove: () => { remove(index); } }, key)))] }), _jsxs("button", { type: "button", className: styles['addModelButton'], disabled: props.disabled, onClick: () => { props.onChange([...props.models.map(model => ({ ...model })), { id: '' }]); }, children: [_jsx(IconPlusOutlineRegular, { size: 14 }), props.t('addModel')] })] }));
 }
-//# sourceMappingURL=CodeSmithModelsEditor.js.map

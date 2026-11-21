@@ -123,4 +123,3 @@ function FileTreeView({ t, useFactorySlot, ...input }) {
  * changes, so a caller keeps its inputs and local selection stable between renders.
  */
 export const FileTree = memo(FileTreeView);
-//# sourceMappingURL=FileTree.js.map

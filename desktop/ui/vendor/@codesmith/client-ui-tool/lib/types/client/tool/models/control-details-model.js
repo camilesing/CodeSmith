@@ -253,4 +253,3 @@ export function controlDetails(name, args, text, json, t) {
         default: return null;
     }
 }
-//# sourceMappingURL=control-details-model.js.map

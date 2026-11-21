@@ -46,4 +46,3 @@ export function InlineEditor({ value, label, onChange, onSave, onCancel, classNa
     };
     return (_jsx("textarea", { ref: ref, autoFocus: true, rows: 1, className: clsx(css.editor, className), "aria-label": label, value: value, onChange: (event) => { onChange(event.currentTarget.value); }, onKeyDown: onKeyDown }));
 }
-//# sourceMappingURL=InlineEditor.js.map

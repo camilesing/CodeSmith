@@ -31,4 +31,3 @@ export function canonicalClientTimeZone(value) {
 }
 export { Cron, CRON_SEARCH_HORIZON_YEARS } from "./cron.js";
 export { RRule } from "./rrule.js";
-//# sourceMappingURL=index.js.map

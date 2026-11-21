@@ -36,4 +36,3 @@ export function useSearchableHidden(hidden, reveal, transition) {
     }, [reveal]);
     return ref;
 }
-//# sourceMappingURL=searchable-hidden.js.map

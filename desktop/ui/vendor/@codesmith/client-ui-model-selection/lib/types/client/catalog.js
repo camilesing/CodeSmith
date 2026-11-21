@@ -92,4 +92,3 @@ export class ModelCatalogDirectory {
         void this.load().catch(() => { });
     }
 }
-//# sourceMappingURL=catalog.js.map

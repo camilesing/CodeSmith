@@ -21,4 +21,3 @@ export function FontSettingsGroup({ setFontFamily, setFontSize, ...shared }) {
     const size = (role, expander) => (_jsx(FontSizeRow, { ...shared, role: role, expander: expander, setFontSize: (px) => { setFontSize(role, px); } }));
     return (_jsxs("div", { className: css.group, children: [size('text', { open, controls: regionId, onToggle: () => { setOpen(value => !value); } }), open && (_jsxs("div", { id: regionId, children: [family('text'), family('code'), size('code'), family('terminal'), size('terminal')] }))] }));
 }
-//# sourceMappingURL=FontSettingsGroup.js.map

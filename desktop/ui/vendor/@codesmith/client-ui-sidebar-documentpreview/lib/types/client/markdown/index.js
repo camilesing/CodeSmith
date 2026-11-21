@@ -20,4 +20,3 @@ export function apply(ctx) {
     ctx.effect(() => ctx.documentPreviews.register(markdownDefinition(() => t('viewer.label'))), 'document-markdown: metadata');
     ctx.effect(() => ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({ name: 'sidebar.right.tab.document', key: MARKDOWN_BODY_ID, locale: 'documentMarkdown' }, MarkdownBody)), 'document-markdown: body');
 }
-//# sourceMappingURL=index.js.map

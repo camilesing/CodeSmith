@@ -15,4 +15,3 @@ export function reviewPreviewAddress(sessionId, requestKey) {
 export function isReviewPreviewAddress(address) {
     return /^cds-resource:\/\/plan-review\/[^/?#]+\/[^/?#]+$/.test(address);
 }
-//# sourceMappingURL=review-preview.js.map

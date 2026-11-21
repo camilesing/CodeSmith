@@ -109,4 +109,3 @@ export class MutableSessionEventSource {
         notifySubscribers(this.listeners, '[session-controller] event feed');
     }
 }
-//# sourceMappingURL=events.js.map

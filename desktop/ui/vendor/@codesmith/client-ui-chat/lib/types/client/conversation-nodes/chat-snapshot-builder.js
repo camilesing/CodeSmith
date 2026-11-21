@@ -1107,4 +1107,3 @@ export const chatViewDefinition = {
 export function registerChatConversationView(ctx) {
     ctx.uiConversation.views.register(chatViewDefinition);
 }
-//# sourceMappingURL=chat-snapshot-builder.js.map

@@ -39,4 +39,3 @@ export function RuleStepper({ id, min, max, value, disabled, increaseLabel, decr
                     onChange(clamp(next));
                 } }), _jsxs("span", { className: css.ruleIntervalArrows, children: [_jsx("button", { type: "button", className: css.ruleIntervalArrow, "aria-label": increaseLabel, disabled: disabled || value >= max, onClick: () => { onChange(clamp(value + 1)); }, children: _jsx(IconChevronUpOutlineRegular, { size: 9 }) }), _jsx("button", { type: "button", className: css.ruleIntervalArrow, "aria-label": decreaseLabel, disabled: disabled || value <= min, onClick: () => { onChange(clamp(value - 1)); }, children: _jsx(IconChevronDownOutlineRegular, { size: 9 }) })] })] });
 }
-//# sourceMappingURL=TaskRuleControls.js.map

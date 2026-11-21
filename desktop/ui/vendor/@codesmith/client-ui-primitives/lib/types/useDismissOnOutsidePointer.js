@@ -26,4 +26,3 @@ export function useDismissOnOutsidePointer(root, open, setOpen, portal) {
         return () => { document.removeEventListener('pointerdown', closeOutside); };
     }, [root, open, setOpen, portal]);
 }
-//# sourceMappingURL=useDismissOnOutsidePointer.js.map

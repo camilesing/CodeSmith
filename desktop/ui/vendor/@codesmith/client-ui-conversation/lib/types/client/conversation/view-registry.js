@@ -10,4 +10,3 @@ export class ConversationViewRegistry extends ConversationDefinitionRegistry {
         return this.registerDefinition(definition.target, definition, `conversation view target "${definition.target}" is already registered`, `uiConversation.views.register(${JSON.stringify(definition.target)})`);
     }
 }
-//# sourceMappingURL=view-registry.js.map

@@ -31,4 +31,3 @@ export function apply(ctx) {
         name: 'tool.call.images', priority: 100,
     }, MessageImages));
 }
-//# sourceMappingURL=index.js.map

@@ -70,4 +70,3 @@ export function turnTriggerDetails(node) {
     }
     return { title, icon };
 }
-//# sourceMappingURL=turn-trigger.js.map

@@ -612,4 +612,3 @@ function requireScopeKey(definition, binding) {
     }
     return binding.key;
 }
-//# sourceMappingURL=registry.js.map

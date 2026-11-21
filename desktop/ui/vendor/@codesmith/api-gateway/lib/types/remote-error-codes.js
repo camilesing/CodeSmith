@@ -4,4 +4,3 @@
  * module so both programs see the same map entries.
  */
 export {};
-//# sourceMappingURL=remote-error-codes.js.map

@@ -19,4 +19,3 @@ export function isVisibleChatNode(node) {
         && (node.kind !== 'context'
             || node.data.content.some(block => block.type === 'tool-addition' || block.type === 'tool-removal'));
 }
-//# sourceMappingURL=chat-visibility.js.map

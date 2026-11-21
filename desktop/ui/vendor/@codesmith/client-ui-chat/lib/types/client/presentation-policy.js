@@ -71,4 +71,3 @@ export function derivePresentationPolicy(mode, collapseTiming, foldedReplies) {
         },
     };
 }
-//# sourceMappingURL=presentation-policy.js.map

@@ -11,4 +11,3 @@ export function TerminalCleanup({ useCloseFailures, retryClose, t }) {
         return null;
     return _jsx("div", { className: css.stack, children: failures.map(failure => _jsxs("div", { className: css.notice, role: "alert", children: [_jsx("span", { children: t('cleanupFailed', { title: failure.title, message: failure.message }) }), _jsx("button", { type: "button", onClick: () => { retryClose(failure.id); }, children: t('retry') })] }, failure.id)) });
 }
-//# sourceMappingURL=TerminalCleanup.js.map

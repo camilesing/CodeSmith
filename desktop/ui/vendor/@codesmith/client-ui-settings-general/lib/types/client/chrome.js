@@ -31,4 +31,3 @@ export function HeaderContent({ t }) {
 export function CloseLabel({ t }) {
     return _jsx(_Fragment, { children: t('close') });
 }
-//# sourceMappingURL=chrome.js.map

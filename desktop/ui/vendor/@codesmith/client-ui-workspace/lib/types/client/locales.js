@@ -979,4 +979,3 @@ export const pt = {
     'time.years': '{n}s',
     'time.ago': '{t} atrás',
 };
-//# sourceMappingURL=locales.js.map

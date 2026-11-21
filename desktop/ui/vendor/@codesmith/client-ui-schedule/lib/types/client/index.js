@@ -267,4 +267,3 @@ export function apply(ctx) {
         }, SessionScheduleHover));
     });
 }
-//# sourceMappingURL=index.js.map

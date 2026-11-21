@@ -329,4 +329,3 @@ export const pt = {
     'terminal.expand': 'Mostrar mais {n} linhas',
     'terminal.expandAria': 'Expanda {n} linhas de saída recolhidas',
 };
-//# sourceMappingURL=locales.js.map

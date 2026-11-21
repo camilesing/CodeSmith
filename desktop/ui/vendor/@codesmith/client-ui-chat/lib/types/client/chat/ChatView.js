@@ -193,4 +193,3 @@ export function ChatView({ useSession, useChat, useConversation, useSessions, re
 function FileOpenErrorDialog({ message, busy, onClose, onRetry, t, }) {
     return (_jsx(Modal, { open: true, onClose: onClose, closeLabel: t('close'), title: t('fileOpen.title'), description: message, footer: (_jsxs(_Fragment, { children: [_jsx(Button, { variant: "outline", className: css.modalAction, onClick: onClose, children: t('cancel') }), _jsx(Button, { variant: "primary", className: css.modalAction, disabled: busy, onClick: onRetry, children: t('retry') })] })) }));
 }
-//# sourceMappingURL=ChatView.js.map

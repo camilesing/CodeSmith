@@ -470,4 +470,3 @@ function samePendingInteractions(left, right) {
     }
     return true;
 }
-//# sourceMappingURL=index.js.map

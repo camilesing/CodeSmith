@@ -481,4 +481,3 @@ export const pt = {
     'diff.coarse': 'A comparação de linha expirou; mostrado como uma substituição de arquivo inteiro',
     'diff.truncated': 'Mostrando as primeiras {count} linhas',
 };
-//# sourceMappingURL=locales.js.map

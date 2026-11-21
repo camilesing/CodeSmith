@@ -589,4 +589,3 @@ export function filesFace(list, watch, canOpen, navigationOf) {
         return face;
     };
 }
-//# sourceMappingURL=face.js.map

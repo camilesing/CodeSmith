@@ -36,4 +36,3 @@ export function WelcomeNotice(props) {
     const paragraphs = t('welcomeBody').split('\n\n');
     return (_jsxs(OnboardingModal, { title: t('welcomeTitle'), focusTitle: true, children: [_jsx("div", { className: css.copy, children: paragraphs.map(paragraph => _jsx("p", { children: paragraph }, paragraph)) }), state.error === null ? null : _jsx("p", { className: css.error, role: "alert", children: t('welcomeError') }), _jsx("div", { className: css.actions, children: _jsx(Button, { variant: "primary", className: css.primary, disabled: state.status === 'saving', onClick: () => { void acknowledge(); }, children: t('welcomeContinue') }) })] }));
 }
-//# sourceMappingURL=WelcomeNotice.js.map

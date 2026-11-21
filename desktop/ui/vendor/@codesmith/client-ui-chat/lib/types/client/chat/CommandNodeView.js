@@ -17,4 +17,3 @@ export const ManualCompactionNodeView = memo(function ManualCompactionNodeView({
     const data = node.data;
     return (_jsx("div", { className: css.callRow, children: _jsx(CompactionCommandCard, { node: data.command, ...data.compaction === null ? {} : { compaction: data.compaction }, t: t }) }));
 });
-//# sourceMappingURL=CommandNodeView.js.map

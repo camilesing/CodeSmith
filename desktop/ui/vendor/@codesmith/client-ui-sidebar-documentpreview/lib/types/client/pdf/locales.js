@@ -103,4 +103,3 @@ export const pt = {
     unsupported: 'A visualização do PDF requer o conteúdo completo do arquivo.',
     retry: 'Tentar novamente',
 };
-//# sourceMappingURL=locales.js.map

@@ -18,4 +18,3 @@ export async function convertExcel(bytes, format, limits) {
         return convertXls(bytes, limits);
     return convertDelimited(bytes, format, limits);
 }
-//# sourceMappingURL=convert.js.map

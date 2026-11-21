@@ -68,4 +68,3 @@ export function ScheduleTurnCard(props) {
         return null;
     return (_jsx("div", { className: css.list, children: _jsx(CurrentScheduleCards, { created: matched.created, openTaskDetail: props.openTaskDetail, t: props.t, useCatalog: props.useCatalog, onRetry: props.onRetry }) }));
 }
-//# sourceMappingURL=ScheduleTurnCard.js.map

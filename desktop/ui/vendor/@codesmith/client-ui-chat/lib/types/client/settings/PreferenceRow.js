@@ -20,4 +20,3 @@ export function PreferenceRow({ title, description, value, selectedLabel, option
     const selector = (_jsxs("button", { ref: selectorRef, type: "button", className: css.selector, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => { setOpen(value => !value); }, children: [selectedLabel, _jsx(IconChevronDownOutlineRegular, { className: css.chevron })] }));
     return (_jsxs("div", { className: css.row, children: [_jsxs("div", { className: css.rowText, children: [_jsx("div", { className: css.title, children: title }), _jsx("div", { className: css.desc, children: description })] }), _jsx(Menu, { open: open, onClose: closeMenu, items: options, selectedId: value, onSelect: selectMode, align: "end", portal: true, anchor: selector })] }));
 }
-//# sourceMappingURL=PreferenceRow.js.map

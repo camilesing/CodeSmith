@@ -82,4 +82,3 @@ export function apply(ctx) {
     }, HeaderLeadingControls));
     syncPanels();
 }
-//# sourceMappingURL=index.js.map

@@ -26,4 +26,3 @@ export function hostFileOf(address) {
 export function createReadPage(remote) {
     return (sessionId, path, offset, signal) => remote.workspaceFiles.read(sessionId, path, { offset }, signal);
 }
-//# sourceMappingURL=rpc.js.map

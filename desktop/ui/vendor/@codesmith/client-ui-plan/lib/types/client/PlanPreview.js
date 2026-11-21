@@ -38,4 +38,3 @@ export function PlanTitle({ useTabInfo, useResource }) {
         ? (params !== undefined && 'planReview' in params ? params.planReview : undefined) : resource.value;
     return _jsxs(_Fragment, { children: [_jsx(FileTypeIcon, { kind: "other", size: 16, className: css.titleIcon }), plan?.title ?? tab.tab.title] });
 }
-//# sourceMappingURL=PlanPreview.js.map

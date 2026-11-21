@@ -45,4 +45,3 @@ export class DesktopUpdateSource {
     /** Detach the carrier and ignore any pending status or action completion. */
     dispose() { this.live = false; this.unsubscribe?.(); }
 }
-//# sourceMappingURL=desktop-update-source.js.map

@@ -157,4 +157,3 @@ export function FileTypeIcon(props) {
         ? _jsx(CodeFileIcon, { type: resolvedType, size: size, className: className })
         : glyph(resolvedType, size, clsx(css.icon, css[resolvedType], className));
 }
-//# sourceMappingURL=FileTypeIcon.js.map

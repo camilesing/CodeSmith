@@ -29,4 +29,3 @@ export function apply(ctx) {
     }, 'ui-settings: describe mirror invalidations');
     new ConfigForms(ctx, { mirror, schema });
 }
-//# sourceMappingURL=index.js.map

@@ -52,4 +52,3 @@ export function PlainUserText({ node }) {
 export function SessionReference({ node, raw }) {
     return _jsx(ReferenceChip, { appearance: "session", label: node.data.label, title: raw });
 }
-//# sourceMappingURL=UserText.js.map

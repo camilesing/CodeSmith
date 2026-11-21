@@ -345,4 +345,3 @@ let TerminalController = (() => {
 export { TerminalController };
 /** Browser terminal service plugin. */
 export default TerminalController;
-//# sourceMappingURL=index.js.map

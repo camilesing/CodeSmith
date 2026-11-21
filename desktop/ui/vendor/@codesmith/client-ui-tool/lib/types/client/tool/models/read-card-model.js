@@ -106,4 +106,3 @@ export function readCardModel(block, sessionCwd, home) {
         lang: meta.lang,
     };
 }
-//# sourceMappingURL=read-card-model.js.map

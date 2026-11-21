@@ -166,4 +166,3 @@ export function ConversationWidthControls({ container, phase }) {
         return null;
     return ['left', 'right'].map(side => (_jsx(WidthHandle, { side: side, onStart: onStart, onDrag: onDrag, onCommit: onCommit, onEnd: onEnd }, side)));
 }
-//# sourceMappingURL=ConversationWidthControls.js.map

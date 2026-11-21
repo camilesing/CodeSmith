@@ -14,4 +14,3 @@ export function createSettingsSchemaOperations(service) {
         deletePath: (root, path) => service.deletePath(root, path),
     };
 }
-//# sourceMappingURL=schema-operations.js.map

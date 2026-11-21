@@ -30,4 +30,3 @@ export const webToolview = {
         });
     },
 };
-//# sourceMappingURL=web-row.js.map

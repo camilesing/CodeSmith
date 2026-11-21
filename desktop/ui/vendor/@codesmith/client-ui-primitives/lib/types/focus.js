@@ -43,4 +43,3 @@ export function focusWithoutRing(element, options) {
     if (!element.matches(':focus'))
         release();
 }
-//# sourceMappingURL=focus.js.map

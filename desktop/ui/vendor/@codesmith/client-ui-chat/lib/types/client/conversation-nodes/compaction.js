@@ -46,4 +46,3 @@ export const compactionDefinition = {
 export function registerCompactionConversationNode(ctx) {
     ctx.uiConversation.events.register(compactionDefinition);
 }
-//# sourceMappingURL=compaction.js.map

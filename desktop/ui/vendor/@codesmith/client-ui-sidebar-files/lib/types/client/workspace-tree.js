@@ -73,4 +73,3 @@ export function workspaceDirectories(tree, t) {
     }
     return directories;
 }
-//# sourceMappingURL=workspace-tree.js.map

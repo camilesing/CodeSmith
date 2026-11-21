@@ -5,4 +5,3 @@
  * @returns the same reader, without another subscription adapter.
  */
 export const documentTabInfoFactory = (_standard, useTabInfo) => useTabInfo;
-//# sourceMappingURL=contract.js.map

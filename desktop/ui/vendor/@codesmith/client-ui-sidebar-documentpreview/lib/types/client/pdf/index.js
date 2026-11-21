@@ -40,4 +40,3 @@ export function pdfBodyRegistration(ctx) {
         }),
     };
 }
-//# sourceMappingURL=index.js.map

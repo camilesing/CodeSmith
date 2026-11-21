@@ -65,4 +65,3 @@ export function isDraggableAt(regions, x, y) {
     }
     return draggable;
 }
-//# sourceMappingURL=regions.js.map

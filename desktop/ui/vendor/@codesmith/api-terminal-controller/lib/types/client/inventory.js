@@ -98,4 +98,3 @@ export class TerminalInventory {
         await Promise.allSettled(this.pending);
     }
 }
-//# sourceMappingURL=inventory.js.map

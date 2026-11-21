@@ -47,4 +47,3 @@ function ChangedFilePreview({ sessionId, seq, index, display, useChangesDiff, lo
     }, [state, sessionId, seq, index, loadChangesDiff]);
     return _jsxs("div", { className: `${diffCss.root} ${css.preview}`, "data-changes-hover-preview": true, children: [_jsx("div", { className: diffCss.header, children: _jsx("span", { className: css.previewPath, "data-changes-preview-path": true, children: display }) }), _jsx(FileDiff, { state: state, split: false, wrap: false, t: t, retry: () => { void loadChangesDiff(sessionId, seq, index); } })] });
 }
-//# sourceMappingURL=ChangedFiles.js.map

@@ -127,4 +127,3 @@ export function iconSymbolId(glyph, weight) {
 }
 /** Default SVG document of every product icon symbol, keyed by symbol id. */
 export const ICON_SYMBOLS = Object.freeze(Object.fromEntries(Object.entries(ICON_ARTWORK).flatMap(([glyph, artwork]) => Object.keys(STROKES).map(weight => [iconSymbolId(glyph, weight), artwork.svg(STROKES[weight])]))));
-//# sourceMappingURL=artwork.js.map

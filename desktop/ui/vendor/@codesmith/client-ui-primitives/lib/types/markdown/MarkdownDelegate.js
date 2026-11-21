@@ -19,4 +19,3 @@ export function MarkdownDelegateProvider({ children, openExternalLink, openFile,
 export function useMarkdownDelegate() {
     return useContext(MarkdownDelegateContext);
 }
-//# sourceMappingURL=MarkdownDelegate.js.map

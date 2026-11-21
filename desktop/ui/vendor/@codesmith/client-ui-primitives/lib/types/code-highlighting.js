@@ -14,4 +14,3 @@ export function useCodeHighlighter(language) {
     const loaded = useSyncExternalStore(subscribeGrammarLoaded, grammarLoadCount, grammarLoadCount);
     return useCallback(code => highlightLines(code, language), [language, loaded]);
 }
-//# sourceMappingURL=code-highlighting.js.map

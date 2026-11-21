@@ -40,4 +40,3 @@ export function SecretText({ node, raw, interactive, t }) {
     const revealed = interactive && revealedRaw === raw;
     return (_jsxs("span", { className: css.secret, "data-secret": "", children: [_jsx("span", { className: css.value, children: revealed ? raw : _jsx(MaskedText, { masked: node.data.masked }) }), interactive && (_jsx("button", { type: "button", className: css.toggle, "aria-pressed": revealed, "aria-label": t(revealed ? 'secret.hide' : 'secret.reveal'), onClick: () => { setRevealedRaw(revealed ? undefined : raw); }, children: _jsx(EyeGlyph, { path: revealed ? EYE_OFF_PATH : EYE_PATH }) }))] }));
 }
-//# sourceMappingURL=SecretText.js.map

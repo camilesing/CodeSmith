@@ -17,4 +17,3 @@
  * the declaration. The types therefore live with their declarer.
  */
 export {};
-//# sourceMappingURL=slot-contract.js.map

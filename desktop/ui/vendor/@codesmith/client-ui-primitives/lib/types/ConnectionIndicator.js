@@ -45,4 +45,3 @@ export function ConnectionIndicator({ state, disconnectedLabel, connectingLabel,
                     ? (_jsxs(_Fragment, { children: [connectingLabel, _jsxs("span", { className: css.dots, "aria-hidden": "true", children: [_jsx("span", { children: "." }), _jsx("span", { className: css.secondDot, children: "." }), _jsx("span", { className: css.thirdDot, children: "." })] })] }))
                     : disconnectedLabel })] }));
 }
-//# sourceMappingURL=ConnectionIndicator.js.map

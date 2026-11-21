@@ -181,4 +181,3 @@ async function handleChangesOpen(ctx, request) {
         return new Response('Changed file unavailable.', { status: failureStatus(error) });
     }
 }
-//# sourceMappingURL=present-open.js.map

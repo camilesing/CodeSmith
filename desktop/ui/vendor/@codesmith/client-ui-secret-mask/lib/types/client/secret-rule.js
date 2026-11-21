@@ -14,4 +14,3 @@ export function createSecretRule() {
         match: (text, from) => scanner.match(text, from),
     };
 }
-//# sourceMappingURL=secret-rule.js.map

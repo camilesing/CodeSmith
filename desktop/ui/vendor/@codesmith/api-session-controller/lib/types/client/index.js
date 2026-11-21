@@ -58,4 +58,3 @@ export function apply(ctx) {
     });
     ctx.effect(() => async () => { await control.dispose(); }, 'session-controller.client.control');
 }
-//# sourceMappingURL=index.js.map

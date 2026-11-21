@@ -73,4 +73,3 @@ export function packageAssetReference(packageName, emittedPath) {
         .join('/');
     return `plugins/${packageName}/${PACKAGE_ASSET_SEGMENT}/${path}`;
 }
-//# sourceMappingURL=assets.js.map

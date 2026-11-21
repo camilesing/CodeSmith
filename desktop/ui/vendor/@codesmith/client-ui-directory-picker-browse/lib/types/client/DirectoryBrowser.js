@@ -824,4 +824,3 @@ export function DirectoryBrowser({ open, listDirectory, createDirectory, onOpen,
                                 }
                             } }), createError !== null && _jsx("div", { className: css.error, role: "alert", children: createError }), _jsxs("div", { className: css.createActions, children: [_jsx(Button, { variant: "outline", disabled: creatingFolder, onClick: () => { setFolderDraft(null); }, children: t('browser.cancel') }), _jsx(Button, { variant: "primary", disabled: creatingFolder || folderDraft === null || folderDraft.trim() === '', onClick: confirmCreate, children: t('browser.create') })] })] }) })] }));
 }
-//# sourceMappingURL=DirectoryBrowser.js.map

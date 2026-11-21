@@ -567,4 +567,3 @@ function revokePreview(url) {
     if (url.startsWith('blob:'))
         URL.revokeObjectURL(url);
 }
-//# sourceMappingURL=service.js.map

@@ -190,4 +190,3 @@ export const pt = {
     'error.notDirectory': 'Isso não é um diretório.',
     'error.unavailable': 'Falha na leitura: {message}',
 };
-//# sourceMappingURL=locales.js.map

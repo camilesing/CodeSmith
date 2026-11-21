@@ -34,4 +34,3 @@ export function remove(list, item) {
 export function makeArray(source) {
     return Array.isArray(source) ? source : isNullable(source) ? [] : [source];
 }
-//# sourceMappingURL=array.js.map

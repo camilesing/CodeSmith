@@ -106,4 +106,3 @@ function SessionScheduleCatalog({ sessionId, useSession, useCatalog, onDelete, o
         : null;
     return (_jsxs("div", { ref: rootRef, className: css.root, onKeyDown: onKeyDown, children: [trigger, catalog] }));
 }
-//# sourceMappingURL=ScheduleCatalogAction.js.map

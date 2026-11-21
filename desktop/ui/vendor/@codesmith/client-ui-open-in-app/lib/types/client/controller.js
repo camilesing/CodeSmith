@@ -100,4 +100,3 @@ export class OpenInAppController {
         this.apps.set(apps);
     }
 }
-//# sourceMappingURL=controller.js.map

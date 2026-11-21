@@ -24,4 +24,3 @@ export function distinguishingPathSuffixes(workspaces) {
     }
     return suffixes;
 }
-//# sourceMappingURL=path-suffix.js.map

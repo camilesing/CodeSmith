@@ -29,4 +29,3 @@ export function ReferenceChip({ appearance, label, title, onActivate, contextMen
                 onActivate();
             }, children: contents });
 }
-//# sourceMappingURL=user-text.js.map

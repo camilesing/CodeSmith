@@ -37,4 +37,3 @@ async function applyIndexInjections(rows, loadScript) {
 //#endregion
 export { applyIndexInjections };
 
-//# sourceMappingURL=apply-injections.js.map

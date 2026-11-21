@@ -20,4 +20,3 @@ export function ModelInputTypes({ model, field, position, disabled, fallback, t,
                         onChange(next);
                     } }, modality))) })] }));
 }
-//# sourceMappingURL=ModelInputTypes.js.map

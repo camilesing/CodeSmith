@@ -41,4 +41,3 @@ export function createToolResultWatcher(remote, sessionId, report) {
         };
     };
 }
-//# sourceMappingURL=watch-tool-result.js.map

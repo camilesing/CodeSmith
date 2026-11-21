@@ -633,4 +633,3 @@ export class SidebarRightController {
         return { sessionId, actions };
     }
 }
-//# sourceMappingURL=service.js.map

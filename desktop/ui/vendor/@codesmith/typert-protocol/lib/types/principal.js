@@ -12,4 +12,3 @@ export function principalOf(invocation) {
     const principal = invocation?.peer.principal;
     return principal?.kind === 'owner' ? undefined : principal;
 }
-//# sourceMappingURL=principal.js.map

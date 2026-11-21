@@ -126,4 +126,3 @@ export function textFace(read, readAll, resources) {
         };
     };
 }
-//# sourceMappingURL=face.js.map

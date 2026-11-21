@@ -31,4 +31,3 @@ export function repairSafariTextareaLayout(input) {
     scrollport.style.height = scrollportHeight;
     void scrollport.offsetHeight;
 }
-//# sourceMappingURL=safari.js.map

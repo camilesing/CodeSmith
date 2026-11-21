@@ -22,4 +22,3 @@ export function transportError(error) {
         },
     };
 }
-//# sourceMappingURL=rpc.js.map

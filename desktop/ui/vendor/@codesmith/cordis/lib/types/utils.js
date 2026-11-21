@@ -277,4 +277,3 @@ export function buildOuterStack(offset = 0) {
     const outerError = new Error();
     return () => outerError.stack.split('\n').slice(3 + offset);
 }
-//# sourceMappingURL=utils.js.map

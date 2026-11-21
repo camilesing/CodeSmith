@@ -156,4 +156,3 @@ export function $createReferenceChipNode(insert) {
 export function $isReferenceChipNode(node) {
     return node instanceof ReferenceChipNode;
 }
-//# sourceMappingURL=chip-node.js.map

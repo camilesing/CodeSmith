@@ -42,4 +42,3 @@ export function StateDot({ state, size, className, appearance = 'dot' }) {
     }
     return (_jsx("span", { className: clsx(appearance === 'step' ? css.step : css.dot, className), "data-state": state, style: { width: edge, height: edge }, "aria-hidden": "true", children: appearance === 'step' && state === 'done' && _jsx(IconCheckOutlineRegular, { size: edge - 2 }) }));
 }
-//# sourceMappingURL=StateDot.js.map

@@ -44,4 +44,3 @@ export const ru = {
     'number.thousand': '{value}K',
     'number.million': '{value}M',
 };
-//# sourceMappingURL=ru.js.map

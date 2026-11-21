@@ -96,4 +96,3 @@ export class Context {
         return this.extend({ [symbols.intercept]: intercept });
     }
 }
-//# sourceMappingURL=context.js.map

@@ -52,4 +52,3 @@ export class ModelDirectoryResolver extends Service {
         return directory;
     }
 }
-//# sourceMappingURL=service.js.map

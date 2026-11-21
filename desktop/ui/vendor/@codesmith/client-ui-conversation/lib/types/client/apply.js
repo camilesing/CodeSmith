@@ -523,4 +523,3 @@ export function apply(ctx, config = Config({})) {
     ctx.plugin(todoDockEntry);
     ctx.plugin(queueDockEntry);
 }
-//# sourceMappingURL=apply.js.map

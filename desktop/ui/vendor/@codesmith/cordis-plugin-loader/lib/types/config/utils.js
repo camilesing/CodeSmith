@@ -25,4 +25,3 @@ export function interpolate(ctx, value) {
 export function isJsExpr(value) {
     return value instanceof Object && '__jsExpr' in value;
 }
-//# sourceMappingURL=utils.js.map

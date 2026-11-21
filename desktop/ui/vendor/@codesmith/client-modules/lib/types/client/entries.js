@@ -257,4 +257,3 @@ export class ClientEntries {
             this.publish({ syncing: false, failures });
     }
 }
-//# sourceMappingURL=entries.js.map

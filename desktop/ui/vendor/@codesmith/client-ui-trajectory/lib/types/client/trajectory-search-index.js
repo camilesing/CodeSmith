@@ -120,4 +120,3 @@ export class TrajectorySearchIndex {
         return matches;
     }
 }
-//# sourceMappingURL=trajectory-search-index.js.map

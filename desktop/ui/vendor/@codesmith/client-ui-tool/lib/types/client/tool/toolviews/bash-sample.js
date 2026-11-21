@@ -80,4 +80,3 @@ export const bashToolviewSample = {
         ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({ name: 'tool.call.toolview', key: 'bash', locale: NS }, BashRow));
     },
 };
-//# sourceMappingURL=bash-sample.js.map

@@ -59,4 +59,3 @@ export function useStatDialog() {
     }, [open, setOpen]);
     return { open, setOpen, rootRef, panelRef, pos };
 }
-//# sourceMappingURL=stat-dialog.js.map

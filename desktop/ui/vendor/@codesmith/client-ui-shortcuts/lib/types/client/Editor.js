@@ -219,4 +219,3 @@ export function ShortcutEditor({ target, onClose, onSaved, onError, useCatalog, 
                         } }, children: captured && message === '' ? _jsx(ShortcutKeys, { keys: describeBinding(candidate).keys, className: css.recorded }) : t('record') })] }), _jsx("span", { id: descriptionId, className: css.srOnly, children: message || (desktopChords ? '' : t(runtime === 'web'
                     ? platform === 'windows' ? 'windows-web-help' : platform === 'macos' ? 'macos-web-help' : 'web-help' : 'record-help')) }), review, retry !== null && !stale && _jsx("button", { type: "button", className: css.inlineAction, disabled: readonly, onClick: () => { capture(retry, target.id); }, children: t('retry-save') })] });
 }
-//# sourceMappingURL=Editor.js.map

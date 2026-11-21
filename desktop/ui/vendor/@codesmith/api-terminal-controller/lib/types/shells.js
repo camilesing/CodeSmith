@@ -56,4 +56,3 @@ export async function discoverShells(subprocess, configured, candidates, signal)
     }
     return [...shells.values()];
 }
-//# sourceMappingURL=shells.js.map

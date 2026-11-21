@@ -158,4 +158,3 @@ function failureText(error, t) {
         return t('password');
     return t('failed', { message: error instanceof Error ? error.message : String(error) });
 }
-//# sourceMappingURL=pdf.js.map

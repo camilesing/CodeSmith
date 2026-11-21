@@ -113,4 +113,3 @@ function unsupportedAddress(address) {
 function unknownWorkspace(address) {
     return new RemoteError('workspace-file/unknown-workspace', `${address} requires a cds-resource://file/session/<sessionId>/<path> address`, { address });
 }
-//# sourceMappingURL=provider.js.map

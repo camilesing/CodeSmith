@@ -154,4 +154,3 @@ function assertTarget(channel, endpoint) {
         throw new Error(`connection: invalid RPC target ${JSON.stringify(`${channel}/${endpoint}`)}`);
     }
 }
-//# sourceMappingURL=rpc.js.map

@@ -42,4 +42,3 @@ export function apply(ctx) {
         }, MenuView));
     });
 }
-//# sourceMappingURL=index.js.map

@@ -12,4 +12,3 @@ export function recordedAbsolutePath(meta, field) {
     const value = meta[field];
     return typeof value === 'string' && isAbsoluteWorkspacePath(value) ? value : undefined;
 }
-//# sourceMappingURL=recorded-path.js.map

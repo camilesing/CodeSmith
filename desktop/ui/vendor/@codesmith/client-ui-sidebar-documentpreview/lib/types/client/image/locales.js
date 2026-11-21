@@ -71,4 +71,3 @@ export const pt = {
     failed: 'Esta imagem não pôde ser exibida.',
     unsupported: 'A visualização da imagem requer o conteúdo completo do arquivo.',
 };
-//# sourceMappingURL=locales.js.map

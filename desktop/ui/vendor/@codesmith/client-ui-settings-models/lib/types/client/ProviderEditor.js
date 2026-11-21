@@ -347,4 +347,3 @@ export function ProviderEditor(props) {
                     || shownKeyFailure !== undefined
                     || (props.credentialRequired === true && keyValue.length === 0), submitLabelKey: props.submitLabelKey ?? 'apply', submitBusyLabelKey: props.submitBusyLabelKey ?? 'applying', ...props.cancelLabelKey === undefined ? {} : { cancelLabelKey: props.cancelLabelKey }, onCancel: () => { props.onClose(false); }, onSubmit: () => { props.onSubmitCredential?.(); void apply(); } })] }));
 }
-//# sourceMappingURL=ProviderEditor.js.map

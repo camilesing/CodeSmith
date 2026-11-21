@@ -15,4 +15,3 @@ export function ScheduleTaskTabTitle({ sessionId, useTabInfo, useCatalog, taskBi
     const record = params === undefined ? undefined : records.find(item => item.id === params.id);
     return (_jsxs(_Fragment, { children: [_jsx(IconClockOutlineRegular, { size: 16, className: css.tabTitleIcon }), record === undefined ? t('detail.label') : taskName(record)] }));
 }
-//# sourceMappingURL=ScheduleTaskTabTitle.js.map

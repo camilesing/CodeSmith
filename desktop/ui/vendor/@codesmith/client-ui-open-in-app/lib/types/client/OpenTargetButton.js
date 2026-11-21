@@ -87,4 +87,3 @@ export function OpenTargetButton(props) {
                         setMenuOpen(value => !value);
                     }, children: _jsx(IconChevronDownOutlineRegular, { size: props.prominent ? 14 : 10 }) })] })) }));
 }
-//# sourceMappingURL=OpenTargetButton.js.map

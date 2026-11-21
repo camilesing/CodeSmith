@@ -4,4 +4,3 @@ import z from '@codesmith/schemastery';
 export const Config = z.object({
     stopSequenceMs: z.natural().min(1).max(2_147_483_646).default(500),
 });
-//# sourceMappingURL=config.js.map

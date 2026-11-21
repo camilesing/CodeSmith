@@ -8,4 +8,3 @@ export class ExcelPreviewError extends Error {
         this.name = 'ExcelPreviewError';
     }
 }
-//# sourceMappingURL=error.js.map

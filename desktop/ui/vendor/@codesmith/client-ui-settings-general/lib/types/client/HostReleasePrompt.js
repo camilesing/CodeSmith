@@ -38,4 +38,3 @@ export function HostReleasePrompt({ useReleaseChange, dismissRelease, reloadPage
     const [pageFrom, pageTo] = transitionText(change.page, change.host, unknown);
     return (_jsx(Modal, { open: true, title: t('hostRelease.title'), description: t('hostRelease.description'), closeLabel: t('hostRelease.later'), onClose: dismissRelease, className: clsx(css.dialog), footer: (_jsxs(_Fragment, { children: [_jsx(Button, { variant: "outline", "data-modal-autofocus": true, onClick: dismissRelease, children: t('hostRelease.later') }), _jsx(Button, { variant: "primary", onClick: reloadPage, children: t('hostRelease.reload') })] })), children: _jsxs("div", { className: css.transitions, children: [_jsx(Transition, { label: t('hostRelease.service'), from: serviceFrom, to: serviceTo, done: true }), _jsx(Transition, { label: t('hostRelease.page'), from: pageFrom, to: pageTo, done: false })] }) }));
 }
-//# sourceMappingURL=HostReleasePrompt.js.map

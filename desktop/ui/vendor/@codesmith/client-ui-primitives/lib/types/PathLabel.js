@@ -30,4 +30,3 @@ export function PathLabel({ path, className, ...attributes }) {
     }, [path]);
     return (_jsx("span", { ...attributes, ref: boxRef, className: clsx(css.path, className), title: path, "data-path-label": true, children: _jsxs("span", { ref: textRef, className: css.text, children: [directory !== '' && _jsx("span", { className: css.directory, children: directory }), _jsx("span", { className: css.name, children: name })] }) }));
 }
-//# sourceMappingURL=PathLabel.js.map

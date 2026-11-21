@@ -101,4 +101,3 @@ export function apply(ctx) {
         },
     }, GoalDock));
 }
-//# sourceMappingURL=index.js.map

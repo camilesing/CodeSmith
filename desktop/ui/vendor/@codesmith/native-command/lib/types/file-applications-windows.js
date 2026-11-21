@@ -270,4 +270,3 @@ ${application === null ? 'ConvertTo-Json -InputObject @([CodeSmithFileAssociatio
         await rm(directory, { recursive: true, force: true });
     }
 }
-//# sourceMappingURL=file-applications-windows.js.map

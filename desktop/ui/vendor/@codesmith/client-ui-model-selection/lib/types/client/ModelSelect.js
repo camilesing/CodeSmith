@@ -432,4 +432,3 @@ export function ModelSelect({ locked, available, directory, load, select, resolv
                                                     ? _jsx(StateDot, { state: "ongoing" })
                                                     : effectiveEffort === level.effort ? _jsx(IconCheckOutlineRegular, {}) : null })] }, level.key))) })] }))] }), document.body), toast !== null && (_jsx(Toast, { text: toast.text, icon: _jsx(IconWarningOutlineRegular, {}), anchor: rootRef.current?.closest('[data-composer-card]') ?? null, onDone: () => { setToast(null); } }, toast.seq))] }));
 }
-//# sourceMappingURL=ModelSelect.js.map

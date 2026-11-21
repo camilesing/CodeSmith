@@ -96,4 +96,3 @@ export function apply(ctx) {
         };
     }, 'ui-layout: theme presenter');
 }
-//# sourceMappingURL=index.js.map

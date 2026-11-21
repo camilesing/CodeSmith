@@ -79,4 +79,3 @@ export const CREDENTIAL_FORMATS = [
     prefixed('whsec_', RUN, ALNUM, 24),
     prefixed('eyJ', JWT, KEY, 8, 2048),
 ];
-//# sourceMappingURL=credential-formats.js.map

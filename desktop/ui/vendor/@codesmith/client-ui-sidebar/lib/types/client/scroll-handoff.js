@@ -82,4 +82,3 @@ export function createScrollHandoff() {
         useSectionScroller: () => sectionScroller,
     };
 }
-//# sourceMappingURL=scroll-handoff.js.map

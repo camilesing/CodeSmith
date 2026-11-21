@@ -43,4 +43,3 @@ export const EMPTY_CHAT_SNAPSHOT = {
         runningCalls: EMPTY_LIST,
     },
 };
-//# sourceMappingURL=snapshot.js.map

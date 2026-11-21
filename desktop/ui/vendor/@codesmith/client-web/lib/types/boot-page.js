@@ -90,4 +90,3 @@ export class BootPage {
         this.spinner.style.setProperty('--cds-boot-arc', `${String(Math.round(72 + ratio * 216))}deg`);
     }
 }
-//# sourceMappingURL=boot-page.js.map

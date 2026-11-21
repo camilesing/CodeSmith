@@ -131,4 +131,3 @@ export function registerTrajectoryRequestHeaderDefinition(ctx) {
     ctx.uiConversation.events.register(trajectorySystemMessageDefinition((previous, event) => ctx.uiConversation.inspectSystemPrompt(previous, event)));
     ctx.uiConversation.events.register(trajectoryRequestHeaderDefinition((previous, event, system) => ctx.uiConversation.inspectRequestPrompt(previous, event, system)));
 }
-//# sourceMappingURL=trajectory-request-header-definition.js.map

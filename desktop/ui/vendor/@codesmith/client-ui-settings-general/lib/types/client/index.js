@@ -223,4 +223,3 @@ export function apply(ctx) {
         name: 'shell.overlay', id: 'host-release-change', locale: NS, inject: releasePromptInjected,
     }, HostReleasePrompt));
 }
-//# sourceMappingURL=index.js.map

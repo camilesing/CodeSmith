@@ -70,4 +70,3 @@ export function todoDiffModel(block, baseline, hasMore, t) {
         },
     };
 }
-//# sourceMappingURL=todo-diff-model.js.map

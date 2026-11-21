@@ -25,4 +25,3 @@ export function BrowseDirectoryFlow(props) {
         onClose: props.onCancel,
     });
 }
-//# sourceMappingURL=flow.js.map

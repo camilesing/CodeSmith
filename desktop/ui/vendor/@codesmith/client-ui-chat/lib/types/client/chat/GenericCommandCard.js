@@ -35,4 +35,3 @@ export const GenericCommandCard = memo(function GenericCommandCard({ node, t, ru
         : undefined, [body, open, state]);
     return (_jsxs("div", { className: css.root, "data-variant": "others", "data-state": state, children: [state === 'running' && _jsx("span", { className: a11yCss.visuallyHidden, children: t('row.running') }), state === 'error' && _jsx("span", { className: a11yCss.visuallyHidden, children: t('row.failed') }), _jsx(DisclosureRow, { leadingClassName: css.leading, titleClassName: css.title, icon: COMMAND_ICON, title: title, running: running, open: open, expandable: body !== null, expandOnRowClick: true, keepContentWhenOpen: true, onToggle: toggle, collapsedContent: collapsedContent, children: content })] }));
 });
-//# sourceMappingURL=GenericCommandCard.js.map

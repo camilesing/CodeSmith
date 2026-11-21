@@ -48,4 +48,3 @@ function FrontmatterBox({ source }) {
     const verbatim = _jsx("pre", { className: css.frontmatterSource, children: source });
     return (_jsx("div", { className: css.frontmatter, "data-document-frontmatter": true, children: _jsx(Suspense, { fallback: verbatim, children: _jsx(FrontmatterFields, { source: source, fallback: verbatim }) }) }));
 }
-//# sourceMappingURL=MarkdownBody.js.map

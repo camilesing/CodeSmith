@@ -22,4 +22,3 @@ export function createLanguageRowStore() {
         },
     });
 }
-//# sourceMappingURL=settings-store.js.map

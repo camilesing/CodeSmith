@@ -8,4 +8,3 @@ const DEPTH = { exchange: 0, input: 1, turn: 2, process: 3 };
 export function isAtOrOutside(node, position) {
     return node.groupTree !== undefined && DEPTH[node.groupTree] <= DEPTH[position];
 }
-//# sourceMappingURL=group-tree.js.map

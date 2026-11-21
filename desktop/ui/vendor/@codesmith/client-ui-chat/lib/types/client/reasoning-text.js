@@ -29,4 +29,3 @@ export function reasoningText(text) {
     return text.slice(start);
     /* v8 ignore stop */
 }
-//# sourceMappingURL=reasoning-text.js.map

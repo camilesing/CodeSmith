@@ -11,4 +11,3 @@ export function CurrentVersionRow({ t }) {
         return null;
     return _jsx("div", { className: css.row, children: t('general.currentVersion', { version }) });
 }
-//# sourceMappingURL=CurrentVersionRow.js.map

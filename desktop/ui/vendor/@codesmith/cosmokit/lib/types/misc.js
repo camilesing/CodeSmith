@@ -47,4 +47,3 @@ export function omit(source, keys) {
 export function defineProperty(object, key, value) {
     return Object.defineProperty(object, key, { writable: true, value, enumerable: false });
 }
-//# sourceMappingURL=misc.js.map

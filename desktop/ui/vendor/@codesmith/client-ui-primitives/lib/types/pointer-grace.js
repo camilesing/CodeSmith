@@ -32,4 +32,3 @@ export function usePointerGrace(close) {
     useEffect(() => cancel, [cancel]);
     return { arm, cancel };
 }
-//# sourceMappingURL=pointer-grace.js.map

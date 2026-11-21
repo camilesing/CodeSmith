@@ -97,4 +97,3 @@ function assertDefinitionTarget(definition) {
         throw new Error(`conversation Definition "${definition.kind}" must declare target and buildViewNode together`);
     }
 }
-//# sourceMappingURL=event-registry.js.map

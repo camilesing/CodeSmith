@@ -25,4 +25,3 @@ export function NavigatorToggle({ useTabInfo, sessionId, useSessions, useStore, 
     const label = t(open ? 'navigator.hide' : 'navigator.show');
     return (_jsx(Tooltip, { label: label, side: "bottom", delayMs: 500, children: _jsx("button", { ref: toggleRef, type: "button", className: css.tool, "aria-label": label, "aria-expanded": open, "data-files-navigator-toggle": true, onClick: () => { actions.shown(panel.id, !open); }, children: open ? _jsx(IconFolderOpenRegular, {}) : _jsx(IconFolderCloseRegular, {}) }) }));
 }
-//# sourceMappingURL=NavigatorToggle.js.map

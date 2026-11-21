@@ -272,4 +272,3 @@ export function registerComposerKeymap(editor, handlers) {
         return true;
     }, COMMAND_PRIORITY_CRITICAL));
 }
-//# sourceMappingURL=keymap.js.map

@@ -77,4 +77,3 @@ export function GuideBody({ useTabInfo, useGuideEntries, renderSlot, renderSlotC
     };
     return renderSlotChain('sidebar.right.tab.guide', {}, options);
 }
-//# sourceMappingURL=GuideBody.js.map

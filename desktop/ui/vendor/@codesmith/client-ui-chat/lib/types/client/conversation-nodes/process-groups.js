@@ -303,4 +303,3 @@ export const processGroupDefinition = {
     update: (context, input) => { context.state.accept(input); return context.state; },
     buildGroups: context => context.state.output(),
 };
-//# sourceMappingURL=process-groups.js.map

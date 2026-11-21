@@ -247,4 +247,3 @@ const trajectoryToolDefinition = {
 export function registerTrajectoryToolDefinition(ctx) {
     ctx.uiConversation.events.register(trajectoryToolDefinition);
 }
-//# sourceMappingURL=trajectory-tool-definition.js.map

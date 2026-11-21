@@ -17,4 +17,3 @@ import css from './Switch.module.css';
 export function Switch({ checked, onChange, label, disabled = false, title, className }) {
     return (_jsx("button", { type: "button", role: "switch", "aria-checked": checked, "aria-label": label, title: title, disabled: disabled, className: clsx(css.switch, className), onClick: () => { onChange(!checked); }, children: _jsx("span", { className: css.thumb }) }));
 }
-//# sourceMappingURL=Switch.js.map

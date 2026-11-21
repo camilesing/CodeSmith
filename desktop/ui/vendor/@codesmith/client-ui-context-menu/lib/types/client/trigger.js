@@ -38,4 +38,3 @@ export function createContextMenuBindings(open, active) {
         },
     };
 }
-//# sourceMappingURL=trigger.js.map

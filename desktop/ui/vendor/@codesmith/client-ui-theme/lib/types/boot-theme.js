@@ -50,4 +50,3 @@ export function bootThemeInjections(preference = DEFAULT_PREFERENCE, fontSizes =
         { kind: 'script', placement: 'body', text: bootThemeBodyScript(preference, fontSizes, fontFamilies) },
     ];
 }
-//# sourceMappingURL=boot-theme.js.map

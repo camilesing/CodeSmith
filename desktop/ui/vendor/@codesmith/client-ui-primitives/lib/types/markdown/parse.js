@@ -42,4 +42,3 @@ export function parseGfmWithMath(text) {
         mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown(), windowsPathDestinations()],
     }), text);
 }
-//# sourceMappingURL=parse.js.map

@@ -54,4 +54,3 @@ export const pt = {
     'code.copied': 'Copiado',
     'footnotes': 'Notas de rodapé',
 };
-//# sourceMappingURL=locales.js.map

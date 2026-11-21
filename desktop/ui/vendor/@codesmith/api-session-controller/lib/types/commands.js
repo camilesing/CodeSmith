@@ -527,4 +527,3 @@ function hasPromptRequest(agent, requestId) {
         return source.kind === 'user' && 'rpcId' in source && source.rpcId === requestId;
     });
 }
-//# sourceMappingURL=commands.js.map

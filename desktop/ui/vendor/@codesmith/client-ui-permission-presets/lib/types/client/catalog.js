@@ -151,4 +151,3 @@ export class PermissionCatalogDirectory {
             && this.connection.generation.getSnapshot()?.id === generationId;
     }
 }
-//# sourceMappingURL=catalog.js.map

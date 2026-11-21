@@ -25,4 +25,3 @@ export const inject = ['remote', 'slots'];
 export function apply(ctx) {
     return mountAccess(ctx, remoteAccessRemote, parseInjectedBaseline(Reflect.get(globalThis, REMOTE_ACCESS_SNAPSHOT_KEY)));
 }
-//# sourceMappingURL=index.js.map

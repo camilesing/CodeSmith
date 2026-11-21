@@ -37,4 +37,3 @@ export function observeControlRow(row) {
         fonts.removeEventListener('loadingdone', measure);
     };
 }
-//# sourceMappingURL=control-row-layout.js.map

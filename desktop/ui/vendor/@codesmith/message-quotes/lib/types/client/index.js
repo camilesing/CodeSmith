@@ -35,4 +35,3 @@ export function apply(ctx) {
         name: 'conversation.user.text.node', key: 'quote', priority: 100,
     }, QuotedUserText));
 }
-//# sourceMappingURL=index.js.map

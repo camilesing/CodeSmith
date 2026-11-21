@@ -8,4 +8,3 @@ import css from './GeneralSection.module.css';
 export function GeneralSection({ renderSlot }) {
     return (_jsx("div", { className: css.section, children: renderSlot('settings.general.item', {}) }));
 }
-//# sourceMappingURL=GeneralSection.js.map

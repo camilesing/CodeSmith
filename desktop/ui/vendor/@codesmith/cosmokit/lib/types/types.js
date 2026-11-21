@@ -167,4 +167,3 @@ export function deepEqual(a, b, strict) {
     }
     return compare(a, b);
 }
-//# sourceMappingURL=types.js.map

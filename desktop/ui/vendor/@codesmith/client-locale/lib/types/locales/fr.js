@@ -44,4 +44,3 @@ export const fr = {
     'number.thousand': '{value}K',
     'number.million': '{value}M',
 };
-//# sourceMappingURL=fr.js.map

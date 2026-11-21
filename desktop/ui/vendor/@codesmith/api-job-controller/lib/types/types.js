@@ -5,4 +5,3 @@
  * @module @codesmith/api-job-controller/types
  */
 export {};
-//# sourceMappingURL=types.js.map

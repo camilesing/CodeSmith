@@ -224,4 +224,3 @@ export function readLangHintForPath(path) {
     const canonical = LANGUAGES.get(extension);
     return canonical === undefined ? undefined : READ_LANG_BY_EXTENSION.get(extension) ?? SHORT_BY_LANGUAGE[canonical];
 }
-//# sourceMappingURL=index.js.map

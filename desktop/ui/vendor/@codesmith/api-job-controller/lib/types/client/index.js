@@ -20,4 +20,3 @@ export function apply(ctx) {
     const { job } = remote;
     new ClientJobs(ctx, { $stream: options => remote.$stream(options), job }, new ClientJobsModel());
 }
-//# sourceMappingURL=index.js.map

@@ -42,4 +42,3 @@ export function singleResultText(block) {
     const only = block.content[0];
     return only?.type === 'text' ? only.text : undefined;
 }
-//# sourceMappingURL=raw-tool-call.js.map

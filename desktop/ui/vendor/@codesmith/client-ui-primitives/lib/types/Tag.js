@@ -11,4 +11,3 @@ import css from './Tag.module.css';
 export function Tag({ tone = 'outline', className, children }) {
     return _jsx("span", { className: clsx(css.tag, className), "data-tone": tone, children: children });
 }
-//# sourceMappingURL=Tag.js.map

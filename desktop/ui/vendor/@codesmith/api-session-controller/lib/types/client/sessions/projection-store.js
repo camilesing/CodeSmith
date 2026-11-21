@@ -159,4 +159,3 @@ export class ProjectionValueStore {
         return channel;
     }
 }
-//# sourceMappingURL=projection-store.js.map

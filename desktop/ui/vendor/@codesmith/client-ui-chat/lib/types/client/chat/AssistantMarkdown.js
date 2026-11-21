@@ -97,4 +97,3 @@ function ProcessReasoning({ hidden, reveal, useGroupAction, children }) {
     return _jsx("div", { ref: ref, "data-turn-process-inline": hidden || undefined, children: children });
 }
 const NOOP = () => { };
-//# sourceMappingURL=AssistantMarkdown.js.map

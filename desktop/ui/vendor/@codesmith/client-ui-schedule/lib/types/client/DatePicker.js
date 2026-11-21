@@ -135,4 +135,3 @@ export function DatePicker({ open, anchorRef, value, onPick, onClose, t }) {
                                         refs.current.set(String(day), element);
                                 }, role: "gridcell", "aria-selected": isoOf(view, day) === value, "aria-current": isoOf(view, day) === todayIso ? 'date' : undefined, tabIndex: day === view.day ? 0 : -1, className: clsx(css.cell, isoOf(view, day) === value && css.selected), onClick: () => { pick(day); }, onKeyDown: (event) => { onCellKeyDown(event, day); }, children: day }, day))) }, week)))] })] });
 }
-//# sourceMappingURL=DatePicker.js.map

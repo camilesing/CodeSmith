@@ -724,4 +724,3 @@ export class Fiber {
         return task;
     }
 }
-//# sourceMappingURL=fiber.js.map

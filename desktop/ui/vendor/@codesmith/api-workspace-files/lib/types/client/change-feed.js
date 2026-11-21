@@ -268,4 +268,3 @@ export class ChangeFeed {
         return feed;
     }
 }
-//# sourceMappingURL=change-feed.js.map

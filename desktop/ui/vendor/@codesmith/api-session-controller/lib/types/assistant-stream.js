@@ -80,4 +80,3 @@ export class SessionAssistantStreamAccumulator {
         return this.snapshotValue;
     }
 }
-//# sourceMappingURL=assistant-stream.js.map

@@ -109,4 +109,3 @@ function conversionErrorKey(code) {
         default: return 'failed';
     }
 }
-//# sourceMappingURL=index.js.map

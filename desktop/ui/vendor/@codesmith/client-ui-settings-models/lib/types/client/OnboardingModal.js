@@ -27,4 +27,3 @@ export function OnboardingModal({ title, focusTitle = false, children, }) {
     }, [focusTitle]);
     return (_jsx(Modal, { open: true, title: title, onClose: ignoreImplicitDismiss, headless: true, className: css.dialog, children: _jsxs("div", { className: css.content, children: [_jsx("h2", { ref: titleRef, className: css.title, tabIndex: focusTitle ? -1 : undefined, children: title }), _jsx("div", { className: css.body, children: children })] }) }));
 }
-//# sourceMappingURL=OnboardingModal.js.map

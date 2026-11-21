@@ -41,4 +41,3 @@ export function remoteErrorOf(value) {
     }
     return undefined;
 }
-//# sourceMappingURL=remote-error.js.map

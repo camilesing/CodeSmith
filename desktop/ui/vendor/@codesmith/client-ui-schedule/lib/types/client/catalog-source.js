@@ -128,4 +128,3 @@ export function createCatalogSource(deps) {
         },
     };
 }
-//# sourceMappingURL=catalog-source.js.map

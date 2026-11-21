@@ -90,4 +90,3 @@ export function scanTextRefs(draft, lexicon) {
     }
     return out.sort((left, right) => left.start - right.start);
 }
-//# sourceMappingURL=decorations.js.map

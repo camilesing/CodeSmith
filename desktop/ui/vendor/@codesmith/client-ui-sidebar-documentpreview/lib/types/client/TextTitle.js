@@ -10,4 +10,3 @@ export function TextTitle({ useTabInfo }) {
     const { tab } = useTabInfo();
     return (_jsxs(_Fragment, { children: [_jsx(FileTypeIcon, { kind: classifyFileType(tab.title), size: 16, className: css.titleIcon }), tab.title] }));
 }
-//# sourceMappingURL=TextTitle.js.map

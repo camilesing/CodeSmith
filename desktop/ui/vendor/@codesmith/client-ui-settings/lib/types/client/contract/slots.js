@@ -9,4 +9,3 @@
  * ui-settings-general too.
  */
 export {};
-//# sourceMappingURL=slots.js.map

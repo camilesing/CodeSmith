@@ -44,4 +44,3 @@ export function SegmentedTabs({ items, value, onChange, label, className, size =
     };
     return (_jsxs("div", { role: "tablist", "data-size": size, "aria-label": label, className: clsx(css.tabs, className), style: { gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }, children: [_jsx("span", { className: css.indicator, "aria-hidden": "true", style: { width: `calc((100% - 2 * var(--segmented-tabs-inset)) / ${items.length})`, transform: `translateX(${selectedIndex * 100}%)` } }), items.map((item, index) => (_jsx(Pill, { id: item.id, role: "tab", className: css.tab, "aria-selected": value === item.value, "aria-controls": item.panelId, tabIndex: value === item.value ? 0 : -1, onClick: () => { onChange(item.value); }, onKeyDown: (event) => { onKeyDown(event, index); }, children: item.label }, item.value)))] }));
 }
-//# sourceMappingURL=SegmentedTabs.js.map

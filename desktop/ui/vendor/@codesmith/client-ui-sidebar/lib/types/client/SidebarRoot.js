@@ -240,4 +240,3 @@ export function SidebarRoot({ collapsed, width, drawer, startSession, toggleSide
                                         toggleSidebar(); },
                                 }, { hookContext: sectionHookContext }) })] }), _jsx("span", { className: css.scrollFade, "aria-hidden": "true" })] }), copiedToast !== null && (_jsx(Toast, { tone: "success", text: t('version.copied'), onDone: () => { setCopiedToast(null); } }, copiedToast)), _jsxs("div", { className: css.footArea, children: [_jsx("div", { className: css.footerActions, children: renderSlot('sidebar.footer.action', { wide }) }), _jsx("div", { className: css.settingsArea, children: renderSlot('sidebar.settings', { wide }) })] })] }));
 }
-//# sourceMappingURL=SidebarRoot.js.map

@@ -32,4 +32,3 @@ export const folderReferenceRule = {
         return candidate === undefined ? undefined : { id: 'folder', ...candidate };
     },
 };
-//# sourceMappingURL=user-text-rules.js.map

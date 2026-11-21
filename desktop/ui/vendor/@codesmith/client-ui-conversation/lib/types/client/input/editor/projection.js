@@ -188,4 +188,3 @@ export function $projectComposer(idOf) {
         command: $isCommandChipNode(lead) ? lead.getClaim() : undefined,
     };
 }
-//# sourceMappingURL=projection.js.map

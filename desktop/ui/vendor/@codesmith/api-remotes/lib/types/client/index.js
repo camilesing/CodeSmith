@@ -64,4 +64,3 @@ export async function apply(ctx) {
             await dispose();
     };
 }
-//# sourceMappingURL=index.js.map

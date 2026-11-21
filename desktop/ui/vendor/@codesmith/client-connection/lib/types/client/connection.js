@@ -271,4 +271,3 @@ function waitForReady(ready, config, signal) {
         });
     });
 }
-//# sourceMappingURL=connection.js.map

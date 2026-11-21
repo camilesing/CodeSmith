@@ -227,4 +227,3 @@ export function readRelease(wire) {
         return undefined;
     return decodeRelease(wire.release) ?? undefined;
 }
-//# sourceMappingURL=manifest.js.map

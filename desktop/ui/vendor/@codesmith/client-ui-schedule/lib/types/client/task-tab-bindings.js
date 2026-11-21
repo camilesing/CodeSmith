@@ -173,4 +173,3 @@ export class TaskTabBindings {
         }
     }
 }
-//# sourceMappingURL=task-tab-bindings.js.map

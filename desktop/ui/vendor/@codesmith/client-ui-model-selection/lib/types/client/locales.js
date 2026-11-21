@@ -215,4 +215,3 @@ export const pt = {
     'empty.models': 'Nenhum modelo disponível.',
     'empty.efforts': 'Este modelo não fornece níveis de esforço de raciocínio.',
 };
-//# sourceMappingURL=locales.js.map

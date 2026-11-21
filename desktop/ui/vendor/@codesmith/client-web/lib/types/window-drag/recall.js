@@ -207,4 +207,3 @@ function defaultWatchBox(row, changed) {
     observer.observe(row);
     return () => { observer.disconnect(); };
 }
-//# sourceMappingURL=recall.js.map

@@ -82,4 +82,3 @@ export function rescanTextRefs(editor) {
             node.markDirty();
     }, { tag: HISTORY_MERGE_TAG });
 }
-//# sourceMappingURL=text-ref.js.map

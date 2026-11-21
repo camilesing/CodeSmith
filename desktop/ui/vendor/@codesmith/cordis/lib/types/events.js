@@ -206,4 +206,3 @@ export class EventsService {
         return dispose;
     }
 }
-//# sourceMappingURL=events.js.map

@@ -73,4 +73,3 @@ export function LinkIconRegular(props) {
 export function LinkIconMedium(props) {
     return _jsx(LinkIconArtwork, { ...props, strokeWidth: ICON_MEDIUM_STROKE });
 }
-//# sourceMappingURL=LinkIcon.js.map

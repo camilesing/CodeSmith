@@ -26,4 +26,3 @@ export function FileRouteAction(props) {
         return null;
     return _jsx(OpenTargetButton, { kind: "file", applications: association.apps, defaultId: association.apps.find(app => app.default)?.id, failed: association.failed, loading: association.loading, busy: props.pending, refresh: association.refresh, t: props.t, report: props.report, execute: operation => props.onAction(operation.kind === 'reveal' ? 'reveal' : 'open', operation.kind === 'application' ? operation.id : undefined) }, props.actionUrl);
 }
-//# sourceMappingURL=FileRouteAction.js.map

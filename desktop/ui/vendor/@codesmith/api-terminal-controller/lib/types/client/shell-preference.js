@@ -23,4 +23,3 @@ export function rememberShell(path) {
     }
     catch (_storageUnavailable) { /* Private browsing or quota failure leaves this launch usable. */ }
 }
-//# sourceMappingURL=shell-preference.js.map

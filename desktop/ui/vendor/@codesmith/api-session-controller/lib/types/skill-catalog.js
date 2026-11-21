@@ -201,4 +201,3 @@ let SessionSkillCatalog = (() => {
 })();
 export { SessionSkillCatalog };
 export default SessionSkillCatalog;
-//# sourceMappingURL=skill-catalog.js.map

@@ -86,4 +86,3 @@ export function GoalDock({ useProjection, useGoalActivation, onEdit, onPause, on
     const activation = useGoalActivation(next => (next.id === goalId && next.revision === revision ? next.activation : undefined));
     return (_jsx(GoalBar, { goal: goal, ...activation === undefined ? {} : { activation }, onEdit: onEdit, onPause: onPause, onResume: onResume, onClear: onClear, t: t }));
 }
-//# sourceMappingURL=GoalBar.js.map

@@ -84,4 +84,3 @@ export function registerInboxConversationNodes(ctx) {
     ctx.uiConversation.events.register(nextStepInboxDefinition);
     ctx.uiConversation.events.register(nextTurnInboxDefinition);
 }
-//# sourceMappingURL=inbox.js.map

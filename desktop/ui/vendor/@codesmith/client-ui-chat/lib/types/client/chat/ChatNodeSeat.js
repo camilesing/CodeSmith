@@ -125,4 +125,3 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({ nodeKey, groupPart, use
             fallback: (_jsx(JsonBlock, { label: t('message.unknownSurface', { type: routedNode.kind }), payload: routedNode.data, truncatedLabel: total => t('json.truncated', { total }) })),
         }) }));
 });
-//# sourceMappingURL=ChatNodeSeat.js.map

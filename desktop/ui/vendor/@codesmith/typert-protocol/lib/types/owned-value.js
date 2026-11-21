@@ -29,4 +29,3 @@ export function isTypertOwnedValue(value) {
     return typeof value === 'object' && value !== null
         && TYPERT_OWNED_VALUE in value && value[TYPERT_OWNED_VALUE] === true;
 }
-//# sourceMappingURL=owned-value.js.map

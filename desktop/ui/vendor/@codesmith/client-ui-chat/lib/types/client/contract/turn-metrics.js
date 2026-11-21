@@ -20,4 +20,3 @@ export function assistantStepReading(node) {
         : null;
     return { ttftMs, decodeMs, outputTokens: usageOutputTokens(node.usage) };
 }
-//# sourceMappingURL=turn-metrics.js.map

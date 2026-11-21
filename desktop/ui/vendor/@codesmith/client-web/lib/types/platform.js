@@ -14,4 +14,3 @@ export const PLATFORM_MODULES = [
 ];
 /** Client-bundle specifiers whose factories the parser preloads before the shell starts. */
 export const PRELOADED_CLIENT_EXTERNALS = [];
-//# sourceMappingURL=platform.js.map

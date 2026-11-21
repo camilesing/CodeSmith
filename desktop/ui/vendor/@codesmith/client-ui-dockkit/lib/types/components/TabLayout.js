@@ -93,4 +93,3 @@ export function TabLayout(props) {
                 return _jsx(TabHost, { ...props, callbacks: tabCallbacks, tab: tab, pane: pane, column: panes.findIndex(candidate => candidate.id === pane.id), floats: floats, focusRequest: focusRequest, offsets: offsets }, tab.id);
             }), panes.filter(pane => pane.tabs.length === 0).map(pane => (_jsx("div", { className: css.emptyTabHost, "data-dockkit-empty": true, style: { gridColumn: panes.indexOf(pane) * 2 + 1, gridRow: 1 }, children: _jsx(TabPanel, { state: state, pane: pane, callbacks: callbacks }) }, pane.id))), root.kind === 'split' && _jsx("div", { className: clsx(css.divider, css.tabLayoutDivider), "data-dockkit-divider": `${root.id}:0`, style: { gridColumn: 2, gridRow: 1 }, onPointerDown: (event) => { callbacks.onDividerPressed(root.id, 0, event); } })] }));
 }
-//# sourceMappingURL=TabLayout.js.map

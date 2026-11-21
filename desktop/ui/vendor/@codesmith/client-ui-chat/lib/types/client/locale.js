@@ -1633,4 +1633,3 @@ export const pt = {
     'clock.md': '{m}/{d}',
     'clock.ymd': '{y}-{m}-{d}',
 };
-//# sourceMappingURL=locale.js.map

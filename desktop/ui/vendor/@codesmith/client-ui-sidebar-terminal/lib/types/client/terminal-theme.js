@@ -104,4 +104,3 @@ function oscColor(value) {
         return n.toString(16).padStart(2, '0');
     }).join('')}`;
 }
-//# sourceMappingURL=terminal-theme.js.map

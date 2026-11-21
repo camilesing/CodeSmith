@@ -93,4 +93,3 @@ export const pt = {
     charts: 'gráficos', images: 'imagens', shapes: 'formas', conditionalFormatting: 'formatação condicional', featureSeparator: ', ',
     retry: 'Tentar novamente',
 };
-//# sourceMappingURL=locales.js.map

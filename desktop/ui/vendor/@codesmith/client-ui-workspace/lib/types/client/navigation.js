@@ -405,4 +405,3 @@ function recentWorkspace(workspaces, sessions) {
     return selected;
 }
 export { UiWorkspaceService };
-//# sourceMappingURL=navigation.js.map

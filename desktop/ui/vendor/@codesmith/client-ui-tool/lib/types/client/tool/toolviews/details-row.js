@@ -114,4 +114,3 @@ export const detailsToolview = {
         });
     },
 };
-//# sourceMappingURL=details-row.js.map

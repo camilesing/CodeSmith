@@ -39,4 +39,3 @@ export class UserTextRegistry extends ConversationDefinitionRegistry {
         super.refresh();
     }
 }
-//# sourceMappingURL=user-text-registry.js.map

@@ -23,4 +23,3 @@ export function historyRecordFirstSeq(record) {
 export function historyRecordLastSeq(record) {
     return record.event.seq;
 }
-//# sourceMappingURL=history-records.js.map

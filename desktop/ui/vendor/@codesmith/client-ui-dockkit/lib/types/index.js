@@ -31,4 +31,3 @@ export { createIdMinter, createInitialState } from "./engine/initial.js";
 export { DockSurface } from "./components/DockSurface.js";
 export { FloatLayer } from "./components/FloatLayer.js";
 export { DockLayout } from "./components/DockSurface.js";
-//# sourceMappingURL=index.js.map

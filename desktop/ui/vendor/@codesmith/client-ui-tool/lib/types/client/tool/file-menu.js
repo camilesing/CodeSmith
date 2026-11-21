@@ -13,4 +13,3 @@ export function toolFileInject(ctx) {
         },
     });
 }
-//# sourceMappingURL=file-menu.js.map

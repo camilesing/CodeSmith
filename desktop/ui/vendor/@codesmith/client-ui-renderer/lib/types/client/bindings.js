@@ -144,4 +144,3 @@ export function ScopeProvider({ scope, children, }) {
     const binding = observableHook(adapter.current)(value => value);
     return _jsx(ScopeBindingContext.Provider, { value: binding, children: children });
 }
-//# sourceMappingURL=bindings.js.map

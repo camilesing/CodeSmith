@@ -34,4 +34,3 @@ export function pdfTextRenderer(host) {
         };
     };
 }
-//# sourceMappingURL=text.js.map

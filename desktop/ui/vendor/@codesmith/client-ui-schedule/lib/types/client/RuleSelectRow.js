@@ -50,4 +50,3 @@ export function RuleZoneRow({ value, disabled, onChange, t }) {
         : [...recentItems, { type: 'separator', id: `${id}-recent` }, ...available];
     return _jsx(RuleSelectRow, { label: t('timing.zone'), value: value, current: zoneName(value, systemZone, t), disabled: disabled, onDismiss: () => { setQuery(''); }, items: items.length === 0 ? [{ id: `${id}-empty`, label: t('timing.zoneNoResults'), disabled: true }] : items, listClassName: css.zoneMenu, header: _jsx("input", { className: css.zoneSearch, type: "search", value: query, "data-menu-field": "", placeholder: t('timing.zoneSearch'), "aria-label": t('timing.zoneSearch'), onChange: (event) => { setQuery(event.target.value); } }), onChange: (zone) => { setQuery(''); setRecent(recent => rememberTimeZone(recent, zone)); onChange(zone); } });
 }
-//# sourceMappingURL=RuleSelectRow.js.map

@@ -4,4 +4,3 @@
  */
 /** Host plugin body — Schedule catalog behavior exists only in the browser entry. */
 export function apply() { }
-//# sourceMappingURL=index.js.map

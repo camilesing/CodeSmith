@@ -251,4 +251,3 @@ export function WorkflowRunPanel({ node, sessionId, useSessions, useSessionStatu
                             }, onContentBlur: (event) => { settlePhaseBlur(phase.key, event); }, onToggle: () => { togglePhase(phase.key); }, open: disclosure.open, pendingCleanCollapse: disclosure.pendingCleanCollapse, phase: phase, navigable: navigable, openSession: openSession, parentSessionId: sessionId, t: t }, phase.key));
                     }) }) }) }));
 }
-//# sourceMappingURL=WorkflowRunPanel.js.map

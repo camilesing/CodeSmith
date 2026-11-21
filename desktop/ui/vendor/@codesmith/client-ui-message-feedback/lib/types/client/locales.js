@@ -183,4 +183,3 @@ export const pt = {
     'error.generic': 'Não foi possível salvar o feedback',
     'error.noteTooLarge': 'A descrição é muito longa; encurte-o e envie novamente',
 };
-//# sourceMappingURL=locales.js.map

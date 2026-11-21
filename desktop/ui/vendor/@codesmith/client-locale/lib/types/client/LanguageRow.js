@@ -23,4 +23,3 @@ export function LanguageRow({ t, setLocale, useStore }) {
                     setOpen(false);
                 }, align: "end", portal: true, anchor: (_jsxs("button", { type: "button", className: css.selector, "aria-haspopup": "menu", "aria-expanded": open, onClick: () => { setOpen(v => !v); }, children: [activeLabel, _jsx(IconChevronDownOutlineRegular, { className: css.chevron })] })) })] }));
 }
-//# sourceMappingURL=LanguageRow.js.map

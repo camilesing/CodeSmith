@@ -281,4 +281,3 @@ export const accessPt = {
     'auto.confirm.acknowledge': 'Entendo esses riscos e quero continuar',
     'auto.confirm.enable': 'Ativar Auto review',
 };
-//# sourceMappingURL=locales.js.map

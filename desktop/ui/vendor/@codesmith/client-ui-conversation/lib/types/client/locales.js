@@ -3112,4 +3112,3 @@ export const pt = {
     'detail.schedule.paused': 'Pausada',
     'detail.schedule.ended': 'Concluída',
 };
-//# sourceMappingURL=locales.js.map

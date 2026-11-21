@@ -24,4 +24,3 @@ export function createClearEnded(deps) {
         return { cleared: true, count: result.value.deleted };
     };
 }
-//# sourceMappingURL=clear-ended.js.map

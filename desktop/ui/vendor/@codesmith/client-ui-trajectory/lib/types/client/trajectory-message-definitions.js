@@ -142,4 +142,3 @@ export function registerTrajectoryMessageDefinitions(ctx) {
     ctx.uiConversation.events.register(trajectoryInboxDefinition);
     ctx.uiConversation.events.register(trajectoryMessageDefinition);
 }
-//# sourceMappingURL=trajectory-message-definitions.js.map

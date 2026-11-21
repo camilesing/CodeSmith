@@ -85,4 +85,3 @@ export function rankByName(items, rawQuery) {
     ranked.sort((left, right) => Number(right.prefix) - Number(left.prefix) || right.score - left.score || left.index - right.index);
     return ranked.map(match => match.item);
 }
-//# sourceMappingURL=rank-by-name.js.map

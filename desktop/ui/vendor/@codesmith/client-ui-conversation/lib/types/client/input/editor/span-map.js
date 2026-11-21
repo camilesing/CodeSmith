@@ -100,4 +100,3 @@ export function $replaceDetectSpanWithNodes(span, nodes) {
     selection.insertNodes([...nodes]);
     return true;
 }
-//# sourceMappingURL=span-map.js.map

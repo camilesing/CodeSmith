@@ -12,4 +12,3 @@ export function ExpandButton({ sessionId, useStore, actions, t, useShortcuts }) 
         return null;
     return (_jsx(Tooltip, { label: t('chrome.expand'), shortcutKeys: shortcut?.keys, side: "bottom", delayMs: 500, disabled: expanded, children: _jsx(Button, { size: "sm", className: clsx(css.button, expanded && css.expanded), disabled: expanded, "aria-label": t('chrome.expandAria'), "aria-keyshortcuts": shortcut?.aria, "data-sidebar-right-expand": true, onClick: () => { actions.setExpanded(sessionId, true); }, children: _jsx(IconPanelLeftOutlineRegular, { className: css.icon }) }) }));
 }
-//# sourceMappingURL=ExpandButton.js.map

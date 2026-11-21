@@ -95,4 +95,3 @@ export class WorkspaceController extends Service {
 function commandError(operation, failure) {
     return new Error(`workspace ${operation} failed: ${failure.code}: ${failure.message}`);
 }
-//# sourceMappingURL=service.js.map

@@ -42,4 +42,3 @@ export function FontNotice({ fonts, t }) {
                         setExpanded(false);
                 }, children: [_jsxs("div", { className: css.panelHeader, children: [_jsx("h3", { id: `${id}-title`, children: t('missingFontsTitle') }), _jsx(Button, { size: "sm", "aria-label": t('closeDetails'), onClick: closeDetails, icon: _jsx(IconCloseOutlineRegular, {}) })] }), _jsx("p", { id: `${id}-description`, className: css.description, children: t('missingFontsDescription') }), _jsx("p", { className: css.count, children: t('missingFontsCount', { count: fonts.length }) }), _jsx("ul", { className: css.fonts, children: fonts.map(font => _jsx("li", { children: font }, font)) })] }), document.body)] });
 }
-//# sourceMappingURL=FontNotice.js.map

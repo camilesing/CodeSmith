@@ -32,4 +32,3 @@ export class DeveloperToolsPreference {
             throw new Error('Developer tools preference was not saved');
     }
 }
-//# sourceMappingURL=developer-tools.js.map

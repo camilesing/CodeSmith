@@ -77,4 +77,3 @@ class AssistantStreamListener {
             dispose();
     }
 }
-//# sourceMappingURL=assistant-stream.js.map

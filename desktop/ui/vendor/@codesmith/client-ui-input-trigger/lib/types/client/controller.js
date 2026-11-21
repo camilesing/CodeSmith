@@ -631,4 +631,3 @@ export class InputTriggerController {
         this.setHeaders(new Map());
     }
 }
-//# sourceMappingURL=controller.js.map

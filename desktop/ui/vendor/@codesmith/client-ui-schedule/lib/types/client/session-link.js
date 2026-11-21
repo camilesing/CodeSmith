@@ -21,4 +21,3 @@ export function sessionLinkState(id, sessions, workspaces) {
         return 'unavailable';
     return 'available';
 }
-//# sourceMappingURL=session-link.js.map

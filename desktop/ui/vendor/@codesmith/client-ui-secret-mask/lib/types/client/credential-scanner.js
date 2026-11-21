@@ -360,4 +360,3 @@ export class CredentialScanner {
         return signatureEnd - (payloadEnd + 1) >= min ? signatureEnd : -1;
     }
 }
-//# sourceMappingURL=credential-scanner.js.map

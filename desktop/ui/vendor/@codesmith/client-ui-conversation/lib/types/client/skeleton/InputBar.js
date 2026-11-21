@@ -402,4 +402,3 @@ export const InputBar = memo(function InputBar({ useSession, useInput, inputActi
                         ? renderSlot('conversation.composer.dock', {})
                         : null, activity ? null : _jsx(ContextMeter, { useProjection: useProjection, t: t })] })] }));
 });
-//# sourceMappingURL=InputBar.js.map

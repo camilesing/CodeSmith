@@ -122,4 +122,3 @@ export function registerCommandChipSeat(editor) {
             $releaseChip(first);
     }));
 }
-//# sourceMappingURL=command-chip-node.js.map

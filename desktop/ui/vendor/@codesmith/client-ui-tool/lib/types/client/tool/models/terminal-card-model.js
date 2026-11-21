@@ -322,4 +322,3 @@ export function terminalCardModel(block, sessionCwd) {
         },
     };
 }
-//# sourceMappingURL=terminal-card-model.js.map

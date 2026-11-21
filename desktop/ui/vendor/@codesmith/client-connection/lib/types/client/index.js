@@ -161,4 +161,3 @@ export function apply(ctx) {
         ...(pageLocation === undefined ? {} : { location: pageLocation }),
     });
 }
-//# sourceMappingURL=index.js.map

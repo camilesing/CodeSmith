@@ -88,4 +88,3 @@ export function useProcessScroll(bodyRef, contentRef, open, grouped) {
     }, [bodyRef, contentRef, follow, open, sync]);
     return { edges, events, initialize };
 }
-//# sourceMappingURL=use-process-scroll.js.map

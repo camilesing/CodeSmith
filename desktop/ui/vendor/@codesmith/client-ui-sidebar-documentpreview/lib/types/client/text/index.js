@@ -15,4 +15,3 @@ export function apply(ctx) {
     ctx.effect(() => ctx.documentPreviews.register(textBodyDefinition(() => t('viewer.text'))));
     ctx.effect(() => ctx.slots.inject('sidebar.right.tab.document', () => ctx.slots.register({ name: 'sidebar.right.tab.document', key: PLAIN_BODY_ID }, TextBody)));
 }
-//# sourceMappingURL=index.js.map

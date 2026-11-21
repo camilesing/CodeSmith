@@ -19,4 +19,3 @@ export function SystemPromptRow({ text, update = false, t }) {
 export const SystemPromptNodeView = memo(function SystemPromptNodeView({ node, t, }) {
     return _jsx(SystemPromptRow, { text: node.data.text, update: node.data.update === true, t: t });
 });
-//# sourceMappingURL=SystemPromptRow.js.map

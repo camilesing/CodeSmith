@@ -1121,4 +1121,3 @@ export class ClientModuleRegistry extends Service {
     }
 }
 export default ClientModuleRegistry;
-//# sourceMappingURL=index.js.map

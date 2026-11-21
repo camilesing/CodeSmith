@@ -240,4 +240,3 @@ export function resolveLocalInstant(time, timeZone) {
     const zoned = local.toZonedDateTime(timeZone, { disambiguation: 'earlier' });
     return zoned.toPlainDateTime().equals(local) ? zoned.epochMilliseconds : undefined;
 }
-//# sourceMappingURL=instant.js.map

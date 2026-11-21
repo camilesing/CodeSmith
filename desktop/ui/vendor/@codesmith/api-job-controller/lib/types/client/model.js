@@ -161,4 +161,3 @@ export class ClientJobsModel {
         notifySubscribers(this.listeners, 'jobs');
     }
 }
-//# sourceMappingURL=model.js.map

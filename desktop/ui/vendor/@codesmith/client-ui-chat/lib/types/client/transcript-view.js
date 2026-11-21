@@ -73,4 +73,3 @@ export class TranscriptViewPolicy {
             this.foldedReplies.set(replies);
     }
 }
-//# sourceMappingURL=transcript-view.js.map

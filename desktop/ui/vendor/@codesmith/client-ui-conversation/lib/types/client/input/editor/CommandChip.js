@@ -15,4 +15,3 @@ import referenceCss from './composer-editor.module.css';
 export function CommandChip({ token }) {
     return (_jsx("span", { className: clsx(referenceCss.reference, css.chip), children: _jsx("span", { className: css.label, children: token }) }));
 }
-//# sourceMappingURL=CommandChip.js.map

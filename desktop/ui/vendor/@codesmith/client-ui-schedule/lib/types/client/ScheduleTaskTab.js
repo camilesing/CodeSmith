@@ -91,4 +91,3 @@ export function ScheduleTaskTab(props) {
     }
     return _jsx("div", { className: css.tabBody, children: _jsx(TaskDetail, { ...detail.props, task: task, authoritative: catalogRecord !== undefined, onDeleted: () => { tab.actions.close(); } }) });
 }
-//# sourceMappingURL=ScheduleTaskTab.js.map

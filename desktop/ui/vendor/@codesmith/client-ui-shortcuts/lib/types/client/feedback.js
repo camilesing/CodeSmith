@@ -25,4 +25,3 @@ export function shortcutFailure(result, catalog, t, runtime) {
         ? t('conflict', { commands: result.conflicts?.map(id => catalog.find(row => row.id === id)?.label ?? id).join(', ') ?? '' })
         : t(result.status);
 }
-//# sourceMappingURL=feedback.js.map

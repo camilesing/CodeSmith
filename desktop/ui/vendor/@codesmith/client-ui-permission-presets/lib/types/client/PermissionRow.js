@@ -54,4 +54,3 @@ export function PermissionRow({ load, select, usePermission, t }) {
                     void select(FULL_ACCESS_PRESET);
                 } })] }));
 }
-//# sourceMappingURL=PermissionRow.js.map

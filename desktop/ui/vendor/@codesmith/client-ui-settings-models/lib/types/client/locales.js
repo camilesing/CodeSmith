@@ -1119,4 +1119,3 @@ export const pt = {
     onboardingSaving: 'Salvando…',
     keyRequired: 'Insira uma chave de API para continuar.',
 };
-//# sourceMappingURL=locales.js.map

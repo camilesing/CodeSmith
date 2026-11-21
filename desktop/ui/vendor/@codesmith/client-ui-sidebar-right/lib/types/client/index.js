@@ -245,4 +245,3 @@ export function apply(ctx) {
         };
     }, 'ui-sidebar-right: seats and shipped tab type');
 }
-//# sourceMappingURL=index.js.map

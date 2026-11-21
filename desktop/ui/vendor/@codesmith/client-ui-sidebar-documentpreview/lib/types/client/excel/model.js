@@ -26,4 +26,3 @@ export function formatCell(cell, numberFormat) {
     cell.m = formatted === undefined ? '' : String(formatted);
     return cell;
 }
-//# sourceMappingURL=model.js.map

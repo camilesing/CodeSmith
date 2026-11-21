@@ -15,4 +15,3 @@ import css from './Button.module.css';
 export const Button = forwardRef(function Button({ variant = 'ghost', size = 'md', icon, className, children, ...rest }, ref) {
     return (_jsxs("button", { ref: ref, type: "button", className: clsx(css.button, css[variant], css[size], className), ...rest, children: [icon != null && _jsx("span", { className: css.icon, children: icon }), children] }));
 });
-//# sourceMappingURL=Button.js.map

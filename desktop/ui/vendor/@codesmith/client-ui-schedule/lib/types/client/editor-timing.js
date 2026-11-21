@@ -193,4 +193,3 @@ export function timingFromDraft(draft, intervalFromNow = false) {
     const parsed = draft.frequency === 'advanced' ? RRule.parse(rrule) : undefined;
     return { kind: 'rrule', rrule: parsed?.kind === 'accepted' ? parsed.rule.expression : rrule };
 }
-//# sourceMappingURL=editor-timing.js.map

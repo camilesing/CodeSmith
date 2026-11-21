@@ -10,4 +10,3 @@ export function TabMenuContent({ target, dismiss, useViews, SessionProvider, ren
         return null;
     return _jsx(SessionProvider, { session: view.reference, children: renderSlot('sidebar.right.tab.menu.item', { tab, dismiss }) });
 }
-//# sourceMappingURL=TabMenuContent.js.map

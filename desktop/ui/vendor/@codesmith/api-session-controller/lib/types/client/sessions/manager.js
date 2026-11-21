@@ -772,4 +772,3 @@ function applyMutation(summaries, mutation) {
 function workspaceAttachSessionId(error) {
     return error.code === 'session/workspace-attach-failed' ? error.details.sessionId : undefined;
 }
-//# sourceMappingURL=manager.js.map

@@ -144,4 +144,3 @@ export default class ShortcutsService extends Service {
         await this.keyboard.closeWindow(this.config.getSnapshot().revision);
     }
 }
-//# sourceMappingURL=index.js.map

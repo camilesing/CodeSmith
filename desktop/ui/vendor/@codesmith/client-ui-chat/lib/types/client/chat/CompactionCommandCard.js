@@ -10,4 +10,3 @@ export function CompactionCommandCard({ node, compaction, t }) {
         return _jsx(GenericCommandCard, { node: node, t: t });
     return _jsx(GenericCommandCard, { node: node, t: t, runningSummary: t('message.compaction.running') });
 }
-//# sourceMappingURL=CompactionCommandCard.js.map

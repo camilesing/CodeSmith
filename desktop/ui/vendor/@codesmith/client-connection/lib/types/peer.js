@@ -37,4 +37,3 @@ export class Peer {
         return this.scope.dispose();
     }
 }
-//# sourceMappingURL=peer.js.map

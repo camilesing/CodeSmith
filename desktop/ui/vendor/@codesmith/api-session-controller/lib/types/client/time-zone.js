@@ -11,4 +11,3 @@ export function resolvedClientTimeZone() {
     }
     return timeZone;
 }
-//# sourceMappingURL=time-zone.js.map

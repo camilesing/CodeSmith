@@ -241,4 +241,3 @@ export class InputHub {
         return conversation;
     }
 }
-//# sourceMappingURL=hub.js.map

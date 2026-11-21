@@ -8,4 +8,3 @@ export class PdfWorkerFailure extends Error {
         this.name = 'PdfWorkerFailure';
     }
 }
-//# sourceMappingURL=errors.js.map

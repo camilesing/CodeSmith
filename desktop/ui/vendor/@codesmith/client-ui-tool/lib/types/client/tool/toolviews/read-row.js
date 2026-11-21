@@ -22,4 +22,3 @@ export const readToolview = {
         ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({ name: 'tool.call.toolview', key: 'read', locale: NS, inject: toolFileInject(ctx) }, ReadRow));
     },
 };
-//# sourceMappingURL=read-row.js.map

@@ -192,4 +192,3 @@ export function reconcile(journal, base, theirs, fileOwned) {
     }
     return conflicts;
 }
-//# sourceMappingURL=journal.js.map

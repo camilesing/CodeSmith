@@ -234,4 +234,3 @@ export class BrowserTerminal {
         });
     }
 }
-//# sourceMappingURL=terminal.js.map

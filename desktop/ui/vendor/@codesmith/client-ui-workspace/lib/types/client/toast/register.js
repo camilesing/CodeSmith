@@ -92,4 +92,3 @@ export function registerToasts(ctx, viewStore, actions) {
         }, ArchiveToastEntry);
     });
 }
-//# sourceMappingURL=register.js.map

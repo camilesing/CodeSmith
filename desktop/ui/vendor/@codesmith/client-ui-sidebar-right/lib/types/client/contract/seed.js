@@ -24,4 +24,3 @@ export const GUIDE_KIND = 'guide';
 export function pageAddress(kind) {
     return `sidebar://${kind}`;
 }
-//# sourceMappingURL=seed.js.map

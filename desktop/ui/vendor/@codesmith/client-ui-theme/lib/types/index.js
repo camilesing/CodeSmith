@@ -30,4 +30,3 @@ export function apply(ctx, config) {
         }));
     }, { prepend: true });
 }
-//# sourceMappingURL=index.js.map

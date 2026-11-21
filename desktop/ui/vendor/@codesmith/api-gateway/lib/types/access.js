@@ -161,4 +161,3 @@ function defaultFieldId(descriptor, args, field) {
     }
     return undefined;
 }
-//# sourceMappingURL=access.js.map

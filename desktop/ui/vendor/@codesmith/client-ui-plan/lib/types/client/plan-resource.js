@@ -64,4 +64,3 @@ export function planResourceProvider(remote) {
         },
     };
 }
-//# sourceMappingURL=plan-resource.js.map

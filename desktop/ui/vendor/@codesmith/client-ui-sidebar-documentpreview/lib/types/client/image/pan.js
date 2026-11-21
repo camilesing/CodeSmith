@@ -89,4 +89,3 @@ export function bindImagePan(image) {
         finish();
     };
 }
-//# sourceMappingURL=pan.js.map
