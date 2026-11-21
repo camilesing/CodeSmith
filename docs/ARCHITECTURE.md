@@ -342,7 +342,8 @@ live there).
   - `landlock.rs` - Linux Landlock ruleset application (enforced: ruleset built in the parent by `prepare_landlock`, applied between fork and exec via `install_sandbox_preexec`; filesystem-only — see its known limitations)
   - `windows.rs` - Windows sandbox helper contract stub (no in-process Windows sandbox is advertised; sandbox-demanding policies fail closed with `SANDBOX_UNAVAILABLE`)
   - `bwrap.rs` / `process_hardening.rs` - optional bubblewrap passthrough; `PR_SET_DUMPABLE`/core-dump hardening
-- **`crates/cli/src/sandbox/`** - Host-side sandbox policy preparation and denial reporting (`mod.rs`, `policy.rs`, `runtime.rs`, `backend.rs` for external OpenSandbox, `opensandbox.rs`)
+  - `backend.rs` - the replaced-world backend seam (`SandboxBackend`: id / capability honesty table / startup probe / denial classification; optional `SandboxTaskPlane` for background-task-capable backends). Local OS confinement and replaced-world execution stay two explicit planes — a backend replaces where the command runs, it never wraps a local spawn
+- **`crates/cli/src/sandbox/`** - Host-side sandbox backend implementations (`backend.rs` config factory — unknown ids fail loud; `docker.rs` the container family: docker/gvisor(runsc)/firecracker(kata-fc), one engine with policy-compiled mounts and a docker task plane; `opensandbox.rs` the hosted HTTP backend; plus `policy.rs`/`runtime.rs` re-export shims). `ShellManager` routes every command through the configured backend (task-plane backends join the background-job machinery; one-shot backends fail closed off the tool path)
 
 ### Utilities
 

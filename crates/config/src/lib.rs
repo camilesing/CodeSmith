@@ -620,10 +620,22 @@ pub struct SandboxToml {
     pub auto_allow_bash_if_sandboxed: Option<bool>,
     #[serde(default)]
     pub prefer_bwrap: Option<bool>,
+    /// Container-family backend controls (docker / gvisor / firecracker).
+    #[serde(default)]
+    pub docker: Option<SandboxDockerToml>,
     #[serde(default)]
     pub filesystem: Option<SandboxFilesystemToml>,
     #[serde(default)]
     pub network: Option<SandboxNetworkToml>,
+}
+
+/// On-disk schema for `[sandbox.docker]` — the image the container-family
+/// sandbox backends run commands in (must exist locally, `bash` required;
+/// never pulled implicitly).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SandboxDockerToml {
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

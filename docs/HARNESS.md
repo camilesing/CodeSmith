@@ -130,8 +130,11 @@ preset value from an older build (`agent`/`plan`/`yolo`/`coordinator`)
 normalizes to the two presets on read.
 
 OS-level sandboxing is enforced on macOS (Seatbelt) and on
-Linux via bubblewrap when installed; the Landlock ruleset code is not
-wired for child-process enforcement, and no Windows sandbox exists. See
+Linux via bubblewrap when installed, with the Landlock ruleset as the
+enforcing fallback (applied between fork and exec via
+`install_sandbox_preexec`); no Windows sandbox exists. Configuring a
+replaced-world backend (`sandbox_backend = docker/gvisor/firecracker/
+opensandbox`) routes every command through it instead. See
 [PRESETS.md](PRESETS.md) and [SANDBOX.md](SANDBOX.md).
 
 Model auto-routing (`--model auto`, the default) is a per-turn classifier that

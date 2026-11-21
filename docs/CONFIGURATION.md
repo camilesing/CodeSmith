@@ -996,11 +996,18 @@ and the capacity controller remains disabled unless configured.
   Shell results report both requested and effective sandbox metadata so fallback
   behavior is explicit.
 - `sandbox_backend` / `sandbox_url` / `sandbox_api_key` (optional):
-  external sandbox backend. `sandbox_backend` is `none` (default) or
-  `opensandbox`; when set to `opensandbox`, `exec_shell` routes commands
-  through `POST {sandbox_url}/v1/sandbox/run` (default
-  `http://localhost:8080`) with `sandbox_api_key` as the Bearer token,
-  instead of spawning local sandboxed processes. Environment equivalents:
+  replaced-world sandbox backend — replaces local execution entirely.
+  `sandbox_backend` is `none` (default), `docker`, `gvisor` (alias
+  `runsc`), `firecracker` (alias `kata-fc`), or `opensandbox`. The
+  container family (`docker`/`gvisor`/`firecracker`) runs every command
+  through the docker CLI with policy-compiled mounts and supports
+  background tasks; `opensandbox` routes commands through
+  `POST {sandbox_url}/v1/sandbox/run` (default `http://localhost:8080`)
+  with `sandbox_api_key` as the Bearer token (one-shot, no background
+  tasks). The backend's startup probe (daemon, runtime, image) runs at
+  engine build and fails loud. Container image override:
+  `[sandbox.docker] image` (default `ubuntu:24.04`; must exist locally
+  and contain `bash` — never auto-pulled). Environment equivalents:
   `CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` /
   `CODESMITH_SANDBOX_API_KEY`. See [SANDBOX.md](SANDBOX.md).
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.

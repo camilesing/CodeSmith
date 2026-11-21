@@ -12,6 +12,7 @@
 //! `crate::sandbox::*` paths keep resolving.
 
 pub mod backend;
+pub mod docker;
 pub mod opensandbox;
 pub mod policy;
 pub mod runtime;

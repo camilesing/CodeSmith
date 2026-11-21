@@ -190,6 +190,50 @@ Linux 上两者都不可用——或 Windows 上不存在辅助程序——时�
 `decide_sandbox` 报告不可用，命令在默认失败关闭姿态下被拒绝。
 在 macOS 上，强制执行层是 Seatbelt。
 
+## 换世界沙箱后端
+
+OS 平面约束的是本地生成的子进程。**换世界后端**（replaced-world
+backend）则整个替换命令的运行位置：设置了 `sandbox_backend` 后，
+每一条 `exec_shell` 命令（前台与后台 alike）都经它执行，本地不再
+有任何执行。
+
+| id | 技术 | 文件系统隔离 | 网络 | 平台 | 后台任务 |
+|---|---|---|---|---|---|
+| `docker` | OS 容器（docker CLI，默认 runtime） | 容器（与守护进程宿主/VM 共享内核） | 开/关 | 任意 docker 宿主，含 macOS Docker Desktop | 支持 |
+| `gvisor` | gVisor 用户态内核（`--runtime runsc`） | 用户态内核 | 开/关 | 注册了 runsc 的 Linux 宿主 | 支持 |
+| `firecracker` | 经 Kata `kata-fc` handler 的 Firecracker microVM（`--runtime kata-fc`） | 硬件虚拟化 microVM | 开/关 | 安装了 Kata 的 Linux 宿主 | 支持 |
+| `opensandbox` | 远程执行服务（HTTP） | 服务自身契约 | 开/关 | 任意 | 不支持（单发） |
+
+所有后端共享的语义：
+
+- **全程失败关闭。** 未知的 `sandbox_backend` id 在加载时即配置错误；
+  所配置后端的启动探测（守护进程可达性、runtime 注册、镜像在场、
+  孤儿清扫）在引擎构建时运行，失败即中止启动——绝不静默回落到本地
+  执行。
+- **策略编译因后端而异。** 容器家族以 `--read-only` 运行，并恰好在
+  策略的可写根上做 rw 绑定挂载（`get_writable_roots`——与 OS 平面
+  同一份立法）；宿主可见的写入恰好是这些挂载，受保护控制面子路径
+  在其上重挂只读，`danger-full-access` 则去掉 `--read-only`（容器
+  文件系统仍是临时的）。挂载在两侧使用同一路径，宿主文件工具与
+  容器视图一致。
+- **后台任务并入常规机制。** 容器后端实现沙箱任务平面：task id、
+  `exec_shell_wait` 轮询、输出 spill、kill 与前台轮询循环全部照常
+  工作（输出经 `docker logs -f` 流式传输，被杀任务退出码 137）。
+  不支持交互/TTY/stdin 执行，并如实拒绝。
+- **排除去掉约束，不去掉容器化。** 配置了后端时，`excluded_commands`
+  条目在后端内无约束 flag 运行——没有可供"解除沙箱"的本地执行。
+- **免审批诚实。** `auto_allow_bash_if_sandboxed` 只在生效策略确实
+  会约束时授予 Auto；即使配置了后端，`danger-full-access` 策略也
+  绝不搭沙箱免审批的车。
+- **孤儿清理。** 任务容器携带 `codesmith.engine` 标签；CLI 崩溃的
+  残留在同一引擎标签下次启动时被清扫。
+
+容器家族的已知限制：网络只有全开/全关（`--network none`；无逐主机
+策略，因此 `allow_managed_domains_only` 保持网络关闭）；镜像必须
+本地存在且含 `bash`（绝不隐式拉取）；拒绝分类只识别
+`Read-only file system`（容器内的裸 `Permission denied` 可能是真实
+的属主错误）；传递给命令的环境变量凭据在容器内可见。
+
 ## 配置
 
 `~/.codesmith/config.toml` 中的相关配置键：
@@ -229,10 +273,13 @@ allow_managed_domains_only = false # local OS sandboxes cannot enforce host allo
 allow = []
 deny = []
 
-# External sandbox backend
-sandbox_backend = "none"          # "none" or "opensandbox"
-sandbox_url = "http://localhost:8080"
-sandbox_api_key = "YOUR_API_KEY"
+# 换世界沙箱后端 —— 完全替换本地执行
+sandbox_backend = "none"          # none | docker | gvisor | firecracker (别名: kata-fc) | opensandbox
+sandbox_url = "http://localhost:8080"     # 仅 opensandbox
+sandbox_api_key = "YOUR_API_KEY"          # 仅 opensandbox
+
+[sandbox.docker]                  # 容器家族: docker / gvisor / firecracker
+image = "ubuntu:24.04"            # 必须本地存在（需含 bash）；绝不自动拉取
 ```
 
 环境变量覆盖：
@@ -262,7 +309,12 @@ sandbox_api_key = "YOUR_API_KEY"
 | macOS Seatbelt | sandbox-exec 违规 | 非零 | `Operation not permitted`、`deny(`、`Sandbox: ` |
 | Linux Landlock | EACCES / EPERM | 非零 | `Permission denied`、`Operation not permitted`、`EACCES`、`EPERM` |
 | Linux SIGSYS 启发式 | seccomp 时代遗留的检测（Linux 共用路径） | 31 | `Bad system call`、`bad system call`、`SIGSYS`、`seccomp` |
+| 容器后端 | 只读容器文件系统（策略编译的挂载） | 非零 | `Read-only file system` |
 | Linux bwrap | 挂载/命名空间失败 | 非零 | 不定 |
+
+换世界后端自行分类自己的拒绝（`SandboxBackend::classify_denial`）；
+被分类的拒绝会在输出前附加跨工具的 `[sandbox: …]` 提示行，绝不
+替代原始 stderr。
 | Windows | 拒绝访问 / 特权 | 非零 | `Access is denied`、`ERROR_PRIVILEGE_NOT_HELD` |
 
 `SandboxManager` 上的 `was_denied()` 方法聚合所有平台特定的检查。

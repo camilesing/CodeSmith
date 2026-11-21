@@ -1534,11 +1534,18 @@ impl ShellManager {
             .with_context(|| format!("Failed to spawn on sandbox backend '{}'", backend.id()))?;
 
         let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
-        let stderr_buffer = None;
+        let stderr_buffer = spawned
+            .stderr
+            .as_ref()
+            .map(|_| Arc::new(Mutex::new(Vec::new())));
         let stdout_thread = Some(spawn_reader_thread(
             spawned.stdout,
             Arc::clone(&stdout_buffer),
         ));
+        let stderr_thread = match (spawned.stderr, stderr_buffer.as_ref()) {
+            (Some(stream), Some(buffer)) => Some(spawn_reader_thread(stream, Arc::clone(buffer))),
+            _ => None,
+        };
 
         let bg_shell = BackgroundShell {
             id: task_id.clone(),
@@ -1558,7 +1565,7 @@ impl ShellManager {
             stdin: None,
             child: None,
             stdout_thread,
-            stderr_thread: None,
+            stderr_thread,
             backend_task: Some(BackendTask {
                 backend: Arc::clone(backend),
                 task: spawned.task,
@@ -3461,6 +3468,7 @@ mod backend_task_tests {
             Ok(SandboxTaskSpawn {
                 task,
                 stdout: Box::new(std::io::Cursor::new(b"stub output\n".to_vec())),
+                stderr: None,
             })
         }
 

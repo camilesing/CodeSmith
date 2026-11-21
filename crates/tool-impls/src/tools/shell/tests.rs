@@ -255,8 +255,11 @@ fn exec_shell_auto_allows_only_when_sandbox_would_enforce() {
 /// review 2026-11-03).
 #[cfg(unix)]
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn execpolicy_ask_user_is_enforced_not_recorded() {
-    let _guard = env_lock();
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _restore = EnvRestore::new(&["CODESMITH_HOME"]);
     let home = tempdir().expect("tempdir");
     // SAFETY: held under env_lock; restored by EnvRestore on drop.
@@ -2777,16 +2780,15 @@ async fn sandbox_backend_errors_and_mode_limits_surface() {
 /// (prepended, never replacing the raw stderr) plus the metadata flag.
 #[tokio::test]
 async fn sandbox_backend_denial_prefixes_hint_and_keeps_stderr() {
-    let _guard = env_lock();
     let tmp = tempdir().expect("tempdir");
-    // Isolate CODESMITH_HOME: `execute` loads execpolicy from it, and a
-    // concurrent writer (see `execpolicy_ask_user_is_enforced_not_recorded`)
-    // would otherwise race this read.
-    let _restore = EnvRestore::new(&["CODESMITH_HOME"]);
-    // SAFETY: held under env_lock; restored by EnvRestore on drop.
-    unsafe { std::env::set_var("CODESMITH_HOME", tmp.path()) };
-    let ctx =
-        ToolContext::new(tmp.path()).with_sandbox_backend(std::sync::Arc::new(StubExecBackend {
+    // No env isolation needed: the ExecPolicy feature is disabled, so
+    // `execute` never resolves CODESMITH_HOME (that env read is what races
+    // env-mutating neighbors).
+    let mut features = codesmith_agent_runtime::features::Features::with_defaults();
+    features.disable(codesmith_agent_runtime::features::Feature::ExecPolicy);
+    let ctx = ToolContext::new(tmp.path())
+        .with_features(features)
+        .with_sandbox_backend(std::sync::Arc::new(StubExecBackend {
             stdout: String::new(),
             stderr: "touch: /etc/x: Read-only file system".to_string(),
             exit_code: 1,
@@ -2872,12 +2874,11 @@ impl codesmith_sandbox::runtime::SandboxTaskPlane for StubTaskPlaneBackend {
 /// command locally while a backend is configured.
 #[tokio::test]
 async fn task_plane_backend_with_unwired_manager_refuses() {
-    let _guard = env_lock();
     let tmp = tempdir().expect("tempdir");
-    let _restore = EnvRestore::new(&["CODESMITH_HOME"]);
-    // SAFETY: held under env_lock; restored by EnvRestore on drop.
-    unsafe { std::env::set_var("CODESMITH_HOME", tmp.path()) };
+    let mut features = codesmith_agent_runtime::features::Features::with_defaults();
+    features.disable(codesmith_agent_runtime::features::Feature::ExecPolicy);
     let ctx = ToolContext::new(tmp.path())
+        .with_features(features)
         .with_sandbox_backend(std::sync::Arc::new(StubTaskPlaneBackend));
     let result = ExecShellTool
         .execute(json!({"command": "printf x"}), &ctx)

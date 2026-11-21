@@ -219,6 +219,60 @@ exists — `decide_sandbox` reports unavailable and the command is refused
 under the default fail-closed posture. On macOS, Seatbelt is the
 enforcing layer.
 
+## Replaced-world sandbox backends
+
+The OS plane confines a locally spawned child. A **replaced-world backend**
+substitutes where the command runs entirely: when `sandbox_backend` is
+set, every `exec_shell` command (foreground and background alike) routes
+through it and nothing executes locally.
+
+| id | technology | fs isolation | network | platform | background tasks |
+|---|---|---|---|---|---|
+| `docker` | OS containers (docker CLI, default runtime) | container (kernel shared with the daemon host/VM) | on/off | any docker host, incl. Docker Desktop on macOS | yes |
+| `gvisor` | gVisor userspace kernel (`--runtime runsc`) | userspace kernel | on/off | Linux host with runsc registered | yes |
+| `firecracker` | Firecracker microVM via Kata's `kata-fc` handler (`--runtime kata-fc`) | hardware-virtualized microVM | on/off | Linux host with Kata installed | yes |
+| `opensandbox` | remote execution service (HTTP) | the service's contract | on/off | anywhere | no (one-shot) |
+
+Semantics shared by every backend:
+
+- **Fail-closed end to end.** An unknown `sandbox_backend` id is a config
+  error at load; the configured backend's startup probe (daemon
+  reachability, runtime registration, image presence, orphan sweep) runs
+  at engine build and aborts startup on failure — never a silent
+  fall-back to local execution.
+- **Policy compilation is backend-specific.** The container family runs
+  `--read-only` with rw binds at exactly the policy's writable roots
+  (`get_writable_roots` — the same legislation as the OS plane); host-
+  visible writes are exactly those mounts, protected control-plane
+  subpaths are re-mounted read-only, and `danger-full-access` drops
+  `--read-only` (the container fs stays ephemeral). Host file tools and
+  the container agree because every mount uses the same path on both
+  sides.
+- **Background tasks join the normal machinery.** The container backends
+  implement the sandbox task plane: task ids, `exec_shell_wait` polling,
+  output spill, kill, and the foreground poll loop all work unchanged
+  (output streams via `docker logs -f`, killed tasks exit 137).
+  Interactive/TTY/stdin execution is not supported and is refused
+  honestly.
+- **Exclusions drop confinement, not containerization.** With a backend
+  configured, `excluded_commands` entries run in the backend with no
+  confinement flags — there is no local execution to unsandbox to.
+- **Auto-allow honesty.** `auto_allow_bash_if_sandboxed` grants Auto only
+  when the effective policy would actually confine; a
+  `danger-full-access` policy never rides the sandbox auto-allow even
+  with a backend set.
+- **Orphan hygiene.** Task containers carry a `codesmith.engine` label; a
+  crashed CLI's leftovers are swept at the next startup of the same
+  engine label.
+
+Known limitations of the container family: network is all-or-nothing
+(`--network none`; no per-host policy, so `allow_managed_domains_only`
+keeps network off); the image must exist locally and contain `bash`
+(images are never pulled implicitly); denial classification recognizes
+only `Read-only file system` (a bare `Permission denied` inside a
+container may be a real ownership error); environment credentials passed
+to commands are visible inside the container.
+
 ## Configuration
 
 Relevant config keys in `~/.codesmith/config.toml`:
@@ -258,10 +312,13 @@ allow_managed_domains_only = false # local OS sandboxes cannot enforce host allo
 allow = []
 deny = []
 
-# External sandbox backend
-sandbox_backend = "none"          # "none" or "opensandbox"
-sandbox_url = "http://localhost:8080"
-sandbox_api_key = "YOUR_API_KEY"
+# Replaced-world sandbox backend — replaces local execution entirely
+sandbox_backend = "none"          # none | docker | gvisor | firecracker (alias: kata-fc) | opensandbox
+sandbox_url = "http://localhost:8080"     # opensandbox only
+sandbox_api_key = "YOUR_API_KEY"          # opensandbox only
+
+[sandbox.docker]                  # container family: docker / gvisor / firecracker
+image = "ubuntu:24.04"            # must exist locally (bash required); never auto-pulled
 ```
 
 Environment variable overrides:
@@ -291,6 +348,12 @@ actually effective (`sandbox_requested`, `sandbox_effective`,
 | macOS Seatbelt | sandbox-exec violation | non-zero | `Operation not permitted`, `sandbox-exec`, `deny(`, `Sandbox: ` |
 | Linux Landlock | EACCES / EPERM | non-zero | `Permission denied`, `Operation not permitted`, `EACCES`, `EPERM` |
 | Linux SIGSYS heuristics | leftover seccomp-era detection (shared Linux path) | 31 | `Bad system call`, `bad system call`, `SIGSYS`, `seccomp` |
+| Container backends | read-only container fs (policy-compiled mounts) | non-zero | `Read-only file system` |
+
+Replaced-world backends classify their own denials
+(`SandboxBackend::classify_denial`); a classified denial prepends the
+cross-tool `[sandbox: …]` hint to the output, never replacing the raw
+stderr.
 | Linux bwrap | Mount/namespace failure | non-zero | varies |
 | Windows | Access denied / privilege | non-zero | `Access is denied`, `ERROR_PRIVILEGE_NOT_HELD` |
 

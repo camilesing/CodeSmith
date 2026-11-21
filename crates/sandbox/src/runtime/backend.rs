@@ -74,6 +74,15 @@ pub enum SandboxKind {
     /// Alibaba OpenSandbox (or compatible) remote execution.
     #[serde(rename = "opensandbox")]
     OpenSandbox,
+    /// OS containers via the docker CLI (`runc`).
+    #[serde(rename = "docker")]
+    Docker,
+    /// gVisor userspace kernel via docker's `runsc` runtime.
+    #[serde(rename = "gvisor")]
+    Gvisor,
+    /// Firecracker microVMs via Kata Containers' `kata-fc` runtime handler.
+    #[serde(rename = "firecracker")]
+    Firecracker,
 }
 
 impl SandboxKind {
@@ -83,6 +92,9 @@ impl SandboxKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "none" | "" => Some(Self::None),
             "opensandbox" | "open-sandbox" | "open_sandbox" => Some(Self::OpenSandbox),
+            "docker" => Some(Self::Docker),
+            "gvisor" | "runsc" => Some(Self::Gvisor),
+            "firecracker" | "kata-fc" | "kata" => Some(Self::Firecracker),
             _ => None,
         }
     }
@@ -93,6 +105,9 @@ impl SandboxKind {
         match self {
             Self::None => "none",
             Self::OpenSandbox => "opensandbox",
+            Self::Docker => "docker",
+            Self::Gvisor => "gvisor",
+            Self::Firecracker => "firecracker",
         }
     }
 }
@@ -187,14 +202,16 @@ pub trait SandboxBackend: Send + Sync + std::fmt::Debug {
     async fn exec(&self, request: SandboxExecRequest) -> Result<SandboxOutput>;
 }
 
-/// A freshly spawned backend task: its handle plus a reader that yields the
-/// task's combined output stream and reaches EOF when the task ends.
+/// A freshly spawned backend task: its handle plus readers that yield the
+/// task's output streams and reach EOF when the task ends.
 pub struct SandboxTaskSpawn {
     /// Backend-local task handle used by the plane's other methods.
     pub task: String,
-    /// Combined stdout+stderr stream (the docker CLI cannot separate them
-    /// after the fact); closes at task end.
+    /// Task stdout stream; closes at task end.
     pub stdout: Box<dyn Read + Send>,
+    /// Task stderr stream, when the backend can separate it (the docker CLI
+    /// does through `docker logs`); `None` means stderr rides `stdout`.
+    pub stderr: Option<Box<dyn Read + Send>>,
 }
 
 /// Terminal status of a backend task.

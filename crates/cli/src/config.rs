@@ -247,10 +247,22 @@ pub struct SandboxConfigToml {
     pub auto_allow: Option<Vec<String>>,
     #[serde(default)]
     pub prefer_bwrap: Option<bool>,
+    /// Container-family backend controls (docker / gvisor / firecracker).
+    #[serde(default)]
+    pub docker: Option<SandboxDockerToml>,
     #[serde(default)]
     pub filesystem: Option<SandboxFilesystemConfigToml>,
     #[serde(default)]
     pub network: Option<SandboxNetworkConfigToml>,
+}
+
+/// On-disk schema for `[sandbox.docker]` — shared by every container-family
+/// backend id. The image must exist locally (`bash` required); it is never
+/// pulled implicitly.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, schemars::JsonSchema)]
+pub struct SandboxDockerToml {
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, schemars::JsonSchema)]

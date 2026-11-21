@@ -900,11 +900,16 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   已废弃并被忽略）。
   Shell 结果会同时报告请求的和实际生效的沙箱元数据，使回退行为
   明确可见。
-- `sandbox_backend` / `sandbox_url` / `sandbox_api_key`（可选）：外部
-  沙箱后端。`sandbox_backend` 为 `none`（默认）或 `opensandbox`；设为
-  `opensandbox` 时，`exec_shell` 把命令路由到
-  `POST {sandbox_url}/v1/sandbox/run`（默认 `http://localhost:8080`），
-  并以 `sandbox_api_key` 作为 Bearer token，而不是本地派生沙箱进程。
+- `sandbox_backend` / `sandbox_url` / `sandbox_api_key`（可选）：换世界
+  沙箱后端——完全替换本地执行。`sandbox_backend` 为 `none`（默认）、
+  `docker`、`gvisor`（别名 `runsc`）、`firecracker`（别名 `kata-fc`）
+  或 `opensandbox`。容器家族（`docker`/`gvisor`/`firecracker`）经
+  docker CLI 以策略编译的挂载运行每条命令，并支持后台任务；
+  `opensandbox` 把命令路由到 `POST {sandbox_url}/v1/sandbox/run`（默认
+  `http://localhost:8080`），以 `sandbox_api_key` 作为 Bearer token
+  （单发，无后台任务）。后端的启动探测（守护进程、runtime、镜像）在
+  引擎构建时运行并 fail-loud。容器镜像覆盖：`[sandbox.docker] image`
+  （默认 `ubuntu:24.04`；必须本地存在且含 `bash`——绝不自动拉取）。
   环境变量等价物：`CODESMITH_SANDBOX_BACKEND` / `CODESMITH_SANDBOX_URL` /
   `CODESMITH_SANDBOX_API_KEY`。参见 [SANDBOX_cn.md](SANDBOX_cn.md)。
 - `managed_config_path`（字符串，可选）：在用户/环境配置之后加载的托管配置文件。

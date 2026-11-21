@@ -976,6 +976,18 @@
           ],
           "default": null
         },
+        "docker": {
+          "description": "Container-family backend controls (docker / gvisor / firecracker).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxDockerToml"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "filesystem": {
           "anyOf": [
             {
@@ -995,6 +1007,19 @@
             {
               "type": "null"
             }
+          ],
+          "default": null
+        }
+      }
+    },
+    "SandboxDockerToml": {
+      "description": "On-disk schema for `[sandbox.docker]` — shared by every container-family\nbackend id. The image must exist locally (`bash` required); it is never\npulled implicitly.",
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": [
+            "string",
+            "null"
           ],
           "default": null
         }
