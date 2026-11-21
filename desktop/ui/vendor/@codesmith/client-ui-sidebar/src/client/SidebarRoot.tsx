@@ -47,7 +47,7 @@ const SCROLLBAR_LINGER_MS = 2000
 
 /** Format complete-build metadata for the local brand badge. */
 function localBuildVersion(): string | undefined {
-  const version = process.env.CODESMITH_CLIENT_VERSION
+  const version = (globalThis as { __CODESMITH_CLIENT_VERSION__?: string }).__CODESMITH_CLIENT_VERSION__
   if (version === undefined) return undefined
   const commit = process.env.CODESMITH_CLIENT_COMMIT_HASH
   return version

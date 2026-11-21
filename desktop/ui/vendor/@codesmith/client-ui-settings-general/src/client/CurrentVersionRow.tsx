@@ -8,7 +8,7 @@ import css from './CurrentVersionRow.module.css'
  * @returns the current release label, or nothing when build metadata is absent.
  */
 export function CurrentVersionRow({ t }: PropsRuntime<'settings.general.item'> & PropsLocale<'settings'>) {
-  const version = process.env.CODESMITH_CLIENT_VERSION
+  const version = (globalThis as { __CODESMITH_CLIENT_VERSION__?: string }).__CODESMITH_CLIENT_VERSION__
   if (version === undefined) return null
   return <div className={css.row}>{t('general.currentVersion', { version })}</div>
 }

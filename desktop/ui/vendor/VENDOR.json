@@ -4030,7 +4030,7 @@
    "dir": "packages/client/ui-settings-general",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "a01202d1bbc265ca616c6c0aecb83eacd180cf24942cddf8021320bcca31abc9",
+    "lib/client.js": "a88f739c2160d66e8758ecef36c3cc778209473596e62db1c5188c14f6123398",
     "lib/index.js": "6256186605bfd2996f804685439a4f47f0b49c8ede127fe6e54d5dd6c6a7ac23",
     "lib/types/client/CurrentVersionRow.d.ts": "60a47291c3fceb5b0eb2f1704feca04b51bc2cbceec9859f7df260dec2d7eb65",
     "lib/types/client/CurrentVersionRow.js": "b1f0acf70a1760283714a9e5e69bc0cd96845430c5514e9483b30431ae5aaca3",
@@ -4078,7 +4078,7 @@
     "locale/zh.json": "6abe170a616299b5401726b65b9accdf3fbdfc690fdc9a683524cb6124aa9f84",
     "package.json": "6b51e1d34adc2d09969eb0f6fb09ca88a8e9a328c8ea03c55e0dcf874e904a7e",
     "src/client/CurrentVersionRow.module.css": "025690154ff19102ad24dd8c821a12d77210e01e28072c8af1a10cae8a9e8ec0",
-    "src/client/CurrentVersionRow.tsx": "c4e1fd6a5bc3b48ea6f74bcd4b26360c4a65a7b1ef270a939c98c58e8c755bff",
+    "src/client/CurrentVersionRow.tsx": "a189235b6ed12cb5cb3313343b516ef5db81d7cc1710a79c4b942ee8992e1e96",
     "src/client/DesktopChannelRow.module.css": "f921d39c1a09f1ea5ae6d996f53d015846bd3c74f45d36c1cf6b01665bd80845",
     "src/client/DesktopChannelRow.tsx": "e1c62ed3e34d56e50fcbfd20f013defffc23b7c2f9a2ef8b7e298da25dc8ff84",
     "src/client/DesktopUpdateIndicator.module.css": "3d3afea694008e2f9587efed31c419e963297026dd53aef475641dc8d2f5fcfa",
@@ -4106,7 +4106,10 @@
     "src/index.ts": "198f25d5f28719b96518bee865bed95cfa378fa50e25a354a87037b7f742ee62",
     "src/types.ts": "3b474f82465d7640f9746579b047fdff47545d017fc8bd70df57a2de10e0f5dc"
    },
-   "patched_files": [],
+   "patched_files": [
+    "lib/client.js",
+    "src/client/CurrentVersionRow.tsx"
+   ],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-product-analytics",
@@ -4114,7 +4117,7 @@
     "devDependencies:@deepseek-ai/dsh-remote-mock",
     "devDependencies:@deepseek-ai/dsh-settings"
    ],
-   "rewritten": 211,
+   "rewritten": 210,
    "upstream": "@deepseek-ai/dsh-client-ui-settings-general"
   },
   "@codesmith/client-ui-settings-models": {
@@ -4308,7 +4311,7 @@
    "dir": "packages/client/ui-sidebar",
    "entry": "client.js",
    "files": {
-    "lib/client.js": "18eb1a04bd5e720801c192616d53ad31e0250166505572dc89ac06a0117ab339",
+    "lib/client.js": "dc24b2d863ba4f672ab4fbc98f9935015816795e88449eae3f86fdd1fbdc8f29",
     "lib/index.js": "be323c589cda4dbb7714df563ebb66f581a3d37ed2ab6859fed85fcebf970aea",
     "lib/types/client/HeaderLeadingControls.d.ts": "c6ad60839d5f7b54167e8da8e4f5ae41e031439135ca3aef80080b7ebb228b4a",
     "lib/types/client/HeaderLeadingControls.js": "d60da446bfba1904ca5869ee76cdb26dff9284d1bd3237d65351d5a7449d6766",
@@ -4341,7 +4344,7 @@
     "src/client/HeaderLeadingControls.tsx": "512f322a13b9ceff45755397757847a54fd86fd86cd82ea85c2baa68f61c565c",
     "src/client/PanelIcon.tsx": "40a64af9ac7194193b44046d5f5ff6d173db55572f2d46d4ca1e0944cc10a7a0",
     "src/client/SidebarRoot.module.css": "a51582c603b2bc4b28b1d9b69907592cefe4ddd9fd2e7317b7abec0797c2416a",
-    "src/client/SidebarRoot.tsx": "9f9e94a1fdb046c44ff5d632eda6217868b48cf5b65b01295a973d6daf8a83b9",
+    "src/client/SidebarRoot.tsx": "896a75f8959bd2a75ad81f232f23fb1e451626cdb7afe0be4773290edeb7bd93",
     "src/client/contract/slots.ts": "51d039f652bdd271589eb9a8267e8d77182fc34e20ec9d9b3ed5e0ab7f07b57b",
     "src/client/index.ts": "c15f3513634b10bde100617ba34df5027402f29faa6435a196625198acba0bf5",
     "src/client/locales.ts": "e8c5d98bd691cf45882e78be4b30624731dac7abf9331bd3a99328103ec92ed3",
@@ -4350,13 +4353,16 @@
     "src/css-modules.d.ts": "e28410d74a0d763364c04fa690c2ca2202ad3019c74f8f5205e8dc6cba69c02f",
     "src/index.ts": "5a683e2d5b799d6f7387bb2e1e527d95e5860e077b2030c232f1209092bdd95c"
    },
-   "patched_files": [],
+   "patched_files": [
+    "lib/client.js",
+    "src/client/SidebarRoot.tsx"
+   ],
    "plugin": true,
    "pruned_deps": [
     "devDependencies:@deepseek-ai/dsh-client-product-analytics",
     "devDependencies:@deepseek-ai/dsh-client-test-runtime"
    ],
-   "rewritten": 156,
+   "rewritten": 154,
    "upstream": "@deepseek-ai/dsh-client-ui-sidebar"
   },
   "@codesmith/client-ui-sidebar-documentpreview": {

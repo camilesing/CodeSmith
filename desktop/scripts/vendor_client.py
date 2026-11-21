@@ -203,6 +203,37 @@ VENDOR_PATCHES: list[dict[str, str]] = [
         "find": 'css.wordmark, "HARNESS"',
         "replace": 'css.wordmark, "CodeSmith"',
     },
+    # The local-build version displays (sidebar brand badge, Settings →
+    # General current-version row) bake upstream's own build stamp into the
+    # bundles. CodeSmith's desktop entry sets `__CODESMITH_CLIENT_VERSION__`
+    # (the workspace version, baked by vite.config.ts) before boot, and these
+    # reads pick it up, so the badge shows the CLI version. The lib finds
+    # anchor on the stamped literals of the pinned upstream build; a rebuild
+    # changes the stamp and fails loud here (update the literals then).
+    {
+        "package": "@deepseek-ai/dsh-client-ui-sidebar",
+        "files": ["src/client/SidebarRoot.tsx"],
+        "find": "const version = process.env.DSH_CLIENT_VERSION",
+        "replace": "const version = (globalThis as { __CODESMITH_CLIENT_VERSION__?: string }).__CODESMITH_CLIENT_VERSION__",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-ui-sidebar",
+        "files": ["lib/client.js"],
+        "find": 'return `0.2.2-alpha.3-8bd0733` + ({}.DSH_CLIENT_GIT_DIRTY === "true" ? "-dirty" : "");',
+        "replace": "return globalThis.__CODESMITH_CLIENT_VERSION__;",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-ui-settings-general",
+        "files": ["src/client/CurrentVersionRow.tsx"],
+        "find": "const version = process.env.DSH_CLIENT_VERSION",
+        "replace": "const version = (globalThis as { __CODESMITH_CLIENT_VERSION__?: string }).__CODESMITH_CLIENT_VERSION__",
+    },
+    {
+        "package": "@deepseek-ai/dsh-client-ui-settings-general",
+        "files": ["lib/client.js"],
+        "find": '{ version: "0.2.2-alpha.3" }',
+        "replace": "{ version: globalThis.__CODESMITH_CLIENT_VERSION__ }",
+    },
     # The open-in-app control renders the application icon as an `<img>`,
     # whose load bypasses the transport's fetch hook — a page-relative icon
     # URL 404s against the asset origin. Point it at the bridge (loopback is

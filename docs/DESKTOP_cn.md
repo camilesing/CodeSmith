@@ -51,6 +51,13 @@ Tauri App (desktop/)
    连同上游 commit 与逐文件哈希记录在 `ui/vendor/VENDOR.json`；
    重复执行是幂等的。
 
+桌面的版本显示（侧栏品牌徽标与设置 → 通用的"当前版本"行）展示 CLI
+版本：一对补丁把 vendored 读取（上游把自家构建戳固化进构建产物）改指
+`globalThis.__CODESMITH_CLIENT_VERSION__`，由 boot 入口取 workspace
+`Cargo.toml` 的版本设置（vite define，每次 serve/build 重新读取，版本
+升级无需重新 vendor）。lib 的 find 锚定在固化的字面量上，上游重新构建
+后会在 VENDOR_PATCHES 处 fail-loud，需要随之更新。
+
 随后 `desktop/scripts/gen_boot_graph.mjs` 生成 boot 图
 （`ui/src/boot-graph.generated.ts`）并把 classic-script bundle 暂存到
 `ui/public/plugins/`。`desktop/scripts/check_brand.py` 强制"无上游品牌"

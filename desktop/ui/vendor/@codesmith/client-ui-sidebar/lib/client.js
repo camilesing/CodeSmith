@@ -279,7 +279,7 @@ window.__ModuleLoader__.load({
 		const SCROLLBAR_LINGER_MS = 2e3;
 		/** Format complete-build metadata for the local brand badge. */
 		function localBuildVersion() {
-			return `0.2.2-alpha.3-8bd0733` + ({}.CODESMITH_CLIENT_GIT_DIRTY === "true" ? "-dirty" : "");
+			return globalThis.__CODESMITH_CLIENT_VERSION__;
 		}
 		/** Analytics category of an official panel; other panels are never reported. */
 		function officialEntry(id) {

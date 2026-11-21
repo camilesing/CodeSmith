@@ -1,5 +1,17 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+// The CLI version (workspace Cargo.toml) the desktop's version displays
+// show — read at every serve/build so a version bump needs no re-vendor.
+// The vendored bundles cannot see this define (they are staged verbatim as
+// classic scripts); main.ts copies it onto globalThis for them to read.
+const workspaceVersion = (() => {
+  const cargo = readFileSync(resolve(__dirname, "../../Cargo.toml"), "utf8");
+  const match = cargo.match(/^\[workspace\.package\][^\[]*?^version\s*=\s*"([^"]+)"/m);
+  if (match === null) throw new Error("desktop ui: no [workspace.package] version in the root Cargo.toml");
+  return match[1];
+})();
 
 // The vendored plugin bundles are classic scripts addressed through the
 // `plugins/??<id>/client.js&rev=<rev>` URL form (chunkUrl in
@@ -19,6 +31,7 @@ export default defineConfig({
     "process.versions.node": '"0.0.0"',
     "process.execArgv": "[]",
     "process.env.CORDIS_SHARED": "undefined",
+    __CODESMITH_CLIENT_VERSION__: JSON.stringify(workspaceVersion),
   },
   server: {
     // Bind IPv4 explicitly: macOS resolves `localhost` to ::1 first and vite

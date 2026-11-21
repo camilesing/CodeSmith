@@ -12,12 +12,23 @@ import { create as createSubagentCatalog } from './subagent-catalog-plugin'
 import { create as createTicketBoard } from './ticket-board-plugin'
 import { bridgeUrl, initTransport, installApiRouteRedirect } from './transport'
 
+// The workspace version baked by vite.config.ts (declared for tsc; the
+// define replaces the identifier at build time).
+declare const __CODESMITH_CLIENT_VERSION__: string
+
 const g = globalThis as {
   __CODESMITH_BOOT__?: unknown
   __CODESMITH_TRANSPORT__?: unknown
   __CODESMITH_REMOTE_ACCESS__?: unknown
   __CODESMITH_FILE_UPLOAD__?: unknown
+  __CODESMITH_CLIENT_VERSION__?: string
 }
+
+// The vendored version displays (sidebar brand badge, Settings → General
+// current-version row) read this global: their bundles are staged verbatim
+// as classic scripts, so a vite define cannot reach them. The value is the
+// CLI's own version, keeping the badge in step with `codesmith --version`.
+g.__CODESMITH_CLIENT_VERSION__ = __CODESMITH_CLIENT_VERSION__
 
 // Attachment uploads post raw bytes to `api/session/uploadFileBinary` on the
 // page origin by default (a background Worker); this page's host lives on

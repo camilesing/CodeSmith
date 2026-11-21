@@ -55,6 +55,15 @@ in order:
    (exact source strings included) is recorded in `ui/vendor/VENDOR.json`
    (with the upstream commit and per-file hashes); re-running is a no-op.
 
+The desktop's version displays (the sidebar brand badge and Settings →
+General's current-version row) show the CLI version: patch pairs redirect
+the vendored reads (upstream bakes its own build stamp into the built
+bundles) to `globalThis.__CODESMITH_CLIENT_VERSION__`, which the boot entry
+sets from the workspace `Cargo.toml` version (a vite define re-read on
+every serve/build, so a version bump needs no re-vendor). The lib finds
+anchor on the stamped literals, so an upstream rebuild fails loud in
+VENDOR_PATCHES until they are updated.
+
 `desktop/scripts/gen_boot_graph.mjs` then generates the boot graph
 (`ui/src/boot-graph.generated.ts`) and stages the classic-script bundles
 under `ui/public/plugins/`. `desktop/scripts/check_brand.py` enforces the
