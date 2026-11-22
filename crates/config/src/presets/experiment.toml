@@ -17,6 +17,7 @@ context_project_pack = true
 capacity_enabled = true
 auto_cost_saving = false
 network_audit = true
+sandbox_enabled = true
 strict_tool_mode = true
 tools_progressive_disclosure = true
 

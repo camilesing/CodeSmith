@@ -39,7 +39,7 @@ Built-in tiers, progressive from lightest to heaviest:
 |---|---|---|---|---|---|
 | `simple` | medium | core file + shell only (`tools.include`), all resident | goldfish (none) | off | index/LSP/snapshots/memory/audit off |
 | `middle` *(default)* | inherits | inherits; declared-deferred tail via `tool_search` | inherits | 10 | high-value low-cost set on (index, LSP, snapshots, memory, strong-brain auto router); experimental seams off |
-| `all` | inherits | full surface − declared-deferred tail (`tool_search`) | notebook (memory on, KOD off) | 20 | middle + LSP warnings; preview flags still off |
+| `all` | inherits | full surface − declared-deferred tail (`tool_search`) | notebook (memory on, KOD off) | 20 | middle + LSP warnings + sandbox runtime; preview flags still off |
 | `experiment` | inherits | full surface − declared-deferred tail (`tool_search`) | elephant + Knowledge On Demand | 20 | everything on (vision, agent teams, coordinator, context manager, capacity controller, strict tool mode) |
 | `plan` | inherits | read-only + plan tooling; declared-deferred tail via `tool_search` | notebook (explicit only) | inherits | inherits |
 
@@ -60,6 +60,7 @@ effective values):
 | `[capacity].enabled` | off | off | off | on |
 | `[auto].cost_saving` | off | off | off | off |
 | `[network].audit` | off | on | on | on |
+| `[sandbox].enabled` | off | off | on | on |
 | `strict_tool_mode` | off | off | off | on |
 | features: `subagents` / `web_search` / `mcp` | off | on | on | on |
 | features: `vision_model` / `knowledge_on_demand` / `agent_teams` / `coordinator_mode` | off | off | off | on |
@@ -67,7 +68,9 @@ effective values):
 Never governed by any tier: safety keys (`yolo`, `approval_policy`,
 `sandbox_mode`), privacy opt-ins (`telemetry`), user content (prompts,
 `personality`, `instructions`), provider credentials, and tool overrides.
-Safety-relevant keys stay yours.
+Safety-relevant keys stay yours. (`sandbox_mode` is the approval-posture
+policy; the sandbox *runtime* switch `[sandbox].enabled` above is governed
+— on from `all` up, see [docs/SANDBOX.md](SANDBOX.md).)
 
 Preset files live in two scanned directories, later layers overriding
 built-ins by name (legacy `modes/` directories are still scanned, with a
@@ -103,6 +106,7 @@ context_project_pack = false
 capacity_enabled = false
 auto_cost_saving = false
 network_audit = false
+sandbox_enabled = false        # OS sandbox runtime + replaced-world backends (on from tier `all`)
 strict_tool_mode = false
 
 [tools]
@@ -121,7 +125,7 @@ memory, `notebook` keeps only what you explicitly save (`# note`,
 
 **Hot vs. restart.** App mode, thinking, approvals, tool allow/denylists,
 sub-agent cap, and model switch on the next turn. The resource switches
-(index, LSP, snapshots, context/capacity seams), the tool catalog dial
+(index, LSP, snapshots, sandbox runtime, context/capacity seams), the tool catalog dial
 (`tools_progressive_disclosure`), provider, feature flags,
 and memory injection are read at engine startup — switching to a preset
 that sets them prints what will apply after restart.

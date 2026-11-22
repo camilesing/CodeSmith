@@ -2,7 +2,7 @@
 # Small tool surface (9 core tools), thinking at medium, no index, no LSP,
 # no cross-session memory, no snapshots, no MCP, no web search.
 name = "simple"
-description = "Pi-style minimal: 9 core tools, thinking medium, no index/LSP/memory/snapshots/MCP/search."
+description = "Pi-style minimal: 9 core tools, thinking medium, no index/LSP/memory/snapshots/MCP/search/sandbox."
 app_mode = "agent"
 reasoning_effort = "medium"
 memory_level = "goldfish"
@@ -18,6 +18,9 @@ context_project_pack = false
 capacity_enabled = false
 auto_cost_saving = false
 network_audit = false
+# The sandbox runtime (OS confinement and replaced-world backends) runs
+# only from tier `all` up.
+sandbox_enabled = false
 strict_tool_mode = false
 # The allowlist below is the whole surface, so it stays fully resident — the
 # on-demand `tool_search` path belongs to the tiers that carry the long tail.

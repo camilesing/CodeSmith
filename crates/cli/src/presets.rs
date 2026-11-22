@@ -144,6 +144,15 @@ pub fn apply_to_config(config: &mut Config, definition: &PresetDefinitionToml) -
         );
     }
 
+    if definition.sandbox_enabled.is_some() {
+        let sandbox = config.sandbox.get_or_insert_with(Default::default);
+        fill_bool(
+            &mut sandbox.enabled,
+            definition.sandbox_enabled,
+            &mut deviated,
+        );
+    }
+
     // Resolve BOTH preset-side memory sources into one desired value
     // first (explicit keys override the derived level): feeding them
     // through fill_bool separately let a preset that sets both
@@ -391,6 +400,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sandbox_enabled_baselines_off_below_all_and_explicit_config_wins() {
+        let middle = PresetDefinitionToml {
+            sandbox_enabled: Some(false),
+            ..PresetDefinitionToml::default()
+        };
+
+        // User left [sandbox] unset: the tier baseline applies, and the
+        // runtime config every engine consumes reflects it.
+        let mut config = Config::default();
+        assert!(!apply_to_config(&mut config, &middle));
+        assert_eq!(
+            config.sandbox.as_ref().and_then(|sandbox| sandbox.enabled),
+            Some(false)
+        );
+        assert!(!config.sandbox_runtime_config().enabled);
+
+        // An explicit value wins — and flags the deviation that reports the
+        // effective preset as `diy`.
+        let mut config: Config =
+            toml::from_str("[sandbox]\nenabled = true\n").expect("test config");
+        assert!(apply_to_config(&mut config, &middle));
+        assert!(config.sandbox_runtime_config().enabled);
+
+        // Tier `all` baselines the sandbox runtime on.
+        let all = PresetDefinitionToml {
+            sandbox_enabled: Some(true),
+            ..PresetDefinitionToml::default()
+        };
+        let mut config = Config::default();
+        assert!(!apply_to_config(&mut config, &all));
+        assert!(config.sandbox_runtime_config().enabled);
+    }
+
+    #[test]
     fn export_definition_without_live_tool_lists_keeps_base_tools() {
         let mut base = PresetDefinitionToml {
             name: Some("all".to_string()),
@@ -422,6 +465,7 @@ mod tests {
         assert!(config.index.is_none());
         assert!(config.lsp.is_none());
         assert!(config.snapshots.is_none());
+        assert!(config.sandbox.is_none());
         assert!(config.memory.is_none());
         assert!(config.capacity.is_none());
         assert!(config.auto.is_none());

@@ -262,7 +262,9 @@ sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-ac
 # prefer_bwrap = false
 
 # Structured runtime policy. These keys are optional and layer on top of
-# the legacy flat keys above.
+# the legacy flat keys above. `enabled` 按档位定基线：自 `all`/`experiment`
+# 起开启，更低档位关闭——显式取值（本键，或 CODESMITH_SANDBOX_ENABLED）
+# 永远生效（填充式）。
 [sandbox]
 enabled = true
 fail_if_unavailable = true        # 默认：要求约束的策略无法强制执行时拒绝（SANDBOX_UNAVAILABLE）；false = 无约束运行（降级）
@@ -287,7 +289,9 @@ allow_managed_domains_only = false # local OS sandboxes cannot enforce host allo
 allow = []
 deny = []
 
-# 换世界沙箱后端 —— 完全替换本地执行
+# 换世界沙箱后端 —— 完全替换本地执行。要求沙箱运行时开启：
+# 运行时关闭（[sandbox] enabled = false，或低于 `all` 档且未显式开启）时
+# 配置了后端，启动时即刻报错，而不是构建"容器化但不限权"的运行时。
 sandbox_backend = "none"          # none | docker | gvisor | firecracker (别名: kata-fc) | gondolin | opensandbox
 sandbox_url = "http://localhost:8080"     # 仅 opensandbox
 sandbox_api_key = "YOUR_API_KEY"          # 仅 opensandbox

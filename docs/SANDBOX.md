@@ -304,7 +304,9 @@ sandbox_mode = "workspace-write"  # read-only | workspace-write | danger-full-ac
 # prefer_bwrap = false
 
 # Structured runtime policy. These keys are optional and layer on top of
-# the legacy flat keys above.
+# the legacy flat keys above. `enabled` is tier-baselined: on from preset
+# `all`/`experiment`, off below — an explicit value (this key, or
+# CODESMITH_SANDBOX_ENABLED) always wins (fill-if-unset).
 [sandbox]
 enabled = true
 fail_if_unavailable = true        # default: refuse when a sandbox-demanding policy cannot be enforced (SANDBOX_UNAVAILABLE); false = run unconfined (degraded)
@@ -329,7 +331,11 @@ allow_managed_domains_only = false # local OS sandboxes cannot enforce host allo
 allow = []
 deny = []
 
-# Replaced-world sandbox backend — replaces local execution entirely
+# Replaced-world sandbox backend — replaces local execution entirely.
+# Requires the sandbox runtime on: a configured backend under a disabled
+# runtime ([sandbox] enabled = false, or a tier below `all` without an
+# explicit opt-in) fails startup loudly instead of building a
+# containerized-but-unconfined runtime.
 sandbox_backend = "none"          # none | docker | gvisor | firecracker (alias: kata-fc) | gondolin | opensandbox
 sandbox_url = "http://localhost:8080"     # opensandbox only
 sandbox_api_key = "YOUR_API_KEY"          # opensandbox only

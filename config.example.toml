@@ -233,6 +233,10 @@ max_subagents = 10
 # with `{"cmd": "...", "env": {...}}` and expects
 # `{"stdout": "...", "stderr": "...", "exit_code": 0}`.
 #
+# A configured backend additionally requires the sandbox runtime on
+# ([sandbox] enabled — tier baseline: off below preset `all`; an explicit
+# key always wins). A backend under a disabled runtime fails startup loudly.
+#
 # sandbox_backend = "none"          # "none" (default) or "opensandbox"
 # sandbox_url = "http://localhost:8080"  # OpenSandbox-compatible API base URL
 # sandbox_api_key = "YOUR_API_KEY"  # Optional Bearer token sent with requests

@@ -34,7 +34,7 @@ codesmith preset show         # 档位矩阵 + 你的生效预设
 |---|---|---|---|---|---|
 | `simple` | medium | 仅核心文件 + shell（`tools.include`），全部常驻 | goldfish（无） | 关闭 | 索引/LSP/快照/记忆/审计全关 |
 | `middle`（默认） | 继承 | 继承；声明延迟的长尾靠 `tool_search` | 继承 | 10 | 高价值低消耗组合开启（索引、LSP、快照、记忆、强脑自动路由）；实验性机制关闭 |
-| `all` | 继承 | 全量 − 声明延迟长尾（`tool_search`） | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告；预览旗标仍关闭 |
+| `all` | 继承 | 全量 − 声明延迟长尾（`tool_search`） | notebook（记忆开、KOD 关） | 20 | middle + LSP 警告 + 沙箱运行时；预览旗标仍关闭 |
 | `experiment` | 继承 | 全量 − 声明延迟长尾（`tool_search`） | elephant + Knowledge On Demand | 20 | 全部开启（视觉、agent teams、coordinator、上下文管理器、容量控制器、strict tool mode） |
 | `plan` | 继承 | 只读 + 计划工具；声明延迟的长尾靠 `tool_search` | notebook（仅显式保存） | 继承 | 继承 |
 
@@ -54,6 +54,7 @@ codesmith preset show         # 档位矩阵 + 你的生效预设
 | `[capacity].enabled` | 关 | 关 | 关 | 开 |
 | `[auto].cost_saving` | 关 | 关 | 关 | 关 |
 | `[network].audit` | 关 | 开 | 开 | 开 |
+| `[sandbox].enabled` | 关 | 关 | 开 | 开 |
 | `strict_tool_mode` | 关 | 关 | 关 | 开 |
 | 特性：`subagents` / `web_search` / `mcp` | 关 | 开 | 开 | 开 |
 | 特性：`vision_model` / `knowledge_on_demand` / `agent_teams` / `coordinator_mode` | 关 | 关 | 关 | 开 |
@@ -61,6 +62,9 @@ codesmith preset show         # 档位矩阵 + 你的生效预设
 任何档位都不会治理：安全键（`yolo`、`approval_policy`、`sandbox_mode`）、
 隐私 opt-in（`telemetry`）、用户内容（提示词、`personality`、
 `instructions`）、provider 凭据和工具覆盖。安全相关的键永远由你掌控。
+（`sandbox_mode` 是审批姿态策略；上面的沙箱**运行时**开关
+`[sandbox].enabled` 受档位治理——自 `all` 起开启，见
+[docs/SANDBOX_cn.md](SANDBOX_cn.md)。）
 
 预设文件放在两个扫描目录，后层按名字覆盖内置（旧版 `modes/` 目录仍会被
 扫描，并给出一次性迁移警告）：
@@ -95,6 +99,7 @@ context_project_pack = false
 capacity_enabled = false
 auto_cost_saving = false
 network_audit = false
+sandbox_enabled = false        # OS 沙箱运行时 + 换世界后端（自 `all` 档起开启）
 strict_tool_mode = false
 
 [tools]
@@ -112,8 +117,8 @@ web_search = false
 衰减的 Knowledge On Demand。
 
 **热切换 vs 需重启。** 应用模式、思考、审批、工具白/黑名单、子代理上限和模型
-下一轮即生效。资源开关（索引、LSP、快照、context/capacity 接缝）、工具目录
-拨盘（`tools_progressive_disclosure`）、Provider、
+下一轮即生效。资源开关（索引、LSP、快照、沙箱运行时、context/capacity 接缝）、
+工具目录拨盘（`tools_progressive_disclosure`）、Provider、
 feature 开关和记忆注入在引擎启动时读取——切换到包含这些字段的预设时，会明确
 提示哪些将在重启后生效。
 

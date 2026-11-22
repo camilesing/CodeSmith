@@ -187,7 +187,7 @@ pub fn catalog() -> &'static [CatalogKey] {
         "network.proxy", KeyKind::StringList, Safety, false, false,
         "Network proxy hosts", "网络代理主机",
         "Hostnames allowed to resolve to trusted proxy ranges", "允许解析到可信代理网段的主机名";
-        "sandbox.enabled", KeyKind::Bool, Safety, false, false,
+        "sandbox.enabled", KeyKind::Bool, Safety, true, false,
         "Sandbox enabled", "启用沙箱",
         "Structured sandbox master switch", "结构化沙箱总开关";
         "sandbox.fail_if_unavailable", KeyKind::Bool, Safety, false, false,
@@ -645,6 +645,7 @@ fn definition_baseline(definition: &PresetDefinitionToml, path: &str) -> Option<
         "lsp.enabled" => bool_of(definition.lsp_enabled),
         "lsp.include_warnings" => bool_of(definition.lsp_include_warnings),
         "snapshots.enabled" => bool_of(definition.snapshots_enabled),
+        "sandbox.enabled" => bool_of(definition.sandbox_enabled),
         "context.enabled" => bool_of(definition.context_enabled),
         "context.project_pack" => bool_of(definition.context_project_pack),
         "capacity.enabled" => bool_of(definition.capacity_enabled),
@@ -1297,7 +1298,7 @@ mod tests {
     #[test]
     fn governed_keys_match_apply_to_config() {
         // The catalog's governed set must equal what the preset layer folds
-        // (presets.rs): 18 scalar/section dials + the known feature keys.
+        // (presets.rs): 19 scalar/section dials + the known feature keys.
         let mut governed: Vec<String> = catalog()
             .iter()
             .filter(|entry| entry.preset_governed)
@@ -1321,6 +1322,7 @@ mod tests {
             "capacity.enabled",
             "auto.cost_saving",
             "network.audit",
+            "sandbox.enabled",
             "strict_tool_mode",
         ]
         .iter()

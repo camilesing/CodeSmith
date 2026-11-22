@@ -6,4 +6,6 @@ name = "plan"
 description = "Design first: read-only exploration, plan tooling, writes gated behind approval."
 app_mode = "plan"
 memory_level = "notebook"
+# Not tier `all`: the sandbox runtime stays off unless explicitly enabled.
+sandbox_enabled = false
 tools_progressive_disclosure = true

@@ -185,6 +185,13 @@ pub struct PresetDefinitionToml {
     /// `"read-only" | "workspace-write" | "danger-full-access"`.
     #[serde(default)]
     pub sandbox_mode: Option<String>,
+    /// `[sandbox] enabled` — the OS-command sandbox runtime (seatbelt /
+    /// Landlock / bwrap) and the replaced-world backend admission switch.
+    /// Distinct from `sandbox_mode` (the approval-posture policy, never
+    /// governed): this dial baselines whether the sandbox runtime is
+    /// entered at all.
+    #[serde(default)]
+    pub sandbox_enabled: Option<bool>,
     /// Memory dial: `"goldfish" | "notebook" | "elephant"`.
     #[serde(default)]
     pub memory_level: Option<String>,
@@ -273,6 +280,7 @@ impl PresetDefinitionToml {
             ("[capacity].enabled", self.capacity_enabled),
             ("[auto].cost_saving", self.auto_cost_saving),
             ("[network].audit", self.network_audit),
+            ("[sandbox].enabled", self.sandbox_enabled),
             ("strict_tool_mode", self.strict_tool_mode),
         ]
     }
@@ -675,6 +683,8 @@ mod tests {
         assert_eq!(middle.tools, None);
         assert_eq!(middle.index_enabled, Some(true));
         assert_eq!(middle.tools_progressive_disclosure, Some(true));
+        // The sandbox runtime is entered only from tier `all` up.
+        assert_eq!(middle.sandbox_enabled, Some(false));
         // Quality-first default: the strong brain classifies; cost_saving is
         // the opt-in cheap router.
         assert_eq!(middle.auto_cost_saving, Some(false));
@@ -699,10 +709,12 @@ mod tests {
         assert_eq!(all.max_subagents, Some(20));
         assert_eq!(all.lsp_include_warnings, Some(true));
         assert_eq!(all.capacity_enabled, Some(false));
+        assert_eq!(all.sandbox_enabled, Some(true));
 
         let experiment = &catalog.get("experiment").unwrap().definition;
         assert_eq!(experiment.capacity_enabled, Some(true));
         assert_eq!(experiment.strict_tool_mode, Some(true));
+        assert_eq!(experiment.sandbox_enabled, Some(true));
         assert_eq!(
             experiment.features.as_ref().unwrap().get("vision_model"),
             Some(&true)

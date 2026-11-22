@@ -33,6 +33,13 @@ use crate::config::Config;
 /// An unrecognized backend name is an error, not a silent fall-through to
 /// local execution — a typo like `sandbox_backend = "opensandbox2"` must
 /// never quietly disable the external sandbox the user asked for.
+///
+/// A configured backend additionally requires the sandbox runtime to be
+/// enabled (`[sandbox] enabled`, tier-baselined on only from `all`):
+/// `create_backend` fails loud instead of building a containerized but
+/// unconfined runtime under a disabled sandbox. `Config::validate` checks
+/// the explicit keys pre-preset-fold; the tier-baseline rejection surfaces
+/// at engine build, the earliest point it is resolvable.
 pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>> {
     let raw = config
         .sandbox_backend
@@ -46,6 +53,13 @@ pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>
         anyhow::bail!(
             "unknown sandbox_backend {raw:?}: expected \"none\", \"docker\", \"gvisor\", \
              \"firecracker\" (alias kata-fc), \"gondolin\", or \"opensandbox\""
+        );
+    };
+    if kind != SandboxKind::None && !config.sandbox_runtime_config().enabled {
+        anyhow::bail!(
+            "sandbox_backend = {raw:?} is set but the sandbox runtime is disabled \
+             ([sandbox] enabled = false — the tier baseline turns it on only from `all` up); \
+             switch to preset all/experiment or set [sandbox] enabled = true"
         );
     };
 
@@ -118,6 +132,40 @@ mod tests {
         ] {
             assert!(err.contains(id), "message must list {id}: {err}");
         }
+    }
+
+    #[test]
+    fn backend_requires_the_sandbox_runtime_enabled() {
+        let err = create_backend(&config_with(
+            "sandbox_backend = \"docker\"\n[sandbox]\nenabled = false\n",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("sandbox runtime is disabled"), "{err}");
+        assert!(err.contains("preset all/experiment"), "{err}");
+
+        // With the runtime on — explicitly or by default — construction
+        // proceeds as before.
+        assert!(
+            create_backend(&config_with("sandbox_backend = \"docker\"\n"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            create_backend(&config_with(
+                "sandbox_backend = \"docker\"\n[sandbox]\nenabled = true\n"
+            ))
+            .unwrap()
+            .is_some()
+        );
+        // "none" stays a no-op even with the runtime disabled.
+        assert!(
+            create_backend(&config_with(
+                "sandbox_backend = \"none\"\n[sandbox]\nenabled = false\n"
+            ))
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

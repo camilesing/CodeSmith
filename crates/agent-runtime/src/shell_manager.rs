@@ -1041,7 +1041,10 @@ pub fn decide_sandbox(
 ///   what is actually enforced), `ReadOnly` / `WorkspaceWrite` are
 ///   compiled by the backend into its own dialect;
 /// - `runtime.enabled = false` drops confinement (unconfined in the
-///   backend), reported as disabled — the same meaning as the local plane;
+///   backend), reported as disabled — the same meaning as the local plane.
+///   `create_backend` now rejects a configured backend under a disabled
+///   runtime, so no shipped configuration reaches this arm; it stays as
+///   defense in depth;
 /// - the exclusion list drops confinement, *not* containerization: there
 ///   is no local execution to unsandbox to, so the command still runs in
 ///   the backend with no confinement flags, reported as excluded.
