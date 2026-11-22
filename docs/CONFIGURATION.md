@@ -264,6 +264,22 @@ turn_executor = "builtin"   # default; the production HostAgentExecutor loop
 turn_executor = "rhai"      # run a mod's loop script (register_loop)
 ```
 
+Sub-agents can override the loop per agent type (keys are type names, values
+are the same id space):
+
+```toml
+[subagents.executors]
+explore = "rhai"   # explore children run the script loop
+# types without an entry run the session's turn_executor
+```
+
+The main turn always runs the session's `turn_executor` (it has no agent
+type). An override applies at the CLI spawn path; a script loop's own
+`spawn_child` children stay on the script loop regardless. Unknown ids fail
+at the child's turn assembly with the same loud resolution error as an
+unknown `turn_executor` — never at config load, because a dylib-contributed
+id only becomes resolvable once its extension is loaded.
+
 Only ids registered in the process are valid — `builtin` and `rhai`; the
 registry exists so an alternate loop can land as a crate-compiled registry
 entry instead of a forked engine or a second sub-agent loop. An unknown id
@@ -1116,6 +1132,10 @@ and the capacity controller remains disabled unless configured.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
   to a supported DeepSeek model id before an agent is spawned.
+  `[subagents.executors]` accepts agent-type keys (`general`, `explore`,
+  `plan`, `review`, `implementer`, `verifier`, `tool-agent`, `custom`,
+  `team`, `coordinator-worker`) with `turn_executor` registry-id values —
+  see "Turn-executor selection".
 - `runtime.*` (optional): engine recursion limits. `runtime.max_spawn_depth`
   (integer, optional, default 3) caps the sub-agent spawn tree — a spawn is
   rejected when `spawn_depth + 1 > max_spawn_depth`, and the rejection

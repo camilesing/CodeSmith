@@ -18,7 +18,7 @@
       ]
     },
     "turn_executor": {
-      "description": "Selected main-turn executor id (kernel composition,\n`engine::executor_composition`). Kept as a raw string because the id\nspace is open: the always-present `builtin` plus any factory a host\nregisters on the process-shared turn-executor registry. An unknown id\nfails loud at startup.",
+      "description": "Selected main-turn executor id (kernel composition,\n`engine::executor_composition`). Kept as a raw string because the id\nspace is open: the always-present `builtin`, any factory a host\nregisters on the process-shared turn-executor registry, or a\ndylib-tier id an extension contributes at load (adopted at turn\nassembly). An unknown id fails loud at the first turn's assembly —\nnot at config-validate time, which runs before extension ids exist.",
       "type": [
         "string",
         "null"
@@ -2607,6 +2607,17 @@
           },
           "default": null
         },
+        "executors": {
+          "description": "Per-agent-type turn-executor overrides (`[subagents.executors]`).\nKeys are agent-type names (`general`, `explore`, `plan`, `review`,\n…); values are `turn_executor` registry ids (`builtin`, `rhai`, a\nhost-registered or dylib-contributed id). A type without an entry\nruns the session's `turn_executor`. Unknown ids fail loud at the\nchild's turn assembly (a dylib-contributed id exists only there),\nnever at config load.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": null
+        },
         "max_concurrent": {
           "description": "Maximum concurrent sub-agents. Overrides the top-level max_subagents\nsetting. Clamped to [1, MAX_SUBAGENTS].",
           "type": [
@@ -2956,7 +2967,7 @@
           ]
         },
         "turn_executor": {
-          "description": "Selected main-turn executor id (kernel composition,\n`engine::executor_composition`). Kept as a raw string because the id\nspace is open: the always-present `builtin` plus any factory a host\nregisters on the process-shared turn-executor registry. An unknown id\nfails loud at startup.",
+          "description": "Selected main-turn executor id (kernel composition,\n`engine::executor_composition`). Kept as a raw string because the id\nspace is open: the always-present `builtin`, any factory a host\nregisters on the process-shared turn-executor registry, or a\ndylib-tier id an extension contributes at load (adopted at turn\nassembly). An unknown id fails loud at the first turn's assembly —\nnot at config-validate time, which runs before extension ids exist.",
           "type": [
             "string",
             "null"

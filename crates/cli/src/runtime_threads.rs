@@ -3272,6 +3272,7 @@ impl RuntimeThreadManager {
                 .saturating_mul(1024 * 1024 * 1024),
             lsp_config,
             subagent_model_overrides: self.config.subagent_model_overrides(),
+            subagent_executor_overrides: self.config.subagent_executor_overrides(),
             auto_route: self.config.auto_route_context(),
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),

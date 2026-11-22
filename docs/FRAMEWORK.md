@@ -131,8 +131,10 @@ Replacement of an id with turns in flight is refused loudly
 
 - **Script mods cannot ship an executor** on this seam — by design, they
   use `register_loop` (`turn_executor = "rhai"`).
-- One `turn_executor` selection for every agent (no per-agent-type
-  selection yet).
+- **Per-type executor selection is spawn-path only**: `[subagents.executors]`
+  overrides resolve in the CLI spawn path; a script loop's own `spawn_child`
+  children stay on the script loop, and the main turn has no agent type so
+  it always runs the session's `turn_executor`.
 - **Retrieval is contracts + in-memory default only** — no vector-db
   integrations, loaders, or splitters in-tree; `IndexServiceApi` (the code
   indexer) is a separate, older seam.

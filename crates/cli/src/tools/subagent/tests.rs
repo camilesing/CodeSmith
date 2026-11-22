@@ -2968,6 +2968,7 @@ fn stub_runtime() -> SubAgentRuntime {
         stream_idle_timeout: DEFAULT_CHILD_STREAM_IDLE_TIMEOUT,
         stream_idle_retry_increment: Duration::ZERO,
         turn_executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+        executor_overrides: std::collections::HashMap::new(),
         parent_agent_id: None,
         dispatch_scope: codesmith_agent::extension::Scope::Global,
         inherit_full_registry: false,
@@ -2997,6 +2998,43 @@ fn stub_client() -> crate::llm_client::LlmClientHandle {
     };
     crate::core::engine::resolve_llm_client_with_secrets(&config, &crate::no_keyring_secrets())
         .expect("stub client should construct")
+}
+
+/// `[subagents.executors]` resolution: a typed override wins for its type,
+/// every other type falls back to the session's `turn_executor`.
+#[test]
+fn executor_overrides_select_per_type_and_fall_back_to_session_selection() {
+    use codesmith_agent_runtime::subagent::SubAgentType;
+
+    let mut runtime = stub_runtime();
+    runtime.turn_executor = "session-loop".to_string();
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert("explore".to_string(), "explore-loop".to_string());
+    runtime.executor_overrides = overrides;
+
+    assert_eq!(
+        configured_executor_for_type(&runtime, &SubAgentType::Explore),
+        "explore-loop"
+    );
+    assert_eq!(
+        configured_executor_for_type(&runtime, &SubAgentType::General),
+        "session-loop",
+        "a type without an override runs the session's selection"
+    );
+}
+
+/// Companion: the propagation half — `child_runtime()` carries the map so a
+/// grandchild's type override still applies.
+#[test]
+fn executor_overrides_propagate_through_child_runtime() {
+    let mut runtime = stub_runtime();
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert("explore".to_string(), "explore-loop".to_string());
+    runtime = runtime.with_executor_overrides(overrides);
+    assert_eq!(
+        runtime.child_runtime().executor_overrides.get("explore"),
+        Some(&"explore-loop".to_string())
+    );
 }
 
 // ---- #405 session-boundary classification ----

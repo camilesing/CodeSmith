@@ -193,7 +193,9 @@ a change to a protocol or config type regenerates `docs/schemas/*.json`
   scope, dylib wrappers excluded). Every in-process
   sub-agent turn takes the same path: the CLI spawn path builds a
   `ChildTurnSpec` (plain data: tool surface, route, channels, depth) and
-  `engine::child_turn::run_child_turn` resolves the same factory, builds a
+  `engine::child_turn::run_child_turn` resolves the selected factory (the
+  session's `turn_executor`, or that agent type's
+  `[subagents.executors]` override), builds a
   child-shaped `TurnDeps` (`TurnShape::Child` — the main turn's session
   services absent, dispatch at the child's agent-type scope) and runs it.
   The delegation policy rides the child's tool surface (`DelegatedTool`,

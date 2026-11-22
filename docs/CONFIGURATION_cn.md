@@ -244,6 +244,20 @@ turn_executor = "builtin"   # 默认值；生产的 HostAgentExecutor 循环
 turn_executor = "rhai"      # 运行某个 mod 的 loop 脚本（register_loop）
 ```
 
+子代理可按 agent 类型覆盖循环（键为类型名，值同一 id 空间）：
+
+```toml
+[subagents.executors]
+explore = "rhai"   # explore 子代理跑脚本循环
+# 没有条目的类型跑会话的 turn_executor
+```
+
+主 turn 恒跑会话的 `turn_executor`（它没有 agent 类型）。覆盖在 CLI
+spawn 路径生效；脚本循环自己的 `spawn_child` 子代理无论如何都留在脚本
+循环上。未知 id 在子代理 turn 装配处报与未知 `turn_executor` 相同的响亮
+解析错误——从不在配置装载时校验，因为 dylib 贡献的 id 要等其扩展装载后
+才可解析。
+
 只有进程内已注册的 id 才有效——`builtin` 与 `rhai`；注册表的存在让替代
 循环能以 crate 内编译的注册条目落地，而不是分叉引擎或第二条子代理循环。
 未知 id 在启动时即刻报错（`turn_executor: no turn executor registered
@@ -994,6 +1008,10 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
   作答：`--auto` 选择允许类选项，其余选择拒绝——这一侧没有可问的人。`[subagents.models]` 接受小写的角色或类型键，如 `worker`、
   `explorer`、`general`、`explore`、`plan` 和 `review`。值必须归一化
   为受支持的 DeepSeek 模型 id，代理才能被生成。
+  `[subagents.executors]` 接受 agent 类型键（`general`、`explore`、
+  `plan`、`review`、`implementer`、`verifier`、`tool-agent`、`custom`、
+  `team`、`coordinator-worker`），值为 `turn_executor` 注册表 id——见
+  "Turn 执行器选择"。
 - `runtime.*`（可选）：引擎递归限制。`runtime.max_spawn_depth`（整数，
   可选，默认 3）封顶子代理派生树——`spawn_depth + 1 > max_spawn_depth`
   时拒绝派生，CLI 打印的拒绝消息即指向此键。`0` 完全禁用子代理派生。

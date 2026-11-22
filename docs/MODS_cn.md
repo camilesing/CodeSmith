@@ -32,7 +32,7 @@ Rust dylib——而"可插拔"的含义是*在运行期经其中一层注册*，
 | Provider | 仅别名（`register_provider`） | — | ✓ 完整 `ProviderFactory` | 脚本无法实现 `LlmClient`（无异步/网络） |
 | 提示词分段、技能 | ✓ `register_prompt_section` / `register_skill` | ✓（默认值） | ✓ | 遵守前缀缓存纪律 |
 | 策略（宿主机制旋钮） | ✓ `register_policy`（last-wins） | ✓——默认值本身就是内建 mod | ✓ | 数据而非代码；`/mods list` 显示解析结果 |
-| turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹） | 内核组合——*选择*：配置 `turn_executor` 选中 crate 内编译的 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本），主 turn 与每个进程内子代理 turn 一视同仁；*组合*：Rust 扩展以 通用 Agent `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
+| turn 循环（所有 agent） | ✓ `register_loop`（驱动，经 `rhai` executor） | — | ✓ `register_around_turn`（包裹）+ `register_turn_executor`（从零编写的循环，dylib/Rust 档——reload 时按世代清扫） | 内核组合——*选择*：配置 `turn_executor` 选中 `TurnExecutorRegistry` 条目（`builtin`，或 `"rhai"` 运行某个 mod 的 loop 脚本、host crate 启动注册、或扩展经 `register_turn_executor` 贡献的 id），主 turn 与每个进程内子代理 turn 一视同仁，另有 `[subagents.executors]` 的按类型覆盖（spawn 路径解析）；*组合*：Rust 扩展以 通用 Agent `next()` 包裹 run（每个 turn——子代理在其 agent 类型作用域上组合该链）；脚本 loop 只拥有循环的**形状**——其能力调用（`llm_request`、`run_tools`）执行宿主的步骤服务（见"编写 loop 脚本"） |
 | 压缩策略 | ✓ `register_compaction_strategy`（trigger + plan 纯决策） | ✓（opt-in 移植经 `[compaction] strategy` 选择） | — | mod 拥有*决策*（何时压缩、保留多少、摘要指令）；宿主拥有*效果*与免疫区（配对不变量、系统提示前缀、append-only 存储、摘要 LLM 调用、断路器）。选择：config `[compaction] strategy = "builtin" \| "<name>"`（见"编写压缩策略"） |
 | 压缩清扫规则（micro-compact 资格判定） | ✓ `register_sweep_rule`（编译的 `eligible` 闭包 + 替换参数） | ✓（opt-in 移植；装载规则即切换） | — | 编译闭包决定一次清扫可清哪些旧工具结果（其存在还改变清扫节奏）；宿主拥有清扫原语（替换执行、字节计量、幂等、配对）与时间/字节触发基线 |
 | `BASE_PROMPT`、子代理工具注册表 | — | — | — | 契约声明的核心（唯一基础提示词、子代理注册表仅内建） |

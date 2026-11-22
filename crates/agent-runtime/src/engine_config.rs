@@ -193,6 +193,13 @@ pub struct EngineConfig {
     pub task_v2_manager: Option<SharedTaskV2Manager>,
     /// Per-role/type sub-agent model overrides already resolved from config.
     pub subagent_model_overrides: HashMap<String, String>,
+    /// Per-agent-type sub-agent turn-executor overrides
+    /// (`[subagents.executors]`), already resolved from config. A child
+    /// whose type has an entry builds its turn with that registry id;
+    /// otherwise it uses `turn_executor` (the session's selection). Values
+    /// are raw ids — unknown ones fail loud at the child's turn assembly,
+    /// where dylib-contributed ids first become resolvable.
+    pub subagent_executor_overrides: HashMap<String, String>,
     /// Distilled auto-routing context (resolved tier pair, router-model
     /// override, cost-saving switch) from the host config. Sub-agent
     /// runtimes translate tier answers into concrete model IDs from this
@@ -483,6 +490,7 @@ impl Default for EngineConfig {
             tools_always_load: HashSet::new(),
             progressive_disclosure: false,
             turn_executor: crate::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+            subagent_executor_overrides: HashMap::new(),
             rhai_loop: Default::default(),
             prefer_bwrap: false,
             sandbox_runtime: SandboxRuntimeConfig::default(),

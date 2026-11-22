@@ -12,7 +12,10 @@
 //! discipline and "model-visible means logged" are inherited, not
 //! reimplemented. The single-loop contract holds: this is one registry
 //! entry resolved at the same chokepoint, one factory for the main turn
-//! and every in-process child alike.
+//! and every in-process child alike. Known limitation: the script's own
+//! `spawn_child` children hard-code the `rhai` id (script lineage stays
+//! self-consistent), so a `[subagents.executors]` override does not reach
+//! them — only the CLI spawn path resolves overrides.
 //!
 //! ## Execution model
 //!

@@ -4,9 +4,10 @@
 //! The host (the CLI's spawn path) knows what a child is *for*: its
 //! prompt, its narrowed tool surface, its model route, its channels. It
 //! hands that over as a [`ChildTurnSpec`] — plain data. [`run_child_turn`]
-//! owns what makes it a *turn*: it resolves the configured `turn_executor`
-//! factory from the same registry the main turn uses (one selection for
-//! every agent), acquires the child's [`TurnLease`](crate::turn_lease::TurnLease),
+//! owns what makes it a *turn*: it resolves the spec's `executor_id`
+//! factory from the same registry the main turn uses (the session's
+//! `turn_executor`, with per-agent-type overrides resolved by the host at
+//! spawn — `[subagents.executors]`), acquires the child's [`TurnLease`](crate::turn_lease::TurnLease),
 //! builds a child-shaped `TurnDeps` (`TurnShape::Child`) and runs the
 //! built executor over the child's transcript. The loop is the main turn's
 //! loop — streaming with the idle watchdog, transparent retry, the loop
@@ -73,8 +74,10 @@ pub struct ChildTurnSpec {
     pub depth: u32,
     /// The spawning sub-agent's id; `None` when the main turn spawned it.
     pub parent: Option<String>,
-    /// The `turn_executor` id to build with — the session's selection,
-    /// shared with the main turn.
+    /// The `turn_executor` id to build with — the session's selection, or
+    /// the child type's `[subagents.executors]` override when the host
+    /// resolved one at spawn. Resolved here from the registry; an unknown
+    /// id fails loud at this assembly.
     pub executor_id: String,
     pub client: LlmClientHandle,
     /// The routed model every request names (empty = the client's own).

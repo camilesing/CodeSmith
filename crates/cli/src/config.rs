@@ -597,6 +597,15 @@ pub struct SubagentsConfig {
     pub custom_model: Option<String>,
     #[serde(default)]
     pub models: Option<HashMap<String, String>>,
+    /// Per-agent-type turn-executor overrides (`[subagents.executors]`).
+    /// Keys are agent-type names (`general`, `explore`, `plan`, `review`,
+    /// …); values are `turn_executor` registry ids (`builtin`, `rhai`, a
+    /// host-registered or dylib-contributed id). A type without an entry
+    /// runs the session's `turn_executor`. Unknown ids fail loud at the
+    /// child's turn assembly (a dylib-contributed id exists only there),
+    /// never at config load.
+    #[serde(default)]
+    pub executors: Option<HashMap<String, String>>,
     /// Maximum concurrent sub-agents. Overrides the top-level max_subagents
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
@@ -3300,6 +3309,29 @@ impl Config {
             }
         }
 
+        overrides
+    }
+
+    /// Per-agent-type turn-executor override map (`[subagents.executors]`),
+    /// with the same key hygiene as [`Self::subagent_model_overrides`]
+    /// (trimmed, lower-cased; blank keys/values dropped). Values are raw
+    /// registry ids — unknown ids fail loud at the child's turn assembly,
+    /// not here.
+    #[must_use]
+    pub fn subagent_executor_overrides(&self) -> HashMap<String, String> {
+        let mut overrides = HashMap::new();
+        let Some(cfg) = self.subagents.as_ref() else {
+            return overrides;
+        };
+        if let Some(executors) = cfg.executors.as_ref() {
+            for (key, id) in executors {
+                let key = key.trim();
+                let id = id.trim();
+                if !key.is_empty() && !id.is_empty() {
+                    overrides.insert(key.to_ascii_lowercase(), id.to_string());
+                }
+            }
+        }
         overrides
     }
 
@@ -11203,6 +11235,27 @@ context_window = 200000
         // Blank values are dropped, models keys lowercased.
         assert!(!overrides.contains_key("custom"));
         assert_eq!(overrides["planner"], "planner-model");
+    }
+
+    #[test]
+    fn subagent_executor_overrides_map_types_and_drop_blanks() {
+        assert!(Config::default().subagent_executor_overrides().is_empty());
+
+        let config: Config = toml::from_str(
+            r#"
+            [subagents.executors]
+            "Explore" = " rhai "
+            plan = "builtin"
+            "" = "ignored"
+            custom = " "
+            "#,
+        )
+        .expect("config");
+        let overrides = config.subagent_executor_overrides();
+        // Keys lower-cased, values trimmed; blank keys and blank values drop.
+        assert_eq!(overrides["explore"], "rhai");
+        assert_eq!(overrides["plan"], "builtin");
+        assert!(!overrides.contains_key("custom"));
     }
 
     #[test]

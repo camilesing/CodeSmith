@@ -120,7 +120,9 @@ Cordis 式的性质——能力以注册的形式到达、内核只做选择 cho
 
 - **脚本 mod 不能经此 seam 提供 executor**——设计如此，脚本走
   `register_loop`（`turn_executor = "rhai"`）。
-- `turn_executor` 对所有 agent 生效（暂无按 agent-type 的选择）。
+- **per-type executor 选择只在 spawn 路径生效**：`[subagents.executors]`
+  覆盖在 CLI spawn 路径解析；脚本循环自己的 `spawn_child` 子代理留在脚本
+  循环上，主 turn 没有 agent 类型、恒跑会话的 `turn_executor`。
 - **检索只有契约 + 内存默认实现**——树内没有向量库集成、loader、
   splitter；`IndexServiceApi`（代码索引）是另一个更早的 seam。
 - **运行时 mod 状态住独立存储，这是设计**——激活同意、启停与 KV 经

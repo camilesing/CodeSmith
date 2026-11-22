@@ -217,6 +217,7 @@ impl HostServices for super::EngineHost {
             req.config.stream_idle_retry_increment,
         )
         .with_turn_executor(req.config.turn_executor.clone())
+        .with_executor_overrides(req.config.subagent_executor_overrides.clone())
         .with_inherit_full_registry(req.config.subagent_inherit_full_registry)
         .with_external_provider(req.config.subagent_external_provider.clone())
         .with_capability_disabled_tools(req.config.disabled_tools.clone())
@@ -422,6 +423,7 @@ impl HostServices for super::EngineHost {
                             config.stream_idle_retry_increment,
                         )
                         .with_turn_executor(config.turn_executor.clone())
+                        .with_executor_overrides(config.subagent_executor_overrides.clone())
                         .with_inherit_full_registry(config.subagent_inherit_full_registry)
                         .with_external_provider(config.subagent_external_provider.clone())
                         .with_capability_disabled_tools(config.disabled_tools.clone())
@@ -522,6 +524,7 @@ impl HostServices for super::EngineHost {
                         config.stream_idle_retry_increment,
                     )
                     .with_turn_executor(config.turn_executor.clone())
+                    .with_executor_overrides(config.subagent_executor_overrides.clone())
                     .with_inherit_full_registry(config.subagent_inherit_full_registry)
                     .with_external_provider(config.subagent_external_provider.clone())
                     .with_capability_disabled_tools(config.disabled_tools.clone())

@@ -565,6 +565,14 @@ pub struct ConfigToml {
     /// assembly table is framework surface, not CLI-private.
     #[serde(default)]
     pub mods: Option<toml::Table>,
+    /// `[subagents]` — sub-agent tuning (models, concurrency, timeouts,
+    /// per-agent-type `executors`). The CLI parses the table (see its
+    /// `SubagentsConfig`); this shared crate recognizes it as a named key
+    /// (schema + reads/writes) instead of leaving it in `extras` — same
+    /// treatment as `[mods]`, because the per-type executor selection is
+    /// kernel-composition surface next to `turn_executor`, not CLI-private.
+    #[serde(default)]
+    pub subagents: Option<toml::Table>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,
@@ -3053,6 +3061,32 @@ mod tests {
         let rewritten = toml::to_string(&parsed).expect("config serializes");
         let reparsed: ConfigToml = toml::from_str(&rewritten).expect("round trip parses");
         assert_eq!(reparsed.mods, parsed.mods, "mods survives the round trip");
+    }
+
+    #[test]
+    fn subagents_table_is_a_named_key_and_survives_round_trip() {
+        let source = r#"
+            model = "deepseek-chat"
+            [subagents]
+            max_concurrent = 4
+            [subagents.executors]
+            explore = "rhai"
+        "#;
+        let parsed: ConfigToml = toml::from_str(source).expect("subagents table parses");
+        let subagents = parsed.subagents.as_ref().expect("subagents is a named key");
+        assert_eq!(subagents.get("max_concurrent"), Some(&toml::Value::from(4)));
+        assert!(
+            !parsed.extras.contains_key("subagents"),
+            "subagents belongs to the named field, not extras"
+        );
+
+        // Serialize → deserialize keeps the table intact.
+        let rewritten = toml::to_string(&parsed).expect("config serializes");
+        let reparsed: ConfigToml = toml::from_str(&rewritten).expect("round trip parses");
+        assert_eq!(
+            reparsed.subagents, parsed.subagents,
+            "subagents survives the round trip"
+        );
     }
 
     struct EnvGuard {

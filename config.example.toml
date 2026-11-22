@@ -302,6 +302,10 @@ max_subagents = 10
 # [subagents.models]               # free-form role/type keys
 # worker = "deepseek-v4-pro"
 # explore = "deepseek-v4-flash"
+# [subagents.executors]            # per-agent-type turn_executor overrides;
+# explore = "rhai"                 # types without an entry run the session's
+#                                  # turn_executor (unknown ids fail at the
+#                                  # child's turn assembly, not config load)
 
 # Engine recursion limits ([runtime]).
 # [runtime]

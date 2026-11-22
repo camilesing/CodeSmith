@@ -644,6 +644,13 @@ pub struct SubAgentRuntime {
     /// selection, the same one the main turn uses (one factory makes every
     /// agent). Propagated verbatim to descendants.
     pub turn_executor: String,
+    /// Per-agent-type executor overrides (`[subagents.executors]`), resolved
+    /// from config at engine construction. A child's `executor_id` is the
+    /// override for its type when present, else `turn_executor`. Keys are
+    /// agent-type names; values are raw registry ids (unknown ids fail loud
+    /// at the child's turn assembly, not here). Propagated to descendants
+    /// like `turn_executor`.
+    pub executor_overrides: HashMap<String, String>,
     /// The id of the sub-agent whose tools spawn this runtime's children;
     /// `None` when the main turn spawns them. Set when a child's own tool
     /// runtime is built, so a grandchild's turn names its parent.
@@ -769,6 +776,7 @@ impl SubAgentRuntime {
             stream_idle_timeout: DEFAULT_CHILD_STREAM_IDLE_TIMEOUT,
             stream_idle_retry_increment: Duration::ZERO,
             turn_executor: codesmith_agent_runtime::engine::BUILTIN_TURN_EXECUTOR_ID.to_string(),
+            executor_overrides: HashMap::new(),
             parent_agent_id: None,
             dispatch_scope: codesmith_agent::extension::Scope::Global,
             inherit_full_registry: false,
@@ -861,6 +869,14 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_turn_executor(mut self, turn_executor: String) -> Self {
         self.turn_executor = turn_executor;
+        self
+    }
+
+    /// Set the per-agent-type executor overrides (`[subagents.executors]`);
+    /// see the [`Self::executor_overrides`] field for the resolution order.
+    #[must_use]
+    pub fn with_executor_overrides(mut self, overrides: HashMap<String, String>) -> Self {
+        self.executor_overrides = overrides;
         self
     }
 
@@ -1078,6 +1094,7 @@ impl SubAgentRuntime {
             stream_idle_timeout: self.stream_idle_timeout,
             stream_idle_retry_increment: self.stream_idle_retry_increment,
             turn_executor: self.turn_executor.clone(),
+            executor_overrides: self.executor_overrides.clone(),
             parent_agent_id: self.parent_agent_id.clone(),
             dispatch_scope: self.dispatch_scope.clone(),
             inherit_full_registry: self.inherit_full_registry,
@@ -5935,7 +5952,7 @@ async fn run_subagent(
         agent_type: agent_type.clone(),
         depth: runtime.spawn_depth,
         parent: runtime.parent_agent_id.clone(),
-        executor_id: runtime.turn_executor.clone(),
+        executor_id: configured_executor_for_type(runtime, &agent_type),
         client: runtime.client.clone(),
         model: runtime.model.clone(),
         reasoning_effort: runtime.reasoning_effort.clone(),
@@ -6841,6 +6858,23 @@ pub(crate) fn configured_model_for_role_or_type(
         }
     }
     Ok(None)
+}
+
+/// The executor id a child of `agent_type` builds its turn with: the
+/// `[subagents.executors]` override for its type when present, else the
+/// session's selection. Keys are agent-type names (`SubAgentType::as_str`);
+/// role names are not consulted — the executor is typed to the loop shape,
+/// and a spawn's `role` input has already resolved into the agent type by
+/// the time the turn spec is built.
+pub(crate) fn configured_executor_for_type(
+    runtime: &SubAgentRuntime,
+    agent_type: &SubAgentType,
+) -> String {
+    runtime
+        .executor_overrides
+        .get(agent_type.as_str())
+        .cloned()
+        .unwrap_or_else(|| runtime.turn_executor.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -883,6 +883,7 @@ pub fn build_engine_config(state: &ReplState, config: &Config) -> anyhow::Result
             .clone()
             .map(crate::config::LspConfigToml::into_runtime),
         subagent_model_overrides: config.subagent_model_overrides(),
+        subagent_executor_overrides: config.subagent_executor_overrides(),
         auto_route: config.auto_route_context(),
         subagent_api_timeout: std::time::Duration::from_secs(config.subagent_api_timeout_secs()),
         workflow_timeout: std::time::Duration::from_secs(config.workflow_timeout_secs()),

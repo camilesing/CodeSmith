@@ -41,10 +41,16 @@
 //!   `register_loop` (`engine::rhai_executor`), never this seam. Wrapping
 //!   an existing turn from a dylib is the around-turn seam
 //!   (`crates/agent/src/extension.rs`).
-//! - **One selection for every agent.** `turn_executor` picks the loop for
-//!   the main turn and every in-process child alike; there is no per-type
-//!   selection (general-agent plan D2 — no consumer yet). External-provider children
-//!   (out of process) run whatever loop their own process selects.
+//! - **One session selection, per-type overrides.** `turn_executor` picks
+//!   the loop for the main turn; every in-process child runs the same id
+//!   unless its agent type has a `[subagents.executors]` override (resolved
+//!   by the host spawn path into the child spec's `executor_id` — the
+//!   registry and the chokepoint are unchanged, still one per turn).
+//!   Known limitation: a script loop's own `spawn_child` children stay on
+//!   the script loop regardless of overrides (the rhai executor hard-codes
+//!   its id into its children — script lineage stays self-consistent).
+//!   External-provider children (out of process) run whatever loop their
+//!   own process selects.
 //! - **Approval is loop discipline, not dispatcher-enforced.** A factory
 //!   receives the approval router and the cancel/steer channels in
 //!   `TurnDeps` and is contractually required to gate tool calls through
