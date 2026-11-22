@@ -280,13 +280,15 @@ at the child's turn assembly with the same loud resolution error as an
 unknown `turn_executor` — never at config load, because a dylib-contributed
 id only becomes resolvable once its extension is loaded.
 
-Only ids registered in the process are valid — `builtin` and `rhai`; the
-registry exists so an alternate loop can land as a crate-compiled registry
-entry instead of a forked engine or a second sub-agent loop. An unknown id
-fails the main turn loud at startup
-(`turn_executor: no turn executor registered for '…'` with the registered
-ids and the remedy), and at turn assembly if a registration disappears
-mid-session, and a child's turn fails through its normal failed-agent
+Only ids registered in the process are valid — the always-present `builtin`
+and `rhai`, plus any host-registered or dylib-contributed id; the registry
+exists so an alternate loop can land as a registry entry instead of a
+forked engine or a second sub-agent loop. An unknown id fails loud at turn
+assembly (`turn_executor: no turn executor registered for '…'` with the
+registered ids and the remedy) — for a bad config value that is the first
+turn, never config load, because a dylib-contributed id resolves only once
+its extension is loaded; a registration that disappears mid-session fails
+the same way, and a child's turn fails through its normal failed-agent
 contract (nothing runs).
 
 `"rhai"` is the script-driven loop: the turn runs the entry a mod declared

@@ -258,11 +258,13 @@ spawn 路径生效；脚本循环自己的 `spawn_child` 子代理无论如何�
 解析错误——从不在配置装载时校验，因为 dylib 贡献的 id 要等其扩展装载后
 才可解析。
 
-只有进程内已注册的 id 才有效——`builtin` 与 `rhai`；注册表的存在让替代
-循环能以 crate 内编译的注册条目落地，而不是分叉引擎或第二条子代理循环。
-未知 id 在启动时即刻报错（`turn_executor: no turn executor registered
-for '…'`，带已注册 id 与补救说明）；会话中途注册消失则在 turn 装配时报错，
-子代理的 turn 按其既有的失败契约失败（什么都不跑）。
+只有进程内已注册的 id 才有效——常驻的 `builtin` 与 `rhai`，加上任何
+host 注册或 dylib 贡献的 id；注册表的存在让替代循环能以注册条目落地，
+而不是分叉引擎或第二条子代理循环。未知 id 在 turn 装配时响亮报错
+（`turn_executor: no turn executor registered for '…'`，带已注册 id 与
+补救说明）——配置值错误时是首个 turn 报错，从不在配置装载时，因为
+dylib 贡献的 id 要等其扩展装载后才可解析；会话中途注册消失同样在
+turn 装配时报错，子代理的 turn 按其既有的失败契约失败（什么都不跑）。
 
 `"rhai"` 是脚本驱动的循环：turn 运行某个 mod 经 `register_loop("main")`
 声明的入口（见 MODS_cn.md "编写 loop 脚本"）；脚本的每次能力调用执行的
