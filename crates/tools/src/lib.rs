@@ -1,20 +1,29 @@
-use std::collections::HashMap;
+//! # Shared tool value types
+//!
+//! This crate owns the leaf value vocabulary every tool surface in the
+//! workspace shares: [`ToolResult`] / [`ToolError`] / [`ToolCapability`] /
+//! [`ApprovalRequirement`], the JSON input helpers, the exec-policy request
+//! shape ([`ToolCall`] over `codesmith_protocol::ToolPayload`), and the
+//! per-workspace index seam ([`index_api`]).
+//!
+//! What it deliberately does **not** own: tool registration and dispatch.
+//! Those live in two places — the framework contract tier
+//! (`codesmith_agent::tools::Tool` + `ToolSet`) and the production host tier
+//! (`codesmith_agent_runtime::tools::spec::ToolSpec` + its `ToolRegistry` /
+//! `ToolDispatcher`), bridged per turn by `ToolSpecAdapter`. This crate used
+//! to carry a third, RwLock-based registry (`ToolSpec` records +
+//! `ToolHandler` + `ToolCallRuntime`); it was deleted in the §E surface
+//! unification because nothing outside its own tests ever registered into it
+//! — the one construction site (`codesmith-core`'s `Runtime`) built it empty,
+//! so its dispatch path could only ever report `ToolNotFound`.
+
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 
 pub mod index_api;
 
-use anyhow::Result;
-use async_trait::async_trait;
-use codesmith_protocol::{ToolKind, ToolOutput, ToolPayload};
+use codesmith_protocol::ToolPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
-
-tokio::task_local! {
-    static TOOL_EXECUTION_LOCK_HELD: ();
-}
 
 /// Capabilities that a tool may have or require.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -325,36 +334,6 @@ pub fn optional_bool(
     }
 }
 
-/// Specification that describes a tool available in the registry.
-///
-/// Contains the tool's name, its JSON input/output schemas, and
-/// execution constraints such as timeout and parallelism.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSpec {
-    /// Unique name used to look up the tool.
-    pub name: String,
-    /// JSON Schema describing the tool's expected input parameters.
-    pub input_schema: Value,
-    /// JSON Schema describing the tool's output format.
-    pub output_schema: Value,
-    /// Whether multiple invocations of this tool may run concurrently.
-    pub supports_parallel_tool_calls: bool,
-    /// Optional per-call timeout in milliseconds; `None` means no timeout.
-    pub timeout_ms: Option<u64>,
-}
-
-/// A [`ToolSpec`] together with its runtime configuration.
-///
-/// Wraps a `ToolSpec` and exposes the parallelism flag directly so the
-/// dispatcher can check it without digging into the inner spec.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfiguredToolSpec {
-    /// The underlying tool specification.
-    pub spec: ToolSpec,
-    /// Whether this tool supports concurrent invocations.
-    pub supports_parallel_tool_calls: bool,
-}
-
 /// Identifies where a tool call originated from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -400,290 +379,6 @@ impl ToolCall {
             ),
             _ => (self.name.clone(), fallback_cwd.to_string(), "tool"),
         }
-    }
-}
-
-/// A validated tool invocation ready to be handled.
-///
-/// Created by the registry after a [`ToolCall`] passes validation, this
-/// carries all the context a [`ToolHandler`] needs to execute the tool.
-#[derive(Debug, Clone)]
-pub struct ToolInvocation {
-    /// Unique identifier for this invocation (generated or from the provider).
-    pub call_id: String,
-    /// Name of the tool being invoked.
-    pub tool_name: String,
-    /// The input payload for the tool.
-    pub payload: ToolPayload,
-    /// Where this invocation originated.
-    pub source: ToolCallSource,
-}
-
-/// Errors that can occur during tool dispatch and execution.
-///
-/// Unlike [`ToolError`], which represents input validation failures within
-/// a tool, `FunctionCallError` covers problems at the dispatch layer: the
-/// tool was not found, its kind did not match, it was rejected because it
-/// is mutating, it timed out, was cancelled, or its handler returned an
-/// error.
-#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
-pub enum FunctionCallError {
-    /// No tool with the given name is registered.
-    #[error("tool not found: {name}")]
-    ToolNotFound { name: String },
-    /// The payload kind does not match the handler's expected kind.
-    #[error("payload kind mismatch: expected {expected:?}, got {got:?}")]
-    KindMismatch { expected: ToolKind, got: ToolKind },
-    /// The tool is mutating but `allow_mutating` was `false`.
-    #[error("mutating tool '{name}' rejected: allow_mutating is false")]
-    MutatingToolRejected { name: String },
-    /// The tool execution exceeded its configured timeout.
-    #[error("tool '{name}' timed out after {timeout_ms}ms")]
-    TimedOut { name: String, timeout_ms: u64 },
-    /// The tool execution was cancelled.
-    #[error("tool '{name}' was cancelled")]
-    Cancelled { name: String },
-    /// The tool handler returned an error.
-    #[error("tool '{name}' failed: {error}")]
-    ExecutionFailed { name: String, error: String },
-}
-
-/// Trait implemented by concrete tool handlers.
-///
-/// Each registered tool is backed by a handler that reports its kind,
-/// whether it is mutating, and performs the actual execution.
-#[async_trait]
-pub trait ToolHandler: Send + Sync {
-    /// The [`ToolKind`] this handler expects (e.g. `Function` or `Mcp`).
-    fn kind(&self) -> ToolKind;
-
-    /// Returns `true` if `kind` matches this handler's expected kind.
-    ///
-    /// The default implementation compares against [`kind()`](ToolHandler::kind).
-    fn matches_kind(&self, kind: ToolKind) -> bool {
-        self.kind() == kind
-    }
-
-    /// Whether this tool performs side-effects that require user approval.
-    ///
-    /// Defaults to `false` (read-only / safe).
-    fn is_mutating(&self) -> bool {
-        false
-    }
-
-    /// Execute the tool with the given invocation context.
-    ///
-    /// Cancellation safety: the dispatcher enforces `timeout_ms` with
-    /// `tokio::time::timeout`, which drops this future mid-execution.
-    /// Work already spawned into detached tasks or child processes keeps
-    /// running after the caller has been told `TimedOut`, so handlers
-    /// must either be cancellation-safe (idempotent side effects) or tear
-    /// down their detached work when dropped.
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> std::result::Result<ToolOutput, FunctionCallError>;
-}
-
-/// Manages concurrent tool execution via a read/write lock.
-///
-/// Parallel-safe tools acquire a read lock (allowing overlap), while
-/// serial tools acquire a write lock (exclusive access). Reentrant calls
-/// (e.g. a tool invoking another tool) skip locking to avoid deadlock.
-///
-/// Known limitations of the reentrancy probe (task-local
-/// `TOOL_EXECUTION_LOCK_HELD`): (1) Tokio task-locals do NOT propagate into
-/// `tokio::spawn`/`spawn_blocking` children — a subtask that calls
-/// `dispatch` is not detected as reentrant and will block on a lock an
-/// ancestor may hold (deadlock if the ancestor awaits it); route spawned
-/// sub-dispatches back through a task that re-enters the scope. (2) The
-/// flag is a single global across all `ToolCallRuntime` instances — a
-/// nested dispatch targeting a *different* registry also returns
-/// `Reentrant` and skips that registry's serial lock.
-#[derive(Debug)]
-pub struct ToolCallRuntime {
-    execution_lock: Arc<RwLock<()>>,
-}
-
-impl Default for ToolCallRuntime {
-    fn default() -> Self {
-        Self {
-            execution_lock: Arc::new(RwLock::new(())),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ToolExecutionGuard {
-    Parallel(#[allow(dead_code)] OwnedRwLockReadGuard<()>),
-    Serial(#[allow(dead_code)] OwnedRwLockWriteGuard<()>),
-    Reentrant,
-}
-
-impl ToolCallRuntime {
-    async fn acquire(&self, supports_parallel: bool) -> ToolExecutionGuard {
-        if TOOL_EXECUTION_LOCK_HELD.try_with(|_| ()).is_ok() {
-            return ToolExecutionGuard::Reentrant;
-        }
-
-        if supports_parallel {
-            ToolExecutionGuard::Parallel(self.execution_lock.clone().read_owned().await)
-        } else {
-            ToolExecutionGuard::Serial(self.execution_lock.clone().write_owned().await)
-        }
-    }
-}
-
-/// Central registry that maps tool names to their specs and handlers.
-///
-/// Use [`register()`](ToolRegistry::register) to add tools, then
-/// [`dispatch()`](ToolRegistry::dispatch) to invoke them. The registry
-/// owns a [`ToolCallRuntime`] that manages concurrent execution.
-#[derive(Default)]
-pub struct ToolRegistry {
-    handlers: HashMap<String, Arc<dyn ToolHandler>>,
-    specs: HashMap<String, ConfiguredToolSpec>,
-    runtime: ToolCallRuntime,
-}
-
-impl ToolRegistry {
-    /// Register a tool with its specification and handler.
-    ///
-    /// The tool's name is taken from `spec.name`. Returns an error if a
-    /// tool with the same name is already registered — silent replacement
-    /// would make the earlier tool vanish with no diagnostic.
-    pub fn register(&mut self, spec: ToolSpec, handler: Arc<dyn ToolHandler>) -> Result<()> {
-        let name = spec.name.clone();
-        if self.handlers.contains_key(&name) {
-            anyhow::bail!("tool '{name}' is already registered");
-        }
-        self.specs.insert(
-            name.clone(),
-            ConfiguredToolSpec {
-                supports_parallel_tool_calls: spec.supports_parallel_tool_calls,
-                spec,
-            },
-        );
-        self.handlers.insert(name, handler);
-        Ok(())
-    }
-
-    /// Return the configured specs for every registered tool.
-    pub fn list_specs(&self) -> Vec<ConfiguredToolSpec> {
-        self.specs.values().cloned().collect()
-    }
-
-    /// Validate and execute a tool call.
-    ///
-    /// Looks up the tool by name, verifies the payload kind matches the
-    /// handler, enforces the `allow_mutating` guard, acquires the
-    /// appropriate execution lock, and forwards the call to the handler.
-    /// Returns a [`FunctionCallError`] if any validation step fails or
-    /// the handler returns an error.
-    pub async fn dispatch(
-        &self,
-        call: ToolCall,
-        allow_mutating: bool,
-    ) -> std::result::Result<ToolOutput, FunctionCallError> {
-        let handler = self.handlers.get(&call.name).cloned().ok_or_else(|| {
-            FunctionCallError::ToolNotFound {
-                name: call.name.clone(),
-            }
-        })?;
-        let configured =
-            self.specs
-                .get(&call.name)
-                .ok_or_else(|| FunctionCallError::ToolNotFound {
-                    name: call.name.clone(),
-                })?;
-        let supports_parallel = configured.supports_parallel_tool_calls;
-        let timeout_ms = configured.spec.timeout_ms;
-
-        let payload_kind = tool_payload_kind(&call.payload);
-        let expected = handler.kind();
-        if !handler.matches_kind(payload_kind) {
-            return Err(FunctionCallError::KindMismatch {
-                expected,
-                got: payload_kind,
-            });
-        }
-        if handler.is_mutating() && !allow_mutating {
-            return Err(FunctionCallError::MutatingToolRejected { name: call.name });
-        }
-
-        let invocation = ToolInvocation {
-            call_id: call
-                .raw_tool_call_id
-                .clone()
-                .unwrap_or_else(|| format!("tool-call-{}", uuid::Uuid::new_v4())),
-            tool_name: call.name.clone(),
-            payload: call.payload,
-            source: call.source,
-        };
-
-        // Bound the LOCK WAIT by the same timeout: a dispatch configured
-        // with a timeout could still hang forever waiting for the FIFO-
-        // fair RwLock behind a hung serial tool (registered with
-        // timeout_ms: None), starving every subsequent dispatch with no
-        // recovery path.
-        let _guard = match timeout_ms {
-            Some(ms) => {
-                let name = invocation.tool_name.clone();
-                match tokio::time::timeout(
-                    Duration::from_millis(ms),
-                    self.runtime.acquire(supports_parallel),
-                )
-                .await
-                {
-                    Ok(guard) => guard,
-                    Err(_) => {
-                        return Err(FunctionCallError::TimedOut {
-                            name,
-                            timeout_ms: ms,
-                        });
-                    }
-                }
-            }
-            None => self.runtime.acquire(supports_parallel).await,
-        };
-
-        TOOL_EXECUTION_LOCK_HELD
-            .scope(
-                (),
-                self.execute_with_timeout(handler, timeout_ms, invocation),
-            )
-            .await
-    }
-
-    async fn execute_with_timeout(
-        &self,
-        handler: Arc<dyn ToolHandler>,
-        timeout_ms: Option<u64>,
-        invocation: ToolInvocation,
-    ) -> std::result::Result<ToolOutput, FunctionCallError> {
-        if let Some(timeout_ms) = timeout_ms {
-            let name = invocation.tool_name.clone();
-            match tokio::time::timeout(
-                Duration::from_millis(timeout_ms),
-                handler.handle(invocation),
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(_) => Err(FunctionCallError::TimedOut { name, timeout_ms }),
-            }
-        } else {
-            handler.handle(invocation).await
-        }
-    }
-}
-
-fn tool_payload_kind(payload: &ToolPayload) -> ToolKind {
-    match payload {
-        ToolPayload::Mcp { .. } => ToolKind::Mcp,
-        ToolPayload::Function { .. }
-        | ToolPayload::Custom { .. }
-        | ToolPayload::LocalShell { .. } => ToolKind::Function,
     }
 }
 

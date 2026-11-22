@@ -2948,6 +2948,20 @@ in Engine" framing above is the pre-migration state, kept as a record.
   `models.rs`) into a `codesmith_agent::tools` module with a `Tool` trait
   (name, schema, async run), so providers and hosts share one tool contract.
 
+**Status:** landed, and the surface unification closed. The framework `Tool`
++ `ToolSet` (`crates/agent/src/tools/`) is the contract the executor loop
+dispatches through; the production `ToolSpec` + `ToolContext` host tier
+bridges onto it per turn (`ToolSpecAdapter`,
+`crates/agent-runtime/src/tools/framework_adapter.rs`) — that run-path
+bridge is the production path since the slice 20 §E cutover. The third,
+value-layer registration surface this section's framing implied
+(`codesmith-tools`' `ToolSpec` record + `ToolHandler` + RwLock
+`ToolRegistry`/`ToolCallRuntime`) was deleted in the §E surface
+unification: its only production construction (`codesmith-core`'s
+`Runtime`) built the registry empty, so its dispatch path could only ever
+report `ToolNotFound`. `codesmith-tools` now owns only the shared leaf
+value types and the exec-policy `ToolCall` request shape.
+
 ### E3 — Memory / callback abstractions
 - LangChain `Memory` + `Callbacks` analogs: a `ChatHistory` trait and a
   `Callback` trait (on_llm_start / on_llm_end / on_tool_*) in core, so the

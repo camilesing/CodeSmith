@@ -67,6 +67,28 @@ kernel stays a selection chokepoint — is spread over two surfaces:
 - **Registry registrations** (crates compiled into the process): the
   `TurnExecutorRegistry` below, `ProviderRegistry`, model catalog.
 
+### The tool surface lineage
+
+Tool registration is one lineage, not three coexisting surfaces (the §E
+surface unification deleted the `codesmith-tools` value-layer registry —
+a third surface whose only production construction was empty, so its
+dispatch path could only ever fail):
+
+1. **Plugin tier** — an extension contributes a `ToolDefinition`
+   (`register_tool`); `ExtensionToolSpecAdapter` bridges it onto the host
+   tier.
+2. **Host tier** — production tools implement `ToolSpec`
+   (context-passed, per-turn `ToolContext`); the host `ToolRegistry`
+   builds the wire catalog and owns the approval / parallelism /
+   defer-loading metadata through `ToolDispatcher` / `ToolMetadata`.
+3. **Contract tier** — every turn wraps each registered spec in
+   `ToolSpecAdapter` onto the framework `Tool` + `ToolSet`
+   (`codesmith-agent`), the surface the executor loop dispatches through.
+
+The shared leaf value types (`ToolResult`, `ToolError`, `ToolCapability`,
+`ApprovalRequirement`) live in `codesmith-tools` so every tier reads one
+vocabulary.
+
 ### The turn-executor seam (host tier + dylib tier)
 
 The loop a turn runs is a *selection*, resolved per turn from the
@@ -114,9 +136,6 @@ Replacement of an id with turns in flight is refused loudly
 - **Retrieval is contracts + in-memory default only** — no vector-db
   integrations, loaders, or splitters in-tree; `IndexServiceApi` (the code
   indexer) is a separate, older seam.
-- **Three tool registration surfaces coexist** (framework `ToolSet`,
-  `codesmith-tools` value layer, production `ToolSpec`/`ToolRegistry` in
-  `agent-runtime`); unifying them is the standing ROADMAP §E slice.
 - **Runtime mod state lives in its own store, by design** — activation
   consent, enablement, and KV persist through `ModStateStore`
   (`mod_state` file + immediate reload), *not* by writing back to the

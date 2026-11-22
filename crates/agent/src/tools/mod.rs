@@ -20,10 +20,14 @@
 //!   [`ToolCapability`], [`ApprovalRequirement`]); re-exported below so
 //!   consumers depend only on `codesmith-agent`.
 //! - `codesmith-agent-runtime::tools::spec` — the production `ToolSpec` trait +
-//!   fat `ToolContext`, used by the live `Engine`. Migrating it onto this trait
-//!   is a later ROADMAP §E slice.
+//!   fat `ToolContext`, used by the live `Engine`. Its run path is bridged
+//!   onto this trait per turn (`ToolSpecAdapter`); the approval / parallelism
+//!   / defer-loading metadata deliberately has no counterpart here (the host
+//!   `ToolDispatcher` owns it). The §E surface unification deleted the third
+//!   registration surface this crate's leaf types used to feed — a
+//!   value-layer registry that nothing outside its own tests registered into.
 //!
-//! See `ARCHITECTURE.md` ("Framework-core agent seam") and `ROADMAP.md` §E.
+//! See `ARCHITECTURE.md` ("Framework-core agent seam").
 
 use std::collections::HashMap;
 use std::future::Future;

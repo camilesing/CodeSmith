@@ -23,7 +23,7 @@ use codesmith_state::{
     JobStateRecord, JobStateStatus, SessionSource, StateStore, ThreadListFilters, ThreadMetadata,
     ThreadStatus as PersistedThreadStatus,
 };
-use codesmith_tools::{ToolCall, ToolRegistry};
+use codesmith_tools::ToolCall;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -762,8 +762,6 @@ pub struct Runtime {
     /// other while everything else (hook emission, tool dispatch, MCP
     /// startup, job reads) runs concurrently.
     pub thread_manager: std::sync::Mutex<ThreadManager>,
-    /// Registry of callable tools.
-    pub tool_registry: Arc<ToolRegistry>,
     /// Manager for MCP server connections.
     pub mcp_manager: Arc<McpManager>,
     /// Engine for evaluating execution policy decisions.
@@ -780,7 +778,6 @@ impl Runtime {
         config: ConfigToml,
         model_registry: ModelRegistry,
         state: StateStore,
-        tool_registry: Arc<ToolRegistry>,
         mcp_manager: Arc<McpManager>,
         exec_policy: ExecPolicyEngine,
         hooks: HookDispatcher,
@@ -805,7 +802,6 @@ impl Runtime {
             config,
             model_registry,
             thread_manager: std::sync::Mutex::new(ThreadManager::new(state)),
-            tool_registry,
             mcp_manager,
             exec_policy,
             hooks,
@@ -1198,18 +1194,18 @@ impl Runtime {
         })
     }
 
-    /// Evaluates execution policy and dispatches a tool call.
+    /// Evaluates execution policy for a tool call.
     ///
-    /// `allow_mutating` is the caller-owned mutating-tool guard (see
-    /// `ToolRegistry::dispatch`): read-only / restricted callers pass
-    /// `false` so mutating tools (file writes, shell) are rejected by the
-    /// registry rather than silently enabled.
+    /// This runtime is a policy gate, not a tool host: a call the policy
+    /// allows (and that needs no approval) fails loud with a no-executor
+    /// error — the value-layer registry that used to sit here was deleted
+    /// in the §E surface unification, and it had never held a tool outside
+    /// tests anyway.
     pub async fn invoke_tool(
         &self,
         call: ToolCall,
         approval_mode: AskForApproval,
         cwd: &Path,
-        allow_mutating: bool,
     ) -> Result<Value> {
         let fallback_cwd = cwd.display().to_string();
         let (command, policy_cwd, execution_kind) = call.execution_subject(&fallback_cwd);
@@ -1335,76 +1331,40 @@ impl Runtime {
             })
             .await;
 
-        match self
-            .tool_registry
-            .dispatch(call.clone(), allow_mutating)
-            .await
-        {
-            Ok(tool_output) => {
-                let result_frame = EventFrame::ToolCallResult {
-                    response_id: response_id.clone(),
-                    tool_name: call.name.clone(),
-                    output: tool_output_value(&tool_output),
-                };
-                self.hooks
-                    .emit(HookEvent::GenericEventFrame {
-                        frame: result_frame.clone(),
-                    })
-                    .await;
-                self.hooks
-                    .emit(HookEvent::ToolLifecycle {
-                        response_id: response_id.clone(),
-                        tool_name: call.name,
-                        phase: "completed".to_string(),
-                        payload: json!({ "ok": true }),
-                    })
-                    .await;
-                Ok(json!({
-                    "ok": true,
-                    "status": "completed",
-                    "execution_kind": execution_kind,
-                    "response_id": response_id,
-                    "precheck": precheck,
-                    "output": tool_output,
-                    "events": [
-                        event_frame_payload(&start_frame),
-                        event_frame_payload(&result_frame)
-                    ]
-                }))
-            }
-            Err(err) => {
-                let message = format!("{err:?}");
-                let error_frame = EventFrame::Error {
-                    response_id: response_id.clone(),
-                    message: message.clone(),
-                };
-                self.hooks
-                    .emit(HookEvent::GenericEventFrame {
-                        frame: error_frame.clone(),
-                    })
-                    .await;
-                self.hooks
-                    .emit(HookEvent::ToolLifecycle {
-                        response_id: response_id.clone(),
-                        tool_name: call.name,
-                        phase: "failed".to_string(),
-                        payload: json!({ "error": message.clone() }),
-                    })
-                    .await;
-                Ok(json!({
-                    "ok": false,
-                    "status": "failed",
-                    "execution_kind": execution_kind,
-                    "response_id": response_id,
-                    "precheck": precheck,
-                    "error": message,
-                    "events": [
-                        event_frame_payload(&start_frame),
-                        event_frame_payload(&error_frame)
-                    ]
-                }))
-            }
-        }
+        let message = format!(
+            "tool '{}' was allowed by policy, but this runtime has no tool \
+             executor — the /tool endpoint is a policy gate, not a tool host",
+            call.name
+        );
+        let error_frame = EventFrame::Error {
+            response_id: response_id.clone(),
+            message: message.clone(),
+        };
+        self.hooks
+            .emit(HookEvent::GenericEventFrame {
+                frame: error_frame.clone(),
+            })
+            .await;
+        self.hooks
+            .emit(HookEvent::ToolLifecycle {
+                response_id: response_id.clone(),
+                tool_name: call.name,
+                phase: "failed".to_string(),
+                payload: json!({ "error": message.clone() }),
+            })
+            .await;
+        Ok(json!({
+            "ok": false,
+            "status": "failed",
+            "execution_kind": execution_kind,
+            "response_id": response_id,
+            "precheck": precheck,
+            "error": message,
+            "events": [
+                event_frame_payload(&start_frame),
+                event_frame_payload(&error_frame)
+            ]
+        }))
     }
 
     /// Starts all configured MCP servers and emits startup events via hooks.
@@ -1818,12 +1778,6 @@ fn policy_subject_path(payload: &ToolPayload) -> Option<String> {
         .find_map(Value::as_str)
         .filter(|path| !path.trim().is_empty())
         .map(str::to_string)
-}
-
-fn tool_output_value(output: &codesmith_protocol::ToolOutput) -> Value {
-    serde_json::to_value(output).unwrap_or_else(
-        |_| json!({"type":"serialization_error","message":"tool output unavailable"}),
-    )
 }
 
 fn event_frame_payload(frame: &EventFrame) -> Value {
@@ -2818,7 +2772,6 @@ mod tests {
             ConfigToml::default(),
             ModelRegistry::default(),
             store,
-            Arc::new(ToolRegistry::default()),
             Arc::new(McpManager::default()),
             ExecPolicyEngine::new(Vec::new(), Vec::new()),
             HookDispatcher::default(),
@@ -3088,7 +3041,6 @@ mod tests {
             ConfigToml::default(),
             ModelRegistry::default(),
             store,
-            Arc::new(ToolRegistry::default()),
             Arc::new(McpManager::default()),
             ExecPolicyEngine::new(Vec::new(), vec!["denied-cmd".to_string()]),
             HookDispatcher::default(),
@@ -3106,7 +3058,7 @@ mod tests {
             raw_tool_call_id: None,
         };
         let result = runtime
-            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"), true)
+            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"))
             .await
             .expect("invoke dispatches");
         assert_eq!(result["ok"], false);
@@ -3121,7 +3073,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invoke_tool_unknown_tool_reports_failure_without_erroring() {
+    async fn invoke_tool_policy_allowed_call_fails_loud_without_executor() {
         let (_tmp, runtime) = runtime_with_scratch_store();
         let call = ToolCall {
             name: "no_such_tool".to_string(),
@@ -3132,14 +3084,21 @@ mod tests {
             raw_tool_call_id: None,
         };
         // OnFailure allows the dispatch (approval comes after a failure), so
-        // the empty registry rejects the unknown name — the Err arm under
-        // test. OnRequest would stop at "approval_required".
+        // the call reaches the no-executor failure — the arm under test.
+        // OnRequest would stop at "approval_required".
         let result = runtime
-            .invoke_tool(call, AskForApproval::OnFailure, Path::new("/tmp"), true)
+            .invoke_tool(call, AskForApproval::OnFailure, Path::new("/tmp"))
             .await
             .expect("invoke_tool itself must not hard-error");
         assert_eq!(result["ok"], false);
         assert_eq!(result["status"], "failed");
+        assert!(
+            result["error"]
+                .as_str()
+                .expect("error string")
+                .contains("no tool executor"),
+            "the failure names the missing executor: {result}"
+        );
     }
 
     #[tokio::test]
@@ -3169,7 +3128,7 @@ mod tests {
         // No trusted prefixes and OnRequest: the policy stops the call at the
         // approval gate — nothing is dispatched, an approval id is returned.
         let result = runtime
-            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"), true)
+            .invoke_tool(call, AskForApproval::OnRequest, Path::new("/tmp"))
             .await
             .expect("invoke dispatches");
         assert_eq!(result["ok"], false);

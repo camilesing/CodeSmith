@@ -21,11 +21,3 @@ codesmith-protocol.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 thiserror.workspace = true
-# Local (non-inherited) tokio: workspace inheritance can only ADD features,
-# so inheriting would impose the workspace-level `full` surface (net,
-# process, fs, signal, …) on any downstream consumer of this publishable
-# crate. The audited local need (src + tests/parity_tools.rs) is `rt`
-# (spawn/task_local), `sync`, `time`, and `macros` (#[tokio::test],
-# select!).
-tokio = { version = "1.49.0", features = ["rt", "sync", "time", "macros"] }
-uuid.workspace = true

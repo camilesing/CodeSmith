@@ -19,7 +19,7 @@ use codesmith_protocol::{
     AppRequest, AppResponse, PromptRequest, PromptResponse, ThreadRequest, ThreadResponse,
 };
 use codesmith_state::StateStore;
-use codesmith_tools::{ToolCall, ToolRegistry};
+use codesmith_tools::ToolCall;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -86,13 +86,6 @@ struct ToolCallRequest {
     call: ToolCall,
     #[serde(default)]
     cwd: Option<PathBuf>,
-    /// Explicit opt-in to run mutating tools through this endpoint.
-    /// Defaults to `false`: the bearer token (which reaches local app
-    /// frontends and can be effectively broadcast via `insecure_no_auth`)
-    /// must not silently grant destructive tool execution against an
-    /// arbitrary host directory.
-    #[serde(default)]
-    allow_mutating: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,16 +278,16 @@ async fn tool_handler(
     let cwd = req
         .cwd
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    // Default-safest posture: mutating tools only run when the request
-    // itself opts in. Known limitation: `cwd` is caller-controlled with
-    // no allowlist — the token gate plus this opt-in are the boundary.
+    // Policy-gate posture: the endpoint never executes a tool (no
+    // executor in this runtime), so it cannot mutate anything — the
+    // caller-controlled `cwd` only feeds policy evaluation, behind the
+    // token gate.
     match state
         .runtime
         .invoke_tool(
             req.call,
             codesmith_execpolicy::AskForApproval::OnRequest,
             &cwd,
-            req.allow_mutating,
         )
         .await
     {
@@ -357,7 +350,6 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
         config.clone(),
         registry.clone(),
         state_store,
-        Arc::new(ToolRegistry::default()),
         Arc::new(McpManager::default()),
         ExecPolicyEngine::new(Vec::new(), default_denied_exec_prefixes()),
         hooks,
@@ -2066,7 +2058,6 @@ mod tests {
                 raw_tool_call_id: None,
             },
             cwd: Some(cwd.to_path_buf()),
-            allow_mutating: false,
         })
         .expect("tool request json")
     }
@@ -2410,7 +2401,6 @@ mod tests {
                 raw_tool_call_id: None,
             },
             cwd: None,
-            allow_mutating: false,
         })
         .expect("tool request json");
         let response = post_json(&app, "/tool", None, request).await;

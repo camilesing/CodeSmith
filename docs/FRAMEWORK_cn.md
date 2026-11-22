@@ -62,6 +62,25 @@ Cordis 式的性质——能力以注册的形式到达、内核只做选择 cho
 - **注册表注册**（编译进进程的 crate）：下述 `TurnExecutorRegistry`、
   `ProviderRegistry`、模型目录。
 
+### 工具面谱系
+
+工具注册是一条谱系，不是三个并存的注册面（§E 工具面统一删除了
+`codesmith-tools` 的值层注册表——那第三个面的唯一生产构造是空的，
+其 dispatch 路径只可能失败）：
+
+1. **插件档** —— 扩展贡献 `ToolDefinition`（`register_tool`），
+   `ExtensionToolSpecAdapter` 桥接到宿主档。
+2. **宿主档** —— 生产工具实现 `ToolSpec`（上下文传递、per-turn
+   `ToolContext`）；宿主 `ToolRegistry` 构建 wire 目录，经
+   `ToolDispatcher` / `ToolMetadata` 持有审批 / 并行 / defer-loading
+   元数据。
+3. **契约档** —— 每 turn 把每个已注册 spec 经 `ToolSpecAdapter` 包到
+   框架 `Tool` + `ToolSet`（`codesmith-agent`）上，executor 循环在该面
+   分发。
+
+共享叶值类型（`ToolResult`、`ToolError`、`ToolCapability`、
+`ApprovalRequirement`）住在 `codesmith-tools`，三档读同一词汇表。
+
 ### turn-executor seam（host 档 + dylib 档）
 
 一个 turn 跑哪个循环是一次*选择*，每 turn 从进程共享的
@@ -104,9 +123,6 @@ Cordis 式的性质——能力以注册的形式到达、内核只做选择 cho
 - `turn_executor` 对所有 agent 生效（暂无按 agent-type 的选择）。
 - **检索只有契约 + 内存默认实现**——树内没有向量库集成、loader、
   splitter；`IndexServiceApi`（代码索引）是另一个更早的 seam。
-- **三个工具注册面并存**（框架 `ToolSet`、`codesmith-tools` 值层、
-  `agent-runtime` 生产 `ToolSpec`/`ToolRegistry`）；统一它们是
-  ROADMAP §E 的常设事项。
 - **运行时 mod 状态住独立存储，这是设计**——激活同意、启停与 KV 经
   `ModStateStore` 持久化（`mod_state` 文件 + 即时 reload），**不是**回写
   手写的 `config.toml`（Cordis 之所以回写 YAML，是因为配置是它唯一的
