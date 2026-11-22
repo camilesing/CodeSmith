@@ -540,9 +540,11 @@ pub struct ConfigToml {
     /// any host-registered factory (e.g. `mock`) or user-declared endpoint.
     pub custom_provider: Option<String>,
     /// Selected main-turn executor id (kernel composition). Kept as a raw
-    /// string because the id space is open: the always-present `builtin`
-    /// plus any factory a host registers on the turn-executor registry. An
-    /// unknown id fails loud at startup. Defaults to `builtin`.
+    /// string because the id space is open: the always-present `builtin`,
+    /// any factory a host registers on the turn-executor registry, or a
+    /// dylib-tier id an extension contributes at load. An unknown id fails
+    /// loud at the first turn's assembly (extension ids exist only there).
+    /// Defaults to `builtin`.
     pub turn_executor: Option<String>,
     /// `[rhai_loop]` — settings for the script-driven executor
     /// (`turn_executor = "rhai"`). The CLI parses `mod` / `timeout_secs`;

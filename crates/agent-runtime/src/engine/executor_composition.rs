@@ -495,8 +495,8 @@ pub fn shared_turn_executors() -> &'static TurnExecutorRegistry {
 }
 
 /// Resolve the factory for `id`, naming the registered ids and the remedy
-/// on a miss (the engine's mid-session loud-error path; startup validation
-/// catches the same condition earlier).
+/// on a miss (the universal loud gate — an id contributed by a dylib
+/// extension exists only here, at turn assembly).
 pub fn resolve_turn_executor(id: &str) -> Result<Arc<dyn TurnExecutorFactory>, String> {
     shared_turn_executors().resolve(id).ok_or_else(|| {
         format!(
@@ -670,8 +670,11 @@ pub fn turn_executor_is_extension_origin(id: &str) -> bool {
 
 /// Host-facing startup validation of the `turn_executor` config id: `Ok`
 /// when registered, `Err(message)` naming the registered ids and the remedy
-/// otherwise. (The registry is crate-assembled for now — see the module
-/// doc — so hosts validate; they do not resolve factories.)
+/// otherwise. Optional early gate for hosts that register factories before
+/// the engine runs (the host tier); the CLI's config-validate does NOT call
+/// this — a dylib-tier id resolves only at turn assembly, so pre-load
+/// validation would reject a valid id. The engine's per-turn resolution is
+/// the universal gate.
 pub fn validate_turn_executor_id(id: &str) -> Result<(), String> {
     resolve_turn_executor(id).map(|_| ())
 }

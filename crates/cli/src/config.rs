@@ -785,9 +785,11 @@ pub struct Config {
     pub custom_provider: Option<String>,
     /// Selected main-turn executor id (kernel composition,
     /// `engine::executor_composition`). Kept as a raw string because the id
-    /// space is open: the always-present `builtin` plus any factory a host
-    /// registers on the process-shared turn-executor registry. An unknown id
-    /// fails loud at startup.
+    /// space is open: the always-present `builtin`, any factory a host
+    /// registers on the process-shared turn-executor registry, or a
+    /// dylib-tier id an extension contributes at load (adopted at turn
+    /// assembly). An unknown id fails loud at the first turn's assembly —
+    /// not at config-validate time, which runs before extension ids exist.
     pub turn_executor: Option<String>,
     /// `[rhai_loop]` — settings for the script-driven executor
     /// (`turn_executor = "rhai"`).
@@ -1858,19 +1860,16 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
-        // Kernel composition — turn-executor selection. Fail loud at
-        // startup: the engine's per-turn resolution would otherwise surface
-        // an unregistered id only at the first turn. The registry carries
-        // the builtin loop plus any host-registered alternates.
-        if let Some(id) = self
-            .turn_executor
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            codesmith_agent_runtime::engine::validate_turn_executor_id(id)
-                .map_err(|err| anyhow::anyhow!("turn_executor: {err}"))?;
-        }
+        // Kernel composition — turn-executor selection is NOT validated
+        // here: an id contributed by a dylib extension resolves only at
+        // turn assembly (its contribution queues at load, the engine
+        // adopts it generation-stamped), so a pre-load check would reject
+        // a valid id. The gate is the engine's per-turn resolution — it
+        // fails loud at the first turn's assembly, naming the registered
+        // ids and the remedy. Hosts that register factories before the
+        // engine (the host tier) may still call
+        // `codesmith_agent_runtime::engine::validate_turn_executor_id`
+        // themselves.
         // §D2 — custom provider escape hatch. When `custom_provider` is set,
         // it overrides the builtin `provider` field: validate the id and its
         // matching `[[providers.custom]]` entry, then skip the builtin-specific
@@ -7758,25 +7757,18 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn turn_executor_selects_builtin_and_rejects_unknown_id() -> Result<()> {
+    fn turn_executor_selects_builtin_and_defers_id_validation_to_assembly() -> Result<()> {
         // Default resolves to the builtin loop.
         assert_eq!(Config::default().turn_executor_id(), "builtin".to_string());
 
-        // An unknown id fails loud at validate time, naming the id, the
-        // registered ids, and the remedy (the registry-seeded error).
+        // `validate` does NOT gate the id anymore: a dylib-tier
+        // contribution resolves only at turn assembly, so a pre-load check
+        // would reject a valid id (the gate is the engine's per-turn
+        // resolution — pinned in codesmith-agent-runtime's
+        // `resolve_miss_names_ids_and_remedy`). An unknown id still
+        // validates structurally here.
         let config = Config {
-            turn_executor: Some("does-not-exist".to_string()),
-            ..Default::default()
-        };
-        let err = config.validate().expect_err("unknown turn executor id");
-        let msg = err.to_string();
-        assert!(msg.contains("does-not-exist"), "names the id: {msg}");
-        assert!(msg.contains("builtin"), "names registered ids: {msg}");
-        assert!(msg.contains("turn_executor"), "names the remedy: {msg}");
-
-        // The builtin id passes.
-        let config = Config {
-            turn_executor: Some("builtin".to_string()),
+            turn_executor: Some("some-dylib-loop".to_string()),
             ..Default::default()
         };
         config.validate()?;

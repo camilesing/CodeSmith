@@ -1804,8 +1804,8 @@ impl Engine {
             Ok(factory) => factory,
             Err(message) => {
                 // Misconfiguration fails loud: the turn aborts with the
-                // registered ids and the remedy (startup validation in the
-                // CLI host catches the same condition even earlier).
+                // registered ids and the remedy (this resolution IS the
+                // gate — an extension-contributed id exists only here).
                 let _ = self
                     .tx_event
                     .send(Event::error(ErrorEnvelope::fatal(message.clone())))
