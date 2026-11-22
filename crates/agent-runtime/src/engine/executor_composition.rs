@@ -27,13 +27,16 @@
 //! engine used to inline, so the default path is the same assembly.
 //!
 //! Known limitations (deliberate):
-//! - **Alternate implementations are compiled-in registrations in this
-//!   crate** (the registry is crate-assembled; hosts validate the id, they
-//!   do not seed factories). A dylib or host-side factory cannot yet ship a
-//!   from-scratch loop: the factory contract would have to name
-//!   `TurnDeps`'s runtime-side types across the `codesmith-agent` →
-//!   `codesmith-agent-runtime` boundary. Wrapping an existing turn from a
-//!   dylib is the around-turn seam (`crates/agent/src/extension.rs`).
+//! - **Host-tier registration only.** The contract types
+//!   ([`TurnDeps`]/[`TurnExecutorFactory`]/[`TurnExecutorRegistry`]) are
+//!   public: any crate compiled into the process may register a factory at
+//!   startup (`shared_turn_executors().register(..)`), which is how an
+//!   embedded host ships a from-scratch loop. Two tiers stay closed: a
+//!   **dylib** extension cannot safely register one (an RAII guard in dylib
+//!   statics dangles after unload — a generation-bound registration sweep
+//!   is the follow-up design), and **script mods** use `register_loop`
+//!   (`engine::rhai_executor`), never this seam. Wrapping an existing turn
+//!   from a dylib is the around-turn seam (`crates/agent/src/extension.rs`).
 //! - **One selection for every agent.** `turn_executor` picks the loop for
 //!   the main turn and every in-process child alike; there is no per-type
 //!   selection (general-agent plan D2 — no consumer yet). External-provider children
@@ -97,7 +100,7 @@ pub const BUILTIN_TURN_EXECUTOR_ID: &str = "builtin";
 /// branch in the loop: the general agent is one scope per agent, not a pile of branches
 /// per agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TurnShape {
+pub enum TurnShape {
     /// The engine's own turn: session-level services, `Global` dispatch.
     Main,
     /// A sub-agent turn ([`run_child_turn`](super::child_turn::run_child_turn)).
@@ -116,7 +119,7 @@ pub(crate) enum TurnShape {
 /// The compaction / capacity probe sources — the main turn's
 /// context-window management. Absent for a sub-agent turn (children run
 /// without compaction or the capacity gates, as they always have).
-pub(crate) struct TurnContextSources {
+pub struct TurnContextSources {
     pub compaction: CompactionConfig,
     pub workspace: PathBuf,
     /// Session `compaction_summary_prompt` snapshot (the fold input for the
@@ -151,10 +154,12 @@ pub(crate) struct TurnContextSources {
 /// `Option`al services are the main turn's own: a child's bundle carries
 /// `None` for each.
 ///
-/// `pub(crate)`: compiled-in factories live in this crate for now (see the
-/// module doc's known limitations); promoting a host-side factory tier
-/// means naming these runtime types across the crate boundary first.
-pub(crate) struct TurnDeps {
+/// Public since the host-tier executor seam opened: an external crate
+/// compiled into the process implements [`TurnExecutorFactory`] against
+/// this bundle (see the module doc for which tiers that excludes). The
+/// engine remains the only *producer* — hosts never assemble a `TurnDeps`
+/// themselves; they receive one per `build` call.
+pub struct TurnDeps {
     pub shape: TurnShape,
 
     // --- the four agent-level collaborators (as the reference loop takes) --
@@ -220,18 +225,19 @@ pub(crate) struct TurnDeps {
 /// A built main turn: the dyn-safe executor the engine runs, plus the
 /// harvest handle it reads post-run state through. The builtin factory
 /// returns the same `HostAgentExecutor` under both Arcs.
-pub(crate) struct BuiltTurn {
+pub struct BuiltTurn {
     pub executor: Arc<dyn AgentExecutor>,
     pub harvest: Arc<dyn TurnHarvest>,
 }
 
 /// Builds a per-turn [`BuiltTurn`] from the engine's kernel-service bundle.
 ///
-/// Factories are compiled-in registrations on the
-/// [`TurnExecutorRegistry`] (see the module doc for why dylib from-scratch
-/// loops are not yet a tier). `build` is infallible by design: a factory
-/// that cannot assemble its loop does not belong in the registry.
-pub(crate) trait TurnExecutorFactory: Send + Sync {
+/// Factories are registrations on the [`TurnExecutorRegistry`]: the two
+/// process-lifetime seeds (`builtin`, `rhai`) plus any crate compiled into
+/// the process that registers at startup (see the module doc for why the
+/// dylib and script tiers are excluded). `build` is infallible by design: a
+/// factory that cannot assemble its loop does not belong in the registry.
+pub trait TurnExecutorFactory: Send + Sync {
     /// Stable selection id (the `turn_executor` config value).
     fn id(&self) -> &'static str;
     /// Assemble this turn's executor + harvest from `deps` (consumed).
@@ -287,7 +293,7 @@ pub trait TurnHarvest: Send + Sync {
 /// registry's in-flight accounting (general agent: the agent registry owns both the
 /// factory slot and the live agents), so `register` can refuse to replace
 /// an id that still has turns running on it.
-pub(crate) struct TurnExecutorRegistry {
+pub struct TurnExecutorRegistry {
     inner: Arc<RwLock<HashMap<String, Arc<dyn TurnExecutorFactory>>>>,
     leases: crate::turn_lease::TurnLeaseRegistry,
 }
@@ -436,9 +442,9 @@ impl TurnExecutorRegistry {
 /// One registered turn-executor slot as an operator sees it (general-agent D1): the
 /// id and the turns in flight on it, main turn and sub-agents by spawn
 /// depth. Which slot is the session's selection is the host's
-/// `turn_executor` config, not registry state — the host marks it. The
-/// registry types themselves stay crate-private; this snapshot is the whole
-/// public surface `/extension status` reads.
+/// `turn_executor` config, not registry state — the host marks it. This
+/// snapshot is the read-only surface `/extension status` reads; the
+/// registration surface is [`shared_turn_executors`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnExecutorSlot {
     pub id: String,
@@ -460,7 +466,7 @@ pub fn turn_executor_status() -> Vec<TurnExecutorSlot> {
 /// Dropping it removes the factory it registered — unless a newer
 /// registration for the same id has since replaced it (identity-checked via
 /// `Arc::ptr_eq`). Same unload story as `ProviderRegistration`.
-pub(crate) struct TurnExecutorRegistration {
+pub struct TurnExecutorRegistration {
     registry: TurnExecutorRegistry,
     id: String,
     factory: Arc<dyn TurnExecutorFactory>,
@@ -477,7 +483,7 @@ impl Drop for TurnExecutorRegistration {
 /// it at startup. Paired with the process-shared lease registry
 /// (`turn_lease::shared_turn_leases`) so the in-flight guard sees every
 /// engine's turns.
-pub(crate) fn shared_turn_executors() -> &'static TurnExecutorRegistry {
+pub fn shared_turn_executors() -> &'static TurnExecutorRegistry {
     static SHARED: OnceLock<TurnExecutorRegistry> = OnceLock::new();
     SHARED.get_or_init(|| {
         TurnExecutorRegistry::with_builtin(crate::turn_lease::shared_turn_leases().clone())
@@ -487,7 +493,7 @@ pub(crate) fn shared_turn_executors() -> &'static TurnExecutorRegistry {
 /// Resolve the factory for `id`, naming the registered ids and the remedy
 /// on a miss (the engine's mid-session loud-error path; startup validation
 /// catches the same condition earlier).
-pub(crate) fn resolve_turn_executor(id: &str) -> Result<Arc<dyn TurnExecutorFactory>, String> {
+pub fn resolve_turn_executor(id: &str) -> Result<Arc<dyn TurnExecutorFactory>, String> {
     shared_turn_executors().resolve(id).ok_or_else(|| {
         format!(
             "no turn executor registered for '{id}'; registered: [{}] — fix `turn_executor` in \

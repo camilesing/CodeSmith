@@ -160,7 +160,7 @@ work. ({present}/{total} present.)"
 /// reset `last_note_step` and re-note an unchanged gap on every turn,
 /// defeating the anti-spam cadence across a multi-turn session.
 #[derive(Clone)]
-pub(crate) struct DeliverablesProbe {
+pub struct DeliverablesProbe {
     deliverables: Vec<String>,
     progress: std::sync::Arc<std::sync::Mutex<DeliverablesProgress>>,
 }

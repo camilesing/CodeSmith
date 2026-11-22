@@ -4158,9 +4158,15 @@ use self::dispatch::{
     mcp_tool_is_read_only, parse_parallel_tool_calls,
 };
 pub use self::executor_composition::{
-    BUILTIN_TURN_EXECUTOR_ID, TurnExecutorSlot, turn_executor_status, validate_turn_executor_id,
+    BUILTIN_TURN_EXECUTOR_ID, BuiltTurn, TurnContextSources, TurnDeps, TurnExecutorFactory,
+    TurnExecutorRegistration, TurnExecutorRegistry, TurnExecutorSlot, TurnHarvest, TurnShape,
+    resolve_turn_executor, shared_turn_executors, turn_executor_status, validate_turn_executor_id,
 };
+// `TurnDeps` field types from otherwise-private modules — reachable for the
+// host-tier executor seam.
+pub use self::deliverables::DeliverablesProbe;
 pub use self::lsp_hooks::edited_paths_for_tool;
+pub use self::result_verifier::VerdictBlock;
 pub use self::streaming::TOOL_CALL_START_MARKERS;
 pub use self::streaming::{
     FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_TRANSPARENT_STREAM_RETRIES,

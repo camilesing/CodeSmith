@@ -127,7 +127,11 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   `builtin`; `"rhai"` runs a mod's `register_loop` script over the host's
   step services, `engine/rhai_executor.rs`) from the process-shared
   `TurnExecutorRegistry` (`engine/executor_composition.rs`), with
-  alternates as crate-compiled registry entries, and wraps every turn with
+  alternates as registry entries contributed by crates compiled into the
+  process (the host-tier executor seam — the contract types
+  (`TurnDeps`/`TurnExecutorFactory`) are public; dylib extensions cannot
+  safely register one and script mods use `register_loop` instead), and
+  wraps every turn with
   the `AroundTurnHandler`
   chain (`register_around_turn`, the general agent's `next()`, Rust extensions; a child
   composes it at its agent-type scope, dylib wrappers excluded). Every

@@ -442,7 +442,7 @@ fn strip_env_assignment(segment: &str) -> Option<&str> {
 /// One recorded verdict — the unit the pending buffer accumulates and the
 /// pre-request flush renders. Field set mirrors 笔记9's four elements.
 #[derive(Debug, Clone)]
-pub(crate) struct VerdictBlock {
+pub struct VerdictBlock {
     pub(crate) kind: ResultVerdict,
     pub(crate) claim_kind: ClaimKind,
     pub(crate) phrase: String,

@@ -99,8 +99,10 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   `agent-runtime/src/compaction/strategy.rs`——效果与免疫区归宿主）；一个 turn 循环驱动所有 agent（通用 Agent 内核
   组合模型）——引擎从进程共享 `TurnExecutorRegistry`
   （`engine/executor_composition.rs`）解析按配置选择的 factory
-  （`turn_executor`，默认 `builtin`），替代循环以 crate 内编译的注册条目
-  落地，并以 `AroundTurnHandler` 链（`register_around_turn`，通用 Agent
+  （`turn_executor`，默认 `builtin`），替代循环以进程内编译 crate 注册的
+  条目落地（host 档执行器 seam——契约类型 `TurnDeps`/`TurnExecutorFactory`
+  公开；dylib 扩展无法安全注册，脚本 mod 走 `register_loop`），并以
+  `AroundTurnHandler` 链（`register_around_turn`，通用 Agent
   `next()`，Rust 扩展）包裹主 turn 与每个子代理 turn（子代理在其
   agent-type scope 上组合该链，dylib 包装被跳过）。每个进程内子代理 turn 经
   `engine/child_turn.rs` 走同一个 factory：CLI 的 spawn 路径交出
