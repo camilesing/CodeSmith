@@ -555,6 +555,14 @@ pub struct ConfigToml {
     /// reads/writes.
     #[serde(default)]
     pub compaction: Option<toml::Table>,
+    /// `[mods]` — the script-mod layer's master switch (`enabled`) and
+    /// opt-in builtin list (`builtin`). The CLI parses both (see its
+    /// `ModsConfig`); this shared crate recognizes the table as a named key
+    /// (schema + reads/writes) instead of leaving it in `extras` — same
+    /// treatment as `[rhai_loop]`/`[compaction]`, because the plugin
+    /// assembly table is framework surface, not CLI-private.
+    #[serde(default)]
+    pub mods: Option<toml::Table>,
     pub model: Option<String>,
     pub auth_mode: Option<String>,
     pub output_mode: Option<String>,
@@ -3016,6 +3024,33 @@ mod tests {
         assert_eq!(policy.default, "allow");
         assert_eq!(policy.proxy, ["github.com", ".githubusercontent.com"]);
         assert!(policy.audit);
+    }
+
+    #[test]
+    fn mods_table_is_a_named_key_and_survives_round_trip() {
+        let source = r#"
+            model = "deepseek-chat"
+            [mods]
+            enabled = false
+            builtin = ["goal-loop"]
+        "#;
+        let parsed: ConfigToml = toml::from_str(source).expect("mods table parses");
+        let mods = parsed.mods.as_ref().expect("mods is a named key");
+        assert_eq!(mods.get("enabled"), Some(&toml::Value::from(false)));
+        assert_eq!(
+            mods.get("builtin"),
+            Some(&toml::Value::Array(vec![toml::Value::from("goal-loop")]))
+        );
+        // A named table must not also leak into `extras`.
+        assert!(
+            !parsed.extras.contains_key("mods"),
+            "mods belongs to the named field, not extras"
+        );
+
+        // Serialize → deserialize keeps the table intact.
+        let rewritten = toml::to_string(&parsed).expect("config serializes");
+        let reparsed: ConfigToml = toml::from_str(&rewritten).expect("round trip parses");
+        assert_eq!(reparsed.mods, parsed.mods, "mods survives the round trip");
     }
 
     struct EnvGuard {
