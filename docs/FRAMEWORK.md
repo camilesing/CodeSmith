@@ -117,6 +117,13 @@ Replacement of an id with turns in flight is refused loudly
 - **Three tool registration surfaces coexist** (framework `ToolSet`,
   `codesmith-tools` value layer, production `ToolSpec`/`ToolRegistry` in
   `agent-runtime`); unifying them is the standing ROADMAP §E slice.
+- **Runtime mod state lives in its own store, by design** — activation
+  consent, enablement, and KV persist through `ModStateStore`
+  (`mod_state` file + immediate reload), *not* by writing back to the
+  hand-authored `config.toml` (Cordis round-trips its YAML because config
+  is its only source of truth; CodeSmith deliberately splits declarative
+  config from runtime state, and config identifiers change only through
+  an explicit migration).
 - **No publish boundary yet**: the framework group is workspace-internal.
   Separately versioned publication (a literal `langchain-core`-style
   package split, or a repo extraction) is a founder decision, not a code

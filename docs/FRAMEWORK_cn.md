@@ -107,6 +107,11 @@ Cordis 式的性质——能力以注册的形式到达、内核只做选择 cho
 - **三个工具注册面并存**（框架 `ToolSet`、`codesmith-tools` 值层、
   `agent-runtime` 生产 `ToolSpec`/`ToolRegistry`）；统一它们是
   ROADMAP §E 的常设事项。
+- **运行时 mod 状态住独立存储，这是设计**——激活同意、启停与 KV 经
+  `ModStateStore` 持久化（`mod_state` 文件 + 即时 reload），**不是**回写
+  手写的 `config.toml`（Cordis 之所以回写 YAML，是因为配置是它唯一的
+  事实源；CodeSmith 有意把声明式配置与运行时状态分开，且配置标识符只能
+  经显式迁移变更）。
 - **尚无发布边界**：framework group 仍是 workspace 内部物。独立版本发布
   （字面意义的 `langchain-core` 式拆包、或拆库）是创始人决策，不是代码
   缺口。

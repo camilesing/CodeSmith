@@ -117,12 +117,14 @@ impl ToolSet {
     }
 
     /// Convert every registered tool into the wire [`models::Tool`] definition
-    /// the model receives in a `MessageRequest.tools`. Tools are emitted in the
-    /// `HashMap`'s arbitrary iteration order — hosts needing a stable order
-    /// should sort the result.
+    /// the model receives in a `MessageRequest.tools`. Emitted sorted by name:
+    /// the wire catalog feeds provider tool-cache keys, so a stable order is
+    /// part of the contract, not a host concern (an unordered `HashMap`
+    /// iteration would churn the catalog between requests and bust the cache).
     #[must_use]
     pub fn to_api_tools(&self) -> Vec<models::Tool> {
-        self.tools
+        let mut tools: Vec<models::Tool> = self
+            .tools
             .values()
             .map(|t| models::Tool {
                 // Anthropic custom-tool convention; harmless for OpenAI-compat
@@ -139,7 +141,9 @@ impl ToolSet {
                 strict: None,
                 cache_control: None,
             })
-            .collect()
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        tools
     }
 }
 
@@ -197,6 +201,34 @@ mod tests {
         assert_eq!(wire[0].name, "echo");
         assert_eq!(wire[0].tool_type.as_deref(), Some("custom"));
         assert_eq!(wire[0].input_schema, default_input_schema());
+    }
+
+    #[tokio::test]
+    async fn to_api_tools_is_sorted_by_name() {
+        // The catalog order feeds provider tool-cache keys — stability is
+        // the contract (this pins it against HashMap iteration order).
+        struct Named(&'static str);
+        impl Tool for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "named"
+            }
+            fn run(
+                &self,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + '_>>
+            {
+                Box::pin(async { Ok(ToolResult::success("ok")) })
+            }
+        }
+        let mut set = ToolSet::new();
+        set.register(Arc::new(Named("zulu")));
+        set.register(Arc::new(Named("alpha")));
+        set.register(Arc::new(Named("mike")));
+        let names: Vec<String> = set.to_api_tools().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["alpha", "mike", "zulu"]);
     }
 
     #[test]

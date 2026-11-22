@@ -30,7 +30,7 @@ use crate::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, StreamEvent,
     SystemPrompt,
 };
-use crate::tools::{ToolError, ToolSet};
+use crate::tools::{ToolError, ToolResult, ToolSet};
 
 /// Configuration for [`DefaultAgentExecutor`].
 #[derive(Debug, Clone)]
@@ -197,16 +197,29 @@ impl DefaultAgentExecutor {
                 return Ok(StopReason::NoToolCalls);
             }
 
-            // Execute each tool sequentially and feed the result back as a
-            // `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
-            for (id, name, input) in tool_uses {
-                callback.on_tool_start(&id, &name, &input).await;
-                let result = match tools.get(&name) {
-                    Some(tool) => tool.run(input.clone()).await,
-                    None => Err(ToolError::NotAvailable {
-                        message: format!("no tool named '{name}'"),
-                    }),
-                };
+            // Execute the batch in parallel (LangChain semantics: one
+            // assistant message may batch independent calls), then feed the
+            // results back in the call order so `tool_use`/`tool_result`
+            // pairing stays deterministic. Starts fire in order before the
+            // batch; ends and history appends keep the same order.
+            for (id, name, input) in &tool_uses {
+                callback.on_tool_start(id, name, input).await;
+            }
+            let executed: Vec<(String, String, Result<ToolResult, ToolError>)> =
+                futures_util::future::join_all(tool_uses.into_iter().map(|(id, name, input)| {
+                    let tool = tools.get(&name).cloned();
+                    async move {
+                        let result = match tool {
+                            Some(tool) => tool.run(input).await,
+                            None => Err(ToolError::NotAvailable {
+                                message: format!("no tool named '{name}'"),
+                            }),
+                        };
+                        (id, name, result)
+                    }
+                }))
+                .await;
+            for (id, name, result) in executed {
                 callback.on_tool_end(&name, &result).await;
 
                 let (content_str, is_error) = match &result {
@@ -752,6 +765,103 @@ mod tests {
                 .lines()
                 .iter()
                 .any(|l| l.starts_with("tool_end:ghost:err:"))
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_calls_in_one_message_execute_concurrently() {
+        // LangChain semantics: one assistant message batches independent
+        // calls and the executor runs them in parallel. "slow" suspends at
+        // its sleep; "fast" (polled next by join_all) must observe it as
+        // still active — overlap, not sequencing. Results still feed back
+        // in call order.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+        struct SlowTool;
+        impl Tool for SlowTool {
+            fn name(&self) -> &str {
+                "slow_tool"
+            }
+            fn description(&self) -> &str {
+                "Sleeps briefly."
+            }
+            fn run(
+                &self,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + '_>>
+            {
+                Box::pin(async move {
+                    ACTIVE.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                    Ok(ToolResult::success("slow done"))
+                })
+            }
+        }
+        struct FastTool;
+        impl Tool for FastTool {
+            fn name(&self) -> &str {
+                "fast_tool"
+            }
+            fn description(&self) -> &str {
+                "Reports concurrent activity."
+            }
+            fn run(
+                &self,
+                _input: serde_json::Value,
+            ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + '_>>
+            {
+                Box::pin(async move {
+                    let active = ACTIVE.load(Ordering::SeqCst);
+                    Ok(ToolResult::success(format!("active={active}")))
+                })
+            }
+        }
+
+        let mut tools = ToolSet::new();
+        tools.register(Arc::new(SlowTool));
+        tools.register(Arc::new(FastTool));
+        // slow_tool first so join_all's in-order polling suspends on it
+        // before fast_tool runs.
+        let mut call = tool_use_block(0, "t1", "slow_tool", r#"{}"#);
+        call.extend(tool_use_block(1, "t2", "fast_tool", r#"{}"#));
+        call.extend(finish("tool_use"));
+        let mut finish_call = text_block(0, "done");
+        finish_call.extend(finish("end_turn"));
+
+        let ex = DefaultAgentExecutor::new(
+            Arc::new(MockLlmClient::new("mock-v0", vec![call, finish_call])),
+            Arc::new(tools),
+            Arc::new(NoopCallback),
+            AgentExecutorConfig {
+                max_steps: 10,
+                ..AgentExecutorConfig::default()
+            },
+        );
+        let mut history = VecChatHistory::new();
+        ex.run(&mut history, "go".to_string()).await.unwrap();
+
+        // fast_tool observed slow_tool in flight → concurrent execution.
+        match &history.messages()[3].content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "t2");
+                assert_eq!(content, "active=1", "fast ran while slow was in flight");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // Fed back in call order: slow's result message precedes fast's.
+        assert_eq!(
+            match &history.messages()[2].content[0] {
+                ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.as_str(),
+                other => panic!("expected ToolResult, got {other:?}"),
+            },
+            "t1"
         );
     }
 
