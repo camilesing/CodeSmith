@@ -98,7 +98,12 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutput<T> {
                 content: response.content.clone(),
             });
 
-            let Some(input) = structured_output_value(&response) else {
+            let Some((call_id, input)) = response.content.iter().find_map(|block| match block {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } if name == STRUCTURED_OUTPUT_TOOL_NAME => Some((id.clone(), input)),
+                _ => None,
+            }) else {
                 last_error = format!(
                     "model answered without calling the '{STRUCTURED_OUTPUT_TOOL_NAME}' tool"
                 );
@@ -108,6 +113,7 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutput<T> {
                 messages.push(feedback(
                     &last_error,
                     format!("Call the '{STRUCTURED_OUTPUT_TOOL_NAME}' tool with your answer."),
+                    None,
                 ));
                 continue;
             };
@@ -124,6 +130,7 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutput<T> {
                         format!(
                             "Resubmit via '{STRUCTURED_OUTPUT_TOOL_NAME}' with the violation fixed."
                         ),
+                        Some(&call_id),
                     ));
                 }
             }
@@ -175,25 +182,28 @@ impl<T: DeserializeOwned + JsonSchema> StructuredOutput<T> {
 }
 
 /// The error-feedback turn: a `role: "user"` message carrying the failed
-/// `ToolResult` (is_error) plus a plain-text instruction block.
-fn feedback(error: &str, instruction: String) -> Message {
+/// `ToolResult` (is_error) paired with the call it answers, plus a
+/// plain-text instruction block. `tool_use_id: None` (the model never
+/// called the tool) sends the instruction as text only — providers validate
+/// `tool_result`/`tool_use` pairing against the preceding assistant
+/// message, so a fabricated id would get the retry request rejected.
+fn feedback(error: &str, instruction: String, tool_use_id: Option<&str>) -> Message {
+    let mut content = Vec::new();
+    if let Some(tool_use_id) = tool_use_id {
+        content.push(ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.to_string(),
+            content: format!("Error: {error}"),
+            is_error: Some(true),
+            content_blocks: None,
+        });
+    }
+    content.push(ContentBlock::Text {
+        text: instruction,
+        cache_control: None,
+    });
     Message {
         role: "user".to_string(),
-        content: vec![
-            ContentBlock::ToolResult {
-                // No real tool_use_id exists for a never-made call; a stable
-                // marker keeps the pairing predicate honest for providers
-                // that check it.
-                tool_use_id: STRUCTURED_OUTPUT_TOOL_NAME.to_string(),
-                content: format!("Error: {error}"),
-                is_error: Some(true),
-                content_blocks: None,
-            },
-            ContentBlock::Text {
-                text: instruction,
-                cache_control: None,
-            },
-        ],
+        content,
     }
 }
 
@@ -215,17 +225,23 @@ mod tests {
     }
 
     /// Pops one canned response per call, mirroring the executor-test mock.
+    /// `sent` records every request so tests can assert on retry transcripts.
     struct ScriptedClient {
         calls: Mutex<std::collections::VecDeque<MessageResponse>>,
+        sent: Mutex<Vec<MessageRequest>>,
     }
 
     fn tool_response(input: serde_json::Value) -> MessageResponse {
+        tool_response_with_id("t1", input)
+    }
+
+    fn tool_response_with_id(id: &str, input: serde_json::Value) -> MessageResponse {
         MessageResponse {
             id: "r".to_string(),
             r#type: "message".to_string(),
             role: "assistant".to_string(),
             content: vec![ContentBlock::ToolUse {
-                id: "t1".to_string(),
+                id: id.to_string(),
                 name: STRUCTURED_OUTPUT_TOOL_NAME.to_string(),
                 input,
                 caller: None,
@@ -264,8 +280,9 @@ mod tests {
         }
         fn create_message(
             &self,
-            _request: MessageRequest,
+            request: MessageRequest,
         ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            self.sent.lock().unwrap().push(request);
             let next = self.calls.lock().unwrap().pop_front();
             Box::pin(
                 async move { next.ok_or_else(|| anyhow::anyhow!("scripted client exhausted")) },
@@ -283,6 +300,7 @@ mod tests {
     fn client(responses: Vec<MessageResponse>) -> LlmClientHandle {
         Arc::new(ScriptedClient {
             calls: Mutex::new(responses.into()),
+            sent: Mutex::new(Vec::new()),
         })
     }
 
@@ -348,6 +366,78 @@ mod tests {
         assert!(
             format!("{err:#}").contains("without calling"),
             "names the failure mode"
+        );
+    }
+
+    /// A capturing client: the handle plus the concrete client so tests can
+    /// read back the requests that were sent.
+    fn capturing_client(responses: Vec<MessageResponse>) -> (LlmClientHandle, Arc<ScriptedClient>) {
+        let client = Arc::new(ScriptedClient {
+            calls: Mutex::new(responses.into()),
+            sent: Mutex::new(Vec::new()),
+        });
+        (client.clone(), client)
+    }
+
+    /// Providers validate `tool_result`/`tool_use` pairing against the
+    /// immediately preceding assistant message (Anthropic rejects an
+    /// unmatched `tool_use_id` outright), so the retry transcript must pair
+    /// the feedback `ToolResult` with the id the model actually issued — and
+    /// must not fabricate a `ToolResult` when the model never called the
+    /// tool. Otherwise the retry request is rejected and never reaches the
+    /// model.
+    #[tokio::test]
+    async fn retry_feedback_pairs_tool_result_with_the_real_call_id() {
+        // Validation failure on attempt 1: the retry's ToolResult must
+        // answer "t9", the id the model issued.
+        let (handle, captured) = capturing_client(vec![
+            tool_response_with_id(
+                "t9",
+                serde_json::json!({"city": "Tokyo", "population": "lots"}),
+            ),
+            tool_response_with_id(
+                "t10",
+                serde_json::json!({"city": "Tokyo", "population": 37_400_000}),
+            ),
+        ]);
+        let _: Answer = structured_output(handle, "biggest city?", 2)
+            .await
+            .expect("second attempt validates");
+        let retry = captured.sent.lock().unwrap()[1].clone();
+        let feedback_id = retry
+            .messages
+            .last()
+            .expect("retry request carries the feedback turn")
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .expect("feedback carries the failed ToolResult");
+        assert_eq!(feedback_id, "t9", "pairs with the issued call id");
+
+        // No tool call on attempt 1: the feedback turn is text only — a
+        // fabricated ToolResult has no tool_use to pair with.
+        let (handle, captured) = capturing_client(vec![
+            text_response("Tokyo, obviously"),
+            tool_response_with_id("t2", serde_json::json!({"city": "Tokyo", "population": 1})),
+        ]);
+        let _: Answer = structured_output(handle, "biggest city?", 2)
+            .await
+            .expect("tool call on retry parses");
+        let retry = captured.sent.lock().unwrap()[1].clone();
+        let feedback = retry
+            .messages
+            .last()
+            .expect("retry request carries the feedback turn");
+        assert!(
+            feedback
+                .content
+                .iter()
+                .all(|block| !matches!(block, ContentBlock::ToolResult { .. })),
+            "no fabricated ToolResult when the model never called the tool: {:?}",
+            feedback.content
         );
     }
 }
