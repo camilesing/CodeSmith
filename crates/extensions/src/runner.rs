@@ -228,6 +228,12 @@ pub(crate) struct Pending {
     /// sub-agent's turn, §F5d).
     pub around_turns: Vec<(Arc<dyn AroundTurnHandler>, RegistrationOrigin)>,
     pub providers: Vec<PendingProvider>,
+    /// Kernel composition (dylib tier) — turn-executor contributions
+    /// queued by the stub `ExtensionApi`, awaiting the `bind_core` flush:
+    /// `(generation at registration, contribution)` in order. The stamp is
+    /// the runner generation the extension configured under — the value
+    /// the engine's retired-generation sweep compares against.
+    pub turn_executors: Vec<(u64, codesmith_agent::extension::TurnExecutorContribution)>,
     pub prompt_sections: Vec<(String, String)>,
     pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
     pub message_projections: Vec<PendingMessageProjection>,
@@ -356,6 +362,15 @@ pub struct ExtensionRunner {
     /// holds a dylib `Arc` would be UAF (dangling vtable). See spec
     /// §4a/§4b.
     pending_drop: Mutex<Vec<Library>>,
+    /// The generation-retirement threshold recorded when libraries were
+    /// drained: everything extension-registered at a generation *below*
+    /// this belongs to the retired world (the engine op loop sweeps those
+    /// registrations before `drop_pending`). Recorded as
+    /// `generation + 1` at drain time — `drain → invalidate → repopulate`
+    /// is the reload order, so a fresh dylib re-registering during
+    /// repopulate stamps `>=` the threshold and survives. `None` while no
+    /// retirement is pending (cleared by `drop_pending`).
+    retired_executor_sweep_threshold: Mutex<Option<u64>>,
     /// Route A — the shared provider registry extension factories flush
     /// into at `bind_core`. Defaults to a private instance; hosts that
     /// resolve clients through their own shared instance call
@@ -367,6 +382,15 @@ pub struct ExtensionRunner {
     /// [`ProviderRegistration`]). `clear_providers` / reload drop the Vec;
     /// that is the whole unload story for this contribution type.
     providers: Mutex<Vec<ProviderRegistration>>,
+    /// Kernel composition (dylib tier) — turn-executor contributions that
+    /// flushed out of `pending` and await **adoption**: the engine
+    /// registers each onto the process-shared turn-executor registry at
+    /// the next turn's assembly (a dylib cannot register directly — its
+    /// copy of any registry static is private to the dlopen'd image; the
+    /// contribution must flow through host memory). `clear_turn_executors`
+    /// / reload drop the unadopted set; adopted registrations are swept
+    /// from the registry by their generation stamp instead.
+    turn_executors: Mutex<Vec<(u64, codesmith_agent::extension::TurnExecutorContribution)>>,
     /// Route B (systemPrompt sections) — `(id, text)` in registration
     /// order. Register at mod load; `clear_prompt_sections` / reload drop
     /// them (a dropped section shifts the prompt prefix once, the same
@@ -480,8 +504,10 @@ impl ExtensionRunner {
             replacements: Mutex::new(Vec::new()),
             libraries: Mutex::new(Vec::new()),
             pending_drop: Mutex::new(Vec::new()),
+            retired_executor_sweep_threshold: Mutex::new(None),
             shared: Mutex::new(SharedProviderRegistry::new()),
             providers: Mutex::new(Vec::new()),
+            turn_executors: Mutex::new(Vec::new()),
             prompt_sections: Mutex::new(Vec::new()),
             skills: Mutex::new(Vec::new()),
             message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc::new(
@@ -687,6 +713,57 @@ impl ExtensionRunner {
         drop(drained);
     }
 
+    /// Kernel composition (dylib tier) — hand every adopted-pending
+    /// turn-executor contribution to `adopt`. `adopt` returns `true` when
+    /// it took the contribution (registered onto the executor registry, or
+    /// permanently rejected — a broken lockstep downcast can never
+    /// succeed, so it is dropped loudly); `false` keeps it pending for the
+    /// next call. Called by the engine at every turn assembly, before the
+    /// executor resolves; the closure lives in `codesmith-agent-runtime`,
+    /// which owns the registry and the concrete factory type.
+    pub fn adopt_pending_turn_executors(
+        &self,
+        mut adopt: impl FnMut(u64, &codesmith_agent::extension::TurnExecutorContribution) -> bool,
+    ) {
+        let mut pending = self
+            .turn_executors
+            .lock()
+            .expect("turn executors lock poisoned");
+        pending.retain(|(generation, contribution)| !adopt(*generation, contribution));
+    }
+
+    /// Kernel composition (dylib tier) — clear the unadopted contribution
+    /// set. Adopted registrations are NOT here (they live in the executor
+    /// registry, swept by their generation stamp); same reload lifecycle
+    /// as `clear_providers`.
+    pub fn clear_turn_executors(&self) {
+        self.turn_executors
+            .lock()
+            .expect("turn executors lock poisoned")
+            .clear();
+    }
+
+    /// The retired-generation sweep threshold for extension-registered
+    /// turn executors: `Some(threshold)` while a library retirement awaits
+    /// `drop_pending` — the engine op loop sweeps registry entries stamped
+    /// below it — and `None` otherwise. See the field doc for why the
+    /// threshold is recorded at drain time rather than read live.
+    #[must_use]
+    pub fn retired_executor_sweep_threshold(&self) -> Option<u64> {
+        let pending_non_empty = !self
+            .pending_drop
+            .lock()
+            .expect("pending_drop lock poisoned")
+            .is_empty();
+        if !pending_non_empty {
+            return None;
+        }
+        *self
+            .retired_executor_sweep_threshold
+            .lock()
+            .expect("sweep threshold lock poisoned")
+    }
+
     /// Route A — clone of the shared provider registry extensions flush
     /// into. Hosts resolve clients through this instance to see
     /// extension-registered factories.
@@ -872,6 +949,18 @@ impl ExtensionRunner {
             .lock()
             .expect("pending_drop lock poisoned");
         pending.extend(drained);
+        // Record the retirement threshold when there is a retirement:
+        // everything extension-registered at a generation below
+        // `generation + 1` belongs to the world being retired. Recorded
+        // here (pre-`invalidate`) because the reload order is drain →
+        // invalidate → repopulate, so repopulate's fresh registrations
+        // stamp at or above this threshold and survive the sweep.
+        if !pending.is_empty() {
+            *self
+                .retired_executor_sweep_threshold
+                .lock()
+                .expect("sweep threshold lock poisoned") = Some(self.generation() + 1);
+        }
     }
 
     /// Whether `pending_drop` holds `Library`s awaiting the engine
@@ -907,6 +996,13 @@ impl ExtensionRunner {
                 .expect("pending_drop lock poisoned");
             std::mem::take(&mut *pending)
         };
+        // The retirement this drop completes is over — its sweep threshold
+        // goes with it (nothing left to sweep; a later retirement records
+        // its own).
+        *self
+            .retired_executor_sweep_threshold
+            .lock()
+            .expect("sweep threshold lock poisoned") = None;
         drop(drained); // dylibs unloaded, no lock held
     }
 
@@ -928,6 +1024,7 @@ impl ExtensionRunner {
         self.clear_commands();
         self.clear_disabled_commands();
         self.clear_providers();
+        self.clear_turn_executors();
         self.clear_prompt_sections();
         self.clear_skills();
         self.clear_message_projections();
@@ -1312,6 +1409,22 @@ impl ExtensionRunner {
                 id.as_str(),
             );
             self.providers.lock().unwrap().push(guard);
+        }
+        if !drained.turn_executors.is_empty() {
+            self.turn_executors
+                .lock()
+                .expect("turn executors lock poisoned")
+                .extend(drained.turn_executors);
+            // Adoption is the engine's step (turn assembly); nothing to
+            // report here beyond the count.
+            tracing::info!(
+                target: "codesmith_extensions",
+                "extension turn-executor contribution(s) flushed: {}",
+                self.turn_executors
+                    .lock()
+                    .expect("turn executors lock poisoned")
+                    .len(),
+            );
         }
         Ok(rejections)
     }
@@ -2414,6 +2527,55 @@ mod tests {
             .expect("load fixture dylib");
         runner.bind_core(Arc::new(Ctx { generation: 1 }));
         runner
+    }
+
+    /// The dylib-tier executor seam, end to end: loading the fixture dylib
+    /// queues its loop contribution through the api object (host memory —
+    /// a dylib's own statics are private to the dlopen'd image), bind_core
+    /// flushes it, the engine's adoption step (what every turn assembly
+    /// runs) registers it as extension-origin, and the retirement sweep —
+    /// drain records the threshold, the op loop sweeps with it — removes
+    /// the registration before `drop_pending` can unmap the library. No
+    /// other test adopts contributions, so the registry assertions below
+    /// are deterministic.
+    #[cfg(not(windows))]
+    #[test]
+    fn fixture_dylib_contributes_a_generation_bound_turn_executor() {
+        let runner = runner_with_fixture_dylib();
+
+        // Adopt exactly as turn assembly does (the same free function the
+        // engine passes to this method — pass it by name, not through the
+        // engine's wrapper, because the dev-cycle compiles this crate
+        // twice and only the shared-signature function crosses cleanly).
+        runner.adopt_pending_turn_executors(
+            codesmith_agent_runtime::engine::adopt_extension_turn_executor,
+        );
+        assert!(
+            codesmith_agent_runtime::engine::turn_executor_is_extension_origin("fixture-loop"),
+            "the adopted fixture loop is extension-origin"
+        );
+        assert!(
+            codesmith_agent_runtime::engine::resolve_turn_executor("fixture-loop").is_ok(),
+            "the extension-registered loop resolves like any other"
+        );
+
+        // A reload retires the dylib's generation: drain records the
+        // threshold, and the op loop sweeps with it — exactly this pair.
+        runner.drain_libraries_to_pending();
+        let threshold = runner
+            .retired_executor_sweep_threshold()
+            .expect("drain recorded the retirement threshold");
+        let swept =
+            codesmith_agent_runtime::engine::sweep_retired_extension_turn_executors(threshold);
+        assert!(swept >= 1, "the retired fixture registration was swept");
+        assert!(
+            !codesmith_agent_runtime::engine::turn_executor_is_extension_origin("fixture-loop"),
+            "origin flag cleared with the sweep"
+        );
+        assert!(
+            codesmith_agent_runtime::engine::resolve_turn_executor("fixture-loop").is_err(),
+            "a retired dylib loop no longer resolves"
+        );
     }
 
     #[cfg(not(windows))]

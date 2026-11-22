@@ -35,4 +35,10 @@ tracing.workspace = true
 libloading.workspace = true
 
 [dev-dependencies]
+# Dylib-tier executor-seam chain test: prove the fixture's generation-bound
+# loop registration from this (framework) crate's tests. A dev-dependency —
+# exempt from the framework dependency rule; never enters a framework
+# artifact. (Cargo allows the dev-cycle: agent-runtime depends on this
+# crate normally.)
+codesmith-agent-runtime.workspace = true
 extensions-fixture-dylib.workspace = true

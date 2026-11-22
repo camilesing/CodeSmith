@@ -249,6 +249,20 @@ impl ExtensionApi for StubExtensionApi {
             .push(crate::runner::PendingProvider { factory });
         Ok(())
     }
+    fn register_turn_executor(
+        &self,
+        contribution: TurnExecutorContribution,
+    ) -> Result<(), ExtensionError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert_live(&self.generation, self.captured_gen)?;
+        // Stamp the generation the extension configured under — the value
+        // the engine's retired-generation sweep compares against (flush
+        // moves the pair into the runner's adopted-pending storage).
+        pending
+            .turn_executors
+            .push((self.generation.load(Ordering::Acquire), contribution));
+        Ok(())
+    }
     fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
         // Validate against the runner's rules now so a bad section fails
         // its load (fail loud), not at first prompt assembly.
@@ -934,11 +948,10 @@ mod tests {
         assert!(commands.lock().unwrap().contains_key("nop_cmd"));
         assert_eq!(handlers.lock().unwrap().len(), 2);
         assert_eq!(providers.lock().unwrap().len(), 2);
-        assert_eq!(
+        assert!(
             shared
                 .resolve(&codesmith_agent::provider::ProviderId::from("nop-llm"))
-                .is_some(),
-            true
+                .is_some()
         );
         assert_eq!(
             *prompt_sections.lock().unwrap(),

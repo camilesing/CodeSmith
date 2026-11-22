@@ -100,8 +100,10 @@ Subscription / Assignment / Executor / Channel，逐一钉到本仓库拥有它�
   组合模型）——引擎从进程共享 `TurnExecutorRegistry`
   （`engine/executor_composition.rs`）解析按配置选择的 factory
   （`turn_executor`，默认 `builtin`），替代循环以进程内编译 crate 注册的
-  条目落地（host 档执行器 seam——契约类型 `TurnDeps`/`TurnExecutorFactory`
-  公开；dylib 扩展无法安全注册，脚本 mod 走 `register_loop`），并以
+  条目（host 档——启动注册、RAII guard）或 Rust/dylib 扩展的贡献条目
+  （dylib 档——贡献经 `ExtensionApi::register_turn_executor` 流入宿主内存，
+  引擎在 turn 装配时收养并打世代戳，reload 的 op-loop 清扫在两阶段 dylib
+  卸载前移除它；脚本 mod 走 `register_loop`）落地，并以
   `AroundTurnHandler` 链（`register_around_turn`，通用 Agent
   `next()`，Rust 扩展）包裹主 turn 与每个子代理 turn（子代理在其
   agent-type scope 上组合该链，dylib 包装被跳过）。每个进程内子代理 turn 经

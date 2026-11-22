@@ -1019,6 +1019,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "codesmith-agent",
+ "codesmith-agent-runtime",
  "codesmith-tools",
  "extensions-fixture-dylib",
  "fd-lock",

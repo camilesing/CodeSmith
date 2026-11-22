@@ -1521,6 +1521,25 @@ pub trait ExtensionApi: Send + Sync {
         ))
     }
 
+    /// Kernel composition, dylib tier — contribute a from-scratch turn loop
+    /// (see [`TurnExecutorContribution`]). The runner holds the
+    /// contribution for the extension's generation; the host engine adopts
+    /// it onto the process-shared turn-executor registry at the next
+    /// turn's assembly and sweeps it when the generation retires (before
+    /// the two-phase dylib unload). Not offered to script mods — their
+    /// loop contribution is `register_loop` in the mod runtime.
+    ///
+    /// Default: hosts that do not support it get a loud error (same
+    /// posture as [`register_provider`](Self::register_provider)).
+    fn register_turn_executor(
+        &self,
+        _contribution: TurnExecutorContribution,
+    ) -> Result<(), ExtensionError> {
+        Err(ExtensionError::Load(
+            "turn-executor registration not supported by this api".into(),
+        ))
+    }
+
     /// Route B (systemPrompt sections) — contribute a named, append-only
     /// section to the base system prompt. Sections register at mod load and
     /// are stable for the session (prefix-cache discipline); the host
@@ -1605,6 +1624,56 @@ pub trait ExtensionApi: Send + Sync {
         Err(ExtensionError::Load(
             "command disabling not supported by this api".into(),
         ))
+    }
+}
+
+// === Turn-executor contributions (dylib tier of kernel composition) ========
+
+/// A turn-executor factory contributed by an extension through
+/// [`ExtensionApi::register_turn_executor`].
+///
+/// The concrete factory type (`codesmith-agent-runtime`'s
+/// `TurnExecutorFactory`) cannot be named here — this crate sits *below*
+/// the runtime in the dependency graph — so the contribution travels
+/// type-erased: the contributing dylib boxes its `Arc<dyn
+/// TurnExecutorFactory>` **whole** (the runtime ships
+/// `contribute_turn_executor` for exactly that), and the host engine
+/// downcasts it back before registering. This is sound under the same
+/// §8.2 lockstep guarantee every dylib trait object already relies on
+/// (same workspace + toolchain → identical fat-pointer repr); a mismatched
+/// downcast fails loud and the contribution is dropped, never mis-executed.
+///
+/// Why type erasure at all: a dylib cannot write host-side statics (its
+/// copy of any crate's statics is private to the dlopen'd image), so the
+/// contribution must flow through the host-constructed `ExtensionApi`
+/// object — the one channel whose storage lives in host memory.
+#[derive(Clone)]
+pub struct TurnExecutorContribution {
+    erased: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl TurnExecutorContribution {
+    /// Wrap an erased factory (construct via the runtime's
+    /// `contribute_turn_executor`, which boxes the `Arc<dyn
+    /// TurnExecutorFactory>` whole so the host can downcast it back).
+    #[must_use]
+    pub fn new(erased: std::sync::Arc<dyn std::any::Any + Send + Sync>) -> Self {
+        Self { erased }
+    }
+
+    /// The erased factory — the host side downcasts to
+    /// `Arc<dyn TurnExecutorFactory>` (runtime type).
+    #[must_use]
+    pub fn erased(&self) -> &std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        &self.erased
+    }
+}
+
+impl std::fmt::Debug for TurnExecutorContribution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnExecutorContribution")
+            .field("erased", &"Arc<dyn Any + Send + Sync>")
+            .finish()
     }
 }
 

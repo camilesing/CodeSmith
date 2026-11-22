@@ -12,14 +12,15 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 codesmith-agent.workspace = true
 codesmith-tools.workspace = true
 serde_json.workspace = true
+# The dylib-tier turn-executor seam: the fixture registers a generation-
+# bound loop at configure() time (agent-runtime is implementation-group
+# territory for a dylib fixture — a downstream dylib links it the same way).
+codesmith-agent-runtime.workspace = true
 
 [dev-dependencies]
-# The turn-executor seam proof test: this fixture is an *implementation
-# group* crate, so it may depend on the runtime the way an embedded host
-# would. Dev-only — never enters the dylib artifact.
-anyhow.workspace = true
-codesmith-agent-runtime.workspace = true
+# (no extra dev-dependencies — the seam proof tests use the lib's own deps)

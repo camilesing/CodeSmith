@@ -16,7 +16,7 @@ construct it, consumers take it by value).
 
 | Seam | Definition | Providers | Consumers (`dyn` / by-value use) |
 |---|---|---|---|
-| `AgentExecutor` | `agent` | `agent`, `agent-runtime` | `agent-runtime` |
+| `AgentExecutor` | `agent` | `agent`, `agent-runtime`, `extensions-fixture-dylib` | `agent-runtime` |
 | `AroundToolHandler` | `agent` | `agent`, `agent-runtime` | `agent`, `extensions` |
 | `AroundTurnHandler` | `agent` | `agent`, `agent-runtime`, `extensions` | `agent`, `extensions` |
 | `ChatHistory` | `agent` | `agent`, `agent-runtime` | `agent`, `agent-runtime` |

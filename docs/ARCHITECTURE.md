@@ -128,10 +128,12 @@ in the top-level and `docs/` markdown resolvable, and the JSON Schemas under
   step services, `engine/rhai_executor.rs`) from the process-shared
   `TurnExecutorRegistry` (`engine/executor_composition.rs`), with
   alternates as registry entries contributed by crates compiled into the
-  process (the host-tier executor seam — the contract types
-  (`TurnDeps`/`TurnExecutorFactory`) are public; dylib extensions cannot
-  safely register one and script mods use `register_loop` instead), and
-  wraps every turn with
+  process (host tier — startup registration, RAII guard) or by a
+  Rust/dylib extension (dylib tier — the contribution flows through
+  `ExtensionApi::register_turn_executor` into host memory, the engine
+  adopts it generation-stamped at turn assembly, and a reload's op-loop
+  sweep removes it before the two-phase dylib unload; script mods use
+  `register_loop` instead), and wraps every turn with
   the `AroundTurnHandler`
   chain (`register_around_turn`, the general agent's `next()`, Rust extensions; a child
   composes it at its agent-type scope, dylib wrappers excluded). Every

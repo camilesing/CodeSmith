@@ -27,16 +27,20 @@
 //! engine used to inline, so the default path is the same assembly.
 //!
 //! Known limitations (deliberate):
-//! - **Host-tier registration only.** The contract types
+//! - **Registration tiers.** The contract types
 //!   ([`TurnDeps`]/[`TurnExecutorFactory`]/[`TurnExecutorRegistry`]) are
 //!   public: any crate compiled into the process may register a factory at
-//!   startup (`shared_turn_executors().register(..)`), which is how an
-//!   embedded host ships a from-scratch loop. Two tiers stay closed: a
-//!   **dylib** extension cannot safely register one (an RAII guard in dylib
-//!   statics dangles after unload — a generation-bound registration sweep
-//!   is the follow-up design), and **script mods** use `register_loop`
-//!   (`engine::rhai_executor`), never this seam. Wrapping an existing turn
-//!   from a dylib is the around-turn seam (`crates/agent/src/extension.rs`).
+//!   startup (`shared_turn_executors().register(..)` — the host tier, an
+//!   RAII guard the host owns), and a **dylib extension** may contribute
+//!   one through `ExtensionApi::register_turn_executor` (the dylib tier:
+//!   the type-erased contribution flows into host memory, this module's
+//!   [`adopt_extension_turn_executor`] registers it generation-stamped at
+//!   turn assembly, and the op loop sweeps retired generations before the
+//!   two-phase dylib unload, so the registry never holds a vtable into
+//!   unmapped memory). What stays closed: **script mods** use
+//!   `register_loop` (`engine::rhai_executor`), never this seam. Wrapping
+//!   an existing turn from a dylib is the around-turn seam
+//!   (`crates/agent/src/extension.rs`).
 //! - **One selection for every agent.** `turn_executor` picks the loop for
 //!   the main turn and every in-process child alike; there is no per-type
 //!   selection (general-agent plan D2 — no consumer yet). External-provider children
@@ -503,6 +507,167 @@ pub fn resolve_turn_executor(id: &str) -> Result<Arc<dyn TurnExecutorFactory>, S
     })
 }
 
+// === Extension-tier registration (dylib lifetime binding) ==================
+
+/// One extension-registered executor: the generation whose `configure()`
+/// registered it, plus the registration guard. The guard cannot live in
+/// `codesmith-extensions` (dependency direction: agent-runtime →
+/// extensions), so the registry side holds it here and the engine op loop
+/// sweeps retired generations — the runner-side lifetime
+/// `clear_providers` gives provider guards, realized on the registry side
+/// for this seam.
+struct ExtensionExecutorSlot {
+    generation: u64,
+    id: String,
+    guard: TurnExecutorRegistration,
+}
+
+fn extension_executor_slots() -> &'static StdMutex<Vec<ExtensionExecutorSlot>> {
+    static SLOTS: OnceLock<StdMutex<Vec<ExtensionExecutorSlot>>> = OnceLock::new();
+    SLOTS.get_or_init(|| StdMutex::new(Vec::new()))
+}
+
+/// Register a turn-executor factory contributed by a **dylib extension**.
+///
+/// `generation` is the registering extension's `ExtensionApi::generation()`
+/// snapshot at `configure()` time. Unlike [`TurnExecutorRegistry::register`]
+/// no RAII guard is returned — the generation sweep is the lifetime: when
+/// the runtime reloads past `generation`, the engine op loop calls
+/// [`sweep_retired_extension_turn_executors`] before the two-phase dylib
+/// unload, removing the registration before the library unmaps. (A dylib
+/// must never hold the guard `register` would return: it dangles after the
+/// unload.) Replacement refusal applies as ever — an id with turns in
+/// flight errors loudly; retry once they drain.
+///
+/// Dylibs do NOT call this directly — their copy of any registry static is
+/// private to the dlopen'd image, so the call would land in the wrong
+/// process image. Their path is
+/// [`ExtensionApi::register_turn_executor`](codesmith_agent::extension::ExtensionApi::register_turn_executor)
+/// (type-erased carrier, host-held queue), and
+/// [`adopt_extension_turn_executors`] performs this registration host-side.
+/// Script mods are not this seam's customer either way: they register loops
+/// with `register_loop` (`engine::rhai_executor`).
+pub fn register_extension_turn_executor(
+    factory: Arc<dyn TurnExecutorFactory>,
+    generation: u64,
+) -> Result<(), String> {
+    let id = factory.id().to_string();
+    let guard = shared_turn_executors().register(factory)?;
+    extension_executor_slots()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(ExtensionExecutorSlot {
+            generation,
+            id,
+            guard,
+        });
+    Ok(())
+}
+
+/// Box an `Arc<dyn TurnExecutorFactory>` **whole** into the type-erased
+/// carrier [`TurnExecutorContribution`](codesmith_agent::extension::TurnExecutorContribution)
+/// — what a dylib hands `ExtensionApi::register_turn_executor`. Boxing the
+/// `Arc` itself (not the factory) is what lets
+/// [`adopt_extension_turn_executors`] downcast it back without naming the
+/// concrete factory type.
+#[must_use]
+pub fn contribute_turn_executor(
+    factory: Arc<dyn TurnExecutorFactory>,
+) -> codesmith_agent::extension::TurnExecutorContribution {
+    codesmith_agent::extension::TurnExecutorContribution::new(Arc::new(factory))
+}
+
+/// Adopt **one** pending extension turn-executor contribution: downcast
+/// the carrier back to `Arc<dyn TurnExecutorFactory>` (§8.2 lockstep) and
+/// register it generation-stamped. Returns `true` when the contribution is
+/// settled — registered, or permanently rejected (a broken-lockstep
+/// downcast cannot succeed on retry, so it is dropped loudly) — and
+/// `false` to keep it pending (a refused replacement retries at the next
+/// turn's assembly, once the in-flight turns drain).
+///
+/// Passed as the adopt closure to
+/// [`ExtensionRunner::adopt_pending_turn_executors`](codesmith_extensions::ExtensionRunner::adopt_pending_turn_executors)
+/// at every turn assembly (main and child), before the executor resolves.
+/// Deliberately free-standing (no `&ExtensionRunner` parameter): signature
+/// types are shared across every compile of the graph, which keeps the
+/// function usable from crates that see a different `codesmith-extensions`
+/// unit than this one (dev-dependency cycles compile the crate twice).
+pub fn adopt_extension_turn_executor(
+    generation: u64,
+    contribution: &codesmith_agent::extension::TurnExecutorContribution,
+) -> bool {
+    let Ok(factory) = contribution
+        .erased()
+        .clone()
+        .downcast::<Arc<dyn TurnExecutorFactory>>()
+    else {
+        tracing::error!(
+            target: "codesmith_extensions",
+            "turn-executor contribution did not downcast to Arc<dyn TurnExecutorFactory> \
+             (dylib lockstep broken?) — dropping it"
+        );
+        return true; // adopted-as-rejected: retrying cannot succeed
+    };
+    let id = factory.id().to_string();
+    match register_extension_turn_executor((*factory).clone(), generation) {
+        Ok(()) => {
+            tracing::info!(
+                target: "codesmith_extensions",
+                "extension turn executor registered: {id} (generation {generation})"
+            );
+            true
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "codesmith_extensions",
+                "turn-executor registration for {id} deferred: {err}"
+            );
+            false // keep pending; retried at the next assembly
+        }
+    }
+}
+
+/// Sweep extension-registered executors stamped below `retired_below` —
+/// the engine op loop passes the threshold the runner recorded when it
+/// drained libraries for a retirement (`drain → invalidate → repopulate`
+/// is the reload order, so a fresh dylib's re-registration stamps at or
+/// above the threshold and survives). Returns how many were swept (for
+/// the op loop's log line). Dropping a guard un-registers
+/// (identity-checked, so a stale guard is a no-op); this runs before
+/// anything unmaps, so no vtable dangles.
+pub fn sweep_retired_extension_turn_executors(retired_below: u64) -> usize {
+    let mut slots = extension_executor_slots()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let before = slots.len();
+    // Removing the whole slot and destructuring it moves the guard out —
+    // its Drop un-registers (identity-checked, so a stale guard is a
+    // no-op). This runs before anything unmaps, so no vtable dangles.
+    let mut index = 0;
+    while index < slots.len() {
+        if slots[index].generation < retired_below {
+            let ExtensionExecutorSlot { guard, .. } = slots.remove(index);
+            drop(guard);
+        } else {
+            index += 1;
+        }
+    }
+    before - slots.len()
+}
+
+/// Whether `id` was registered through [`register_extension_turn_executor`]
+/// — the child-turn lease consults this to declare dylib exposure (the
+/// loop itself is dylib code, so the 5b "dylib contributions never enter
+/// child dispatch" rule does not cover a dylib-provided executor).
+#[must_use]
+pub fn turn_executor_is_extension_origin(id: &str) -> bool {
+    extension_executor_slots()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|slot| slot.id == id)
+}
+
 /// Host-facing startup validation of the `turn_executor` config id: `Ok`
 /// when registered, `Err(message)` naming the registered ids and the remedy
 /// otherwise. (The registry is crate-assembled for now — see the module
@@ -841,5 +1006,102 @@ mod tests {
             "names registered ids: {err}"
         );
         assert!(err.contains("turn_executor"), "names the remedy: {err}");
+    }
+
+    /// A factory whose id is unique per run — the extension-tier tests
+    /// share the process-wide registry and slot storage with every other
+    /// test in this binary, so a fixed id would let parallel tests sweep
+    /// each other's registrations.
+    struct UniqueFactory(&'static str);
+
+    impl TurnExecutorFactory for UniqueFactory {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn build(&self, _deps: TurnDeps) -> BuiltTurn {
+            struct NeverRuns;
+            impl AgentExecutor for NeverRuns {
+                fn run<'a>(
+                    &'a self,
+                    _history: &'a mut dyn codesmith_agent::memory::ChatHistory,
+                    _user_text: String,
+                ) -> Pin<
+                    Box<
+                        dyn Future<Output = anyhow::Result<codesmith_agent::callback::StopReason>>
+                            + Send
+                            + 'a,
+                    >,
+                > {
+                    Box::pin(async { Ok(codesmith_agent::callback::StopReason::NoToolCalls) })
+                }
+            }
+            struct NoHarvest;
+            impl TurnHarvest for NoHarvest {}
+            BuiltTurn {
+                executor: Arc::new(NeverRuns),
+                harvest: Arc::new(NoHarvest),
+            }
+        }
+    }
+
+    /// The extension-tier tests share the process-static slot storage (and
+    /// the shared registry) with each other — the sweeps below are
+    /// global, so the two tests serialize.
+    static EXTENSION_TIER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The generation contract: a registration made at generation N
+    /// survives a sweep at N (current) and is removed by a sweep at N+1
+    /// (retired) — and the origin flag follows it, so the child-turn lease
+    /// stops declaring dylib exposure once the registration is gone.
+    #[test]
+    fn extension_registration_binds_to_generation() {
+        let _guard = EXTENSION_TIER_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let id: &'static str = Box::leak(format!("ext-loop-gen-{}", line!()).into_boxed_str());
+        register_extension_turn_executor(Arc::new(UniqueFactory(id)), 5)
+            .expect("first registration is never refused");
+
+        assert!(turn_executor_is_extension_origin(id));
+        assert!(resolve_turn_executor(id).is_ok(), "resolves while live");
+
+        // Sweep at the current generation keeps it: a dylib that just
+        // configured during this reload window survives.
+        assert_eq!(sweep_retired_extension_turn_executors(5), 0);
+        assert!(turn_executor_is_extension_origin(id));
+
+        // Sweep past its generation removes it (guard drop, identity-checked).
+        assert_eq!(sweep_retired_extension_turn_executors(6), 1);
+        assert!(!turn_executor_is_extension_origin(id));
+        assert!(
+            resolve_turn_executor(id).is_err(),
+            "retired id no longer resolves"
+        );
+
+        // Re-registration after a sweep is a first registration again.
+        register_extension_turn_executor(Arc::new(UniqueFactory(id)), 6)
+            .expect("re-registration after sweep");
+        assert!(turn_executor_is_extension_origin(id));
+        // Clean up behind the process-shared registry.
+        sweep_retired_extension_turn_executors(7);
+    }
+
+    /// A host-tier registration is untouched by the extension sweep — the
+    /// two tiers have different lifetimes by design.
+    #[test]
+    fn extension_sweep_never_touches_host_registrations() {
+        let _guard = EXTENSION_TIER_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let host_id: &'static str = Box::leak(format!("host-loop-{}", line!()).into_boxed_str());
+        let guard = shared_turn_executors()
+            .register(Arc::new(UniqueFactory(host_id)))
+            .expect("host registration");
+        let swept = sweep_retired_extension_turn_executors(u64::MAX);
+        assert!(
+            resolve_turn_executor(host_id).is_ok(),
+            "host registration survives a full extension sweep (swept {swept} extension slots)"
+        );
+        drop(guard);
     }
 }

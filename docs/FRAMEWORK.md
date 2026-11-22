@@ -67,36 +67,46 @@ kernel stays a selection chokepoint — is spread over two surfaces:
 - **Registry registrations** (crates compiled into the process): the
   `TurnExecutorRegistry` below, `ProviderRegistry`, model catalog.
 
-### The turn-executor seam (host tier)
+### The turn-executor seam (host tier + dylib tier)
 
 The loop a turn runs is a *selection*, resolved per turn from the
 process-shared `TurnExecutorRegistry`
 (`agent-runtime/src/engine/executor_composition.rs`; config
 `turn_executor`, default `builtin`). The contract types
-(`TurnDeps`/`TurnExecutorFactory`/`BuiltTurn`/`TurnHarvest`) are public: a
-crate compiled into the process registers a from-scratch loop at startup —
+(`TurnDeps`/`TurnExecutorFactory`/`BuiltTurn`/`TurnHarvest`) are public,
+and there are two registration tiers:
 
-```rust,ignore
-use codesmith_agent_runtime::engine::{shared_turn_executors, TurnExecutorFactory};
+- **Host tier** — a crate compiled into the process registers at startup,
+  owning the RAII guard:
 
-let guard = shared_turn_executors()
-    .register(std::sync::Arc::new(MyLoopFactory))
-    .expect("first registration is never refused");
-// config: turn_executor = "my-loop"; drop(guard) un-registers.
-```
+  ```rust,ignore
+  use codesmith_agent_runtime::engine::{shared_turn_executors, TurnExecutorFactory};
+
+  let guard = shared_turn_executors()
+      .register(std::sync::Arc::new(MyLoopFactory))
+      .expect("first registration is never refused");
+  // config: turn_executor = "my-loop"; drop(guard) un-registers.
+  ```
+
+  The executable proof lives in
+  `crates/extensions-fixture-dylib/tests/turn_executor_seam.rs`.
+
+- **Dylib tier** — an installed Rust dylib contributes a from-scratch loop
+  through `ExtensionApi::register_turn_executor` (the carrier is
+  type-erased because a dylib cannot write host-side registry statics —
+  its copy of any static is private to the dlopen'd image). The engine
+  adopts the contribution onto the registry at the next turn's assembly,
+  generation-stamped; a reload's op-loop sweep removes it **before** the
+  two-phase dylib unload, so the registry never holds a vtable into
+  unmapped memory. End-to-end proof:
+  `crates/extensions/src/runner.rs` test
+  `fixture_dylib_contributes_a_generation_bound_turn_executor`.
 
 Replacement of an id with turns in flight is refused loudly
-(`turn_lease`); registration takes effect at the next turn's assembly. The
-executable proof lives in
-`crates/extensions-fixture-dylib/tests/turn_executor_seam.rs`.
+(`turn_lease`); registration takes effect at the next turn's assembly.
 
 ## Known limitations & iteration roadmap
 
-- **dylib extensions cannot register a turn executor** — an RAII guard in
-  dylib statics dangles after the two-phase unload. A generation-bound
-  registration sweep (retired generations lose their registrations;
-  `dylib_exposed` leases already defer the drop) is the follow-up design.
-  Today a dylib wraps turns via `register_around_turn` instead.
 - **Script mods cannot ship an executor** on this seam — by design, they
   use `register_loop` (`turn_executor = "rhai"`).
 - One `turn_executor` selection for every agent (no per-agent-type

@@ -62,34 +62,43 @@ Cordis 式的性质——能力以注册的形式到达、内核只做选择 cho
 - **注册表注册**（编译进进程的 crate）：下述 `TurnExecutorRegistry`、
   `ProviderRegistry`、模型目录。
 
-### turn-executor seam（host 档）
+### turn-executor seam（host 档 + dylib 档）
 
 一个 turn 跑哪个循环是一次*选择*，每 turn 从进程共享的
 `TurnExecutorRegistry`
 （`agent-runtime/src/engine/executor_composition.rs`；配置
 `turn_executor`，默认 `builtin`）解析。契约类型
-（`TurnDeps`/`TurnExecutorFactory`/`BuiltTurn`/`TurnHarvest`）已公开：
-编译进进程的 crate 在启动时注册一个从零编写的循环——
+（`TurnDeps`/`TurnExecutorFactory`/`BuiltTurn`/`TurnHarvest`）已公开，
+注册分两档：
 
-```rust,ignore
-use codesmith_agent_runtime::engine::{shared_turn_executors, TurnExecutorFactory};
+- **host 档** —— 编译进进程的 crate 在启动时注册、自持 RAII guard：
 
-let guard = shared_turn_executors()
-    .register(std::sync::Arc::new(MyLoopFactory))
-    .expect("first registration is never refused");
-// 配置：turn_executor = "my-loop"；drop(guard) 即注销。
-```
+  ```rust,ignore
+  use codesmith_agent_runtime::engine::{shared_turn_executors, TurnExecutorFactory};
+
+  let guard = shared_turn_executors()
+      .register(std::sync::Arc::new(MyLoopFactory))
+      .expect("first registration is never refused");
+  // 配置：turn_executor = "my-loop"；drop(guard) 即注销。
+  ```
+
+  可执行证明在
+  `crates/extensions-fixture-dylib/tests/turn_executor_seam.rs`。
+
+- **dylib 档** —— 安装的 Rust dylib 经
+  `ExtensionApi::register_turn_executor` 贡献从零编写的循环（载体类型擦
+  除，因为 dylib 无法写宿主侧注册表静态量——任何静态量在 dlopen 的映像
+  里都是私有的）。引擎在下一个 turn 装配时收养贡献并打世代戳；reload 的
+  op-loop 清扫在两阶段 dylib 卸载**之前**移除它——注册表永远不会持有指向
+  已解除映射内存的 vtable。端到端证明：
+  `crates/extensions/src/runner.rs` 测试
+  `fixture_dylib_contributes_a_generation_bound_turn_executor`。
 
 有 in-flight turn 的 id 拒绝被替换（`turn_lease`，报错响亮）；注册在下一
-个 turn 装配时生效。可执行证明在
-`crates/extensions-fixture-dylib/tests/turn_executor_seam.rs`。
+个 turn 装配时生效。
 
 ## 已知限制与迭代路线图
 
-- **dylib 扩展不能注册 turn executor**——dylib 静态量里的 RAII guard 在
-  两阶段卸载后会悬垂。世代绑定注册清扫（退役世代失去其注册；
-  `dylib_exposed` 租约本就延迟 drop）是后续设计。今天 dylib 用
-  `register_around_turn` 包裹 turn。
 - **脚本 mod 不能经此 seam 提供 executor**——设计如此，脚本走
   `register_loop`（`turn_executor = "rhai"`）。
 - `turn_executor` 对所有 agent 生效（暂无按 agent-type 的选择）。

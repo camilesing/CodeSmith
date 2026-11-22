@@ -5298,7 +5298,7 @@ mod tests {
                 Arc::new(|state, _msg| Ok(state)),
             )
             .expect("seed hub state");
-        let m = RhaiMod::load_source(
+        RhaiMod::load_source(
             "proj-reader",
             "Reader",
             "0.1.0",

@@ -70,6 +70,21 @@ Everything an extension can register, and what the host does with it:
   `register_provider(spec)` native. Rhai mods cannot implement
   `LlmClient` (no async/net by design), so this is their only provider
   contribution.
+- **Turn executors (`register_turn_executor`, Rust/dylib tier)** — a
+  from-scratch turn loop (`Arc<dyn TurnExecutorFactory>`, boxed whole via
+  `codesmith_agent_runtime::engine::contribute_turn_executor`). The
+  contribution travels through the api object into host memory (a dylib's
+  own statics are private to the dlopen'd image); the engine adopts it
+  onto the process-shared `TurnExecutorRegistry` at the next turn's
+  assembly, generation-stamped, and config selects it with
+  `turn_executor = "<id>"`. Lifetime is generation-bound: a reload's
+  library drain records a retirement threshold and the engine op loop
+  sweeps the registration **before** the two-phase dylib unload, so the
+  registry never holds a vtable into unmapped memory; a reload that
+  re-loads the extension re-registers at the fresh generation. A refused
+  replacement (turns in flight on the id) stays pending and retries at
+  the next assembly. Not offered to script mods — their loop
+  contribution is `register_loop`.
 - **Prompt sections (`register_prompt_section`)** — named, session-stable
   sections appended to the base system prompt (≤16 sections, validated
   at load). The host appends them each turn **before** the

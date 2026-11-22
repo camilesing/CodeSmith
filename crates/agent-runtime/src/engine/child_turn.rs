@@ -12,8 +12,10 @@
 //! loop — streaming with the idle watchdog, transparent retry, the loop
 //! guard, the truncation gate, parallel batches — and its extension
 //! dispatch runs at the child's agent-type scope, where the runner skips
-//! dylib-origin handlers and around wrappers (5b: dylib code never enters a
-//! sub-agent, so the lease declares `dylib_exposed: false`).
+//! dylib-origin handlers and around wrappers (5b: dylib contributions never
+//! enter a sub-agent; the one exception is a dylib-provided *executor* —
+//! the loop itself is dylib code, so the lease declares `dylib_exposed`
+//! for exactly that origin).
 //!
 //! What a child turn does **not** get (known limitations, by design):
 //! - the main turn's session services: compaction and the capacity gates,
@@ -196,6 +198,13 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         subagents,
         journal,
     } = spec;
+    // Dylib-tier kernel composition, before the selection resolves (same
+    // step as the main turn's assembly): adopt pending extension
+    // turn-executor contributions so a freshly loaded/flushed loop is
+    // selectable for this child.
+    if let Some(runner) = extension_runner.as_ref() {
+        runner.adopt_pending_turn_executors(crate::engine::adopt_extension_turn_executor);
+    }
     // Misconfiguration fails loud: the same resolution, and the same
     // remedy text, as the main turn's assembly.
     let factory = match resolve_turn_executor(&executor_id) {
@@ -228,6 +237,13 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     // Structural ownership: the lease covers the executor's lifetime (it
     // is dropped after `built`), so a reload of the runtime this child was
     // assembled under drains it before the two-phase dylib unload.
+    // `dylib_exposed` mirrors the 5b rule with one exception: dylib-origin
+    // handlers/tools never enter child dispatch (exposure false), but a
+    // child running an *extension-registered executor* executes dylib code
+    // — the loop itself — so its lease must declare exposure and defer the
+    // unload until the child finishes.
+    let executor_is_extension_origin =
+        crate::engine::turn_executor_is_extension_origin(&executor_id);
     let lease = shared_turn_leases().acquire(TurnLeaseSpec {
         key: TurnLeaseKey {
             agent: agent_id.clone(),
@@ -236,7 +252,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         },
         depth,
         cancel: cancel.clone(),
-        dylib_exposed: false,
+        dylib_exposed: executor_is_extension_origin,
         scope: extension_runner.as_ref().map(Arc::downgrade),
     });
     events.mailbox(MailboxMessage::Started {

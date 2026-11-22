@@ -759,6 +759,22 @@ impl Engine {
             if let Some(runner) = &self.extension_runner
                 && runner.has_pending_drop()
             {
+                // Extension-registered executors from the retired generation
+                // go first: their factories' vtables live in the pending
+                // libraries, so the registry must stop referencing them
+                // before anything unmaps. The threshold the runner recorded
+                // at drain time protects a dylib that re-registered during
+                // the same reload's repopulate.
+                if let Some(retired_below) = runner.retired_executor_sweep_threshold() {
+                    let swept = sweep_retired_extension_turn_executors(retired_below);
+                    if swept > 0 {
+                        tracing::info!(
+                            target: "codesmith_extensions",
+                            "swept {swept} extension-registered turn executor(s) from the \
+                             retired generation (below {retired_below})"
+                        );
+                    }
+                }
                 let stale = crate::turn_lease::shared_turn_leases()
                     .stale_dylib_holders(runner, runner.generation());
                 if stale == 0 {
@@ -1776,6 +1792,13 @@ impl Engine {
             session_id: Some(self.session.id.clone()),
             rhai_loop: Some(self.config.rhai_loop.clone()),
         };
+        // Dylib-tier kernel composition, before the selection resolves:
+        // adopt any pending extension turn-executor contributions so a
+        // freshly loaded/flushed loop is selectable this turn.
+        if let Some(runner) = &self.extension_runner {
+            runner
+                .adopt_pending_turn_executors(executor_composition::adopt_extension_turn_executor);
+        }
         let factory = match executor_composition::resolve_turn_executor(&self.config.turn_executor)
         {
             Ok(factory) => factory,
@@ -1816,7 +1839,9 @@ impl Engine {
         // drain leaves alone (from the REPL no main turn is in flight; from
         // the `manage_mods` tool the main turn is the reload's initiator).
         // `dylib_exposed` whenever a runner is bound: the turn's
-        // catalog/around chains may be dylib-origin.
+        // catalog/around chains may be dylib-origin — and an
+        // extension-registered executor implies a runner anyway (its
+        // registration is generation-bound to one).
         let _turn_lease =
             crate::turn_lease::shared_turn_leases().acquire(crate::turn_lease::TurnLeaseSpec {
                 key: crate::turn_lease::TurnLeaseKey {
@@ -4160,7 +4185,9 @@ use self::dispatch::{
 pub use self::executor_composition::{
     BUILTIN_TURN_EXECUTOR_ID, BuiltTurn, TurnContextSources, TurnDeps, TurnExecutorFactory,
     TurnExecutorRegistration, TurnExecutorRegistry, TurnExecutorSlot, TurnHarvest, TurnShape,
-    resolve_turn_executor, shared_turn_executors, turn_executor_status, validate_turn_executor_id,
+    adopt_extension_turn_executor, contribute_turn_executor, register_extension_turn_executor,
+    resolve_turn_executor, shared_turn_executors, sweep_retired_extension_turn_executors,
+    turn_executor_is_extension_origin, turn_executor_status, validate_turn_executor_id,
 };
 // `TurnDeps` field types from otherwise-private modules — reachable for the
 // host-tier executor seam.

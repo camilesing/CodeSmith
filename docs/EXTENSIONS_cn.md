@@ -44,6 +44,17 @@ dylib 源（安装根）→ 与磁盘上的 `ExtensionStateStore` 对账（跳�
   `default_model` / `http_headers` 覆盖）；即 Rhai 的
   `register_provider(spec)` 原生函数。Rhai mod 无法实现 `LlmClient`
   （设计上无 async/网络），因此这是它们唯一的 provider 贡献形式。
+- **Turn 执行器（`register_turn_executor`，Rust/dylib 层）** —— 从零编写
+  的 turn 循环（`Arc<dyn TurnExecutorFactory>`，经
+  `codesmith_agent_runtime::engine::contribute_turn_executor` 整体装箱）。
+  贡献经 api 对象流入宿主内存（dylib 自己的静态量对 dlopen 的映像私有）；
+  引擎在下一个 turn 装配时收养到进程共享的 `TurnExecutorRegistry`、打上
+  世代戳，配置用 `turn_executor = "<id>"` 选用。生命周期绑定世代：reload
+  的库腾挪记录退役阈值，引擎 op loop 在两阶段 dylib 卸载**之前**按阈值
+  清扫注册——注册表永远不会持有指向已解除映射内存的 vtable；reload 重新
+  加载扩展时按新世代重新注册。被拒绝的替换（该 id 上有 in-flight turn）
+  保持待定，下个装配重试。不对脚本 mod 开放——它们的循环贡献是
+  `register_loop`。
 - **提示词分段（`register_prompt_section`）** —— 追加到基础系统提示词的
   命名、会话内稳定分段（≤16 段，加载时校验）。宿主在每轮
   `BeforeAgentStart` 接缝**之前**追加它们，因此 handler 的整段提示词

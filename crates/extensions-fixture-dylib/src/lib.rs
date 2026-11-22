@@ -16,9 +16,13 @@
 //! copy, so the test would read 0. The transform is returned to the host
 //! through the runner's handler chain, so no shared memory is needed.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use codesmith_agent::callback::StopReason;
+use codesmith_agent::executor::AgentExecutor;
 use codesmith_agent::extension::*;
 use codesmith_tools::{ToolCapability, ToolResult};
 use serde_json::Value;
@@ -34,6 +38,16 @@ impl Extension for FixtureExtension {
     async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
         api.register_tool(Box::new(FixtureEchoTool))?;
         api.on(Arc::new(FixtureTurnStartHandler))?;
+        // The dylib-tier turn-executor seam: a from-scratch loop, handed to
+        // the host through the api object (a dylib cannot write host-side
+        // registry statics — its copy of any crate's statics is private to
+        // the dlopen'd image, so the contribution must flow through host
+        // memory). The engine adopts it onto the process-shared registry at
+        // the next turn's assembly and sweeps it when this extension's
+        // generation retires, before the library unmaps.
+        api.register_turn_executor(codesmith_agent_runtime::engine::contribute_turn_executor(
+            Arc::new(FixtureLoopFactory),
+        ))?;
         Ok(())
     }
 }
@@ -80,6 +94,43 @@ impl Handler for FixtureTurnStartHandler {
             }))
         } else {
             Ok(HandlerOutcome::Continue)
+        }
+    }
+}
+
+/// The loop the fixture contributes through the dylib-tier executor seam:
+/// a no-op executor (answers `NoToolCalls` without an LLM call) + a
+/// defaults-only harvest. Never selected by config in tests — it exists to
+/// prove the seam's registration and generation-swept lifetime.
+pub struct FixtureLoopFactory;
+
+/// The fixture's registered executor id (also asserted by
+/// `codesmith-extensions` tests).
+pub const FIXTURE_LOOP_ID: &str = "fixture-loop";
+
+impl codesmith_agent_runtime::engine::TurnExecutorFactory for FixtureLoopFactory {
+    fn id(&self) -> &'static str {
+        FIXTURE_LOOP_ID
+    }
+    fn build(
+        &self,
+        _deps: codesmith_agent_runtime::engine::TurnDeps,
+    ) -> codesmith_agent_runtime::engine::BuiltTurn {
+        struct NeverRuns;
+        impl AgentExecutor for NeverRuns {
+            fn run<'a>(
+                &'a self,
+                _history: &'a mut dyn codesmith_agent::memory::ChatHistory,
+                _user_text: String,
+            ) -> Pin<Box<dyn Future<Output = anyhow::Result<StopReason>> + Send + 'a>> {
+                Box::pin(async { Ok(StopReason::NoToolCalls) })
+            }
+        }
+        struct NoHarvest;
+        impl codesmith_agent_runtime::engine::TurnHarvest for NoHarvest {}
+        codesmith_agent_runtime::engine::BuiltTurn {
+            executor: Arc::new(NeverRuns),
+            harvest: Arc::new(NoHarvest),
         }
     }
 }
