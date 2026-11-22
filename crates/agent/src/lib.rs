@@ -35,6 +35,17 @@
 //! - [`executor`] — the [`executor::AgentExecutor`] trait + the reference
 //!   [`executor::DefaultAgentExecutor`] (LangChain `AgentExecutor` analog):
 //!   the LLM↔tool loop with a step cap (§E).
+//! - [`prompt_template`] — the LangChain `ChatPromptTemplate` analog:
+//!   role-tagged `{var}` templates + a history placeholder rendered into
+//!   wire `Message`s / `SystemPrompt`.
+//! - [`output_parser`] — the LangChain `BaseOutputParser` analog (JSON,
+//!   markdown-fence tolerant).
+//! - [`structured`] — the LangChain `with_structured_output` analog (tool
+//!   strategy): typed `T` out of one call, schema-forced + validated with
+//!   error-feedback retry.
+//! - [`retrieval`] — the LangChain retrieval contracts: `Document`,
+//!   [`retrieval::Retriever`], [`retrieval::Embeddings`],
+//!   [`retrieval::VectorStore`] + the in-memory default.
 //!
 //! ## What does *not* live here
 //!
@@ -66,10 +77,14 @@ pub mod extension;
 pub mod llm_client;
 pub mod memory;
 pub mod models;
+pub mod output_parser;
 pub mod policy;
+pub mod prompt_template;
 pub mod provider;
 pub mod reasoning;
+pub mod retrieval;
 pub mod retry;
+pub mod structured;
 pub mod tools;
 
 use std::collections::HashMap;

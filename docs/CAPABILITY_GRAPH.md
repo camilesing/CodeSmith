@@ -24,6 +24,7 @@ construct it, consumers take it by value).
 | `ChildSessionJournalFactory` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `ChildTurnSpec` (data) | `agent-runtime` | `agent-runtime`, `cli` | `agent-runtime` |
 | `CommandDefinition` | `agent` | `agent`, `extensions` | `agent`, `extensions` |
+| `Embeddings` | `agent` | `agent` | `agent` |
 | `Extension` | `agent` | `agent-runtime`, `cli`, `extensions`, `extensions-fixture-dylib` | `extensions`, `extensions-fixture-dylib` |
 | `ExternalSubagentProvider` | `agent-runtime` | `cli` | `agent-runtime`, `cli` |
 | `Handler` | `agent` | `agent`, `agent-runtime`, `extensions`, `extensions-fixture-dylib` | `agent`, `agent-runtime`, `extensions` |
@@ -35,6 +36,7 @@ construct it, consumers take it by value).
 | `LlmClient` | `agent` | `agent`, `agent-runtime`, `cli`, `extensions`, `providers`, `tool-impls` | `agent`, `agent-runtime` |
 | `OpenTicketsNote` | `agent-runtime` | `cli` | `agent-runtime` |
 | `ProviderFactory` | `agent` | `agent`, `extensions`, `providers` | `agent`, `extensions` |
+| `Retriever` | `agent` | `agent` | `—` |
 | `SandboxBackend` | `sandbox` | `agent-runtime`, `cli` | `agent-runtime`, `cli` |
 | `ScriptCompactionStrategy` (data) | `extensions` | `extensions` | `agent-runtime`, `extensions` |
 | `SessionJournal` | `session` | `session` | `agent-runtime`, `cli` |
@@ -45,5 +47,6 @@ construct it, consumers take it by value).
 | `ToolReplacement` | `agent` | `agent-runtime`, `extensions` | `agent`, `agent-runtime`, `extensions` |
 | `TurnExecutorFactory` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
 | `TurnHarvest` | `agent-runtime` | `agent-runtime` | `agent-runtime` |
+| `VectorStore` | `agent` | `agent` | `—` |
 | `WorkflowEngine` | `agent-runtime` | `cli` | `cli` |
 | `WorkflowRunRecorder` | `agent-runtime` | `cli` | `cli` |

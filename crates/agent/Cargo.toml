@@ -17,6 +17,9 @@ codesmith-config.workspace = true
 codesmith-tools.workspace = true
 futures-util.workspace = true
 reqwest = { workspace = true }
+# structured_output derives the tool input schema from the caller's type
+# (same workspace pin protocol/config already use).
+schemars.workspace = true
 serde.workspace = true
 serde_json = { workspace = true }
 tracing.workspace = true

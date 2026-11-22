@@ -769,6 +769,7 @@ dependencies = [
  "codesmith-tools",
  "futures-util",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2027,8 +2028,10 @@ dependencies = [
 name = "extensions-fixture-dylib"
 version = "0.12.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "codesmith-agent",
+ "codesmith-agent-runtime",
  "codesmith-tools",
  "serde_json",
 ]
