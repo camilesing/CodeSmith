@@ -433,15 +433,7 @@ impl SessionMapper {
                 )));
             }
             "turn.completed" | "turn.failed" => {
-                let status = payload
-                    .pointer("/turn/status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("completed");
-                let reason = match status {
-                    "interrupted" => "interrupted",
-                    "error" | "failed" => "error",
-                    _ => "completed",
-                };
+                let reason = turn_end_reason(payload.pointer("/turn")).unwrap_or("completed");
                 // The turn's changed-files announcement precedes its end:
                 // the deliverables card anchors on this event's seq and the
                 // bridge's /api/changes.* routes serve its summary from the
@@ -457,7 +449,7 @@ impl SessionMapper {
                 self.turn_has_file_changes = false;
                 frames.push(Frame::Event(self.seq.event(
                     "turn/end",
-                    json!({ "turn": self.turn_no, "reason": { "kind": reason } }),
+                    json!({ "turn": self.turn_no, "reason": end_reason_value(reason) }),
                     false,
                     time,
                 )));
@@ -969,6 +961,43 @@ fn replay_workflow_run(events: &mut Vec<Value>, seq: &mut WireSeq, run: &Value, 
     }
 }
 
+/// The client's turn-end reason kind for a runtime turn record.
+///
+/// The client's `interrupted` kind means "the process exited before this
+/// turn finished" and renders that failure, so only a restart-closed turn —
+/// the runtime stamps `error` on exactly those — maps there. A turn the
+/// user stopped carries no `error` and is `aborted` (live and replay).
+fn turn_end_reason(turn: Option<&Value>) -> Option<&'static str> {
+    let turn = turn?;
+    Some(match turn.get("status").and_then(Value::as_str)? {
+        "completed" => "completed",
+        "interrupted" | "canceled" => {
+            let restart_closed = turn
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| !error.is_empty());
+            if restart_closed {
+                "interrupted"
+            } else {
+                "aborted"
+            }
+        }
+        "error" | "failed" => "error",
+        // in_progress / queued: no end yet.
+        _ => return None,
+    })
+}
+
+/// The `turn/end` reason object for one kind: `aborted` names its cause
+/// (`AgentCancelCause`), a bare `{ kind }` there would crash the client's
+/// failure fold.
+fn end_reason_value(kind: &str) -> Value {
+    match kind {
+        "aborted" => json!({ "kind": "aborted", "reason": { "kind": "user" } }),
+        _ => json!({ "kind": kind }),
+    }
+}
+
 pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec<Value> {
     let mut seq = WireSeq::default();
     let mut events = Vec::new();
@@ -986,16 +1015,6 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-
-    let turn_end_reason = |turn: &Value| -> Option<&'static str> {
-        match turn.get("status").and_then(Value::as_str) {
-            Some("completed") => Some("completed"),
-            // Canceled and interrupted both read as an interrupted turn.
-            Some("interrupted") | Some("canceled") => Some("interrupted"),
-            Some("error") | Some("failed") => Some("error"),
-            _ => None, // in_progress / queued: no end yet
-        }
-    };
 
     for (turn_index, turn) in turns.iter().enumerate() {
         let turn_no = (turn_index + 1) as u64;
@@ -1215,10 +1234,10 @@ pub fn replay_events_sourced(detail: &Value, provider: &str, model: &str) -> Vec
                 ended_instant(turn, turn_start),
             ));
         }
-        if let Some(reason) = turn_end_reason(turn) {
+        if let Some(reason) = turn_end_reason(Some(turn)) {
             events.push(seq.event(
                 "turn/end",
-                json!({ "turn": turn_no, "reason": { "kind": reason } }),
+                json!({ "turn": turn_no, "reason": end_reason_value(reason) }),
                 false,
                 // The runtime stamps `ended_at` on every terminal turn.
                 record_time(turn, &["ended_at"]).unwrap_or(turn_start),
@@ -1624,6 +1643,57 @@ mod tests {
         );
         assert_eq!(rows[1]["content"].as_array().unwrap().len(), 1, "text only");
     }
+    /// Found in the desktop: a turn the user stopped rendered "the process
+    /// exited before this turn finished" — every interrupted turn mapped
+    /// onto the client's `interrupted` kind, live and on replay.
+    #[test]
+    fn a_user_stopped_turn_ends_aborted_only_a_restart_closed_one_interrupted() {
+        let live = |turn: Value| {
+            let mut mapper = SessionMapper::default();
+            let _ = mapper.map_envelope(&json!({
+                "event": "turn.started", "turn_id": "turn_1", "timestamp": "2026-11-06T10:00:00Z", "payload": {}
+            }));
+            let frames = mapper.map_envelope(&json!({
+                "event": "turn.completed", "turn_id": "turn_1", "timestamp": "2026-11-06T10:00:03Z",
+                "payload": { "turn": turn }
+            }));
+            frames
+                .into_iter()
+                .find_map(|frame| match frame {
+                    Frame::Event(event) if event["type"] == "turn/end" => {
+                        Some(event["data"]["reason"].clone())
+                    }
+                    _ => None,
+                })
+                .expect("turn/end")
+        };
+        let replay = |turn: Value| {
+            replay_events(&json!({ "turns": [turn], "items": [] }))
+                .into_iter()
+                .find(|event| event["type"] == "turn/end")
+                .map(|event| event["data"]["reason"].clone())
+                .expect("replayed turn/end")
+        };
+        let stopped = json!({ "id": "turn_1", "status": "interrupted" });
+        let restart_closed = json!({
+            "id": "turn_1", "status": "interrupted", "error": "Interrupted by process restart"
+        });
+        let user_stop = json!({ "kind": "aborted", "reason": { "kind": "user" } });
+        let process_exit = json!({ "kind": "interrupted" });
+        assert_eq!(live(stopped.clone()), user_stop, "live: a user stop");
+        assert_eq!(
+            live(restart_closed.clone()),
+            process_exit,
+            "live: restart-closed"
+        );
+        assert_eq!(replay(stopped.clone()), user_stop, "replay: a user stop");
+        assert_eq!(
+            replay(restart_closed.clone()),
+            process_exit,
+            "replay: restart-closed"
+        );
+    }
+
     #[test]
     fn interrupted_items_abandon_their_open_attempts() {
         let mut mapper = SessionMapper::default();
