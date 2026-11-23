@@ -130,10 +130,15 @@ pub fn filter_tool_call_delta(delta: &str, in_tool_call: &mut bool) -> String {
 /// forged wrapper sailed through to the user. This filter carries the
 /// trailing partial-marker suffix between chunks; call [`Self::push`] per
 /// delta and [`Self::flush`] at stream end to release any held-back tail.
+///
+/// A held-back tail makes a push return LESS than it was given without
+/// anything being scrubbed, so "visible shorter than the delta" is not a
+/// scrub signal; [`Self::scrubbed`] is.
 #[derive(Debug, Default)]
 pub struct ToolCallDeltaFilter {
     in_tool_call: bool,
     carry: String,
+    scrubbed: bool,
 }
 
 impl ToolCallDeltaFilter {
@@ -164,6 +169,7 @@ impl ToolCallDeltaFilter {
                     }
                     rest = &rest[idx + len..];
                     self.in_tool_call = !self.in_tool_call;
+                    self.scrubbed = true;
                 }
                 None => {
                     if self.in_tool_call {
@@ -191,6 +197,13 @@ impl ToolCallDeltaFilter {
     /// Release any held-back partial-marker tail (call at stream end).
     pub fn flush(&mut self) -> String {
         std::mem::take(&mut self.carry)
+    }
+
+    /// Whether any push of this filter consumed a wrapper marker — the one
+    /// condition under which the caller's text really shrank.
+    #[must_use]
+    pub fn scrubbed(&self) -> bool {
+        self.scrubbed
     }
 }
 

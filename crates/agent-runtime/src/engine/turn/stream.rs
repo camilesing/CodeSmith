@@ -700,7 +700,7 @@ impl HostAgentExecutor {
                                 any_content_received = true;
                             }
                             let mut visible_start = text_filter.push(&text);
-                            if !wrapper_notice_shown && text.len() > visible_start.len() {
+                            if !wrapper_notice_shown && text_filter.scrubbed() {
                                 wrapper_notice_shown = true;
                                 visible_start.push_str(FAKE_WRAPPER_NOTICE);
                                 self.callback
@@ -768,7 +768,7 @@ impl HostAgentExecutor {
                                     any_content_received = true;
                                 }
                                 let visible = text_filter.push(&text);
-                                if !wrapper_notice_shown && visible.len() < text.len() {
+                                if !wrapper_notice_shown && text_filter.scrubbed() {
                                     wrapper_notice_shown = true;
                                     let notice = format!("\n{FAKE_WRAPPER_NOTICE}\n");
                                     buf.push_str(&notice);
@@ -2170,6 +2170,75 @@ mod tests {
         assert!(
             transcript.contains("Stripped non-API tool-call wrapper"),
             "the scrub notice must accompany suppressed text: {transcript:?}"
+        );
+    }
+
+    /// The notice tracks a real scrub, never a held-back tail: a clean delta
+    /// that merely ends in a marker prefix (`a <`) is carried whole to the
+    /// next delta, yet gating on "visible shorter than the delta" read that
+    /// as a scrub and told the user their intact text had been stripped.
+    #[tokio::test]
+    async fn carried_marker_prefix_does_not_raise_the_scrub_notice() {
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let text_delta = |text: &str| StreamEvent::ContentBlockDelta {
+            index: 1,
+            delta: Delta::TextDelta {
+                text: text.to_string(),
+            },
+        };
+        let events = vec![
+            message_start_with_usage(10),
+            // A non-empty start payload is the other notice site.
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlockStart::Text {
+                    text: "x <".to_string(),
+                },
+            },
+            StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: Delta::TextDelta {
+                    text: " y".to_string(),
+                },
+            },
+            StreamEvent::ContentBlockStop { index: 0 },
+            StreamEvent::ContentBlockStart {
+                index: 1,
+                content_block: ContentBlockStart::Text {
+                    text: String::new(),
+                },
+            },
+            text_delta("a <"),
+            text_delta(" b"),
+            StreamEvent::ContentBlockStop { index: 1 },
+            StreamEvent::MessageStop,
+        ];
+        let mock = std::sync::Arc::new(RetryMockLlm::new(vec![MockRound::Events(events)]));
+        let executor = stream_test_executor(&mock, echo_tool_set());
+
+        let reason = executor
+            .run(&mut history, "go".to_string())
+            .await
+            .expect("clean round");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let transcript: String = history
+            .messages()
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                codesmith_agent::models::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            transcript.contains("x < y") && transcript.contains("a < b"),
+            "carried text lost: {transcript:?}"
+        );
+        assert!(
+            !transcript.contains("Stripped non-API tool-call wrapper"),
+            "a held-back marker prefix raised the scrub notice: {transcript:?}"
         );
     }
 
