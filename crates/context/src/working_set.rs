@@ -1055,6 +1055,28 @@ const COMMON_EXTENSIONS: &[&str] = &[
     "c", "cc", "cpp", "h", "hpp", "sh", "bash", "zsh", "sql", "html", "css", "scss",
 ];
 
+/// The path regex reads `\` as a Windows separator, so a string escape in
+/// prose (`Patch\n*** End`, `notes.md\n@@`) scans as `Patch/n`: a backslash
+/// followed by one escape letter and a non-segment character ends the path.
+fn strip_escape_tails(candidate: &str) -> &str {
+    for (at, _) in candidate.match_indices('\\') {
+        let mut next = candidate[at + 1..].chars();
+        if let Some(letter) = next.next()
+            && ESCAPE_LETTERS.contains(&letter)
+            && next.next().is_none_or(|c| !is_path_segment_char(c))
+        {
+            return &candidate[..at];
+        }
+    }
+    candidate
+}
+
+const ESCAPE_LETTERS: &[char] = &['n', 't', 'r', 'b', 'f', 'v', '0', 'd', 's', 'w', 'x'];
+
+fn is_path_segment_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'
+}
+
 fn extract_paths_from_text(text: &str) -> Vec<String> {
     if text.trim().is_empty() {
         return Vec::new();
@@ -1062,8 +1084,9 @@ fn extract_paths_from_text(text: &str) -> Vec<String> {
 
     let re = path_regex();
     re.find_iter(text)
-        .map(|m| m.as_str().to_string())
+        .map(|m| strip_escape_tails(m.as_str()))
         .filter(|s| looks_like_path(s))
+        .map(str::to_string)
         .collect()
 }
 
@@ -1388,6 +1411,24 @@ mod tests {
 
         let paths = extract_paths_from_message(&msg);
         assert!(paths.iter().any(|p| p.contains("src/compaction.rs")));
+    }
+
+    /// Found in the desktop: a prompt carrying JSON and patch text listed
+    /// `n/n`, `Patch/n` and `notes.md/n` under the `<turn_meta>` "Active
+    /// paths" — its `\n` escapes read as Windows separators.
+    #[test]
+    fn string_escapes_do_not_become_path_segments() {
+        let mut paths = extract_paths_from_text(
+            r#"{"patch":"*** Begin Patch\n*** Update File: notes.md\n@@"} 你好\n\n来自"#,
+        );
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths, vec!["notes.md".to_string()]);
+
+        // A real Windows path keeps its backslashes, escape-letter segments
+        // included (`\new`, `\notes`).
+        let windows = extract_paths_from_text(r"open C:\new\test\notes\x.rs");
+        assert_eq!(windows, vec![r"C:\new\test\notes\x.rs".to_string()]);
     }
 
     #[test]
