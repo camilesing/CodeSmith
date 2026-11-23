@@ -1291,6 +1291,22 @@ pub async fn fork(host: &HostState, request: &Value) -> Result<Value> {
     // The fork lands in the same workspace: re-publish the complete follow
     // baseline, the same way session/create does.
     super::workspace::push_replace(host).await;
+    // The client files the child as a hidden blank placeholder until the
+    // Host's `api-session/added` carries its real summary (upstream's
+    // registry push) — without it the sidebar row only shows after a reload.
+    let listed = super::session_list(host).await;
+    if let Some(row) = listed
+        .pointer("/value/items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|row| row["sessionId"] == json!(child_id)))
+    {
+        host.push_event_frame(json!({
+            "type": "emit",
+            "event": "api-session/added",
+            "args": [row],
+        }))
+        .await;
+    }
     Ok(json!({ "sessionId": child_id }))
 }
 

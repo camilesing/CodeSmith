@@ -53,9 +53,15 @@ struct FakeRuntime {
     watchers: Arc<AtomicUsize>,
     /// Every `POST /v1/presets/apply` body, in order.
     preset_applies: Arc<StdMutex<Vec<Value>>>,
+    /// Fork POSTs so far; the child `thr_fork` lists once one landed.
+    forks: Arc<AtomicUsize>,
 }
 
 impl FakeRuntime {
+    fn forked(&self) -> bool {
+        self.forks.load(Ordering::SeqCst) > 0
+    }
+
     fn new(workspace: std::path::PathBuf) -> Self {
         let (events_tx, _) = tokio::sync::broadcast::channel::<String>(64);
         Self {
@@ -70,6 +76,7 @@ impl FakeRuntime {
             events_tx,
             watchers: Default::default(),
             preset_applies: Default::default(),
+            forks: Default::default(),
         }
     }
 
@@ -108,13 +115,26 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         .route(
             "/v1/threads",
             get(|State(fake): State<FakeRuntime>| async move {
-                Json(json!([{ "id": "thr_a", "workspace": fake.workspace.to_string_lossy() }]))
+                let mut threads =
+                    vec![json!({ "id": "thr_a", "workspace": fake.workspace.to_string_lossy() })];
+                if fake.forked() {
+                    threads.push(
+                        json!({ "id": "thr_fork", "workspace": fake.workspace.to_string_lossy() }),
+                    );
+                }
+                Json(threads)
             }),
         )
         .route(
             "/v1/threads/summary",
-            get(|| async move {
-                Json(json!([{ "id": "thr_a", "updated_at": "2026-11-15T00:00:00Z" }]))
+            get(|State(fake): State<FakeRuntime>| async move {
+                let mut summaries =
+                    vec![json!({ "id": "thr_a", "updated_at": "2026-11-15T00:00:00Z" })];
+                if fake.forked() {
+                    summaries
+                        .push(json!({ "id": "thr_fork", "updated_at": "2026-11-15T00:00:01Z" }));
+                }
+                Json(summaries)
             }),
         )
         .route(
@@ -131,7 +151,10 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         )
         .route(
             "/v1/threads/{id}/fork",
-            post(|| async move { Json(json!({ "id": "thr_fork" })) }),
+            post(|State(fake): State<FakeRuntime>| async move {
+                fake.forks.fetch_add(1, Ordering::SeqCst);
+                Json(json!({ "id": "thr_fork" }))
+            }),
         )
         .route(
             "/v1/threads/{id}/queue",
@@ -1120,7 +1143,12 @@ async fn prompt_queues_steers_and_interrupts_through_the_runtime() {
 
 #[tokio::test]
 async fn session_fork_and_search_shape() {
-    let (home, client, base, _fake, _host, _ws) = spawn_stack("forksearch").await;
+    let (home, client, base, fake, _host, _ws) = spawn_stack("forksearch").await;
+    // The client files a fork child as a hidden blank placeholder until the
+    // Host's `api-session/added` carries its real row (found in the desktop:
+    // the sidebar only listed the child after a reload).
+    let mut events_ws = open_mux_stream(&base, "e1", "$events", json!({ "args": {} })).await;
+    let _ready = next_frame(&mut events_ws).await; // ready frame
     let forked = rpc(
         &client,
         &base,
@@ -1130,6 +1158,14 @@ async fn session_fork_and_search_shape() {
     .await;
     assert_eq!(forked["ok"], json!(true), "fork: {forked}");
     assert_eq!(forked["value"]["sessionId"], json!("thr_fork"));
+    let added = wait_emit(&mut events_ws, "api-session/added").await;
+    let row = &added["value"]["args"][0];
+    assert_eq!(row["sessionId"], json!("thr_fork"), "{added}");
+    assert_eq!(
+        row["cwd"],
+        json!(fake.workspace.to_string_lossy()),
+        "the child lists under its workspace: {added}"
+    );
     let found = rpc(
         &client,
         &base,
@@ -1138,10 +1174,17 @@ async fn session_fork_and_search_shape() {
     )
     .await;
     assert_eq!(found["ok"], json!(true), "search: {found}");
+    // The fake's summary search lists every thread it knows, the forked
+    // child included; each row is the summary's id plus its preview snippet.
+    let rows = found["value"]["items"].as_array().expect("search rows");
+    let mut ids: Vec<&str> = rows
+        .iter()
+        .map(|row| row["sessionId"].as_str().expect("session id"))
+        .collect();
+    ids.sort();
+    assert_eq!(ids, ["thr_a", "thr_fork"], "search rows: {found}");
     assert!(
-        found["value"]["items"]
-            .as_array()
-            .is_some_and(|items| items.iter().all(|row| row["sessionId"] == json!("thr_a"))),
+        rows.iter().all(|row| row.get("snippet").is_some()),
         "search rows: {found}"
     );
     drop(home);

@@ -761,7 +761,7 @@ fn session_row(t: ThreadSummary, cwd: &std::path::Path) -> Value {
     row
 }
 
-async fn session_list(host: &HostState) -> Value {
+pub(super) async fn session_list(host: &HostState) -> Value {
     let (summaries, records) = tokio::join!(
         host.backend
             .get::<Vec<ThreadSummary>>("/v1/threads/summary?limit=200"),
