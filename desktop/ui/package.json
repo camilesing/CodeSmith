@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "vendor": "python3 ../scripts/vendor_client.py && node ../scripts/gen_boot_graph.mjs",
-    "dev": "vite",
-    "build": "vite build"
+    "vendor": "python3 ../scripts/vendor_client.py && pnpm stage",
+    "stage": "node ../scripts/gen_boot_graph.mjs",
+    "dev": "pnpm stage && vite",
+    "build": "pnpm stage && vite build"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

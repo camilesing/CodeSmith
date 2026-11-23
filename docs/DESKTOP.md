@@ -94,11 +94,12 @@ codesmith ui        # or: codes ui
 ```
 
 ```sh
-# 1. vendor + boot graph. Re-run whenever either side drifts: ui/public/plugins
-#    (the staged bundles) is gitignored, so a vendor tree can be current while
-#    the staging is stale — a missing bundle 404s at boot and its plugins
-#    silently never activate (the approval card among them).
-python3 desktop/scripts/vendor_client.py && node desktop/scripts/gen_boot_graph.mjs
+# 1. vendor — only after the upstream client moves. ui/public/plugins (the
+#    staged bundles) is gitignored; `pnpm dev` and `pnpm build` re-stage it
+#    and the boot graph on every run, so a fresh clone or a vendor refresh
+#    cannot serve stale bundles (a missing bundle 404s at boot and its
+#    plugins silently never activate — the approval card among them).
+python3 desktop/scripts/vendor_client.py
 # 2. frontend
 cd desktop/ui && pnpm install && pnpm dev        # vite on :1420
 # 3. desktop shell (bridge on :1421, spawns codesmith serve --http)

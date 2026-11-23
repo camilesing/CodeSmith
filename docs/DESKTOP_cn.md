@@ -85,10 +85,11 @@ codesmith ui        # 或：codes ui
 ```
 
 ```sh
-# 1. vendor + boot 图。两侧任一漂移都要重跑：ui/public/plugins（暂存的
-#    bundle）是 gitignore 的，vendor 树可能已最新而暂存是旧的——缺的
-#    bundle 启动时 404，对应插件静默不激活（审批卡就在其中）。
-python3 desktop/scripts/vendor_client.py && node desktop/scripts/gen_boot_graph.mjs
+# 1. vendor——仅在上游客户端更新后执行。ui/public/plugins（暂存的 bundle）
+#    是 gitignore 的；`pnpm dev` 和 `pnpm build` 每次运行都会重新暂存它和
+#    boot 图，全新克隆或 vendor 刷新后不会再跑旧 bundle（缺的 bundle
+#    启动时 404，对应插件静默不激活——审批卡就在其中）。
+python3 desktop/scripts/vendor_client.py
 # 2. 前端
 cd desktop/ui && pnpm install && pnpm dev        # vite :1420
 # 3. 桌面壳（桥 :1421，自行 spawn codesmith serve --http）
