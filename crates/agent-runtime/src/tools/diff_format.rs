@@ -30,7 +30,8 @@ pub fn make_unified_diff(path: &str, old: &str, new: &str) -> String {
     if old == new {
         return String::new();
     }
-    let header_path = escape_header_path(path);
+    // An absolute caller path must not double the separator (`a//Users/…`).
+    let header_path = escape_header_path(path.trim_start_matches('/'));
     let a = format!("a/{header_path}");
     let b = format!("b/{header_path}");
     let diff = TextDiff::from_lines(old, new);
@@ -80,6 +81,17 @@ mod tests {
     fn identical_inputs_emit_empty_diff() {
         let s = "hello\nworld\n";
         assert!(make_unified_diff("foo.txt", s, s).is_empty());
+    }
+
+    /// Found in the desktop: `write_file` passes the absolute target, which
+    /// rendered `--- a//private/tmp/…` — not a git-style header.
+    #[test]
+    fn absolute_path_keeps_a_single_separator() {
+        let diff = make_unified_diff("/private/tmp/x.rs", "a\n", "b\n");
+        assert!(
+            diff.starts_with("--- a/private/tmp/x.rs\n+++ b/private/tmp/x.rs\n"),
+            "{diff}"
+        );
     }
 
     #[test]
