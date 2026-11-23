@@ -133,8 +133,10 @@ on the follow stream, the running flag on `$events`), sub-agents, the
 open-in-app fence, fork/search, schedule), and the real-backend main-path lane
 (`host::backend_e2e`, `#[ignore]`-gated: build the backend first with
 `cargo build --locked -p codesmith-cli`, then run with
-`cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored` — it
-spawns the real `serve --http` child against a scripted loopback
+`cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored` — append
+`--skip real_configured_model` to stay offline, because the one ignored test
+that filter drops copies `~/.codesmith/config.toml` and spends a real model
+turn. The lane spawns the real `serve --http` child against a scripted loopback
 OpenAI-compatible model and drives chat settle/replay, both approval
 outcomes, the queued-prompt/interrupt round, and the `/compact` command —
 history compressed with the recent journal intact and replay identical

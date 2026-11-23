@@ -7,8 +7,11 @@
 //!
 //! ```sh
 //! cargo build --locked -p codesmith-cli
-//! cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored
+//! cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored --skip real_configured_model
 //! ```
+//!
+//! The `--skip` keeps the lane offline: the dropped test copies the user's
+//! real provider config and spends one model turn (see its `#[ignore]`).
 //!
 //! The scripted model is an axum route answering `POST /v1/chat/completions`
 //! with OpenAI streaming chunks from a FIFO script (one response per request,

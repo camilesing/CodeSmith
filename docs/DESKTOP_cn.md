@@ -119,7 +119,9 @@ live 分流（journal 记录走 follow 流、running 位走 `$events`）、子�
 open-in-app 越界栅栏、fork/search、schedule）；真后端主链路车道
 （`host::backend_e2e`，`#[ignore]` 门控：先
 `cargo build --locked -p codesmith-cli` 构建后端，再
-`cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored`——拉起
+`cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored`——要保持
+离线请追加 `--skip real_configured_model`：该过滤掉的那一条 ignored 用例会复制
+`~/.codesmith/config.toml` 并消耗一轮真实模型调用。此车道拉起
 真实 `serve --http` 子进程对接脚本化 loopback OpenAI 兼容模型，驱动聊天
 落定/重放、两种审批结局、排队提示/interrupt 轮、`/compact` 压缩命令——
 历史压缩后近期 journal 完整、bridge 重启后重放一致）。
