@@ -2,15 +2,15 @@
 //!
 //! This crate is the shared "execution kernel" consumed by all run-forms
 //! (interactive REPL, headless/SDK one-shots, subagents, background agents, and
-//! the app-server). It owns the streaming turn loop (`run_turn_once`), the
+//! the app-server). It owns the streaming turn loop (`HostAgentExecutor`, in
+//! `engine`), the
 //! `Engine` / `EngineHandle` / `Op` / `Event` protocol, and the supporting
 //! subsystems the loop depends on (compaction, sandbox, MCP, hooks, knowledge,
 //! command safety).
 //!
-//! Migration status: modules are being moved here incrementally from the
-//! `codesmith-tui` binary crate. Until the migration completes, the CLI keeps
-//! thin re-export shims (`pub use codesmith_agent_runtime::…`) so existing
-//! `use crate::<module>` paths keep resolving.
+//! The CLI keeps thin re-export shims (`pub use
+//! codesmith_agent_runtime::…`) so existing `use crate::<module>` paths keep
+//! resolving.
 
 // `deny` (not `forbid`): the execution core legitimately uses `unsafe` for
 // `std::env` mutation in `child_env` (documented single-threaded pre-spawn

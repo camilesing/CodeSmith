@@ -546,8 +546,8 @@ impl From<ToolError> for ErrorEnvelope {
 /// Stream‑level error discriminated by origin.
 ///
 /// Each variant maps to an `ErrorCategory` so the UI can render
-/// stream‑specific icons or formatting. Wired into engine.rs at the three
-/// stream guard sites (chunk timeout, max-bytes overflow, max-duration).
+/// stream‑specific icons or formatting. Not constructed anywhere today:
+/// the turn loop's stream guards report these limits on their own path.
 #[derive(Debug, Clone)]
 pub enum StreamError {
     /// Stream stalled — no chunk received within the idle timeout.

@@ -8,9 +8,8 @@
 //! module.
 //!
 //! Today the CLI's concrete `EngineHost` struct implements [`HostServices`];
-//! the engine body calls these trait methods on `self.host`. When the
-//! `Engine` struct moves to `codesmith-agent-runtime`, the `host` field
-//! becomes `Arc<dyn HostServices>` and the body code is unchanged.
+//! the engine body calls these trait methods on `self.host`, the
+//! `Arc<dyn HostServices>` field of the `Engine` that lives in this crate.
 //!
 //! This mirrors the existing trait-erasure bridges (`ToolDispatcher`,
 //! `RuntimeUi`, `HookHost`) and is the natural continuation of the
@@ -629,9 +628,8 @@ pub struct TurnDispatchRequest<'a> {
 /// `framework_tool_set` is the framework-core `ToolSet` (§E) derived from the
 /// concrete `ToolRegistry` *before* it is erased into `Arc<dyn ToolDispatcher>`
 /// — the trait object cannot be recovered, so the `ToolSet` must be built while
-/// the concrete type is still in hand. Unused until `HostAgentExecutor` is
-/// wired into `handle_send_message`; populated here so the wire-in has the
-/// `Arc<ToolSet>` it needs for
+/// the concrete type is still in hand. Consumed by the `HostAgentExecutor`
+/// wire-in in `handle_send_message`, which needs the `Arc<ToolSet>` for
 /// `HostAgentExecutor::new`.
 ///
 /// The registry / catalog / framework set are populated together or not at
