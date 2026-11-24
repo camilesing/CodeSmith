@@ -1399,8 +1399,10 @@ fn replace_links(html: &str, base_url: &str) -> (String, Vec<WebLink>) {
         };
 
         output.push_str(&html[last..full.start()]);
-        let text = normalize_whitespace(&strip_tags(text_match.as_str()));
-        let resolved = resolve_url(base_url, href.as_str());
+        // An href is HTML like the rest of the page: `&amp;` in it is an
+        // escaped `&`, not part of the URL.
+        let text = normalize_whitespace(&decode_html_entities(&strip_tags(text_match.as_str())));
+        let resolved = resolve_url(base_url, &decode_html_entities(href.as_str()));
         if !text.is_empty() {
             let id = links.len() + 1;
             links.push(WebLink {
@@ -1528,6 +1530,14 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].url, "https://example.com");
         assert!(lines.iter().any(|line| line.contains("Example")));
+    }
+
+    #[test]
+    fn link_urls_and_texts_are_entity_decoded() {
+        let html = r#"<a href="/list?p=2&amp;q=x">A &amp; B</a>"#;
+        let (_, links, _) = parse_html(html, "https://example.com/");
+        assert_eq!(links[0].url, "https://example.com/list?p=2&q=x");
+        assert_eq!(links[0].text, "A & B");
     }
 
     #[test]
