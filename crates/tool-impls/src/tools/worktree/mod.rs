@@ -82,19 +82,21 @@ pub fn worktrees_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".codesmith").join("worktrees")
 }
 
-/// Generate a random slug for unnamed worktrees.
-/// Pattern: `{adjective}-{noun}-{4hex}`
+/// Generate a unique slug for unnamed worktrees.
+/// Pattern: `{adjective}-{noun}-{8hex}`, from a random UUIDv4. Unique, not
+/// merely time-varying: worktrees are resumed by name, so a slug that
+/// repeated would re-enter an older kept worktree of that name.
 pub fn generate_random_slug() -> String {
     let adjectives = ["swift", "bright", "calm", "keen", "bold"];
     let nouns = ["fox", "owl", "elm", "oak", "ray"];
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let adj_idx = (ts % adjectives.len() as u64) as usize;
-    let noun_idx = ((ts >> 8) % nouns.len() as u64) as usize;
-    let suffix = format!("{:04x}", (ts >> 16) & 0xFFFF);
-    format!("{}-{}-{}", adjectives[adj_idx], nouns[noun_idx], suffix)
+    let id = uuid::Uuid::new_v4();
+    let bytes = id.as_bytes();
+    format!(
+        "{}-{}-{}",
+        adjectives[usize::from(bytes[0]) % adjectives.len()],
+        nouns[usize::from(bytes[1]) % nouns.len()],
+        &id.simple().to_string()[..8]
+    )
 }
 
 // ── Git helpers ───────────────────────────────────────────────────────────
@@ -417,6 +419,20 @@ mod tests {
             "the resumed HEAD, earlier work included"
         );
         assert_ne!(resumed.head_commit, created.head_commit);
+    }
+
+    #[test]
+    fn generated_slugs_do_not_repeat() {
+        // Two in a row used to be the same slug whenever they fell in the
+        // same second — the suffix was the wall clock.
+        let first = generate_random_slug();
+        let second = generate_random_slug();
+        assert_ne!(first, second, "a repeated name resumes an older worktree");
+        for slug in [&first, &second] {
+            validate_worktree_slug(slug).expect("a valid worktree name");
+            let suffix = slug.rsplit('-').next().unwrap();
+            assert_eq!(suffix.len(), 8, "{slug}");
+        }
     }
 
     #[test]
