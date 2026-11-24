@@ -2604,7 +2604,7 @@ impl Engine {
         if !should_use_session_memory_compact(&memory_content, &self.session.messages, config) {
             let message = format!(
                 "Session-memory compaction skipped: conversation is below the {} token threshold or memory is empty",
-                config.min_retain_tokens
+                config.max_retain_tokens
             );
             self.emit_compaction_failed(id, false, message.clone())
                 .await;
