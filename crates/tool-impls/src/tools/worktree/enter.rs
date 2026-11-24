@@ -115,6 +115,28 @@ impl ToolSpec for EnterWorktreeTool {
                 ToolError::execution_failed(format!("worktree creation task failed: {e}"))
             })??;
 
+        // For a RESUMED worktree, `create_result.head_commit` is the
+        // worktree's CURRENT HEAD — storing it as the session baseline made
+        // exit_worktree's `rev-list original..HEAD` count report 0 for all
+        // prior-session commits, so `action: "remove"` could delete earlier
+        // work (dir + `git branch -D`) without `discard_changes`. Use the
+        // branch point when derivable. That is git work: it runs here, on
+        // the blocking pool, never under the state lock below.
+        let baseline = if create_result.existed {
+            let (path, branch) = (
+                create_result.worktree_path.clone(),
+                create_result.worktree_branch.clone(),
+            );
+            tokio::task::spawn_blocking(move || merge_base_baseline(&path, &branch))
+                .await
+                .map_err(|e| {
+                    ToolError::execution_failed(format!("worktree baseline task failed: {e}"))
+                })?
+                .unwrap_or_else(|| create_result.head_commit.clone())
+        } else {
+            create_result.head_commit.clone()
+        };
+
         // 6. Update WorktreeSessionState. Re-verify under the lock: the
         // initial `!state.active` check ran before the (slow) git/process
         // work above, and a concurrent enter/exit interleaving in between
@@ -144,21 +166,6 @@ impl ToolSpec for EnterWorktreeTool {
                 state.worktree_branch = Some(create_result.worktree_branch.clone());
                 state.worktree_name = Some(slug.clone());
                 state.original_cwd = Some(context.cwd.clone());
-                // For a RESUMED worktree, `create_result.head_commit` is the
-                // worktree's CURRENT HEAD — storing it as the session baseline
-                // made exit_worktree's `rev-list original..HEAD` count report
-                // 0 for all prior-session commits, so `action: "remove"` could
-                // delete earlier work (dir + `git branch -D`) without
-                // `discard_changes`. Use the branch point when derivable.
-                let baseline = if create_result.existed {
-                    merge_base_baseline(
-                        &create_result.worktree_path,
-                        &create_result.worktree_branch,
-                    )
-                    .unwrap_or_else(|| create_result.head_commit.clone())
-                } else {
-                    create_result.head_commit.clone()
-                };
                 state.original_head_commit = Some(baseline);
                 state.session_id = None; // session_id not available in ToolContext
             }

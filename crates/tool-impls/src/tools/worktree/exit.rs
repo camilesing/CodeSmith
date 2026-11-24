@@ -134,7 +134,16 @@ impl ToolSpec for ExitWorktreeTool {
 
         // 2. Safety check for "remove" action
         if action == "remove" && !discard_changes {
-            let summary = count_worktree_changes(&worktree_path, &original_head_commit);
+            // Git subprocesses: on the blocking pool, off the async
+            // executor (the same reason `enter_worktree` gives).
+            let summary = {
+                let (path, baseline) = (worktree_path.clone(), original_head_commit.clone());
+                tokio::task::spawn_blocking(move || count_worktree_changes(&path, &baseline))
+                    .await
+                    .map_err(|e| {
+                        ToolError::execution_failed(format!("worktree check task failed: {e}"))
+                    })?
+            };
             match summary {
                 None => {
                     // Fail-closed: can't determine state, refuse
@@ -198,10 +207,25 @@ impl ToolSpec for ExitWorktreeTool {
         }
 
         // action == "remove"
-        let git_root = find_canonical_git_root(&context.workspace)
-            .unwrap_or_else(|| context.workspace.clone());
-
-        cleanup_worktree(&worktree_path, &worktree_branch, &git_root)?;
+        // `git worktree remove` deletes the whole checkout — seconds on a
+        // built tree — and the root lookup is a git call too: both on the
+        // blocking pool.
+        {
+            let (worktree_path, worktree_branch, workspace) = (
+                worktree_path.clone(),
+                worktree_branch.clone(),
+                context.workspace.clone(),
+            );
+            tokio::task::spawn_blocking(move || {
+                let git_root =
+                    find_canonical_git_root(&workspace).unwrap_or_else(|| workspace.clone());
+                cleanup_worktree(&worktree_path, &worktree_branch, &git_root)
+            })
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("worktree cleanup task failed: {e}"))
+            })??;
+        }
 
         // Clear state — conditionally (same compare-and-clear rationale).
         self.clear_session_if_same(&worktree_path);
