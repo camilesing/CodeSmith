@@ -209,6 +209,31 @@ fn validate_automation_rule(rule: &str) -> Result<String> {
             }
             Ok(joined)
         }
+        // The task page's "every day" arrives as FREQ=DAILY;INTERVAL=1 at a
+        // fixed clock — the same schedule as every weekday at that clock.
+        // Any other daily shape (a step, a day filter) has no equivalent.
+        "DAILY" => {
+            if keys
+                .iter()
+                .any(|key| !["FREQ", "INTERVAL", "BYHOUR", "BYMINUTE"].contains(&key.as_str()))
+            {
+                bail!("CodeSmith DAILY automations allow only FREQ,INTERVAL,BYHOUR,BYMINUTE");
+            }
+            let field = |name: &str| {
+                joined
+                    .split(';')
+                    .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            };
+            match (field("INTERVAL"), field("BYHOUR"), field("BYMINUTE")) {
+                (None | Some("1"), Some(hour), Some(minute)) => Ok(format!(
+                    "FREQ=WEEKLY;BYDAY={};BYHOUR={hour};BYMINUTE={minute}",
+                    WEEKDAY_CODES.join(",")
+                )),
+                _ => {
+                    bail!("CodeSmith DAILY automations need INTERVAL=1 and a BYHOUR/BYMINUTE clock")
+                }
+            }
+        }
         other => {
             bail!("CodeSmith automations support FREQ=HOURLY and FREQ=WEEKLY only (got {other:?})")
         }
@@ -738,6 +763,20 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(hourly, "FREQ=HOURLY;INTERVAL=3");
+        // The task page's "every day" (found failing in the desktop): a daily
+        // step of one at a fixed clock is every weekday at that clock.
+        let daily = timing_to_rrule(&json!({
+            "kind": "rrule", "rrule": "RRULE:FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=38"
+        }))
+        .unwrap();
+        assert_eq!(
+            daily,
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=38"
+        );
+        let stepped = timing_to_rrule(&json!({
+            "kind": "rrule", "rrule": "FREQ=DAILY;INTERVAL=2;BYHOUR=9;BYMINUTE=38"
+        }));
+        assert!(stepped.is_err(), "every other day has no equivalent");
         let daily = timing_to_rrule(&json!({ "kind": "rrule", "rrule": "FREQ=DAILY" }));
         assert!(daily.is_err(), "DAILY is outside the automation grammar");
         let with_seconds = timing_to_rrule(&json!({
