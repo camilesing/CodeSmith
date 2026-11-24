@@ -72,6 +72,28 @@ fn validated_record_id<'a>(id: &'a str, label: &str) -> Result<&'a str> {
     Ok(trimmed)
 }
 
+/// The engine events the turn loop (`monitor_turn`) does not relay: it emits
+/// and journals nothing for them, so they never flush a deferred message
+/// completion — the engine reports `SessionUpdated` as it files the final
+/// message, and that report must not cost the completion its turn usage.
+/// The loop's `match` leaves exactly these to its catch-all arm; an arm
+/// added for one of them takes it off this list.
+fn ignored_by_turn_loop(event: &EngineEvent) -> bool {
+    matches!(
+        event,
+        EngineEvent::PurgeStarted { .. }
+            | EngineEvent::PurgeCompleted { .. }
+            | EngineEvent::PurgeFailed { .. }
+            | EngineEvent::SubAgentMailbox { .. }
+            | EngineEvent::SessionUpdated { .. }
+            | EngineEvent::PrefixCacheChange { .. }
+            | EngineEvent::ResultVerification { .. }
+            | EngineEvent::TranscriptRebuilt { .. }
+            | EngineEvent::BackgroundTaskStarted { .. }
+            | EngineEvent::BackgroundTaskNotification { .. }
+    )
+}
+
 /// Bumped to 2 for v0.6.6 — see issue #124. The persisted thread/turn/item
 /// records didn't change shape, but the live engine semantics did: cycle
 /// boundaries advance the `Session.cycle_count` and produce archived JSONL
@@ -3758,8 +3780,8 @@ impl RuntimeThreadManager {
         // A settled message whose `item.completed` emission is deferred: the
         // turn's usage arrives only with `TurnComplete`, and attaching it to
         // this payload (where GUI clients read per-turn accounting) must not
-        // reorder the journal — the next engine event flushes it first, and
-        // the turn end flushes it last, with the usage.
+        // reorder the journal — the next relayed engine event flushes it
+        // first, and the turn end flushes it last, with the usage.
         let mut pending_message_emit: Option<(String, Value)> = None;
         let mut tool_items: HashMap<String, String> = HashMap::new();
         let mut compaction_items: HashMap<String, String> = HashMap::new();
@@ -3792,8 +3814,11 @@ impl RuntimeThreadManager {
             // Flush a deferred message completion before anything else emits
             // (preserving journal order) — except for `TurnComplete`, whose
             // handler breaks the loop and lets the post-loop flush attach the
-            // turn's usage to this very payload.
+            // turn's usage to this very payload, and except for the events
+            // this loop ignores: they emit nothing, so the completion keeps
+            // waiting for that usage.
             if !matches!(event, EngineEvent::TurnComplete { .. })
+                && !ignored_by_turn_loop(&event)
                 && let Some((pending_id, pending_item)) = pending_message_emit.take()
             {
                 self.emit_event(
@@ -5988,6 +6013,126 @@ mod tests {
             "arguments survive the result's metadata replacement"
         );
         assert_eq!(metadata.get("bytes"), Some(&json!(2)));
+        Ok(())
+    }
+
+    /// Found through the desktop: on a live turn the final message's
+    /// `item.completed` never carried the turn's usage, so a GUI client
+    /// showed per-turn accounting only after a replay. The engine reports
+    /// `SessionUpdated` as it files that message — between `MessageComplete`
+    /// and `TurnComplete` — and the loop let that unrelayed report flush the
+    /// deferred completion first.
+    #[tokio::test]
+    async fn an_unrelayed_engine_event_does_not_flush_the_deferred_message_completion() -> Result<()>
+    {
+        let manager = test_manager(test_runtime_dir())?;
+        let thread = manager
+            .create_thread(CreateThreadRequest {
+                model: None,
+                workspace: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                archived: false,
+                system_prompt: None,
+                task_id: None,
+            })
+            .await?;
+
+        let harness = install_mock_engine(&manager, &thread.id).await;
+        let mut rx_op = harness.rx_op;
+        let tx_event = harness.tx_event;
+        let session_id = thread.id.clone();
+        tokio::spawn(async move {
+            if matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
+                let _ = tx_event
+                    .send(EngineEvent::TurnStarted {
+                        turn_id: "engine_turn_1".to_string(),
+                        synthesized: false,
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageStarted { index: 0 })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageDelta {
+                        index: 0,
+                        content: "done".to_string(),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::MessageComplete { index: 0 })
+                    .await;
+                // `SessionChatHistory::push` reports the filed message.
+                let _ = tx_event
+                    .send(EngineEvent::SessionUpdated {
+                        session_id,
+                        messages: std::sync::Arc::new(Vec::new()),
+                        system_prompt: None,
+                        model: String::new(),
+                        workspace: std::path::PathBuf::new(),
+                    })
+                    .await;
+                let _ = tx_event
+                    .send(EngineEvent::TurnComplete {
+                        usage: Usage {
+                            input_tokens: 100,
+                            output_tokens: 7,
+                            prompt_cache_hit_tokens: Some(90),
+                            prompt_cache_miss_tokens: Some(10),
+                            ..Usage::default()
+                        },
+                        status: TurnOutcomeStatus::Completed,
+                        error: None,
+                        tool_catalog: None,
+                        base_url: None,
+                        reported_model: None,
+                        failed_attempts: Vec::new(),
+                    })
+                    .await;
+            }
+        });
+
+        let turn = manager
+            .start_turn(
+                &thread.id,
+                StartTurnRequest {
+                    prompt: "say done".to_string(),
+                    input_summary: None,
+                    model: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    attachments: Vec::new(),
+                },
+            )
+            .await?;
+        let completed = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
+        assert_eq!(completed.status, RuntimeTurnStatus::Completed);
+
+        let events = manager.events_since(&thread.id, None)?;
+        let message_completed = events
+            .iter()
+            .position(|ev| {
+                ev.event == "item.completed"
+                    && ev
+                        .payload
+                        .pointer("/item/kind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("agent_message")
+            })
+            .expect("message item.completed emitted");
+        let usage = events[message_completed].payload.get("usage").cloned();
+        assert_eq!(
+            usage,
+            Some(json!({
+                "input_tokens": 100, "output_tokens": 7,
+                "prompt_cache_hit_tokens": 90, "prompt_cache_miss_tokens": 10,
+            })),
+            "the unrelayed session report must not cost the completion its usage"
+        );
         Ok(())
     }
 
