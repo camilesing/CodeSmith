@@ -5735,6 +5735,58 @@ async fn sync_session_moves_cwd_into_next_turn_meta() {
     );
 }
 
+/// Found through the desktop: a thread resumed after the runtime restarted
+/// ran every later turn without a system prompt. `Op::SyncSession` replaces
+/// the session's prompt — a thread without a custom one syncs `None` — but
+/// left the hash the engine build stamped for the assembled prompt, so each
+/// turn's refresh read that prompt as already applied.
+#[tokio::test]
+async fn sync_session_without_a_prompt_keeps_the_assembled_system_prompt() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    // The engine is built for the same model the sync names, as a resumed
+    // thread's is, and the turn keeps its approvals like a desktop thread's:
+    // either one differing changes the prompt, and the refresh re-applies it.
+    let mut config = test_engine_config(tmp.path());
+    config.model = "mock-model".to_string();
+    let mock = MockLlmClient::new(vec![canned::simple_text_turn("ok")]);
+    let (handle, mock) = spawn_engine_with_mock(config, mock);
+    // A resumed thread: the same workspace, no custom prompt.
+    handle
+        .send(Op::SyncSession {
+            session_id: Some("resumed-thread".to_string()),
+            messages: Vec::new(),
+            system_prompt: None,
+            system_prompt_override: false,
+            model: "mock-model".to_string(),
+            workspace: tmp.path().to_path_buf(),
+        })
+        .await
+        .expect("sync op");
+    let mut send = make_send_op("hello");
+    let Op::SendMessage {
+        auto_approve,
+        approval_mode,
+        ..
+    } = &mut send
+    else {
+        unreachable!("make_send_op builds a SendMessage");
+    };
+    *auto_approve = false;
+    *approval_mode = ApprovalMode::Suggest;
+    handle.send(send).await.expect("send op");
+    let _events = collect_until_turn_complete(&handle).await;
+
+    let system = mock
+        .last_request()
+        .expect("the turn reached the model")
+        .system;
+    assert!(
+        matches!(&system, Some(SystemPrompt::Text(text)) if !text.trim().is_empty()),
+        "a resumed thread's turn carries the assembled system prompt: {system:?}"
+    );
+}
+
 // === Cycle-trigger regression: window smaller than the flat reserve ========
 
 /// A model whose context window is smaller than the flat turn-response

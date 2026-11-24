@@ -950,6 +950,12 @@ impl Engine {
                     self.session.system_prompt = system_prompt;
                     self.session.system_prompt_override =
                         system_prompt_override && self.session.system_prompt.is_some();
+                    // The synced prompt is not the one the hash was stamped
+                    // for — a thread resumed without a custom prompt syncs
+                    // `None` — so the next turn's refresh must apply the
+                    // assembled prompt instead of reading the stale hash as
+                    // "already applied".
+                    self.session.last_system_prompt_hash = None;
                     self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                     self.session.model = model;
                     self.session.workspace = workspace.clone();
