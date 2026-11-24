@@ -122,9 +122,9 @@ pub struct RecordingClient {
 }
 
 impl RecordingClient {
-    /// Wrap `inner`, appending to `path`. The file (and its parent
-    /// directory) must already exist — misconfiguration fails loud here,
-    /// at the earliest resolvable point.
+    /// Wrap `inner`, appending to `path` (created if missing; its parent
+    /// directory must already exist) — misconfiguration fails loud here, at
+    /// the earliest resolvable point.
     pub fn new(inner: LlmClientHandle, path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         let file = std::fs::OpenOptions::new()
