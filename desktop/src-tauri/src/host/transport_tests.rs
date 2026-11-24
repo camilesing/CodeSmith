@@ -30,6 +30,9 @@ use super::{bridge_router, HostState, SharedHost};
 
 // === The scripted fake runtime ===
 
+/// One automation PATCH or DELETE the fake runtime recorded: (method, id, body).
+type AutomationEdit = (&'static str, String, Value);
+
 #[derive(Clone)]
 struct FakeRuntime {
     workspace: std::path::PathBuf,
@@ -48,7 +51,7 @@ struct FakeRuntime {
     /// The stored automations, as `GET /v1/automations` lists them.
     automations: Arc<StdMutex<Vec<Value>>>,
     /// Every automation PATCH and DELETE, as (method, id, body).
-    automation_edits: Arc<StdMutex<Vec<(&'static str, String, Value)>>>,
+    automation_edits: Arc<StdMutex<Vec<AutomationEdit>>>,
     /// Sub-agent continuation inputs and cancels, as (path suffix, body).
     subagent_posts: Arc<StdMutex<Vec<(&'static str, String)>>>,
     /// Feed of SSE `data:` lines handed to every events subscriber.
