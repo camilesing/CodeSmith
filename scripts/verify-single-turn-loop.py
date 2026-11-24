@@ -51,6 +51,10 @@ ALLOWLIST = {
         "the RLM algorithm (code → REPL → final answer over a Python kernel), "
         "a tool's protocol rather than a tool-dispatching agent loop"
     ),
+    "crates/agent/src/structured.rs": (
+        "the structured-output extraction retry: resubmits one extraction "
+        "with the schema error as feedback, never dispatches a host tool"
+    ),
 }
 
 CALL_RE = re.compile(r"\.create_message(?:_stream)?\s*\(")
