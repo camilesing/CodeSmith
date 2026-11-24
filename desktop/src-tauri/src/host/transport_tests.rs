@@ -16,7 +16,7 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -45,6 +45,10 @@ struct FakeRuntime {
     tasks: Arc<StdMutex<Vec<Value>>>,
     /// Automation run POSTs, in order.
     automation_runs: Arc<StdMutex<Vec<String>>>,
+    /// The stored automations, as `GET /v1/automations` lists them.
+    automations: Arc<StdMutex<Vec<Value>>>,
+    /// Every automation PATCH and DELETE, as (method, id, body).
+    automation_edits: Arc<StdMutex<Vec<(&'static str, String, Value)>>>,
     /// Sub-agent continuation inputs and cancels, as (path suffix, body).
     subagent_posts: Arc<StdMutex<Vec<(&'static str, String)>>>,
     /// Feed of SSE `data:` lines handed to every events subscriber.
@@ -72,6 +76,8 @@ impl FakeRuntime {
             approvals: Default::default(),
             tasks: Default::default(),
             automation_runs: Default::default(),
+            automations: Default::default(),
+            automation_edits: Default::default(),
             subagent_posts: Default::default(),
             events_tx,
             watchers: Default::default(),
@@ -98,6 +104,10 @@ impl FakeRuntime {
 
     fn add_task(&self, task: Value) {
         self.tasks.lock().unwrap().push(task);
+    }
+
+    fn add_automation(&self, automation: Value) {
+        self.automations.lock().unwrap().push(automation);
     }
 }
 
@@ -327,7 +337,51 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
                 },
             ),
         )
-        .route("/v1/automations", get(|| async move { Json(json!([])) }))
+        .route(
+            "/v1/automations",
+            get(|State(fake): State<FakeRuntime>| async move {
+                Json(fake.automations.lock().unwrap().clone())
+            }),
+        )
+        // Patch semantics: a present field replaces, and the revision moves.
+        .route(
+            "/v1/automations/{id}",
+            patch(
+                |State(fake): State<FakeRuntime>,
+                 Path(id): Path<String>,
+                 Json(body): Json<Value>| async move {
+                    let mut automations = fake.automations.lock().unwrap();
+                    let Some(automation) = automations.iter_mut().find(|a| a["id"] == id) else {
+                        return axum::http::StatusCode::NOT_FOUND.into_response();
+                    };
+                    fake.automation_edits
+                        .lock()
+                        .unwrap()
+                        .push(("PATCH", id, body.clone()));
+                    for key in ["name", "prompt", "rrule", "cwds", "status"] {
+                        if let Some(value) = body.get(key) {
+                            automation[key] = value.clone();
+                        }
+                    }
+                    automation["updated_at"] = json!("2026-11-15T00:00:02Z");
+                    Json(automation.clone()).into_response()
+                },
+            )
+            .delete(
+                |State(fake): State<FakeRuntime>, Path(id): Path<String>| async move {
+                    let mut automations = fake.automations.lock().unwrap();
+                    let Some(at) = automations.iter().position(|a| a["id"] == id) else {
+                        return axum::http::StatusCode::NOT_FOUND.into_response();
+                    };
+                    fake.automation_edits
+                        .lock()
+                        .unwrap()
+                        .push(("DELETE", id, Value::Null));
+                    // The runtime answers with the record it removed.
+                    Json(automations.remove(at)).into_response()
+                },
+            ),
+        )
         .route(
             "/v1/automations/{id}/run",
             post(
@@ -1214,6 +1268,129 @@ async fn schedule_run_and_history_map_onto_automations() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["messageId"], json!("run_1"));
     assert_eq!(records[0]["prompt"], json!("daily report"));
+    drop(home);
+}
+
+/// Found in the desktop: the task page's pause, resume, edit and delete all
+/// answered "edit without a change" — the page nests its change in `patch`
+/// and states its intent in `action`, and the bridge read neither.
+#[tokio::test]
+async fn schedule_edit_applies_the_page_patch_and_delete() {
+    let (home, client, base, fake, _host, _ws) = spawn_stack("schedule-edit").await;
+    let other = fake.workspace.join("other");
+    std::fs::create_dir_all(&other).expect("other project dir");
+    fake.add_automation(json!({
+        "id": "auto_1", "name": "Tidy", "prompt": "run tidy",
+        "rrule": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0",
+        "cwds": [fake.workspace.to_string_lossy()],
+        "status": "active",
+        "created_at": "2026-11-15T00:00:00Z", "updated_at": "2026-11-15T00:00:01Z",
+        "next_run_at": "2026-11-16T09:00:00Z",
+    }));
+    let edit = |request: Value| {
+        rpc(
+            &client,
+            &base,
+            "schedule/edit",
+            json!({ "request": request }),
+        )
+    };
+    // Pause and resume carry the page's `patch.active` and the revision it read.
+    let paused = edit(json!({
+        "id": "auto_1", "action": "update", "patch": { "active": false },
+        "expectedUpdatedAt": "2026-11-15T00:00:01Z",
+    }))
+    .await;
+    assert_eq!(
+        paused["value"]["status"],
+        json!("paused"),
+        "pause: {paused}"
+    );
+    let resumed = edit(json!({
+        "id": "auto_1", "action": "update", "patch": { "active": true },
+        "expectedUpdatedAt": "2026-11-15T00:00:02Z",
+    }))
+    .await;
+    assert_eq!(
+        resumed["value"]["status"],
+        json!("active"),
+        "resume: {resumed}"
+    );
+    // `expectedUpdatedAt: null` — the editor read no revision — skips the check.
+    let renamed = edit(json!({
+        "id": "auto_1", "action": "update", "patch": { "title": "Tidy up" },
+        "expectedUpdatedAt": null,
+    }))
+    .await;
+    assert_eq!(
+        renamed["value"]["title"],
+        json!("Tidy up"),
+        "rename: {renamed}"
+    );
+    // A timing edit recompiles and a target's created-session cwd remaps in
+    // the same change.
+    let retimed = edit(json!({
+        "id": "auto_1", "action": "update",
+        "patch": {
+            "timing": { "kind": "daily", "daily": { "time": "09:30" } },
+            "target": { "kind": "new", "create": { "cwd": other.to_string_lossy() } },
+        },
+    }))
+    .await;
+    assert_eq!(
+        retimed["value"]["rrule"],
+        json!("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=30"),
+        "retime: {retimed}"
+    );
+    assert_eq!(
+        retimed["value"]["target"]["create"]["cwd"],
+        json!(other.to_string_lossy()),
+        "retime: {retimed}"
+    );
+    // A revision the editor did read is still enforced.
+    let stale = edit(json!({
+        "id": "auto_1", "action": "update", "patch": { "title": "Stale" },
+        "expectedUpdatedAt": "2026-11-15T00:00:01Z",
+    }))
+    .await;
+    assert_eq!(
+        stale["error"]["code"],
+        json!("schedule_conflict"),
+        "stale: {stale}"
+    );
+    // Delete is the same verb with `action: "delete"`.
+    let deleted = edit(json!({ "id": "auto_1", "action": "delete" })).await;
+    assert_eq!(
+        deleted["value"],
+        json!({ "id": "auto_1", "deleted": true }),
+        "delete: {deleted}"
+    );
+    let catalog = rpc(&client, &base, "schedule/catalog", json!({})).await;
+    assert_eq!(
+        catalog["value"],
+        json!([]),
+        "deleted task still listed: {catalog}"
+    );
+    // What the runtime received, in order.
+    let edits = fake.automation_edits.lock().unwrap().clone();
+    assert_eq!(
+        edits,
+        vec![
+            ("PATCH", "auto_1".to_string(), json!({ "status": "paused" })),
+            ("PATCH", "auto_1".to_string(), json!({ "status": "active" })),
+            ("PATCH", "auto_1".to_string(), json!({ "name": "Tidy up" })),
+            (
+                "PATCH",
+                "auto_1".to_string(),
+                json!({
+                    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=30",
+                    "cwds": [other.to_string_lossy()],
+                })
+            ),
+            ("DELETE", "auto_1".to_string(), Value::Null),
+        ],
+        "runtime edits: {edits:?}"
+    );
     drop(home);
 }
 

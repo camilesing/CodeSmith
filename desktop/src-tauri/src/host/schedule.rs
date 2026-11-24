@@ -518,11 +518,22 @@ impl std::fmt::Display for StaleRevision {
 
 impl std::error::Error for StaleRevision {}
 
-/// `schedule/edit` — PATCH the mutable fields; a timing edit recompiles.
+/// `schedule/edit` — the task page's one mutation verb. `action: "update"`
+/// applies `patch` (title / prompt / timing / target / active) as one atomic
+/// change — a timing edit recompiles, `active` is the automation's status —
+/// and `action: "delete"` removes the task and answers `{ id, deleted }`.
+/// Either way a result without a `code` member reads as saved.
+///
 /// `expectedUpdatedAt` is enforced here (the runtime's PATCH ignores it):
 /// the stored `updated_at` must equal the revision the editor read, and a
 /// mismatch answers `schedule_conflict` so the client can offer to review
-/// its edits instead of overwriting a newer task.
+/// its edits instead of overwriting a newer task. `null` — the editor read
+/// no revision — skips the check.
+///
+/// Not applied: a `session` delivery target (automations always run in a
+/// working directory), so an edit whose only change is that target is an
+/// edit without a change; and a task the runtime no longer holds answers
+/// its 404 as an arguments error, not `schedule_not_found`.
 pub async fn edit(host: &HostState, request: &Value) -> Result<Value, OpError> {
     match edit_inner(host, request).await {
         Ok(value) => Ok(value),
@@ -543,28 +554,50 @@ async fn edit_inner(host: &HostState, request: &Value) -> Result<Value> {
         .get("id")
         .and_then(Value::as_str)
         .context("edit without id")?;
+    let delete = match request.get("action").and_then(Value::as_str) {
+        None | Some("update") => false,
+        Some("delete") => true,
+        Some(other) => bail!("edit with unknown action {other:?}"),
+    };
+    // The page nests its change in `patch`; a caller may also send the
+    // fields bare, so the request itself is the fallback.
+    let changes = request
+        .get("patch")
+        .filter(|patch| patch.is_object())
+        .unwrap_or(request);
     let mut body = json!({});
     let obj = body.as_object_mut().unwrap();
-    if let Some(title) = request.get("title").and_then(Value::as_str) {
+    if let Some(title) = changes.get("title").and_then(Value::as_str) {
         obj.insert("name".into(), json!(title));
     }
-    if let Some(prompt) = request.get("prompt").and_then(Value::as_str) {
+    if let Some(prompt) = changes.get("prompt").and_then(Value::as_str) {
         obj.insert("prompt".into(), json!(prompt));
     }
-    if let Some(timing) = request.get("timing") {
+    if let Some(timing) = changes.get("timing") {
         let rrule = timing_to_rrule(timing)?;
         obj.insert("rrule".into(), json!(rrule));
     }
-    if let Some(active) = request.get("active").and_then(Value::as_bool) {
+    // A delivery target's created-session cwd is the automation's run
+    // directory, the same mapping `create` makes.
+    if let Some(cwd) = changes
+        .pointer("/target/create/cwd")
+        .and_then(Value::as_str)
+    {
+        obj.insert("cwds".into(), json!([cwd]));
+    }
+    if let Some(active) = changes.get("active").and_then(Value::as_bool) {
         obj.insert(
             "status".into(),
             json!(if active { "active" } else { "paused" }),
         );
     }
-    if obj.is_empty() {
+    if !delete && obj.is_empty() {
         bail!("edit without a change");
     }
-    if let Some(expected) = request.get("expectedUpdatedAt") {
+    if let Some(expected) = request
+        .get("expectedUpdatedAt")
+        .filter(|expected| !expected.is_null())
+    {
         let automations: Vec<Value> = host
             .backend
             .get("/v1/automations")
@@ -579,6 +612,14 @@ async fn edit_inner(host: &HostState, request: &Value) -> Result<Value> {
         if &current != expected {
             return Err(anyhow::Error::new(StaleRevision));
         }
+    }
+    if delete {
+        let _: Value = host
+            .backend
+            .delete(&format!("/v1/automations/{id}"))
+            .await
+            .with_context(|| format!("delete automation {id}"))?;
+        return Ok(json!({ "id": id, "deleted": true }));
     }
     let automation: Value = host
         .backend
