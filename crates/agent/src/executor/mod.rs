@@ -171,8 +171,27 @@ impl DefaultAgentExecutor {
             };
 
             callback.on_llm_start(&request).await;
-            let stream = client.create_message_stream(request).await?;
-            let (content, _stop_reason) = accumulate_stream(stream).await?;
+            // `on_complete` fires once whenever the run stops (the `Callback`
+            // contract): an LLM or stream failure is a stop with
+            // `StopReason::Error`, not a bare `Err` that skips the hook.
+            let stream = match client.create_message_stream(request).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    callback
+                        .on_complete(&StopReason::Error(format!("{e:#}")))
+                        .await;
+                    return Err(e);
+                }
+            };
+            let (content, _stop_reason) = match accumulate_stream(stream).await {
+                Ok(reduced) => reduced,
+                Err(e) => {
+                    callback
+                        .on_complete(&StopReason::Error(format!("{e:#}")))
+                        .await;
+                    return Err(e);
+                }
+            };
             callback.on_llm_end(&content).await;
 
             // Persist the assistant turn.
@@ -712,6 +731,33 @@ mod tests {
         assert!(lines.iter().any(|l| l == "tool_end:echo:ok:echo:world"));
         assert!(lines.iter().any(|l| l == "step:0"));
         assert!(lines.iter().any(|l| l == "complete:NoToolCalls"));
+    }
+
+    /// `on_complete` fires once whenever the run stops — an LLM or stream
+    /// failure included. The run used to return `Err` without the hook,
+    /// unlike `HostAgentExecutor` and the `Callback` contract.
+    #[tokio::test]
+    async fn a_truncated_stream_completes_with_an_error_stop() {
+        // No `MessageStop`: the reducer reports a truncated response.
+        let recorder = Arc::new(RecordingCallback::new());
+        let ex = executor(vec![text_block(0, "cut off")], 10, recorder.clone());
+        let mut history = VecChatHistory::new();
+        let err = ex
+            .run(&mut history, "hi".to_string())
+            .await
+            .expect_err("a stream without MessageStop fails");
+        assert!(err.to_string().contains("without MessageStop"), "{err}");
+
+        let lines = recorder.lines();
+        let completions: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.starts_with("complete:"))
+            .collect();
+        assert_eq!(completions.len(), 1, "exactly one completion: {lines:?}");
+        assert!(
+            completions[0].starts_with("complete:Error("),
+            "the failure is the stop reason: {lines:?}"
+        );
     }
 
     #[tokio::test]
