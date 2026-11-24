@@ -5625,42 +5625,49 @@ pub(crate) async fn run_interactive(
         logging::warn(format!("Failed to install system skills: {e}"));
     }
 
-    // Prune stale workspace snapshots from prior sessions (7-day default).
-    // Non-fatal: a flaky disk, missing `git`, or read-only home should
-    // never block the REPL from starting.
+    // Boot prunes of stale on-disk state. All non-fatal: a flaky disk,
+    // missing `git`, or read-only home should never block the REPL from
+    // starting. They walk directories and the snapshot prune shells out to
+    // git (a gc included), so the whole set runs on the blocking pool —
+    // inline it would stall the runtime worker for the length of the gc.
     let snapshots = config.snapshots_config();
-    if snapshots.is_enabled() {
-        codesmith_agent_runtime::snapshot::prune_workspace_snapshots(
-            &workspace,
-            snapshots.max_age(),
-        );
-    }
+    let prune_workspace = workspace.clone();
+    // A join error only means the task panicked or was cancelled at
+    // shutdown; the prunes are best-effort either way.
+    let _ = tokio::task::spawn_blocking(move || {
+        // Stale workspace snapshots from prior sessions (7-day default).
+        if snapshots.is_enabled() {
+            codesmith_agent_runtime::snapshot::prune_workspace_snapshots(
+                &prune_workspace,
+                snapshots.max_age(),
+            );
+        }
 
-    // Prune stale tool-output spillover files (#422). Non-fatal: home
-    // missing or directory unreadable just means nothing got pruned;
-    // we never block startup. Runs unconditionally because the
-    // spillover store is created lazily on first write — there's no
-    // user-facing setting to gate.
-    match codesmith_session::spillover::prune_older_than(
-        codesmith_session::spillover::SPILLOVER_MAX_AGE,
-    ) {
-        Ok(0) => {}
-        Ok(n) => tracing::debug!(
-            target: "spillover",
-            "boot prune removed {n} spillover file(s)"
-        ),
-        Err(err) => tracing::warn!(
-            target: "spillover",
-            ?err,
-            "spillover prune skipped on boot"
-        ),
-    }
+        // Stale tool-output spillover files (#422). Runs unconditionally
+        // because the spillover store is created lazily on first write —
+        // there's no user-facing setting to gate.
+        match codesmith_session::spillover::prune_older_than(
+            codesmith_session::spillover::SPILLOVER_MAX_AGE,
+        ) {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!(
+                target: "spillover",
+                "boot prune removed {n} spillover file(s)"
+            ),
+            Err(err) => tracing::warn!(
+                target: "spillover",
+                ?err,
+                "spillover prune skipped on boot"
+            ),
+        }
 
-    // v0.8.44: prune managed sessions on boot to prevent unbounded growth.
-    // Keeps at most MAX_SESSIONS (50) recent sessions; non-fatal on error.
-    if let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() {
-        let _ = manager.cleanup_old_sessions();
-    }
+        // v0.8.44: prune managed sessions on boot to prevent unbounded
+        // growth. Keeps at most MAX_SESSIONS (50) recent sessions.
+        if let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() {
+            let _ = manager.cleanup_old_sessions();
+        }
+    })
+    .await;
 
     // `CODESMITH_YOLO` (config.yolo) is not a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
