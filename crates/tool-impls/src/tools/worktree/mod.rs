@@ -105,62 +105,21 @@ fn run_git(working_dir: &Path, args: &[&str]) -> Result<std::process::Output, To
         .map_err(|e| ToolError::execution_failed(format!("git command failed: {e}")))
 }
 
-/// Find the canonical git root, resolving through worktree links.
-/// If inside a worktree, returns the main repository root.
+/// The directory session worktrees are created under and their git
+/// commands run in: the workspace itself, canonicalized, when it is inside
+/// a git repository. It only has to be inside the repository — `git worktree
+/// add` resolves the repository from there whether the workspace is a main
+/// checkout, a subdirectory of one, or a linked worktree — so the worktrees
+/// land at `<workspace>/.codesmith/worktrees/`, inside the workspace the
+/// file tools are contained to. Despite the name it is not the main
+/// repository's root when the workspace is a linked worktree or a
+/// subdirectory; nothing here needs that.
 pub fn find_canonical_git_root(start_dir: &Path) -> Option<PathBuf> {
     let output = run_git(start_dir, &["rev-parse", "--git-dir"]).ok()?;
     if !output.status.success() {
         return None;
     }
-    let git_dir_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let git_dir = start_dir.join(&git_dir_str);
-
-    // For worktrees, .git is a file containing "gitdir: <path>".
-    // The commondir file inside the worktree git dir points to the main repo.
-    if git_dir.is_dir() {
-        // Not a worktree — git_dir IS the main .git directory
-        let commondir_path = git_dir.join("commondir");
-        if let Ok(common_dir_str) = std::fs::read_to_string(&commondir_path) {
-            // commondir usually contains just "." for the main repo
-            let common_dir_str = common_dir_str.trim();
-            let common_dir = if PathBuf::from(common_dir_str).is_relative() {
-                git_dir.join(common_dir_str)
-            } else {
-                PathBuf::from(common_dir_str)
-            };
-            common_dir.parent().map(|p| p.to_path_buf())
-        } else {
-            start_dir.canonicalize().ok()
-        }
-    } else {
-        // git_dir is a file (worktree gitlink)
-        let gitlink = std::fs::read_to_string(&git_dir).ok()?;
-        let gitlink_trimmed = gitlink.trim();
-        let real_git_dir = if gitlink_trimmed.starts_with("gitdir: ") {
-            PathBuf::from(gitlink_trimmed.strip_prefix("gitdir: ").unwrap())
-        } else {
-            PathBuf::from(gitlink_trimmed)
-        };
-        let resolved_git_dir = if real_git_dir.is_relative() {
-            start_dir.join(real_git_dir)
-        } else {
-            real_git_dir
-        };
-        // Read commondir from the resolved git dir
-        let commondir_path = resolved_git_dir.join("commondir");
-        if let Ok(common_dir_str) = std::fs::read_to_string(&commondir_path) {
-            let common_dir_str = common_dir_str.trim();
-            let common_dir = if PathBuf::from(common_dir_str).is_relative() {
-                resolved_git_dir.join(common_dir_str)
-            } else {
-                PathBuf::from(common_dir_str)
-            };
-            // The canonical root is the parent of the common .git directory
-            common_dir.parent().map(|p| p.to_path_buf())
-        } else {
-            start_dir.canonicalize().ok()
-        }
-    }
+    start_dir.canonicalize().ok()
 }
 
 /// Get the current branch name at a given path.
@@ -392,6 +351,81 @@ pub fn cleanup_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── real-git fixtures ──────────────────────────────────────────────
+
+    fn git_available() -> bool {
+        codesmith_agent_runtime::dependencies::Git::available()
+    }
+
+    fn git_ok(root: &Path, args: &[&str]) {
+        let output = run_git(root, args).expect("git should spawn");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A repository on `main` (pinned: the default name is global config).
+    fn init_git_repo(root: &Path) {
+        git_ok(root, &["init", "-q", "-b", "main"]);
+        git_ok(root, &["config", "user.email", "test@example.com"]);
+        git_ok(root, &["config", "user.name", "Test User"]);
+    }
+
+    fn commit(root: &Path, message: &str) {
+        // Nothing to add, and a global `commit.gpgsign` must not matter.
+        git_ok(
+            root,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+        );
+    }
+
+    /// A session started inside a linked worktree creates its session
+    /// worktrees under that workspace — where the file tools can reach them
+    /// — not under the main repository's `.git` directory.
+    #[test]
+    fn a_session_in_a_linked_worktree_keeps_its_worktrees_inside_it() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).expect("mkdir");
+        init_git_repo(&main);
+        commit(&main, "init");
+        let linked = tmp.path().join("linked");
+        git_ok(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+        );
+
+        let root = find_canonical_git_root(&linked).expect("the workspace is a git repository");
+        assert_eq!(
+            root,
+            linked.canonicalize().unwrap(),
+            "the workspace itself, not a path under the main repo's .git"
+        );
+        let created = get_or_create_worktree(&root, "x").expect("session worktree");
+        assert!(created.worktree_path.starts_with(&root));
+        assert!(created.worktree_path.join(".git").is_file());
+    }
 
     #[test]
     fn validate_worktree_slug_accepts_valid_names() {
