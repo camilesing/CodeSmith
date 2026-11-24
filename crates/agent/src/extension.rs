@@ -2076,6 +2076,21 @@ impl MessageProjectionHub {
         state.dirty = true;
     }
 
+    /// Drop the projection registered as `(owner, key)` — the unload of the
+    /// mod that registered it. A no-op when no such projection exists.
+    /// Marks the hub dirty, like `clear`: the survivors' states are refolded
+    /// from the transcript at the next turn start.
+    pub fn unregister(&self, owner: &str, key: &str) {
+        let mut state = self.inner.lock().expect("projection hub poisoned");
+        let before = state.projections.len();
+        state
+            .projections
+            .retain(|p| !(p.owner == owner && p.key == key));
+        if state.projections.len() != before {
+            state.dirty = true;
+        }
+    }
+
     /// Consume the dirty flag (the engine refolds the transcript when this
     /// returns `true`).
     pub fn take_dirty(&self) -> bool {

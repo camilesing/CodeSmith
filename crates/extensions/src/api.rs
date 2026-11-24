@@ -15,7 +15,6 @@
 //! the generation under the same lock — so a registration can never be
 //! checked live and then queued after an invalidation (§7.3).
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -121,9 +120,10 @@ impl ExtensionApi for StubExtensionApi {
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending
-            .commands
-            .push(crate::runner::PendingCommand { command });
+        pending.commands.push(crate::runner::PendingCommand {
+            command,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn disable_command(&self, name: String) -> Result<(), ExtensionError> {
@@ -138,7 +138,7 @@ impl ExtensionApi for StubExtensionApi {
         }
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending.disabled_commands.push(name);
+        pending.disabled_commands.push((name, self.origin));
         Ok(())
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
@@ -191,12 +191,13 @@ impl ExtensionApi for StubExtensionApi {
         crate::runner::validate_tool_restriction(&scope, &names)?;
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending
-            .tool_restrictions
-            .push(crate::runner::ToolRestriction {
+        pending.tool_restrictions.push((
+            crate::runner::ToolRestriction {
                 scope,
                 denied: names,
-            });
+            },
+            self.origin,
+        ));
         Ok(())
     }
     fn replace_tool(&self, replacement: Box<dyn ToolReplacement>) -> Result<(), ExtensionError> {
@@ -228,9 +229,10 @@ impl ExtensionApi for StubExtensionApi {
     fn register_provider(&self, factory: Arc<dyn ProviderFactory>) -> Result<(), ExtensionError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending
-            .providers
-            .push(crate::runner::PendingProvider { factory });
+        pending.providers.push(crate::runner::PendingProvider {
+            factory,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError> {
@@ -244,9 +246,10 @@ impl ExtensionApi for StubExtensionApi {
         );
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending
-            .providers
-            .push(crate::runner::PendingProvider { factory });
+        pending.providers.push(crate::runner::PendingProvider {
+            factory,
+            origin: self.origin,
+        });
         Ok(())
     }
     fn register_turn_executor(
@@ -260,7 +263,11 @@ impl ExtensionApi for StubExtensionApi {
         // moves the pair into the runner's adopted-pending storage).
         pending
             .turn_executors
-            .push((self.generation.load(Ordering::Acquire), contribution));
+            .push(crate::runner::PendingTurnExecutor {
+                generation: self.generation.load(Ordering::Acquire),
+                contribution,
+                origin: self.origin,
+            });
         Ok(())
     }
     fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
@@ -269,7 +276,7 @@ impl ExtensionApi for StubExtensionApi {
         crate::runner::validate_prompt_section(&id, &text)?;
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending.prompt_sections.push((id, text));
+        pending.prompt_sections.push((id, text, self.origin));
         Ok(())
     }
 
@@ -282,7 +289,7 @@ impl ExtensionApi for StubExtensionApi {
         crate::runner::validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending.skills.push(skill);
+        pending.skills.push((skill, self.origin));
         Ok(())
     }
 
@@ -302,6 +309,7 @@ impl ExtensionApi for StubExtensionApi {
                 key,
                 init,
                 fold,
+                origin: self.origin,
             });
         Ok(())
     }
@@ -322,13 +330,14 @@ impl ExtensionApi for StubExtensionApi {
         }
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         assert_live(&self.generation, self.captured_gen)?;
-        pending
-            .policies
-            .push(codesmith_agent::policy::ResolvedPolicy {
+        pending.policies.push((
+            codesmith_agent::policy::ResolvedPolicy {
                 kind,
                 config,
                 source: owner,
-            });
+            },
+            self.origin,
+        ));
         Ok(())
     }
 }
@@ -351,18 +360,25 @@ pub struct RealExtensionApi {
     /// registrations the most-privileged unload-safety level).
     origin: RegistrationOrigin,
     tools: Arc<Mutex<crate::runner::BoundToolMap>>,
-    commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
+    commands: Arc<Mutex<crate::runner::BoundCommandMap>>,
     handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
     /// Route A — live registrations (drop = un-register) + the shared
     /// registry they flush into.
-    providers: Arc<Mutex<Vec<ProviderRegistration>>>,
+    providers: Arc<Mutex<Vec<(ProviderRegistration, RegistrationOrigin)>>>,
     shared: SharedProviderRegistry,
     /// Route B — prompt-section contributions (same storage the runner
     /// reads at assembly; shared so late registrations are honored).
-    prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
+    prompt_sections: Arc<Mutex<Vec<(String, String, RegistrationOrigin)>>>,
     /// Route B (skills) — registered skills (same storage the runner
     /// snapshots for catalogue render / `load_skill`).
-    skills: Arc<Mutex<Vec<codesmith_agent::extension::SkillRegistration>>>,
+    skills: Arc<
+        Mutex<
+            Vec<(
+                codesmith_agent::extension::SkillRegistration,
+                RegistrationOrigin,
+            )>,
+        >,
+    >,
     /// Session log folds — the runner's shared hub (same `Arc` the engine
     /// folds through).
     message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
@@ -375,12 +391,19 @@ impl RealExtensionApi {
         generation: Arc<AtomicU64>,
         origin: RegistrationOrigin,
         tools: Arc<Mutex<crate::runner::BoundToolMap>>,
-        commands: Arc<Mutex<HashMap<String, Arc<dyn CommandDefinition>>>>,
+        commands: Arc<Mutex<crate::runner::BoundCommandMap>>,
         handlers: Arc<Mutex<Vec<crate::runner::RegisteredHandler>>>,
-        providers: Arc<Mutex<Vec<ProviderRegistration>>>,
+        providers: Arc<Mutex<Vec<(ProviderRegistration, RegistrationOrigin)>>>,
         shared: SharedProviderRegistry,
-        prompt_sections: Arc<Mutex<Vec<(String, String)>>>,
-        skills: Arc<Mutex<Vec<codesmith_agent::extension::SkillRegistration>>>,
+        prompt_sections: Arc<Mutex<Vec<(String, String, RegistrationOrigin)>>>,
+        skills: Arc<
+            Mutex<
+                Vec<(
+                    codesmith_agent::extension::SkillRegistration,
+                    RegistrationOrigin,
+                )>,
+            >,
+        >,
         message_projection_hub: codesmith_agent::extension::MessageProjectionHubArc,
     ) -> Self {
         let captured_gen = generation.load(Ordering::Acquire);
@@ -421,11 +444,14 @@ impl ExtensionApi for RealExtensionApi {
     fn register_command(&self, command: Box<dyn CommandDefinition>) -> Result<(), ExtensionError> {
         assert_live(&self.generation, self.captured_gen)?;
         let name = command.name().to_string();
-        let arc: Arc<dyn CommandDefinition> = Arc::from(command);
+        let bound = crate::runner::BoundCommand {
+            def: Arc::from(command),
+            origin: self.origin,
+        };
         self.commands
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(name, arc);
+            .insert(name, bound);
         Ok(())
     }
     fn on(&self, handler: Arc<dyn Handler>) -> Result<(), ExtensionError> {
@@ -464,7 +490,7 @@ impl ExtensionApi for RealExtensionApi {
         self.providers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(guard);
+            .push((guard, self.origin));
         Ok(())
     }
     fn register_provider_alias(&self, alias: ProviderAlias) -> Result<(), ExtensionError> {
@@ -483,8 +509,9 @@ impl ExtensionApi for RealExtensionApi {
             .prompt_sections
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some(slot) = sections.iter_mut().find(|(existing, _)| *existing == id) {
+        if let Some(slot) = sections.iter_mut().find(|(existing, _, _)| *existing == id) {
             slot.1 = text;
+            slot.2 = self.origin;
         } else {
             // Same cap the runner's flush path enforces — the real api
             // writes the shared store directly, so the limit holds here too.
@@ -494,7 +521,7 @@ impl ExtensionApi for RealExtensionApi {
                     crate::runner::MAX_PROMPT_SECTIONS
                 )));
             }
-            sections.push((id, text));
+            sections.push((id, text, self.origin));
         }
         Ok(())
     }
@@ -508,15 +535,15 @@ impl ExtensionApi for RealExtensionApi {
         let mut skills = self.skills.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = skills
             .iter()
-            .find(|s| s.name == skill.name && s.owner != skill.owner)
+            .find(|(s, _)| s.name == skill.name && s.owner != skill.owner)
         {
             return Err(ExtensionError::Config(format!(
                 "skill {:?} already registered by mod {:?}",
-                skill.name, existing.owner
+                skill.name, existing.0.owner
             )));
         }
-        if let Some(slot) = skills.iter_mut().find(|s| s.name == skill.name) {
-            *slot = skill;
+        if let Some(slot) = skills.iter_mut().find(|(s, _)| s.name == skill.name) {
+            *slot = (skill, self.origin);
         } else {
             // Same cap the runner's flush path enforces (see above).
             if skills.len() >= codesmith_agent::extension::MAX_REGISTERED_SKILLS {
@@ -527,7 +554,7 @@ impl ExtensionApi for RealExtensionApi {
                     skill.owner
                 )));
             }
-            skills.push(skill);
+            skills.push((skill, self.origin));
         }
         Ok(())
     }
@@ -551,6 +578,7 @@ mod tests {
     use super::*;
     use crate::runner::Pending;
     use codesmith_tools::ToolResult;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn stub_after_invalidate_returns_stale_context() {
@@ -789,7 +817,10 @@ mod tests {
             assert_eq!(p.tools.len(), 2, "global + scoped tool queued");
             assert_eq!(p.commands.len(), 1);
             assert_eq!(p.handlers.len(), 3, "on + on_variant + on_variant_scoped");
-            assert_eq!(p.disabled_commands, vec!["model".to_string()]);
+            assert_eq!(
+                p.disabled_commands,
+                vec![("model".to_string(), RegistrationOrigin::Script)]
+            );
             assert_eq!(p.tool_restrictions.len(), 1);
             assert_eq!(p.replacements.len(), 1);
             assert_eq!(p.around_tools.len(), 1);
@@ -955,7 +986,11 @@ mod tests {
         );
         assert_eq!(
             *prompt_sections.lock().unwrap(),
-            vec![("guide".to_string(), "second".to_string())]
+            vec![(
+                "guide".to_string(),
+                "second".to_string(),
+                RegistrationOrigin::Script
+            )]
         );
         assert_eq!(skills.lock().unwrap().len(), 1);
         assert_eq!(

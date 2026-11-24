@@ -3035,6 +3035,189 @@ mod tests {
         );
     }
 
+    /// A stand-in for a compiled-in or dylib extension — anything but a
+    /// script mod: one registration in each bound registry a per-mod unload
+    /// touches.
+    struct NativeContributions;
+
+    struct NativeTool;
+    #[async_trait]
+    impl codesmith_agent::extension::ToolDefinition for NativeTool {
+        fn name(&self) -> &str {
+            "native-tool"
+        }
+        fn description(&self) -> &str {
+            "A tool contributed by a non-script extension."
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<ToolResult, ExtensionError> {
+            Ok(ToolResult::success("native"))
+        }
+    }
+
+    struct NativeHandler;
+    #[async_trait]
+    impl codesmith_agent::extension::Handler for NativeHandler {
+        async fn handle(
+            &self,
+            _event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<codesmith_agent::extension::HandlerOutcome, ExtensionError> {
+            Ok(codesmith_agent::extension::HandlerOutcome::Continue)
+        }
+    }
+
+    struct NativeCmd;
+    #[async_trait]
+    impl codesmith_agent::extension::CommandDefinition for NativeCmd {
+        fn name(&self) -> &str {
+            "native-cmd"
+        }
+        fn description(&self) -> &str {
+            "A command contributed by a non-script extension."
+        }
+        async fn run(
+            &self,
+            _ctx: &dyn codesmith_agent::extension::ExtensionCommandContext,
+            _args: &str,
+        ) -> Result<codesmith_agent::extension::CommandOutput, ExtensionError> {
+            Ok(codesmith_agent::extension::CommandOutput::Message(
+                "native".into(),
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl Extension for NativeContributions {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("native-contrib");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.register_tool(Box::new(NativeTool))?;
+            api.on_variant(ExtensionEventKind::ToolCall, Arc::new(NativeHandler))?;
+            api.register_command(Box::new(NativeCmd))?;
+            api.register_prompt_section("native-section".into(), "native text".into())?;
+            api.register_skill(codesmith_agent::extension::SkillRegistration {
+                owner: "native-contrib".into(),
+                name: "native-skill".into(),
+                description: "native skill".into(),
+                body: "native body".into(),
+                when_to_use: None,
+            })?;
+            api.disable_command("model".into())?;
+            api.register_policy(
+                "native-contrib".into(),
+                codesmith_agent::policy::PolicyKind::ShellOutput,
+                serde_json::json!({"max_output_size": 11111}),
+            )?;
+            api.register_message_projection(
+                "native-contrib".into(),
+                "counts".into(),
+                serde_json::json!(0),
+                Arc::new(|state, _msg| Ok(state.clone())),
+            )?;
+            Ok(())
+        }
+    }
+
+    /// Unloading one script mod used to clear every bound registration and
+    /// replay only the script mods. Compiled-in and dylib contributions are
+    /// not retained for replay, so they silently vanished until a
+    /// whole-layer reload — the sample `scratch` tool, an installed dylib's
+    /// tools and deny guards.
+    #[test]
+    fn unloading_a_script_mod_keeps_non_script_contributions_bound() {
+        use codesmith_agent::policy::PolicyKind::ShellOutput;
+
+        let dir = TempDir::new().unwrap();
+        let alpha = tool_mod("alpha", &dir, "alpha-tool");
+        let pol = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "pol",
+                r#"register_policy("shell-output", #{ max_output_size: 22222 });
+                   register_message_projection("k", 0, |s, m| s);"#,
+            ),
+            kv_for(&dir, "pol"),
+            hub(),
+        )
+        .expect("load pol");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&NativeContributions))
+            .expect("load native contributions");
+        runner.bind_core(Arc::new(PerModCtx));
+        rt.block_on(runner.bind_mod(Arc::new(alpha)))
+            .expect("bind alpha");
+        rt.block_on(runner.bind_mod(Arc::new(pol)))
+            .expect("bind pol");
+        let native_policy = serde_json::json!({"max_output_size": 11111});
+        assert_eq!(
+            runner.bound_policy(ShellOutput),
+            Some(serde_json::json!({"max_output_size": 22222})),
+            "precondition: the script mod overrides the native policy"
+        );
+
+        for id in ["alpha", "pol"] {
+            let outcome = rt.block_on(runner.unload_retained_mod(id));
+            assert!(outcome.evicted, "{id}: {outcome:?}");
+            assert!(outcome.errors.is_empty(), "{id}: {outcome:?}");
+        }
+
+        let names: Vec<_> = runner
+            .bound_tools()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["native-tool"],
+            "the script tool left with its mod; the native one stayed"
+        );
+        assert_eq!(
+            runner.bound_handler_count(ExtensionEventKind::ToolCall),
+            1,
+            "native handler"
+        );
+        assert_eq!(runner.bound_command_names(), vec!["native-cmd"]);
+        let prompt = runner
+            .append_prompt_sections(codesmith_agent::models::SystemPrompt::Text("base".into()));
+        assert!(
+            prompt.is_some_and(|p| matches!(
+                p,
+                codesmith_agent::models::SystemPrompt::Text(t) if t.contains("native text")
+            )),
+            "native prompt section"
+        );
+        assert_eq!(
+            runner
+                .registered_skills()
+                .into_iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>(),
+            vec!["native-skill"]
+        );
+        assert!(runner.is_builtin_command_disabled("model"));
+        assert_eq!(
+            runner.bound_policy(ShellOutput),
+            Some(native_policy),
+            "the script override left with its mod; the native layer is back"
+        );
+        let hub = runner.message_projection_hub();
+        assert!(
+            hub.state("pol", "k").is_none(),
+            "the script projection left with its mod"
+        );
+        assert!(
+            hub.state("native-contrib", "counts").is_some(),
+            "native projection"
+        );
+    }
+
     /// A `configure` that fails halfway used to leave its earlier
     /// registrations queued: they bound at the next flush while the mod was
     /// reported as failed — and with no retained slot, nothing could

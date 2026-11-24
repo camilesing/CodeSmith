@@ -52,6 +52,14 @@ impl RegistrationOrigin {
     pub fn is_dylib(&self) -> bool {
         matches!(self, RegistrationOrigin::Dylib)
     }
+
+    /// Whether registrations of this origin come from a script mod — the
+    /// only tier a single-mod unload removes. Compiled-in and dylib
+    /// contributions are not retained for replay (see `mod_slots`), so they
+    /// stay bound.
+    pub fn is_script(&self) -> bool {
+        matches!(self, RegistrationOrigin::Script)
+    }
 }
 
 /// A tool queued by the stub `ExtensionApi` during `configure`, awaiting
@@ -126,11 +134,17 @@ pub(crate) fn validate_skill_registration(
 /// (route A).
 pub(crate) struct PendingProvider {
     pub factory: Arc<dyn ProviderFactory>,
+    /// Which load path contributed this provider (the per-mod unload removes
+    /// script-origin entries only).
+    pub origin: RegistrationOrigin,
 }
 
 /// A command queued by the stub `ExtensionApi`.
 pub(crate) struct PendingCommand {
     pub command: Box<dyn CommandDefinition>,
+    /// Which load path contributed this command (the per-mod unload removes
+    /// script-origin entries only).
+    pub origin: RegistrationOrigin,
 }
 
 /// general-agent tool restriction — shared validation (stub-time and live
@@ -233,20 +247,25 @@ pub(crate) struct Pending {
     /// `(generation at registration, contribution)` in order. The stamp is
     /// the runner generation the extension configured under — the value
     /// the engine's retired-generation sweep compares against.
-    pub turn_executors: Vec<(u64, codesmith_agent::extension::TurnExecutorContribution)>,
-    pub prompt_sections: Vec<(String, String)>,
-    pub skills: Vec<codesmith_agent::extension::SkillRegistration>,
+    pub turn_executors: Vec<PendingTurnExecutor>,
+    pub prompt_sections: Vec<(String, String, RegistrationOrigin)>,
+    pub skills: Vec<(
+        codesmith_agent::extension::SkillRegistration,
+        RegistrationOrigin,
+    )>,
     pub message_projections: Vec<PendingMessageProjection>,
     /// Data policies (see [`codesmith_agent::policy`]); last-wins at
     /// flush by registration order (builtin < global < project mods).
     /// `source` is the registering mod's id, stamped at the replay seam.
-    pub policies: Vec<codesmith_agent::policy::ResolvedPolicy>,
+    /// Each entry carries its load-path origin: the per-mod unload removes
+    /// the script-origin layer.
+    pub policies: Vec<(codesmith_agent::policy::ResolvedPolicy, RegistrationOrigin)>,
     /// Builtin command names the stub `ExtensionApi`'s `disable_command`
     /// queued during `configure`, awaiting the `bind_core` flush.
-    pub disabled_commands: Vec<String>,
+    pub disabled_commands: Vec<(String, RegistrationOrigin)>,
     /// general-agent tool restrictions queued by the stub `ExtensionApi`, awaiting
     /// the `bind_core` flush (deny-only; see [`ToolRestriction`]).
-    pub tool_restrictions: Vec<ToolRestriction>,
+    pub tool_restrictions: Vec<(ToolRestriction, RegistrationOrigin)>,
     /// Tool replacements queued by the stub `ExtensionApi`, awaiting the
     /// `bind_core` flush — each with its load-path origin (dylib-origin
     /// replacements stay main-turn-only, same §F5d rule as tools).
@@ -259,6 +278,17 @@ pub(crate) struct PendingMessageProjection {
     pub key: String,
     pub init: serde_json::Value,
     pub fold: codesmith_agent::extension::MessageFoldFn,
+    pub origin: RegistrationOrigin,
+}
+
+/// A turn-executor contribution queued by the stub `ExtensionApi`, awaiting
+/// the `bind_core` flush: the runner generation it configured under (the
+/// value the engine's retired-generation sweep compares against), the
+/// contribution, and its load-path origin.
+pub(crate) struct PendingTurnExecutor {
+    pub generation: u64,
+    pub contribution: codesmith_agent::extension::TurnExecutorContribution,
+    pub origin: RegistrationOrigin,
 }
 
 impl Pending {
@@ -308,6 +338,16 @@ pub(crate) struct BoundTool {
 /// (general-agent registration scope — see [`ExtensionRunner::bound_tools_scoped`]).
 pub(crate) type BoundToolMap = HashMap<(Scope, String), BoundTool>;
 
+/// One bound command: the definition plus the load-path origin that decides
+/// whether a single-mod unload removes it.
+pub(crate) struct BoundCommand {
+    pub def: Arc<dyn CommandDefinition>,
+    pub origin: RegistrationOrigin,
+}
+
+/// The bound command registry's storage shape: name → bound command.
+pub(crate) type BoundCommandMap = HashMap<String, BoundCommand>;
+
 /// The host runtime. Constructed by [`ExtensionRunner::new`] +
 /// [`ExtensionRunner::load`](Self::load) (runs each extension's `configure`
 /// against a **stub** api), then [`ExtensionRunner::bind_core`](Self::bind_core)
@@ -331,13 +371,13 @@ pub struct ExtensionRunner {
     /// Bound at `bind_core` — deny-only tool restrictions (general-agent
     /// `ToolRestriction`), intersecting; cleared with the other bound
     /// registrations on reload.
-    tool_restrictions: Mutex<Vec<ToolRestriction>>,
-    commands: Mutex<HashMap<String, Arc<dyn CommandDefinition>>>,
+    tool_restrictions: Mutex<Vec<(ToolRestriction, RegistrationOrigin)>>,
+    commands: Mutex<BoundCommandMap>,
     /// Bound at `bind_core` — builtin command names disabled by this
     /// generation's extensions (`disable_command`; the "suppress a
     /// builtin" contribution). The framework stores names opaquely — the
     /// host resolves them against its builtin table and warns on unknowns.
-    disabled_builtin_commands: Mutex<HashSet<String>>,
+    disabled_builtin_commands: Mutex<HashMap<String, RegistrationOrigin>>,
     /// Bound at `bind_core` — the flushed handlers, each carrying its variant
     /// filter (`None` = subscribe-to-all via `on`; `Some(kind)` = per-variant
     /// via `on_variant`). T8's `emit` filters on this before dispatch.
@@ -404,7 +444,7 @@ pub struct ExtensionRunner {
     /// Route A — the live registration guards (drop = un-register, see
     /// [`ProviderRegistration`]). `clear_providers` / reload drop the Vec;
     /// that is the whole unload story for this contribution type.
-    providers: Mutex<Vec<ProviderRegistration>>,
+    providers: Mutex<Vec<(ProviderRegistration, RegistrationOrigin)>>,
     /// Kernel composition (dylib tier) — turn-executor contributions that
     /// flushed out of `pending` and await **adoption**: the engine
     /// registers each onto the process-shared turn-executor registry at
@@ -413,17 +453,22 @@ pub struct ExtensionRunner {
     /// contribution must flow through host memory). `clear_turn_executors`
     /// / reload drop the unadopted set; adopted registrations are swept
     /// from the registry by their generation stamp instead.
-    turn_executors: Mutex<Vec<(u64, codesmith_agent::extension::TurnExecutorContribution)>>,
-    /// Route B (systemPrompt sections) — `(id, text)` in registration
-    /// order. Register at mod load; `clear_prompt_sections` / reload drop
-    /// them (a dropped section shifts the prompt prefix once, the same
-    /// cost class as a whole-prompt replacement).
-    prompt_sections: Mutex<Vec<(String, String)>>,
-    /// Route B (skills) — mod-registered skills in registration order.
-    /// `clear_skills` / reload drop the generation's set. Hosts read via
-    /// [`Self::registered_skills`] at catalogue render / `load_skill`
-    /// snapshot time.
-    skills: Mutex<Vec<codesmith_agent::extension::SkillRegistration>>,
+    turn_executors: Mutex<Vec<PendingTurnExecutor>>,
+    /// Route B (systemPrompt sections) — `(id, text, origin)` in
+    /// registration order. Register at mod load; `clear_prompt_sections` /
+    /// reload drop them (a dropped section shifts the prompt prefix once,
+    /// the same cost class as a whole-prompt replacement).
+    prompt_sections: Mutex<Vec<(String, String, RegistrationOrigin)>>,
+    /// Route B (skills) — mod-registered skills in registration order,
+    /// each with its load-path origin. `clear_skills` / reload drop the
+    /// generation's set. Hosts read via [`Self::registered_skills`] at
+    /// catalogue render / `load_skill` snapshot time.
+    skills: Mutex<
+        Vec<(
+            codesmith_agent::extension::SkillRegistration,
+            RegistrationOrigin,
+        )>,
+    >,
     /// Session log folds — mod-registered message projections. The hub is
     /// runner-created but host-shared: the engine folds transcript
     /// mutations through this `Arc` (`fold_message` / `refold_all`),
@@ -441,6 +486,17 @@ pub struct ExtensionRunner {
     policies: Mutex<
         HashMap<codesmith_agent::policy::PolicyKind, codesmith_agent::policy::ResolvedPolicy>,
     >,
+    /// The non-script layer of `policies`: what the compiled-in and dylib
+    /// registrations resolved to before any script mod overrode it. A
+    /// single-mod unload reinstates this layer (a script override that
+    /// replaced a non-script entry would otherwise be lost with the mod).
+    /// Cleared with `policies`.
+    base_policies: Mutex<
+        HashMap<codesmith_agent::policy::PolicyKind, codesmith_agent::policy::ResolvedPolicy>,
+    >,
+    /// `(owner, key)` of the script-origin message projections bound in the
+    /// hub — the ones a single-mod unload unregisters.
+    script_projections: Mutex<Vec<(String, String)>>,
     /// The store the flush publishes into and the reload clear empties
     /// — the engine's [`PolicyStore`] when a host binds one via
     /// [`bind_policy_store`](Self::bind_policy_store). Defaults to the
@@ -453,7 +509,9 @@ pub struct ExtensionRunner {
     /// (adapter re-creation against the retained compiled AST — no
     /// recompile). Only script mods are retained: dylib/compiled-in
     /// `configure` is factory-cheap and their code lifetime is governed by
-    /// `libraries` / the inventory. Known limitation: a mod's KV store is
+    /// `libraries` / the inventory — and a per-mod unload never clears
+    /// their registrations, so they need no replay. Known limitation: a
+    /// mod's KV store is
     /// file-backed and deliberately NOT evicted — it is the mod's opt-in
     /// persistent state, the unload reclaims only the compiled form.
     mod_slots: Mutex<Vec<Arc<crate::script::rhai_mod::RhaiMod>>>,
@@ -520,7 +578,7 @@ impl ExtensionRunner {
             tools: Mutex::new(HashMap::new()),
             tool_restrictions: Mutex::new(Vec::new()),
             commands: Mutex::new(HashMap::new()),
-            disabled_builtin_commands: Mutex::new(HashSet::new()),
+            disabled_builtin_commands: Mutex::new(HashMap::new()),
             handlers: Mutex::new(Vec::new()),
             around_tools: Mutex::new(Vec::new()),
             around_turns: Mutex::new(Vec::new()),
@@ -537,6 +595,8 @@ impl ExtensionRunner {
                 codesmith_agent::extension::MessageProjectionHub::new(),
             ),
             policies: Mutex::new(HashMap::new()),
+            base_policies: Mutex::new(HashMap::new()),
+            script_projections: Mutex::new(Vec::new()),
             policy_sink: Mutex::new(codesmith_agent::policy::PolicyStore::process_default()),
             mod_slots: Mutex::new(Vec::new()),
             transition_lock: tokio::sync::Mutex::new(()),
@@ -680,12 +740,24 @@ impl ExtensionRunner {
     /// intersect; nothing re-admits a denied name. Fails loud on a blank
     /// scope id or a blank tool name.
     pub fn restrict_tools(&self, scope: Scope, names: Vec<String>) -> Result<(), ExtensionError> {
+        self.restrict_tools_as(scope, names, RegistrationOrigin::CompiledIn)
+    }
+
+    /// [`restrict_tools`](Self::restrict_tools) with the load-path origin
+    /// recorded beside the entry: a single-mod unload removes the
+    /// script-origin entries only.
+    fn restrict_tools_as(
+        &self,
+        scope: Scope,
+        names: Vec<String>,
+        origin: RegistrationOrigin,
+    ) -> Result<(), ExtensionError> {
         validate_tool_restriction(&scope, &names)?;
         let denied: Vec<String> = names.into_iter().map(|n| n.trim().to_string()).collect();
         self.tool_restrictions
             .lock()
             .expect("tool restrictions lock poisoned")
-            .push(ToolRestriction { scope, denied });
+            .push((ToolRestriction { scope, denied }, origin));
         Ok(())
     }
 
@@ -752,7 +824,7 @@ impl ExtensionRunner {
             .turn_executors
             .lock()
             .expect("turn executors lock poisoned");
-        pending.retain(|(generation, contribution)| !adopt(*generation, contribution));
+        pending.retain(|entry| !adopt(entry.generation, &entry.contribution));
     }
 
     /// Kernel composition (dylib tier) — clear the unadopted contribution
@@ -802,6 +874,17 @@ impl ExtensionRunner {
     /// Errors on an empty id/text, an unknown id charset, or beyond
     /// `MAX_PROMPT_SECTIONS` sections (fail loud at load, not mid-session).
     pub fn register_prompt_section(&self, id: String, text: String) -> Result<(), ExtensionError> {
+        self.register_prompt_section_as(id, text, RegistrationOrigin::CompiledIn)
+    }
+
+    /// [`register_prompt_section`](Self::register_prompt_section) with the
+    /// load-path origin recorded beside the entry.
+    fn register_prompt_section_as(
+        &self,
+        id: String,
+        text: String,
+        origin: RegistrationOrigin,
+    ) -> Result<(), ExtensionError> {
         validate_prompt_section(&id, &text)?;
         let mut sections = self
             .prompt_sections
@@ -810,15 +893,16 @@ impl ExtensionRunner {
         // Re-registering an id replaces its text in place (id is identity) —
         // an in-place replacement does not grow the collection, so the cap
         // only applies when a new entry would actually be added.
-        if let Some(slot) = sections.iter_mut().find(|(existing, _)| *existing == id) {
+        if let Some(slot) = sections.iter_mut().find(|(existing, _, _)| *existing == id) {
             slot.1 = text;
+            slot.2 = origin;
         } else {
             if sections.len() >= MAX_PROMPT_SECTIONS {
                 return Err(ExtensionError::Config(format!(
                     "too many prompt sections (>{MAX_PROMPT_SECTIONS})"
                 )));
             }
-            sections.push((id, text));
+            sections.push((id, text, origin));
         }
         Ok(())
     }
@@ -840,7 +924,7 @@ impl ExtensionRunner {
         }
         let joined = sections
             .iter()
-            .map(|(_, text)| text.as_str())
+            .map(|(_, text, _)| text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
         Some(match base {
@@ -876,22 +960,32 @@ impl ExtensionRunner {
         &self,
         skill: codesmith_agent::extension::SkillRegistration,
     ) -> Result<(), ExtensionError> {
+        self.register_skill_as(skill, RegistrationOrigin::CompiledIn)
+    }
+
+    /// [`register_skill`](Self::register_skill) with the load-path origin
+    /// recorded beside the entry.
+    fn register_skill_as(
+        &self,
+        skill: codesmith_agent::extension::SkillRegistration,
+        origin: RegistrationOrigin,
+    ) -> Result<(), ExtensionError> {
         validate_skill_registration(&skill.name, &skill.description, &skill.body)?;
         let mut skills = self.skills.lock().expect("registered skills poisoned");
         if let Some(existing) = skills
             .iter()
-            .find(|s| s.name == skill.name && s.owner != skill.owner)
+            .find(|(s, _)| s.name == skill.name && s.owner != skill.owner)
         {
             return Err(ExtensionError::Config(format!(
                 "skill {:?} already registered by mod {:?}",
-                skill.name, existing.owner
+                skill.name, existing.0.owner
             )));
         }
         // Same owner re-registering replaces in place (owner+name is
         // identity); otherwise append in registration order. The cap only
         // applies when a new entry would actually be added.
-        if let Some(slot) = skills.iter_mut().find(|s| s.name == skill.name) {
-            *slot = skill;
+        if let Some(slot) = skills.iter_mut().find(|(s, _)| s.name == skill.name) {
+            *slot = (skill, origin);
         } else {
             if skills.len() >= codesmith_agent::extension::MAX_REGISTERED_SKILLS {
                 return Err(ExtensionError::Config(format!(
@@ -901,7 +995,7 @@ impl ExtensionRunner {
                     skill.owner
                 )));
             }
-            skills.push(skill);
+            skills.push((skill, origin));
         }
         Ok(())
     }
@@ -914,7 +1008,9 @@ impl ExtensionRunner {
         self.skills
             .lock()
             .expect("registered skills poisoned")
-            .clone()
+            .iter()
+            .map(|(skill, _)| skill.clone())
+            .collect()
     }
 
     /// Route B (skills) — clear all registered skills (reload drops the
@@ -939,6 +1035,10 @@ impl ExtensionRunner {
     /// start, once the new generation has registered.
     pub fn clear_message_projections(&self) {
         self.message_projection_hub.clear();
+        self.script_projections
+            .lock()
+            .expect("script projections poisoned")
+            .clear();
     }
 
     /// Route A — point the runner at the host's shared provider registry
@@ -1054,6 +1154,97 @@ impl ExtensionRunner {
         self.clear_policies();
     }
 
+    /// The single-mod unload's clear: drop the **script-origin** entries
+    /// only. Compiled-in and dylib contributions are not retained for replay
+    /// (see `mod_slots`), so the whole-layer clear dropped them until the
+    /// next reload — every `/mods disable` took the sample `scratch` tool and
+    /// any installed dylib's tools, handlers and deny guards with it. The
+    /// surviving script mods are replayed by `unload_retained_mod`.
+    fn clear_script_registrations(&self) {
+        self.handlers
+            .lock()
+            .expect("handlers lock poisoned")
+            .retain(|h| !h.origin.is_script());
+        self.around_tools
+            .lock()
+            .expect("around-tools lock poisoned")
+            .retain(|(_, origin)| !origin.is_script());
+        self.around_turns
+            .lock()
+            .expect("around-turns lock poisoned")
+            .retain(|(_, origin)| !origin.is_script());
+        self.tools
+            .lock()
+            .expect("tools lock poisoned")
+            .retain(|_, tool| !tool.origin.is_script());
+        self.tool_restrictions
+            .lock()
+            .expect("tool restrictions lock poisoned")
+            .retain(|(_, origin)| !origin.is_script());
+        self.replacements
+            .lock()
+            .expect("replacements lock poisoned")
+            .retain(|(_, origin)| !origin.is_script());
+        self.commands
+            .lock()
+            .expect("commands lock poisoned")
+            .retain(|_, command| !command.origin.is_script());
+        self.disabled_builtin_commands
+            .lock()
+            .expect("disabled commands lock poisoned")
+            .retain(|_, origin| !origin.is_script());
+        // Move the script guards out under the lock and drop them outside
+        // it: a guard's drop takes the shared registry's write lock.
+        let dropped = {
+            let mut providers = self.providers.lock().expect("providers lock poisoned");
+            let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut *providers)
+                .into_iter()
+                .partition(|(_, origin)| !origin.is_script());
+            *providers = kept;
+            dropped
+        };
+        drop(dropped);
+        self.turn_executors
+            .lock()
+            .expect("turn executors lock poisoned")
+            .retain(|entry| !entry.origin.is_script());
+        self.prompt_sections
+            .lock()
+            .expect("prompt sections poisoned")
+            .retain(|(_, _, origin)| !origin.is_script());
+        self.skills
+            .lock()
+            .expect("registered skills poisoned")
+            .retain(|(_, origin)| !origin.is_script());
+        // Script projections leave the hub by identity; the survivors'
+        // replays re-register theirs.
+        let script_projections = std::mem::take(
+            &mut *self
+                .script_projections
+                .lock()
+                .expect("script projections poisoned"),
+        );
+        for (owner, key) in script_projections {
+            self.message_projection_hub.unregister(&owner, &key);
+        }
+        // Reinstate the non-script policy layer; the surviving mods' replays
+        // put their overrides back on top.
+        let base = self
+            .base_policies
+            .lock()
+            .expect("base policies lock poisoned")
+            .clone();
+        *self.policies.lock().expect("policies lock poisoned") = base.clone();
+        self.policy_sink
+            .lock()
+            .expect("policy sink lock poisoned")
+            .publish(
+                base.iter()
+                    .map(|(kind, entry)| (*kind, entry.config.clone()))
+                    .collect(),
+            );
+    }
+
     /// Point the flush/clear at `store` — the engine host binds the
     /// session's [`PolicyStore`](codesmith_agent::policy::PolicyStore) so
     /// this runner's resolved set lands in that engine's scope (the
@@ -1070,6 +1261,10 @@ impl ExtensionRunner {
         self.policies
             .lock()
             .expect("policies lock poisoned")
+            .clear();
+        self.base_policies
+            .lock()
+            .expect("base policies lock poisoned")
             .clear();
         self.policy_sink
             .lock()
@@ -1148,13 +1343,15 @@ impl ExtensionRunner {
     }
 
     /// Unload one retained script mod without recompiling its peers: evict
-    /// the slot, clear every bound registration, replay the survivors'
-    /// registrations against their retained compiled ASTs, bump the
-    /// generation once. `evicted: false` when `id` has no retained slot
-    /// (nothing was live under that id — a no-op). `errors` carries
-    /// survivor replay failures and the unbound-context error; the evict
-    /// itself always completes — the slot drop is the no-residue unload
-    /// guarantee, independent of the survivors' health.
+    /// the slot, clear the **script-origin** registrations (compiled-in and
+    /// dylib contributions stay bound — see
+    /// [`clear_script_registrations`](Self::clear_script_registrations)),
+    /// replay the survivors' registrations against their retained compiled
+    /// ASTs, bump the generation once. `evicted: false` when `id` has no
+    /// retained slot (nothing was live under that id — a no-op). `errors`
+    /// carries survivor replay failures and the unbound-context error; the
+    /// evict itself always completes — the slot drop is the no-residue
+    /// unload guarantee, independent of the survivors' health.
     pub async fn unload_retained_mod(&self, id: &str) -> UnloadModOutcome {
         let _guard = self.transition_lock.lock().await;
         if !self.evict_mod(id) {
@@ -1164,7 +1361,7 @@ impl ExtensionRunner {
                 errors: Vec::new(),
             };
         }
-        self.clear_bound_registrations();
+        self.clear_script_registrations();
         let slots: Vec<_> = self
             .mod_slots
             .lock()
@@ -1315,8 +1512,8 @@ impl ExtensionRunner {
                 .entry((scope, name))
                 .or_insert(bound);
         }
-        for restriction in drained.tool_restrictions {
-            if let Err(e) = self.restrict_tools(restriction.scope, restriction.denied) {
+        for (restriction, origin) in drained.tool_restrictions {
+            if let Err(e) = self.restrict_tools_as(restriction.scope, restriction.denied, origin) {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "tool restriction rejected at bind: {e}"
@@ -1344,16 +1541,19 @@ impl ExtensionRunner {
         }
         for pc in drained.commands {
             let name = pc.command.name().to_string();
-            let arc: Arc<dyn CommandDefinition> = Arc::from(pc.command);
-            self.commands.lock().unwrap().entry(name).or_insert(arc);
+            let bound = BoundCommand {
+                def: Arc::from(pc.command),
+                origin: pc.origin,
+            };
+            self.commands.lock().unwrap().entry(name).or_insert(bound);
         }
         {
             let mut disabled = self
                 .disabled_builtin_commands
                 .lock()
                 .expect("disabled commands lock poisoned");
-            for name in drained.disabled_commands {
-                disabled.insert(name);
+            for (name, origin) in drained.disabled_commands {
+                disabled.insert(name, origin);
             }
         }
         {
@@ -1381,8 +1581,8 @@ impl ExtensionRunner {
                 .expect("around-turns lock poisoned");
             around.extend(drained.around_turns);
         }
-        for (id, text) in drained.prompt_sections {
-            if let Err(e) = self.register_prompt_section(id, text) {
+        for (id, text, origin) in drained.prompt_sections {
+            if let Err(e) = self.register_prompt_section_as(id, text, origin) {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "prompt section rejected at bind: {e}"
@@ -1390,8 +1590,8 @@ impl ExtensionRunner {
                 rejections.push(e);
             }
         }
-        for skill in drained.skills {
-            if let Err(e) = self.register_skill(skill) {
+        for (skill, origin) in drained.skills {
+            if let Err(e) = self.register_skill_as(skill, origin) {
                 tracing::warn!(
                     target: "codesmith_extensions",
                     "registered skill rejected at bind: {e}"
@@ -1409,6 +1609,11 @@ impl ExtensionRunner {
                     "message projection rejected at bind: {e}"
                 );
                 rejections.push(ExtensionError::Config(e));
+            } else if mp.origin.is_script() {
+                self.script_projections
+                    .lock()
+                    .expect("script projections poisoned")
+                    .push((mp.owner, mp.key));
             }
         }
         // Data policies: last-wins by registration (drain) order — the
@@ -1418,9 +1623,17 @@ impl ExtensionRunner {
         // runner map for the resolved-policy view.
         {
             let mut policies = self.policies.lock().expect("policies lock poisoned");
-            for entry in drained.policies {
+            let mut base = self
+                .base_policies
+                .lock()
+                .expect("base policies lock poisoned");
+            for (entry, origin) in drained.policies {
+                if !origin.is_script() {
+                    base.insert(entry.kind, entry.clone());
+                }
                 policies.insert(entry.kind, entry);
             }
+            drop(base);
             self.policy_sink
                 .lock()
                 .expect("policy sink lock poisoned")
@@ -1443,7 +1656,7 @@ impl ExtensionRunner {
                 "extension provider registered: {}",
                 id.as_str(),
             );
-            self.providers.lock().unwrap().push(guard);
+            self.providers.lock().unwrap().push((guard, pp.origin));
         }
         if !drained.turn_executors.is_empty() {
             self.turn_executors
@@ -1475,6 +1688,18 @@ impl ExtensionRunner {
     #[must_use]
     pub fn has_handlers(&self, kind: ExtensionEventKind) -> bool {
         self.has_handlers_scoped(kind, &Scope::Global)
+    }
+
+    /// How many bound handlers would receive `kind` at any scope — the
+    /// duplication check of the per-mod bind tests.
+    #[cfg(test)]
+    pub(crate) fn bound_handler_count(&self, kind: ExtensionEventKind) -> usize {
+        self.handlers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|h| h.kind_filter.is_none_or(|k| k == kind))
+            .count()
     }
 
     /// [`has_handlers`](Self::has_handlers) for a dispatch at `scope`:
@@ -1700,7 +1925,12 @@ impl ExtensionRunner {
     /// suffixing is §F2 — slice 1 uses first-wins via HashMap insert). Used
     /// by the CLI `extension_commands::try_dispatch` (Task 8).
     pub async fn try_dispatch_command(&self, name: &str, args: &str) -> Option<CommandOutput> {
-        let cmd = self.commands.lock().unwrap().get(name).cloned()?;
+        let cmd = self
+            .commands
+            .lock()
+            .unwrap()
+            .get(name)
+            .map(|bound| Arc::clone(&bound.def))?;
         let ctx = self.context.lock().unwrap().clone()?;
         match cmd.run(&*ctx, args).await {
             Ok(output) => Some(output),
@@ -1801,8 +2031,8 @@ impl ExtensionRunner {
             .lock()
             .expect("tool restrictions lock poisoned")
             .iter()
-            .filter(|r| r.scope.covers(scope))
-            .flat_map(|r| r.denied.iter().cloned())
+            .filter(|(r, _)| r.scope.covers(scope))
+            .flat_map(|(r, _)| r.denied.iter().cloned())
             .collect();
         let tools = self.tools.lock().expect("tools lock poisoned");
         let admits = |tool: &BoundTool| include_dylib || !tool.origin.is_dylib();
@@ -1886,7 +2116,7 @@ impl ExtensionRunner {
         self.disabled_builtin_commands
             .lock()
             .expect("disabled commands lock poisoned")
-            .contains(name)
+            .contains_key(name)
     }
 
     /// The builtin command names disabled by bound extensions (host-side
@@ -1895,7 +2125,7 @@ impl ExtensionRunner {
         self.disabled_builtin_commands
             .lock()
             .expect("disabled commands lock poisoned")
-            .iter()
+            .keys()
             .cloned()
             .collect()
     }
