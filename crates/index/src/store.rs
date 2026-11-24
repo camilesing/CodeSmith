@@ -882,7 +882,15 @@ mod tests {
             &codesmith_home,
         );
         let ws = tempfile::tempdir().expect("tempdir");
-        let store = IndexStore::open_default(ws.path()).expect("open default");
-        assert!(true, "opened under the isolated home");
+        let _store = IndexStore::open_default(ws.path()).expect("open default");
+        let expected = codesmith_home
+            .join("index")
+            .join(workspace_hash(ws.path()))
+            .join("index.db");
+        assert!(
+            expected.is_file(),
+            "the index should live at {}, and nothing was created there",
+            expected.display()
+        );
     }
 }
