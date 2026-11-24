@@ -101,7 +101,8 @@ pub fn generate_random_slug() -> String {
 
 // ── Git helpers ───────────────────────────────────────────────────────────
 
-/// Run a git command with no-credential-prompt env vars.
+/// Run a git command in `working_dir` and capture its output. It sets no
+/// environment — credential prompting is not suppressed here.
 fn run_git(working_dir: &Path, args: &[&str]) -> Result<std::process::Output, ToolError> {
     codesmith_agent_runtime::dependencies::Git::output(args, working_dir)
         .map_err(|e| ToolError::execution_failed(format!("git command failed: {e}")))

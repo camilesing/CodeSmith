@@ -212,10 +212,6 @@ impl ToolSpec for EnterWorktreeTool {
     }
 }
 
-/// Baseline for a RESUMED worktree: the merge-base of the worktree branch
-/// and the default branch, so prior-session commits stay visible to
-/// exit_worktree's `rev-list original..HEAD` safety check. Best-effort —
-/// callers fall back to the current HEAD when git cannot answer.
 /// The oldest entry of `worktree_branch`'s reflog — the branch's
 /// creation point, when the reflog exists and is non-empty.
 fn reflog_oldest_baseline(
@@ -239,6 +235,11 @@ fn reflog_oldest_baseline(
     valid.then_some(sha)
 }
 
+/// Baseline for a RESUMED worktree: the branch's creation point (its
+/// oldest reflog entry), else its merge-base with the default branch — so
+/// prior-session commits stay visible to exit_worktree's
+/// `rev-list original..HEAD` safety check. Best-effort — callers fall back
+/// to the current HEAD when git cannot answer.
 fn merge_base_baseline(worktree_path: &std::path::Path, worktree_branch: &str) -> Option<String> {
     if worktree_branch.is_empty() {
         return None;
