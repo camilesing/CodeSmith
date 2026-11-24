@@ -18780,6 +18780,100 @@ mod tests {
         }
     }
 
+    /// A denied extension `Ask` is the user's answer for that call. The
+    /// standard approval gate used to prompt again for the same call — a
+    /// second `ApprovalRequired` for something the user had just refused.
+    #[tokio::test]
+    async fn a_denied_extension_ask_is_not_asked_again_by_the_standard_gate() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        for tool_name in ["gated_a", "gated_b"] {
+            registry.register(Arc::new(OverlapSpec {
+                tool_name,
+                live: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                peak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                hold_ms: 0,
+            }));
+        }
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Denied {
+                id: "t1".to_string(),
+            })
+            .await
+            .expect("deny t1");
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "t2".to_string(),
+            })
+            .await
+            .expect("approve t2");
+        // A spare answer for the second ask the fix removes, so an unfixed
+        // run fails on the event count instead of waiting forever.
+        tx_approval
+            .send(ApprovalDecision::Denied {
+                id: "t1".to_string(),
+            })
+            .await
+            .expect("spare answer");
+        let runner = tool_chain_runner(ToolChainExt {
+            around: None,
+            ask: Some(Arc::new(AskHandler {
+                asked: Arc::new(Mutex::new(Vec::new())),
+                outcome: || HandlerOutcome::Ask {
+                    reason: "user should confirm".into(),
+                },
+            })),
+        })
+        .await;
+
+        let mut call1 = text_block(0, "running two");
+        call1.extend(tool_use_block(1, "t1", "gated_a", r#"{}"#));
+        call1.extend(tool_use_block(2, "t2", "gated_b", r#"{}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        let (tx_event, mut rx_event) = mpsc::channel(256);
+        let executor = build_gated_test_executor(
+            Arc::new(registry.to_framework_tool_set()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            vec![call1, call2],
+            Some(rx_approval),
+            Some(tx_event),
+        )
+        .with_extension_runner(Some(runner));
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "run two".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let mut asked_ids = Vec::new();
+        while let Ok(event) = rx_event.try_recv() {
+            if let Event::ApprovalRequired { id, .. } = event {
+                asked_ids.push(id);
+            }
+        }
+        asked_ids.sort();
+        assert_eq!(
+            asked_ids,
+            vec!["t1".to_string(), "t2".to_string()],
+            "each call is asked about exactly once"
+        );
+        let results = tool_result_blocks(&sess);
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(
+            results[0].2 && results[0].1.contains("denied"),
+            "t1 stays denied: {:?}",
+            results[0]
+        );
+        assert_eq!(results[1].1, "gated_b-done");
+    }
+
     /// `Ask` on a serial (approval-classified) call forces the gate the
     /// same way the static classification does: denied ⇒ permission error,
     /// the tool never runs.

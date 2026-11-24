@@ -466,6 +466,11 @@ impl HostAgentExecutor {
                                     }
                                     Err(denial) => {
                                         approval_denials.insert(plan.index, denial);
+                                        // The user was asked — and answered no.
+                                        // Leaving `asked` false let the standard
+                                        // gate below prompt again for a call the user
+                                        // had just refused.
+                                        asked = true;
                                     }
                                 }
                             } else if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
