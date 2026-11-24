@@ -2655,6 +2655,62 @@ mod tests {
         );
     }
 
+    /// Found in the desktop: with the archived-only filter on, every archived
+    /// session listed under "Ungrouped". The baseline accounted only live
+    /// sessions to their Workspace, while the vendored client keeps an
+    /// archived member's slot and gates the row behind its own filter.
+    #[tokio::test]
+    async fn workspace_membership_keeps_archived_sessions() {
+        let home = test_home("workspace-archived");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let workspace = home.path.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = std::fs::canonicalize(&workspace).expect("canonical workspace");
+        let host = test_host(fake_runtime(workspace.clone()).await, cwd);
+        let register = json!({ "args": { "request": { "path": workspace } } });
+
+        let created = dispatch(&host, "workspace/create", &register).await;
+        assert_eq!(created["value"]["created"], true, "{created}");
+        let workspace_id = created["value"]["workspace"]["workspaceId"]
+            .as_str()
+            .expect("workspace id")
+            .to_string();
+        // thr_b is dragged ahead of thr_a, then archived: its slot survives.
+        let moved = dispatch(
+            &host,
+            "workspace/insertSessionBefore",
+            &json!({ "args": { "request": {
+                "workspaceId": workspace_id,
+                "sessionId": "thr_b",
+                "beforeSessionId": "thr_a",
+            } } }),
+        )
+        .await;
+        assert_eq!(moved["ok"], true, "{moved}");
+        let archived = dispatch(
+            &host,
+            "workspace/archiveSession",
+            &json!({ "args": { "request": { "sessionId": "thr_b" } } }),
+        )
+        .await;
+        assert_eq!(
+            archived["value"]["archivedSessionIds"],
+            json!(["thr_b"]),
+            "{archived}"
+        );
+
+        // Re-requesting the registered directory answers its current row.
+        let row = dispatch(&host, "workspace/create", &register).await;
+        assert_eq!(row["value"]["created"], false, "{row}");
+        assert_eq!(
+            row["value"]["workspace"]["sessionIds"],
+            json!(["thr_b", "thr_a"]),
+            "an archived session stays accounted to its Workspace, in its slot: {row}"
+        );
+        drop(home);
+    }
+
     // === Terminal host tests (host::terminal over a real PTY) ===
 
     /// The first frame matching `pred` within 10s, keeping every other frame

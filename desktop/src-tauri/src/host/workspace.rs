@@ -15,7 +15,9 @@
 //! `sessionIds` order — sessions that were never dragged keep following the
 //! runtime's recency order after the manually ordered ones, which is exactly
 //! the merge the client's own reconcile applies (vendored `ui-workspace`
-//! `tree.ts`).
+//! `tree.ts`). Membership includes archived sessions (the client keeps their
+//! slot and gates the rows behind its archived filter); the pin set is
+//! live-only.
 //!
 //! State persists at `~/.codesmith/desktop/workspace.json` (pins/order) and
 //! `~/.codesmith/desktop/workspaces.json` (registry), loaded per operation.
@@ -204,15 +206,16 @@ fn load(home: &Path) -> Result<SidebarState> {
     }
 }
 
-/// The view's merged session ids for callers that already hold the live
-/// list. A corrupt state file logs loud and degrades to the runtime's
-/// recency order rather than failing an unrelated flow (session creation).
-pub fn ordered_live(home: &Path, live: &[String]) -> Vec<String> {
+/// The view's merged session ids for callers that already hold the member
+/// list (archived sessions included). A corrupt state file logs loud and
+/// degrades to the given order rather than failing an unrelated flow
+/// (session creation).
+pub fn ordered_members(home: &Path, members: &[String]) -> Vec<String> {
     match load(home) {
-        Ok(state) => ordered_session_ids(&state.order, live),
+        Ok(state) => ordered_session_ids(&state.order, members),
         Err(err) => {
             eprintln!("codesmith desktop: sidebar order unreadable: {err:#}");
-            live.to_vec()
+            members.to_vec()
         }
     }
 }
@@ -228,12 +231,12 @@ pub fn pinned_live(home: &Path, live: &[String]) -> Vec<String> {
     }
 }
 
-/// [`ordered_live`] parked off the async workers — the state file read is
+/// [`ordered_members`] parked off the async workers — the state file read is
 /// blocking I/O and the view builders run on the runtime.
-pub async fn ordered_live_parked(home: &Path, live: Vec<String>) -> Vec<String> {
+pub async fn ordered_members_parked(home: &Path, members: Vec<String>) -> Vec<String> {
     let home = home.to_path_buf();
-    let fallback = live.clone();
-    tokio::task::spawn_blocking(move || ordered_live(&home, &live))
+    let fallback = members.clone();
+    tokio::task::spawn_blocking(move || ordered_members(&home, &members))
         .await
         .unwrap_or_else(|err| {
             eprintln!("codesmith desktop: sidebar order read join failed: {err}");
@@ -488,7 +491,12 @@ pub async fn baseline(host: &HostState) -> WorkspaceBaseline {
         .map(|row| row.id.clone())
         .collect();
     let home = host.settings_home();
-    let merged = ordered_live_parked(&home, live.clone()).await;
+    // Archived sessions stay accounted to their Workspace: the client keeps
+    // an archived member's slot, grays the row, and gates it behind its
+    // archived filter. Only the pin set is live-only.
+    let mut members = live.clone();
+    members.extend(archived.iter().cloned());
+    let merged = ordered_members_parked(&home, members).await;
     let workspaces: std::collections::HashMap<&str, &Path> = rows
         .iter()
         .map(|row| (row.id.as_str(), row.workspace.as_path()))
@@ -855,7 +863,8 @@ pub async fn pin_or_unpin(host: &HostState, pin: bool, args: &Value) -> Result<V
 
 /// `workspace/insertSessionBefore`: splice the manual order and answer the
 /// updated workspace view. Both the session and an anchor must belong to the
-/// named workspace; the saved order stays registry-global (the view filters
+/// named workspace and be live — an archived member cannot be dragged, nor
+/// anchor a drop; the saved order stays registry-global (the view filters
 /// it per workspace), so a cross-workspace splice keeps every other row.
 pub async fn insert_session_before(host: &HostState, args: &Value) -> Result<Value, OpError> {
     let args = args.get("request").unwrap_or(args);
@@ -1038,7 +1047,7 @@ mod tests {
         // The view helpers degrade to the runtime order instead of failing
         // an unrelated flow.
         let live = ["a".to_string()];
-        assert_eq!(ordered_live(&home, &live), vec!["a"]);
+        assert_eq!(ordered_members(&home, &live), vec!["a"]);
         assert_eq!(pinned_live(&home, &live), Vec::<String>::new());
         let _ = std::fs::remove_dir_all(&home);
     }
