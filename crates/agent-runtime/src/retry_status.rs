@@ -1,18 +1,27 @@
 //! Process-wide retry-state surface (#499).
 //!
-//! The engine's transparent stream-retry loop (`engine::turn::stream`)
-//! times its waits and knows the error category. This module gives the
-//! host UI a way to observe that state — `start`, `succeeded`, and
-//! `failed` flip a global `RetryState` that the footer / status panel
-//! reads each frame.
+//! The engine's transparent stream-retry loop (`engine::turn/stream`)
+//! times its waits and knows the error category. This module lets a host
+//! UI observe that state — `start`, `succeeded`, and `failed` flip a
+//! global `RetryState` that a status panel reads each frame through
+//! [`snapshot`].
 //!
 //! Why a process-wide global: the user-facing REPL runs as one engine
-//! per process, and the only retry state we want to surface is the one
-//! the user is staring at. Sub-agent retries in background tasks
-//! deliberately do **not** light up the foreground banner — they're
-//! supposed to be invisible. If a future feature ever needs per-engine
-//! retry surfaces, swap this for an `Arc<RwLock<...>>` carried on the
+//! per process, and the only retry state worth surfacing is the one the
+//! user is staring at. If a future feature ever needs per-engine retry
+//! surfaces, swap this for an `Arc<RwLock<...>>` carried on the
 //! `EngineHandle`; the public API stays the same.
+//!
+//! # Known limitations
+//!
+//! - Nothing reads the surface today: the footer that called
+//!   [`snapshot`] left with the ratatui TUI (v0.10.0), so the module is
+//!   write-only until a host wires up a reader.
+//! - "Foreground only" is not enforced. The mutators sit in the one retry
+//!   loop that main turns and in-process sub-agent turns both run, so the
+//!   global reflects whichever turn retried last. A reader has to gate on
+//!   the main-turn shape before rendering, or a background sub-agent's
+//!   retry shows up as the foreground's own.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -116,13 +125,11 @@ pub fn snapshot() -> RetryState {
 ///
 /// # Call-site contract
 ///
-/// The global is last-writer-wins with no chain ownership: only the
-/// foreground turn's retry loop may call this (and
-/// [`succeeded`](succeeded())/[`failed`](failed())). Background /
-/// sub-agent requests must not — they would light up the foreground
-/// banner — and two concurrent chains clobber each other's state (chain
-/// B's `start` overwrites chain A's countdown; B's `succeeded` erases
-/// A's still-in-flight banner mid-countdown).
+/// The global is last-writer-wins with no chain ownership: two concurrent
+/// retry chains clobber each other's state (chain B's `start` overwrites
+/// chain A's countdown; B's `succeeded` erases A's still-in-flight banner
+/// mid-countdown). The one call site today is reached by main turns and
+/// in-process sub-agent turns alike — see the module's known limitations.
 pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
     let now = Instant::now();
     // `Add<Duration> for Instant` panics on overflow; a bogus
