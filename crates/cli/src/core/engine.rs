@@ -520,6 +520,32 @@ fn wrap_with_recording(client: LlmClientHandle) -> Result<LlmClientHandle, Strin
     }
 }
 
+/// Give a resolved `[utility_model]` its recorder — the same recording path
+/// as the main client — so multi-model sessions record completely. A
+/// same-provider handle *is* `main_client`, which `build_engine` already
+/// wrapped: it is returned untouched, because a second recorder would append
+/// two lines per utility call and desync strict-FIFO replay. An unopenable
+/// recording drops the utility (documented fallback to the main model) rather
+/// than running it unrecorded.
+fn record_utility_llm(
+    mut utility: UtilityLlm,
+    main_client: Option<&LlmClientHandle>,
+) -> Option<UtilityLlm> {
+    if main_client.is_some_and(|main| Arc::ptr_eq(&utility.client, main)) {
+        return Some(utility);
+    }
+    match wrap_with_recording(utility.client) {
+        Ok(client) => {
+            utility.client = client;
+            Some(utility)
+        }
+        Err(err) => {
+            tracing::error!("utility model recording disabled: {err}");
+            None
+        }
+    }
+}
+
 /// Route A — the process-shared provider registry. Seeded once from the
 /// builtin `default_registry`; the extension runner upserts
 /// extension-registered factories into it (via `attach_shared_providers`),
@@ -1522,8 +1548,9 @@ pub fn build_engine(
     // Record/replay (dev plan capability 1+2): wrap the resolved client in
     // a JSONL recorder when CODESMITH_RECORD_LLM is set, so main-turn model
     // calls (full request envelope + streamed response) are replayable
-    // keyless. Known gap: a cross-provider `[utility_model]` client is
-    // built separately in `resolve_utility_llm` and is not recorded.
+    // keyless. A cross-provider `[utility_model]` client is built separately
+    // in `resolve_utility_llm` and gets its own recorder below
+    // (`record_utility_llm`); a same-provider one is this same handle.
     let (llm_client, llm_client_error) = match llm_client {
         Some(client) => match wrap_with_recording(client) {
             Ok(client) => (Some(client), llm_client_error),
@@ -1648,25 +1675,8 @@ pub fn build_engine(
 
     // Resolve the optional [utility_model] once. Seam defaults below and the
     // workshop synthesis handle both consume it.
-    let utility_llm =
-        resolve_utility_llm(api_config, llm_client.as_ref()).and_then(|mut utility| {
-            // Same recording path as the main client: a cross-provider
-            // `[utility_model]` handle gets its own recorder (append mode;
-            // whole-line writes keep the shared JSONL parseable), so
-            // multi-model sessions record completely. An unopenable
-            // recording drops the utility (documented fallback to the main
-            // model) rather than running it unrecorded.
-            match wrap_with_recording(utility.client) {
-                Ok(client) => {
-                    utility.client = client;
-                    Some(utility)
-                }
-                Err(err) => {
-                    tracing::error!("utility model recording disabled: {err}");
-                    None
-                }
-            }
-        });
+    let utility_llm = resolve_utility_llm(api_config, llm_client.as_ref())
+        .and_then(|utility| record_utility_llm(utility, llm_client.as_ref()));
 
     // Create Flash seam manager for layered context (#159). An explicit
     // `[context] seam_model` always wins (and keeps the main client — the id

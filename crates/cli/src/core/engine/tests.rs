@@ -402,6 +402,33 @@ fn resolve_utility_llm_builds_cross_provider_client() {
     assert_eq!(utility.client.provider_name(), "anthropic");
 }
 
+/// Under `CODESMITH_RECORD_LLM` a same-provider `[utility_model]` stays the
+/// main handle: `build_engine` wraps the main client first and the utility
+/// branch reuses it, so wrapping it again recorded every utility call twice.
+#[test]
+fn same_provider_utility_llm_is_not_recorded_twice() {
+    let _guard = lock_test_env();
+    let tmp = tempdir().expect("tempdir");
+    let _record = ScopedMaxOutputTokens::set(
+        "CODESMITH_RECORD_LLM",
+        &tmp.path().join("calls.jsonl").display().to_string(),
+    );
+    let main: LlmClientHandle = std::sync::Arc::new(MockLlmClient::new(vec![]));
+    let recorded_main = super::wrap_with_recording(main).expect("recorder opens");
+    let utility = UtilityLlm {
+        client: recorded_main.clone(),
+        model: "deepseek-v4-flash".to_string(),
+    };
+
+    let utility = super::record_utility_llm(utility, Some(&recorded_main))
+        .expect("same-provider utility survives recording");
+
+    assert!(
+        std::sync::Arc::ptr_eq(&utility.client, &recorded_main),
+        "the utility handle is the already-recorded main handle — no second recorder"
+    );
+}
+
 /// Seam resolution keeps the built-in Flash default when neither
 /// `[context] seam_model` nor a utility model is configured.
 #[test]
