@@ -186,11 +186,12 @@ pub fn pre_turn_snapshot(
     )
 }
 
-/// Take a `tool:<call_id>` workspace snapshot, taken before executing a
-/// file-modifying tool call (write_file, edit_file, apply_patch).
+/// Take a `tool:<call_id>` workspace snapshot, labelled by the tool call it
+/// would precede.
 ///
-/// This enables surgical undo: `/undo` can restore to the most recent
-/// `tool:<call_id>` snapshot to revert just the last file write.
+/// No caller at HEAD. Workspace restore points are the per-turn
+/// [`pre_turn_snapshot`] / [`post_turn_snapshot`] pairs, and `/undo` is
+/// transcript-only — it does not revert files.
 ///
 /// Returns the snapshot SHA on success, `None` on any error. Errors are
 /// logged at WARN and are non-fatal.
