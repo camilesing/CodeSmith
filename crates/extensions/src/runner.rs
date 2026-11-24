@@ -1057,9 +1057,10 @@ impl ExtensionRunner {
     /// reload-time). Safe: takes the `libraries` lock once + `std::mem::take`s
     /// the `Vec` (each `Library` is an owned handle, not a borrowed `Arc`);
     /// the `Library` stays alive until [`drop_pending`](Self::drop_pending)
-    /// runs. The main-thread executor's per-turn dylib `Arc`s are unaffected
-    /// (they point at the `Arc<Library>` the engine captured this turn; the
-    /// runner's own `Vec` move does not touch them). Called from
+    /// runs. The main-thread executor's per-turn dylib-origin `Arc`s (tools,
+    /// handlers) are unaffected — they point at trait objects whose vtables
+    /// live in the still-loaded `Library`; the runner's own `Vec` move does
+    /// not unload it. Called from
     /// `reload_extension_runtime` before re-populate loads fresh dylibs.
     /// Idempotent (empty `libraries` → no-op).
     pub fn drain_libraries_to_pending(&self) {
