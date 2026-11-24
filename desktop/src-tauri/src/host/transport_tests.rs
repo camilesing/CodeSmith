@@ -1352,9 +1352,16 @@ async fn schedule_edit_applies_the_page_patch_and_delete() {
         },
     }))
     .await;
+    // The entry's rule is the page's shape — a DTSTART line, then the rule —
+    // so only the rule line is compared here.
+    let entry_rrule = retimed["value"]["rrule"].as_str().expect("entry rrule");
     assert_eq!(
-        retimed["value"]["rrule"],
-        json!("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=30"),
+        entry_rrule
+            .lines()
+            .next_back()
+            .unwrap_or_default()
+            .trim_start_matches("RRULE:"),
+        "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=30",
         "retime: {retimed}"
     );
     assert_eq!(

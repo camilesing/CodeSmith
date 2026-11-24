@@ -23,6 +23,9 @@ base64 = "0.22"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = "0.10"
+# The machine's IANA zone name for the schedule catalog's DTSTART line — the
+# crate chrono already resolves `Local` through, so no new crate enters the lock.
+iana-time-zone = "0.1"
 dirs = "6"
 which = "7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }

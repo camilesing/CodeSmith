@@ -14,6 +14,11 @@
 //! Known limitations (the page states them in its module docs too):
 //! - one-shot timings (after/at), sub-hour intervals, foreign time zones,
 //!   and cron shapes outside the two grammars fail loud at create/edit;
+//! - the catalog's `rrule` carries a synthesized `DTSTART;TZID=<machine zone>`
+//!   line so the page reads the zone and edits the rule as an RRULE; the
+//!   scheduler ignores `DTSTART` and evaluates the rule in the machine's
+//!   zone, and a weekly rule keeps its clock in BYHOUR/BYMINUTE, which the
+//!   page edits as Custom, never as its guided Weekly;
 //! - delivery retention is a fixed answer, not a configured limit;
 //! - `schedule/run` triggers the automation immediately and reports success
 //!   from the HTTP route, not from the run's outcome;
@@ -21,8 +26,10 @@
 //!   takes no revision), so a concurrent write between the read and the
 //!   patch can still be lost; the window is one loopback round trip.
 
+use std::sync::OnceLock;
+
 use anyhow::{bail, Context, Result};
-use chrono::Offset as _;
+use chrono::{Offset as _, Timelike};
 use serde_json::{json, Value};
 
 use super::workspace::OpError;
@@ -397,6 +404,58 @@ impl CronField {
     }
 }
 
+/// The machine's IANA zone, resolved once. `None` when the system names no
+/// zone; the catalog then carries the bare rule.
+fn machine_zone() -> Option<&'static str> {
+    static ZONE: OnceLock<Option<String>> = OnceLock::new();
+    ZONE.get_or_init(|| iana_time_zone::get_timezone().ok())
+        .as_deref()
+}
+
+/// The `DTSTART;TZID=…` stamp of one automation's catalog rule: its creation
+/// date in `zone`, at the rule's own clock so the page's guided editor
+/// starts from the time the task really runs. A rule without a clock (an
+/// hourly one) keeps the creation instant.
+fn local_stamp(rule: &str, created_at: &str, zone: &str) -> Option<String> {
+    let tz: chrono_tz::Tz = zone.parse().ok()?;
+    let created = chrono::DateTime::parse_from_rfc3339(created_at)
+        .ok()?
+        .with_timezone(&tz);
+    let field = |name: &str| {
+        rule.split(';').find_map(|part| {
+            let (key, value) = part.trim_start_matches("RRULE:").split_once('=')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().parse().ok())
+                .flatten()
+        })
+    };
+    let start = match (field("BYHOUR"), field("BYMINUTE")) {
+        (Some(hour), Some(minute)) => created
+            .with_hour(hour)?
+            .with_minute(minute)?
+            .with_second(0)?,
+        _ => created,
+    };
+    Some(start.format("%Y%m%dT%H%M%S").to_string())
+}
+
+/// The catalog entry's `rrule` in the shape the page parses — one
+/// `DTSTART;TZID=<machine zone>` line and one `RRULE:` line. The page reads
+/// a rule without the `DTSTART` as UTC-zoned and takes edited rule text for
+/// a cron expression, so a task's rule could not be edited at all; the
+/// scheduler evaluates the rule in the machine's zone, which the line names
+/// (and ignores on the way back). A machine that names no zone keeps the
+/// bare rule.
+fn catalog_rrule(rule: &str, created_at: &str, zone: Option<&str>) -> String {
+    if rule.is_empty() {
+        return String::new();
+    }
+    match zone.map(|zone| (zone, local_stamp(rule, created_at, zone))) {
+        Some((zone, Some(stamp))) => format!("DTSTART;TZID={zone}:{stamp}\nRRULE:{rule}"),
+        _ => rule.to_string(),
+    }
+}
+
 /// Automation record → the catalog entry the client renders. The automation's
 /// `cwds[0]` becomes the synthesized `new` delivery target; runs beyond the
 /// record's `last_run_at` stay absent.
@@ -414,6 +473,14 @@ fn catalog_entry(automation: &Value, home: &str) -> Value {
         .get("rrule")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let rrule = catalog_rrule(
+        rrule,
+        automation
+            .get("created_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        machine_zone(),
+    );
     let next = automation.get("next_run_at").and_then(Value::as_str);
     let last = automation.get("last_run_at").and_then(Value::as_str);
     let status = match automation.get("status").and_then(Value::as_str) {
@@ -929,5 +996,66 @@ mod tests {
             home,
         );
         assert_eq!(drained["status"], "ended", "no next occurrence left");
+    }
+
+    /// Found in the desktop: the catalog carried a bare `RRULE`, which the
+    /// page reads as UTC-zoned and replaces, once edited, with a cron
+    /// expression — a task's zone showed `UTC+00:00` and its rule could not
+    /// be edited. The page parses one DTSTART line and one RRULE line.
+    #[test]
+    fn catalog_rrule_names_the_zone_on_the_rules_clock() {
+        let weekly = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=9;BYMINUTE=50";
+        assert_eq!(
+            catalog_rrule(weekly, "2026-11-24T00:50:40.236558Z", Some("Asia/Shanghai")),
+            format!("DTSTART;TZID=Asia/Shanghai:20261124T095000\nRRULE:{weekly}"),
+            "the creation date in the zone, at the rule's own clock"
+        );
+        // An hourly rule has no clock: the creation instant anchors it.
+        assert_eq!(
+            catalog_rrule(
+                "FREQ=HOURLY;INTERVAL=2",
+                "2026-11-24T00:50:40.236558Z",
+                Some("Asia/Shanghai")
+            ),
+            "DTSTART;TZID=Asia/Shanghai:20261124T085040\nRRULE:FREQ=HOURLY;INTERVAL=2"
+        );
+        // No resolvable zone, or no creation instant to date: the bare rule.
+        assert_eq!(catalog_rrule(weekly, "2026-11-24T00:50:40Z", None), weekly);
+        assert_eq!(catalog_rrule(weekly, "", Some("Asia/Shanghai")), weekly);
+        assert_eq!(
+            catalog_rrule(weekly, "2026-11-24T00:50:40Z", Some("Mars/Olympus")),
+            weekly
+        );
+    }
+
+    /// The page sends an edited rule back as the entry's own text; with the
+    /// machine zone on its DTSTART line that text compiles to the stored rule.
+    #[test]
+    fn catalog_rrule_compiles_back_to_the_stored_rule() {
+        let rule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30";
+        let entry = catalog_entry(
+            &json!({
+                "id": "a1", "name": "Tidy", "prompt": "run tidy", "rrule": rule, "cwds": [],
+                "status": "active",
+                "created_at": "2026-11-24T00:50:40Z", "updated_at": "2026-11-24T00:50:40Z",
+                "next_run_at": "2026-11-30T09:30:00Z",
+            }),
+            "/Users/x/proj",
+        );
+        let rrule = entry["rrule"].as_str().expect("entry rrule");
+        match machine_zone() {
+            Some(zone) => assert!(
+                rrule.starts_with(&format!("DTSTART;TZID={zone}:")),
+                "the DTSTART line names the machine zone: {rrule}"
+            ),
+            None => assert_eq!(rrule, rule, "no zone: the bare rule"),
+        }
+        assert_eq!(
+            timing_to_rrule(&json!({
+                "kind": "rrule", "rrule": rrule.replace("BYMINUTE=30", "BYMINUTE=45"),
+            }))
+            .unwrap(),
+            "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=45"
+        );
     }
 }
