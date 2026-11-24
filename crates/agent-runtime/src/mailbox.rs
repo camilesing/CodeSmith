@@ -202,10 +202,11 @@ pub struct MailboxReceiver {
 }
 
 impl Mailbox {
-    /// Create a new mailbox bound to the given cancellation token. Closing
-    /// the mailbox (or dropping the last sender) cancels this token. Runtimes
-    /// that derive from the same token observe that cancellation; detached
-    /// background `agent_open` sessions use their own runtime token.
+    /// Create a new mailbox bound to the given cancellation token. Only
+    /// [`close`](Self::close) cancels this token — dropping every sender
+    /// merely ends the receiver's stream. Runtimes that derive from the same
+    /// token observe that cancellation; detached background `agent_open`
+    /// sessions use their own runtime token.
     #[must_use]
     pub fn new(cancel_token: CancellationToken) -> (Self, MailboxReceiver) {
         let (tx, rx) = mpsc::unbounded_channel();
