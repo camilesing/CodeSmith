@@ -742,7 +742,20 @@ impl SnapshotRepo {
                 args.push(p.clone());
             }
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            let newc = run_git(&self.git_dir, &self.work_tree, &arg_refs)?;
+            // A rebuilt commit is stamped with the current time unless the
+            // survivor's own dates ride along: every rebuild would reset the
+            // whole chain to "now", so `/rewind list` showed the rebuild time
+            // for every row and the age-based prune never aged anything out.
+            let date = format!("{} +0000", s.timestamp);
+            let newc = run_git_with_env(
+                &self.git_dir,
+                &self.work_tree,
+                &arg_refs,
+                &[
+                    ("GIT_AUTHOR_DATE", date.clone()),
+                    ("GIT_COMMITTER_DATE", date),
+                ],
+            )?;
             if !newc.status.success() {
                 return Err(io_other(format!(
                     "commit-tree failed: {}",
@@ -889,14 +902,28 @@ fn cleanup_stale_pack_temps_in(
 }
 
 fn run_git(git_dir: &Path, work_tree: &Path, args: &[&str]) -> io::Result<Output> {
-    crate::dependencies::Git::command()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git not found on PATH"))?
+    run_git_with_env(git_dir, work_tree, args, &[])
+}
+
+/// [`run_git`] with extra environment variables for the child process.
+fn run_git_with_env(
+    git_dir: &Path,
+    work_tree: &Path,
+    args: &[&str],
+    env: &[(&str, String)],
+) -> io::Result<Output> {
+    let mut command = crate::dependencies::Git::command()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "git not found on PATH"))?;
+    command
         .arg("--git-dir")
         .arg(git_dir)
         .arg("--work-tree")
         .arg(work_tree)
-        .args(args)
-        .output()
+        .args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output()
 }
 
 fn io_other(msg: impl Into<String>) -> io::Error {
@@ -1263,7 +1290,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1100));
         }
 
-        assert_eq!(repo.list(usize::MAX).unwrap().len(), 4);
+        let before = repo.list(usize::MAX).unwrap();
+        assert_eq!(before.len(), 4);
 
         let removed = repo.prune_keep_last_n(2).unwrap();
         assert_eq!(removed, 2);
@@ -1273,6 +1301,15 @@ mod tests {
         // Should be newest-first: turn:3 (newest), turn:2 (second newest)
         assert_eq!(remaining[0].label, "turn:3");
         assert_eq!(remaining[1].label, "turn:2");
+        // The rebuild carries each survivor's own timestamp: a fresh
+        // `commit-tree` date reset the chain to the rebuild time.
+        for (kept, orig) in remaining.iter().zip(&before[..2]) {
+            assert_eq!(
+                kept.timestamp, orig.timestamp,
+                "timestamp of {}",
+                kept.label
+            );
+        }
 
         // New snapshot continues the chain.
         std::fs::write(repo.work_tree().join("f.txt"), "fresh").unwrap();
