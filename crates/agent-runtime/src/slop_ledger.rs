@@ -420,7 +420,20 @@ impl SlopLedger {
         }
     }
 
+    /// How many entries an id or prefix matches.
+    fn count_matches(&self, id: &str) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.id.starts_with(id))
+            .count()
+    }
+
     /// Update an entry's status (and optionally other fields) and save.
+    ///
+    /// `Ok(None)` means no entry matches `id`. An empty or ambiguous prefix
+    /// is refused with an [`io::ErrorKind::InvalidInput`] error carrying the
+    /// reason: reported as "no entry found" it denied that the entries
+    /// exist, and a retry with the same prefix failed the same way.
     pub fn update_status(
         &mut self,
         id: &str,
@@ -431,8 +444,11 @@ impl SlopLedger {
             let entry = match self.resolve_mut(id) {
                 Ok(e) => e,
                 Err(reason) => {
-                    eprintln!("[slop-ledger] refusing update: {reason}");
-                    return Ok(None);
+                    return if id.is_empty() || self.count_matches(id) > 1 {
+                        Err(io::Error::new(io::ErrorKind::InvalidInput, reason))
+                    } else {
+                        Ok(None)
+                    };
                 }
             };
             entry.status = status;
@@ -922,6 +938,10 @@ impl ToolSpec for SlopLedgerUpdateTool {
                 Ok(None) => Ok(ToolResult::success(format!(
                     "No slop ledger entry found matching '{id}'. Use slop_ledger_query to list entries."
                 ))),
+                // A refused id (empty or ambiguous): the reason is for the model.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                    Err(ToolError::invalid_input(e.to_string()))
+                }
                 Err(e) => Err(ToolError::execution_failed(format!(
                     "failed to update slop ledger: {e}"
                 ))),
@@ -2055,6 +2075,33 @@ mod tests {
         assert_eq!(
             SlopLedger::load().unwrap().entries[0].status,
             SlopEntryStatus::Resolved
+        );
+
+        // An ambiguous prefix is a refusal the model has to see, not "no
+        // entry found": a retry with the same prefix fails the same way.
+        let mut twin = SlopEntry::new(
+            SlopBucket::NamingDrift,
+            SlopSeverity::Low,
+            SlopConfidence::High,
+            "twin issue".into(),
+            "desc".into(),
+        );
+        let ambiguous = id[..id.len() - 1].to_string();
+        twin.id = format!("{ambiguous}0");
+        let mut ledger = SlopLedger::load().unwrap();
+        let _ = ledger.append(vec![twin]);
+        ledger.save().unwrap();
+
+        let err = SlopLedgerUpdateTool
+            .execute(json!({"id": ambiguous, "status": "open"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err}");
+        assert!(err.to_string().contains("ambiguous"), "{err}");
+        assert_eq!(
+            SlopLedger::load().unwrap().entries[0].status,
+            SlopEntryStatus::Resolved,
+            "a refused update changes nothing"
         );
     }
 
