@@ -22,8 +22,8 @@ The REPL exposes:
 - `chunk(max_chars=20000, overlap=0)` - full-coverage chunks with index/start/end/text fields.
 - `chunk_coverage(chunks)` - coverage summary for chunks produced by `chunk`.
 - `sub_query(prompt, slice=None)` - one child LLM call, optionally scoped to one bounded slice.
-- `sub_query_batch(prompt, slices, dependency_mode=None, safety_note=None)` - apply one prompt to many independent bounded slices concurrently; `dependency_mode="independent"` must be passed explicitly.
-- `sub_query_map(prompts, slices=None, dependency_mode=None, safety_note=None)` - run N distinct independent prompts, optionally paired with N bounded slices; `dependency_mode="independent"` must be passed explicitly.
+- `sub_query_batch(prompt, slices, dependency_mode=None, safety_note=None)` - apply one prompt to many independent bounded slices concurrently; `dependency_mode="independent"` must be passed explicitly. A batch takes at most 16 slices: loop over windows of 16 for more.
+- `sub_query_map(prompts, slices=None, dependency_mode=None, safety_note=None)` - run N distinct independent prompts, optionally paired with N bounded slices; `dependency_mode="independent"` must be passed explicitly. At most 16 prompts per call.
 - `sub_query_sequence(prompt, slices, carry_prompt=None)` - process dependent slices sequentially, feeding each child result into the next step.
 - `sub_rlm(prompt, source=None)` - recursive sub-RLM for a sub-task that needs its own decomposition. Pass a bounded source, not the whole body.
 - `SHOW_VARS()` - list user variables and their types.
@@ -57,16 +57,19 @@ Search before peeking. Pull only the slices you need. Store maps of the input as
 ```repl
 chunks = chunk(max_chars=12000, overlap=400)
 coverage = chunk_coverage(chunks)
-partials = sub_query_batch(
-    "Extract the facts needed for the user's question from this slice. "
-    "Return only grounded facts and cite the slice index/range.",
-    chunks,
-    dependency_mode="independent",
-    safety_note="each chunk is read-only evidence extraction; no step consumes another step's output",
-)
-print({"coverage": coverage, "partials": len(partials)})
+partials = []
+for i in range(0, len(chunks), 16):   # one batch takes at most 16 slices
+    partials += sub_query_batch(
+        "Extract the facts needed for the user's question from this slice. "
+        "Return only grounded facts and cite the slice index/range.",
+        chunks[i:i + 16],
+        dependency_mode="independent",
+        safety_note="each chunk is read-only evidence extraction; no step consumes another step's output",
+    )
+failed = [p for p in partials if p.startswith("[") and ": " in p]
+print({"coverage": coverage, "partials": len(partials), "failed": len(failed), "first_error": failed[:1]})
 ```
-Use deterministic Python first for counts, regex, parsing, sorting, dedupe, joins, and coverage. You do NO math by asking a child model to count; if Python can enumerate, parse, or simulate it exactly, do that in Python.
+Use deterministic Python first for counts, regex, parsing, sorting, dedupe, joins, and coverage. You do NO math by asking a child model to count; if Python can enumerate, parse, or simulate it exactly, do that in Python. A slice the bridge refused or that failed comes back as a bracketed error string (`[child err: ...]`) instead of an answer; check for those before treating the output as read.
 
 Parallel safety gate: `sub_query_batch`, `sub_query_map`, and low-level `*_batched` helpers are only for independent map-reduce work. Do not batch tasks where A's output feeds B, multi-file refactors with shared global state, database or schema migrations with ordered steps, rollback-sensitive edits, or any task that requires a sequential invariant. For dependent work, use `sub_query_sequence(...)` or an explicit Python `for` loop with `sub_query(...)`, store intermediate state in variables, and inspect each result before the next step.
 
@@ -88,10 +91,10 @@ progress = evaluate_progress()
 finalize(
     f"{analysis}\n\nCoverage: {coverage['covered_chars']}/{coverage['input_chars']} chars "
     f"across {coverage['chunks']} chunks; complete={coverage['complete']}.",
-    confidence="medium" if coverage["complete"] else "low",
+    confidence="medium" if coverage["complete"] and not failed else "low",
 )
 ```
-Call `evaluate_progress()` if the answer is not stable. Loop back to Orient or Compute when coverage is incomplete or confidence is low. Call `finalize(...)` only when the answer is supported by variables you can inspect.
+Call `evaluate_progress()` if the answer is not stable. Loop back to Orient or Compute when coverage is incomplete, any slice failed, or confidence is low. Call `finalize(...)` only when the answer is supported by variables you can inspect.
 
 Rules
 
