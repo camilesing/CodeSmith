@@ -1473,7 +1473,10 @@ fn model_selection(
 }
 
 /// The title the runtime's own thread list derives: the user-set title, else
-/// the latest turn's input summary; null while the thread has neither.
+/// the latest prompted turn's input summary; null while the thread has
+/// neither. A host-originated turn (`/compact`) carries only its internal
+/// reason as the summary and no user message, so it never names the session;
+/// a detail without items keeps the plain latest-turn read.
 fn session_title(detail: &Value) -> Value {
     let text = |value: Option<&Value>| {
         value
@@ -1482,15 +1485,22 @@ fn session_title(detail: &Value) -> Value {
             .filter(|t| !t.is_empty())
             .map(str::to_string)
     };
+    let items = detail.get("items").and_then(Value::as_array);
+    let is_prompted = |turn: &&Value| match items {
+        Some(items) => items
+            .iter()
+            .any(|item| item["turn_id"] == turn["id"] && item["kind"] == "user_message"),
+        None => true,
+    };
     text(detail.pointer("/thread/title"))
         .or_else(|| {
-            text(
-                detail
-                    .get("turns")
-                    .and_then(Value::as_array)
-                    .and_then(|turns| turns.last())
-                    .and_then(|turn| turn.get("input_summary")),
-            )
+            let turns = detail.get("turns").and_then(Value::as_array)?;
+            let latest = turns
+                .iter()
+                .filter(is_prompted)
+                .next_back()
+                .or_else(|| turns.last());
+            text(latest.and_then(|turn| turn.get("input_summary")))
         })
         .map_or(Value::Null, Value::String)
 }
@@ -2505,6 +2515,27 @@ mod tests {
             session_title(&json!({ "thread": { "title": " Mine " }, "turns": turns })),
             json!("Mine")
         );
+    }
+
+    /// Found in the desktop: `/compact` renamed the session to its internal
+    /// reason ("Manual context compaction") — the compaction turn is the
+    /// latest one but holds no user message.
+    #[test]
+    fn session_title_skips_a_host_originated_turn() {
+        let detail = json!({
+            "thread": {},
+            "turns": [
+                { "id": "t1", "input_summary": "first" },
+                { "id": "t2", "input_summary": "the prompt" },
+                { "id": "t3", "input_summary": "Manual context compaction" },
+            ],
+            "items": [
+                { "turn_id": "t1", "kind": "user_message" },
+                { "turn_id": "t2", "kind": "user_message" },
+                { "turn_id": "t3", "kind": "system_status" },
+            ],
+        });
+        assert_eq!(session_title(&detail), json!("the prompt"));
     }
 
     #[test]
