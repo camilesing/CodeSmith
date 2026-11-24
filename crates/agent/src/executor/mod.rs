@@ -284,12 +284,12 @@ enum BlockBuild {
 /// the terminal `stop_reason`.
 ///
 /// Handles `ContentBlockStart`/`Delta`/`Stop` (text, thinking, tool_use) and
-/// `MessageDelta`/`MessageStop`. This is the minimal reducer — reusable by any
-/// [`AgentExecutor`] impl that drains the whole stream before acting (the
-/// reference [`DefaultAgentExecutor`] and the host-side `HostAgentExecutor` both
-/// use it). The production `Engine` instead reduces inline so it can emit
-/// streaming deltas and run early-tool-start mid-stream (deferred to a later
-/// §E slice). Returns an error if any stream item errors.
+/// `MessageDelta`/`MessageStop`. This is the minimal reducer, used by the
+/// reference [`DefaultAgentExecutor`]. The production `HostAgentExecutor`
+/// reduces inline instead (`reduce_stream` in `codesmith-agent-runtime`,
+/// `engine/turn/stream.rs` — it keeps its own copy of this tail; keep the two
+/// in step) so it can emit streaming deltas and run early-tool-start
+/// mid-stream. Returns an error if any stream item errors.
 pub async fn accumulate_stream(
     mut stream: StreamEventBox,
 ) -> Result<(Vec<ContentBlock>, Option<String>)> {
