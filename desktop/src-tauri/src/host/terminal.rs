@@ -181,6 +181,27 @@ struct Info {
     error: Option<String>,
 }
 
+/// One terminal's client-visible metadata. `error` is omitted while there
+/// is none: the client types it as an optional string and renders its error
+/// banner on any present value — an explicit null read as "Terminal error:
+/// null" under every tab.
+fn info_json(info: &Info, id: &str, shell: &Value, cwd: &str) -> Value {
+    let mut value = json!({
+        "id": id,
+        "title": info.title,
+        "shell": shell,
+        "cwd": cwd,
+        "cols": info.cols,
+        "rows": info.rows,
+        "state": info.state,
+        "exitCode": info.exit_code,
+    });
+    if let Some(error) = &info.error {
+        value["error"] = json!(error);
+    }
+    value
+}
+
 /// One attach stream's bounded output queue — upstream's `TerminalFollower`.
 struct Follower {
     id: u64,
@@ -271,22 +292,7 @@ struct Terminal {
 impl Terminal {
     /// The client-visible `WebTerminalInfo` for this terminal.
     fn info_json(&self, id: &str, shared: &Shared) -> Value {
-        json!({
-            "id": id,
-            "title": shared.info.title,
-            "shell": self.shell,
-            "cwd": self.cwd,
-            "cols": shared.info.cols,
-            "rows": shared.info.rows,
-            "state": shared.info.state,
-            "exitCode": shared.info.exit_code,
-            "error": shared
-                .info
-                .error
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
-        })
+        info_json(&shared.info, id, &self.shell, &self.cwd)
     }
 
     fn writable(shared: &Shared, follower: u64) -> bool {
@@ -1171,6 +1177,36 @@ pub async fn attach(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found in the desktop: every terminal tab showed "Terminal error:
+    /// null" — the info carried an explicit `error: null`, and the client
+    /// renders its banner on any present value.
+    #[test]
+    fn info_omits_error_until_one_exists() {
+        let running = Info {
+            title: "zsh".into(),
+            cols: 80,
+            rows: 24,
+            state: "running",
+            exit_code: None,
+            error: None,
+        };
+        let value = info_json(&running, "t1", &json!({ "name": "zsh" }), "/ws");
+        assert!(value.get("error").is_none(), "{value}");
+        assert_eq!(
+            value["exitCode"],
+            Value::Null,
+            "exitCode is nullable: {value}"
+        );
+
+        let failed = Info {
+            state: "failed",
+            error: Some("spawn failed".into()),
+            ..running
+        };
+        let value = info_json(&failed, "t1", &json!({ "name": "zsh" }), "/ws");
+        assert_eq!(value["error"], json!("spawn failed"), "{value}");
+    }
 
     fn shared_for_screen(rows: u16, cols: u16) -> Shared {
         Shared {
