@@ -748,11 +748,13 @@ impl Engine {
             // This is the safe moment: the main turn's in-flight lease
             // (structural ownership, `turn_lease`) was released when
             // `handle_send_message` returned — same task as this loop —
-            // and sub-agent leases declare no dylib exposure (5b:
-            // dylib-origin contributions never enter sub-agent dispatch),
-            // so no lease assembled under a retired generation holds
-            // dylib handles here. The lease check is the safety net for a
-            // holder that breaks those rules: defer the `dlclose` and say
+            // and sub-agent leases on a builtin executor declare no dylib
+            // exposure (5b: dylib-origin contributions never enter
+            // sub-agent dispatch), so no such lease assembled under a
+            // retired generation holds dylib handles here. The lease check
+            // is the safety net for the holders that do: a drained-but-
+            // outstanding child on an extension-registered executor, whose
+            // loop is dylib code. Defer the `dlclose` and say
             // so, rather than dangle a vtable. Idempotent (empty pending
             // → no-op, and the lock is only taken when there is something
             // to drop). See spec §4a/§4b.

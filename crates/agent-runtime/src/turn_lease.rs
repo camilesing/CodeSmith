@@ -34,9 +34,10 @@
 //!   -provider children (out of process, no in-process handles) and
 //!   AgentTeams teammates (`run_teammate_loop`) do not.
 //! - `dylib_exposed` is declared by the holder, not derived: the main
-//!   turn declares it whenever a runner is bound; sub-agents declare
-//!   `false` by the 5b rule (dylib-origin contributions never enter
-//!   sub-agent dispatch).
+//!   turn declares it whenever a runner is bound; a sub-agent declares it
+//!   only when it runs an extension-registered turn executor (its loop is
+//!   dylib code). Otherwise it declares `false` by the 5b rule —
+//!   dylib-origin handlers and tools never enter sub-agent dispatch.
 //! - The drain is a blocking wait (the reload path runs under
 //!   `spawn_blocking`); there is no async form.
 //! - Drain scope is the `ExtensionRunner` identity (`Weak::ptr_eq`), so a
@@ -521,7 +522,7 @@ mod tests {
         assert_eq!(
             registry.stale_dylib_holders(&runner, 4),
             0,
-            "sub-agents declare no dylib exposure (5b)"
+            "a sub-agent on a builtin executor declares no dylib exposure (5b)"
         );
         drop(sub);
 
