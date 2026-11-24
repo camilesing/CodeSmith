@@ -166,49 +166,15 @@ pub struct WorktreeCreateResult {
     pub existed: bool,
 }
 
-/// Check if a worktree already exists at the expected path by reading
-/// the HEAD file directly (no subprocess).
+/// Whether a worktree already exists at the expected path, and its HEAD.
+/// Asks git: a worktree's `HEAD` names a branch (`ref: refs/heads/…`)
+/// whose ref lives in the common dir or a packed-refs file, not under the
+/// worktree's own git dir.
 fn check_existing_worktree(worktree_path: &Path) -> Option<String> {
-    // Read .git/HEAD or the gitlink file
-    let git_path = worktree_path.join(".git");
-    let head_path = if git_path.is_file() {
-        // Worktree gitlink — read it to find real git dir
-        let gitlink = std::fs::read_to_string(&git_path).ok()?;
-        let gitlink_trimmed = gitlink.trim();
-        let real_git_dir = if gitlink_trimmed.starts_with("gitdir: ") {
-            PathBuf::from(gitlink_trimmed.strip_prefix("gitdir: ").unwrap())
-        } else {
-            PathBuf::from(gitlink_trimmed)
-        };
-        let resolved = if real_git_dir.is_relative() {
-            worktree_path.join(real_git_dir)
-        } else {
-            real_git_dir
-        };
-        resolved.join("HEAD")
-    } else if git_path.is_dir() {
-        git_path.join("HEAD")
-    } else {
+    if !worktree_path.join(".git").exists() {
         return None;
-    };
-
-    let head_content = std::fs::read_to_string(&head_path).ok()?;
-    let head_content = head_content.trim();
-
-    // Direct SHA or ref like "ref: refs/heads/main"
-    if head_content.starts_with("ref: ") {
-        let ref_path = head_content.strip_prefix("ref: ").unwrap();
-        let ref_file = if let Some(parent) = head_path.parent() {
-            parent.join(ref_path)
-        } else {
-            return None;
-        };
-        std::fs::read_to_string(ref_file)
-            .ok()
-            .map(|s| s.trim().to_string())
-    } else {
-        Some(head_content.to_string())
     }
+    get_head_commit(worktree_path).ok()
 }
 
 /// Create a git worktree for the given slug, or resume if it already exists.
@@ -425,6 +391,32 @@ mod tests {
         let created = get_or_create_worktree(&root, "x").expect("session worktree");
         assert!(created.worktree_path.starts_with(&root));
         assert!(created.worktree_path.join(".git").is_file());
+    }
+
+    /// `exit_worktree(action="keep")` preserves a worktree so it can be
+    /// entered again later. Re-entering resumes it and reports its current
+    /// HEAD instead of failing to create it a second time.
+    #[test]
+    fn entering_an_existing_worktree_resumes_it() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        commit(tmp.path(), "init");
+
+        let created = get_or_create_worktree(tmp.path(), "x").expect("create");
+        assert!(!created.existed);
+        commit(&created.worktree_path, "work in the worktree");
+
+        let resumed = get_or_create_worktree(tmp.path(), "x").expect("resume the kept worktree");
+        assert!(resumed.existed);
+        assert_eq!(
+            resumed.head_commit,
+            get_head_commit(&created.worktree_path).unwrap(),
+            "the resumed HEAD, earlier work included"
+        );
+        assert_ne!(resumed.head_commit, created.head_commit);
     }
 
     #[test]
