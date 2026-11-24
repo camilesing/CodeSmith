@@ -81,6 +81,16 @@ impl ToolSpec for RevertTurnTool {
         let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
             let repo = SnapshotRepo::open_or_init(&workspace)
                 .map_err(|e| format!("Snapshot repo init failed: {e}"))?;
+            // Snapshot the current tree first. It is the safety net
+            // `/rewind` takes — `restore` only removes paths HEAD knows, so
+            // files created since the last snapshot (earlier in this turn,
+            // or by hand) would survive the revert — and it stages those
+            // files, so the boundary comparison below sees them (`git diff
+            // <commit>` ignores files the index does not know). A failed
+            // safety-net snapshot is a warning, not a blocker.
+            if let Err(err) = repo.snapshot("before revert_turn") {
+                tracing::warn!(target: "snapshot", "revert_turn safety snapshot failed: {err}");
+            }
             // Find pre-turn:* snapshots only — those mark the start of
             // each turn, which is the right rollback target. We pull a
             // generous list and filter so the model's `turn_offset` is
@@ -88,17 +98,45 @@ impl ToolSpec for RevertTurnTool {
             let snapshots = repo
                 .list((MAX_OFFSET as usize).saturating_mul(2) + 16)
                 .map_err(|e| format!("Snapshot list failed: {e}"))?;
-            let pre_turns: Vec<_> = snapshots
+            let mut pre_turns: Vec<_> = snapshots
                 .into_iter()
                 .filter(|s| s.label.starts_with("pre-turn:"))
                 .collect();
+            // Newest first. A pre-turn snapshot that already matches the
+            // working tree is a boundary nothing changed after: the calling
+            // turn's own (the engine takes it before the first request) and
+            // any turn that edited no files. Restoring to it is a no-op, so
+            // the offset counts past those.
+            let mut skipped = 0;
+            while let Some(newest) = pre_turns.first() {
+                let matches = repo
+                    .work_tree_matches_snapshot(&newest.id)
+                    .map_err(|e| format!("Snapshot comparison failed: {e}"))?;
+                if !matches {
+                    break;
+                }
+                pre_turns.remove(0);
+                skipped += 1;
+            }
             let target = pre_turns
                 .get((offset - 1) as usize)
                 .ok_or_else(|| {
-                    format!(
-                        "Only {} pre-turn snapshot(s) exist; turn_offset={offset} is out of range.",
-                        pre_turns.len(),
-                    )
+                    if skipped > 0 && pre_turns.is_empty() {
+                        "NoSnapshotForTurn: every pre-turn snapshot already matches the current \
+                         workspace; no earlier turn boundary differs from it."
+                            .to_string()
+                    } else if skipped > 0 {
+                        format!(
+                            "Only {} pre-turn snapshot(s) differ from the current workspace; \
+                             turn_offset={offset} is out of range.",
+                            pre_turns.len(),
+                        )
+                    } else {
+                        format!(
+                            "Only {} pre-turn snapshot(s) exist; turn_offset={offset} is out of range.",
+                            pre_turns.len(),
+                        )
+                    }
                 })?
                 .clone();
             if repo
@@ -190,6 +228,132 @@ mod tests {
 
         let content = std::fs::read_to_string(workspace.join("a.txt")).unwrap();
         assert_eq!(content, "original");
+    }
+
+    #[tokio::test]
+    async fn revert_turn_removes_files_created_after_the_target_snapshot() {
+        // The calling turn created new.txt after its pre-turn snapshot.
+        // `restore` only deletes paths the snapshot repo's HEAD knows, so
+        // without a snapshot of the current tree the new file survived.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let _guard = scoped_home(tmp.path());
+        let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"original").unwrap();
+        repo.snapshot("pre-turn:1").unwrap();
+        std::fs::write(workspace.join("new.txt"), b"created this turn").unwrap();
+
+        let tool = RevertTurnTool;
+        let ctx = ToolContext::new(workspace.clone());
+        let r = tool.execute(json!({}), &ctx).await.expect("execute");
+        assert!(r.success, "expected success: {r:?}");
+
+        assert!(
+            !workspace.join("new.txt").exists(),
+            "the new file is reverted too"
+        );
+    }
+
+    #[tokio::test]
+    async fn revert_turn_keeps_a_calling_turn_that_only_created_files() {
+        // Turn 1 rewrote a.txt; the calling turn then created new.txt and
+        // nothing else. A file the index does not know yet is invisible to
+        // the boundary comparison, so without the safety snapshot first the
+        // calling turn's own boundary read as unchanged — and offset 1 undid
+        // turn 1 as well.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let _guard = scoped_home(tmp.path());
+        let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"original").unwrap();
+        repo.snapshot("pre-turn:1").unwrap();
+        std::fs::write(workspace.join("a.txt"), b"modified").unwrap();
+        repo.snapshot("post-turn:1").unwrap();
+        repo.snapshot("pre-turn:2").unwrap();
+        std::fs::write(workspace.join("new.txt"), b"created this turn").unwrap();
+
+        let tool = RevertTurnTool;
+        let ctx = ToolContext::new(workspace.clone());
+        let r = tool.execute(json!({}), &ctx).await.expect("execute");
+        assert!(r.success, "expected success: {r:?}");
+
+        assert!(
+            !workspace.join("new.txt").exists(),
+            "the calling turn's new file is undone"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "modified",
+            "turn 1 stays as it was"
+        );
+    }
+
+    #[tokio::test]
+    async fn revert_turn_default_offset_counts_past_the_calling_turns_own_snapshot() {
+        // The live sequence: turn 1 edits, turn 2 changes nothing, and
+        // turn 3 opens with its own pre-turn snapshot before the model calls
+        // the tool. Both boundaries match the working tree, so offset 1 has
+        // to land on the start of turn 1 — the latest turn that changed files.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let _guard = scoped_home(tmp.path());
+        let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"original").unwrap();
+        repo.snapshot("pre-turn:1").unwrap();
+        std::fs::write(workspace.join("a.txt"), b"modified").unwrap();
+        repo.snapshot("post-turn:1").unwrap();
+        repo.snapshot("pre-turn:2").unwrap();
+        repo.snapshot("post-turn:2").unwrap();
+        repo.snapshot("pre-turn:3").unwrap();
+
+        let tool = RevertTurnTool;
+        let ctx = ToolContext::new(workspace.clone());
+        let r = tool.execute(json!({}), &ctx).await.expect("execute");
+        assert!(r.success, "expected success: {r:?}");
+
+        let content = std::fs::read_to_string(workspace.join("a.txt")).unwrap();
+        assert_eq!(content, "original");
+    }
+
+    #[tokio::test]
+    async fn revert_turn_offset_two_reaches_the_turn_before_the_last_edit() {
+        // Turn 1 adds b.txt, turn 2 rewrites a.txt, turn 3 (the caller) has
+        // only its own pre-turn snapshot. Offset 2 must skip the caller's
+        // boundary and then count two real turns back.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let _guard = scoped_home(tmp.path());
+        let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
+        std::fs::write(workspace.join("a.txt"), b"base").unwrap();
+        repo.snapshot("pre-turn:1").unwrap();
+        std::fs::write(workspace.join("b.txt"), b"one").unwrap();
+        repo.snapshot("post-turn:1").unwrap();
+        repo.snapshot("pre-turn:2").unwrap();
+        std::fs::write(workspace.join("a.txt"), b"two").unwrap();
+        repo.snapshot("post-turn:2").unwrap();
+        repo.snapshot("pre-turn:3").unwrap();
+
+        let tool = RevertTurnTool;
+        let ctx = ToolContext::new(workspace.clone());
+        let r = tool
+            .execute(json!({"turn_offset": 2}), &ctx)
+            .await
+            .expect("execute");
+        assert!(r.success, "expected success: {r:?}");
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "base",
+            "turn 2 is undone"
+        );
+        assert!(
+            !workspace.join("b.txt").exists(),
+            "turn 1 is undone too: the file did not exist before it"
+        );
     }
 
     #[tokio::test]
