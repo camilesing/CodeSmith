@@ -1732,8 +1732,9 @@ pub const MAX_REGISTERED_SKILLS: usize = 16;
 /// every transcript mutation through this hub (append → [`fold_message`],
 /// wholesale replacement → [`refold_all`]), so a projection's state is
 /// always "the fold of the current transcript" — session restore, compaction,
-/// and `/edit` rollback rebuild it for free. `clear` (reload) marks the hub
-/// dirty; the engine refolds from the transcript at the next turn start.
+/// and `/edit` rollback rebuild it for free. `clear` (reload) and
+/// `register` (a mod loaded mid-session) mark the hub dirty; the engine
+/// refolds from the transcript at the next turn start.
 ///
 /// [`fold_message`]: MessageProjectionHub::fold_message
 /// [`refold_all`]: MessageProjectionHub::refold_all
@@ -1765,8 +1766,9 @@ impl std::fmt::Debug for MessageProjectionHub {
 #[derive(Default)]
 struct HubState {
     projections: Vec<StoredProjection>,
-    /// Set by `clear`; the engine consumes it (`take_dirty`) to refold from
-    /// the live transcript after a reload.
+    /// Set by `clear` and `register`; the engine consumes it (`take_dirty`)
+    /// to refold from the live transcript after a reload or a late
+    /// registration.
     dirty: bool,
     /// Bumped by `clear`; a `refold_all` whose folds straddled a `clear`
     /// leaves the reload signal set instead of clobbering it.
@@ -1848,6 +1850,11 @@ impl MessageProjectionHub {
             state: init,
             fold,
         });
+        // The new projection starts at `init`. When the transcript already
+        // has messages (a mod enabled mid-session), only the turn-start
+        // refold builds its state from them — and that runs only when the
+        // hub is dirty, the same signal a reload's `clear` raises.
+        state.dirty = true;
         Ok(())
     }
 
@@ -2736,6 +2743,22 @@ mod tests {
         hub.clear();
         assert_eq!(hub.state("mod-a", "count"), None);
         assert!(hub.take_dirty());
+        assert!(!hub.take_dirty(), "dirty is one-shot");
+    }
+
+    /// A projection registered after the transcript already exists — a mod
+    /// enabled mid-session — starts at `init`. Only the turn-start refold
+    /// builds its state from the transcript, and that runs only when the
+    /// hub is dirty: `register` has to raise the same signal `clear` does.
+    #[test]
+    fn projection_registration_marks_the_hub_dirty() {
+        let hub = MessageProjectionHub::new();
+        hub.register("mod-a", "count", Value::from(0), counting_fold())
+            .unwrap();
+        assert!(
+            hub.take_dirty(),
+            "a registration needs a refold over the existing transcript"
+        );
         assert!(!hub.take_dirty(), "dirty is one-shot");
     }
 
