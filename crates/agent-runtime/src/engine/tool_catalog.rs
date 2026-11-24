@@ -29,9 +29,9 @@ pub fn is_tool_search_tool(name: &str) -> bool {
     name == TOOL_SEARCH_NAME
 }
 
-// `DEFAULT_ACTIVE_NATIVE_TOOLS` relocated to
-// `codesmith_agent_runtime::tools::tool_catalog` (re-exported above) — it now
-// feeds the prompt's core-tool taxonomy only; deferral is declared per tool.
+// `DEFAULT_ACTIVE_NATIVE_TOOLS` is defined in `codesmith-prompts` and
+// re-exported through `codesmith_agent_runtime::tools::tool_catalog` (above) —
+// it feeds the prompt's core-tool taxonomy only; deferral is declared per tool.
 
 /// Model-facing description of the `tool_search` control tool.
 pub const TOOL_SEARCH_DESCRIPTION: &str = "\

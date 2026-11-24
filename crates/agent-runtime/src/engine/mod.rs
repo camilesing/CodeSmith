@@ -4264,9 +4264,8 @@ mod turn_meta;
 pub mod host_executor;
 
 pub fn default_active_native_tool_names() -> &'static [&'static str] {
-    // Delegates to `codesmith_agent_runtime::tools::tool_catalog` so the
-    // prompt builder (now in agent-runtime) can share the same list
-    // without a circular crate dependency.
+    // Delegates to `crate::tools::tool_catalog`. The list itself is defined
+    // in `codesmith-prompts`, which renders the core-tool taxonomy from it.
     crate::tools::default_active_native_tool_names()
 }
 

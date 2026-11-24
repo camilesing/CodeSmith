@@ -1,11 +1,9 @@
 //! Native tool catalog defaults.
 //!
 //! The default active native tool set — the tools eager-loaded at startup
-//! (as opposed to deferred behind tool-search progressive disclosure).
-//! Relocated from `crates/tui/src/core/engine/tool_catalog.rs` so the
-//! prompt builder (which renders a core-tool taxonomy block from this
-//! list) can live in `codesmith-agent-runtime` without a circular
-//! dependency back into the TUI engine body.
+//! (as opposed to deferred behind tool-search progressive disclosure). The
+//! base prompt's core-tool taxonomy is rendered from the same list (defined
+//! once in `codesmith-prompts`, re-exported here).
 
 /// Canonical name of the sub-agent release tool (`AgentCloseTool`).
 pub const AGENT_CLOSE_NAME: &str = "agent_close";
@@ -66,8 +64,13 @@ pub const WEB_SEARCH_NAME: &str = "web_search";
 /// Canonical name of the file write tool (`WriteFileTool`).
 pub const WRITE_FILE_NAME: &str = "write_file";
 
-/// The native tools the prompt builder advertises as the core surface (its
-/// core-tool taxonomy block is rendered from this list).
+/// The native tools the base prompt advertises as the core surface.
+///
+/// One definition: the list lives in `codesmith-prompts`
+/// (`assembly::DEFAULT_ACTIVE_NATIVE_TOOLS`), the crate that renders the
+/// core-tool taxonomy and cannot depend on this one. It is re-exported here
+/// so engine-side readers keep the `tools::tool_catalog` path; the `*_NAME`
+/// constants above remain the spelling for tool construction and `name()`.
 ///
 /// Deferral is **not** derived from this list — it is declared per tool
 /// ([`crate::tools::spec::ToolSpec::defer_loading`], propagated into the
@@ -75,41 +78,7 @@ pub const WRITE_FILE_NAME: &str = "write_file";
 /// its own definition says so, so an undeclared tool is resident and this list
 /// going stale cannot silently hide anything. `[tools] always_load` overrides a
 /// declaration; the YOLO mode override is MCP-only.
-///
-/// Built from the `*_NAME` constants above so the list and the tool
-/// construction/`name()` sites share one spelling — a bare literal that drifts
-/// would advertise a tool the model does not have, or miss one it does.
-pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
-    AGENT_CLOSE_NAME,
-    AGENT_EVAL_NAME,
-    AGENT_OPEN_NAME,
-    APPLY_PATCH_NAME,
-    CHECKLIST_WRITE_NAME,
-    EDIT_FILE_NAME,
-    EXEC_INTERACT_NAME,
-    EXEC_SHELL_NAME,
-    EXEC_SHELL_INTERACT_NAME,
-    EXEC_SHELL_WAIT_NAME,
-    EXEC_WAIT_NAME,
-    FETCH_URL_NAME,
-    FILE_SEARCH_NAME,
-    FIND_REFERENCES_NAME,
-    GIT_DIFF_NAME,
-    GIT_STATUS_NAME,
-    GREP_FILES_NAME,
-    LIST_DIR_NAME,
-    READ_FILE_NAME,
-    RUN_TESTS_NAME,
-    SYMBOL_SEARCH_NAME,
-    TASK_CREATE_NAME,
-    TASK_LIST_NAME,
-    TASK_READ_NAME,
-    TASK_SHELL_START_NAME,
-    TASK_SHELL_WAIT_NAME,
-    UPDATE_PLAN_NAME,
-    WEB_SEARCH_NAME,
-    WRITE_FILE_NAME,
-];
+pub use codesmith_prompts::assembly::DEFAULT_ACTIVE_NATIVE_TOOLS;
 
 /// Accessor kept as a function (rather than importing the constant
 /// directly) to mirror the original engine-body API and leave room for
@@ -121,16 +90,6 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn default_active_native_tools_are_sorted_and_unique() {
-        assert!(
-            DEFAULT_ACTIVE_NATIVE_TOOLS.windows(2).all(|w| w[0] < w[1]),
-            "catalog must stay sorted (prefix-cache stability) and duplicate-free"
-        );
-    }
-
     /// The deferral rule's shape, at the level this crate can see it.
     ///
     /// The declarations themselves are pinned over the real registry in

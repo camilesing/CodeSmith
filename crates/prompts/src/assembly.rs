@@ -405,12 +405,10 @@ pub fn load_handoff_block(workspace: &Path) -> Option<String> {
 
 // ── Prompt layers loaded at compile time ──────────────────────────────
 
-/// Core: task execution, tool-use rules, output format, toolbox reference,
-/// "When NOT to use" guidance, sub-agent sentinel protocol.
 /// The default active native tool set — the core-tool taxonomy the base
-/// prompt teaches (moved to the prompts crate in the round-9 split; the
-/// engine re-exports it). Sorted and duplicate-free (prefix-cache
-/// stability, pinned by a test there).
+/// prompt teaches. The one definition: `codesmith-agent-runtime` re-exports
+/// it (`tools::tool_catalog`). Sorted and duplicate-free (prefix-cache
+/// stability, pinned by a test).
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     "agent_close",
     "agent_eval",
