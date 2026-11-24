@@ -1584,7 +1584,7 @@ impl Engine {
         };
 
         // Update system prompt to match current mode and include persisted compaction context.
-        self.refresh_system_prompt(mode);
+        self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
         // Build tool registry and tool list for the current mode via the host
@@ -3411,7 +3411,7 @@ impl Engine {
         // Drop any compaction summary — that path is incompatible with the
         // fresh-context model and would Frankenstein-merge with the briefing.
         self.session.compaction_summary_prompt = None;
-        self.refresh_system_prompt(mode);
+        self.refresh_system_prompt_offloaded(mode).await;
         self.emit_session_updated().await;
 
         let _ = self
