@@ -1061,7 +1061,7 @@ fn ledger_io_lock() -> std::sync::MutexGuard<'static, ()> {
 /// `[REDACTED]`. Also normalises fully-qualified secrets directory paths
 /// to the portable `~/.codesmith/secrets` form.
 fn redact_exported_text(text: &mut String) {
-    let prefixes: &[&[u8]] = &[b"sk-", b"Bearer ", b"dsk-", b"deepseek-"];
+    let prefixes: &[&[u8]] = &[b"sk-", b"Bearer ", b"dsk-"];
     let mut result = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0usize;
@@ -1193,6 +1193,22 @@ mod tests {
             ledger_path: path,
         };
         (tmp, ledger)
+    }
+
+    #[test]
+    fn redaction_keeps_model_ids_and_redacts_keys() {
+        // Every model id in the registry starts with `deepseek-`: listed as
+        // a key prefix, it replaced the model name with `[REDACTED]` in
+        // every ledger read path — the fact that identifies the failing
+        // provider path.
+        let mut text =
+            "fails on `deepseek-v4-flash`; key sk-abcdef0123456789, header Bearer xyz.tmp"
+                .to_string();
+        redact_exported_text(&mut text);
+        assert!(text.contains("fails on `deepseek-v4-flash`"), "{text}");
+        assert!(!text.contains("abcdef0123456789"), "{text}");
+        assert!(!text.contains("xyz.tmp"), "{text}");
+        assert!(text.contains("[REDACTED]"), "{text}");
     }
 
     #[test]
