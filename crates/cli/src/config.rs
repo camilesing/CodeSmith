@@ -1900,7 +1900,7 @@ impl Config {
             && ApiProvider::parse(provider).is_none()
         {
             anyhow::bail!(
-                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, atlascloud, wanjie-ark, openrouter, xiaomi-mimo, novita, fireworks, siliconflow, moonshot, sglang, vllm, or ollama."
+                "Invalid provider '{provider}': expected deepseek, deepseek-cn, nvidia-nim, openai, atlascloud, wanjie-ark, volcengine, openrouter, xiaomi-mimo, novita, fireworks, siliconflow, moonshot, sglang, vllm, ollama, or anthropic."
             );
         }
         if let Some(ref key) = self.api_key
