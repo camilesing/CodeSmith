@@ -43,6 +43,10 @@
 //!   (capacity events still capture those failures).
 //! - No batching, retry, or backoff: a failed OTLP export is dropped, not
 //!   retried — telemetry must never block or break the engine.
+//! - [`LocalJsonlSink`] appends inline: each post-`attach` emit does its
+//!   open / append / close on the caller's thread, a runtime worker in the
+//!   REPL. It is opt-in (`telemetry = true`) and one small line per event;
+//!   move it to the blocking pool if `~/.codesmith` sits on a slow mount.
 
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
@@ -51,17 +55,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Total byte budget every provider enforces on the session-log channel.
-/// Records beyond it are dropped whole — the channel is capped by contract,
-/// not by hope.
+/// Total byte budget every provider enforces on the session-log channel,
+/// per provider instance. Records beyond it are dropped whole — the channel
+/// is capped by contract, not by hope.
 pub const SESSION_LOG_BYTE_BUDGET: u64 = 256 * 1024;
 
 /// The telemetry seam (P1-2): where product events and byte-capped session
 /// summaries go. Definition lives here (framework); providers are
 /// [`LocalJsonlSink`] (local jsonl) and the CLI's OTLP/HTTP exporter;
 /// consumers are the engine's event-emission mirror sites. All methods must
-/// be non-blocking and must never fail loudly — telemetry must not break the
-/// engine (providers swallow IO/export errors internally).
+/// never fail loudly — telemetry must not break the engine (providers
+/// swallow IO/export errors internally). Exporters answer off the caller's
+/// thread; [`LocalJsonlSink`] is the documented inline exception (see the
+/// module's known limitations).
 pub trait TelemetrySink: Send + Sync + std::fmt::Debug {
     /// One product event (low volume): capacity decisions and kin. `Value`
     /// is the mirrored form of an existing event — no new vocabulary.
@@ -114,7 +120,8 @@ impl TelemetrySink for TelemetryFanout {
 /// Gated by the existing `telemetry: bool` config (`enabled`). The events
 /// channel writes `~/.codesmith/telemetry/events.jsonl`; the session-log
 /// channel writes a sibling `session-log.jsonl`, byte-capped to
-/// [`SESSION_LOG_BYTE_BUDGET`]. Pre-`attach`, emissions enqueue in memory;
+/// [`SESSION_LOG_BYTE_BUDGET`] per process; the file itself is append-only
+/// across runs and is not rotated. Pre-`attach`, emissions enqueue in memory;
 /// after `attach`, the queue drains to the files and new events are written
 /// directly. IO errors are swallowed — the sink must never break the engine.
 ///

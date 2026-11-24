@@ -155,8 +155,9 @@ pub fn new_shared_permission_registry() -> SharedPermissionRequestRegistry {
 // Shutdown Protocol Handler
 // ---------------------------------------------------------------------------
 
-/// Handle shutdown approval from a teammate. Cancel the teammate's token,
-/// remove from team file, and unassign their tasks.
+/// Handle shutdown approval from a teammate: cancel the teammate's token and
+/// remove it from the team file. Releasing its tasks is the teammate's own
+/// step when it approves, not this one.
 pub fn handle_shutdown_approval(
     _request_id: &str,
     teammate_name: &str,

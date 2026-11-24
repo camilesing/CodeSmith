@@ -313,7 +313,8 @@ pub fn find_member_by_agent_id(team_file: &TeamFile, agent_id: &str) -> Option<T
 }
 
 /// Remove a member by name from the team file, returning the removed member
-/// if found. Caller must `write_team_file()` to persist.
+/// if found. Persist inside a `with_team_file` closure — an unlocked
+/// `write_team_file()` after this races a concurrent roster update.
 pub fn remove_member_by_name(team_file: &mut TeamFile, name: &str) -> Option<TeamMember> {
     let idx = team_file.members.iter().position(|m| m.name == name)?;
     Some(team_file.members.remove(idx))

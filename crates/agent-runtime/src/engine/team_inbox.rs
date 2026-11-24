@@ -10,7 +10,7 @@ impl Engine {
     ///
     /// Each dispatch type is processed according to the team protocol:
     /// - TeammateMessage → inject as `<teammate-message>` XML synthetic user message
-    /// - ShutdownApprovalAction → cancel teammate token, remove from team, unassign tasks
+    /// - ShutdownApprovalAction → cancel teammate token, remove from team
     /// - PermissionRequestPending → route to approval dialog
     /// - PlanApprovalAutoApprove → informational (already auto-approved by poller)
     /// - IdleNotificationInfo → informational display
@@ -52,7 +52,8 @@ impl Engine {
                 backend_type: _,
             } => {
                 // Find and cancel the teammate's CancellationToken.
-                // Remove from team file and unassign tasks. The hook's
+                // Remove from team file (the teammate releases its own tasks
+                // when it approves). The hook's
                 // inputs are snapshotted and the guard dropped before the
                 // blocking file I/O, so other team operations are not
                 // stalled for the hook's duration.
