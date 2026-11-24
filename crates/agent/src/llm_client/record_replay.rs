@@ -157,7 +157,7 @@ impl LlmClient for RecordingClient {
         request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
         let provider = self.inner.provider_name().to_string();
-        let model = self.inner.model().to_string();
+        let model = targeted_model(&self.inner, &request);
         let base_url = self.inner.base_url().to_string();
         let writer = Arc::clone(&self.writer);
         let path = self.path.clone();
@@ -201,7 +201,7 @@ impl LlmClient for RecordingClient {
         request: MessageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
         let provider = self.inner.provider_name().to_string();
-        let model = self.inner.model().to_string();
+        let model = targeted_model(&self.inner, &request);
         let base_url = self.inner.base_url().to_string();
         let writer = Arc::clone(&self.writer);
         let path = self.path.clone();
@@ -332,6 +332,18 @@ impl LlmClient for RecordingClient {
 
     fn list_models(&self) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + '_>> {
         self.inner.list_models()
+    }
+}
+
+/// The model a recorded call targets: a per-request id (a same-provider
+/// utility or seam model reusing this client) wins over the client default —
+/// the same choice the provider makes when sending, and the key `ByModel`
+/// replay matches on.
+fn targeted_model(inner: &LlmClientHandle, request: &MessageRequest) -> String {
+    if request.model.is_empty() {
+        inner.model().to_string()
+    } else {
+        request.model.clone()
     }
 }
 
@@ -1288,6 +1300,23 @@ mod tests {
 
     // === ReplayMode::ByModel ================================================
 
+    fn text_response(model: &str, text: &str) -> MessageResponse {
+        MessageResponse {
+            id: format!("msg_{text}"),
+            r#type: "message".into(),
+            role: "assistant".into(),
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+            model: model.into(),
+            stop_reason: Some("end_turn".into()),
+            stop_sequence: None,
+            container: None,
+            usage: Usage::default(),
+        }
+    }
+
     fn text_response_line(model: &str, text: &str) -> RecordLine {
         RecordLine {
             version: RECORD_VERSION,
@@ -1309,21 +1338,33 @@ mod tests {
                 top_p: None,
             },
             outcome: RecordOutcome::Message {
-                response_message: Box::new(MessageResponse {
-                    id: format!("msg_{text}"),
-                    r#type: "message".into(),
-                    role: "assistant".into(),
-                    content: vec![ContentBlock::Text {
-                        text: text.into(),
-                        cache_control: None,
-                    }],
-                    model: model.into(),
-                    stop_reason: Some("end_turn".into()),
-                    stop_sequence: None,
-                    container: None,
-                    usage: Usage::default(),
-                }),
+                response_message: Box::new(text_response(model, text)),
             },
+        }
+    }
+
+    /// Answers every non-streaming call with one text block. Its default
+    /// model is `main-model`, which a per-request model id overrides.
+    struct TextAnswerMock;
+
+    impl LlmClient for TextAnswerMock {
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+        fn model(&self) -> &str {
+            "main-model"
+        }
+        fn create_message(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<MessageResponse>> + Send + '_>> {
+            Box::pin(async { Ok(text_response("main-model", "utility answer")) })
+        }
+        fn create_message_stream(
+            &self,
+            _request: MessageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamEventBox>> + Send + '_>> {
+            Box::pin(async { Err(anyhow!("not used in this test")) })
         }
     }
 
@@ -1399,6 +1440,27 @@ mod tests {
         // An empty model cannot discriminate buckets — head-of-queue wins.
         assert_eq!(drained_text(&replay, "").await, "a1");
         assert_eq!(drained_text(&replay, "util-model").await, "b1");
+    }
+
+    #[tokio::test]
+    async fn by_model_replays_a_per_request_model_override() {
+        // A same-provider utility model reuses the main client with a
+        // per-request model id. The recorded line must carry that id: stamped
+        // with the client default, the utility call has no line ByModel replay
+        // can find — the mode documented for mixed main + utility recordings.
+        let path = temp_recording_path("by_model_override");
+        let recorder = RecordingClient::new(Arc::new(TextAnswerMock), &path).expect("open");
+        let handle: LlmClientHandle = Arc::new(recorder);
+        handle
+            .create_message(model_request("util-model"))
+            .await
+            .expect("recorded call");
+        drop(handle);
+
+        let replay = ReplayClient::load_with_mode(&path, ReplayMode::ByModel).expect("load");
+        assert_eq!(drained_text(&replay, "util-model").await, "utility answer");
+        assert_eq!(replay.remaining(), 0);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
