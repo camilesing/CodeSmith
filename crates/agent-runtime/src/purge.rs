@@ -371,10 +371,16 @@ pub fn execute_purge_operations(messages: &[Message], ops: &[PurgeOp]) -> PurgeR
                     continue;
                 }
                 if let Some(block) = msgs[idx].content.get_mut(*block_idx) {
-                    let old_text = block_content_text(block).to_string();
-                    let new_text = pattern.replace_all(&old_text, with.as_str()).to_string();
-                    apply_block_replacement(block, &new_text);
-                    replaced_count = replaced_count.saturating_add(1);
+                    let old_text = block_content_text(block);
+                    let new_text = pattern.replace_all(old_text, with.as_str()).to_string();
+                    // A pattern that does not match (or a block type that
+                    // carries no replaceable text) changes nothing: counting
+                    // it reported "condensed" for a byte-for-byte identical
+                    // transcript.
+                    if new_text != old_text {
+                        apply_block_replacement(block, &new_text);
+                        replaced_count = replaced_count.saturating_add(1);
+                    }
                 }
             }
         }
@@ -805,6 +811,50 @@ mod tests {
         } else {
             panic!("expected text block");
         }
+    }
+
+    /// The purge model often answers with a `replace` that changes nothing —
+    /// a pattern copied from the truncated snippet that does not match, or
+    /// one aimed at a block with no replaceable text. Those were counted as
+    /// "condensed" while the transcript stayed byte-for-byte identical.
+    #[test]
+    fn a_replace_that_changes_nothing_is_not_counted() {
+        let replace = |msgs: Vec<Message>, pattern: &str| {
+            let ops = vec![PurgeOp::Replace {
+                msg_id: 1,
+                block_idx: 0,
+                pattern: Regex::new(pattern).unwrap(),
+                with: "Hi".to_string(),
+            }];
+            execute_purge_operations(&msgs, &ops)
+        };
+
+        let untouched = replace(
+            vec![msg_text("assistant", "nothing to see here")],
+            "does-not-appear",
+        );
+        assert_eq!(untouched.replaced_count, 0, "a non-matching pattern");
+        assert_eq!(
+            untouched.messages,
+            vec![msg_text("assistant", "nothing to see here")]
+        );
+
+        let on_tool_use = replace(
+            vec![msg_tool_use(
+                "call_01",
+                "read_file",
+                json!({"path": "x.rs"}),
+            )],
+            "x",
+        );
+        assert_eq!(
+            on_tool_use.replaced_count, 0,
+            "a ToolUse block has no replaceable text"
+        );
+        assert_eq!(
+            on_tool_use.messages[0].content[0],
+            msg_tool_use("call_01", "read_file", json!({"path": "x.rs"})).content[0]
+        );
     }
 
     #[test]
