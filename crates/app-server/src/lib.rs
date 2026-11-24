@@ -1051,26 +1051,39 @@ enum PersistOp<'a> {
 }
 
 async fn persist_config(state: &AppState, op: PersistOp<'_>) -> Result<()> {
-    let Some(path) = state.config_path.clone() else {
-        return Ok(());
+    // `None` resolves to the default config file, exactly as it does in
+    // `build_state` and `reload_config_snapshot`. An early return on `None`
+    // made `app/config/set` answer `ok` in the default launch (no
+    // `--config`) without writing anything.
+    let path = state.config_path.clone();
+    let (key, value) = match op {
+        PersistOp::Set { key, value } => (key.to_string(), Some(value.to_string())),
+        PersistOp::Unset { key } => (key.to_string(), None),
     };
-    // Re-read from disk: applying only this request's key change to the
-    // current on-disk state preserves any external edits made since this
-    // process started (a whole-snapshot overwrite would discard them).
-    let mut store = ConfigStore::load(Some(path))?;
-    match op {
-        PersistOp::Set { key, value } => store.config.set_value(key, value)?,
-        PersistOp::Unset { key } => store.config.unset_value(key)?,
-    }
-    store.save()
+    // `ConfigStore` does blocking file IO, so it runs on the blocking pool.
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        // Re-read from disk: applying only this request's key change to the
+        // current on-disk state preserves any external edits made since this
+        // process started (a whole-snapshot overwrite would discard them).
+        let mut store = ConfigStore::load(path)?;
+        match value {
+            Some(value) => store.config.set_value(&key, &value)?,
+            None => store.config.unset_value(&key)?,
+        }
+        store.save()
+    })
+    .await?
 }
 
 /// Re-derive the in-memory config snapshot from disk. Called after every
 /// persisted change (absorbing external edits) and after a failed persist
 /// (rolling back whatever the caller speculatively applied).
 async fn reload_config_snapshot(state: &AppState) -> Result<()> {
-    let store = ConfigStore::load(state.config_path.clone())?;
-    *state.config.write().await = store.config;
+    let path = state.config_path.clone();
+    let config =
+        tokio::task::spawn_blocking(move || ConfigStore::load(path).map(|store| store.config))
+            .await??;
+    *state.config.write().await = config;
     Ok(())
 }
 
@@ -2385,6 +2398,28 @@ mod tests {
         .await
         .expect("set after repair");
         assert_eq!(recovered.result["ok"], true, "{:?}", recovered.result);
+    }
+
+    /// The default launch passes no `--config`: reads resolve to the default
+    /// config file. Writes resolved to nothing — and still answered `ok`.
+    #[tokio::test]
+    async fn config_set_without_an_explicit_config_path_writes_the_default_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().to_path_buf();
+        let _env = ScopedCodeSmithHome::set(&home, Some(tmp));
+        let state = build_state(None, None, AppTransport::Http).expect("state");
+
+        let set = dispatch_stdio_request(
+            &state,
+            "app/config/set",
+            json!({ "key": "hook_sinks.unix_socket_path", "value": "/tmp/cw-default.sock" }),
+        )
+        .await
+        .expect("app/config/set");
+        assert_eq!(set.result["ok"], true, "{:?}", set.result);
+
+        let raw = fs::read_to_string(home.join("config.toml")).expect("default config written");
+        assert!(raw.contains("/tmp/cw-default.sock"), "{raw}");
     }
 
     // ── build_state hook sink wiring ────────────────────────────────────
