@@ -3425,13 +3425,21 @@ impl Engine {
         //    proceed with the swap — the briefing alone preserves enough
         //    state to continue, and the user can recover the lost archive
         //    from their session log if needed.
-        match archive_cycle(
-            &self.session.id,
-            to,
-            &self.session.messages,
-            &self.session.model,
-            archive_started,
-        ) {
+        // The archive serialises, writes and fsyncs the whole transcript:
+        // blocking work, so it runs on the blocking pool.
+        let archived = {
+            let (id, model, messages) = (
+                self.session.id.clone(),
+                self.session.model.clone(),
+                self.session.messages.to_vec(),
+            );
+            tokio::task::spawn_blocking(move || {
+                archive_cycle(&id, to, &messages, &model, archive_started)
+            })
+            .await
+            .unwrap_or_else(|join| Err(anyhow::Error::new(join)))
+        };
+        match archived {
             Ok(path) => {
                 tracing::info!("Cycle {to} archived to {}", path.display());
             }
