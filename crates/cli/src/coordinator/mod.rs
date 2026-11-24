@@ -60,19 +60,25 @@ impl OpenTicketsNote for OpenTicketsBoard {
     async fn open_tickets_digest(&self) -> Option<String> {
         // Manager first (async, short-lived guard), then the store's sync
         // lock — the two are never held together across an await.
-        let running: std::collections::HashSet<String> = {
-            let manager = self.subagent_manager.read().await;
-            manager
-                .list()
-                .into_iter()
-                .filter(|agent| agent.status == SubAgentStatus::Running)
-                .map(|agent| agent.agent_id)
-                .collect()
-        };
+        let running = running_agent_ids(&self.subagent_manager).await;
         let mut store = self
             .store
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         store.board_digest_with(&|id| running.contains(id))
     }
+}
+
+/// The ids of the workers the manager reports as `Running` — the live half
+/// of a derived ticket stage.
+async fn running_agent_ids(
+    manager: &crate::tools::subagent::SharedSubAgentManager,
+) -> std::collections::HashSet<String> {
+    let manager = manager.read().await;
+    manager
+        .list()
+        .into_iter()
+        .filter(|agent| agent.status == SubAgentStatus::Running)
+        .map(|agent| agent.agent_id)
+        .collect()
 }

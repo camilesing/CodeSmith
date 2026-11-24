@@ -23,6 +23,7 @@ use codesmith_agent_runtime::tools::spec::{
 };
 use serde_json::json;
 
+use super::running_agent_ids;
 use super::tickets::{ReportState, SUMMARY_INLINE_LIMIT, SharedTicketStore, TicketOutcome};
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentStatus};
 
@@ -171,15 +172,7 @@ impl TicketListTool {
     async fn render(&self) -> String {
         // Manager first (async read, short-lived guard): a running-ids
         // snapshot taken without holding the ticket store's sync lock.
-        let running: std::collections::HashSet<String> = {
-            let manager = self.manager.read().await;
-            manager
-                .list()
-                .into_iter()
-                .filter(|agent| agent.status == SubAgentStatus::Running)
-                .map(|agent| agent.agent_id)
-                .collect()
-        };
+        let running = running_agent_ids(&self.manager).await;
         let mut store = self
             .store
             .lock()
@@ -303,6 +296,9 @@ impl ToolSpec for TicketReadTool {
                 .resolve_agent_ref(requested)
                 .unwrap_or_else(|_| requested.to_string())
         };
+        // A running worker reads as `working` — the stage the board shows
+        // for the same ticket.
+        let running = running_agent_ids(&self.manager).await;
         let mut store = self
             .store
             .lock()
@@ -312,7 +308,7 @@ impl ToolSpec for TicketReadTool {
                 "no ticket for {requested} (only coordinator-spawned background workers get tickets)"
             )));
         };
-        let stage = ticket.stage(false);
+        let stage = ticket.stage(running.contains(&ticket.id));
         let mut out = format!(
             "# ticket {id}\ntitle: {title}\nstage: {stage}\ncreated: {created}\n\n## scope (mandate)\n{scope}\n",
             id = ticket.id,
@@ -627,6 +623,21 @@ mod tests {
         assert!(text.contains("recorded waiting"), "{text}");
         assert!(!text.contains("relayed"), "{text}");
         assert!(rx.try_recv().is_err(), "a blank question wakes nobody");
+    }
+
+    /// A running worker that filed no report reads as `working` — the stage
+    /// `ticket_list` shows for the same ticket — not as `idle`.
+    #[tokio::test]
+    async fn read_derives_the_stage_from_live_worker_status() {
+        let (dir, manager) = manager_with_running_worker("agent_w").await;
+        let tool = TicketReadTool::new(shared_store(), manager.clone());
+        let result = tool
+            .execute(json!({ "id": "agent_w" }), &ToolContext::new(dir.path()))
+            .await
+            .expect("read");
+        let text = format!("{result:?}");
+        assert!(text.contains("stage: working"), "{text}");
+        manager.write().await.abort_test_agent("agent_w");
     }
 
     #[tokio::test]
