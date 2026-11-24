@@ -108,9 +108,9 @@ impl HostAgentExecutor {
     /// exactly as it rewrites the submitted turn text; a rewrite to
     /// whitespace drops a text-only steer. Image paths ride beside the text
     /// untouched and are appended as native image blocks in the same wire
-    /// order as a turn's opening message. The only `await` is that emit —
-    /// the lock on the shared working set is taken after it and never held
-    /// across one.
+    /// order as a turn's opening message. The only `await`s are that emit
+    /// and the turn-meta enrichment — the lock on the shared working set is
+    /// taken after both and never held across one.
     pub(crate) async fn push_steer_message(
         &self,
         steer: SteerInput,

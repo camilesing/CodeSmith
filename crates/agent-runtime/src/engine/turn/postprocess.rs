@@ -21,7 +21,7 @@
 //! - `should_emit_thinking_only_status` — the clean-end gate for the
 //!   thinking-only status.
 //! - [`HostAgentExecutor::collect_lsp_diagnostics`] (seam 3, post-edit) and
-//!   [`HostAgentExecutor::flush_pending_lsp_diagnostics`] (seam 1,
+//!   [`HostAgentExecutor::take_pending_lsp_message`] (seam 1,
 //!   pre-request) — the self-contained LSP diagnostics pair over the `lsp`
 //!   probe (the probe type itself stays in `host_executor.rs`; the wire-in
 //!   constructs it there).
@@ -262,7 +262,7 @@ impl HostAgentExecutor {
     /// (P3-8) pre-request seam — drain the pending result-verification
     /// verdicts into a synthetic `user` message so the model sees the
     /// engine's claim check before its next reasoning step. Mirrors
-    /// [`HostAgentExecutor::flush_pending_lsp_diagnostics`] above:
+    /// [`HostAgentExecutor::take_pending_lsp_message`] above:
     /// `mem::take` the engine-held buffer, render, push. The message is a
     /// `<codesmith:runtime_event kind="result_verification">` sentinel
     /// (never `<turn_meta>`-enriched — matching the sub-agent completion
