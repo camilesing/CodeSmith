@@ -726,7 +726,13 @@ impl WorkingSet {
             lines.push("Active paths (prioritize these):".to_string());
             for entry in prompt_entries {
                 let kind = if entry.is_dir { "dir" } else { "file" };
-                lines.push(format!("- {} ({kind})", entry.path));
+                // The workspace root itself relativizes to the empty path.
+                let path = if entry.path.is_empty() {
+                    "."
+                } else {
+                    entry.path.as_str()
+                };
+                lines.push(format!("- {path} ({kind})"));
             }
         }
 
@@ -1289,6 +1295,24 @@ mod tests {
         let entry = ws.entries.get("src/lib.rs").expect("entry");
         assert!(entry.exists);
         assert!(!entry.is_dir);
+    }
+
+    /// Found in the desktop: a message naming the workspace's own absolute
+    /// path relativized to the empty string and rendered a bare `-  (dir)`
+    /// under "Active paths".
+    #[test]
+    fn the_workspace_root_renders_as_a_dot_entry() {
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonical root");
+        let mut ws = WorkingSet::default();
+        ws.observe_user_message(&format!("everything under {}", root.display()), tmp.path());
+        assert!(
+            ws.summary_block(tmp.path())
+                .unwrap()
+                .contains("\n- . (dir)\n"),
+            "{:?}",
+            ws.summary_block(tmp.path())
+        );
     }
 
     #[test]
