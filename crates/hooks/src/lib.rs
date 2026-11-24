@@ -345,6 +345,12 @@ impl HookDispatcher {
         self.sinks.push(sink);
     }
 
+    /// How many sinks are registered (for tests and diagnostics).
+    #[must_use]
+    pub fn sink_count(&self) -> usize {
+        self.sinks.len()
+    }
+
     /// Broadcast an event to every registered sink.
     ///
     /// Sinks are dispatched concurrently; `emit` returns once every sink

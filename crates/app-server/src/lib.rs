@@ -142,7 +142,7 @@ struct ThreadMessageParams {
 
 pub async fn run(options: AppServerOptions) -> Result<()> {
     let auth_token = resolve_auth_token(&options)?;
-    let state = build_state(options.config_path.clone(), auth_token)?;
+    let state = build_state(options.config_path.clone(), auth_token, AppTransport::Http)?;
     let app = app_router(state, &options.cors_origins);
 
     let listener = tokio::net::TcpListener::bind(options.listen).await?;
@@ -171,7 +171,7 @@ fn app_router(state: AppState, cors_origins: &[String]) -> Router {
 }
 
 pub async fn run_stdio(config_path: Option<PathBuf>) -> Result<()> {
-    let state = build_state(config_path, None)?;
+    let state = build_state(config_path, None, AppTransport::Stdio)?;
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
@@ -319,7 +319,31 @@ async fn app_handler(
     Json(process_app_request(&state, req, AppTransport::Http).await)
 }
 
-fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Result<AppState> {
+/// Hook sinks for the app server. [`StdoutHookSink`] mirrors every event
+/// onto stdout, which is the JSON-RPC stream itself in stdio mode — the
+/// protocol reply would be preceded by non-JSON-RPC lines — so it is
+/// registered for the HTTP transport only.
+fn build_hooks(
+    hook_log_path: PathBuf,
+    unix_socket_path: Option<PathBuf>,
+    transport: AppTransport,
+) -> HookDispatcher {
+    let mut hooks = HookDispatcher::default();
+    if transport == AppTransport::Http {
+        hooks.add_sink(Arc::new(StdoutHookSink));
+    }
+    hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
+    if let Some(socket_path) = unix_socket_path {
+        hooks.add_sink(Arc::new(UnixSocketHookSink::new(socket_path)));
+    }
+    hooks
+}
+
+fn build_state(
+    config_path: Option<PathBuf>,
+    auth_token: Option<String>,
+    transport: AppTransport,
+) -> Result<AppState> {
     let store = ConfigStore::load(config_path.clone())?;
     let config = store.config.clone();
     let registry = ModelRegistry::default();
@@ -329,22 +353,17 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
         .and_then(|p| p.parent().map(|parent| parent.join("state.db")));
     let state_store = StateStore::open(state_db_path)?;
 
-    let mut hooks = HookDispatcher::default();
-    hooks.add_sink(Arc::new(StdoutHookSink));
     let hook_log_path = config_path
         .as_ref()
         .and_then(|p| p.parent().map(|parent| parent.join("events.jsonl")))
         .unwrap_or_else(|| PathBuf::from(".codesmith/events.jsonl"));
-    hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
-
-    if let Some(socket_path) = config
+    let unix_socket_path = config
         .hook_sinks
         .as_ref()
         .and_then(|sinks| sinks.unix_socket_path.as_ref())
         .filter(|path| !path.as_os_str().is_empty())
-    {
-        hooks.add_sink(Arc::new(UnixSocketHookSink::new(socket_path.clone())));
-    }
+        .cloned();
+    let hooks = build_hooks(hook_log_path, unix_socket_path, transport);
 
     let runtime = Runtime::new(
         config.clone(),
@@ -1093,6 +1112,7 @@ mod tests {
         let state = build_state(
             Some(config_path),
             auth_token.map(std::string::ToString::to_string),
+            AppTransport::Http,
         )
         .expect("state");
         (app_router(state, &[]), tmp)
@@ -1197,7 +1217,7 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_transport_keeps_raw_config_get_for_legacy_clients() {
-        let state = build_state(None, None).expect("state");
+        let state = build_state(None, None, AppTransport::Http).expect("state");
         {
             let mut cfg = state.config.write().await;
             cfg.api_key = Some("sk-codesmith-test-secret".to_string());
@@ -1395,7 +1415,7 @@ mod tests {
     /// handler serialized behind the single global runtime mutex.
     #[tokio::test]
     async fn read_handlers_are_not_blocked_by_a_slow_write_handler() {
-        let mut state = build_state(None, None).expect("state");
+        let mut state = build_state(None, None, AppTransport::Http).expect("state");
         {
             let mut hooks = codesmith_hooks::HookDispatcher::default();
             hooks.add_sink(Arc::new(StallingSink(std::time::Duration::from_millis(
@@ -1441,7 +1461,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("config.toml");
         fs::write(&config_path, "api_key = \"sk-a\"\n").expect("write config");
-        let state = build_state(Some(config_path.clone()), None).expect("state");
+        let state =
+            build_state(Some(config_path.clone()), None, AppTransport::Http).expect("state");
 
         // An external edit lands after this process loaded its config.
         fs::write(
@@ -1475,7 +1496,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("config.toml");
         fs::write(&config_path, "api_key = \"sk-codesmith-test-secret\"\n").expect("write config");
-        let state = build_state(Some(config_path), None).expect("state");
+        let state = build_state(Some(config_path), None, AppTransport::Http).expect("state");
         (state, tmp)
     }
 
@@ -2368,6 +2389,23 @@ mod tests {
 
     // ── build_state hook sink wiring ────────────────────────────────────
 
+    /// Stdout is the JSON-RPC stream in stdio mode: hook events mirrored
+    /// there put non-JSON-RPC lines in front of every protocol reply.
+    #[test]
+    fn stdio_hooks_never_mirror_events_to_stdout() {
+        let log = PathBuf::from("events.jsonl");
+        assert_eq!(
+            build_hooks(log.clone(), None, AppTransport::Stdio).sink_count(),
+            1,
+            "stdio: the jsonl log only"
+        );
+        assert_eq!(
+            build_hooks(log, None, AppTransport::Http).sink_count(),
+            2,
+            "http: the stdout mirror and the jsonl log"
+        );
+    }
+
     #[test]
     fn build_state_registers_unix_socket_hook_sink_when_configured() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2379,7 +2417,8 @@ mod tests {
         .expect("write config");
         // Construction succeeds; the sink connects lazily per emit and
         // skips silently when no listener owns the socket.
-        let _state = build_state(Some(config_path), None).expect("state with hook sink");
+        let _state =
+            build_state(Some(config_path), None, AppTransport::Http).expect("state with hook sink");
     }
 
     // ── tool endpoint cwd fallback ──────────────────────────────────────
