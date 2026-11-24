@@ -157,7 +157,7 @@ fn format_user_message(buf: &mut String, msg_id: usize, msg: &Message) {
             let _ = writeln!(
                 buf,
                 "[{msg_id}] user  Text ({len} chars): \"{snippet}\"",
-                len = text.len()
+                len = text.chars().count()
             );
         }
         Some(ContentBlock::ToolResult {
@@ -169,7 +169,7 @@ fn format_user_message(buf: &mut String, msg_id: usize, msg: &Message) {
             let _ = writeln!(
                 buf,
                 "[{msg_id}] user  ToolResult (id={tool_use_id}, {len} chars): \"{snippet}\"",
-                len = content.len(),
+                len = content.chars().count(),
             );
         }
         _ => {
@@ -185,7 +185,7 @@ fn format_content_block(buf: &mut String, blk_idx: usize, block: &ContentBlock) 
             let _ = writeln!(
                 buf,
                 "  [{blk_idx}] Text ({len} chars): \"{snippet}\"",
-                len = text.len(),
+                len = text.chars().count(),
             );
         }
         ContentBlock::Thinking { .. } => {
@@ -214,7 +214,7 @@ fn format_content_block(buf: &mut String, blk_idx: usize, block: &ContentBlock) 
             let _ = writeln!(
                 buf,
                 "  [{blk_idx}] ToolResult (id={tool_use_id}, {len} chars): \"{snippet}\"",
-                len = content.len(),
+                len = content.chars().count(),
             );
         }
         ContentBlock::ServerToolUse {
@@ -901,6 +901,16 @@ mod tests {
         assert!(prompt.contains("(200 chars)"));
         assert!(prompt.contains("xxx...")); // truncated
         assert!(!prompt.contains(&long_text));
+    }
+
+    /// The listing labels the length "chars" and truncates by characters;
+    /// it printed the byte length, overstating CJK text threefold.
+    #[test]
+    fn prompt_counts_characters_not_bytes() {
+        let msgs = vec![msg_text("user", "配置文件")];
+        let prompt = build_purge_prompt(&msgs);
+        assert!(prompt.contains("Text (4 chars)"), "{prompt}");
+        assert!(!prompt.contains("12 chars"), "{prompt}");
     }
 
     #[test]
