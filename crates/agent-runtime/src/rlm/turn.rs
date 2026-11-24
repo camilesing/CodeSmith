@@ -237,6 +237,7 @@ async fn run_rlm_turn_impl(
         0,
         None,
         None,
+        None,
     )];
 
     let mut consecutive_no_code: u32 = 0;
@@ -510,6 +511,19 @@ async fn run_rlm_turn_impl(
             }
 
             // 4f. Build metadata for next iteration.
+            // An uncaught exception is appended to the END of the round's
+            // stdout; the head-only preview below can cut it out entirely,
+            // so the failure is named separately or the root model sees
+            // only its own output and no sign the round failed.
+            let round_error = round.has_error.then(|| {
+                round
+                    .full_stdout
+                    .trim()
+                    .lines()
+                    .next_back()
+                    .unwrap_or_default()
+                    .to_string()
+            });
             messages.push(Message {
                 role: "assistant".to_string(),
                 content: vec![ContentBlock::Text {
@@ -523,6 +537,7 @@ async fn run_rlm_turn_impl(
                 iteration + 1,
                 Some(&code_to_run),
                 Some(&stdout_preview),
+                round_error.as_deref(),
             ));
 
             if messages.len() > MAX_HISTORY_MESSAGES {
@@ -598,13 +613,15 @@ fn build_root_request(model: &str, messages: &[Message], system: &SystemPrompt) 
 /// - the small `root_prompt` (if any) — repeated each iteration
 /// - `context` length + preview
 /// - the REPL helpers
-/// - the previous round's code summary + stdout preview
+/// - the previous round's code summary + stdout preview, and its error
+///   line when the round raised
 fn build_metadata_message(
     prompt: &str,
     root_prompt: Option<&str>,
     iteration: u32,
     previous_code: Option<&str>,
     previous_stdout: Option<&str>,
+    previous_error: Option<&str>,
 ) -> Message {
     let prompt_len = prompt.chars().count();
     let prompt_preview = truncate_text(prompt, PROMPT_PREVIEW_LEN);
@@ -682,6 +699,9 @@ fn build_metadata_message(
             } else {
                 parts.push("- Stdout: (empty)".to_string());
             }
+        }
+        if let Some(error) = previous_error {
+            parts.push(format!("- Round status: ERROR — {error}"));
         }
     }
 
@@ -927,7 +947,7 @@ mod tests {
 
     #[test]
     fn build_metadata_contains_key_information() {
-        let msg = build_metadata_message("Hello, world!", None, 0, None, None);
+        let msg = build_metadata_message("Hello, world!", None, 0, None, None, None);
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("context"));
         assert!(text.contains("Hello, world!"));
@@ -938,10 +958,41 @@ mod tests {
     }
 
     #[test]
+    fn build_metadata_names_a_failed_round_beyond_the_stdout_preview() {
+        // The REPL appends the traceback after the round's output. A round
+        // that printed past the preview limit showed the root model only its
+        // own stdout — no sign that the round had raised.
+        let stdout = format!(
+            "{}\n[traceback]\nNameError: name 'context' is not defined",
+            "x".repeat(STDOUT_METADATA_PREVIEW_LEN * 2)
+        );
+        let error = "NameError: name 'context' is not defined";
+        // The loop hands over the head-only preview of the round's stdout.
+        let preview = truncate_text(stdout.trim(), STDOUT_METADATA_PREVIEW_LEN);
+        let msg = build_metadata_message(
+            "ctx",
+            None,
+            1,
+            Some("len(context)"),
+            Some(&preview),
+            Some(error),
+        );
+        let text = extract_text_blocks(&msg.content);
+        assert!(
+            !preview.contains("NameError"),
+            "the preview itself is head-only"
+        );
+        assert!(text.contains("- Round status: ERROR — NameError: name 'context' is not defined"));
+
+        let clean = build_metadata_message("ctx", None, 1, Some("print(1)"), Some("1"), None);
+        assert!(!extract_text_blocks(&clean.content).contains("Round status"));
+    }
+
+    #[test]
     fn build_metadata_truncates_long_context_without_leaking_tail() {
         let secret_tail = "DO_NOT_LEAK_CONTEXT_TAIL";
         let prompt = format!("{}{}", "a".repeat(PROMPT_PREVIEW_LEN + 100), secret_tail);
-        let msg = build_metadata_message(&prompt, None, 0, None, None);
+        let msg = build_metadata_message(&prompt, None, 0, None, None, None);
         let text = extract_text_blocks(&msg.content);
 
         assert!(text.contains(&format!("- Length: {} chars", prompt.chars().count())));
@@ -963,6 +1014,7 @@ mod tests {
             0,
             None,
             None,
+            None,
         )];
 
         let request = build_root_request("root-model", &messages, &rlm_system_prompt());
@@ -977,7 +1029,14 @@ mod tests {
 
     #[test]
     fn build_metadata_with_iteration_shows_previous_code() {
-        let msg = build_metadata_message("Test prompt", None, 3, Some("print('hi')"), Some("hi"));
+        let msg = build_metadata_message(
+            "Test prompt",
+            None,
+            3,
+            Some("print('hi')"),
+            Some("hi"),
+            None,
+        );
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("round 3"));
         assert!(text.contains("print('hi')"));
@@ -992,6 +1051,7 @@ mod tests {
             1,
             Some("# noop"),
             Some("ok"),
+            None,
         );
         let text = extract_text_blocks(&msg.content);
         assert!(text.contains("Original task"));
@@ -1040,7 +1100,7 @@ mod tests {
 
     #[test]
     fn metadata_msg_role_is_user() {
-        let msg = build_metadata_message("test", None, 0, None, None);
+        let msg = build_metadata_message("test", None, 0, None, None, None);
         assert_eq!(msg.role, "user");
     }
 
