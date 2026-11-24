@@ -261,6 +261,29 @@ pub(crate) struct PendingMessageProjection {
     pub fold: codesmith_agent::extension::MessageFoldFn,
 }
 
+impl Pending {
+    /// Move every queued registration of `other` onto the end of this queue.
+    /// `load_as` configures against a private queue and splices it in only
+    /// when `configure` succeeded, so a failed load leaves nothing behind.
+    pub(crate) fn absorb(&mut self, mut other: Pending) {
+        self.tools.append(&mut other.tools);
+        self.commands.append(&mut other.commands);
+        self.handlers.append(&mut other.handlers);
+        self.around_tools.append(&mut other.around_tools);
+        self.around_turns.append(&mut other.around_turns);
+        self.providers.append(&mut other.providers);
+        self.turn_executors.append(&mut other.turn_executors);
+        self.prompt_sections.append(&mut other.prompt_sections);
+        self.skills.append(&mut other.skills);
+        self.message_projections
+            .append(&mut other.message_projections);
+        self.policies.append(&mut other.policies);
+        self.disabled_commands.append(&mut other.disabled_commands);
+        self.tool_restrictions.append(&mut other.tool_restrictions);
+        self.replacements.append(&mut other.replacements);
+    }
+}
+
 /// Outcome of [`ExtensionRunner::unload_retained_mod`].
 #[derive(Debug, Clone)]
 #[must_use]
@@ -1194,13 +1217,25 @@ impl ExtensionRunner {
             .lock()
             .expect("shared provider registry lock poisoned")
             .clone();
-        let stub = StubExtensionApi::new(
-            self.generation.clone(),
-            self.pending.clone(),
-            shared,
-            origin,
-        );
-        ext.configure(&stub).await
+        // `configure` queues into a private queue that is spliced into the
+        // runner's only on success. Queued straight into the runner's, a
+        // `configure` that failed halfway left its earlier registrations
+        // behind, and they bound at the next flush while the extension was
+        // reported as failed.
+        let captured = self.generation.load(Ordering::Acquire);
+        let local = Arc::new(Mutex::new(Pending::default()));
+        let stub = StubExtensionApi::new(self.generation.clone(), local.clone(), shared, origin);
+        ext.configure(&stub).await?;
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        // Re-checked under the pending lock — the one `invalidate` holds
+        // while bumping: a stub that passed its liveness check just before
+        // an invalidate cannot land a stale registration after it.
+        if self.generation.load(Ordering::Acquire) != captured {
+            return Err(ExtensionError::StaleContext);
+        }
+        let queued = std::mem::take(&mut *local.lock().unwrap_or_else(|e| e.into_inner()));
+        pending.absorb(queued);
+        Ok(())
     }
 
     /// §F5b — load a dylib extension (spec §F5b / §7.2). Opens the library,

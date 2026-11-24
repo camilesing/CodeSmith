@@ -3035,6 +3035,37 @@ mod tests {
         );
     }
 
+    /// A `configure` that fails halfway used to leave its earlier
+    /// registrations queued: they bound at the next flush while the mod was
+    /// reported as failed — and with no retained slot, nothing could
+    /// unload them short of a reload.
+    #[test]
+    fn a_failed_configure_queues_nothing() {
+        let dir = TempDir::new().unwrap();
+        let m = RhaiMod::load(
+            &discovered_for(
+                &dir,
+                "half",
+                r#"on("turn-start", |e| { proceed() });
+                   register_guard(|e, ctx| { "no" });"#,
+            ),
+            kv_for(&dir, "half"),
+            hub(),
+        )
+        .expect("compile + capture");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(
+            rt.block_on(runner.load(&m)).is_err(),
+            "the mis-declared guard fails the configure"
+        );
+        runner.bind_core(Arc::new(PerModCtx));
+        assert!(
+            !runner.has_handlers(ExtensionEventKind::TurnStart),
+            "the hook queued before the failure must not bind"
+        );
+    }
+
     #[test]
     fn bind_mod_requires_bound_context() {
         let dir = TempDir::new().unwrap();
