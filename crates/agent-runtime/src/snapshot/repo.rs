@@ -932,9 +932,15 @@ fn io_other(msg: impl Into<String>) -> io::Error {
 ///
 /// The walk is bounded by both `cap_bytes` and
 /// `SIZE_WALK_MAX_ENTRIES` — either trip returns `None`. A
-/// `cap_bytes` of `0` disables the cap entirely (returns `Some(total)`
-/// no matter how large), so config can opt out.
+/// `cap_bytes` of `0` disables both (returns `Some(total)` no matter how
+/// large or how many entries), so config can opt out.
 pub fn estimate_workspace_size_bounded(workspace: &Path, cap_bytes: u64) -> Option<u64> {
+    estimate_size_bounded_by(workspace, cap_bytes, SIZE_WALK_MAX_ENTRIES)
+}
+
+/// [`estimate_workspace_size_bounded`] with the entry bound injectable, so
+/// a test can trip it without creating [`SIZE_WALK_MAX_ENTRIES`] files.
+fn estimate_size_bounded_by(workspace: &Path, cap_bytes: u64, max_entries: usize) -> Option<u64> {
     use ignore::WalkBuilder;
     let mut total: u64 = 0;
     let mut entries: usize = 0;
@@ -954,7 +960,7 @@ pub fn estimate_workspace_size_bounded(workspace: &Path, cap_bytes: u64) -> Opti
         .build();
     for entry in walker.flatten() {
         entries += 1;
-        if entries > SIZE_WALK_MAX_ENTRIES {
+        if cap_bytes > 0 && entries > max_entries {
             return None;
         }
         if let Ok(meta) = entry.metadata()
@@ -1602,6 +1608,29 @@ mod tests {
         assert!(
             total >= 10 * 1024,
             "total ({total}) must include the 10 KB file when cap is disabled"
+        );
+    }
+
+    #[test]
+    fn estimate_workspace_size_bounded_cap_zero_lifts_the_entry_bound_too() {
+        // `max_workspace_gb = 0` is documented as "disable the cap". The
+        // entry bound used to survive it, so a monorepo past that bound was
+        // refused with advice to set the setting it already had.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        for i in 0..5 {
+            std::fs::write(workspace.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+
+        assert!(
+            estimate_size_bounded_by(&workspace, u64::MAX, 2).is_none(),
+            "the entry bound trips under a cap"
+        );
+        assert_eq!(
+            estimate_size_bounded_by(&workspace, 0, 2),
+            Some(5),
+            "no cap: every entry is walked and counted"
         );
     }
 
