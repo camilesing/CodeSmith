@@ -43,13 +43,23 @@ const RLM_EVAL_HARD_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 /// Timeout handler: tear the wedged kernel down (it is being killed, not
 /// reused) and fail the eval with a clear message.
-fn rlm_eval_timeout(name: &str) -> ToolError {
-    // The caller drops `kernel` right after this returns via `?`; mark the
-    // session closed so the next eval says "closed" instead of dangling.
+///
+/// Dropping the timed-out `run` future neither kills the child nor poisons
+/// the runtime: left in place, the kernel keeps executing the wedged code,
+/// the next eval waits out the same deadline behind it, and `rlm_open`
+/// refuses the name because the session still exists. Taking the kernel
+/// here is what makes the context read as closed afterwards.
+async fn rlm_eval_timeout(
+    session: &mut RlmSession,
+    name: &str,
+    hard_timeout: std::time::Duration,
+) -> ToolError {
+    if let Some(kernel) = session.kernel.take() {
+        kernel.shutdown().await;
+    }
     ToolError::execution_failed(format!(
-        "rlm_eval: eval in context `{name}` exceeded the hard deadline of {} s and was killed; \
-         the context is now closed — re-open it with rlm_open to continue",
-        RLM_EVAL_HARD_TIMEOUT.as_secs()
+        "rlm_eval: eval in context `{name}` exceeded the hard deadline of {hard_timeout:?} and was killed; \
+         the context is now closed — rlm_close it, then rlm_open again to continue"
     ))
 }
 
@@ -245,12 +255,24 @@ impl ToolSpec for RlmOpenTool {
 
 pub struct RlmEvalTool {
     client: Option<LlmClientHandle>,
+    /// Wall-clock bound for one eval: [`RLM_EVAL_HARD_TIMEOUT`] outside tests.
+    hard_timeout: std::time::Duration,
 }
 
 impl RlmEvalTool {
     #[must_use]
     pub fn new(client: Option<LlmClientHandle>) -> Self {
-        Self { client }
+        Self {
+            client,
+            hard_timeout: RLM_EVAL_HARD_TIMEOUT,
+        }
+    }
+
+    /// Tests drive the deadline path without waiting out the real one.
+    #[cfg(test)]
+    fn with_hard_timeout(mut self, hard_timeout: std::time::Duration) -> Self {
+        self.hard_timeout = hard_timeout;
+        self
     }
 }
 
@@ -305,7 +327,10 @@ impl ToolSpec for RlmEvalTool {
         };
 
         let started = Instant::now();
-        let (round, child_usage) = if let Some(client) = self.client.clone() {
+        // Each arm yields `Ok(round)` or the elapsed deadline. On the
+        // deadline the `run` future is dropped mid-flight; the kernel is
+        // torn down in the match below, once its borrow has ended.
+        let (outcome, child_usage) = if let Some(client) = self.client.clone() {
             let bridge = RlmBridge::new(
                 client,
                 DEFAULT_CHILD_MODEL.to_string(),
@@ -313,24 +338,20 @@ impl ToolSpec for RlmEvalTool {
             )
             .with_child_timeout_secs(config.sub_query_timeout_secs);
             let usage_handle = bridge.usage_handle();
-            let round =
-                tokio::time::timeout(RLM_EVAL_HARD_TIMEOUT, kernel.run(code, Some(&bridge)))
-                    .await
-                    .map_err(|_| rlm_eval_timeout(name))
-                    .and_then(|res| {
-                        res.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))
-                    })?;
+            let outcome =
+                tokio::time::timeout(self.hard_timeout, kernel.run(code, Some(&bridge))).await;
             let usage = usage_handle.lock().await.clone();
-            (round, usage)
+            (outcome, usage)
         } else {
-            let round =
-                tokio::time::timeout(RLM_EVAL_HARD_TIMEOUT, kernel.run(code, None::<&RlmBridge>))
-                    .await
-                    .map_err(|_| rlm_eval_timeout(name))
-                    .and_then(|res| {
-                        res.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))
-                    })?;
-            (round, Default::default())
+            let outcome =
+                tokio::time::timeout(self.hard_timeout, kernel.run(code, None::<&RlmBridge>)).await;
+            (outcome, Default::default())
+        };
+        let round = match outcome {
+            Ok(res) => res.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))?,
+            Err(_elapsed) => {
+                return Err(rlm_eval_timeout(&mut session, name, self.hard_timeout).await);
+            }
         };
 
         session.rpc_count = session.rpc_count.saturating_add(round.rpc_count);
@@ -901,6 +922,39 @@ mod tests {
             .await
             .expect("close");
         assert!(close.content.contains("sample"));
+    }
+
+    #[tokio::test]
+    async fn rlm_eval_hard_timeout_leaves_the_context_closed() {
+        // The deadline drops the eval future mid-flight. The kernel used to
+        // stay in the session, still running the wedged code: the next eval
+        // waited out the same deadline again instead of reporting "closed".
+        let ctx = ctx();
+        RlmOpenTool
+            .execute(json!({"name": "wedged", "content": "alpha\nbeta"}), &ctx)
+            .await
+            .expect("open");
+        let eval = RlmEvalTool::new(None).with_hard_timeout(std::time::Duration::from_millis(300));
+
+        let first = eval
+            .execute(json!({"name": "wedged", "code": "while True: pass"}), &ctx)
+            .await
+            .expect_err("the infinite loop hits the deadline");
+        assert!(
+            first.to_string().contains("exceeded the hard deadline"),
+            "{first}"
+        );
+
+        let second = eval
+            .execute(json!({"name": "wedged", "code": "print('ok')"}), &ctx)
+            .await
+            .expect_err("the context is closed after the deadline");
+        assert!(second.to_string().contains("is closed"), "{second}");
+
+        RlmCloseTool
+            .execute(json!({"name": "wedged"}), &ctx)
+            .await
+            .expect("a closed context still closes");
     }
 
     #[tokio::test]
