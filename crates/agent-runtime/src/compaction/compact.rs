@@ -1281,6 +1281,15 @@ pub async fn compact_messages(
         }
     }
     let summary = summary_result.text;
+    // A reasoning-only completion — the whole `max_tokens` budget spent on
+    // thinking — arrives as a `Thinking` block and no text. Accepted, it
+    // dropped the summarized span and replaced the previous summary with an
+    // empty one; failing keeps every caller's transcript intact instead.
+    if summary.trim().is_empty() {
+        return Err(anyhow::anyhow!(
+            "compaction summary response contained no text (model {summary_model})"
+        ));
+    }
 
     // Extract workflow context (files touched, tasks in progress, etc.)
     let workflow_context = extract_workflow_context(&to_summarize, workspace);

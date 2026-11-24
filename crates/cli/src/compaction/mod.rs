@@ -2066,6 +2066,37 @@ mod tests {
         assert_eq!(mock.call_count(), 1);
     }
 
+    /// A reasoning-only completion carries a `Thinking` block and no text.
+    /// Accepted as a summary, it dropped the summarized span and replaced
+    /// the previous summary with an empty one — the compaction has to fail
+    /// so every caller keeps the transcript.
+    #[tokio::test]
+    async fn a_summary_response_without_text_fails_the_compaction() {
+        let mock = MockLlmClient::new(Vec::new());
+        let mut thinking_only = summary_response("reasoning", "");
+        thinking_only.content = vec![ContentBlock::Thinking {
+            thinking: "let me consider the conversation…".to_string(),
+        }];
+        mock.push_message_response(thinking_only.clone());
+        mock.push_message_response(thinking_only);
+
+        let err = compact_messages(
+            &mock,
+            &long_conversation(),
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            "",
+            None,
+            None,
+        )
+        .await
+        .expect_err("a response with no text is not a summary");
+        assert!(err.to_string().contains("contained no text"), "{err}");
+        assert_eq!(mock.call_count(), 2, "one fresh draw, then give up");
+    }
+
     /// Reflection loop: the lessons the model wrote into the summary's
     /// "Refuted Assumptions & Invariants" section are captured into the
     /// fact ledger, so the next compaction re-renders them even after the
