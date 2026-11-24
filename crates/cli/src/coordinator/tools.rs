@@ -444,36 +444,42 @@ impl ToolSpec for TicketCloseTool {
         };
         let cancel_worker = optional_bool(&input, "cancel_worker", true)?;
 
-        // Resolve session-name refs through the manager, and cancel a still
-        // running worker when asked (the same cancel `agent_close` uses).
-        let (agent_id, cancelled) = {
-            let mut guard = self.manager.write().await;
-            match guard.resolve_agent_ref(requested) {
-                Ok(resolved) => {
-                    let cancelled = if cancel_worker {
-                        guard.cancel(&resolved).ok().map(|snapshot| snapshot.status)
-                    } else {
-                        None
-                    };
-                    (resolved, cancelled)
-                }
-                Err(_) => (requested.to_string(), None),
-            }
+        // Resolve session-name refs through the manager; cancel a still
+        // running worker when asked (the same cancel `agent_close` uses) —
+        // only once the ticket is confirmed open, so an unknown or
+        // already-ended ticket cancels nothing.
+        let agent_id = {
+            let manager = self.manager.read().await;
+            manager
+                .resolve_agent_ref(requested)
+                .unwrap_or_else(|_| requested.to_string())
         };
-
-        let mut store = self
-            .store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !store.end(&agent_id, outcome, "coordinator") {
-            return Err(ToolError::execution_failed(format!(
-                "no open ticket for {requested}"
-            )));
+        {
+            let mut store = self
+                .store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !store.end(&agent_id, outcome, "coordinator") {
+                return Err(ToolError::execution_failed(format!(
+                    "no open ticket for {requested}"
+                )));
+            }
         }
+        // `cancel` answers for any resolved agent, settled or not: only a
+        // worker that was running when the ask arrived was cancelled by it.
+        let cancelled = cancel_worker && {
+            let mut guard = self.manager.write().await;
+            let was_running = matches!(
+                guard.get_result(&agent_id),
+                Ok(snapshot) if snapshot.status == SubAgentStatus::Running
+            );
+            let _ = guard.cancel(&agent_id);
+            was_running
+        };
         Ok(ToolResult::success(format!(
             "ticket {agent_id} closed ({}); the worker's further tool calls are refused{}",
             outcome.as_str(),
-            if cancelled.is_some() {
+            if cancelled {
                 " and its session was cancelled"
             } else {
                 ""
@@ -491,6 +497,25 @@ mod tests {
         let mut store = TicketStore::in_memory();
         store.create("agent_w", "", "Fix the flaky login test");
         std::sync::Arc::new(std::sync::Mutex::new(store))
+    }
+
+    /// A manager over a temp workspace plus one `Running` worker — the
+    /// live-status fixture of the board tools.
+    async fn manager_with_running_worker(id: &str) -> (tempfile::TempDir, SharedSubAgentManager) {
+        use crate::tools::subagent::SubAgentManager;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager: SharedSubAgentManager = std::sync::Arc::new(tokio::sync::RwLock::new(
+            SubAgentManager::new(dir.path().to_path_buf(), 2),
+        ));
+        manager.write().await.insert_test_live_agent(
+            id.to_string(),
+            crate::tools::subagent::SubAgentAssignment {
+                objective: "Fix the flaky login test".to_string(),
+                role: None,
+            },
+        );
+        (dir, manager)
     }
 
     #[tokio::test]
@@ -529,6 +554,55 @@ mod tests {
         .expect("execute");
         let completion = rx.try_recv().expect("wake sent");
         assert!(completion.payload.contains("which tenant?"));
+    }
+
+    /// `ready → synthesize → close` runs `ticket_close` on a worker that has
+    /// already settled. The reply used to claim "its session was cancelled"
+    /// for any agent the id resolved to.
+    #[tokio::test]
+    async fn closing_a_settled_workers_ticket_claims_no_cancel() {
+        let (dir, manager) = manager_with_running_worker("agent_w").await;
+        manager
+            .write()
+            .await
+            .cancel("agent_w")
+            .expect("settle the worker");
+        let tool = TicketCloseTool::new(shared_store(), manager.clone());
+        let result = tool
+            .execute(json!({ "id": "agent_w" }), &ToolContext::new(dir.path()))
+            .await
+            .expect("close");
+        let text = format!("{result:?}");
+        assert!(text.contains("closed (completed)"), "{text}");
+        assert!(!text.contains("session was cancelled"), "{text}");
+        manager.write().await.abort_test_agent("agent_w");
+    }
+
+    /// An agent without an open ticket (an Agent-mode child, or a ticket a
+    /// `dropped` report already ended) stays untouched: the cancel used to
+    /// run before the ticket check and go unreported behind the error.
+    #[tokio::test]
+    async fn closing_without_an_open_ticket_cancels_nothing() {
+        use crate::tools::subagent::SubAgentStatus;
+
+        let (dir, manager) = manager_with_running_worker("agent_unticketed").await;
+        let tool = TicketCloseTool::new(shared_store(), manager.clone());
+        let err = tool
+            .execute(
+                json!({ "id": "agent_unticketed" }),
+                &ToolContext::new(dir.path()),
+            )
+            .await
+            .expect_err("no ticket to close");
+        assert!(err.to_string().contains("no open ticket"), "{err}");
+        let status = manager
+            .read()
+            .await
+            .get_result("agent_unticketed")
+            .expect("the agent is still there")
+            .status;
+        assert_eq!(status, SubAgentStatus::Running);
+        manager.write().await.abort_test_agent("agent_unticketed");
     }
 
     #[tokio::test]
