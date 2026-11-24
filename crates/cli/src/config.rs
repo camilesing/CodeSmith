@@ -5525,6 +5525,28 @@ modle = "x"
         );
     }
 
+    /// The configuration docs prescribe the kebab spelling of these three
+    /// providers, and the top-level `provider` key accepts it. The table
+    /// deserialized straight into the enum and rejected it.
+    #[test]
+    fn utility_model_provider_accepts_the_documented_kebab_spellings() {
+        for (spelling, expected) in [
+            ("nvidia-nim", ApiProvider::NvidiaNim),
+            ("wanjie-ark", ApiProvider::WanjieArk),
+            ("xiaomi-mimo", ApiProvider::XiaomiMimo),
+        ] {
+            let config: Config = toml::from_str(&format!(
+                "[utility_model]\nmodel = \"m\"\nprovider = \"{spelling}\"\n"
+            ))
+            .unwrap_or_else(|err| panic!("provider = {spelling:?}: {err}"));
+            assert_eq!(
+                config.utility_model.expect("utility model set").provider,
+                Some(expected),
+                "provider = {spelling:?}"
+            );
+        }
+    }
+
     #[test]
     fn codesmith_utility_model_env_enables_utility_model() -> Result<()> {
         let _lock = lock_test_env();

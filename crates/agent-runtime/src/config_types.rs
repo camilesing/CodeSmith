@@ -258,12 +258,18 @@ pub enum ApiProvider {
         alias = "deepseek_cn"
     )]
     Deepseek,
+    // The kebab spellings are the ones the configuration docs prescribe and
+    // the top-level `provider` key accepts; without the aliases a
+    // `[utility_model] provider = "nvidia-nim"` table failed to deserialize.
+    #[serde(alias = "nvidia-nim")]
     NvidiaNim,
     Openai,
     Atlascloud,
+    #[serde(alias = "wanjie-ark")]
     WanjieArk,
     Volcengine,
     Openrouter,
+    #[serde(alias = "xiaomi-mimo")]
     XiaomiMimo,
     Novita,
     Fireworks,
