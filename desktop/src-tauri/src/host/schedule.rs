@@ -417,10 +417,12 @@ fn catalog_entry(automation: &Value, home: &str) -> Value {
     let next = automation.get("next_run_at").and_then(Value::as_str);
     let last = automation.get("last_run_at").and_then(Value::as_str);
     let status = match automation.get("status").and_then(Value::as_str) {
+        // Automations know active/paused; an active one with no next
+        // occurrence left has run out.
+        Some("active") if next.is_none() && last.is_some() => "ended",
         Some("active") => "active",
-        // Automations know active/paused; an automation with no next
-        // occurrence left reads as ended.
-        _ if next.is_none() && last.is_some() => "ended",
+        // Pausing clears `next_run_at` and keeps `last_run_at`, so a paused
+        // automation that has run still reads as paused.
         _ => "paused",
     };
     let cwd = automation
@@ -903,10 +905,24 @@ mod tests {
         assert_eq!(active["target"]["create"]["cwd"], "/Users/x/proj");
         assert_eq!(active["scheduledAt"], "2026-11-08T00:00:00Z");
 
-        let drained = catalog_entry(
+        // Found in the desktop: a task paused after its first run read as
+        // ended, and the page disables Resume for an ended task. Pausing
+        // clears `next_run_at` and keeps `last_run_at`.
+        let paused = catalog_entry(
             &json!({
                 "id": "a2", "name": "Once", "prompt": "once", "rrule": "RRULE:FREQ=DAILY;COUNT=1",
                 "cwds": [], "status": "paused",
+                "created_at": "2026-11-01T00:00:00Z", "updated_at": "2026-11-02T00:00:00Z",
+                "last_run_at": "2026-11-02T09:00:00Z",
+            }),
+            home,
+        );
+        assert_eq!(paused["status"], "paused", "a paused task that has run");
+
+        let drained = catalog_entry(
+            &json!({
+                "id": "a2", "name": "Once", "prompt": "once", "rrule": "RRULE:FREQ=DAILY;COUNT=1",
+                "cwds": [], "status": "active",
                 "created_at": "2026-11-01T00:00:00Z", "updated_at": "2026-11-02T00:00:00Z",
                 "last_run_at": "2026-11-02T09:00:00Z",
             }),
