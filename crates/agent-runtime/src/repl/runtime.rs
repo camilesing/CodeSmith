@@ -482,7 +482,9 @@ impl PythonRuntime {
     {
         if self.poisoned {
             return Err(
-                "REPL runtime was terminated after a round timeout; spawn a new one".to_string(),
+                "REPL runtime was terminated (round timeout, or the interpreter exited \
+                 mid-round); spawn a new one"
+                    .to_string(),
             );
         }
         let started = Instant::now();
@@ -558,6 +560,9 @@ impl PythonRuntime {
                 let line = match line_read.expect("one arm always wins")? {
                     Some(line) => line,
                     None => {
+                        // The interpreter is gone: a later round could only
+                        // write into a dead pipe, so fail fast instead.
+                        self.poisoned = true;
                         return Err("Python interpreter closed stdout mid-round".to_string());
                     }
                 };
@@ -721,6 +726,13 @@ impl PythonRuntime {
         let buf =
             std::mem::take(&mut *self.stderr_buffer.lock().unwrap_or_else(|p| p.into_inner()));
         String::from_utf8_lossy(&buf).to_string()
+    }
+
+    /// Whether the runtime can no longer run rounds: its round timed out and
+    /// the child was killed, or the interpreter exited mid-round.
+    #[must_use]
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// Total rounds executed.

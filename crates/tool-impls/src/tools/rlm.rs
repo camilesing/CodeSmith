@@ -54,13 +54,20 @@ async fn rlm_eval_timeout(
     name: &str,
     hard_timeout: std::time::Duration,
 ) -> ToolError {
-    if let Some(kernel) = session.kernel.take() {
-        kernel.shutdown().await;
-    }
+    rlm_eval_drop_kernel(session).await;
     ToolError::execution_failed(format!(
         "rlm_eval: eval in context `{name}` exceeded the hard deadline of {hard_timeout:?} and was killed; \
          the context is now closed — rlm_close it, then rlm_open again to continue"
     ))
+}
+
+/// Take the session's kernel out and shut down what is left of it. Called
+/// when the kernel can never run a round again: the eval hit its hard
+/// deadline, or the interpreter exited mid-round and the runtime is poisoned.
+async fn rlm_eval_drop_kernel(session: &mut RlmSession) {
+    if let Some(kernel) = session.kernel.take() {
+        kernel.shutdown().await;
+    }
 }
 
 pub struct RlmSessionObjectsTool;
@@ -348,7 +355,21 @@ impl ToolSpec for RlmEvalTool {
             (outcome, Default::default())
         };
         let round = match outcome {
-            Ok(res) => res.map_err(|e| ToolError::execution_failed(format!("rlm_eval: {e}")))?,
+            Ok(res) => match res {
+                Ok(round) => round,
+                Err(e) => {
+                    // Kept in the session, a poisoned kernel answered every
+                    // later eval with a write into its dead pipe.
+                    if session
+                        .kernel
+                        .as_ref()
+                        .is_some_and(PythonRuntime::is_poisoned)
+                    {
+                        rlm_eval_drop_kernel(&mut session).await;
+                    }
+                    return Err(ToolError::execution_failed(format!("rlm_eval: {e}")));
+                }
+            },
             Err(_elapsed) => {
                 return Err(rlm_eval_timeout(&mut session, name, self.hard_timeout).await);
             }
@@ -916,6 +937,42 @@ mod tests {
             .await
             .expect("close");
         assert!(close.content.contains("sample"));
+    }
+
+    #[tokio::test]
+    async fn rlm_eval_closes_the_context_when_the_interpreter_dies() {
+        // The interpreter exits mid-round. The kernel kept in the session
+        // could never run again, yet every later eval went to it and failed
+        // on the dead pipe.
+        let ctx = ctx();
+        RlmOpenTool
+            .execute(json!({"name": "dying", "content": "alpha\nbeta"}), &ctx)
+            .await
+            .expect("open");
+        let eval = RlmEvalTool::new(None);
+
+        let first = eval
+            .execute(
+                json!({"name": "dying", "code": "import os; os._exit(1)"}),
+                &ctx,
+            )
+            .await
+            .expect_err("the interpreter exits before the round ends");
+        assert!(
+            first.to_string().contains("closed stdout mid-round"),
+            "{first}"
+        );
+
+        let second = eval
+            .execute(json!({"name": "dying", "code": "print('ok')"}), &ctx)
+            .await
+            .expect_err("the context is closed after the interpreter died");
+        assert!(second.to_string().contains("is closed"), "{second}");
+
+        RlmCloseTool
+            .execute(json!({"name": "dying"}), &ctx)
+            .await
+            .expect("a closed context still closes");
     }
 
     #[tokio::test]
