@@ -59,13 +59,18 @@ pub struct OpenTicketsBoard {
 impl OpenTicketsNote for OpenTicketsBoard {
     async fn open_tickets_digest(&self) -> Option<String> {
         // Manager first (async, short-lived guard), then the store's sync
-        // lock — the two are never held together across an await.
+        // lock on the blocking pool — the two are never held together
+        // across an await.
         let running = running_agent_ids(&self.subagent_manager).await;
-        let mut store = self
-            .store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        store.board_digest_with(&|id| running.contains(id))
+        let store = std::sync::Arc::clone(&self.store);
+        TicketStore::offload(&store, move |store| {
+            store.board_digest_with(&|id| running.contains(id))
+        })
+        .await
+        .unwrap_or_else(|err| {
+            tracing::error!("board digest task failed: {err}");
+            None
+        })
     }
 }
 

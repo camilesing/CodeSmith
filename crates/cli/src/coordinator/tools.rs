@@ -24,7 +24,9 @@ use codesmith_agent_runtime::tools::spec::{
 use serde_json::json;
 
 use super::running_agent_ids;
-use super::tickets::{ReportState, SUMMARY_INLINE_LIMIT, SharedTicketStore, TicketOutcome};
+use super::tickets::{
+    ReportState, SUMMARY_INLINE_LIMIT, SharedTicketStore, TicketOutcome, TicketStore,
+};
 use crate::tools::subagent::{SharedSubAgentManager, SubAgentStatus};
 
 /// Parse the `state` argument shared by report-shaped inputs.
@@ -122,13 +124,18 @@ impl ToolSpec for TicketReportTool {
         let question =
             optional_str(&input, "question").filter(|question| !question.trim().is_empty());
 
-        let card = {
-            let mut store = self
-                .store
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            store.add_report(&self.agent_id, state, summary, question)
-        };
+        let has_question = question.is_some();
+        let (store, agent_id, summary) = (
+            std::sync::Arc::clone(&self.store),
+            self.agent_id.clone(),
+            summary.to_string(),
+        );
+        let question = question.map(str::to_string);
+        let card = TicketStore::offload(&store, move |store| {
+            store.add_report(&agent_id, state, &summary, question.as_deref())
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("ticket store task failed: {err}")))?;
         if let Some(card) = card
             && let Some(tx) = &self.parent_tx
         {
@@ -146,7 +153,7 @@ impl ToolSpec for TicketReportTool {
             format!(
                 "recorded {}; the coordinator sees it on the next board update{}",
                 state.as_str(),
-                if question.is_some() {
+                if has_question {
                     " — your question was relayed"
                 } else {
                     ""
@@ -169,47 +176,50 @@ impl TicketListTool {
         Self { store, manager }
     }
 
-    async fn render(&self) -> String {
+    /// The board, person-first. The store is read on the blocking pool
+    /// (`TicketStore::offload`).
+    async fn render(&self) -> Result<String, ToolError> {
         // Manager first (async read, short-lived guard): a running-ids
         // snapshot taken without holding the ticket store's sync lock.
         let running = running_agent_ids(&self.manager).await;
-        let mut store = self
-            .store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut open = store.open_tickets_with(&|id| running.contains(id));
-        if open.is_empty() {
-            return "No open tickets.".to_string();
-        }
-        open.sort_by_key(|(_, stage)| *stage);
-        let total = open.len();
-        let mut lines: Vec<String> = open
-            .iter()
-            .map(|(ticket, stage)| {
-                let worker = if running.contains(&ticket.id) {
-                    "running"
-                } else {
-                    "settled"
-                };
-                let mut line = format!(
-                    "- {} [{}] {} (worker: {worker}",
-                    ticket.id,
-                    stage.as_str(),
-                    ticket.title
-                );
-                if let Some(name) = &ticket.session_name {
-                    line.push_str(&format!(", name: {name}"));
-                }
-                line.push(')');
-                line
-            })
-            .collect();
-        lines.push(format!(
-            "\n{total} open ticket(s). Stages: awaiting-answer > awaiting-review > blocked > \
-             failed > working > idle. Route follow-ups for an open ticket to its worker via \
-             agent_eval's message parameter; close with ticket_close when done."
-        ));
-        lines.join("\n")
+        let store = std::sync::Arc::clone(&self.store);
+        TicketStore::offload(&store, move |store| {
+            let mut open = store.open_tickets_with(&|id| running.contains(id));
+            if open.is_empty() {
+                return "No open tickets.".to_string();
+            }
+            open.sort_by_key(|(_, stage)| *stage);
+            let total = open.len();
+            let mut lines: Vec<String> = open
+                .iter()
+                .map(|(ticket, stage)| {
+                    let worker = if running.contains(&ticket.id) {
+                        "running"
+                    } else {
+                        "settled"
+                    };
+                    let mut line = format!(
+                        "- {} [{}] {} (worker: {worker}",
+                        ticket.id,
+                        stage.as_str(),
+                        ticket.title
+                    );
+                    if let Some(name) = &ticket.session_name {
+                        line.push_str(&format!(", name: {name}"));
+                    }
+                    line.push(')');
+                    line
+                })
+                .collect();
+            lines.push(format!(
+                "\n{total} open ticket(s). Stages: awaiting-answer > awaiting-review > blocked > \
+                 failed > working > idle. Route follow-ups for an open ticket to its worker via \
+                 agent_eval's message parameter; close with ticket_close when done."
+            ));
+            lines.join("\n")
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("ticket store task failed: {err}")))
     }
 }
 
@@ -236,7 +246,7 @@ impl ToolSpec for TicketListTool {
         _input: serde_json::Value,
         _context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::success(self.render().await))
+        Ok(ToolResult::success(self.render().await?))
     }
 }
 
@@ -299,16 +309,22 @@ impl ToolSpec for TicketReadTool {
         // A running worker reads as `working` — the stage the board shows
         // for the same ticket.
         let running = running_agent_ids(&self.manager).await;
-        let mut store = self
-            .store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(ticket) = store.get(&agent_id) else {
+        let store = std::sync::Arc::clone(&self.store);
+        let found = TicketStore::offload(&store, move |store| {
+            let found = store.get(&agent_id).map(|ticket| {
+                let stage = ticket.stage(running.contains(&ticket.id));
+                (ticket, stage)
+            });
+            (agent_id, found)
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("ticket store task failed: {err}")))?;
+        let (agent_id, found) = found;
+        let Some((ticket, stage)) = found else {
             return Err(ToolError::execution_failed(format!(
                 "no ticket for {requested} (only coordinator-spawned background workers get tickets)"
             )));
         };
-        let stage = ticket.stage(running.contains(&ticket.id));
         let mut out = format!(
             "# ticket {id}\ntitle: {title}\nstage: {stage}\ncreated: {created}\n\n## scope (mandate)\n{scope}\n",
             id = ticket.id,
@@ -453,16 +469,17 @@ impl ToolSpec for TicketCloseTool {
                 .resolve_agent_ref(requested)
                 .unwrap_or_else(|_| requested.to_string())
         };
-        {
-            let mut store = self
-                .store
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !store.end(&agent_id, outcome, "coordinator") {
-                return Err(ToolError::execution_failed(format!(
-                    "no open ticket for {requested}"
-                )));
-            }
+        let store = std::sync::Arc::clone(&self.store);
+        let (agent_id, ended) = TicketStore::offload(&store, move |store| {
+            let ended = store.end(&agent_id, outcome, "coordinator");
+            (agent_id, ended)
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("ticket store task failed: {err}")))?;
+        if !ended {
+            return Err(ToolError::execution_failed(format!(
+                "no open ticket for {requested}"
+            )));
         }
         // `cancel` answers for any resolved agent, settled or not: only a
         // worker that was running when the ask arrived was cancelled by it.
@@ -490,7 +507,6 @@ impl ToolSpec for TicketCloseTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::tickets::TicketStore;
 
     fn shared_store() -> SharedTicketStore {
         let mut store = TicketStore::in_memory();

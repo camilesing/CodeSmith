@@ -213,7 +213,8 @@ fn cap_inline(text: &str, limit: usize) -> String {
 
 /// Lazily-loaded, best-effort-persisted ticket set. All mutation methods
 /// persist before returning; callers hold the outer mutex (sync fs write of
-/// a small JSON file, the `subagents.v1.json` pattern).
+/// a small JSON file, the `subagents.v1.json` pattern). Callers on the
+/// Tokio runtime take it through [`TicketStore::offload`].
 #[derive(Debug, Default)]
 pub struct TicketStore {
     /// `None` until first access — a session that never touches tickets
@@ -294,6 +295,28 @@ impl TicketStore {
         if let Err(err) = crate::tools::subagent::write_json_atomic(path, &state) {
             tracing::warn!("failed to persist ticket state: {err:#}");
         }
+    }
+
+    /// Run one store operation on the blocking pool. Every mutation
+    /// persists the state file and the first access reads it, so callers on
+    /// the Tokio runtime (the ticket tools, the board digest) go through
+    /// here rather than taking the lock inline.
+    pub async fn offload<T, F>(
+        store: &SharedTicketStore,
+        op: F,
+    ) -> Result<T, tokio::task::JoinError>
+    where
+        F: FnOnce(&mut Self) -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let store = std::sync::Arc::clone(store);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            op(&mut guard)
+        })
+        .await
     }
 
     /// Create the ticket for a spawned worker. Idempotent by id.

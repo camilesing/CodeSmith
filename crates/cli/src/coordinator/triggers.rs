@@ -285,10 +285,10 @@ impl SeenNotifications {
 }
 
 /// Run `gh api notifications` and return every parsed page as one JSON
-/// array of notifications. Shared
-/// `gh`-invocation stance with `tools/github.rs` (env override, PATH
-/// resolve, loud failure) but standalone: the poller runs outside a tool
-/// context, off the runtime threads via `spawn_blocking` at the caller.
+/// array of notifications. Shares the `gh`-invocation stance with
+/// `tools/github.rs` (env override, PATH resolve, loud failure) but is
+/// standalone: the poller is a plain spawned task, so the `gh` subprocess
+/// runs via `spawn_blocking` here.
 pub async fn poll_github_notifications(
     workspace: &std::path::Path,
 ) -> anyhow::Result<serde_json::Value> {
@@ -340,7 +340,13 @@ pub async fn run_trigger_poller(
     mut submit: Box<dyn FnMut(String) + Send>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
-    let mut seen = SeenNotifications::for_workspace(&workspace);
+    // The seen-set load, like each persist below, is a sync fs read/write:
+    // both run on the blocking pool, off this task's runtime thread.
+    let load_workspace = workspace.clone();
+    let mut seen =
+        tokio::task::spawn_blocking(move || SeenNotifications::for_workspace(&load_workspace))
+            .await
+            .expect("the seen-set load task does not panic");
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
         settings.interval_minutes.saturating_mul(60),
     ));
@@ -358,7 +364,12 @@ pub async fn run_trigger_poller(
         match poll_github_notifications(&workspace).await {
             Ok(page) => {
                 let (admitted, _dropped) = admit_notifications(&page, &settings, seen.set_mut());
-                seen.persist();
+                seen = tokio::task::spawn_blocking(move || {
+                    seen.persist();
+                    seen
+                })
+                .await
+                .expect("the seen-set persist task does not panic");
                 if admitted.is_empty() {
                     continue;
                 }
