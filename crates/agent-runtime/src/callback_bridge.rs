@@ -448,7 +448,14 @@ impl Callback for CallbackBridge {
                 && hooks.has_hooks_for_event(HookEvent::ToolCallBefore)
             {
                 let ctx = template.clone().with_tool_name(name).with_tool_args(input);
-                let _ = hooks.execute(HookEvent::ToolCallBefore, &ctx);
+                // The host's executor waits on the hook process (up to the
+                // hook timeout), so it runs on the blocking pool rather than
+                // holding this runtime worker for that long.
+                let hooks = std::sync::Arc::clone(hooks);
+                let _ = tokio::task::spawn_blocking(move || {
+                    hooks.execute(HookEvent::ToolCallBefore, &ctx)
+                })
+                .await;
             }
         })
     }
@@ -545,7 +552,13 @@ impl Callback for CallbackBridge {
                     .with_tool_name(name)
                     .with_tool_args(&input)
                     .with_tool_result(&text, success, None);
-                let _ = hooks.execute(HookEvent::ToolCallAfter, &ctx);
+                // Same blocking-pool handoff as `on_tool_start`: the hook
+                // executor waits on the hook process.
+                let hooks = std::sync::Arc::clone(hooks);
+                let _ = tokio::task::spawn_blocking(move || {
+                    hooks.execute(HookEvent::ToolCallAfter, &ctx)
+                })
+                .await;
             }
         })
     }
