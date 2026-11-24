@@ -718,8 +718,9 @@ pub(crate) fn resolve_utility_llm(
 /// Resolve the seam client + model (#159) honouring, in order:
 /// 1. an explicit `[context] seam_model` — keeps the main client, the id
 ///    belongs to the main provider
-/// 2. a configured utility model — same-provider setups reuse the main client
-///    with a per-request model override; cross-provider setups use the
+/// 2. a configured utility model — one that inherits the main endpoint
+///    reuses the main client with a per-request model override; any other
+///    (cross-provider, or a dedicated same-provider endpoint) uses the
 ///    utility client
 /// 3. the active provider's light tier (cheap-and-fast summarizer), which
 ///    falls back to the effective main model on pass-through providers —
@@ -734,10 +735,12 @@ pub(crate) fn resolve_seam_model_and_client(
     }
     match utility_llm.as_ref() {
         Some(utility) => {
-            let client = if utility.client.provider_name() != main_client.provider_name() {
-                utility.client.clone()
-            } else {
+            // Compared by handle, not provider tag: a dedicated
+            // same-provider endpoint is its own client.
+            let client = if std::sync::Arc::ptr_eq(&utility.client, main_client) {
                 main_client.clone()
+            } else {
+                utility.client.clone()
             };
             (client, utility.model.clone())
         }

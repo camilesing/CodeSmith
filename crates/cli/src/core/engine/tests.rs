@@ -510,6 +510,41 @@ fn seam_resolution_explicit_model_wins_over_utility() {
     );
 }
 
+/// A same-provider utility on a dedicated endpoint is its own client (only
+/// the inherit-main case is the main handle). The seam used to pick the
+/// client by provider tag — identical for both — and sent the seam model to
+/// the main endpoint instead.
+#[test]
+fn seam_resolution_sends_a_dedicated_same_provider_utility_to_its_own_client() {
+    let _guard = lock_test_env();
+    let cfg = Config {
+        api_key: Some("test-registry-key".to_string()),
+        utility_model: Some(UtilityModelConfig {
+            model: "deepseek-v4-flash".to_string(),
+            provider: None,
+            api_key: Some("test-utility-key".to_string()),
+            base_url: Some("https://utility.example.invalid/v1".to_string()),
+        }),
+        ..Config::default()
+    };
+    let main = super::resolve_llm_client_with_secrets(&cfg, &crate::no_keyring_secrets())
+        .expect("main client builds");
+    let utility = super::resolve_utility_llm(&cfg, Some(&main))
+        .expect("dedicated same-provider utility builds");
+    assert_eq!(
+        utility.client.provider_name(),
+        main.provider_name(),
+        "precondition: one provider tag, two endpoints"
+    );
+
+    let (client, model) = super::resolve_seam_model_and_client(&cfg, &main, &Some(utility.clone()));
+    assert_eq!(model, "deepseek-v4-flash");
+    assert!(
+        std::sync::Arc::ptr_eq(&client, &utility.client),
+        "the seam call goes to the dedicated endpoint's client"
+    );
+}
+
 /// §D2 — `resolve_llm_client` routes a `custom_provider` selection to
 /// `ProviderId::Custom(id)`, which reaches `default_registry().build()`. Since
 /// "acme" is not a registered factory, the build fails with the registry's
