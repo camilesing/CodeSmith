@@ -89,9 +89,9 @@ fn prune_grace_age() -> String {
 /// long-running or high-churn sessions (#1112).
 const MAX_SNAPSHOT_SIZE_MB: u64 = 500;
 
-/// Grace margin below `MAX_SNAPSHOT_SIZE_MB` used as the prune target
-/// so the repo doesn't hit the limit again one snapshot later.
-const PRUNE_TARGET_MB: u64 = 400;
+/// How many snapshots an over-limit side repo ([`MAX_SNAPSHOT_SIZE_MB`]) is
+/// cut back to.
+const SIZE_PRUNE_KEEP: usize = 10;
 
 /// Default workspace-size ceiling above which snapshots self-disable
 /// on first use (2 GB of non-excluded content). Reports from users with
@@ -371,48 +371,9 @@ impl SnapshotRepo {
     ///
     /// Returns the snapshot's commit SHA.
     pub fn snapshot(&self, label: &str) -> io::Result<SnapshotId> {
-        // Guard against disk blowup (#1112): if the snapshot directory has
-        // grown beyond the limit, prune aggressively before adding more.
-        if let Ok(current_mb) = dir_size_mb(&self.git_dir)
-            && current_mb > MAX_SNAPSHOT_SIZE_MB
-        {
-            tracing::warn!(
-                target: "snapshot",
-                current_mb,
-                limit_mb = MAX_SNAPSHOT_SIZE_MB,
-                "snapshot storage approaching limit — pruning aggressively"
-            );
-            // Walk backward from a 1-second retention to zero until
-            // we're under the target, or until there's nothing left.
-            let mut age = Duration::from_secs(1);
-            for _ in 0..10 {
-                let _ = self.prune_older_than(age);
-                if let Ok(new_size) = dir_size_mb(&self.git_dir)
-                    && new_size <= PRUNE_TARGET_MB
-                {
-                    tracing::info!(
-                        target: "snapshot",
-                        new_size_mb = new_size,
-                        "pruned snapshot storage back under limit"
-                    );
-                    break;
-                }
-                age = age.saturating_sub(Duration::from_millis(100));
-            }
-            // Fallback: if even 0-second pruning didn't help (shouldn't
-            // happen but belt-and-suspenders), nuke the refs so the next
-            // snapshot starts a fresh history.
-            if let Ok(final_size) = dir_size_mb(&self.git_dir)
-                && final_size > MAX_SNAPSHOT_SIZE_MB
-            {
-                tracing::warn!(
-                    target: "snapshot",
-                    "snapshot storage still over limit after pruning; wiping history"
-                );
-                let _ = self.prune_older_than(Duration::ZERO);
-                let _ = self.prune_unreachable_objects();
-            }
-        }
+        // Guard against disk blowup (#1112): cut an over-limit side repo
+        // back before adding more.
+        self.enforce_size_limit(MAX_SNAPSHOT_SIZE_MB);
         // Stage every tracked + untracked path the workspace exposes.
         // `--all` here means `add` + `update` + `remove` — the same set
         // `git status` would show.
@@ -477,6 +438,38 @@ impl SnapshotRepo {
         }
 
         Ok(SnapshotId(sha))
+    }
+
+    /// Cut the side repo back to its newest [`SIZE_PRUNE_KEEP`] snapshots
+    /// when it has grown past `limit_mb`.
+    ///
+    /// # Known limitations
+    ///
+    /// - Prunes by count, never by age, and never below
+    ///   [`SIZE_PRUNE_KEEP`]. `git gc` keeps unreachable objects for
+    ///   [`PRUNE_GRACE`], so the directory size does not reflect a prune
+    ///   for an hour: the age walk this replaces re-measured after every
+    ///   step, never saw its own progress, and wiped the whole history on
+    ///   each snapshot until the grace ran out.
+    /// - A side repo whose newest [`SIZE_PRUNE_KEEP`] snapshots alone
+    ///   exceed the limit stays over it; the dropped objects are reclaimed
+    ///   by the next gc after the grace.
+    fn enforce_size_limit(&self, limit_mb: u64) {
+        let Ok(current_mb) = dir_size_mb(&self.git_dir) else {
+            return;
+        };
+        if current_mb <= limit_mb {
+            return;
+        }
+        tracing::warn!(
+            target: "snapshot",
+            current_mb,
+            limit_mb,
+            "snapshot storage over limit — pruning"
+        );
+        if let Err(err) = self.prune_keep_last_n(SIZE_PRUNE_KEEP) {
+            tracing::warn!(target: "snapshot", "size prune failed: {err}");
+        }
     }
 
     /// Restore the workspace to the state at `id`.
@@ -1501,20 +1494,51 @@ mod tests {
         assert_eq!(size, 2, "expected 2 MB after writing 2 MB file");
     }
 
-    /// Regression: snapshot size cap (#1112). When the snapshot dir grows,
-    /// `snapshot()` must prune old snapshots to stay under the limit.
-    /// This test uses the real size constants, which are 500/400 MB —
-    /// we can't easily blow up a temp dir to 500 MB in a unit test.
-    /// Instead we verify the guard logic doesn't panic or error on a
-    /// small repo (well under the cap), and that `snapshot()` still works.
+    /// Regression: snapshot size cap (#1112). The real limit is 500 MB, so
+    /// the guard takes it as a parameter and this test drives it with a
+    /// limit of 0 MB. It must cut the history back to the newest
+    /// `SIZE_PRUNE_KEEP` snapshots and never wipe it: `git gc` keeps
+    /// unreachable objects for its grace period, so the age walk this guard
+    /// replaced never saw its own prune take effect and wiped the whole
+    /// history on every snapshot until the grace ran out.
     #[test]
-    fn snapshot_succeeds_when_under_size_cap() {
+    fn size_limit_cuts_by_count_and_never_wipes_the_history() {
         let tmp = tempdir().unwrap();
         let (repo, _home) = make_repo(tmp.path());
-        // The side repo is tiny — well under 500 MB. Snapshot should work.
-        std::fs::write(repo.work_tree().join("f.txt"), b"hello").unwrap();
-        let id = repo.snapshot("pre-turn:1").expect("snapshot under cap");
-        assert_eq!(id.as_str().len(), 40);
+        // Incompressible filler: repeated or compressible content would
+        // stay under any limit after git's deduplication. `.dat` is not in
+        // the builtin excludes, unlike `.bin` and the other binary types.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut filler = || {
+            let mut buf = vec![0u8; 512 * 1024];
+            for chunk in buf.chunks_mut(8) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                chunk.copy_from_slice(&state.to_le_bytes());
+            }
+            buf
+        };
+        for i in 0..12 {
+            std::fs::write(repo.work_tree().join(format!("big{i}.dat")), filler()).unwrap();
+            repo.snapshot(&format!("turn:{i}")).unwrap();
+        }
+        assert!(
+            dir_size_mb(repo.git_dir()).expect("size") > 0,
+            "the side repo is past a 0 MB limit"
+        );
+
+        repo.enforce_size_limit(0);
+
+        let remaining = repo.list(usize::MAX).unwrap();
+        assert_eq!(remaining.len(), SIZE_PRUNE_KEEP);
+        assert_eq!(remaining[0].label, "turn:11");
+        assert_eq!(remaining.last().unwrap().label, "turn:2");
+
+        // Still over the limit (the dropped objects wait out the gc grace):
+        // the guard has nothing left to cut and must not go below the floor.
+        repo.enforce_size_limit(0);
+        assert_eq!(repo.list(usize::MAX).unwrap().len(), SIZE_PRUNE_KEEP);
     }
 
     #[test]
