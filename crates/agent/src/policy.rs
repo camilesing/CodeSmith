@@ -267,8 +267,8 @@ impl PolicyStore {
     }
 
     /// Read a `usize` field of a published policy map with a default +
-    /// bounds. Bad or out-of-bounds values warn (once per read site) and
-    /// fall back — a mod bug must not brick the mechanism it tunes.
+    /// bounds. Bad or out-of-bounds values warn on every read and fall
+    /// back — a mod bug must not brick the mechanism it tunes.
     #[must_use]
     pub fn read_usize(&self, kind: PolicyKind, field: &str, default: usize, max: usize) -> usize {
         let Some(Value::Object(map)) = self.get(kind) else {
@@ -344,9 +344,10 @@ impl PolicyStore {
     }
 
     /// Read a string-array field of a published policy map with a
-    /// default + entry cap. Non-string entries or a too-long list warn
-    /// and fall back to the default wholesale (a policy list is tuning,
-    /// not protocol).
+    /// default + entry cap. A non-string entry, an empty list or a
+    /// non-array value warns and falls back to the default wholesale (a
+    /// policy list is tuning, not protocol); string entries past
+    /// `max_entries` are dropped silently.
     #[must_use]
     pub fn read_string_list(
         &self,
@@ -467,7 +468,7 @@ pub fn clear_published_policies() {
 
 /// Read one policy value from the ambient store. `None` = no
 /// registration won for the kind (callers fall back to their compiled
-/// defaults and warn once).
+/// defaults).
 #[must_use]
 pub fn published_policy(kind: PolicyKind) -> Option<Value> {
     PolicyStore::ambient().get(kind)
