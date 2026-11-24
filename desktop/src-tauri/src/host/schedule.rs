@@ -167,6 +167,7 @@ fn parse_hms(text: &str) -> Result<(u32, u32, u32)> {
 /// Pass a raw `rrule` timing through only when it already speaks one of the
 /// two automation grammars.
 fn validate_automation_rule(rule: &str) -> Result<String> {
+    check_dtstart_zone(rule)?;
     let cleaned: Vec<String> = rule
         .lines()
         .map(str::trim)
@@ -237,6 +238,35 @@ fn validate_automation_rule(rule: &str) -> Result<String> {
         other => {
             bail!("CodeSmith automations support FREQ=HOURLY and FREQ=WEEKLY only (got {other:?})")
         }
+    }
+}
+
+/// A `DTSTART;TZID=<zone>:…` line must keep the machine's clock, and a `…Z`
+/// stamp is UTC — the scheduler reads BYHOUR/BYMINUTE locally, so this is the
+/// `rrule` kind's half of the contract `local_time` holds for the others.
+fn check_dtstart_zone(rule: &str) -> Result<()> {
+    let Some(dtstart) = rule
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("DTSTART"))
+    else {
+        return Ok(());
+    };
+    let zone = dtstart
+        .split([';', ':'])
+        .find_map(|part| part.strip_prefix("TZID="))
+        .map(|tzid| {
+            tzid.parse::<chrono_tz::Tz>()
+                .with_context(|| format!("unknown time zone {tzid:?}"))
+        })
+        .transpose()?
+        .or_else(|| dtstart.ends_with('Z').then_some(chrono_tz::Tz::UTC));
+    match zone {
+        Some(zone) if !zone_matches_system(zone) => bail!(
+            "CodeSmith automations schedule in the machine's local zone; \
+             {dtstart} keeps a different clock"
+        ),
+        _ => Ok(()),
     }
 }
 
@@ -783,6 +813,35 @@ mod tests {
             "kind": "rrule", "rrule": "FREQ=WEEKLY;BYDAY=MO;BYSECOND=30"
         }));
         assert!(with_seconds.is_err(), "BYSECOND is outside the grammar");
+    }
+
+    /// Found in the desktop: the task page sends `DTSTART;TZID=…` with its
+    /// rrule and the bridge dropped the line unread, so a timezone picked on
+    /// the page was silently scheduled as local time.
+    #[test]
+    fn rrule_dtstart_zone_must_keep_the_local_clock() {
+        let rule = |dtstart: &str| {
+            timing_to_rrule(&json!({
+                "kind": "rrule",
+                "rrule": format!("{dtstart}\nRRULE:FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=38"),
+            }))
+        };
+        let refused = rule(&format!(
+            "DTSTART;TZID={}:20261124T093800",
+            zone_offset_apart_from_local()
+        ))
+        .err()
+        .expect("a foreign clock must fail loud");
+        assert!(refused.to_string().contains("local zone"), "{refused:#}");
+        assert!(
+            rule("DTSTART;TZID=Mars/Olympus:20261124T093800").is_err(),
+            "an unknown zone must fail loud"
+        );
+        assert_eq!(
+            rule("DTSTART:20261124T093800").unwrap(),
+            "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=38",
+            "a floating local stamp passes"
+        );
     }
 
     #[test]
