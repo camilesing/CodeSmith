@@ -2285,6 +2285,49 @@ async fn reinject_compaction_attachments_includes_live_subagents() {
         .abort_test_agent(&agent_id);
 }
 
+/// The board digest derives a ticket's stage from live worker status, so it
+/// must read the engine's own sub-agent manager. `build_engine` used to
+/// install it with the host's placeholder manager, where a running worker
+/// rendered `[idle]`.
+#[tokio::test]
+async fn board_digest_reads_live_status_from_the_engine_s_manager() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let (engine, _handle) = Engine::new(test_engine_config(tmp.path()), &Config::default());
+    let agent_id = {
+        let mut manager = engine.host_concrete().subagent_manager.write().await;
+        manager.insert_test_live_agent(
+            "agent_live".to_string(),
+            crate::tools::subagent::SubAgentAssignment {
+                objective: "Inspect context management".to_string(),
+                role: None,
+            },
+        )
+    };
+    {
+        let store = std::sync::Arc::clone(&engine.host_concrete().ticket_store);
+        let mut store = store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        store.create("agent_live", "", "Investigate the auth middleware");
+    }
+
+    let note = engine
+        .config
+        .open_tickets_note
+        .as_ref()
+        .expect("the board digest is installed");
+    let digest = note.open_tickets_digest().await.expect("one open ticket");
+    assert!(digest.contains("[working]"), "{digest}");
+
+    engine
+        .host_concrete()
+        .subagent_manager
+        .write()
+        .await
+        .abort_test_agent(&agent_id);
+}
+
 #[tokio::test]
 async fn reinject_compaction_attachments_skips_messages_that_exceed_budget() {
     let _env = HermeticEnv::new();

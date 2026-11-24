@@ -1509,16 +1509,14 @@ pub fn build_engine(
 
     // Router/Worker: the coordinator's ticket store — workspace-persisted,
     // lazily loaded, shared by the spawn path, the worker report tool, the
-    // board tools, and the turn's board digest seam. Installing the digest
-    // provider is unconditional: outside coordinator mode the executor
-    // never asks (mode-gated at the pre-request seam).
+    // board tools, and the turn's board digest seam. The digest provider is
+    // installed once the sub-agent manager is final (below): it derives a
+    // ticket's stage from that manager's live worker status. Installing it
+    // is unconditional: outside coordinator mode the executor never asks
+    // (mode-gated at the pre-request seam).
     host.ticket_store = std::sync::Arc::new(std::sync::Mutex::new(
         crate::coordinator::TicketStore::for_workspace(&config.workspace),
     ));
-    config.open_tickets_note = Some(std::sync::Arc::new(crate::coordinator::OpenTicketsBoard {
-        store: std::sync::Arc::clone(&host.ticket_store),
-        subagent_manager: Arc::clone(&host.subagent_manager),
-    }));
 
     if config.features.enabled(Feature::AgentTeams) {
         let team_context = config
@@ -1808,6 +1806,12 @@ pub fn build_engine(
     host.subagent_api = Arc::new(runtime_traits::SubAgentManagerHost(Arc::clone(
         &host.subagent_manager,
     )));
+    // After the manager is final: the board digest reads live worker status
+    // from it — the host's placeholder manager sees no worker at all.
+    config.open_tickets_note = Some(std::sync::Arc::new(crate::coordinator::OpenTicketsBoard {
+        store: std::sync::Arc::clone(&host.ticket_store),
+        subagent_manager: Arc::clone(&host.subagent_manager),
+    }));
     host.workshop_vars = workshop_vars;
     host.utility_llm = utility_llm;
     host.main_llm = llm_client.clone();
