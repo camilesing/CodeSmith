@@ -440,7 +440,10 @@ pub async fn dispatch(host: &SharedHost, endpoint: &str, payload: &Value) -> Val
                 ),
             }
         }
-        "schedule/deliveryLimits" => rpc_ok(json!({ "days": 30, "records": 100 })),
+        // The task detail's schema names this one field — the minimum
+        // interval between runs that each create a session. An automation
+        // has none, so the answer is 0.
+        "schedule/deliveryLimits" => rpc_ok(json!({ "newSessionIntervalSeconds": 0 })),
         // The jobs popover's kill (host::jobs): the runtime's task cancel.
         "job/kill" => jobs::kill(host, args_of(payload)).await,
         "session/updateQueue" => match sessions::update_queue(host, args_of(payload)).await {

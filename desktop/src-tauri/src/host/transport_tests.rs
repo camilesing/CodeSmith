@@ -1271,6 +1271,21 @@ async fn schedule_run_and_history_map_onto_automations() {
     drop(home);
 }
 
+/// Found in the desktop: every task detail warned "could not load the run
+/// interval limit" — the bridge answered retention numbers where the page's
+/// schema requires `newSessionIntervalSeconds`, a number.
+#[tokio::test]
+async fn schedule_delivery_limits_carry_the_page_field() {
+    let (home, client, base, _fake, _host, _ws) = spawn_stack("schedule-limits").await;
+    let limits = rpc(&client, &base, "schedule/deliveryLimits", json!({})).await;
+    assert_eq!(
+        limits["value"]["newSessionIntervalSeconds"],
+        json!(0),
+        "{limits}"
+    );
+    drop(home);
+}
+
 /// Found in the desktop: the task page's pause, resume, edit and delete all
 /// answered "edit without a change" — the page nests its change in `patch`
 /// and states its intent in `action`, and the bridge read neither.
