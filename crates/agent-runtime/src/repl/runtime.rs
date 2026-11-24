@@ -300,11 +300,17 @@ impl PythonRuntime {
         let session_id = Uuid::new_v4().simple().to_string();
         let bootstrap = render_bootstrap(&session_id);
 
-        let mut cmd = crate::dependencies::Python::tokio_command().ok_or_else(|| {
-            "no Python interpreter found on PATH (tried python3, python, py -3). \
+        // The first lookup in a process probes each interpreter candidate
+        // with a blocking `--version` subprocess; run inline, it stalls
+        // every task queued on this runtime worker for the probe.
+        let mut cmd = tokio::task::spawn_blocking(crate::dependencies::Python::tokio_command)
+            .await
+            .map_err(|e| format!("interpreter lookup task failed: {e}"))?
+            .ok_or_else(|| {
+                "no Python interpreter found on PATH (tried python3, python, py -3). \
              Install Python 3 and restart codesmith."
-                .to_string()
-        })?;
+                    .to_string()
+            })?;
         cmd.arg("-u")
             .arg("-c")
             .arg(&bootstrap)
