@@ -116,7 +116,10 @@ impl ToolSpec for TicketReportTool {
         )?;
         let summary =
             optional_str(&input, "summary").ok_or_else(|| ToolError::missing_field("summary"))?;
-        let question = optional_str(&input, "question");
+        // A blank question is no question (the store drops it): it neither
+        // wakes the coordinator nor was relayed.
+        let question =
+            optional_str(&input, "question").filter(|question| !question.trim().is_empty());
 
         let card = {
             let mut store = self
@@ -603,6 +606,27 @@ mod tests {
             .status;
         assert_eq!(status, SubAgentStatus::Running);
         manager.write().await.abort_test_agent("agent_unticketed");
+    }
+
+    /// A blank `question` is a common way to "fill in" the optional field.
+    /// It is no question: the worker is not told it was relayed and the
+    /// coordinator is not woken for it.
+    #[tokio::test]
+    async fn report_tool_treats_a_blank_question_as_none() {
+        let (tx, mut rx) =
+            SubAgentCompletionSender::channel(std::sync::Arc::new(tokio::sync::Notify::new()));
+        let tool = TicketReportTool::new(shared_store(), "agent_w".to_string(), Some(tx));
+        let result = tool
+            .execute(
+                json!({ "state": "waiting", "summary": "nothing left", "question": "  " }),
+                &ToolContext::new("/tmp"),
+            )
+            .await
+            .expect("execute");
+        let text = format!("{result:?}");
+        assert!(text.contains("recorded waiting"), "{text}");
+        assert!(!text.contains("relayed"), "{text}");
+        assert!(rx.try_recv().is_err(), "a blank question wakes nobody");
     }
 
     #[tokio::test]

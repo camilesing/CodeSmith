@@ -332,6 +332,9 @@ impl TicketStore {
         question: Option<&str>,
     ) -> Option<String> {
         self.load_if_needed();
+        // A blank question is no question: it records no attention, wakes
+        // nobody, and is not reported as relayed.
+        let question = question.filter(|question| !question.trim().is_empty());
         let now = Utc::now().to_rfc3339();
         let ticket = self.tickets.iter_mut().find(|ticket| ticket.id == id)?;
         if ticket.ended.is_some() {
@@ -342,7 +345,7 @@ impl TicketStore {
             summary: summary.to_string(),
             at: now.clone(),
         });
-        if let Some(question) = question.filter(|question| !question.trim().is_empty()) {
+        if let Some(question) = question {
             ticket.attention = Some(Attention {
                 question: question.to_string(),
                 at: now.clone(),
@@ -608,6 +611,20 @@ mod tests {
                 .add_report("agent_a", ReportState::Progress, "halfway", None)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_blank_question_is_no_question() {
+        let mut store = store_with_ticket();
+        assert!(
+            store
+                .add_report("agent_a", ReportState::Progress, "halfway", Some("  "))
+                .is_none(),
+            "a blank question wakes nobody"
+        );
+        let ticket = store.get("agent_a").unwrap();
+        assert!(ticket.attention.is_none());
+        assert_eq!(ticket.stage(true), TicketStage::Working);
     }
 
     #[test]
