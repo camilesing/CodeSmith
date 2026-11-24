@@ -291,7 +291,7 @@ RLM is now persistent as well:
 | `rlm_session_objects` | List compact cards for the active prompt, session metadata, transcript, latest user message, and per-message refs. |
 | `rlm_open` | Open a named Python REPL over a file, inline content, or URL. |
 | `rlm_eval` | Run bounded Python against that session, using deterministic code and in-REPL semantic helpers such as `sub_query_batch`. |
-| `rlm_configure` | Adjust output feedback, child-query timeout/depth, and session-sharing settings. |
+| `rlm_configure` | Adjust output feedback and child-query timeout/depth. |
 | `rlm_close` | Shut down the Python runtime and return final session stats. |
 
 `rlm_open` also accepts `session_object`, a stable ref returned by

@@ -30,7 +30,6 @@ pub struct RlmSession {
     pub config: RlmSessionConfig,
     pub rpc_count: u32,
     pub total_duration: Duration,
-    pub peak_var_count: usize,
     pub final_count: usize,
     /// Monotonic sequence for stdout/stderr large-output handles:
     /// `HandleStore` is last-writer-wins on (session, name), so fixed
@@ -59,7 +58,6 @@ impl RlmSession {
             config: RlmSessionConfig::default(),
             rpc_count: 0,
             total_duration: Duration::ZERO,
-            peak_var_count: 0,
             final_count: 0,
             output_count: 0,
             created_at: now,
@@ -102,7 +100,6 @@ pub struct RlmSessionConfig {
     pub output_feedback: OutputFeedback,
     pub sub_query_timeout_secs: u64,
     pub sub_rlm_max_depth: u32,
-    pub share_session: bool,
 }
 
 impl Default for RlmSessionConfig {
@@ -111,7 +108,6 @@ impl Default for RlmSessionConfig {
             output_feedback: OutputFeedback::Full,
             sub_query_timeout_secs: 120,
             sub_rlm_max_depth: 1,
-            share_session: false,
         }
     }
 }

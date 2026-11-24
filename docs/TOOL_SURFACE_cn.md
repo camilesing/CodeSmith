@@ -273,7 +273,7 @@ RLM 现在同样是持久化的：
 | `rlm_session_objects` | 为活跃提示、会话元数据、转录、最新用户消息和逐消息引用列出紧凑卡片。 |
 | `rlm_open` | 基于文件、内联内容或 URL 打开一个命名 Python REPL。 |
 | `rlm_eval` | 在该会话中运行有界 Python，使用确定性代码和 REPL 内语义辅助函数（如 `sub_query_batch`）。 |
-| `rlm_configure` | 调整输出反馈、子查询超时/深度和会话共享设置。 |
+| `rlm_configure` | 调整输出反馈以及子查询超时/深度。 |
 | `rlm_close` | 关闭 Python 运行时并返回最终会话统计。 |
 
 `rlm_open` 还接受 `session_object`，即 `rlm_session_objects` 返回的

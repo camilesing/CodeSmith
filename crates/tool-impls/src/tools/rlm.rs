@@ -431,7 +431,6 @@ impl ToolSpec for RlmEvalTool {
             "duration_ms": duration_ms,
             "rpc_count": rpc_count,
             "had_error": had_error,
-            "new_vars": [],
             "final": final_handle,
         });
         if let Some(ref stdout_preview) = stdout_preview {
@@ -476,7 +475,7 @@ impl ToolSpec for RlmConfigureTool {
 
     fn description(&self) -> &'static str {
         "Configure a named RLM context: output feedback, child query timeout, \
-         recursive sub-RLM depth, and explicit session sharing."
+         and recursive sub-RLM depth."
     }
 
     fn input_schema(&self) -> Value {
@@ -487,8 +486,7 @@ impl ToolSpec for RlmConfigureTool {
                 "name": { "type": "string" },
                 "output_feedback": { "type": "string", "enum": ["full", "metadata"] },
                 "sub_query_timeout_secs": { "type": "integer" },
-                "sub_rlm_max_depth": { "type": "integer", "minimum": 0, "maximum": 3 },
-                "share_session": { "type": "boolean" }
+                "sub_rlm_max_depth": { "type": "integer", "minimum": 0, "maximum": 3 }
             }
         })
     }
@@ -518,9 +516,6 @@ impl ToolSpec for RlmConfigureTool {
         }
         if let Some(depth) = input.get("sub_rlm_max_depth").and_then(Value::as_u64) {
             session.config.sub_rlm_max_depth = (depth as u32).min(HARD_SUB_RLM_DEPTH_CAP);
-        }
-        if let Some(share) = input.get("share_session").and_then(Value::as_bool) {
-            session.config.share_session = share;
         }
 
         ToolResult::json(&json!({
@@ -578,7 +573,6 @@ impl ToolSpec for RlmCloseTool {
             "id": session.id,
             "rpc_count": session.rpc_count,
             "total_duration_ms": session.total_duration.as_millis() as u64,
-            "peak_var_count": session.peak_var_count,
             "created_ms_ago": session.created_at.elapsed().as_millis() as u64,
             "context_path": session.context_path,
         });
