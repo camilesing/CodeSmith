@@ -124,6 +124,37 @@ pub(crate) struct ToolBatchOutcome {
 }
 
 impl HostAgentExecutor {
+    /// A parallel batch is classified on its ORIGINAL inputs. An extension
+    /// rewrite has to re-classify its call against the batch (see
+    /// [`batch_stays_parallel_safe_with`]): two writers whose rewritten inputs
+    /// name the same file would run concurrently and lose updates. `Some` is
+    /// the block reason for a rewrite that voids the guarantee — the call is
+    /// reported as an extension-caused intervention rather than raced.
+    fn rewritten_input_breaks_parallel_batch(
+        &self,
+        batch_plans: &[ToolExecutionPlan],
+        plan: &ToolExecutionPlan,
+        rewritten: &serde_json::Value,
+    ) -> Option<String> {
+        if !plan.writes_files {
+            return None;
+        }
+        let rewritten_paths = self
+            .tool_dispatcher
+            .as_ref()
+            .map(|d| d.touched_paths(&plan.name, rewritten))
+            .unwrap_or_default();
+        (!batch_stays_parallel_safe_with(batch_plans, plan.index, &rewritten_paths)).then(|| {
+            format!(
+                "extension rewrote the input of `{}` so it no longer runs safely \
+                 alongside this batch's other calls; not executed — re-issue it on its own",
+                plan.name
+            )
+        })
+    }
+}
+
+impl HostAgentExecutor {
     /// Execute the parsed tool calls and feed each result back as a
     /// `role:"user"` `ToolResult` block (Anthropic/OpenAI-compat shape).
     ///
@@ -430,6 +461,20 @@ impl HostAgentExecutor {
                                 // `on_tool_start` and the audit record must
                                 // see the input that actually runs.
                                 effective_input = ask_input.clone();
+                                // A rewrite that rides along with the ask gets
+                                // the batch's disjointness re-check too (the
+                                // same one the rewrite branch below runs): one
+                                // that voids the guarantee is blocked instead
+                                // of asked about and then raced.
+                                if let Some(block_reason) = self
+                                    .rewritten_input_breaks_parallel_batch(
+                                        &batch_plans,
+                                        plan,
+                                        &ask_input,
+                                    )
+                                {
+                                    ext_blocks.insert(plan.index, block_reason);
+                                }
                                 // A classifier/registry divergence (a plan
                                 // whose tool vanished) degrades to a typed
                                 // per-call result below instead of aborting
@@ -437,40 +482,42 @@ impl HostAgentExecutor {
                                 let Some(tool) = tool_for_plan[plan.index].clone() else {
                                     continue;
                                 };
-                                match self
-                                    .request_approval_forced(
-                                        &plan.id,
-                                        &plan.name,
-                                        &ask_input,
-                                        &tool,
-                                        intent_summary,
-                                        &reason,
-                                    )
-                                    .await
-                                {
-                                    // Approved (or an escalation the parallel
-                                    // batch cannot thread — it logs and runs
-                                    // with the fixed context, plain-approval
-                                    // semantics, same fallback as a missing
-                                    // dispatcher).
-                                    Ok(maybe_policy) => {
-                                        if maybe_policy.is_some() {
-                                            tracing::warn!(
-                                                target: "codesmith_agent_runtime::engine",
-                                                "approval escalation on an asked parallel-batch \
-                                                 call cannot thread into the concurrent batch; \
-                                                 running with the fixed context"
-                                            );
+                                if !ext_blocks.contains_key(&plan.index) {
+                                    // The forced gate owns this call whichever
+                                    // way the user answers. A denial that left
+                                    // `asked` false let the standard gate below
+                                    // prompt again for a call the user had just
+                                    // refused.
+                                    asked = true;
+                                    match self
+                                        .request_approval_forced(
+                                            &plan.id,
+                                            &plan.name,
+                                            &ask_input,
+                                            &tool,
+                                            intent_summary,
+                                            &reason,
+                                        )
+                                        .await
+                                    {
+                                        // Approved (or an escalation the parallel
+                                        // batch cannot thread — it logs and runs
+                                        // with the fixed context, plain-approval
+                                        // semantics, same fallback as a missing
+                                        // dispatcher).
+                                        Ok(maybe_policy) => {
+                                            if maybe_policy.is_some() {
+                                                tracing::warn!(
+                                                    target: "codesmith_agent_runtime::engine",
+                                                    "approval escalation on an asked parallel-batch \
+                                                     call cannot thread into the concurrent batch; \
+                                                     running with the fixed context"
+                                                );
+                                            }
                                         }
-                                        asked = true;
-                                    }
-                                    Err(denial) => {
-                                        approval_denials.insert(plan.index, denial);
-                                        // The user was asked — and answered no.
-                                        // Leaving `asked` false let the standard
-                                        // gate below prompt again for a call the user
-                                        // had just refused.
-                                        asked = true;
+                                        Err(denial) => {
+                                            approval_denials.insert(plan.index, denial);
+                                        }
                                     }
                                 }
                             } else if let codesmith_agent::extension::ExtensionEvent::ToolCall(e) =
@@ -505,36 +552,17 @@ impl HostAgentExecutor {
                                     needs_approval = true;
                                 }
                                 // The batch's disjointness guarantee was
-                                // computed on the ORIGINAL inputs: two writers
-                                // whose rewritten inputs now name the same
-                                // file would run concurrently and lose
-                                // updates. Re-run the batch classifier with
-                                // this plan's paths recomputed for the
-                                // rewritten input; a rewrite that voids the
-                                // guarantee is blocked (an extension-caused
-                                // intervention, reported as such) rather than
-                                // raced.
-                                if plan.writes_files {
-                                    let rewritten_paths = self
-                                        .tool_dispatcher
-                                        .as_ref()
-                                        .map(|d| d.touched_paths(&plan.name, &e.input))
-                                        .unwrap_or_default();
-                                    if !batch_stays_parallel_safe_with(
+                                // computed on the ORIGINAL inputs: re-run the
+                                // batch classifier with this plan's paths
+                                // recomputed for the rewritten input.
+                                if let Some(block_reason) = self
+                                    .rewritten_input_breaks_parallel_batch(
                                         &batch_plans,
-                                        plan.index,
-                                        &rewritten_paths,
-                                    ) {
-                                        ext_blocks.insert(
-                                            plan.index,
-                                            format!(
-                                                "extension rewrote the input of `{}` so it no \
-                                                 longer runs safely alongside this batch's other \
-                                                 calls; not executed — re-issue it on its own",
-                                                plan.name
-                                            ),
-                                        );
-                                    }
+                                        plan,
+                                        &e.input,
+                                    )
+                                {
+                                    ext_blocks.insert(plan.index, block_reason);
                                 }
                                 effective_input = e.input.clone();
                                 ext_rewrites.insert(plan.index, e.input);

@@ -18489,6 +18489,21 @@ mod tests {
         }
     }
 
+    /// Load `ext` into a runner bound to a core context — the shared setup of
+    /// the tool-chain tests below.
+    async fn extension_runner(ext: impl Extension) -> Arc<ExtensionRunner> {
+        let runner = Arc::new(ExtensionRunner::new());
+        runner.load(&ext).await.unwrap();
+        runner.bind_core(Arc::new(HostExtensionContext::new(
+            PathBuf::from("/tmp/codesmith-test"),
+            ExtensionMode::Interactive,
+            Arc::new(Mutex::new(true)),
+            Arc::new(Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+        runner
+    }
+
     /// An extension whose `configure` registers one around handler and/or
     /// one `ToolCall` handler (the Ask path).
     struct ToolChainExt {
@@ -18517,16 +18532,7 @@ mod tests {
     }
 
     async fn tool_chain_runner(ext: ToolChainExt) -> Arc<ExtensionRunner> {
-        let runner = Arc::new(ExtensionRunner::new());
-        runner.load(&ext).await.unwrap();
-        runner.bind_core(Arc::new(HostExtensionContext::new(
-            PathBuf::from("/tmp/codesmith-test"),
-            ExtensionMode::Interactive,
-            Arc::new(Mutex::new(true)),
-            Arc::new(Mutex::new(CancellationToken::new())),
-            runner.generation_arc(),
-        )));
-        runner
+        extension_runner(ext).await
     }
 
     /// echo round (id `t1`) + clean end round.
@@ -18872,6 +18878,174 @@ mod tests {
             results[0]
         );
         assert_eq!(results[1].1, "gated_b-done");
+    }
+
+    /// A `ToolCall` handler that rewrites the input of the calls listed in
+    /// `rewrites` (by call id) and passes every other call through.
+    struct RewriteToolCallHandler {
+        rewrites: Vec<(&'static str, serde_json::Value)>,
+    }
+
+    #[async_trait]
+    impl Handler for RewriteToolCallHandler {
+        async fn handle(
+            &self,
+            event: &ExtensionEvent,
+            _ctx: &dyn ExtensionContext,
+        ) -> Result<HandlerOutcome, ExtensionError> {
+            if let ExtensionEvent::ToolCall(e) = event
+                && let Some((_, input)) = self.rewrites.iter().find(|(id, _)| *id == e.id)
+            {
+                return Ok(HandlerOutcome::Transform(ExtensionEvent::ToolCall(
+                    codesmith_agent::extension::ToolCallEvent {
+                        id: e.id.clone(),
+                        name: e.name.clone(),
+                        input: input.clone(),
+                    },
+                )));
+            }
+            Ok(HandlerOutcome::Continue)
+        }
+    }
+
+    /// A rewrite handler followed by an ask handler on the `ToolCall` seam:
+    /// the ask sees the rewritten input.
+    struct RewriteThenAskExt {
+        rewrite: Arc<RewriteToolCallHandler>,
+        ask: Arc<AskHandler>,
+    }
+
+    #[async_trait]
+    impl Extension for RewriteThenAskExt {
+        fn metadata(&self) -> &ExtensionMetadata {
+            static M: ExtensionMetadata = ExtensionMetadata::new("rewrite-then-ask");
+            &M
+        }
+        async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+            api.on_variant(
+                codesmith_agent::extension::ExtensionEventKind::ToolCall,
+                self.rewrite.clone(),
+            )?;
+            api.on_variant(
+                codesmith_agent::extension::ExtensionEventKind::ToolCall,
+                self.ask.clone(),
+            )?;
+            Ok(())
+        }
+    }
+
+    /// A file writer that is parallel-eligible: calls on disjoint files share
+    /// one `Parallel` batch. (The default classification calls every writer
+    /// destructive, which keeps [`WriteSpec`] serial.)
+    struct ParallelWriteSpec;
+
+    #[async_trait::async_trait]
+    impl ToolSpec for ParallelWriteSpec {
+        fn name(&self) -> &str {
+            "write_file"
+        }
+        fn description(&self) -> &str {
+            "Writes a file (parallel-eligible, requires approval)."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } }
+            })
+        }
+        fn capabilities(&self) -> Vec<ToolCapability> {
+            vec![ToolCapability::WritesFiles]
+        }
+        fn is_destructive(&self, _input: &serde_json::Value) -> bool {
+            false
+        }
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            Ok(ToolResult {
+                canonical: None,
+                content: format!("wrote:{path}"),
+                success: true,
+                metadata: None,
+            })
+        }
+    }
+
+    /// A rewrite that rides along with an extension `Ask` gets the batch's
+    /// disjointness re-check, the same as a plain rewrite: a writer whose
+    /// rewritten input now names a sibling's file is blocked, not asked about
+    /// and then run alongside it.
+    #[tokio::test]
+    async fn a_rewrite_riding_an_ask_cannot_break_the_parallel_batch() {
+        let tmp = tempdir().expect("tempdir");
+        let mut registry = ToolRegistry::new(ToolContext::new(tmp.path().to_path_buf()));
+        registry.register(Arc::new(ParallelWriteSpec));
+        let tools = Arc::new(registry.to_framework_tool_set());
+        let (tx_approval, rx_approval) = approval_channel();
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "t2".to_string(),
+            })
+            .await
+            .expect("approve t2");
+        // A spare answer for the ask the fix removes (see above).
+        tx_approval
+            .send(ApprovalDecision::Approved {
+                id: "t1".to_string(),
+            })
+            .await
+            .expect("spare answer");
+        let runner = extension_runner(RewriteThenAskExt {
+            rewrite: Arc::new(RewriteToolCallHandler {
+                rewrites: vec![("t1", serde_json::json!({"path": "b.txt"}))],
+            }),
+            ask: Arc::new(AskHandler {
+                asked: Arc::new(Mutex::new(Vec::new())),
+                outcome: || HandlerOutcome::Ask {
+                    reason: "user should confirm".into(),
+                },
+            }),
+        })
+        .await;
+
+        let mut call1 = text_block(0, "writing two files");
+        call1.extend(tool_use_block(1, "t1", "write_file", r#"{"path":"a.txt"}"#));
+        call1.extend(tool_use_block(2, "t2", "write_file", r#"{"path":"b.txt"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+
+        // The registry as dispatcher is what classifies the two writes as a
+        // parallel batch (writers on disjoint files).
+        let executor = build_gated_test_executor(
+            tools,
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            vec![call1, call2],
+            Some(rx_approval),
+            None,
+        )
+        .with_tool_dispatcher(Some(Arc::new(registry)))
+        .with_extension_runner(Some(runner));
+
+        let mut sess = fresh_session();
+        let mut history = SessionChatHistory::new(&mut sess);
+        let reason = executor
+            .run(&mut history, "write two".to_string())
+            .await
+            .expect("run");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        let results = tool_result_blocks(&sess);
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(
+            results[0].2 && results[0].1.contains("no longer runs safely alongside"),
+            "the rewrite onto b.txt is blocked: {:?}",
+            results[0]
+        );
+        assert_eq!(results[1].1, "wrote:b.txt");
     }
 
     /// `Ask` on a serial (approval-classified) call forces the gate the
