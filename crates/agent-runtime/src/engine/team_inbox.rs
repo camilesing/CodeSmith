@@ -86,7 +86,9 @@ impl Engine {
                             let _ = self
                                 .tx_event
                                 .send(Event::status(format!(
-                                    "Shutdown approval for {from} (request {request_id})                                      failed after token cancel; the team file may still                                      list them active: {err:#}"
+                                    "Shutdown approval for {from} (request {request_id}) \
+                                     failed after token cancel; the team file may still \
+                                     list them active: {err:#}"
                                 )))
                                 .await;
                         }
@@ -94,7 +96,8 @@ impl Engine {
                             let _ = self
                                 .tx_event
                                 .send(Event::status(format!(
-                                    "Shutdown approval hook for {from} (request {request_id})                                      panicked: {join_err}"
+                                    "Shutdown approval hook for {from} (request {request_id}) \
+                                     panicked: {join_err}"
                                 )))
                                 .await;
                         }

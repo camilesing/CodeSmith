@@ -310,7 +310,8 @@ pub fn render_instructions_block(sources: &[InstructionSource]) -> Option<String
         if remaining == 0 {
             tracing::warn!(
                 target: "instructions",
-                "aggregate instructions budget ({INSTRUCTIONS_TOTAL_MAX_BYTES} bytes) exhausted;                  skipping remaining sources"
+                "aggregate instructions budget ({INSTRUCTIONS_TOTAL_MAX_BYTES} bytes) exhausted; \
+                 skipping remaining sources"
             );
             break;
         }

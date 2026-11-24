@@ -247,7 +247,8 @@ pub async fn resolve_authorization_value(
             // mirroring the `Denied` warning, instead of degrading silently.
             Ok(None) => {}
             Err(err) => tracing::debug!(
-                "mcp oauth `{server}`: proactive token refresh failed,                  falling back to the stored token: {err:#}"
+                "mcp oauth `{server}`: proactive token refresh failed, \
+                 falling back to the stored token: {err:#}"
             ),
         }
     }

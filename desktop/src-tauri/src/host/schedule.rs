@@ -66,7 +66,8 @@ pub fn timing_to_rrule(timing: &Value) -> Result<String> {
             }
             if seconds % 3600 != 0 {
                 bail!(
-                    "CodeSmith automations run at whole-hour intervals or more;                      every {seconds}s is finer than that"
+                    "CodeSmith automations run at whole-hour intervals or more; \
+                     every {seconds}s is finer than that"
                 );
             }
             Ok(format!("FREQ=HOURLY;INTERVAL={}", seconds / 3600))

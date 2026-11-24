@@ -1182,7 +1182,8 @@ fn load_mcp_server_definitions(store: &ConfigStore) -> Result<Vec<McpServerDefin
                 &raw,
             );
             Err(anyhow::anyhow!(
-                "refusing to rewrite key {MCP_SERVER_DEFINITIONS_KEY};                  fix or unset it first (the raw value was quarantined)"
+                "refusing to rewrite key {MCP_SERVER_DEFINITIONS_KEY}; \
+                 fix or unset it first (the raw value was quarantined)"
             ))
         }
     }

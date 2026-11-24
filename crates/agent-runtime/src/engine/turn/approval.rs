@@ -370,10 +370,12 @@ impl HostAgentExecutor {
             if send_result.is_err() {
                 tracing::warn!(
                     target: "codesmith_agent_runtime::engine",
-                    "tool '{name}' approval prompt could not be delivered (UI event channel                      closed); denied fail-closed"
+                    "tool '{name}' approval prompt could not be delivered (UI event channel \
+                     closed); denied fail-closed"
                 );
                 return Err(format!(
-                    "Tool '{name}' requires approval but the UI event channel closed before                      the prompt was delivered — the call was denied (fail-closed)."
+                    "Tool '{name}' requires approval but the UI event channel closed before \
+                     the prompt was delivered — the call was denied (fail-closed)."
                 ));
             }
         }
