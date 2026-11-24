@@ -1266,8 +1266,10 @@ pub fn wrap_turn_dispatch<'a>(
 /// `general`, `explore`, `implementer`, …) — opaque at this layer; the
 /// host resolves them against its sub-agent type table. Known
 /// limitations: no scoped variants of `on` (subscribe-all — register
-/// per-variant instead) or `register_around_tool` (the around chain is
-/// main-turn-only today); script mods do not see scopes.
+/// per-variant instead) or of `register_around_tool` / `register_around_turn`
+/// (around registrations are `Global`-only; the chains themselves wrap
+/// sub-agent turns too, minus dylib-origin handlers); script mods do not see
+/// scopes.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scope {
@@ -1478,8 +1480,9 @@ pub trait ExtensionApi: Send + Sync {
     /// (`AgentExecutor::run`) with a `next()`-style [`AroundTurnHandler`].
     /// Registration order composes outermost-first; the registration takes
     /// effect at the next turn's assembly and reload clears it with the
-    /// generation's other bound registrations. Main-turn only; not offered
-    /// to script mods (async seam).
+    /// generation's other bound registrations. Wraps the main turn and every
+    /// sub-agent turn (at its agent-type scope); dylib-origin handlers wrap
+    /// the main turn only. Not offered to script mods (async seam).
     ///
     /// Default: hosts that do not support it get a loud error, keeping
     /// the trait implementable (source- and binary-compatible) for api
