@@ -940,8 +940,7 @@ mod tests {
             "DTSTART;TZID={}:20261124T093800",
             zone_offset_apart_from_local()
         ))
-        .err()
-        .expect("a foreign clock must fail loud");
+        .expect_err("a foreign clock must fail loud");
         assert!(refused.to_string().contains("local zone"), "{refused:#}");
         assert!(
             rule("DTSTART;TZID=Mars/Olympus:20261124T093800").is_err(),
