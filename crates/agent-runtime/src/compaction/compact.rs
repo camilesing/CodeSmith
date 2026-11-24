@@ -1110,10 +1110,15 @@ pub async fn compact_messages_safe(
                         }
                     }
                 }
+                // Only a summary request folds the previous summary. When
+                // the plan pinned everything no request ran, and a `true`
+                // here made the caller replace the previous summary with
+                // nothing.
+                let summary_folded_previous = folded_previous && prompt.is_some();
                 return Ok(CompactionResult {
                     messages: msgs,
                     summary_prompt: merge_preserve_context(prompt, preserve_context.as_deref()),
-                    summary_folded_previous: folded_previous,
+                    summary_folded_previous,
                     removed_messages: removed,
                     retries_used: attempt.saturating_add(summary_retries),
                 });

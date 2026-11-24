@@ -2097,6 +2097,42 @@ mod tests {
         assert_eq!(mock.call_count(), 2, "one fresh draw, then give up");
     }
 
+    /// A plan that pins every message makes no summary request. Nothing
+    /// folded the previous summary there, yet the result reported a fold —
+    /// so the caller replaced the previous summary with nothing.
+    #[tokio::test]
+    async fn a_compaction_without_a_summary_request_reports_no_fold() {
+        let mock = MockLlmClient::new(Vec::new());
+        let enhancements = CompactionEnhancements {
+            previous_summary: Some("## earlier summary\n- keep me".to_string()),
+            ..CompactionEnhancements::default()
+        };
+        let short = vec![msg("user", "hello"), msg("assistant", "hi there")];
+
+        let result = compact_messages_safe(
+            &mock,
+            &short,
+            &over_threshold_config(),
+            None,
+            None,
+            None,
+            Some(&enhancements),
+        )
+        .await
+        .expect("compaction should succeed");
+
+        assert_eq!(
+            mock.call_count(),
+            0,
+            "precondition: every message is pinned"
+        );
+        assert!(result.summary_prompt.is_none());
+        assert!(
+            !result.summary_folded_previous,
+            "nothing folded the previous summary"
+        );
+    }
+
     /// Reflection loop: the lessons the model wrote into the summary's
     /// "Refuted Assumptions & Invariants" section are captured into the
     /// fact ledger, so the next compaction re-renders them even after the
