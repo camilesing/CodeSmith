@@ -8,9 +8,9 @@
 
 /// Supported application modes for the runtime.
 ///
-/// Drives per-turn toolset selection (`ToolRegistryFactory::build`) and the
-/// default sandbox policy (`Agent`/`Plan` → workspace-write, `Yolo` → full
-/// access).
+/// Drives per-turn toolset selection and the default sandbox policy
+/// (`Agent` → workspace-write, `Plan`/`Coordinator` → read-only, `Yolo` →
+/// full access; see `agent_runtime::sandbox_mode_policy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
     Agent,
@@ -118,7 +118,7 @@ impl ApprovalMode {
 
 /// DeepSeek reasoning-effort tier, mirrored on ChatGPT/Claude effort pickers.
 ///
-/// The config file accepts all five string values for forward-compat with
+/// The config file accepts all six string values for forward-compat with
 /// providers that expose the full spectrum; DeepSeek currently collapses
 /// `Low`/`Medium` → `high` and `Max` → `max` at the API boundary. The
 /// keyboard cycler (Shift+Tab) walks only the three behaviorally distinct
