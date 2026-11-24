@@ -284,7 +284,8 @@ impl SeenNotifications {
     }
 }
 
-/// Run `gh api notifications` and return the parsed JSON page. Shared
+/// Run `gh api notifications` and return every parsed page as one JSON
+/// array of notifications. Shared
 /// `gh`-invocation stance with `tools/github.rs` (env override, PATH
 /// resolve, loud failure) but standalone: the poller runs outside a tool
 /// context, off the runtime threads via `spawn_blocking` at the caller.
@@ -311,8 +312,19 @@ pub async fn poll_github_notifications(
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    serde_json::from_slice(&out.stdout)
+    flatten_pages(&out.stdout)
         .map_err(|err| anyhow::anyhow!("failed to parse gh notifications: {err}"))
+}
+
+/// Flatten `gh api --paginate` output — one JSON array per page, on
+/// consecutive lines — into a single array of notification items.
+fn flatten_pages(stdout: &[u8]) -> serde_json::Result<serde_json::Value> {
+    let pages = serde_json::Deserializer::from_slice(stdout).into_iter::<Vec<serde_json::Value>>();
+    let mut items = Vec::new();
+    for page in pages {
+        items.extend(page?);
+    }
+    Ok(serde_json::Value::Array(items))
 }
 
 /// The poll task: on every interval tick — but only while the host reports
@@ -421,6 +433,23 @@ mod tests {
             dropped
                 .iter()
                 .any(|(_, reason)| *reason == DropReason::RepoNotAllowed)
+        );
+    }
+
+    /// `--paginate` prints one JSON array per page. The poller used to
+    /// `from_slice` the whole output and fail on the second one.
+    #[test]
+    fn paginate_output_flattens_to_one_array() {
+        let flattened =
+            flatten_pages(b"[{\"id\":\"1\"}]\n[{\"id\":\"2\"}]\n").expect("two pages parse");
+        assert_eq!(flattened, serde_json::json!([{ "id": "1" }, { "id": "2" }]));
+        assert_eq!(
+            flatten_pages(b"[]").expect("an empty page"),
+            serde_json::json!([])
+        );
+        assert!(
+            flatten_pages(b"[{\"id\":").is_err(),
+            "a truncated page fails instead of reading as no notifications"
         );
     }
 
