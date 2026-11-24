@@ -1276,7 +1276,8 @@ impl ExtensionRunner {
     /// replaces in place (idempotent against a host double-load);
     /// otherwise append, preserving load order — the replay flush follows
     /// that order, so first-wins name conflicts keep their original
-    /// winners.
+    /// winners. (`bind_mod` is what makes the idempotence real: it clears
+    /// a same-id incumbent's registrations before retaining the new one.)
     pub fn retain_mod(&self, m: Arc<crate::script::rhai_mod::RhaiMod>) {
         let mut slots = self.mod_slots.lock().expect("mod slots lock poisoned");
         match slots
@@ -1335,11 +1336,83 @@ impl ExtensionRunner {
         m: Arc<crate::script::rhai_mod::RhaiMod>,
     ) -> Result<Vec<ExtensionError>, ExtensionError> {
         let _guard = self.transition_lock.lock().await;
-        self.load_as(&*m, RegistrationOrigin::Script).await?;
-        let rejections = self.flush_pending()?;
-        self.retain_mod(m);
-        self.invalidate();
-        Ok(rejections)
+        let id = m.metadata().id.to_string();
+        let incumbent_at = self
+            .mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .iter()
+            .position(|s| s.metadata().id == id);
+        let Some(position) = incumbent_at else {
+            self.load_as(&*m, RegistrationOrigin::Script).await?;
+            let rejections = self.flush_pending()?;
+            self.retain_mod(m);
+            self.invalidate();
+            return Ok(rejections);
+        };
+        // A same-id incumbent — `/mods enable` or a re-activation on a mod
+        // that is already live — is replaced, not appended to: its
+        // registrations go exactly the way an unload's do. A second
+        // `configure` on top of the first binding doubled every hook and
+        // left the old tools first-wins bound over the new ones.
+        self.evict_mod(&id);
+        self.clear_script_registrations();
+        // Replay in load order with the new binding in the incumbent's
+        // slot, so first-wins name conflicts keep their original winners.
+        let slots: Vec<_> = self
+            .mod_slots
+            .lock()
+            .expect("mod slots lock poisoned")
+            .clone();
+        let mut replayed = 0usize;
+        let mut errors = Vec::new();
+        for survivor in &slots[..position] {
+            self.replay_survivor(survivor, &mut replayed, &mut errors)
+                .await;
+        }
+        let loaded = self.load_as(&*m, RegistrationOrigin::Script).await;
+        for survivor in &slots[position..] {
+            self.replay_survivor(survivor, &mut replayed, &mut errors)
+                .await;
+        }
+        match loaded {
+            Ok(()) => {
+                let rejections = self.flush_pending()?;
+                self.retain_mod(m);
+                self.invalidate();
+                Ok(rejections)
+            }
+            Err(e) => {
+                // Not retained half-bound. The survivors still come back
+                // from their replay; its problems ride the log.
+                if let Err(flush) = self.flush_pending() {
+                    errors.push(flush.to_string());
+                }
+                self.invalidate();
+                for err in &errors {
+                    tracing::warn!(
+                        target: "codesmith_extensions",
+                        "replay after a failed re-bind of mod {id}: {err}"
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Queue one surviving script mod's registrations for the replay that
+    /// follows a per-mod transition.
+    async fn replay_survivor(
+        &self,
+        m: &crate::script::rhai_mod::RhaiMod,
+        replayed: &mut usize,
+        errors: &mut Vec<String>,
+    ) {
+        let mid = m.metadata().id.to_string();
+        match self.load_as(m, RegistrationOrigin::Script).await {
+            Ok(()) => *replayed += 1,
+            Err(e) => errors.push(format!("re-register mod {mid}: {e}")),
+        }
     }
 
     /// Unload one retained script mod without recompiling its peers: evict
@@ -1369,12 +1442,8 @@ impl ExtensionRunner {
             .clone();
         let mut errors = Vec::new();
         let mut replayed = 0usize;
-        for m in slots {
-            let mid = m.metadata().id.to_string();
-            match self.load_as(&*m, RegistrationOrigin::Script).await {
-                Ok(()) => replayed += 1,
-                Err(e) => errors.push(format!("re-register mod {mid}: {e}")),
-            }
+        for m in &slots {
+            self.replay_survivor(m, &mut replayed, &mut errors).await;
         }
         if let Err(e) = self.flush_pending() {
             errors.push(e.to_string());

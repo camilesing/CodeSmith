@@ -3218,6 +3218,59 @@ mod tests {
         );
     }
 
+    /// `/mods enable` or a re-activation on a mod that is already live bound
+    /// the mod a second time on top of the first: every hook ran twice and
+    /// the old tools stayed first-wins bound over the new ones.
+    #[test]
+    fn binding_an_already_live_mod_replaces_its_incumbent() {
+        let dir = TempDir::new().unwrap();
+        let alpha = Arc::new(
+            RhaiMod::load(
+                &discovered_for(
+                    &dir,
+                    "alpha",
+                    r#"on("turn-start", |e| { proceed() });
+                       register_tool(#{ name: "alpha-tool", description: "test tool", schema: #{ type: "object", properties: #{}, additionalProperties: false } }, |input, ctx| { ok("alpha") });
+                       register_message_projection("k", 0, |s, m| s);"#,
+                ),
+                kv_for(&dir, "alpha"),
+                hub(),
+            )
+            .expect("load alpha"),
+        );
+        let runner = crate::ExtensionRunner::new();
+        runner.bind_core(Arc::new(PerModCtx));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.bind_mod(Arc::clone(&alpha)))
+            .expect("bind");
+        let rejections = rt
+            .block_on(runner.bind_mod(Arc::clone(&alpha)))
+            .expect("re-bind on a live id");
+        assert!(
+            rejections.is_empty(),
+            "nothing collides with the replaced incumbent: {rejections:?}"
+        );
+
+        assert_eq!(
+            runner.bound_handler_count(ExtensionEventKind::TurnStart),
+            1,
+            "the incumbent's hook is not doubled"
+        );
+        let names: Vec<_> = runner
+            .bound_tools()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, vec!["alpha-tool"]);
+        assert!(
+            runner
+                .message_projection_hub()
+                .state("alpha", "k")
+                .is_some()
+        );
+        assert_eq!(runner.retained_mod_ids(), vec!["alpha"]);
+    }
+
     /// A `configure` that fails halfway used to leave its earlier
     /// registrations queued: they bound at the next flush while the mod was
     /// reported as failed — and with no retained slot, nothing could
