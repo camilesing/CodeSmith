@@ -403,7 +403,9 @@ impl ProviderAlias {
 /// (`127.0.0.2`, `::ffff:127.0.0.1`, expanded `0:0:0:0:0:0:0:1`).
 pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
     // The rejection message must not echo the credential it rejects: mask
-    // any `user:pass@` before the URL reaches the error string.
+    // any `user:pass@` before the URL reaches the error string. A URL that
+    // lost its scheme (`user:pass@host/path`) carries the credential too, so
+    // it is masked on the raw string.
     let shown = match url.find("://") {
         Some(scheme_end) => {
             let rest = &url[scheme_end + 3..];
@@ -412,7 +414,11 @@ pub fn validate_alias_base_url(url: &str) -> Result<(), String> {
                 None => url.to_string(),
             }
         }
-        None => url.to_string(),
+        None => match url.rfind('@') {
+            // `@` is ASCII, so the index after it is a char boundary.
+            Some(at) => format!("***@{}", &url[at + 1..]),
+            None => url.to_string(),
+        },
     };
     let reject = |reason: &str| {
         Err(format!(
@@ -855,6 +861,29 @@ mod tests {
                 err.contains("base_url must be https://"),
                 "rejection explains the rule: {err}"
             );
+        }
+    }
+
+    /// The rejection never carries the credential it rejects. A URL that
+    /// lost its scheme has no `://`, and the masking used to run only on the
+    /// `://` branch — the raw `user:pass@host` went into the error text.
+    #[test]
+    fn alias_rejection_never_echoes_the_credential() {
+        let mut alias = alias_for("my-gw", "openai");
+        for bad in [
+            "http://user:s3cret@gw.example/v1",
+            "//user:s3cret@gw.example/v1",
+            "user:s3cret@gw.example/v1",
+        ] {
+            alias.base_url = Some(bad.to_string());
+            let err = alias
+                .clone()
+                .into_factory(SharedProviderRegistry::new())
+                .err()
+                .unwrap_or_else(|| panic!("base_url with credentials must be masked, got {bad:?}"));
+            assert!(err.contains("base_url must be https://"), "{err}");
+            assert!(!err.contains("s3cret"), "the password leaked into: {err}");
+            assert!(!err.contains("user:"), "the user name leaked into: {err}");
         }
     }
 
