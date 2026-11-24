@@ -1512,14 +1512,10 @@ pub fn default_tasks_dir() -> PathBuf {
     if let Some(path) = codesmith_config::codesmith_env("TASKS_DIR") {
         return PathBuf::from(path);
     }
+    // `codesmith_home()` is already `~/.codesmith` (or `$CODESMITH_HOME`).
     codesmith_config::codesmith_home()
-        .ok()
-        .map(|home| default_tasks_dir_for_home(&home))
-        .unwrap_or_else(|| PathBuf::from(".codesmith").join("tasks"))
-}
-
-fn default_tasks_dir_for_home(home: &Path) -> PathBuf {
-    home.join(".codesmith").join("tasks")
+        .map(|home| home.join("tasks"))
+        .unwrap_or_else(|_| PathBuf::from(".codesmith").join("tasks"))
 }
 
 /// Wait for a task to reach a terminal status (tests and API helpers).
@@ -1838,32 +1834,20 @@ mod tests {
     }
 
     #[test]
-    fn default_tasks_dir_prefers_existing_codesmith_tasks() {
+    fn default_tasks_dir_sits_directly_under_codesmith_home() {
+        // `codesmith_home()` is already `~/.codesmith`: appending
+        // `.codesmith` again nested durable tasks at
+        // `~/.codesmith/.codesmith/tasks`, away from the documented
+        // `~/.codesmith/tasks`.
         let temp_home = tempfile::tempdir().unwrap();
-        let home = temp_home.path();
-        let primary_tasks = home.join(".codesmith").join("tasks");
-        std::fs::create_dir_all(&primary_tasks).unwrap();
-
-        assert_eq!(default_tasks_dir_for_home(home), primary_tasks);
-    }
-
-    #[test]
-    fn default_tasks_dir_ignores_legacy_file_for_new_installs() {
-        let temp_home = tempfile::tempdir().unwrap();
-        let home = temp_home.path();
-        let primary_tasks = home.join(".codesmith").join("tasks");
-
-        assert_eq!(default_tasks_dir_for_home(home), primary_tasks);
-    }
-
-    #[test]
-    fn default_tasks_dir_uses_codesmith_tasks_for_new_installs() {
-        let temp_home = tempfile::tempdir().unwrap();
-        let home = temp_home.path();
-
-        assert_eq!(
-            default_tasks_dir_for_home(home),
-            home.join(".codesmith").join("tasks")
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let _tasks_dir =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_TASKS_DIR", "");
+        let _home = codesmith_agent_runtime::test_support::EnvVarGuard::set(
+            "CODESMITH_HOME",
+            temp_home.path(),
         );
+
+        assert_eq!(default_tasks_dir(), temp_home.path().join("tasks"));
     }
 }

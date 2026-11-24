@@ -1,7 +1,7 @@
 //! Path resolution for the per-workspace snapshot side-repos.
 //!
-//! Snapshots live under the resolved state directory
-//! (`~/.codesmith/snapshots`) with
+//! Snapshots live under the CodeSmith home
+//! (`~/.codesmith/snapshots`, or `$CODESMITH_HOME/snapshots`) with
 //! a two-level hash split so we can snapshot multiple worktrees of the
 //! same project independently — `git worktree list` users won't get
 //! cross-talk between feature branches.
@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 
 /// Compute the snapshot directory for a given workspace path.
 ///
-/// Returns `$STATE_DIR/snapshots/<project_hash>/<worktree_hash>/` where
-/// `$STATE_DIR` is resolved via `codesmith_config::resolve_state_dir`.
+/// Returns `$CODESMITH_HOME/snapshots/<project_hash>/<worktree_hash>/` where
+/// the base is the CodeSmith home that [`codesmith_config::codesmith_home`]
+/// resolves (`~/.codesmith` unless `$CODESMITH_HOME` is set).
 /// The caller is responsible for creating it on disk; we purposefully
 /// don't touch the filesystem here so this is cheap to call repeatedly.
 ///
@@ -25,24 +26,22 @@ pub fn snapshot_dir_for(workspace: &Path) -> PathBuf {
     snapshot_dir_with_home(workspace, codesmith_config::codesmith_home().ok())
 }
 
-/// Same as [`snapshot_dir_for`] but with an injectable home directory.
-/// Used by tests so they never touch the user's real state directory.
+/// Same as [`snapshot_dir_for`] but with an injectable CodeSmith home
+/// (`~/.codesmith` or `$CODESMITH_HOME` — the `.codesmith` segment is
+/// already part of it). Used by tests so they never touch the user's real
+/// state directory.
 pub fn snapshot_dir_with_home(workspace: &Path, home: Option<PathBuf>) -> PathBuf {
-    let home = home.unwrap_or_else(|| PathBuf::from("."));
+    // An unresolvable home falls back to a workspace-relative directory.
+    let base = home
+        .unwrap_or_else(|| PathBuf::from(".codesmith"))
+        .join("snapshots");
     let canonical = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
     let project_root = strip_worktree_suffix(&canonical);
     let project_hash = stable_hex(&project_root);
     let worktree_hash = stable_hex(&canonical);
-    snapshot_base_with_home(Some(home))
-        .join(project_hash)
-        .join(worktree_hash)
-}
-
-fn snapshot_base_with_home(home: Option<PathBuf>) -> PathBuf {
-    let home = home.unwrap_or_else(|| PathBuf::from("."));
-    home.join(".codesmith").join("snapshots")
+    base.join(project_hash).join(worktree_hash)
 }
 
 /// Resolve the `.git` directory inside the snapshot dir.
@@ -93,15 +92,36 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn snapshot_dir_layout_two_levels_under_deepseek() {
+    fn snapshot_dir_layout_two_levels_under_codesmith_home() {
         let tmp = tempdir().expect("tempdir");
-        let dir = snapshot_dir_with_home(tmp.path(), Some(tmp.path().to_path_buf()));
+        let dir = snapshot_dir_with_home(tmp.path(), Some(tmp.path().join(".codesmith")));
         let mut iter = dir.strip_prefix(tmp.path()).unwrap().components();
         assert_eq!(iter.next().unwrap().as_os_str(), ".codesmith");
         assert_eq!(iter.next().unwrap().as_os_str(), "snapshots");
         assert!(iter.next().is_some()); // project_hash
         assert!(iter.next().is_some()); // worktree_hash
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn snapshot_dir_for_sits_directly_under_codesmith_home() {
+        // `codesmith_home()` is already `~/.codesmith`. The base helper
+        // kept appending `.codesmith` after it became the base, so snapshots
+        // landed under `~/.codesmith/.codesmith/snapshots`.
+        let tmp = tempdir().expect("tempdir");
+        let _guard = crate::test_support::lock_test_env();
+        let _home = crate::test_support::EnvVarGuard::set("CODESMITH_HOME", tmp.path());
+        let dir = snapshot_dir_for(tmp.path());
+        let mut rel = dir
+            .strip_prefix(tmp.path())
+            .expect("under CODESMITH_HOME")
+            .components();
+        assert_eq!(rel.next().unwrap().as_os_str(), "snapshots");
+        assert_eq!(
+            rel.count(),
+            2,
+            "project hash, then worktree hash — nothing else"
+        );
     }
 
     #[test]
@@ -112,8 +132,8 @@ mod tests {
         std::fs::create_dir_all(&main_path).unwrap();
         std::fs::create_dir_all(&wt_path).unwrap();
 
-        let main_dir = snapshot_dir_with_home(&main_path, Some(tmp.path().to_path_buf()));
-        let wt_dir = snapshot_dir_with_home(&wt_path, Some(tmp.path().to_path_buf()));
+        let main_dir = snapshot_dir_with_home(&main_path, Some(tmp.path().join(".codesmith")));
+        let wt_dir = snapshot_dir_with_home(&wt_path, Some(tmp.path().join(".codesmith")));
 
         // Same project_hash (parent component before the worktree-specific tail).
         let main_components: Vec<_> = main_dir.components().collect();
@@ -130,8 +150,8 @@ mod tests {
     #[test]
     fn ensure_snapshot_dir_creates_path() {
         let tmp = tempdir().expect("tempdir");
-        // Use scoped HOME so we don't pollute the real one.
-        let dir = snapshot_dir_with_home(tmp.path(), Some(tmp.path().to_path_buf()));
+        // Use a scoped home so we don't pollute the real one.
+        let dir = snapshot_dir_with_home(tmp.path(), Some(tmp.path().join(".codesmith")));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(dir.exists());
     }

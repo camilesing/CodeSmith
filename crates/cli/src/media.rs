@@ -49,8 +49,9 @@ pub fn clipboard_images_dir(workspace: &Path) -> PathBuf {
 }
 
 fn clipboard_images_dir_for_home(workspace: &Path, home: Option<&Path>) -> PathBuf {
+    // `home` is the CodeSmith home (`~/.codesmith`), `.codesmith` included.
     if let Some(home) = home {
-        return home.join(".codesmith").join("clipboard-images");
+        return home.join("clipboard-images");
     }
     workspace.join("clipboard-images")
 }
@@ -540,6 +541,24 @@ mod tests {
     use super::*;
     use codesmith_agent_runtime::attachments::MAX_ATTACHMENTS_PER_MESSAGE;
     use tempfile::tempdir;
+
+    #[test]
+    fn clipboard_images_dir_sits_directly_under_codesmith_home() {
+        // The caller hands over `codesmith_home()` (already `~/.codesmith`);
+        // appending `.codesmith` again nested pasted images one level deeper
+        // than the documented `~/.codesmith/clipboard-images`.
+        let tmp = tempdir().expect("tempdir");
+        let home = tmp.path().join(".codesmith");
+        assert_eq!(
+            clipboard_images_dir_for_home(tmp.path(), Some(&home)),
+            home.join("clipboard-images")
+        );
+        assert_eq!(
+            clipboard_images_dir_for_home(tmp.path(), None),
+            tmp.path().join("clipboard-images"),
+            "no resolvable home falls back to the workspace"
+        );
+    }
 
     fn pending(dir: &Path, name: &str, bytes: &[u8]) -> PendingAttachment {
         let path = dir.join(name);
