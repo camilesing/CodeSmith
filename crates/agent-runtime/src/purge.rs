@@ -26,7 +26,7 @@ const TOOL_USE_ARGS_CHARS: usize = 120;
 const PURGE_INSTRUCTIONS: &str = "\
 ## Context Purge
 
-Free space in the conversation's context window. Below is the current history with stable numeric IDs.\
+Free space in the conversation's context window. Below is the current history with stable numeric IDs.
 Identify content that is clearly no longer needed for the ongoing work.
 
 ### Operations
