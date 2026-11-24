@@ -143,11 +143,10 @@ fn rotate_if_oversized(path: &Path, max_bytes: u64) {
     if metadata.len() <= max_bytes {
         return;
     }
-    // A failed read (transient EIO, or a crash-truncated multibyte tail
-    // making the whole file invalid UTF-8) must abort rotation: rewriting
-    // from an empty set would truncate the log to zero bytes and destroy
-    // all history instead of keeping an oversized file.
-    let Ok(content) = fs::read_to_string(path) else {
+    // A failed read (transient EIO) must abort rotation: rewriting from an
+    // empty set would truncate the log to zero bytes and destroy all
+    // history instead of keeping an oversized file.
+    let Some(content) = read_lossy(path) else {
         tracing::warn!(
             "evolution log unreadable; rotation skipped at {}",
             path.display()
@@ -189,7 +188,7 @@ fn rotate_if_oversized(path: &Path, max_bytes: u64) {
 /// Load records from a jsonl file, skipping malformed lines (a truncated
 /// tail line from a crash mid-append must not hide the rest).
 pub fn load_verdicts(path: &Path) -> Vec<VerdictRecord> {
-    let Ok(content) = fs::read_to_string(path) else {
+    let Some(content) = read_lossy(path) else {
         return Vec::new();
     };
     content
@@ -197,6 +196,16 @@ pub fn load_verdicts(path: &Path) -> Vec<VerdictRecord> {
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+/// The log as text, decoded lossily. An append cut mid-multibyte-character
+/// leaves the file invalid UTF-8: a strict read fails on the whole file,
+/// hiding every earlier record and — in the rotation path — disabling
+/// retention for good. Lossy decoding turns that tail into one malformed
+/// line, which the per-line parse already skips.
+fn read_lossy(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Aggregated stats over the verdict log — the first evaluation surface
@@ -333,6 +342,47 @@ mod tests {
         assert_eq!(loaded.len(), 2, "malformed tail must be skipped");
         assert_eq!(loaded[0].verdict, ResultVerdict::VerifiedPass);
         assert_eq!(loaded[1].failure_type, Some(ResultFailureType::TestFailure));
+    }
+
+    /// A crash mid-append can cut a multibyte character, leaving the file
+    /// invalid UTF-8 as a whole. A strict read failed on all of it, so
+    /// `/verify stats` reported no records and rotation was skipped forever.
+    #[test]
+    fn a_crash_cut_multibyte_tail_hides_nothing_and_still_rotates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("evolution").join(VERDICTS_FILE);
+        append_record(&path, &record(ResultVerdict::VerifiedPass, None)).unwrap();
+        append_record(
+            &path,
+            &record(
+                ResultVerdict::VerifiedFail,
+                Some(ResultFailureType::TestFailure),
+            ),
+        )
+        .unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        // The first two bytes of `测`: the append died inside the character.
+        std::io::Write::write_all(&mut file, b"{\"claim\":\"\xe6\xb5").unwrap();
+        drop(file);
+        assert!(
+            std::fs::read_to_string(&path).is_err(),
+            "precondition: the file is invalid UTF-8"
+        );
+
+        let loaded = load_verdicts(&path);
+        assert_eq!(loaded.len(), 2, "the cut tail is one malformed line");
+
+        // Past the size cap, the rotation now rewrites the file without the
+        // tail instead of skipping itself on every later append.
+        let size = std::fs::metadata(&path).unwrap().len();
+        rotate_if_oversized(&path, size - 1);
+        std::fs::read_to_string(&path).expect("rotation left valid UTF-8 behind");
+        let after = load_verdicts(&path);
+        assert!(!after.is_empty(), "rotation keeps the newest record");
+        assert_eq!(after.last().unwrap().verdict, ResultVerdict::VerifiedFail);
     }
 
     #[test]
