@@ -344,9 +344,10 @@ async fn run_rlm_turn_impl(
                             text: "You called FINAL(...) without ever running a ```repl block. \
                                    That defeats the recursive language model — you're guessing \
                                    from the preview alone. Emit a ```repl block now that uses \
-                                   `llm_query`, `sub_query_sequence`, or an explicitly independent \
-                                   `llm_query_batched(..., dependency_mode=\"independent\")` against \
-                                   `context` to actually compute the answer."
+                                   `sub_query`, `sub_query_sequence`, or an explicitly independent \
+                                   `sub_query_batch(..., dependency_mode=\"independent\")` on \
+                                   `_context` to actually compute the answer, then calls \
+                                   `finalize(...)`."
                                 .to_string(),
                             cache_control: None,
                         }],
@@ -404,9 +405,9 @@ async fn run_rlm_turn_impl(
                         role: "user".to_string(),
                         content: vec![ContentBlock::Text {
                             text: "Reminder: emit Python inside a ```repl … ``` fence. \
-                                   Use `llm_query`, `sub_query_sequence`, or \
-                                   `llm_query_batched(..., dependency_mode=\"independent\")` to \
-                                   process `context` and call `FINAL(value)` when done."
+                                   Use `sub_query`, `sub_query_sequence`, or \
+                                   `sub_query_batch(..., dependency_mode=\"independent\")` to \
+                                   process `_context`, then call `finalize(value)` inside the block."
                                 .to_string(),
                             cache_control: None,
                         }],
@@ -636,54 +637,63 @@ fn build_metadata_message(
         parts.push(format!("> {}", truncate_text(rp.trim(), 600)));
         parts.push(String::new());
     }
-    parts.push("**`context`** — the long input lives in the REPL only".to_string());
+    // The same vocabulary as the system prompt (`prompt.rs`): the REPL
+    // defines `_context` (alias `content`) and the `sub_query*` / `finalize`
+    // helpers. This message used to list the retired names (`context`,
+    // `ctx`, `llm_query`, `FINAL`) — `context` and `ctx` are not defined, so
+    // generated code that followed the message raised NameError.
+    parts.push(
+        "**`_context`** — the long input lives in the REPL only (`content` is an alias)"
+            .to_string(),
+    );
     parts.push(format!("- Length: {prompt_len} chars"));
     parts.push(format!("- Preview: \"{prompt_preview}\""));
     parts.push(String::new());
 
     parts.push("**REPL helpers** (use inside ```repl blocks)".to_string());
-    parts.push("- `context` / `ctx`                       — the full input string".to_string());
-    parts.push("- `len(context)` / `context[a:b]` / `context.splitlines()` — slice it".to_string());
     parts.push(
-        "- `chunk_context(max_chars=20000, overlap=0)` — full-coverage chunks with index/start/end/text"
+        "- `context_meta()`                      — bounded metadata: char count, line count, previews"
             .to_string(),
     );
     parts.push(
-        "- `chunk_coverage(chunks)`              — coverage report for chunk_context output"
+        "- `peek(start, end, unit=\"chars\")`    — bounded slice by char offsets or line numbers"
             .to_string(),
     );
     parts.push(
-        "- `llm_query(prompt, model=None)`        — one-shot child LLM; `model` is ignored and child calls stay pinned to Flash"
+        "- `search(pattern, max_hits=100)`       — regex search returning bounded hit records"
             .to_string(),
     );
     parts.push(
-        "- `llm_query_batched([p1, p2, ...], dependency_mode=\"independent\")` — concurrent fan-out for independent prompts only; `model` is ignored"
+        "- `chunk(max_chars=20000, overlap=0)`   — full-coverage chunks with index/start/end/text"
             .to_string(),
     );
     parts.push(
-        "- `rlm_query(prompt, model=None)`        — recursive sub-RLM; `model` is ignored"
+        "- `chunk_coverage(chunks)`              — coverage report for chunk output".to_string(),
+    );
+    parts.push(
+        "- `sub_query(prompt, slice=None)`       — one child LLM call, optionally scoped to one bounded slice"
             .to_string(),
     );
     parts.push(
-        "- `rlm_query_batched([p1, p2, ...], dependency_mode=\"independent\")` — concurrent recursive sub-RLMs for independent prompts only; `model` is ignored"
+        "- `sub_query_batch(prompt, slices, dependency_mode=\"independent\")` — one prompt over at most 16 independent slices"
             .to_string(),
     );
     parts.push(
-        "- `sub_query_sequence(prompt, slices)`   — sequential child calls for A->B dependencies and rollback-sensitive work"
+        "- `sub_query_sequence(prompt, slices)`  — sequential child calls for A->B dependencies and rollback-sensitive work"
+            .to_string(),
+    );
+    parts.push(
+        "- `sub_rlm(prompt, source=None)`        — recursive sub-RLM for a sub-task that needs its own decomposition; pass a bounded source"
             .to_string(),
     );
     parts.push(
         "- Batch safety: never batch dependent steps, global-state refactors, schema migrations, or rollback-sensitive tasks"
             .to_string(),
     );
-    parts.push("- `SHOW_VARS()`                          — list user variables".to_string());
+    parts.push("- `SHOW_VARS()`                         — list user variables".to_string());
     parts.push("- `repl_set(name, value)` / `repl_get(name)` — explicit store".to_string());
     parts.push(
-        "- `FINAL(value)`                         — end the loop with this answer".to_string(),
-    );
-    parts.push(
-        "- `FINAL_VAR(name)`                      — end the loop with a variable's value"
-            .to_string(),
+        "- `finalize(value, confidence=None)`    — end the loop with this answer".to_string(),
     );
     parts.push(String::new());
 
@@ -949,12 +959,17 @@ mod tests {
     fn build_metadata_contains_key_information() {
         let msg = build_metadata_message("Hello, world!", None, 0, None, None, None);
         let text = extract_text_blocks(&msg.content);
-        assert!(text.contains("context"));
+        assert!(text.contains("_context"));
         assert!(text.contains("Hello, world!"));
         assert!(text.contains("round 0"));
-        assert!(text.contains("llm_query"));
-        assert!(text.contains("rlm_query"));
-        assert!(text.contains("FINAL"));
+        assert!(text.contains("sub_query"));
+        assert!(text.contains("sub_rlm"));
+        assert!(text.contains("finalize"));
+        // The REPL defines `_context` (alias `content`) only: the retired
+        // names raised NameError in generated code that followed this list.
+        assert!(!text.contains("`context` / `ctx`"));
+        assert!(!text.contains("len(context)"));
+        assert!(!text.contains("FINAL("));
     }
 
     #[test]
