@@ -1320,19 +1320,12 @@ fn populate_extension_runtime(
             "startup audit: {failed} extension(s) failed to load — fix and /extension reload"
         );
     }
-    let report = PopulateReport {
+    PopulateReport {
         loaded_mods: loaded_mods_cell.load(std::sync::atomic::Ordering::Relaxed),
         pending_mods,
         audit,
         drain: None,
-    };
-    if failed > 0 {
-        tracing::warn!(
-            target: "codesmith_extensions",
-            "startup audit: {failed} extension(s) failed to load — fix and /extension reload"
-        );
     }
-    report
 }
 
 /// The reason a reload drain writes onto every lease it cancels (the general-agent
