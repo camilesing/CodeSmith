@@ -205,7 +205,6 @@ pub fn get_or_create_worktree(
 
     // Resolve base branch
     let base_branch = get_default_branch(repo_root)?;
-    let base_sha = get_head_commit(repo_root)?;
 
     // git worktree add -B <branch> <path> <base>
     // -B resets any orphan branch left by a previous removed worktree
@@ -228,10 +227,13 @@ pub fn get_or_create_worktree(
         )));
     }
 
+    // The baseline is the commit the worktree starts from — its own HEAD,
+    // the tip of `base_branch` — not the main checkout's HEAD.
+    let head_commit = get_head_commit(&worktree_path)?;
     Ok(WorktreeCreateResult {
         worktree_path,
         worktree_branch,
-        head_commit: base_sha,
+        head_commit,
         existed: false,
     })
 }
@@ -433,6 +435,41 @@ mod tests {
             let suffix = slug.rsplit('-').next().unwrap();
             assert_eq!(suffix.len(), 8, "{slug}");
         }
+    }
+
+    /// The new branch may start ahead of the main checkout (`origin/main`).
+    /// An untouched worktree then has no commits for `exit_worktree`'s
+    /// removal check to report — the main checkout's HEAD used to be the
+    /// baseline, and every commit origin had ahead read as new work.
+    #[test]
+    fn a_new_worktree_is_baselined_where_it_starts() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        commit(tmp.path(), "first");
+        // The main checkout stays on `first`; origin/main moves ahead.
+        git_ok(tmp.path(), &["checkout", "-q", "-b", "side"]);
+        commit(tmp.path(), "second");
+        let origin_main = get_head_commit(tmp.path()).unwrap();
+        git_ok(
+            tmp.path(),
+            &["update-ref", "refs/remotes/origin/main", &origin_main],
+        );
+        git_ok(tmp.path(), &["checkout", "-q", "main"]);
+
+        let created = get_or_create_worktree(tmp.path(), "x").expect("create");
+        assert_eq!(
+            created.head_commit, origin_main,
+            "the worktree's start commit"
+        );
+        let summary = count_worktree_changes(&created.worktree_path, &Some(created.head_commit))
+            .expect("git answers");
+        assert_eq!(
+            summary.commits, 0,
+            "nothing to lose in an untouched worktree"
+        );
     }
 
     #[test]
