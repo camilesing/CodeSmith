@@ -888,7 +888,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #     ~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git
 #
 # Your own `.git` is never touched — `--git-dir` and `--work-tree` are always
-# set together when shelling out to git. Use `/restore N` (slash command) or
+# set together when shelling out to git. Use `/rewind N` (slash command) or
 # the `revert_turn` tool to roll the working tree back. Conversation history
 # is unaffected.
 #
@@ -897,7 +897,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # boot prunes anything older than `max_age_days` (default 7).
 #
 # [snapshots]
-# enabled = true        # Snapshot workspace pre/post each turn for /restore
+# enabled = true        # Snapshot workspace pre/post each turn for /rewind
 # max_age_days = 7      # Older snapshots pruned at session start
 # max_workspace_gb = 2  # Snapshots self-disable on first init when the
 #                         # non-excluded workspace exceeds this size in GB

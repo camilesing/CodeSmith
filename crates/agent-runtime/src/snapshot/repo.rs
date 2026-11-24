@@ -606,8 +606,9 @@ impl SnapshotRepo {
     ///
     /// Strategy: identify keepable commits (younger than the cutoff),
     /// reset HEAD to the oldest survivor, then `git reflog expire` +
-    /// `git gc --prune=now` to actually reclaim space. Cheap and avoids
-    /// rewriting history when nothing has aged out.
+    /// `git gc --prune=<grace age>` to reclaim the space once the dropped
+    /// objects outlive [`PRUNE_GRACE`]. Cheap and avoids rewriting history
+    /// when nothing has aged out.
     pub fn prune_older_than(&self, max_age: Duration) -> io::Result<usize> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

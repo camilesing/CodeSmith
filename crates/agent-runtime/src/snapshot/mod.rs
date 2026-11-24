@@ -4,7 +4,7 @@
 //! workspace into a side git repo at
 //! `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`, then a
 //! matching `post-turn:<seq>` snapshot when the turn finishes. Users
-//! can roll back via `/restore N` (slash command) or, when the model
+//! can roll back via `/rewind N` (slash command) or, when the model
 //! recognises an "undo my last edit" intent, the `revert_turn` tool.
 //!
 //! ## Why a side repo?

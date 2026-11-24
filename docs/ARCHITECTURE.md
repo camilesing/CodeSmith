@@ -384,7 +384,7 @@ live there).
 3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.codesmith/sessions/checkpoints/offline_queue.json`
 4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
 5. Successful turn completion clears the active checkpoint and writes a durable session snapshot
-6. Agent/Yolo turns also take pre/post-turn side-git workspace snapshots under `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`; `/restore N` and `revert_turn` restore file state without changing conversation history or the user's `.git`
+6. Agent/Yolo turns also take pre/post-turn side-git workspace snapshots under `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`; `/rewind N` and `revert_turn` restore file state without changing conversation history or the user's `.git`
 
 ### Tool Execution
 
@@ -531,6 +531,6 @@ command = "echo 'Running tool: $TOOL_NAME'"
 - `~/.codesmith/skills/` - User skills directory
 - `~/.codesmith/sessions/` - Session history
 - `~/.codesmith/sessions/checkpoints/` - Crash checkpoint + offline queue persistence
-- `~/.codesmith/snapshots/` - Side-git pre/post-turn workspace snapshots for `/restore` and `revert_turn`
+- `~/.codesmith/snapshots/` - Side-git pre/post-turn workspace snapshots for `/rewind` and `revert_turn`
 - `~/.codesmith/tasks/` - Background task records, queue, timelines, artifacts
 - `~/.codesmith/audit.log` - Append-only audit events for credential + approval/elevation actions

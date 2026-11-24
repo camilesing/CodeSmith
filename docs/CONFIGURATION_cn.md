@@ -1082,8 +1082,8 @@ DeepSeek V4 前缀缓存使得 token 标签很重要。这些数量是分开维�
     体积遍历遵循 `.gitignore` 和模块内置排除项（`node_modules/`、
     `target/` 等）。
   - 快照位于
-    `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`，
-    当仅存在旧版状态时回退到 `~/.codesmith/snapshots/...`，并且绝不
+    `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`
+    （设置了 `$CODESMITH_HOME` 时位于 `$CODESMITH_HOME/snapshots/…`），并且绝不
     使用工作区自身的 `.git` 目录
 - `edit.*`（可选）：文件编辑工具（`write_file`、`edit_file`、
   `apply_patch`、`fim_edit`）的写前 parse 门：

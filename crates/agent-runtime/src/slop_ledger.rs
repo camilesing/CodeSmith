@@ -10,7 +10,8 @@
 //!
 //! ## Design
 //!
-//! - **Storage**: `~/.codesmith/slop_ledger.json` (a JSON array of entries).
+//! - **Storage**: `~/.codesmith/slop_ledger/slop_ledger.json` (a JSON object
+//!   holding an `entries` array).
 //! - **Schema**: each entry has a bucket, severity, confidence, owner,
 //!   source links, status, cleanup recommendation, and timestamps.
 //! - **Tools**: `slop_ledger_append`, `slop_ledger_query`,

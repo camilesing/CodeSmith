@@ -1217,9 +1217,9 @@ and the capacity controller remains disabled unless configured.
     this cap; `0` disables the cap. The size walk honours `.gitignore` and
     the module's built-in excludes (`node_modules/`, `target/`, …).
   - snapshots live under
-    `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`, with legacy
-    `~/.codesmith/snapshots/...` fallback when only the legacy state exists, and
-    never use the workspace's own `.git` directory
+    `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git`
+    (`$CODESMITH_HOME/snapshots/…` when that variable is set) and never use
+    the workspace's own `.git` directory
 - `edit.*` (optional): pre-write parse gate for the file-editing tools
   (`write_file`, `edit_file`, `apply_patch`, `fim_edit`):
   - `[edit].parse_gate` (bool, default `true`): writes to `.rs` / `.toml` /

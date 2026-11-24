@@ -10,7 +10,7 @@
 //! `crate::snapshot`). They are intentionally non-blocking and
 //! non-fatal: any IO error is logged at WARN and swallowed so a busted
 //! filesystem or missing `git` binary never derails the agent loop.
-//! `/restore N` and the `revert_turn` tool both consume these
+//! `/rewind N` and the `revert_turn` tool both consume these
 //! snapshots.
 
 use crate::models::Usage;
@@ -141,7 +141,7 @@ fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
 const USER_PROMPT_LABEL_MAX: usize = 100;
 
 /// Format a snapshot label that includes the user prompt for readability
-/// in `/restore` listings.
+/// in `/rewind` listings.
 ///
 /// Takes the first line of the prompt (up to `USER_PROMPT_LABEL_MAX`
 /// characters) and appends it to the traditional `type:seq` label so
@@ -168,7 +168,7 @@ fn format_snapshot_label(prefix: &str, turn_seq: u64, user_prompt: Option<&str>)
 /// (passed through to [`SnapshotRepo::open_or_init_with_cap`]); pass
 /// `0` to disable the cap.
 /// `user_prompt` is an optional snippet of the user's message for this
-/// turn, embedded in the snapshot label so `/restore` listings are
+/// turn, embedded in the snapshot label so `/rewind` listings are
 /// human-readable.
 ///
 /// Returns the snapshot SHA on success, `None` on any error. Errors are

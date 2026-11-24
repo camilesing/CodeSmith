@@ -349,7 +349,7 @@ Chat Completions 驱动 turn。
 3. 在降级/离线状态下，新的提示词会在内存中排队并镜像到 `~/.codesmith/sessions/checkpoints/offline_queue.json`
 4. 队列编辑（`/queue ...`）会持续持久化，因此草稿和已排队的提示词可在重启后保留
 5. turn 成功完成后会清除活动检查点并写入持久会话快照
-6. Agent/Yolo turn 还会在 `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git` 下创建 turn 前/后的 side-git 工作区快照；`/restore N` 和 `revert_turn` 恢复文件状态，而不更改对话历史或用户的 `.git`
+6. Agent/Yolo turn 还会在 `~/.codesmith/snapshots/<project_hash>/<worktree_hash>/.git` 下创建 turn 前/后的 side-git 工作区快照；`/rewind N` 和 `revert_turn` 恢复文件状态，而不更改对话历史或用户的 `.git`
 
 ### 工具执行
 
@@ -471,6 +471,6 @@ command = "echo 'Running tool: $TOOL_NAME'"
 - `~/.codesmith/skills/` - 用户技能目录
 - `~/.codesmith/sessions/` - 会话历史
 - `~/.codesmith/sessions/checkpoints/` - 崩溃检查点 + 离线队列持久化
-- `~/.codesmith/snapshots/` - 用于 `/restore` 和 `revert_turn` 的 turn 前/后 side-git 工作区快照
+- `~/.codesmith/snapshots/` - 用于 `/rewind` 和 `revert_turn` 的 turn 前/后 side-git 工作区快照
 - `~/.codesmith/tasks/` - 后台任务记录、队列、时间线、工件
 - `~/.codesmith/audit.log` - 用于凭据 + 审批/提权操作的只追加审计事件

@@ -2,7 +2,7 @@
 //! prior pre-turn snapshot.
 //!
 //! The model invokes this when the user says something like "undo the
-//! last edit" or "roll back". It mirrors `/restore` but speaks JSON and
+//! last edit" or "roll back". It mirrors `/rewind` but speaks JSON and
 //! takes a turn-offset (default 1 = previous turn) instead of a list
 //! index, so the model doesn't have to count entries.
 //!

@@ -145,7 +145,7 @@ the cheap-utility-model router. Fin — the fast light-tier path — still handl
 quick tool work and background summaries.
 
 Every turn records a side-git snapshot outside your repo's `.git`.
-`/restore` and `revert_turn` roll back the workspace.
+`/rewind` and `revert_turn` roll back the workspace.
 
 Sub-agents run concurrently (up to 20). `agent_open` returns immediately;
 results arrive inline as completion sentinels with a summary. Full

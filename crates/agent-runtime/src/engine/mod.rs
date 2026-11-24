@@ -1430,7 +1430,7 @@ impl Engine {
             // Clone the user prompt now — `content` is moved into
             // `user_text_message_with_turn_metadata_for_route` below, so we need
             // a copy for both pre- and post-turn snapshot labels. The
-            // label carries a truncated first line so `/restore`
+            // label carries a truncated first line so `/rewind`
             // listings are human-readable.
             let snapshot_prompt = content.clone();
             let pre_workspace = self.session.workspace.clone();

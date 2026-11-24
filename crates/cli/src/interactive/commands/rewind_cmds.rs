@@ -18,7 +18,7 @@
 //! - Restoring is a checkout of the whole tree: files the snapshot does not
 //!   contain are removed from the working tree (`git checkout … -- :/` plus
 //!   the repo's own reconciliation). It is the engine's own restore path, so
-//!   the behaviour matches `/restore`'s engine-side equivalent.
+//!   the behaviour matches `/rewind`'s engine-side equivalent.
 //! - Snapshots are off when `[snapshots] enabled = false`, and a workspace
 //!   the side repo refuses (a home directory, for instance) has none at all;
 //!   both cases are reported as "nothing to rewind to" with the reason.

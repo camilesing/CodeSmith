@@ -115,7 +115,7 @@ OS 级沙箱在 macOS（Seatbelt）强制执行，在 Linux 上经 bubblewrap（
 轻量档路径 —— 仍然处理快速工具工作和后台摘要。
 
 每个回合都会在你的仓库 `.git` 之外记录一份 side-git 快照。
-`/restore` 和 `revert_turn` 负责回滚工作区。
+`/rewind` 和 `revert_turn` 负责回滚工作区。
 
 子代理并发运行（上限 20）。`agent_open` 立即返回；结果以携带摘要的
 完成哨兵标记（sentinel）形式内联到达。完整转录通过 `agent_eval` 留在
