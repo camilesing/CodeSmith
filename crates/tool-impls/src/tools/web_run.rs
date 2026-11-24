@@ -11,7 +11,9 @@
 //! DuckDuckGo-images scrape — it is not part of the `WebService` contract.
 
 use async_trait::async_trait;
-use codesmith_agent_runtime::network_policy::{Decision, host_from_url};
+use codesmith_agent_runtime::network_policy::{
+    Decision, host_from_url, network_approval_requirement,
+};
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_u64, required_str,
@@ -460,6 +462,10 @@ impl ToolSpec for WebRunTool {
     /// image search is requested). A `Prompt` decision on any of them raises
     /// the standard inline approval prompt; later actions on an
     /// already-open page have no new host to gate, so they stay `Auto`.
+    /// A `click` can reach a new host — it follows a link of a stored page —
+    /// but its destination is not part of the input the user approves, so
+    /// `execute` refuses a click that needs approval and names the URL to
+    /// `open` instead.
     fn approval_requirement_for_input(
         &self,
         input: &serde_json::Value,
@@ -684,6 +690,24 @@ impl ToolSpec for WebRunTool {
                     ))
                 })?;
                 let target = link.url.clone();
+                // The dispatch gate cannot see a click's destination — it is
+                // a link of an already-stored page — so it is checked here. A
+                // host that needs approval is refused: the URL goes back to
+                // the model as an `open`, whose input is what the user
+                // approves.
+                if let Some(host) = host_from_url(&target)
+                    && network_approval_requirement(
+                        context.network_policy.as_ref(),
+                        &host,
+                        "web_run",
+                    ) == ApprovalRequirement::Required
+                {
+                    return Err(ToolError::permission_denied(format!(
+                        "click would fetch '{target}', whose host needs network approval. A \
+                         click cannot raise that approval — pass the URL as an `open` item's \
+                         ref_id so the user approves it"
+                    )));
+                }
                 let fetched =
                     resolve_or_fetch_page(&target, DEFAULT_OPEN_TIMEOUT_MS, context).await?;
                 click_counter += 1;
@@ -2296,6 +2320,77 @@ mod tests {
             .await
             .expect_err("unknown link id");
         assert!(format!("{err}").contains("not found"));
+    }
+
+    /// A `Prompt`-by-default network policy that allow-lists `hosts`.
+    fn policy_allowing(
+        hosts: &[&str],
+    ) -> codesmith_agent_runtime::network_policy::NetworkPolicyDecider {
+        use codesmith_agent_runtime::network_policy::{
+            Decision, NetworkPolicy, NetworkPolicyDecider,
+        };
+        NetworkPolicyDecider::new(
+            NetworkPolicy {
+                default: Decision::Prompt.into(),
+                allow: hosts.iter().map(|host| host.to_string()).collect(),
+                deny: Vec::new(),
+                proxy: Vec::new(),
+                audit: false,
+            },
+            None,
+        )
+    }
+
+    /// A click follows a link of a stored page, so its destination never
+    /// reaches the dispatch gate. A link to a host that needs approval is
+    /// refused before anything is fetched; a link to an allowed host still
+    /// works.
+    #[tokio::test]
+    async fn click_to_a_host_needing_approval_is_refused() {
+        let _lock = lock_web_run_tests();
+        reset_web_run_state();
+        let service = MockWebService::ok().with_fetch(Ok(FetchOutcome {
+            url: "https://allowed.example/article".to_string(),
+            status: 200,
+            headers: BTreeMap::new(),
+            content_type: "text/html".to_string(),
+            body: b"<html><body><p>article body</p>\
+                    <a href=\"https://unlisted.example/next\">Unlisted</a>\
+                    <a href=\"https://allowed.example/more\">Allowed</a></body></html>"
+                .to_vec(),
+            truncated: false,
+        }));
+        let ctx = service_ctx(service).with_network_policy(policy_allowing(&["allowed.example"]));
+        let opened = WebRunTool
+            .execute(
+                json!({"open": [{"ref_id": "https://allowed.example/article"}]}),
+                &ctx,
+            )
+            .await
+            .expect("open on an allowed host");
+        let parsed: serde_json::Value = serde_json::from_str(&opened.content).unwrap();
+        let view_ref = parsed["open"][0]["ref_id"].as_str().unwrap().to_string();
+        let click = |id: u64| json!({"click": [{"ref_id": view_ref, "id": id}]});
+
+        // The gate cannot see where a click goes: it stays Auto.
+        assert_eq!(
+            WebRunTool.approval_requirement_for_input(&click(1), &ctx),
+            ApprovalRequirement::Auto
+        );
+        let err = format!(
+            "{}",
+            WebRunTool
+                .execute(click(1), &ctx)
+                .await
+                .expect_err("a click to an unapproved host is refused")
+        );
+        assert!(err.contains("https://unlisted.example/next"), "{err}");
+        assert!(err.contains("approval"), "{err}");
+        // An allow-listed host is not held up by the check.
+        WebRunTool
+            .execute(click(2), &ctx)
+            .await
+            .expect("click on an allowed host");
     }
 
     #[tokio::test]
