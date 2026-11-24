@@ -1299,7 +1299,13 @@ pub async fn compact_messages(
     // Extract workflow context (files touched, tasks in progress, etc.)
     let workflow_context = extract_workflow_context(&to_summarize, workspace);
 
-    let anchors_section = anchor_summary_section(workspace);
+    // The anchors read is filesystem I/O on a path inside the workspace:
+    // on a network or virtual mount it must not stall the runtime worker.
+    let anchors_workspace = workspace.map(ToOwned::to_owned);
+    let anchors_section =
+        tokio::task::spawn_blocking(move || anchor_summary_section(anchors_workspace.as_deref()))
+            .await
+            .unwrap_or_default();
 
     // Deterministic failure record: one line per failed approach in the
     // summarized span, independent of what the LLM summary kept.
