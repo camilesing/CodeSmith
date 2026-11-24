@@ -1230,17 +1230,37 @@ impl HostAgentExecutor {
             // tool execution (workshop-gated) and consumes the oversized
             // body, while spillover runs engine-side afterwards on whatever
             // the tool returned and preserves the original bytes.
-            if let Ok(r) = &mut o.result
-                && r.success
+            let spillable = matches!(&o.result, Ok(r) if r.success);
+            // The result is moved out for the spill and put back below (the
+            // stand-in only exists while the blocking task runs).
+            if spillable
+                && let Ok(mut r) =
+                    std::mem::replace(&mut o.result, Ok(ToolResult::error("result spilled")))
             {
-                let spilled = match self.session_id.as_deref() {
-                    Some(session_id) => {
-                        codesmith_session::spillover::apply_spillover_with_artifact(
-                            r, &o.id, &o.name, session_id,
-                        )
-                    }
-                    None => codesmith_session::spillover::apply_spillover(r, &o.id),
+                // The spill writes and fsyncs the whole body (twice, with a
+                // session id): blocking work, so it runs on the blocking pool.
+                // A disk failure — or a panic in that task — still degrades to
+                // passing the original content through.
+                let original = r.clone();
+                let (id, name, session_id) =
+                    (o.id.clone(), o.name.clone(), self.session_id.clone());
+                let (spilled, r) = match tokio::task::spawn_blocking(move || {
+                    let spilled = match session_id.as_deref() {
+                        Some(session_id) => {
+                            codesmith_session::spillover::apply_spillover_with_artifact(
+                                &mut r, &id, &name, session_id,
+                            )
+                        }
+                        None => codesmith_session::spillover::apply_spillover(&mut r, &id),
+                    };
+                    (spilled, r)
+                })
+                .await
+                {
+                    Ok(spilled) => spilled,
+                    Err(_join_err) => (None, original),
                 };
+                o.result = Ok(r);
                 if let Some(path) = spilled {
                     tracing::info!(
                         target: "spillover",
