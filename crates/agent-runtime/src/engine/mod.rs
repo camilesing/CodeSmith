@@ -1304,6 +1304,32 @@ impl Engine {
             reasoning_effort,
             reasoning_effort_auto,
         );
+        Self::user_message_with_block(block, text)
+    }
+
+    /// [`Self::user_text_message_with_turn_metadata_for_route`] for
+    /// engine-loop callers: the `<turn_meta>` block is built on the blocking
+    /// pool (see [`Self::turn_metadata_content_block_offloaded`]).
+    pub(crate) async fn user_text_message_with_turn_metadata_offloaded(
+        &self,
+        text: String,
+        routed_model: &str,
+        auto_model: bool,
+        reasoning_effort: Option<&str>,
+        reasoning_effort_auto: bool,
+    ) -> Message {
+        let block = self
+            .turn_metadata_content_block_offloaded(
+                routed_model,
+                auto_model,
+                reasoning_effort,
+                reasoning_effort_auto,
+            )
+            .await;
+        Self::user_message_with_block(block, text)
+    }
+
+    fn user_message_with_block(block: ContentBlock, text: String) -> Message {
         Message {
             role: "user".to_string(),
             content: vec![
@@ -1331,16 +1357,75 @@ impl Engine {
         reasoning_effort: Option<&str>,
         reasoning_effort_auto: bool,
     ) -> ContentBlock {
-        let working_set = self
-            .session
-            .working_set
+        Self::build_turn_metadata_block(
+            &self.session.working_set,
+            &self.config.workspace,
+            &self.session.cwd,
+            &self.config.skills_dir,
+            routed_model,
+            auto_model,
+            reasoning_effort,
+            reasoning_effort_auto,
+        )
+    }
+
+    /// [`Self::turn_metadata_content_block_for_route`] for engine-loop
+    /// callers: the working-set read and the conditional-skills walk (a
+    /// recursive filesystem scan of the workspace and the skills roots) run
+    /// on the blocking pool, so a slow or network-mounted workspace cannot
+    /// stall op/event processing (30 s+ stalls are documented for WSL2
+    /// `/mnt/c`).
+    pub(crate) async fn turn_metadata_content_block_offloaded(
+        &self,
+        routed_model: &str,
+        auto_model: bool,
+        reasoning_effort: Option<&str>,
+        reasoning_effort_auto: bool,
+    ) -> ContentBlock {
+        let working_set = std::sync::Arc::clone(&self.session.working_set);
+        let workspace = self.config.workspace.clone();
+        let cwd = self.session.cwd.clone();
+        let skills_dir = self.config.skills_dir.clone();
+        let routed_model = routed_model.to_string();
+        let reasoning_effort = reasoning_effort.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            Self::build_turn_metadata_block(
+                &working_set,
+                &workspace,
+                &cwd,
+                &skills_dir,
+                &routed_model,
+                auto_model,
+                reasoning_effort.as_deref(),
+                reasoning_effort_auto,
+            )
+        })
+        .await
+        .expect("turn_meta build task")
+    }
+
+    /// The `<turn_meta>` block for one model route, from an explicit
+    /// working-set handle: the one body behind the sync method (embeds and
+    /// tests) and its offloaded twin (engine loop).
+    #[allow(clippy::too_many_arguments)]
+    fn build_turn_metadata_block(
+        working_set: &std::sync::Mutex<crate::working_set::WorkingSet>,
+        workspace: &std::path::Path,
+        cwd: &std::path::Path,
+        skills_dir: &std::path::Path,
+        routed_model: &str,
+        auto_model: bool,
+        reasoning_effort: Option<&str>,
+        reasoning_effort_auto: bool,
+    ) -> ContentBlock {
+        let working_set = working_set
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         turn_meta::turn_metadata_block(
             &working_set,
-            &self.config.workspace,
-            &self.session.cwd,
-            &self.config.skills_dir,
+            workspace,
+            cwd,
+            skills_dir,
             routed_model,
             auto_model,
             reasoning_effort,
@@ -1357,13 +1442,17 @@ impl Engine {
     /// post-compaction. Enrich-only (no `observe_user_message`) — re-inject
     /// messages are synthetic system-reminders, not user intent (matches the
     /// LSP-flush precedent, slice 22 §E).
-    pub(crate) fn enrich_reinject_message(&self, mut msg: Message) -> Message {
-        let block = self.turn_metadata_content_block_for_route(
-            &self.session.model,
-            self.session.auto_model,
-            self.session.reasoning_effort.as_deref(),
-            self.session.reasoning_effort_auto,
-        );
+    /// The `<turn_meta>` block is built on the blocking pool (this runs in
+    /// the engine loop).
+    pub(crate) async fn enrich_reinject_message(&self, mut msg: Message) -> Message {
+        let block = self
+            .turn_metadata_content_block_offloaded(
+                &self.session.model,
+                self.session.auto_model,
+                self.session.reasoning_effort.as_deref(),
+                self.session.reasoning_effort_auto,
+            )
+            .await;
         msg.content.insert(0, block);
         msg
     }
@@ -1513,13 +1602,15 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prompt_paths();
-        let mut user_msg = self.user_text_message_with_turn_metadata_for_route(
-            content,
-            &model,
-            auto_model,
-            reasoning_effort.as_deref(),
-            reasoning_effort_auto,
-        );
+        let mut user_msg = self
+            .user_text_message_with_turn_metadata_offloaded(
+                content,
+                &model,
+                auto_model,
+                reasoning_effort.as_deref(),
+                reasoning_effort_auto,
+            )
+            .await;
         append_image_blocks(&mut user_msg, &image_paths);
         // TODO-50: remember the attachments outside the transcript so the
         // post-compaction re-inject hook can re-send them once compaction
@@ -3851,7 +3942,7 @@ impl Engine {
             // post-compaction. Enrich-only (no observe) — matches the LSP-flush
             // precedent (slice 22). Done here so the dedup check, budget trial,
             // and push all see the enriched candidate.
-            let candidate = self.enrich_reinject_message(candidate);
+            let candidate = self.enrich_reinject_message(candidate).await;
             // Dedup on the payload (everything after the `<turn_meta>` block
             // at index 0): the block embeds cwd / working-set state and is
             // not byte-stable across compactions, so whole-message equality

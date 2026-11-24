@@ -975,6 +975,7 @@ fn accumulate_cleared_facts(
 ///
 /// The subagent-completion sentinel push is **not** enriched (plain user
 /// text), matching production — see `HostAgentExecutor::run_inner`.
+#[derive(Clone)]
 pub struct TurnMetaProbe {
     working_set: Arc<std::sync::Mutex<WorkingSet>>,
     workspace: PathBuf,
@@ -1051,6 +1052,26 @@ impl TurnMetaProbe {
             self.reasoning_effort.as_deref(),
             self.reasoning_effort_auto,
         )
+    }
+
+    /// [`Self::enrich_user_text_message`] for the executor's async paths
+    /// (steer and LSP-flush pushes): the working-set read and the
+    /// conditional-skills walk — a recursive filesystem scan — run on the
+    /// blocking pool, so a slow workspace cannot stall the runtime worker.
+    pub async fn enrich_user_text_message_offloaded(&self, text: String) -> Message {
+        let probe = self.clone();
+        tokio::task::spawn_blocking(move || probe.enrich_user_text_message(text))
+            .await
+            .expect("turn_meta build task")
+    }
+
+    /// [`Self::turn_metadata_block`] on the blocking pool, for the same
+    /// reason as [`Self::enrich_user_text_message_offloaded`].
+    pub async fn turn_metadata_block_offloaded(&self) -> ContentBlock {
+        let probe = self.clone();
+        tokio::task::spawn_blocking(move || probe.turn_metadata_block())
+            .await
+            .expect("turn_meta build task")
     }
 
     /// Build the standalone `<turn_meta>` [`ContentBlock`] (date / model route /
@@ -2567,7 +2588,10 @@ impl HostAgentExecutor {
         // Enrich: prepend the `<turn_meta>` block (slice 24 shape) — built
         // from the TurnMetaProbe's snapshotted state. Absent probe ⇒ no
         // enrich (plain candidates, matching the pre-slice-24 behavior).
-        let turn_meta_block = self.turn_meta.as_ref().map(|p| p.turn_metadata_block());
+        let turn_meta_block = match self.turn_meta.as_ref() {
+            Some(probe) => Some(probe.turn_metadata_block_offloaded().await),
+            None => None,
+        };
         let mut injected = 0usize;
         for mut candidate in candidates {
             if let Some(block) = &turn_meta_block {
@@ -3867,7 +3891,9 @@ impl HostAgentExecutor {
             // (e.g. MaxSteps right after an edit) leaves pending diagnostics
             // on the executor for the next turn's first flush — matching the
             // production `Engine.pending_lsp_blocks` field semantics.
-            self.flush_pending_lsp_diagnostics(history);
+            if let Some(message) = self.take_pending_lsp_message().await {
+                history.push(message);
+            }
             // P3-8 result claim verifier: verdicts from a previous turn's
             // post-run background check flush at the same pre-request seam —
             // appended before the request snapshot so the model reconciles

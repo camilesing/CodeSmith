@@ -100,7 +100,15 @@ impl Engine {
         if rendered.is_empty() {
             return;
         }
-        self.add_session_message(self.user_text_message_with_turn_metadata(rendered))
+        let message = self
+            .user_text_message_with_turn_metadata_offloaded(
+                rendered,
+                &self.session.model,
+                self.session.auto_model,
+                self.session.reasoning_effort.as_deref(),
+                self.session.reasoning_effort_auto,
+            )
             .await;
+        self.add_session_message(message).await;
     }
 }

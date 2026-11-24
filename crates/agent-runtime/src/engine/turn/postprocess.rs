@@ -216,15 +216,16 @@ impl HostAgentExecutor {
         }
     }
 
-    /// (1) per-step pre-request seam — drain the pending LSP diagnostics into a
-    /// synthetic `user` message so the model sees compile errors before its next
-    /// reasoning step. Mirrors `Engine::flush_pending_lsp_diagnostics`
-    /// (`lsp_hooks.rs`): `mem::take` the accumulator, render, push. No-op when
-    /// nothing is pending or when LSP is disabled. Synchronous — the mutex guard
-    /// is taken and dropped before `history.push`, never held across an `await`.
-    pub(crate) fn flush_pending_lsp_diagnostics(&self, history: &mut dyn ChatHistory) {
+    /// (1) per-step pre-request seam — the pending LSP diagnostics as one
+    /// synthetic `user` message, for the caller to push before its next
+    /// reasoning step so the model sees compile errors in time. Mirrors
+    /// `Engine::flush_pending_lsp_diagnostics` (`lsp_hooks.rs`): `mem::take`
+    /// the accumulator, render, wrap. `None` when nothing is pending or when
+    /// LSP is disabled. The mutex guard is taken and dropped before the
+    /// `<turn_meta>` build, never held across an `await`.
+    pub(crate) async fn take_pending_lsp_message(&self) -> Option<Message> {
         let Some(probe) = &self.lsp else {
-            return;
+            return None;
         };
         let blocks = std::mem::take(
             &mut *probe
@@ -233,11 +234,11 @@ impl HostAgentExecutor {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         if blocks.is_empty() {
-            return;
+            return None;
         }
         let rendered = render_lsp_blocks(&blocks);
         if rendered.is_empty() {
-            return;
+            return None;
         }
         // When a `TurnMetaProbe` is wired in (production), wrap the rendered
         // diagnostics in a `<turn_meta>` block — matching production's
@@ -246,8 +247,8 @@ impl HostAgentExecutor {
         // user-intent path tokens). Embeds/tests (`None`) push plain text
         // (the pre-slice-22 behavior). Pushed via `ChatHistory`, so it lands
         // in the real `Session` transcript ahead of the request snapshot.
-        let message = match &self.turn_meta {
-            Some(probe) => probe.enrich_user_text_message(rendered),
+        Some(match &self.turn_meta {
+            Some(probe) => probe.enrich_user_text_message_offloaded(rendered).await,
             None => Message {
                 role: "user".to_string(),
                 content: vec![ContentBlock::Text {
@@ -255,8 +256,7 @@ impl HostAgentExecutor {
                     cache_control: None,
                 }],
             },
-        };
-        history.push(message);
+        })
     }
 
     /// (P3-8) pre-request seam — drain the pending result-verification

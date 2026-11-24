@@ -135,7 +135,7 @@ impl HostAgentExecutor {
         let mut message = match &self.turn_meta {
             Some(probe) => {
                 probe.observe_user_message(&text);
-                probe.enrich_user_text_message(text)
+                probe.enrich_user_text_message_offloaded(text).await
             }
             None => Message {
                 role: "user".to_string(),
