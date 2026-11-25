@@ -493,10 +493,21 @@ pub fn parse_frontmatter(content: &str) -> PluginMetadata {
     }
 }
 
-/// Read the first 4 KB of a file and parse its frontmatter.
+/// Read the first 20 lines of a file (to a 256 kB bound) and parse its
+/// frontmatter. A byte cap cut a long `# schema:` line mid-JSON and
+/// silently registered the permissive schema instead.
 fn read_script_metadata(path: &Path) -> Option<PluginMetadata> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let content = read_prefix_to_string(&mut file, 4096)?;
+    use std::io::{BufRead as _, Read as _};
+    let file = std::fs::File::open(path).ok()?;
+    let mut lines = std::io::BufReader::new(file.take(256 * 1024)).lines();
+    let mut content = String::new();
+    for _ in 0..20 {
+        let Some(line) = lines.next() else {
+            break;
+        };
+        content.push_str(&line.ok()?);
+        content.push('\n');
+    }
     let meta = parse_frontmatter(&content);
     // Require at least the `name` field to consider it a valid plugin.
     if meta.name == "unnamed-plugin" {
@@ -862,6 +873,32 @@ echo hello
         .expect_err("the binary does not exist")
         .to_string();
         assert!(err.contains("codesmith-no-such-binary-xyz"), "{err}");
+    }
+
+    /// A `# schema:` line longer than 4 KiB used to be cut mid-JSON: the
+    /// tool was registered with the permissive schema and no properties.
+    #[test]
+    fn a_long_schema_line_is_read_whole() {
+        let dir = TempDir::new().unwrap();
+        let script = dir.path().join("wide-schema.sh");
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "q".repeat(4200)}
+            },
+            "required": ["query"]
+        });
+        std::fs::write(
+            &script,
+            format!("# name: wide\n# description: wide schema\n# schema: {schema}\n"),
+        )
+        .unwrap();
+
+        let tools = load_plugin_tools(dir.path());
+        assert_eq!(tools.len(), 1);
+        let schema = tools[0].input_schema();
+        assert!(schema["properties"]["query"].is_object(), "{schema}");
+        assert_eq!(schema["required"][0], "query");
     }
 
     #[test]
