@@ -7,7 +7,7 @@
 //! cause silent 400s that users can't diagnose.
 //!
 //! The sanitizer runs in-place on every schema returned by
-//! `ToolRegistry::tools_for_api()` before the registry hands them off.
+//! `ToolRegistry::build_api_tools` before the registry hands them off.
 //! Output is cached so the per-tool overhead is paid once per registration.
 
 use serde_json::{Map, Value};
