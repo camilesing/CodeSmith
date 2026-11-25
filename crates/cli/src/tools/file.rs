@@ -1133,7 +1133,16 @@ fn leading_whitespace_fuzzy_matches(contents: &str, search: &str) -> Vec<(usize,
             continue;
         }
         let original_start = line_start;
-        let original_end = byte_map.get(norm_end).copied().unwrap_or(contents.len());
+        // End right after the last matched character. `byte_map[norm_end]` is
+        // the first KEPT character after the match: when the stripped last
+        // search line is empty (a trailing newline), that is the next line's
+        // first non-blank character, and the span swallowed its indentation.
+        // `normalized_search` is non-empty here, so `norm_end >= 1`.
+        let last_start = byte_map[norm_end - 1];
+        let original_end = contents[last_start..]
+            .chars()
+            .next()
+            .map_or(contents.len(), |ch| last_start + ch.len_utf8());
         matches.push((original_start, original_end));
         // Advance past the whole match (a char boundary): advancing one
         // byte could land inside a multi-byte first character and panic
@@ -2621,6 +2630,36 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("Replaced 1 occurrence"));
         assert!(!result.content.contains("multiple matches were replaced"));
+    }
+
+    /// A fuzzy `search` whose last line ends in a newline used to swallow
+    /// the next line's indentation: the span ended at the next kept
+    /// character instead of right after the matched text.
+    #[tokio::test]
+    async fn test_edit_file_fuzzy_trailing_newline_keeps_the_next_line_indent() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("trail.txt");
+        fs::write(&test_file, "fn main() {\n    foo();\n    bar();\n}\n").expect("write");
+
+        let result = EditFileTool
+            .execute(
+                json!({
+                    "path": "trail.txt",
+                    "search": "foo();\n",
+                    "replace": "baz();\n",
+                    "fuzz": true
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+
+        assert!(result.success);
+        assert_eq!(
+            fs::read_to_string(&test_file).expect("read"),
+            "fn main() {\n    baz();\n    bar();\n}\n"
+        );
     }
 
     #[tokio::test]
