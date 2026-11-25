@@ -3079,22 +3079,33 @@ impl McpPool {
             };
             path
         };
-        let current_mtime = match mcp_config_mtime(&path) {
-            Some(m) => m,
-            None => return Ok(false),
+        if validate_mcp_config_path(&path).is_err() {
+            return Ok(false);
+        }
+        let current_mtime = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => match metadata.modified() {
+                Ok(mtime) => mtime,
+                // The platform exposes no mtime: skip the check.
+                Err(_) => return Ok(false),
+            },
+            // Missing, or stat failed: skip the check this turn.
+            Err(_) => return Ok(false),
         };
         if self.state.lock().unwrap().last_mtime == Some(current_mtime) {
             return Ok(false);
         }
-        // mtime moved — we owe a re-read. Done outside the table lock so a
-        // slow filesystem cannot stall concurrent tool dispatch.
-        let new_config: McpConfig = if path.exists() {
-            let contents = fs::read_to_string(&path)
-                .with_context(|| format!("Failed to re-read MCP config: {}", path.display()))?;
-            serde_json::from_str(&contents)
-                .with_context(|| format!("Failed to re-parse MCP config: {}", path.display()))?
-        } else {
-            McpConfig::default()
+        // mtime moved — we owe a re-read. Done outside the table lock, and
+        // with async IO, so a slow filesystem cannot stall the runtime
+        // thread or concurrent tool dispatch.
+        let new_config: McpConfig = match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => serde_json::from_str(&contents)
+                .with_context(|| format!("Failed to re-parse MCP config: {}", path.display()))?,
+            // Gone since the stat: the empty config a missing file loads.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => McpConfig::default(),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("Failed to re-read MCP config: {}", path.display()));
+            }
         };
         let new_hash = hash_mcp_config(&new_config);
         let mut state = self.state.lock().unwrap();
