@@ -1995,7 +1995,15 @@ impl Engine {
         record: &CapacityMemoryRecord,
     ) -> String {
         let pointer = format!("memory://{}/{}", self.session.id, record.id);
-        if let Err(err) = append_capacity_record(&self.session.id, record) {
+        // A small JSONL append — on the blocking pool: it is a file write on
+        // the engine's async path, and a slow `~/.codesmith` mount must not
+        // stall the op loop.
+        let (session_id, record) = (self.session.id.clone(), record.clone());
+        let appended =
+            tokio::task::spawn_blocking(move || append_capacity_record(&session_id, &record))
+                .await
+                .expect("the capacity memory append task does not panic");
+        if let Err(err) = appended {
             let event = Event::CapacityMemoryPersistFailed {
                 session_id: VerifiedAnalyticsMetadata::verified(&self.session.telemetry_session_id),
                 turn_id: VerifiedAnalyticsMetadata::verified(&turn.id),
@@ -2010,10 +2018,25 @@ impl Engine {
     }
 
     pub fn rehydrate_latest_canonical_state(&mut self) {
-        let Ok(records) = load_last_k_capacity_records(&self.session.id, 1) else {
-            return;
-        };
-        let Some(last) = records.last() else {
+        // A sync file read + parse: for callers already off the runtime
+        // (engine construction). The op loop uses the offloaded form.
+        let records = load_last_k_capacity_records(&self.session.id, 1);
+        self.merge_rehydrated_canonical_state(records.ok());
+    }
+
+    /// [`Self::rehydrate_latest_canonical_state`] for a caller on the Tokio
+    /// runtime: the record is loaded on the blocking pool.
+    pub async fn rehydrate_latest_canonical_state_offloaded(&mut self) {
+        let session_id = self.session.id.clone();
+        let records =
+            tokio::task::spawn_blocking(move || load_last_k_capacity_records(&session_id, 1))
+                .await
+                .expect("the capacity memory load task does not panic");
+        self.merge_rehydrated_canonical_state(records.ok());
+    }
+
+    fn merge_rehydrated_canonical_state(&mut self, records: Option<Vec<CapacityMemoryRecord>>) {
+        let Some(last) = records.and_then(|records| records.into_iter().next_back()) else {
             return;
         };
         let pointer = format!("memory://{}/{}", self.session.id, last.id);
