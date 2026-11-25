@@ -241,7 +241,12 @@ fn drop_torn_tail(path: &Path) -> std::io::Result<u64> {
 /// any other unreadable line, or a header newer than this build, is an
 /// `InvalidData` error.
 pub fn read_journal(path: &Path) -> std::io::Result<Vec<JournalEntry>> {
-    let text = fs::read_to_string(path)?;
+    // Decode lossily: a crash mid-write can cut the last line inside a
+    // multi-byte character, and a strict decode failed the WHOLE file —
+    // every complete line since the last snapshot stayed unrecovered. The
+    // torn line cannot parse either way and is dropped below.
+    let bytes = fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
     let torn_tail_allowed = !text.ends_with('\n');
     let lines: Vec<&str> = text
         .lines()
@@ -485,6 +490,35 @@ mod tests {
         assert_eq!(
             fold_transcript(&entries).unwrap(),
             vec![text("user", "one"), text("user", "two")]
+        );
+    }
+
+    /// A crash can cut the last line inside a multi-byte character. A
+    /// strict decode failed the whole file, so every complete line since the
+    /// last snapshot stayed unrecovered.
+    #[test]
+    fn a_torn_tail_cut_inside_a_character_still_reads_the_complete_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = FileSessionJournal::new(dir.path());
+        journal
+            .append(
+                "s3",
+                vec![JournalEntry::Append {
+                    messages: vec![text("user", "谢谢")],
+                }],
+            )
+            .expect("append");
+        let path = journal_path(dir.path(), "s3").unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        // Two of the three bytes of a character: not valid UTF-8.
+        file.write_all(b"{\"at\":\"x\",\"kind\":\"append\",\"text\":\"\xe8\xb0")
+            .unwrap();
+        drop(file);
+
+        let entries = read_journal(&path).expect("a cut inside a character is a torn tail");
+        assert_eq!(
+            fold_transcript(&entries).unwrap(),
+            vec![text("user", "谢谢")]
         );
     }
 
