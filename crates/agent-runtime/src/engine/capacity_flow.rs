@@ -527,9 +527,14 @@ pub(crate) fn select_replay_candidate_from_messages(
 /// legacy path uses inside `execute_tool_with_lock`, minus the `ToolExecGuard`
 /// lock + `mcp_pool`). Returns the outcome so the host's post-`run` call can
 /// run the state work (canonical persist, system-prompt fold, emit, mark) with
-/// `skip_transcript = true`. Returns `None` when no candidate is found (the
-/// host then no-ops). Does **not** call `mark_replay_failed` — the
-/// `CapacityGateProbe` doesn't expose it, and it's state work (post-`run`).
+/// `skip_transcript = true`. Returns `None` when no candidate is found or the
+/// replay input needs approval (the host then no-ops). Does **not** call
+/// `mark_replay_failed` — the `CapacityGateProbe` doesn't expose it, and it's
+/// state work (post-`run`).
+///
+/// Known limitation: the replay goes straight to `ToolDispatcher::execute` —
+/// no extension `ToolCall` verdict, and no `on_tool_start` / `on_tool_end`
+/// for it (the result verifier's replay fires both).
 pub(crate) async fn replay_and_push_verification_note(
     history: &mut dyn ChatHistory,
     tool_registry: Option<&dyn ToolDispatcher>,
@@ -537,6 +542,15 @@ pub(crate) async fn replay_and_push_verification_note(
 ) -> Option<ReplayOutcome> {
     let candidate = select_replay_candidate_from_messages(&history.messages(), tool_registry)?;
     let registry = tool_registry?;
+
+    // Approval gate — the result verifier's rule: the original call's
+    // approval covered that invocation, not an unattended second one. A
+    // `Required` for the exact replay input means no replay.
+    if registry.approval_requirement_for(&candidate.name, &candidate.input)
+        == Some(codesmith_tools::ApprovalRequirement::Required)
+    {
+        return None;
+    }
 
     // Capture the pre-intervention token level BEFORE the verification note
     // lands in the transcript — mirrors `TargetedRefreshOutcome`'s

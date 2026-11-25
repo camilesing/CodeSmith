@@ -13311,6 +13311,32 @@ mod tests {
         assert_eq!(*runs.lock().unwrap(), 0);
     }
 
+    /// The original call's approval covered that invocation, not an
+    /// unattended second one: a replay whose input needs approval under the
+    /// current policy is skipped rather than run.
+    #[tokio::test]
+    async fn a_replay_that_needs_approval_is_not_run() {
+        let runs = Arc::new(Mutex::new(0));
+        let mut sess = fetch_session("raw body");
+        let mut history = SessionChatHistory::new(&mut sess);
+        let gated = FetchDispatcher {
+            approval: Some(ApprovalRequirement::Required),
+            body: "raw body",
+            runs: Arc::clone(&runs),
+        };
+        assert!(
+            replay_and_push_verification_note(&mut history, Some(&gated), None)
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            *runs.lock().unwrap(),
+            0,
+            "the gated input was not re-executed"
+        );
+        assert_eq!(history.messages().len(), 3, "no note was pushed");
+    }
+
     /// §E slice 3b: a disabled `CapacityGateProbe` (`enabled: false`) never
     /// observes → seam-4 never fires → no `[verification replay]` note and the
     /// replay-outcome slot stays `None` (no spurious state work post-`run`).
