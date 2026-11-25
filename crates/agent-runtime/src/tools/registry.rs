@@ -206,10 +206,20 @@ impl ToolRegistry {
                         estimated_tokens,
                         threshold,
                     );
-                    let routed = if result.success {
-                        ToolResult::success(wrapped)
-                    } else {
-                        ToolResult::error(wrapped)
+                    // The synthesis replaces the text, not the call's record:
+                    // exit code and status are read after a replay, and the
+                    // canonical value feeds the sub-agent summaries.
+                    let ToolResult {
+                        success,
+                        canonical,
+                        metadata,
+                        ..
+                    } = result;
+                    let routed = ToolResult {
+                        content: wrapped,
+                        success,
+                        canonical,
+                        metadata,
                     };
                     tracing::debug!(
                         tool = name,
@@ -855,7 +865,9 @@ mod tests {
             // 17_000 chars ≈ 4,250 tokens under the CJK-aware heuristic
             // (chars/4 for ASCII) — above the default 4,096-token routing
             // threshold.
-            Ok(ToolResult::success("v".repeat(17_000)))
+            Ok(ToolResult::success("v".repeat(17_000))
+                .with_metadata(serde_json::json!({"exit_code": 0}))
+                .with_canonical(serde_json::json!({"ok": true})))
         }
     }
 
@@ -970,6 +982,13 @@ mod tests {
             result.content.contains("condensed: 3 facts preserved"),
             "synthesis text must reach the parent context"
         );
+        // Routing replaces the text, not the call's record: the claim
+        // verifier reads the exit code of a replay, the summaries the value.
+        assert_eq!(
+            result.metadata.as_ref().and_then(|m| m.get("exit_code")),
+            Some(&serde_json::json!(0))
+        );
+        assert!(result.canonical.is_some(), "the canonical value is kept");
     }
 
     #[tokio::test]
