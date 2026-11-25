@@ -524,6 +524,11 @@ mod tests {
             config.evaluate("GIT_EXTERNAL_DIFF=sh git diff"),
             ExecPolicyDecision::AskUser(_)
         ));
+        // The same assignment handed to `env`.
+        assert!(matches!(
+            config.evaluate("env PATH=/tmp/evil:$PATH git diff"),
+            ExecPolicyDecision::AskUser(_)
+        ));
     }
 
     /// A redirect with no command body still truncates the file; it used

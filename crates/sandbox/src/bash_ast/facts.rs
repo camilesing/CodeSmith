@@ -87,6 +87,13 @@ impl CommandSegment {
     /// assignments) and any leading assignments, mirroring
     /// `command_safety::primary_token_index`.
     pub fn primary(&self) -> Option<&str> {
+        self.argv.get(self.primary_index()?).map(String::as_str)
+    }
+
+    /// Index of the primary command word in `argv` — the walk
+    /// [`Self::primary`] does. [`Self::assignment_selects_executor`] reads
+    /// the tokens it skips.
+    fn primary_index(&self) -> Option<usize> {
         let mut idx = 0;
         while idx < self.argv.len() {
             let token = self.argv[idx].as_str();
@@ -115,7 +122,7 @@ impl CommandSegment {
                 idx += 1;
                 continue;
             }
-            return Some(token);
+            return Some(idx);
         }
         None
     }
@@ -193,13 +200,30 @@ pub fn assignment_selects_executor(assignment: &str) -> bool {
         .is_some_and(|(name, _)| EXECUTOR_SELECTING_ASSIGNMENTS.contains(&name))
 }
 
+/// Whether a token ahead of the command selects what executes: a
+/// `NAME=value` assignment of an executor-selecting variable, or a long
+/// option carrying one as its value (`env --split-string=PATH=…`).
+pub(crate) fn token_selects_executor(token: &str) -> bool {
+    assignment_selects_executor(token)
+        || (token.starts_with("--")
+            && token
+                .split_once('=')
+                .is_some_and(|(_, value)| assignment_selects_executor(value)))
+}
+
 impl CommandSegment {
-    /// Whether a prefix assignment of this segment selects what executes.
+    /// Whether an assignment ahead of the command selects what executes: a
+    /// prefix assignment, or one handed to a leading `env`
+    /// (`env PATH=… git status`), which applies it to the command the same
+    /// way while argv still reads `git status`.
     #[must_use]
     pub fn assignment_selects_executor(&self) -> bool {
         self.assignments
             .iter()
             .any(|assignment| assignment_selects_executor(assignment))
+            || self.argv[..self.primary_index().unwrap_or(self.argv.len())]
+                .iter()
+                .any(|token| token_selects_executor(token))
     }
 }
 
@@ -773,6 +797,28 @@ mod tests {
             Some(vec!["ls".to_string()])
         );
         assert!(!ok("FOO=bar ls").any_assignment_selects_executor());
+    }
+
+    /// `env PATH=… git status` applies the assignment to the command the
+    /// way a prefix assignment does; argv reads `env … git status`.
+    #[test]
+    fn env_assignment_that_selects_the_program_is_flagged() {
+        for command in [
+            "env GIT_EXTERNAL_DIFF=sh git diff",
+            "env PATH=/tmp/evil:$PATH git status",
+            "env -i PATH=/tmp/evil git status",
+            "env --split-string=PATH=/tmp/evil git status",
+        ] {
+            let f = ok(command);
+            assert!(f.top_level_segment_strings().is_none(), "{command}");
+            assert!(f.any_assignment_selects_executor(), "{command}");
+        }
+        // An innocuous assignment handed to env stays transparent.
+        assert_eq!(
+            ok("env FOO=bar ls").top_level_segment_strings(),
+            Some(vec!["env FOO=bar ls".to_string()])
+        );
+        assert!(!ok("env FOO=bar ls").any_assignment_selects_executor());
     }
 
     // ── top-level statement coverage + redirect visibility (OCR 2026-11-03) ──

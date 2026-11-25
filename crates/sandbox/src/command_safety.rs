@@ -2329,6 +2329,25 @@ mod tests {
         ));
     }
 
+    /// `env PATH=… git status` selects the program the way a prefix
+    /// assignment does; the `env` wrapper is otherwise transparent.
+    #[test]
+    fn env_assignment_that_selects_the_program_is_not_safe() {
+        for command in [
+            "env GIT_EXTERNAL_DIFF=sh git diff",
+            "env PATH=/tmp/evil:$PATH git status",
+            "env RUSTC_WRAPPER=./malware cargo check",
+            "env --split-string=PATH=/tmp/evil git status",
+        ] {
+            let level = analyze_command(command).level;
+            assert!(!matches!(level, SafetyLevel::Safe), "{command}: {level:?}");
+        }
+        assert!(matches!(
+            analyze_command("env FOO=bar git status").level,
+            SafetyLevel::Safe
+        ));
+    }
+
     #[test]
     fn first_word_checks_see_through_env_prefix() {
         // NETWORK_COMMANDS and the rm check keyed off the raw first token
