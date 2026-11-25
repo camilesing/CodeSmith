@@ -4205,6 +4205,36 @@ fn a_read_only_session_names_the_real_cause_of_the_refusal() {
     assert!(read_only_refusal_message(&SubAgentType::Explore, &refused).contains("'explore'"));
 }
 
+/// Plan mode refuses a `general` child's write tool. The message used to
+/// blame `'explore'` and advise spawning "a write-capable type instead" —
+/// what the caller had just done.
+#[tokio::test]
+async fn a_read_only_run_names_plan_mode_as_the_cause() {
+    let runtime = stub_runtime().with_children_read_only(true);
+    let (_tx, rx) = mpsc::channel(4);
+
+    let err = run_subagent(
+        &runtime,
+        "agent-child".to_string(),
+        SubAgentType::General,
+        ChildSessionMode::OneShot,
+        "task".to_string(),
+        make_assignment(),
+        Some(vec!["read_file".to_string(), "edit_file".to_string()]),
+        false,
+        None,
+        Instant::now(),
+        10,
+        rx,
+    )
+    .await
+    .expect_err("a write tool is refused in a read-only session");
+
+    let message = err.to_string();
+    assert!(message.contains("read-only in this session"), "{message}");
+    assert!(!message.contains("'explore'"), "{message}");
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.
