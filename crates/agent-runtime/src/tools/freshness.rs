@@ -395,27 +395,43 @@ impl ToolSpec for FreshnessWrappedTool {
         // Shell inputs carry no tracked `path` — extracting (and resolving)
         // one would let a hallucinated field steer the wrapper, so the
         // probe role skips the work entirely.
-        let resolved: Vec<PathBuf> = if self.role == FreshnessRole::ShellProbe {
+        let declared = if self.role == FreshnessRole::ShellProbe {
             Vec::new()
         } else {
             target_paths(self.inner.name(), &input)
-                .iter()
-                .filter_map(|p| context.resolve_path(p).ok())
-                .collect()
         };
-
-        if self.role == FreshnessRole::Write {
-            for path in &resolved {
-                if let Err(message) = self.tracker.validate(path) {
-                    tracing::warn!(
-                        tool = self.inner.name(),
-                        path = %path.display(),
-                        "file freshness validation rejected the edit"
-                    );
-                    return Err(ToolError::rejected(message));
+        let resolved: Vec<PathBuf> = if declared.is_empty() {
+            Vec::new()
+        } else {
+            // Resolving and stat-ing block on a slow or hung mount
+            // (disconnected SMB/NFS, FUSE): off the async worker, like the
+            // drift scan below.
+            let (blocking_context, tracker, role) =
+                (context.clone(), self.tracker.clone(), self.role);
+            let (tool, declared) = (self.inner.name().to_owned(), declared);
+            tokio::task::spawn_blocking(move || {
+                let resolved: Vec<PathBuf> = declared
+                    .iter()
+                    .filter_map(|p| blocking_context.resolve_path(p).ok())
+                    .collect();
+                if role == FreshnessRole::Write {
+                    for path in &resolved {
+                        if let Err(message) = tracker.validate(path) {
+                            tracing::warn!(
+                                tool = tool.as_str(),
+                                path = %path.display(),
+                                "file freshness validation rejected the edit"
+                            );
+                            return Err(message);
+                        }
+                    }
                 }
-            }
-        }
+                Ok(resolved)
+            })
+            .await
+            .map_err(|_| ToolError::execution_failed("file freshness check did not complete"))?
+            .map_err(ToolError::rejected)?
+        };
 
         let result = self.inner.execute(input, context).await?;
         if !result.success {
@@ -424,12 +440,21 @@ impl ToolSpec for FreshnessWrappedTool {
         // Only Read/Write roles record: a hallucinated `path` in a shell
         // input must never mark a file known-fresh — that would defeat the
         // read-before-edit gate this module exists to enforce.
-        for path in &resolved {
-            match self.role {
-                FreshnessRole::Read => self.tracker.record_read(path),
-                FreshnessRole::Write => self.tracker.record_write(path),
-                FreshnessRole::ShellProbe => {}
-            }
+        if !resolved.is_empty() {
+            let (tracker, role) = (self.tracker.clone(), self.role);
+            // One stat per path, off the worker for the same reason. A
+            // dropped hop only leaves the paths unrecorded: the next edit
+            // then asks for a read.
+            let _ = tokio::task::spawn_blocking(move || {
+                for path in &resolved {
+                    match role {
+                        FreshnessRole::Read => tracker.record_read(path),
+                        FreshnessRole::Write => tracker.record_write(path),
+                        FreshnessRole::ShellProbe => {}
+                    }
+                }
+            })
+            .await;
         }
         // P2-5 staleReadFileStateHint: a successful shell call may have
         // rewritten tracked files (sed -i, generators, formatters). Naming
