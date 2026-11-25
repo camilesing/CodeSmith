@@ -285,6 +285,9 @@ pub trait TurnHarvest: Send + Sync {
     fn take_pending_replay_outcome(&self) -> Option<ReplayOutcome> {
         None
     }
+    fn take_pending_replan_before_tokens(&self) -> Option<usize> {
+        None
+    }
     fn take_pending_targeted_refresh_outcome(&self) -> Option<TargetedRefreshOutcome> {
         None
     }

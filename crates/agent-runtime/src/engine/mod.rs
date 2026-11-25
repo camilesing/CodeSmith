@@ -2172,6 +2172,7 @@ impl Engine {
                             snapshot.as_ref(),
                             &decision.reason,
                             true,
+                            built.harvest.take_pending_replan_before_tokens(),
                         )
                         .await;
                 }

@@ -981,6 +981,7 @@ impl Engine {
                     snapshot.as_ref(),
                     "high_risk_post_tool",
                     false,
+                    None,
                 )
                 .await
             }
@@ -1059,6 +1060,7 @@ impl Engine {
                 category_labels.join(",")
             ),
             false,
+            None,
         )
         .await
     }
@@ -1695,8 +1697,13 @@ impl Engine {
         snapshot: Option<&CapacitySnapshot>,
         reason: &str,
         skip_transcript: bool,
+        before_reset_tokens: Option<usize>,
     ) -> bool {
-        let before_tokens = self.estimated_input_tokens();
+        // A mid-loop reset (`skip_transcript`) already replaced the
+        // transcript: the estimate the executor carried from just before it
+        // is the honest pre-intervention level — sampling here would make
+        // the reported reduction always 0.
+        let before_tokens = before_reset_tokens.unwrap_or_else(|| self.estimated_input_tokens());
         let canonical = self.build_canonical_state(turn, Some(reason));
         let source_message_ids = self.capacity_source_message_ids(turn);
         let record = self.build_capacity_record(

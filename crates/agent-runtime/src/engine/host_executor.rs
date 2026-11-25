@@ -1504,6 +1504,13 @@ pub struct HostAgentExecutor {
     /// [`HostAgentExecutor::pending_capacity_decision`].
     pending_replay_outcome: std::sync::Mutex<Option<ReplayOutcome>>,
 
+    /// The input-token estimate taken just before a mid-loop `VerifyAndReplan`
+    /// reset (one-shot, same pattern as [`Self::pending_replay_outcome`]).
+    /// The post-`run` intervention event reports it as `before_prompt_tokens`:
+    /// its own sample would come after the reset and the replanning, making
+    /// the reported reduction always 0.
+    pending_replan_before_tokens: std::sync::Mutex<Option<usize>>,
+
     /// One-shot targeted-refresh-outcome slot (slice 3c §E). Set by the executor
     /// mid-loop when **seam 1** (pre-request) decides `TargetedContextRefresh`:
     /// `refresh_targeted_context_mid_loop` runs the transcript portion (LLM
@@ -1673,6 +1680,7 @@ impl HostAgentExecutor {
             capacity_gate: None,
             pending_capacity_decision: std::sync::Mutex::new(None),
             pending_replay_outcome: std::sync::Mutex::new(None),
+            pending_replan_before_tokens: std::sync::Mutex::new(None),
             pending_targeted_refresh_outcome: std::sync::Mutex::new(None),
             pending_interrupted_text: std::sync::Mutex::new(None),
             extension: None,
@@ -2291,6 +2299,30 @@ impl HostAgentExecutor {
             .take()
     }
 
+    /// The pre-reset token estimate a mid-loop `VerifyAndReplan` left behind.
+    pub fn take_pending_replan_before_tokens(&self) -> Option<usize> {
+        self.pending_replan_before_tokens
+            .lock()
+            .expect("pending_replan_before_tokens mutex poisoned")
+            .take()
+    }
+
+    /// The mid-loop `VerifyAndReplan` reset: samples the input-token level
+    /// just before the wipe, so the post-`run` intervention event reports an
+    /// honest `before_prompt_tokens`.
+    fn reset_history_for_replan(
+        &self,
+        history: &mut dyn ChatHistory,
+        system: Option<&SystemPrompt>,
+    ) {
+        let before_reset = estimate_input_tokens_conservative(&history.messages(), system);
+        reset_history_to_latest_user_and_verified(history);
+        *self
+            .pending_replan_before_tokens
+            .lock()
+            .expect("pending_replan_before_tokens mutex poisoned") = Some(before_reset);
+    }
+
     /// Read back the targeted-refresh-outcome slot set by seam 1 mid-loop
     /// (slice 3c §E). The host calls this after `run` returns to run the
     /// post-`run` state work of
@@ -2349,6 +2381,9 @@ impl TurnHarvest for HostAgentExecutor {
     }
     fn take_pending_replay_outcome(&self) -> Option<ReplayOutcome> {
         HostAgentExecutor::take_pending_replay_outcome(self)
+    }
+    fn take_pending_replan_before_tokens(&self) -> Option<usize> {
+        HostAgentExecutor::take_pending_replan_before_tokens(self)
     }
     fn take_pending_targeted_refresh_outcome(&self) -> Option<TargetedRefreshOutcome> {
         HostAgentExecutor::take_pending_targeted_refresh_outcome(self)
@@ -4702,7 +4737,7 @@ impl HostAgentExecutor {
                     // catches cancellations next iteration, and the
                     // cooldown blocks error-escalation anyway.
                     if decision.action == GuardrailAction::VerifyAndReplan {
-                        reset_history_to_latest_user_and_verified(history);
+                        self.reset_history_for_replan(history, system.as_ref());
                         step += 1;
                         continue;
                     } else if decision.action == GuardrailAction::VerifyWithToolReplay {
@@ -4833,7 +4868,7 @@ impl HostAgentExecutor {
                 .await;
                 // §E slice 3a: mid-loop transcript reset (always
                 // `VerifyAndReplan` from this checkpoint).
-                reset_history_to_latest_user_and_verified(history);
+                self.reset_history_for_replan(history, system.as_ref());
                 step += 1;
                 continue;
             }

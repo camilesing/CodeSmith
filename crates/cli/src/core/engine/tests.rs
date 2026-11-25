@@ -3585,7 +3585,14 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
     let turn = TurnContext::new(10);
 
     let applied = engine
-        .apply_verify_and_replan(&turn, AppMode::Agent, None, "test skip_transcript", true)
+        .apply_verify_and_replan(
+            &turn,
+            AppMode::Agent,
+            None,
+            "test skip_transcript",
+            true,
+            None,
+        )
         .await;
 
     // State work ran to completion (canonical persist, system-prompt fold,
@@ -3597,6 +3604,55 @@ async fn apply_verify_and_replan_skip_transcript_preserves_messages() {
     // not wipe the growth the model produced after the mid-loop reset).
     assert_eq!(engine.session.messages.len(), before_len);
     assert_eq!(engine.session.messages.to_vec(), before_messages);
+}
+
+/// A mid-loop reset already replaced the transcript, so the post-`run` event
+/// has no "before" level of its own to sample: it reports the count the
+/// executor carried from just before the reset. Sampling here — after the
+/// reset and the replanning — made the reported reduction always 0.
+#[tokio::test]
+async fn replan_intervention_reports_the_carried_pre_reset_level() {
+    let _env = HermeticEnv::new();
+    let _env_lock = CAPACITY_MEMORY_ENV_LOCK.lock().await;
+    let tmp = tempdir().expect("tempdir");
+    let _env = ScopedCapacityMemoryDir::set(tmp.path());
+
+    let engine_config = EngineConfig {
+        capacity: CapacityControllerConfig::default(),
+        ..Default::default()
+    };
+    let (mut engine, handle) = Engine::new(engine_config, &Config::default());
+    let turn = TurnContext::new(11);
+
+    engine
+        .apply_verify_and_replan(
+            &turn,
+            AppMode::Agent,
+            None,
+            "carried before",
+            true,
+            Some(4321),
+        )
+        .await;
+
+    let mut rx = handle.rx_event.write().await;
+    // Session updates and a status line come first; the intervention follows.
+    let mut before_reported = None;
+    for _ in 0..8 {
+        if let Event::CapacityIntervention {
+            before_prompt_tokens,
+            ..
+        } = rx.recv().await.expect("event")
+        {
+            before_reported = Some(before_prompt_tokens);
+            break;
+        }
+    }
+    assert_eq!(
+        before_reported.expect("the intervention event was emitted"),
+        4321,
+        "the pre-reset level the executor carried"
+    );
 }
 
 /// §E slice 3b: `apply_verify_with_tool_replay(skip_transcript = true)` runs
