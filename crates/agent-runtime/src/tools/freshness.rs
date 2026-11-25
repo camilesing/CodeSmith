@@ -283,19 +283,13 @@ fn apply_patch_target_paths(input: &Value) -> Vec<String> {
     }
     if let Some(patch) = input.get("patch").and_then(Value::as_str) {
         for line in patch.lines() {
-            let target = if let Some(rest) = line.strip_prefix("diff --git ") {
-                // `diff --git a/foo.rs b/foo.rs` — the destination side.
-                rest.split_whitespace().nth(1)
-            } else if let Some(rest) = line.strip_prefix("+++ ") {
-                Some(rest.trim())
-            } else {
-                line.strip_prefix("--- ").map(str::trim)
-            };
+            // `diff --git a/foo.rs b/foo.rs` — the destination side.
+            let target = line
+                .strip_prefix("diff --git ")
+                .and_then(|rest| rest.split_whitespace().nth(1))
+                .map(strip_diff_prefix)
+                .or_else(|| patch_header_target(line));
             if let Some(target) = target {
-                let target = target
-                    .strip_prefix("b/")
-                    .or_else(|| target.strip_prefix("a/"))
-                    .unwrap_or(target);
                 paths.push(target.to_owned());
             }
         }
@@ -303,6 +297,29 @@ fn apply_patch_target_paths(input: &Value) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     paths.retain(|p| !p.is_empty() && seen.insert(p.clone()));
     paths
+}
+
+/// The file a `---` / `+++` header names, the way `apply_patch` reads it:
+/// an optional `a/`/`b/` prefix, then the text up to a tab (`diff -u` writes
+/// a timestamp there). `/dev/null` names no file — a deletion is named by
+/// its `---` line.
+fn patch_header_target(line: &str) -> Option<&str> {
+    let rest = line
+        .strip_prefix("+++ ")
+        .or_else(|| line.strip_prefix("--- "))?;
+    let target = rest.split('\t').next()?.trim().trim_matches('"');
+    if target == "/dev/null" {
+        return None;
+    }
+    Some(strip_diff_prefix(target))
+}
+
+/// Drop the `a/` / `b/` prefix a diff header puts before a path.
+fn strip_diff_prefix(target: &str) -> &str {
+    target
+        .strip_prefix("b/")
+        .or_else(|| target.strip_prefix("a/"))
+        .unwrap_or(target)
 }
 
 /// Workspace paths named by `tool_name`'s input, as written by the model.
@@ -566,6 +583,22 @@ mod tests {
                 "src/lib.rs".to_owned()
             ]
         );
+    }
+
+    /// A `diff -u` header carries a timestamp after a tab. The target kept
+    /// it, resolved to a path that does not exist, and the gate passed a
+    /// file that was never read.
+    #[test]
+    fn apply_patch_paths_read_timestamped_headers_like_the_tool() {
+        let input = json!({
+            "patch": "--- a/x.rs\t2026-10-22 10:00:00.000000000 +0200\n+++ b/x.rs\t2026-10-22 10:00:00.000000000 +0200\n@@ -1 +1 @@\n-a\n+b\n"
+        });
+        assert_eq!(apply_patch_target_paths(&input), vec!["x.rs".to_owned()]);
+        // A deletion is named by its `---` line; `/dev/null` is no file.
+        let deleted = json!({
+            "patch": "--- a/y.rs\n+++ /dev/null\n@@ -1 +0 @@\n-a\n"
+        });
+        assert_eq!(apply_patch_target_paths(&deleted), vec!["y.rs".to_owned()]);
     }
 
     #[test]
