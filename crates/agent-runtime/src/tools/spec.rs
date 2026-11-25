@@ -995,10 +995,16 @@ pub trait ToolSpec: Send + Sync {
     /// Returns the capabilities this tool has.
     fn capabilities(&self) -> Vec<ToolCapability>;
 
-    /// Returns the approval requirement for this tool.
+    /// Returns the approval requirement for this tool. A tool that declares
+    /// [`ToolCapability::RequiresApproval`] and overrides nothing is
+    /// `Required`, as the engine's static fallback reads the same
+    /// capability: reporting `Auto` here let the MCP adapters run inside a
+    /// non-approved sub-agent with no prompt.
     fn approval_requirement(&self) -> ApprovalRequirement {
         let caps = self.capabilities();
-        if caps.contains(&ToolCapability::ExecutesCode) {
+        if caps.contains(&ToolCapability::ExecutesCode)
+            || caps.contains(&ToolCapability::RequiresApproval)
+        {
             ApprovalRequirement::Required
         } else if caps.contains(&ToolCapability::WritesFiles) {
             ApprovalRequirement::Suggest
@@ -1347,5 +1353,52 @@ mod tests {
     fn test_approval_requirement_default() {
         let level = ApprovalRequirement::default();
         assert_eq!(level, ApprovalRequirement::Auto);
+    }
+
+    /// A tool that only declares `RequiresApproval` — the shape of the MCP
+    /// adapter — reported `Auto`, so a non-approved sub-agent ran it unasked.
+    #[test]
+    fn test_approval_requirement_honours_the_capability() {
+        struct Probe(Vec<ToolCapability>);
+
+        #[async_trait]
+        impl ToolSpec for Probe {
+            fn name(&self) -> &str {
+                "approval_probe"
+            }
+            fn description(&self) -> &str {
+                "probe"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn capabilities(&self) -> Vec<ToolCapability> {
+                self.0.clone()
+            }
+            async fn execute(
+                &self,
+                _input: Value,
+                _context: &ToolContext,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("ok"))
+            }
+        }
+
+        assert_eq!(
+            Probe(vec![
+                ToolCapability::Network,
+                ToolCapability::RequiresApproval
+            ])
+            .approval_requirement(),
+            ApprovalRequirement::Required
+        );
+        assert_eq!(
+            Probe(vec![ToolCapability::ReadOnly]).approval_requirement(),
+            ApprovalRequirement::Auto
+        );
+        assert_eq!(
+            Probe(vec![ToolCapability::WritesFiles]).approval_requirement(),
+            ApprovalRequirement::Suggest
+        );
     }
 }
