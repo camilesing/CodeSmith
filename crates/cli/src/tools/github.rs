@@ -60,7 +60,7 @@ impl ToolSpec for GithubIssueContextTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        ensure_github_repo(context)?;
+        ensure_github_repo(context).await?;
         let number = required_u64(&input, "number")?;
         let include_comments = optional_bool(&input, "include_comments", true)?;
         let fields = if include_comments {
@@ -119,7 +119,7 @@ impl ToolSpec for GithubPrContextTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        ensure_github_repo(context)?;
+        ensure_github_repo(context).await?;
         let number = required_u64(&input, "number")?;
         let number_s = number.to_string();
         let raw = run_gh_json(
@@ -378,7 +378,7 @@ async fn close_github_thread(
 ) -> Result<ToolResult, ToolError> {
     validate_evidence(&input, true)?;
     if !optional_bool(&input, "allow_dirty", false)? {
-        let status = git_status_porcelain(context)?;
+        let status = git_status_porcelain(context).await?;
         if !status.trim().is_empty() {
             return Ok(ToolResult::error(format!(
                 "Refusing to close {}: worktree is dirty and allow_dirty was false.",
@@ -519,12 +519,37 @@ async fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, Tool
     serde_json::from_str(&text).map_err(|e| ToolError::execution_failed(e.to_string()))
 }
 
-fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
-    let out = codesmith_agent_runtime::dependencies::Git::output(
-        &["rev-parse", "--is-inside-work-tree"],
-        &context.workspace,
-    )
-    .map_err(|e| ToolError::execution_failed(format!("failed to run git: {e}")))?;
+/// Run git for a probe, awaited and bounded like the `gh` calls. The sync
+/// `Git::output` blocked the runtime thread (an index refresh on a large
+/// repository can take seconds).
+async fn git_output(
+    context: &ToolContext,
+    args: &[&str],
+) -> Result<std::process::Output, ToolError> {
+    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::tokio_command() else {
+        return Err(ToolError::not_available(
+            "git is not installed or not in PATH",
+        ));
+    };
+    cmd.args(args)
+        .current_dir(&context.workspace)
+        .kill_on_drop(true);
+    tokio::time::timeout(GH_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| {
+            ToolError::execution_failed(format!(
+                "git {} timed out after {}s",
+                args.join(" "),
+                GH_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|e| {
+            ToolError::execution_failed(format!("failed to run git {}: {e}", args.join(" ")))
+        })
+}
+
+async fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
+    let out = git_output(context, &["rev-parse", "--is-inside-work-tree"]).await?;
     if out.status.success() {
         Ok(())
     } else {
@@ -534,12 +559,8 @@ fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
     }
 }
 
-fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
-    let out = codesmith_agent_runtime::dependencies::Git::output(
-        &["status", "--porcelain"],
-        &context.workspace,
-    )
-    .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
+async fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
+    let out = git_output(context, &["status", "--porcelain"]).await?;
     // Fail closed: `Git::output` returns Ok even on a non-zero exit, and
     // an empty stdout from a FAILED status run read as "clean worktree" —
     // the close proceeded on an unverified tree (or from a non-git
@@ -592,10 +613,17 @@ async fn write_artifact_if_needed(
         return Ok(None);
     };
     if let Some(manager) = context.runtime.task_manager.as_ref() {
-        return manager
-            .write_task_artifact(task_id, label, content)
-            .map(Some)
-            .map_err(|e| ToolError::execution_failed(e.to_string()));
+        // The host write is synchronous file IO: off the runtime thread.
+        let manager = std::sync::Arc::clone(manager);
+        let (task_id, label, content) =
+            (task_id.to_string(), label.to_string(), content.to_string());
+        return tokio::task::spawn_blocking(move || {
+            manager.write_task_artifact(&task_id, &label, &content)
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("artifact task failed: {e}")))?
+        .map(Some)
+        .map_err(|e| ToolError::execution_failed(e.to_string()));
     }
     let Some(data_dir) = context.runtime.task_data_dir.as_ref() else {
         return Ok(None);
