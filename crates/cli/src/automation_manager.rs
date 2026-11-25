@@ -1037,35 +1037,63 @@ pub fn spawn_scheduler(
 /// through `task_manager` while the automation lock is taken.
 pub(crate) struct AutomationManagerHostBridge(pub SharedAutomationManager);
 
+impl AutomationManagerHostBridge {
+    /// Run one manager call on the blocking pool: the manager is fs-backed
+    /// (`read_dir`, `read_to_string`, `write_json_atomic`), and its lock is
+    /// held only for the call's duration, as before.
+    async fn off_thread<T: Send + 'static>(
+        &self,
+        call: impl FnOnce(&AutomationManager) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let manager = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || call(&manager.blocking_lock()))
+            .await
+            .map_err(|e| anyhow::anyhow!("automation manager call failed: {e}"))?
+    }
+}
+
 #[async_trait]
 impl AutomationManagerHost for AutomationManagerHostBridge {
     async fn create_automation(&self, req: CreateAutomationRequest) -> Result<AutomationRecord> {
-        self.0.lock().await.create_automation(req)
+        self.off_thread(move |manager| manager.create_automation(req))
+            .await
     }
     async fn list_automations(&self) -> Result<Vec<AutomationRecord>> {
-        self.0.lock().await.list_automations()
+        self.off_thread(|manager| manager.list_automations()).await
     }
     async fn get_automation(&self, id: &str) -> Result<AutomationRecord> {
-        self.0.lock().await.get_automation(id)
+        let id = id.to_string();
+        self.off_thread(move |manager| manager.get_automation(&id))
+            .await
     }
     async fn list_runs(&self, id: &str, limit: Option<usize>) -> Result<Vec<AutomationRunRecord>> {
-        self.0.lock().await.list_runs(id, limit)
+        let id = id.to_string();
+        self.off_thread(move |manager| manager.list_runs(&id, limit))
+            .await
     }
     async fn update_automation(
         &self,
         id: &str,
         req: UpdateAutomationRequest,
     ) -> Result<AutomationRecord> {
-        self.0.lock().await.update_automation(id, req)
+        let id = id.to_string();
+        self.off_thread(move |manager| manager.update_automation(&id, req))
+            .await
     }
     async fn pause_automation(&self, id: &str) -> Result<AutomationRecord> {
-        self.0.lock().await.pause_automation(id)
+        let id = id.to_string();
+        self.off_thread(move |manager| manager.pause_automation(&id))
+            .await
     }
     async fn resume_automation(&self, id: &str) -> Result<AutomationRecord> {
-        self.0.lock().await.resume_automation(id)
+        let id = id.to_string();
+        self.off_thread(move |manager| manager.resume_automation(&id))
+            .await
     }
     async fn delete_automation(&self, id: &str) -> Result<AutomationRecord> {
-        self.0.lock().await.delete_automation(id)
+        let id = id.to_string();
+        self.off_thread(move |manager| manager.delete_automation(&id))
+            .await
     }
     async fn run_now(
         &self,
