@@ -3925,6 +3925,61 @@ async fn session_before_fork_continue_proceeds_past_the_seam() {
     );
 }
 
+/// `<trusted>/../../<dir>` passes the trust check as text — `Path::starts_with`
+/// compares components literally — while resolving anywhere on disk. The
+/// child's workspace root must never be that directory.
+#[tokio::test]
+async fn cwd_through_a_trusted_root_with_dotdot_is_refused() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("ws");
+    let trusted = tmp.path().join("trusted");
+    let secret = tmp.path().join("secret");
+    for dir in [&workspace, &trusted, &secret] {
+        std::fs::create_dir_all(dir).expect("mkdir");
+    }
+    let context =
+        ToolContext::new(workspace.clone()).with_trusted_external_paths(vec![trusted.clone()]);
+    let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        workspace.clone(),
+        4,
+    )));
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.clone());
+    let escaping = format!("{}/../{}", trusted.display(), "secret");
+
+    let spawn = AgentSpawnTool::new(manager.clone(), runtime.clone());
+    let err = spawn
+        .execute(json!({"prompt": "x", "cwd": escaping}), &context)
+        .await
+        .expect_err("a cwd that climbs out of the trusted root is refused");
+    assert!(err.to_string().contains("cwd must be inside"), "{err}");
+
+    let run = SubagentRunTool::new(manager, runtime);
+    let err = run
+        .execute(json!({"prompt": "x", "cwd": escaping}), &context)
+        .await
+        .expect_err("the foreground run applies the same rule");
+    assert!(err.to_string().contains("cwd must be inside"), "{err}");
+
+    // The trusted root itself is still allowed.
+    let outcome = AgentSpawnTool::new(
+        Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(workspace, 4))),
+        stub_runtime(),
+    )
+    .execute(
+        json!({"prompt": "x", "cwd": trusted.display().to_string()}),
+        &context,
+    )
+    .await;
+    assert!(
+        !outcome
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string().contains("cwd must be inside")),
+        "{outcome:?}"
+    );
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.

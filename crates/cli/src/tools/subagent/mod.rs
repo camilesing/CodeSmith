@@ -2848,9 +2848,10 @@ impl ToolSpec for AgentSpawnTool {
             let workspace_canonical = parent_workspace
                 .canonicalize()
                 .unwrap_or_else(|_| parent_workspace.clone());
+            // Only the canonical path goes to the trust check: as text,
+            // `<trusted>/../../.ssh` starts with the trusted root.
             if !canonical.starts_with(&workspace_canonical)
                 && !context.is_trusted_external_path(&canonical)
-                && !context.is_trusted_external_path(&resolved)
             {
                 return Err(ToolError::invalid_input(format!(
                     "cwd must be inside the parent workspace or a trusted external path: {} is \
@@ -3622,9 +3623,10 @@ impl SubagentRunTool {
         let workspace_canonical = parent_workspace
             .canonicalize()
             .unwrap_or_else(|_| parent_workspace.to_path_buf());
+        // Only the canonical path goes to the trust check: as text,
+        // `<trusted>/../../.ssh` starts with the trusted root.
         if !canonical.starts_with(&workspace_canonical)
             && !context.is_trusted_external_path(&canonical)
-            && !context.is_trusted_external_path(&resolved)
         {
             return Err(ToolError::invalid_input(format!(
                 "cwd must be inside the parent workspace or a trusted external path: {} is not \
