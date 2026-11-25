@@ -1314,9 +1314,6 @@ pub(crate) async fn real_main() -> Result<()> {
     // for follow-up messages. Use `codesmith exec` for explicit non-interactive
     // one-shot behavior (#2370).
     let config = load_config_from_cli(&cli)?;
-    if let Some(initial_input) = top_level_prompt_initial_input(&cli.prompt) {
-        return run_interactive(&cli, &config, None, Some(initial_input)).await;
-    }
 
     // Handle session resume. Plain `codesmith` starts fresh: interrupted
     // snapshots are preserved for explicit resume, but never auto-attached.
@@ -1333,6 +1330,12 @@ pub(crate) async fn real_main() -> Result<()> {
     } else {
         None
     };
+
+    // `--resume` / `--continue` apply to prompt mode as they do to
+    // `codesmith pr`: the prompt continues that session.
+    if let Some(initial_input) = top_level_prompt_initial_input(&cli.prompt) {
+        return run_interactive(&cli, &config, resume_session_id, Some(initial_input)).await;
+    }
 
     // Default: Interactive REPL
     // --yolo starts in YOLO mode (shell + trust + auto-approve)
