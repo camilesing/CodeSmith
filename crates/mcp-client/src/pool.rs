@@ -1385,6 +1385,13 @@ impl McpTransport for HttpTransport {
                         "MCP Streamable HTTP unavailable; falling back to SSE endpoint discovery: {}",
                         detail
                     );
+                    // A token refreshed on this leg (a 401 answered by
+                    // `refresh_auth_headers`) must reach the fallback: the SSE
+                    // transport is built from `self.headers`, which still held
+                    // the pre-refresh one.
+                    if let HttpTransportMode::Streamable(transport) = &self.mode {
+                        self.headers.clone_from(&transport.headers);
+                    }
                     self.switch_to_sse_and_send(msg).await
                 }
                 Err(StreamableSendError::StaleSession(detail)) => {
