@@ -497,6 +497,36 @@ fn tail_capped(text: &str, max: usize) -> &str {
     &text[start..]
 }
 
+/// Kills the job when a foreground wait is dropped before it observed the
+/// job's end — a cancelled verification replay, an aborted turn: the job is a
+/// detached shell-manager process and would otherwise run on (holding build
+/// locks and CPU) after its caller stopped waiting. Disarmed on the returns
+/// that leave the job finished or intentionally running (Ctrl+B).
+struct ForegroundWaitGuard {
+    manager: Arc<dyn ShellManagerApi>,
+    task_id: String,
+    armed: bool,
+}
+
+impl ForegroundWaitGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ForegroundWaitGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Synchronous by necessity: a `Drop` cannot await, and a blocking-pool
+        // hand-off may never run while the runtime shuts down. Same
+        // kill-and-reap as `BackgroundShell`'s own `Drop`; a job that already
+        // ended answers with an error, which is fine here.
+        let _ = self.manager.kill(&self.task_id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_foreground_via_background(
     context: &ToolContext,
@@ -544,6 +574,11 @@ async fn execute_foreground_via_background(
         .task_id
         .ok_or_else(|| anyhow!("foreground shell did not return a process id"))?;
 
+    let mut wait_guard = ForegroundWaitGuard {
+        manager: Arc::clone(manager),
+        task_id: task_id.clone(),
+        armed: true,
+    };
     if close_stdin {
         let task_for_call = task_id.clone();
         offload_manager_call(manager, move |manager| {
@@ -560,6 +595,7 @@ async fn execute_foreground_via_background(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
+            wait_guard.disarm();
             let task_for_call = task_id.clone();
             return offload_manager_call(manager, move |manager| manager.kill(&task_for_call))
                 .await;
@@ -581,12 +617,14 @@ async fn execute_foreground_via_background(
                     Ok(())
                 })
                 .await;
+                wait_guard.disarm();
                 return snapshot;
             }
             snapshot?
         };
 
         if snapshot.status != ShellStatus::Running {
+            wait_guard.disarm();
             return Ok(snapshot);
         }
 
@@ -602,6 +640,7 @@ async fn execute_foreground_via_background(
             .await;
 
         if Instant::now() >= deadline {
+            wait_guard.disarm();
             let task_for_call = task_id.clone();
             let mut result =
                 offload_manager_call(manager, move |manager| manager.kill(&task_for_call)).await?;

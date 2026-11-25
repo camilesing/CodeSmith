@@ -1042,6 +1042,50 @@ async fn foreground_run_is_marked_and_background_run_is_not() {
     );
 }
 
+/// A foreground wait dropped before the job ended (a cancelled verification
+/// replay, an aborted turn) kills its job instead of leaving it running on
+/// its own.
+#[tokio::test]
+async fn dropped_foreground_wait_kills_its_job() {
+    let tmp = tempdir().expect("tempdir");
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
+    let task_ctx = ctx.clone();
+
+    let wait = tokio::spawn(async move {
+        execute_foreground_via_background(
+            &task_ctx,
+            &sleep_command(30),
+            None,
+            600_000,
+            None,
+            false,
+            None,
+            std::collections::HashMap::new(),
+            SandboxRuntimeConfig::default(),
+        )
+        .await
+    });
+
+    // Let the wait reach its poll loop, then drop it as a cancelled caller does.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait.abort();
+    assert!(wait.await.is_err(), "the wait was dropped, not completed");
+
+    let jobs = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .list_jobs();
+    assert_eq!(jobs.len(), 1, "one job was started");
+    assert_eq!(
+        jobs[0].status,
+        ShellStatus::Killed,
+        "the dropped wait killed its job: {:?}",
+        jobs[0].status
+    );
+}
+
 #[tokio::test]
 async fn test_exec_shell_foreground_cancel_kills_process() {
     let tmp = tempdir().expect("tempdir");
