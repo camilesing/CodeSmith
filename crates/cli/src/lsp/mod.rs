@@ -183,7 +183,7 @@ impl LspManager {
             Severity::Hint => 3u8,
         });
         let mut block = DiagnosticBlock {
-            file: relative_to_workspace(&self.workspace, file),
+            file: relative_to_workspace(&self.workspace, file).await,
             items,
         };
         block.truncate(self.config.max_diagnostics_per_file);
@@ -261,7 +261,7 @@ impl LspManager {
         };
         text_document.insert(
             "uri".to_string(),
-            Value::String(client::uri_from_path(file)),
+            Value::String(client::uri_from_path(file).await),
         );
 
         // The enum→wire mapping happens here, at the host boundary: the
@@ -349,13 +349,18 @@ impl LspManager {
 /// back to the full canonical path — never to a bare file name, which made
 /// two `mod.rs` files in different directories indistinguishable in the
 /// rendered `DiagnosticBlock`.
-fn relative_to_workspace(workspace: &Path, path: &Path) -> PathBuf {
+async fn relative_to_workspace(workspace: &Path, path: &Path) -> PathBuf {
     if let Ok(rel) = path.strip_prefix(workspace) {
         return rel.to_path_buf();
     }
-    let canonical_workspace =
-        std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
-    let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Async: the caller is on the Tokio runtime, and `canonicalize` is a
+    // syscall that stalls for the filesystem's latency.
+    let canonical_workspace = tokio::fs::canonicalize(workspace)
+        .await
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let canonical_path = tokio::fs::canonicalize(path)
+        .await
+        .unwrap_or_else(|_| path.to_path_buf());
     if let Ok(rel) = canonical_path.strip_prefix(&canonical_workspace) {
         return rel.to_path_buf();
     }
@@ -615,12 +620,12 @@ pub(crate) mod tests {
 
     /// Outside the workspace the full path is kept — a bare file name made
     /// two `mod.rs` in different directories indistinguishable.
-    #[test]
-    fn relative_path_keeps_full_path_when_outside_workspace() {
+    #[tokio::test]
+    async fn relative_path_keeps_full_path_when_outside_workspace() {
         let workspace = PathBuf::from("/foo/bar");
         let path = PathBuf::from("/baz/qux.rs");
         assert_eq!(
-            relative_to_workspace(&workspace, &path),
+            relative_to_workspace(&workspace, &path).await,
             PathBuf::from("/baz/qux.rs")
         );
     }

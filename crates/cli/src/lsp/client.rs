@@ -214,14 +214,14 @@ impl StdioLspTransport {
             "method": "initialize",
             "params": {
                 "processId": std::process::id(),
-                "rootUri": uri_from_path(&workspace),
+                "rootUri": uri_from_path(&workspace).await,
                 "capabilities": {
                     "textDocument": {
                         "publishDiagnostics": { "relatedInformation": false }
                     }
                 },
                 "workspaceFolders": [{
-                    "uri": uri_from_path(&workspace),
+                    "uri": uri_from_path(&workspace).await,
                     "name": "workspace"
                 }]
             }
@@ -295,14 +295,14 @@ impl LspTransport for StdioLspTransport {
         text: &str,
         wait: Duration,
     ) -> Result<Vec<Diagnostic>> {
-        let path_buf = path.to_path_buf();
-        let uri = uri_from_path(&path_buf);
+        let canonical = canonicalize_best_effort(path).await;
+        let uri = uri_from_canonical_path(&canonical);
         // Key the cache exactly like the dispatcher stores it: decode the
         // URI we send (spec-shaped: `\\?\` stripped on Windows, `/`
         // separators) so lookups match on Windows as well as Unix. The old
         // canonicalize-based key compared `\\?\C:\…` against a stored
         // `C:/…` and missed on every publish.
-        let cache_key = path_from_uri(&uri).unwrap_or_else(|| canonicalize_best_effort(&path_buf));
+        let cache_key = path_from_uri(&uri).unwrap_or(canonical);
 
         // Either send didOpen (first time) or didChange (subsequent edits).
         let mut opened = self.opened.lock().await;
@@ -685,9 +685,12 @@ fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Vec<Diagnostic>,
 /// Canonicalize `path` for use as a URI source / cache key, falling back to
 /// the input when the file does not exist yet (or the filesystem is odd).
 /// The server echoes back the canonical URI we send, so cache lookups must
-/// use the same canonical form.
-fn canonicalize_best_effort(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+/// use the same canonical form. Async: every caller sits on the Tokio
+/// runtime, and the syscall stalls for the filesystem's latency.
+async fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    tokio::fs::canonicalize(path)
+        .await
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Strip the Windows verbatim-prefix forms `canonicalize()` yields on that
@@ -711,8 +714,13 @@ fn strip_windows_verbatim(text: &str) -> std::borrow::Cow<'_, str> {
 /// `\\?\` verbatim prefix stripped and separators normalized to `/`
 /// (`file:///C:/…`); on Unix a backslash is a legal filename character and
 /// stays percent-encoded as-is.
-pub(crate) fn uri_from_path(path: &Path) -> String {
-    let canonical = canonicalize_best_effort(path);
+pub(crate) async fn uri_from_path(path: &Path) -> String {
+    let canonical = canonicalize_best_effort(path).await;
+    uri_from_canonical_path(&canonical)
+}
+
+/// [`uri_from_path`] for a path that is already canonical.
+fn uri_from_canonical_path(canonical: &Path) -> String {
     let lossy = canonical.to_string_lossy();
     let text = strip_windows_verbatim(&lossy);
     let text = if cfg!(windows) {
@@ -954,7 +962,7 @@ mod tests {
         let path = dir.path().join("my file #1%.rs");
         std::fs::write(&path, b"fn main() {}").expect("write file");
         let canonical = path.canonicalize().expect("canonicalize");
-        let uri = uri_from_path(&path);
+        let uri = uri_from_canonical_path(&canonical);
         assert!(uri.contains("%20"), "space encoded in {uri}");
         assert!(uri.contains("%23"), "hash encoded in {uri}");
         assert!(uri.contains("%25"), "percent encoded in {uri}");
