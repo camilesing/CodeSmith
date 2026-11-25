@@ -622,6 +622,12 @@ where
     // Parse hunk lines
     let mut hunk_lines = Vec::new();
     let expected_lines = old_count.max(new_count) + old_count.min(new_count);
+    // What the header still owes. A section boundary counts as one only
+    // once the budget is spent: before that, `--- ` is a removed line that
+    // starts at column 0 with `-- ` (a top-level comment in SQL, Lua,
+    // Haskell, Elm). Taking it for the next file's header dropped it and
+    // every hunk line after it — and the hunk was still reported applied.
+    let (mut old_seen, mut new_seen) = (0usize, 0usize);
 
     for _ in 0..expected_lines * 2 {
         // Allow for more lines than expected
@@ -633,23 +639,29 @@ where
             // the next file's hunks to this section in a concatenated
             // `diff -u` without `diff --git` separators.
             Some(line)
-                if line.starts_with("diff ")
+                if (line.starts_with("diff ")
                     || line.starts_with("--- ")
-                    || line.starts_with("+++ ") =>
+                    || line.starts_with("+++ "))
+                    && old_seen >= old_count
+                    && new_seen >= new_count =>
             {
                 break;
             }
             Some(line) if line.starts_with('-') => {
                 hunk_lines.push(HunkLine::Remove(line[1..].to_string()));
+                old_seen += 1;
                 lines.next();
             }
             Some(line) if line.starts_with('+') => {
                 hunk_lines.push(HunkLine::Add(line[1..].to_string()));
+                new_seen += 1;
                 lines.next();
             }
             Some(line) if line.starts_with(' ') || line.is_empty() => {
                 let content = if line.is_empty() { "" } else { &line[1..] };
                 hunk_lines.push(HunkLine::Context(content.to_string()));
+                old_seen += 1;
+                new_seen += 1;
                 lines.next();
             }
             Some(line) if !line.starts_with('\\') => {
@@ -2200,6 +2212,50 @@ diff --git a/b.txt b/b.txt
         assert_eq!(
             fs::read_to_string(tmp.path().join("crlf.txt")).expect("read"),
             "a\r\nB\r\nc\r\n"
+        );
+    }
+
+    /// A removed line that starts at column 0 with `-- ` reads as the next
+    /// file's `--- ` header. The hunk parser used to stop there, silently
+    /// dropping it and every hunk line after it.
+    #[test]
+    fn removed_column_zero_dash_dash_comment_is_a_hunk_line() {
+        let patch = "--- a/query.sql\n+++ b/query.sql\n@@ -1,3 +1,3 @@\n select 1;\n--- old comment\n+-- new comment\n select 2;\n";
+        let files = parse_unified_diff_files(patch, false).expect("parse");
+        let lines = &files[0].hunks[0].lines;
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line, HunkLine::Remove(text) if text == "-- old comment")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line, HunkLine::Add(text) if text == "-- new comment")),
+            "{lines:?}"
+        );
+    }
+
+    /// Through the tool: the comment line is replaced, not skipped with the
+    /// hunk still reported as applied.
+    #[tokio::test]
+    async fn patch_replaces_a_column_zero_dash_dash_comment() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(
+            tmp.path().join("q.sql"),
+            "select 1;\n-- old comment\nselect 2;\n",
+        )
+        .expect("write");
+        let patch = "@@ -1,3 +1,3 @@\n select 1;\n--- old comment\n+-- new comment\n select 2;\n";
+        ApplyPatchTool
+            .execute(json!({"path": "q.sql", "patch": patch}), &ctx)
+            .await
+            .expect("patch");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("q.sql")).expect("read"),
+            "select 1;\n-- new comment\nselect 2;\n"
         );
     }
 }
