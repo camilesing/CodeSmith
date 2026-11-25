@@ -235,11 +235,9 @@ pub fn mirror_asset_url(base_url: &str, asset_name: &str) -> String {
 pub fn update_network_fallback_hint() -> String {
     format!(
         "GitHub release downloads may be blocked or slow on this network.\n\
-         For mainland China, use one of these fallback paths:\n\
-           1. Source build from the CNB mirror (the single shipped binary):\n\
-              cargo install --git {CNB_REPO_URL} --tag vX.Y.Z codesmith-cli --locked --force\n\
-           2. Use a binary asset mirror:\n\
-              {RELEASE_BASE_URL_ENV}=https://<mirror>/<release-assets>/ {UPDATE_VERSION_ENV}=X.Y.Z codesmith update\n\
+         For mainland China, use a binary asset mirror:\n\
+           {RELEASE_BASE_URL_ENV}=https://<mirror>/<release-assets>/ {UPDATE_VERSION_ENV}=X.Y.Z codesmith update\n\
+         (The CNB source mirror is hand-synced and may lag; do not install from it.)\n\
          The mirror directory must contain {CHECKSUM_MANIFEST_ASSET} and the platform binaries."
     )
 }
@@ -691,7 +689,10 @@ mod tests {
     #[test]
     fn update_network_fallback_hint_names_mirror_and_env_knobs() {
         let hint = update_network_fallback_hint();
-        assert!(hint.contains(CNB_REPO_URL), "missing CNB repo URL: {hint}");
+        // The CNB source mirror is unsynced (INSTALL.md): the hint names it
+        // only to steer away from it.
+        assert!(!hint.contains("cargo install --git"), "{hint}");
+        assert!(hint.contains("do not install from it"), "{hint}");
         assert!(
             hint.contains(RELEASE_BASE_URL_ENV),
             "missing base-url knob: {hint}"
@@ -703,10 +704,6 @@ mod tests {
         assert!(
             hint.contains(CHECKSUM_MANIFEST_ASSET),
             "missing checksum manifest name: {hint}"
-        );
-        assert!(
-            hint.contains("cargo install --git"),
-            "missing source-build path: {hint}"
         );
     }
 
