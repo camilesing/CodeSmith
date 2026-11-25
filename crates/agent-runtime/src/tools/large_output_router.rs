@@ -3,9 +3,10 @@
 //! Any tool result whose estimated token count exceeds the configured threshold
 //! is intercepted here before it reaches the parent context. A lightweight
 //! V4-Flash synthesis sub-agent condenses the raw output; only the synthesis
-//! is returned to the parent. The raw content is stored in the workshop
-//! variable `last_tool_result` so the parent agent can call
-//! `promote_to_context` later if it needs the full text.
+//! is returned to the parent. The raw content is kept in the in-process
+//! workshop variable `last_tool_result`, which no tool reads — nothing
+//! promotes it back. A caller that needs the full text re-runs the call
+//! with `raw=true`.
 //!
 //! Per-tool thresholds can override the global default. Individual tool calls
 //! may pass `raw=true` to bypass routing entirely.
@@ -19,9 +20,6 @@ pub use crate::config_types::{DEFAULT_LARGE_OUTPUT_THRESHOLD_TOKENS, WorkshopCon
 use codesmith_tools::ToolResult;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
-
-/// Workshop variable name where the raw tool output is stored.
-pub const WORKSHOP_LAST_TOOL_RESULT_VAR: &str = "last_tool_result";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -258,8 +256,7 @@ impl LargeOutputRouter {
             .await
     }
 
-    /// Wrap a synthesis result with a workshop provenance header and a hint
-    /// about the stored raw output.
+    /// Wrap a synthesis result with a workshop provenance header.
     #[must_use]
     pub fn wrap_synthesis(
         tool_name: &str,
@@ -270,9 +267,12 @@ impl LargeOutputRouter {
         // The header enters the transcript like the synthesis prompt does:
         // a server-controlled MCP tool name must not inject through it.
         let safe_name = Self::safe_tool_ident(tool_name);
+        // No `raw_stored_in=…`: the stored raw output has no reader (the
+        // `promote_to_context` tool was never registered), so naming it
+        // sent the model after a handle it could not use.
         format!(
             "[workshop-synthesis: tool={safe_name}, raw_tokens≈{estimated_tokens}, \
-             threshold={threshold}, raw_stored_in={WORKSHOP_LAST_TOOL_RESULT_VAR}]\n\n{synthesis}"
+             threshold={threshold}]\n\n{synthesis}"
         )
     }
 
@@ -298,8 +298,9 @@ impl LargeOutputRouter {
 // ── Workshop variable store ───────────────────────────────────────────────────
 
 /// In-process store for workshop variables that persist across tool calls
-/// within a session. The only variable exposed today is `last_tool_result`
-/// which holds the most recent raw large-tool output for `promote_to_context`.
+/// within a session. The only variable today is `last_tool_result`, which
+/// holds the most recent raw large-tool output. Nothing reads it back: the
+/// `promote_to_context` tool it was kept for was never registered.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkshopVariables {
     /// Raw content of the most recent large tool output that was routed
@@ -322,7 +323,8 @@ impl WorkshopVariables {
     /// Peek at the stored raw output without consuming it, so a failed
     /// promotion can be retried.
     ///
-    /// Called by the `promote_to_context` tool (not yet wired in this PR).
+    /// No caller yet — the reader tool it was written for was never
+    /// registered.
     #[must_use]
     #[allow(dead_code)] // consumed by promote_to_context tool in follow-up
     pub fn peek_raw(&self) -> Option<(&str, &str)> {
@@ -467,6 +469,10 @@ mod tests {
         assert!(wrapped.contains("web_search"));
         assert!(wrapped.contains("5000"));
         assert!(wrapped.contains("key facts here"));
+        assert!(
+            !wrapped.contains("raw_stored_in"),
+            "the header names no store the model can read: {wrapped}"
+        );
     }
 
     #[test]

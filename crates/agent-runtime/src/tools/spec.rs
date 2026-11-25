@@ -332,8 +332,9 @@ pub struct ToolContext {
     pub web_service: Option<Arc<dyn crate::web_service::WebService>>,
 
     /// Per-session workshop variable store (#548). Holds the raw content of
-    /// the most recent large-tool routing event so the parent can call
-    /// `promote_to_context` later. `None` when the router is disabled.
+    /// the most recent large-tool routing event; no tool reads it back (the
+    /// `promote_to_context` reader was never registered). `None` when the
+    /// router is disabled.
     pub workshop_vars: Option<
         std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
     >,

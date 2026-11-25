@@ -597,13 +597,14 @@ impl FailClosedTool {
 }
 
 /// Fallback synthesis for the large-output router (#548): a head-truncated
-/// preview pointing at the workshop variable that holds the full raw text.
-/// Used when no utility model is configured or the synthesis call fails.
+/// preview. Used when no utility model is configured or the synthesis call
+/// fails. The full raw text is stored, but no tool reads that store — the
+/// model's way back to it is the call's `raw=true`.
 fn truncated_preview(raw: &str) -> String {
     const PREVIEW_CHARS: usize = 1_200;
     let preview: String = raw.chars().take(PREVIEW_CHARS).collect();
     let ellipsis = if raw.chars().count() > PREVIEW_CHARS {
-        "\n… [output truncated — full text in workshop variable `last_tool_result`]"
+        "\n… [output truncated — call again with raw=true for the full text]"
     } else {
         ""
     };
@@ -983,6 +984,11 @@ mod tests {
         assert!(
             result.content.contains("output truncated"),
             "without a utility model the truncation preview is used"
+        );
+        assert!(
+            !result.content.contains("last_tool_result"),
+            "the preview names no store the model can read: {}",
+            result.content
         );
     }
 
