@@ -2,9 +2,9 @@
 //!
 //! Routes through the host-injected `NotifierHost` (see
 //! `codesmith_agent_runtime::host_services`), which picks the terminal
-//! protocol — OSC 9 for known capable terminals, BEL fallback on macOS /
-//! Linux, `MessageBeep` on Windows when explicitly opted in — and wraps for
-//! tmux. The tool itself is host-agnostic: the model decides when to fire
+//! protocol — OSC 9 or Kitty for terminals that announce themselves, the
+//! macOS Notification Center, BEL elsewhere (Windows included) — and wraps
+//! for tmux. The tool itself is host-agnostic: the model decides when to fire
 //! and the host decides how it lands.
 //!
 //! Intended for "long task done, come back" beats and sub-agent-completion
@@ -45,7 +45,7 @@ impl ToolSpec for NotifyTool {
          routine progress updates, conversational acknowledgements, or \
          confirmation that the model is alive — that's noise. The user \
          can disable notifications entirely via \
-         `[notifications].method = \"off\"` in `~/.deepseek/config.toml`; \
+         `[notifications].method = \"off\"` in `~/.codesmith/config.toml`; \
          when disabled this tool is a silent no-op."
     }
 
