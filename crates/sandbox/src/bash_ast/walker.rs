@@ -98,6 +98,12 @@ fn is_statement_kind(kind: &str) -> bool {
             | "if_statement"
             | "case_statement"
             | "function_definition"
+            // `{ …; }` and `for ((…))` are statements with a body, like a
+            // subshell: their commands are nested, so a reconstruction from
+            // top-level segments would drop them — and let the rest of the
+            // line ride an approval granted for that rest.
+            | "compound_statement"
+            | "c_style_for_statement"
     )
 }
 

