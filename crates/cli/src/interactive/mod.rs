@@ -1738,6 +1738,38 @@ async fn submit_with_images(
     send_result.context("failed to send message to engine")
 }
 
+/// Whether the REPL's turn pump is parked in its event `select!` — the
+/// one window in which it holds a live SIGINT stream and acts on Ctrl+C
+/// itself (cancel the turn; a second press quits). The process-wide signal
+/// cleanup task consults it: every SIGINT listener is notified at once, so
+/// exiting on Ctrl+C while this is set would end the session on the first
+/// press.
+static TURN_PUMP_HOLDS_SIGINT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// See [`TURN_PUMP_HOLDS_SIGINT`].
+pub(crate) fn turn_pump_holds_sigint() -> bool {
+    TURN_PUMP_HOLDS_SIGINT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Arms [`turn_pump_holds_sigint`] for as long as it lives. The pump creates
+/// one per `select!`, so a cancelled pump, an early `continue` and a
+/// returned arm all hand Ctrl+C back on the way out.
+pub(crate) struct SigintHandoff;
+
+impl SigintHandoff {
+    pub(crate) fn arm() -> Self {
+        TURN_PUMP_HOLDS_SIGINT.store(true, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for SigintHandoff {
+    fn drop(&mut self) {
+        TURN_PUMP_HOLDS_SIGINT.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod coverage_tests {
     use super::*;

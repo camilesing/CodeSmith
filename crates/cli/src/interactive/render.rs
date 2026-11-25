@@ -824,6 +824,9 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
     };
 
     loop {
+        // While this `select!` is pending, the `ctrl_c` arm below is live
+        // and owns Ctrl+C; the process-wide cleanup task stands down for it.
+        let _sigint_handoff = super::SigintHandoff::arm();
         let event = tokio::select! {
             event = async {
                 let mut rx = engine.rx_event.write().await;

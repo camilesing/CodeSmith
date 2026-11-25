@@ -466,27 +466,54 @@ pub(crate) struct SwebenchExportArgs {
     model_name_or_path: Option<String>,
 }
 
-/// Spawn a tokio task that listens for terminating signals (SIGINT
-/// always; SIGTERM and SIGHUP on Unix) and, on receipt, restores the
-/// terminal modes and exits with the conventional 128 + signal code.
-/// Multiple deliveries are tolerated: once the cleanup runs, a second
-/// signal short-circuits to plain exit so a stuck cleanup can never
-/// trap a frustrated user pressing Ctrl+C repeatedly.
+/// Whether a terminating signal ends the process now. Ctrl+C does not
+/// while the REPL's turn pump holds it: every SIGINT listener is notified
+/// at once, so exiting there ended the session on the first press instead
+/// of letting the pump cancel the turn (a second press quits). `130` is
+/// the Ctrl+C exit code on every platform [`wait_for_terminating_signal`]
+/// serves.
+fn signal_ends_process(exit_code: i32, turn_pump_holds_sigint: bool) -> bool {
+    exit_code != 130 || !turn_pump_holds_sigint
+}
+
+/// Spawn a tokio task that listens for terminating signals (SIGINT,
+/// SIGTERM and SIGHUP on Unix) and, on receipt, restores the terminal
+/// modes and exits with the conventional 128 + signal code. A Ctrl+C the
+/// REPL's turn pump is handling is left to it (see
+/// [`signal_ends_process`]); the task keeps listening, so a later SIGTERM
+/// or SIGHUP still restores the terminal.
 ///
 /// See the call site in `main` for the rationale (#1583).
 pub(crate) fn spawn_signal_cleanup_task() {
     tokio::spawn(async {
-        let exit_code = wait_for_terminating_signal().await;
-        // If we get here a fatal signal arrived. Restore the terminal
-        // and exit. A second signal during cleanup re-enters this
-        // path and aborts via `std::process::exit` directly.
-        static CLEANED_UP: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !CLEANED_UP.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        loop {
+            let exit_code = wait_for_terminating_signal().await;
+            if !signal_ends_process(exit_code, crate::interactive::turn_pump_holds_sigint()) {
+                continue;
+            }
             restore_terminal_best_effort();
+            std::process::exit(exit_code);
         }
-        std::process::exit(exit_code);
     });
+}
+
+#[cfg(test)]
+mod signal_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_c_is_left_to_the_turn_pump_only_while_it_holds_it() {
+        assert!(
+            !signal_ends_process(130, true),
+            "the pump cancels the turn; the process stays up"
+        );
+        assert!(
+            signal_ends_process(130, false),
+            "no pump holding it: Ctrl+C exits"
+        );
+        assert!(signal_ends_process(143, true), "SIGTERM always exits");
+        assert!(signal_ends_process(129, true), "SIGHUP always exits");
+    }
 }
 
 #[cfg(unix)]
@@ -982,13 +1009,13 @@ pub(crate) async fn real_main() -> Result<()> {
     // toggled) leaves the user's shell receiving raw CSI sequences
     // like `^[[>5u` until they run `reset` (#1583).
     //
-    // Once the REPL's raw mode is engaged the terminal driver delivers
-    // Ctrl+C as the byte 0x03 rather than SIGINT, so the in-REPL key
-    // handler — not this handler — is what processes user interrupts
-    // during normal operation. This handler exists for the gaps:
-    // pre-REPL subcommands (--version, doctor, login, …), the moments
-    // around enable_raw_mode / disable_raw_mode, the external-editor
-    // suspend path, and SIGTERM / SIGHUP from the OS.
+    // The REPL never enters raw mode, so a mid-turn Ctrl+C is a real
+    // SIGINT that reaches this task and the turn pump alike: the pump
+    // cancels the turn and this task stands down for that press (see
+    // `spawn_signal_cleanup_task`). This handler exists for everything
+    // the pump is not holding — pre-REPL subcommands (--version, doctor,
+    // login, …), the blocking prompts inside a turn, the external-editor
+    // suspend path — and for SIGTERM / SIGHUP from the OS.
     spawn_signal_cleanup_task();
 
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
