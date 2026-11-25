@@ -80,7 +80,7 @@ pub enum ToolError {
     // transcript (`engine/turn/batches.rs`), the REPL line
     // (`interactive/render.rs`), and the logs all print it verbatim. Terse on
     // purpose — the remedies (`/trust add`, copying the file in, YOLO,
-    // pasting) are model guidance in `agent-runtime/src/prompts/base.md`
+    // pasting) are model guidance in `crates/prompts/src/assets/base.md`
     // (`<workspace_boundary>`), so the refusal line stays one sentence.
     #[error("Failed to resolve path '{}': path escapes workspace.", path.display())]
     PathEscape { path: PathBuf },
