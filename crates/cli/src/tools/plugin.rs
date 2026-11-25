@@ -108,8 +108,8 @@ impl ToolSpec for ScriptPluginTool {
         // A plugin script's frontmatter is author-controlled and must never
         // downgrade its own gate: plugins always run behind approval. The
         // `approval:` frontmatter key is metadata only. (Config-authored
-        // command overrides are the user's own trust decision and keep
-        // their configured level.)
+        // command overrides are the user's own trust decision and run at
+        // `Suggest`.)
         ApprovalRequirement::Required
     }
 
@@ -644,9 +644,9 @@ pub fn tool_from_override(
                 input_schema: serde_json::json!({"type": "object"}),
                 command: command.clone(),
                 args: cmd_args,
-                // User-authored config overrides keep the gate the config
-                // asks for (the user is the trust principal here, unlike a
-                // script's own frontmatter).
+                // Command overrides run at `Suggest`: the user authored
+                // the command. Script plugins, `Script` overrides included,
+                // are always `Required`.
                 approval: ApprovalRequirement::Suggest,
             }) as Arc<dyn ToolSpec>)
         }
