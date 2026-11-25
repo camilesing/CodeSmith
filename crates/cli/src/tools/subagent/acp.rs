@@ -55,6 +55,10 @@ pub const ACP_PROVIDER_NAME: &str = "acp";
 /// Default child-run timeout, aligned with the headless provider's 30 min.
 const DEFAULT_ACP_TIMEOUT_SECS: u64 = 1800;
 
+/// How long a timed-out child gets to act on `session/cancel` before it is
+/// killed.
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+
 /// The ACP protocol version this client speaks (the repo's server
 /// baseline).
 const ACP_PROTOCOL_VERSION: u64 = 1;
@@ -299,8 +303,8 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
         match tokio::time::timeout(self.timeout, drive).await {
             Ok(outcome) => outcome,
             Err(_) => {
-                // Best-effort cancel before kill_on_drop tears the child
-                // down with the dropped future. `session/cancel` REQUIRES a
+                // Best-effort cancel before the teardown below sends
+                // SIGKILL. `session/cancel` REQUIRES a
                 // sessionId — empty params are a silent no-op in the repo's
                 // own server handler and any spec-conforming agent, so the
                 // id must ride the notification or nothing is cancelled.
@@ -310,6 +314,9 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
                     json!({ "sessionId": session_slot.lock().map(|s| s.clone()).unwrap_or_default() }),
                 )
                 .await;
+                // The kill comes from `run` returning (the drop of `child`,
+                // `kill_on_drop`): give the cancel a moment to land first.
+                let _ = tokio::time::timeout(CANCEL_GRACE, child.wait()).await;
                 Ok(ExternalSubagentOutcome {
                     status: SubAgentStatus::Failed(format!(
                         "ACP sub-agent timed out after {}s",
