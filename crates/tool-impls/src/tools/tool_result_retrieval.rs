@@ -112,10 +112,19 @@ impl ToolSpec for RetrieveToolResultTool {
             1,
             HARD_MAX_BYTES,
         );
-        let path = resolve_spillover_reference(reference, &context.state_namespace)?;
-        let content = fs::read_to_string(&path).map_err(|err| {
-            ToolError::execution_failed(format!("failed to read {}: {err}", path.display()))
-        })?;
+        // A spilled file can be tens of megabytes: resolve and read it on
+        // the blocking pool, off the runtime thread.
+        let owned_reference = reference.to_string();
+        let namespace = context.state_namespace.clone();
+        let (path, content) = tokio::task::spawn_blocking(move || {
+            let path = resolve_spillover_reference(&owned_reference, &namespace)?;
+            let content = fs::read_to_string(&path).map_err(|err| {
+                ToolError::execution_failed(format!("failed to read {}: {err}", path.display()))
+            })?;
+            Ok::<_, ToolError>((path, content))
+        })
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("retrieval task failed: {err}")))??;
 
         let lines: Vec<&str> = content.lines().collect();
         let payload = match mode.as_str() {
