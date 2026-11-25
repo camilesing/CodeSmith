@@ -2063,9 +2063,9 @@ pub(crate) fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> R
 
     println!(
         "{}",
-        "DeepSeek Setup".truecolor(aqua_r, aqua_g, aqua_b).bold()
+        "CodeSmith Setup".truecolor(aqua_r, aqua_g, aqua_b).bold()
     );
-    println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
+    println!("{}", "===============".truecolor(sky_r, sky_g, sky_b));
     println!(
         "Workspace: {}",
         codesmith_agent_runtime::utils::display_path(workspace)
@@ -2174,7 +2174,77 @@ pub(crate) fn report_write_status(label: &str, path: &Path, status: WriteStatus)
     }
 }
 
-/// Source of the resolved DeepSeek API key, used in status reports.
+/// Where a provider's key comes from, and the command that saves one —
+/// the hint `setup --status` prints and the doctor's advice on a rejected
+/// key. DeepSeek is only one provider among the configured ones.
+fn provider_key_hints(provider: crate::config::ApiProvider) -> (&'static str, &'static str) {
+    match provider {
+        crate::config::ApiProvider::NvidiaNim => (
+            "NVIDIA_API_KEY",
+            "codesmith auth set --provider nvidia-nim --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Openai => (
+            "OPENAI_API_KEY",
+            "codesmith auth set --provider openai --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Atlascloud => (
+            "ATLASCLOUD_API_KEY",
+            "codesmith auth set --provider atlascloud --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::WanjieArk => (
+            "WANJIE_ARK_API_KEY",
+            "codesmith auth set --provider wanjie-ark --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Openrouter => (
+            "OPENROUTER_API_KEY",
+            "codesmith auth set --provider openrouter --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::XiaomiMimo => (
+            "XIAOMI_MIMO_API_KEY/XIAOMI_API_KEY/MIMO_API_KEY",
+            "codesmith auth set --provider xiaomi-mimo --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Novita => (
+            "NOVITA_API_KEY",
+            "codesmith auth set --provider novita --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Fireworks => (
+            "FIREWORKS_API_KEY",
+            "codesmith auth set --provider fireworks --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Siliconflow => (
+            "SILICONFLOW_API_KEY",
+            "codesmith auth set --provider siliconflow --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Moonshot => (
+            "MOONSHOT_API_KEY/KIMI_API_KEY",
+            "codesmith auth set --provider moonshot --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Sglang => (
+            "SGLANG_API_KEY",
+            "codesmith auth set --provider sglang --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Vllm => (
+            "VLLM_API_KEY",
+            "codesmith auth set --provider vllm --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Ollama => {
+            ("OLLAMA_API_KEY", "codesmith auth set --provider ollama")
+        }
+        crate::config::ApiProvider::Volcengine => (
+            "VOLCENGINE_API_KEY",
+            "codesmith auth set --provider volcengine",
+        ),
+        crate::config::ApiProvider::Anthropic => (
+            "ANTHROPIC_API_KEY/CLAUDE_API_KEY",
+            "codesmith auth set --provider anthropic --api-key \"...\"",
+        ),
+        crate::config::ApiProvider::Deepseek => {
+            ("DEEPSEEK_API_KEY", "codesmith auth set --provider deepseek")
+        }
+    }
+}
+
+/// Source of the resolved provider API key, used in status reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApiKeySource {
     Env,
@@ -2235,14 +2305,14 @@ pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> 
 
     println!(
         "{}",
-        "DeepSeek Status".truecolor(aqua_r, aqua_g, aqua_b).bold()
+        "CodeSmith Status".truecolor(aqua_r, aqua_g, aqua_b).bold()
     );
-    println!("{}", "===============".truecolor(sky_r, sky_g, sky_b));
+    println!("{}", "================".truecolor(sky_r, sky_g, sky_b));
     println!("workspace: {}", workspace.display());
 
     match resolve_api_key_source(config) {
         ApiKeySource::Env => println!(
-            "  {} api_key: set via DEEPSEEK_API_KEY",
+            "  {} api_key: set via an environment variable",
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
         ApiKeySource::Keyring => println!(
@@ -2254,70 +2324,7 @@ pub(crate) fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> 
             "✓".truecolor(aqua_r, aqua_g, aqua_b)
         ),
         ApiKeySource::Missing => {
-            let (env_var, login_hint) = match config.api_provider() {
-                crate::config::ApiProvider::NvidiaNim => (
-                    "NVIDIA_API_KEY",
-                    "codesmith auth set --provider nvidia-nim --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Openai => (
-                    "OPENAI_API_KEY",
-                    "codesmith auth set --provider openai --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Atlascloud => (
-                    "ATLASCLOUD_API_KEY",
-                    "codesmith auth set --provider atlascloud --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::WanjieArk => (
-                    "WANJIE_ARK_API_KEY",
-                    "codesmith auth set --provider wanjie-ark --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Openrouter => (
-                    "OPENROUTER_API_KEY",
-                    "codesmith auth set --provider openrouter --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::XiaomiMimo => (
-                    "XIAOMI_MIMO_API_KEY/XIAOMI_API_KEY/MIMO_API_KEY",
-                    "codesmith auth set --provider xiaomi-mimo --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Novita => (
-                    "NOVITA_API_KEY",
-                    "codesmith auth set --provider novita --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Fireworks => (
-                    "FIREWORKS_API_KEY",
-                    "codesmith auth set --provider fireworks --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Siliconflow => (
-                    "SILICONFLOW_API_KEY",
-                    "codesmith auth set --provider siliconflow --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Moonshot => (
-                    "MOONSHOT_API_KEY/KIMI_API_KEY",
-                    "codesmith auth set --provider moonshot --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Sglang => (
-                    "SGLANG_API_KEY",
-                    "codesmith auth set --provider sglang --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Vllm => (
-                    "VLLM_API_KEY",
-                    "codesmith auth set --provider vllm --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Ollama => {
-                    ("OLLAMA_API_KEY", "codesmith auth set --provider ollama")
-                }
-                crate::config::ApiProvider::Volcengine => (
-                    "VOLCENGINE_API_KEY",
-                    "codesmith auth set --provider volcengine",
-                ),
-                crate::config::ApiProvider::Anthropic => (
-                    "ANTHROPIC_API_KEY/CLAUDE_API_KEY",
-                    "codesmith auth set --provider anthropic --api-key \"...\"",
-                ),
-                crate::config::ApiProvider::Deepseek => {
-                    ("DEEPSEEK_API_KEY", "codesmith auth set --provider deepseek")
-                }
-            };
+            let (env_var, login_hint) = provider_key_hints(config.api_provider());
             println!(
                 "  {} api_key: missing  (set {env_var} or `[providers.{}].api_key` in ~/.codesmith/config.toml; or run `{login_hint}`)",
                 "✗".truecolor(red_r, red_g, red_b),
@@ -2842,8 +2849,9 @@ pub(crate) async fn run_doctor(
                     ),
                 );
                 if error_msg.contains("401") || error_msg.contains("Unauthorized") {
+                    let (env_var, login_hint) = provider_key_hints(config.api_provider());
                     println!(
-                        "    Invalid API key. Check `codesmith auth status`, DEEPSEEK_API_KEY, or config.toml"
+                        "    Invalid API key. Check `codesmith auth status`, {env_var}, or config.toml"
                     );
                     if matches!(api_key_source, ApiKeySource::Keyring) {
                         println!(
@@ -2854,15 +2862,15 @@ pub(crate) async fn run_doctor(
                         );
                     } else if matches!(api_key_source, ApiKeySource::Env) {
                         println!(
-                            "    The rejected key came from DEEPSEEK_API_KEY; no saved config key is present."
+                            "    The rejected key came from an environment variable; no saved config key is present."
                         );
                         println!(
-                            "    Run `codesmith auth set --provider deepseek` to save a config key that overrides stale env."
+                            "    Run `{login_hint}` to save a config key that overrides stale env."
                         );
                     }
                 } else if error_msg.contains("403") || error_msg.contains("Forbidden") {
                     println!(
-                        "    API key lacks permissions. Verify key is active at platform.deepseek.com"
+                        "    API key lacks permissions. Verify the key is active for your provider"
                     );
                 } else if error_msg.contains("timeout") || error_msg.contains("Timeout") {
                     for line in doctor_timeout_recovery_lines(config) {
