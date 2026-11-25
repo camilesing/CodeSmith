@@ -9,8 +9,10 @@
 //!
 //! Failure modes are non-blocking by design: a missing LSP binary, a
 //! crashed server, or a timeout all degrade to "no diagnostics this turn"
-//! rather than stalling the agent. We log a one-time warning per language
-//! when the binary is missing.
+//! rather than stalling the agent. A server that cannot be spawned
+//! (binary missing, wrong command, dead on arrival) is reported once per
+//! language on the CLI's verbose channel (`--verbose` /
+//! `CODESMITH_LOG_LEVEL`).
 //!
 //! # Wiring
 //!
@@ -317,6 +319,14 @@ impl LspManager {
                 error = %err,
                 "lsp: server unavailable; diagnostics disabled for this language"
             );
+            // The CLI installs no `tracing` subscriber, so the `tracing`
+            // event alone reaches nobody: the warning is for the user, so it
+            // also goes through the verbose channel.
+            crate::logging::warn(format!(
+                "lsp: server unavailable for `{}` (`{cmd}`); diagnostics and navigation are off \
+                 for this language: {err:#}",
+                lang.as_key()
+            ));
         }
     }
 
