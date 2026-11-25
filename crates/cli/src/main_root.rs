@@ -1601,6 +1601,15 @@ pub(crate) fn prediction_path_inside_workspace(
     } else {
         cwd.join(predictions_path)
     };
+    // Canonical form on both sides, as `workspace_abs` already is. The file
+    // need not exist yet (first run), so its parent is resolved and the name
+    // re-joined.
+    let resolved = prediction_abs.canonicalize().ok().or_else(|| {
+        let parent = prediction_abs.parent()?;
+        let name = prediction_abs.file_name()?;
+        Some(parent.canonicalize().ok()?.join(name))
+    });
+    let prediction_abs = resolved.unwrap_or(prediction_abs);
     let Ok(relative) = prediction_abs.strip_prefix(&workspace_abs) else {
         return Ok(None);
     };
@@ -1609,6 +1618,40 @@ pub(crate) fn prediction_path_inside_workspace(
         Ok(None)
     } else {
         Ok(Some(relative))
+    }
+}
+
+#[cfg(test)]
+mod prediction_path_tests {
+    use super::*;
+
+    /// A spelled path (`sub/..`, or a symlinked `/tmp`, `/var`) inside the
+    /// workspace must still be recognised, or the predictions file leaks
+    /// into the exported diff.
+    #[test]
+    fn prediction_path_is_matched_in_canonical_form() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir(workspace.path().join("sub")).expect("subdir");
+        let spelled = workspace
+            .path()
+            .join("sub")
+            .join("..")
+            .join("all_preds.jsonl");
+        assert_eq!(
+            prediction_path_inside_workspace(workspace.path(), &spelled).unwrap(),
+            Some("all_preds.jsonl".to_string())
+        );
+
+        let elsewhere = tempfile::tempdir().expect("elsewhere");
+        let outside = elsewhere
+            .path()
+            .join("sub")
+            .join("..")
+            .join("all_preds.jsonl");
+        assert_eq!(
+            prediction_path_inside_workspace(workspace.path(), &outside).unwrap(),
+            None
+        );
     }
 }
 
