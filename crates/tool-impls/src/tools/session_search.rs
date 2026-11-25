@@ -421,8 +421,14 @@ fn index_search(
         };
         index.upsert_session(&projection).ok()?;
     }
-    let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
-    let _pruned = index.prune_missing(&live_refs).unwrap_or(0);
+    // Only a complete listing may prune: the capped candidate set never
+    // names the sessions past the cap, and pruning against it deleted
+    // their rows on every refresh — the rows the module doc promises they
+    // keep.
+    if !candidates.truncated {
+        let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
+        let _pruned = index.prune_missing(&live_refs).unwrap_or(0);
+    }
 
     let fts_query = fts_query_from_terms(query);
     if fts_query.is_empty() {
