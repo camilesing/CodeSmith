@@ -2393,7 +2393,7 @@ impl ToolSpec for AgentOpenTool {
                 },
                 "resident_file": {
                     "type": "string",
-                    "description": "Optional file path for cache-aware resident mode"
+                    "description": "Optional file path for cache-aware resident mode; must be inside the workspace or a trusted root"
                 },
                 "fork_context": {
                     "type": "boolean",
@@ -2723,7 +2723,7 @@ impl ToolSpec for AgentSpawnTool {
                 },
                 "resident_file": {
                     "type": "string",
-                    "description": "Optional file path for cache-aware resident mode. When set, the child's system prefix is augmented with the full contents of this file so DeepSeek's prefix cache stays warm across follow-up send_input calls. Only one agent may hold a resident lease on a given file at a time — a second spawn with the same path receives a conflict warning in the result."
+                    "description": "Optional file path for cache-aware resident mode; must be inside the workspace or a trusted root. When set, the child's system prefix is augmented with the full contents of this file so DeepSeek's prefix cache stays warm across follow-up send_input calls. Only one agent may hold a resident lease on a given file at a time — a second spawn with the same path receives a conflict warning in the result."
                 },
                 "fork_context": {
                     "type": "boolean",
@@ -2905,13 +2905,14 @@ impl ToolSpec for AgentSpawnTool {
         // so the child's prefix is byte-stable for DeepSeek prefix caching.
         let (effective_prompt, resident_conflict) =
             if let Some(ref file_path) = spawn_request.resident_file {
-                let abs_path = if std::path::Path::new(file_path).is_absolute() {
-                    std::path::PathBuf::from(file_path)
-                } else {
-                    self.runtime.context.workspace.join(file_path)
-                };
-                let file_contents = std::fs::read_to_string(&abs_path)
-                    .unwrap_or_else(|e| format!("<!-- resident_file read error: {e} -->"));
+                // Model-supplied, so it goes through the workspace and
+                // trusted-root boundary every other read goes through, off
+                // the async worker; a file that cannot be read fails the
+                // spawn instead of sending the child a prompt without it.
+                let abs_path = context.resolve_path(file_path)?;
+                let file_contents = tokio::fs::read_to_string(&abs_path).await.map_err(|e| {
+                    ToolError::invalid_input(format!("Invalid resident_file '{file_path}': {e}"))
+                })?;
                 let prefixed = format!(
                     "<!-- resident_file: {file_path} -->\n```\n{file_contents}\n```\n\n{}",
                     spawn_request.prompt

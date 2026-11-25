@@ -3980,6 +3980,32 @@ async fn cwd_through_a_trusted_root_with_dotdot_is_refused() {
     );
 }
 
+/// `resident_file` is model-supplied and `agent_open` is auto-approved:
+/// an absolute path, or one that climbs out, must meet the same boundary
+/// as `read_file`. It used to read any path and splice it into the prompt.
+#[tokio::test]
+async fn resident_file_outside_the_workspace_is_refused() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("mkdir");
+    let outside = tmp.path().join("secret.txt");
+    std::fs::write(&outside, "token").expect("write secret");
+    let context = ToolContext::new(workspace.clone());
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(workspace.clone());
+    let tool = AgentSpawnTool::new(
+        Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(workspace, 4))),
+        runtime,
+    );
+    for path in [outside.display().to_string(), "../secret.txt".to_string()] {
+        let err = tool
+            .execute(json!({"prompt": "x", "resident_file": path}), &context)
+            .await
+            .expect_err("a resident file outside the workspace is refused");
+        assert!(matches!(err, ToolError::PathEscape { .. }), "{path}: {err}");
+    }
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.
