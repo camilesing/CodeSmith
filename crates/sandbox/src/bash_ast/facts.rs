@@ -146,6 +146,73 @@ fn assignments_execute_substitutions(segment: &CommandSegment) -> bool {
         .any(|a| a.contains("$(") || a.contains('`') || a.contains("<(") || a.contains(">("))
 }
 
+/// Assignment names that select which program a command executes. `FOO=bar
+/// ls` is transparent to classification; `GIT_EXTERNAL_DIFF=sh git diff` is
+/// not — git runs `sh` while argv still reads `git diff`.
+pub const EXECUTOR_SELECTING_ASSIGNMENTS: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "GIT_EXEC_PATH",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_PAGER",
+    "PAGER",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_TEMPLATE_DIR",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "RUSTC_WRAPPER",
+    "RUSTC",
+    "CARGO_BUILD_RUSTC",
+    "CARGO",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+    "PROMPT_COMMAND",
+    "PERL5OPT",
+    "RUBYOPT",
+];
+
+/// Whether one `NAME=value` assignment names an executor-selecting variable.
+#[must_use]
+pub fn assignment_selects_executor(assignment: &str) -> bool {
+    assignment
+        .split_once('=')
+        .is_some_and(|(name, _)| EXECUTOR_SELECTING_ASSIGNMENTS.contains(&name))
+}
+
+impl CommandSegment {
+    /// Whether a prefix assignment of this segment selects what executes.
+    #[must_use]
+    pub fn assignment_selects_executor(&self) -> bool {
+        self.assignments
+            .iter()
+            .any(|assignment| assignment_selects_executor(assignment))
+    }
+}
+
+impl BashFacts {
+    /// Whether any segment carries an executor-selecting assignment.
+    #[must_use]
+    pub fn any_assignment_selects_executor(&self) -> bool {
+        self.segments
+            .iter()
+            .any(CommandSegment::assignment_selects_executor)
+    }
+}
+
 /// Fail-closed parse result: the tree contained `ERROR`/`MISSING` nodes, so
 /// no facts can be trusted. Callers must tighten (require approval), never
 /// loosen, on this.
@@ -227,7 +294,9 @@ impl BashFacts {
     /// text visible to allow/deny matching.
     pub fn top_level_segment_strings(&self) -> Option<Vec<String>> {
         let top = self.top_level_segments()?;
-        if self.has_command_substitution || top.iter().any(|s| assignments_execute_substitutions(s))
+        if self.has_command_substitution
+            || top.iter().any(|s| assignments_execute_substitutions(s))
+            || top.iter().any(|s| s.assignment_selects_executor())
         {
             return None;
         }
@@ -672,6 +741,26 @@ mod tests {
             joins(&ok("cat a |& wc -l")),
             vec![None, Some(SegmentJoin::Pipe)]
         );
+    }
+
+    /// `GIT_EXTERNAL_DIFF=sh git diff` runs `sh`; argv reads `git diff`.
+    /// Such an assignment must not vanish from the reconstruction.
+    #[test]
+    fn executor_selecting_assignment_blocks_top_level_reconstruction() {
+        for command in [
+            "GIT_EXTERNAL_DIFF=sh git diff",
+            "PATH=/tmp/evil:$PATH git status",
+        ] {
+            let f = ok(command);
+            assert!(f.top_level_segment_strings().is_none(), "{command}");
+            assert!(f.any_assignment_selects_executor(), "{command}");
+        }
+        // An innocuous assignment stays transparent.
+        assert_eq!(
+            ok("FOO=bar ls").top_level_segment_strings(),
+            Some(vec!["ls".to_string()])
+        );
+        assert!(!ok("FOO=bar ls").any_assignment_selects_executor());
     }
 
     // ── top-level statement coverage + redirect visibility (OCR 2026-11-03) ──

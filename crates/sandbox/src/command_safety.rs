@@ -701,6 +701,16 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         return analysis;
     }
 
+    // An assignment that selects which program runs (`PATH=…`,
+    // `GIT_EXTERNAL_DIFF=sh`) hides the command behind argv that still
+    // reads `git diff`: never a read-only verdict.
+    if facts.any_assignment_selects_executor() {
+        return SafetyAnalysis::requires_approval(
+            command,
+            vec!["An assignment selects which program runs".to_string()],
+        );
+    }
+
     if facts.has_chain() {
         // Chains of known-safe commands (cargo/git/zig/npm/etc.) are
         // routine for build+test workflows. Instead of hard-blocking,
@@ -2174,6 +2184,25 @@ mod tests {
         ));
 
         // Env assignments in front of a safe command stay safe.
+        assert!(matches!(
+            analyze_command("FOO=bar ls").level,
+            SafetyLevel::Safe
+        ));
+    }
+
+    /// A prefix assignment that selects what executes is not a read-only
+    /// command: git runs `sh` while argv reads `git diff`.
+    #[test]
+    fn executor_selecting_assignment_is_not_safe() {
+        for command in [
+            "GIT_EXTERNAL_DIFF=sh git diff",
+            "PATH=/tmp/evil:$PATH git status",
+            "RUSTC_WRAPPER=./malware cargo check",
+        ] {
+            let level = analyze_command(command).level;
+            assert!(!matches!(level, SafetyLevel::Safe), "{command}: {level:?}");
+        }
+        // An innocuous assignment stays transparent (the pinned behaviour).
         assert!(matches!(
             analyze_command("FOO=bar ls").level,
             SafetyLevel::Safe
