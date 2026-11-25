@@ -26,7 +26,8 @@
 //!   `--json` summary, not `stream-json` events.
 //! - The child inherits the parent's environment (API keys, config paths) —
 //!   it is our own binary, not a third-party server, so no sanitization is
-//!   applied.
+//!   applied. The one value set is `CODESMITH_YOLO=0` for a non-auto
+//!   parent.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -147,6 +148,11 @@ impl HeadlessSelfProvider {
         cmd.arg("exec").arg("--json");
         if request.auto_approve {
             cmd.arg("--auto");
+        } else {
+            // The child re-derives auto mode from `config.yolo` and
+            // `CODESMITH_YOLO`: pin the parent's posture, or a non-auto
+            // parent gets an auto-approved child (the posture is a ceiling).
+            cmd.env("CODESMITH_YOLO", "0");
         }
         if let Some(model) = request
             .model
@@ -392,6 +398,34 @@ mod tests {
             recorded.contains("depth=2 max=3 id=agent_test"),
             "spawn-depth budget must cross the process boundary; recorded:\n{recorded}"
         );
+    }
+
+    /// A non-auto parent's child used to re-enable auto mode from the shared
+    /// `config.toml` (`yolo = true`) or an inherited `CODESMITH_YOLO=1`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn headless_provider_pins_a_non_auto_child() {
+        for (auto_approve, expected) in [(false, "0"), (true, "unset")] {
+            let dir = tempfile::tempdir().unwrap();
+            let record = dir.path().join("yolo.txt");
+            let script = write_script(
+                dir.path(),
+                &format!(
+                    "printf '%s' \"${{CODESMITH_YOLO-unset}}\" > {record}\n\
+                     printf '{{\"output\": \"ok\", \"tools\": []}}'\n",
+                    record = record.display(),
+                ),
+            );
+            HeadlessSelfProvider::with_program(script)
+                .run(request(dir.path().to_path_buf(), auto_approve))
+                .await
+                .unwrap();
+            assert_eq!(
+                record_line(&record),
+                expected,
+                "auto_approve = {auto_approve}: CODESMITH_YOLO the child saw"
+            );
+        }
     }
 
     #[cfg(unix)]
