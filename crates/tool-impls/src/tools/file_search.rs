@@ -105,6 +105,7 @@ impl ToolSpec for FileSearchTool {
         let matches = search_files_async(
             query.to_string(),
             base_path,
+            context.workspace.clone(),
             extensions,
             exclude_patterns,
             limit,
@@ -116,9 +117,11 @@ impl ToolSpec for FileSearchTool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn search_files_async(
     query: String,
     base_path: PathBuf,
+    workspace: PathBuf,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -137,6 +140,7 @@ async fn search_files_async(
         search_files(
             &query,
             &base_path,
+            &workspace,
             extensions,
             exclude_patterns,
             limit,
@@ -268,6 +272,7 @@ fn parse_exclude_patterns(input: &Value) -> Vec<String> {
 fn search_files(
     query: &str,
     base_path: &Path,
+    workspace: &Path,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -284,6 +289,13 @@ fn search_files(
 
     let query_norm = query.to_ascii_lowercase();
     let mut results: Vec<FileSearchMatch> = Vec::new();
+    // Reported paths are relative to the workspace — the base every other
+    // tool resolves against, and what `grep_files` reports. Its canonical
+    // form too: a symlinked workspace (`/tmp` on macOS) is what the walker
+    // spells. Excludes and scoring stay relative to the search base.
+    let canonical_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
 
     let mut builder = WalkBuilder::new(base_path);
     builder.hidden(false).follow_links(false).require_git(false);
@@ -321,8 +333,14 @@ fn search_files(
             None => continue,
         };
 
+        let report_path = path
+            .strip_prefix(workspace)
+            .or_else(|_| path.strip_prefix(&canonical_workspace))
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
         results.push(FileSearchMatch {
-            path: rel_path,
+            path: report_path,
             name,
             score,
         });
@@ -463,6 +481,35 @@ mod tests {
 
         assert!(result.success);
         assert!(result.content.contains("main.rs"));
+    }
+
+    /// Results are relative to the workspace — the base every other tool
+    /// resolves against — not to the `path` argument they were searched
+    /// under, which produced addresses no follow-up tool could resolve.
+    #[tokio::test]
+    async fn test_file_search_paths_are_workspace_relative() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pkg/src")).expect("mkdir");
+        std::fs::write(root.join("pkg/src/needle.rs"), "fn main() {}\n").expect("write");
+
+        let ctx = ToolContext::new(root.to_path_buf());
+        let result = FileSearchTool
+            .execute(json!({"query": "needle", "path": "pkg", "limit": 5}), &ctx)
+            .await
+            .expect("execute");
+
+        assert!(
+            result.content.contains("pkg/src/needle.rs"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("\"path\":\"src/needle.rs\"")
+                && !result.content.contains("\"path\": \"src/needle.rs\""),
+            "base-relative address: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
