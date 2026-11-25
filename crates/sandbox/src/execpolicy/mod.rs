@@ -22,4 +22,5 @@ pub use rule::RuleMatch;
 pub use rule::RuleRef;
 pub use rules::{
     ExecPolicyConfig, ExecPolicyDecision, default_execpolicy_path, load_default_policy,
+    load_policy_at,
 };

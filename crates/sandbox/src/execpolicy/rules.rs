@@ -182,13 +182,20 @@ pub fn default_execpolicy_path() -> Option<PathBuf> {
 }
 
 pub fn load_default_policy() -> Result<Option<ExecPolicyConfig>> {
-    let Some(path) = default_execpolicy_path() else {
+    load_policy_at(default_execpolicy_path().as_deref())
+}
+
+/// [`load_default_policy`] for an explicit path (`None` = no policy file):
+/// lets a caller resolve the home directory once, on its own thread, and do
+/// the file work elsewhere.
+pub fn load_policy_at(path: Option<&Path>) -> Result<Option<ExecPolicyConfig>> {
+    let Some(path) = path else {
         return Ok(None);
     };
     // `exists()` conflates "file absent" with any stat failure — a
     // permission error on `~/.codesmith` must not silently disable
     // allow/deny enforcement. Only `NotFound` means "no policy".
-    match std::fs::metadata(&path) {
+    match std::fs::metadata(path) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
@@ -196,7 +203,7 @@ pub fn load_default_policy() -> Result<Option<ExecPolicyConfig>> {
                 .context(format!("failed to stat execpolicy file {}", path.display())));
         }
     }
-    ExecPolicyConfig::from_path(&path).map(Some)
+    ExecPolicyConfig::from_path(path).map(Some)
 }
 
 #[cfg(test)]

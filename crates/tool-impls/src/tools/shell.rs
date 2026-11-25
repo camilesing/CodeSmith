@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use codesmith_agent_runtime::tools::git_env::merge_git_scrub_env;
@@ -78,7 +79,9 @@ fn command_would_be_sandboxed(context: &ToolContext, command: &str) -> bool {
 
 use async_trait::async_trait;
 use codesmith_agent_runtime::command_safety::{SafetyLevel, analyze_command};
-use codesmith_agent_runtime::execpolicy::{ExecPolicyDecision, load_default_policy};
+use codesmith_agent_runtime::execpolicy::{
+    ExecPolicyDecision, default_execpolicy_path, load_default_policy, load_policy_at,
+};
 use codesmith_agent_runtime::features::Feature;
 use codesmith_agent_runtime::tools::cargo_failure_summary::summarize_cargo_failure;
 use codesmith_agent_runtime::tools::spec::{
@@ -625,6 +628,9 @@ impl ToolSpec for ExecShellTool {
         };
         // An execpolicy `AskUser` decision ("no allow rule matched") must
         // reach the user: a predicted sandbox never overrides the policy.
+        // Known limitation: this gate is synchronous by trait, so its policy
+        // load (a small file read and parse) runs inline; `execute` below
+        // moves the same work to the blocking pool.
         if context.features.enabled(Feature::ExecPolicy)
             && let Ok(Some(policy)) = load_default_policy()
             && matches!(policy.evaluate(command), ExecPolicyDecision::AskUser(_))
@@ -686,12 +692,26 @@ impl ToolSpec for ExecShellTool {
         let background = background || tty;
 
         let mut execpolicy_decision: Option<ExecPolicyDecision> = None;
-        if context.features.enabled(Feature::ExecPolicy)
-            && let Some(policy) = load_default_policy()
-                .map_err(|e| ToolError::execution_failed(format!("execpolicy load failed: {e}")))?
-        {
-            let decision = policy.evaluate(command);
-            execpolicy_decision = Some(decision.clone());
+        if context.features.enabled(Feature::ExecPolicy) {
+            // A file read, a TOML parse and a tree-sitter parse: on the
+            // blocking pool, off the runtime thread.
+            let policy_command = command.to_string();
+            // The home directory is resolved on the caller's thread, as
+            // before the hop: one read per call, not whatever the blocking
+            // pool sees.
+            let policy_path = default_execpolicy_path();
+            execpolicy_decision = tokio::task::spawn_blocking(move || {
+                let policy = load_policy_at(policy_path.as_deref()).map_err(|e| {
+                    ToolError::execution_failed(format!("execpolicy load failed: {e}"))
+                })?;
+                Ok::<_, ToolError>(policy.map(|policy| policy.evaluate(&policy_command)))
+            })
+            .await
+            .map_err(|err| {
+                ToolError::execution_failed(format!("execpolicy task failed: {err}"))
+            })??;
+        }
+        if let Some(decision) = &execpolicy_decision {
             match decision {
                 ExecPolicyDecision::Deny(reason) => {
                     return Ok(ToolResult {
