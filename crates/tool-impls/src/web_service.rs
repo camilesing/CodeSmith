@@ -232,7 +232,7 @@ impl HttpWebService {
 
     /// Search via Tavily AI Search API (<https://tavily.com>).
     async fn run_tavily_search(&self, req: &SearchRequest) -> Result<SearchOutcome, WebError> {
-        check_policy(req.policy.as_ref(), "api.tavily.com", req.tool)?;
+        check_policy(req.policy.as_ref(), "api.tavily.com", req.tool).await?;
         let api_key = self.api_key.as_deref().ok_or_else(|| {
             WebError::new(
                 WebErrorKind::Config,
@@ -288,7 +288,7 @@ impl HttpWebService {
 
     /// Search via Bocha AI Search API (<https://bochaai.com>).
     async fn run_bocha_search(&self, req: &SearchRequest) -> Result<SearchOutcome, WebError> {
-        check_policy(req.policy.as_ref(), "api.bochaai.com", req.tool)?;
+        check_policy(req.policy.as_ref(), "api.bochaai.com", req.tool).await?;
         let api_key = self.api_key.as_deref().ok_or_else(|| {
             WebError::new(
                 WebErrorKind::Config,
@@ -359,7 +359,7 @@ impl HttpWebService {
     /// key across every install exhausted its quota collectively and shipped
     /// an implicit credential in the binary.
     async fn run_metaso_search(&self, req: &SearchRequest) -> Result<SearchOutcome, WebError> {
-        check_policy(req.policy.as_ref(), "metaso.cn", req.tool)?;
+        check_policy(req.policy.as_ref(), "metaso.cn", req.tool).await?;
         let env_key = std::env::var("METASO_API_KEY").ok();
         let api_key = self
             .api_key
@@ -440,7 +440,7 @@ impl HttpWebService {
 
     /// Search via Baidu AI Search API (<https://qianfan.baidubce.com>).
     async fn run_baidu_search(&self, req: &SearchRequest) -> Result<SearchOutcome, WebError> {
-        check_policy(req.policy.as_ref(), "qianfan.baidubce.com", req.tool)?;
+        check_policy(req.policy.as_ref(), "qianfan.baidubce.com", req.tool).await?;
         let env_key = std::env::var("BAIDU_SEARCH_API_KEY").ok();
         let api_key = self
             .api_key
@@ -513,7 +513,7 @@ impl HttpWebService {
     /// `connect_timeout` of 15 s lets DNS/TLS failures surface quickly.
     /// Transient transport errors are retried twice with exponential backoff.
     async fn run_volcengine_search(&self, req: &SearchRequest) -> Result<SearchOutcome, WebError> {
-        check_policy(req.policy.as_ref(), "ark.cn-beijing.volces.com", req.tool)?;
+        check_policy(req.policy.as_ref(), "ark.cn-beijing.volces.com", req.tool).await?;
         let volc_key = std::env::var("VOLCENGINE_API_KEY").ok();
         let volc_ark_key = std::env::var("VOLCENGINE_ARK_API_KEY").ok();
         let ark_key = std::env::var("ARK_API_KEY").ok();
@@ -651,7 +651,7 @@ impl HttpWebService {
         })?;
 
         let host = host_from_url(native.base_url.trim()).unwrap_or_default();
-        check_policy(req.policy.as_ref(), &host, req.tool)?;
+        check_policy(req.policy.as_ref(), &host, req.tool).await?;
 
         let endpoint = messages_endpoint(&native.base_url);
         let client = search_client(
@@ -744,7 +744,7 @@ impl HttpWebService {
         let mut bing_was_empty = false;
 
         if self.provider == SearchProvider::Bing {
-            check_policy(req.policy.as_ref(), BING_HOST, req.tool)?;
+            check_policy(req.policy.as_ref(), BING_HOST, req.tool).await?;
             let results = run_bing_search(&client, &req.query, req.max_results).await?;
             if !results.is_empty() {
                 return Ok(SearchOutcome {
@@ -757,7 +757,7 @@ impl HttpWebService {
             bing_was_empty = true;
         }
 
-        check_policy(req.policy.as_ref(), DUCKDUCKGO_HOST, req.tool)?;
+        check_policy(req.policy.as_ref(), DUCKDUCKGO_HOST, req.tool).await?;
 
         let encoded = url_encode(&req.query);
         let ddg_url = format!("https://html.duckduckgo.com/html/?q={encoded}");
@@ -791,7 +791,7 @@ impl HttpWebService {
             // Bing is a separate host — a policy deny on it degrades to a
             // warning (DuckDuckGo already answered; often with zero results)
             // instead of failing the whole search.
-            match check_policy(req.policy.as_ref(), BING_HOST, req.tool) {
+            match check_policy(req.policy.as_ref(), BING_HOST, req.tool).await {
                 Err(policy_err) => {
                     warnings.push(format!("Bing fallback skipped: {policy_err}"));
                 }
@@ -840,15 +840,24 @@ impl HttpWebService {
 /// Returns `Ok(())` if the policy allows the call. Falls through silently
 /// when no policy is attached (back-compat). A `Prompt` decision passes —
 /// the inline approval gate at tool-dispatch time owns the ask (P1-5).
-fn check_policy(
+///
+/// The evaluation appends to the network audit log — a file write — so it
+/// runs on the blocking pool, never on the caller's runtime thread. If it
+/// cannot run at all, the call is refused.
+async fn check_policy(
     decider: Option<&NetworkPolicyDecider>,
     host: &str,
     tool: &str,
 ) -> Result<(), WebError> {
-    let Some(decider) = decider else {
+    let Some(decider) = decider.cloned() else {
         return Ok(());
     };
-    match decider.evaluate(host, tool) {
+    let (host, tool) = (host.to_string(), tool.to_string());
+    let (host_for_check, tool_for_check) = (host.clone(), tool.clone());
+    let decision =
+        tokio::task::spawn_blocking(move || decider.evaluate(&host_for_check, &tool_for_check))
+            .await;
+    match decision.unwrap_or(Decision::Deny) {
         Decision::Allow => Ok(()),
         Decision::Deny => Err(WebError::new(
             WebErrorKind::PolicyDenied,
@@ -1023,7 +1032,7 @@ async fn validate_fetch_target(
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| WebError::new(WebErrorKind::InvalidUrl, "URL must include a host"))?;
 
-    check_policy(req.policy.as_ref(), &host, req.tool)?;
+    check_policy(req.policy.as_ref(), &host, req.tool).await?;
 
     // SSRF protection: reject loopback names and private/link-local/loopback
     // IPs. Prevents LLM-prompted requests to cloud metadata
@@ -1065,7 +1074,7 @@ async fn validate_fetch_target(
         })?;
     let mut first_valid: Option<IpAddr> = None;
     for addr in addrs {
-        validate_dns_resolved_ip(&host, &addr.ip(), req.policy.as_ref(), req.tool)?;
+        validate_dns_resolved_ip(&host, &addr.ip(), req.policy.as_ref(), req.tool).await?;
         if first_valid.is_none() {
             first_valid = Some(addr.ip());
         }
@@ -1080,7 +1089,8 @@ async fn validate_fetch_target(
     Ok(Some((host, first_valid)))
 }
 
-fn validate_dns_resolved_ip(
+/// The audit record is a file write: it is appended on the blocking pool.
+async fn validate_dns_resolved_ip(
     host: &str,
     ip: &IpAddr,
     decider: Option<&NetworkPolicyDecider>,
@@ -1099,7 +1109,11 @@ fn validate_dns_resolved_ip(
     if let Some(decider) = decider
         && (decider.is_trusted_fakeip_addr(ip) || decider.trusts_proxy_fakeip_host(host))
     {
-        decider.record_trusted_proxy_fakeip_allow(host, tool);
+        let (decider, host, tool) = (decider.clone(), host.to_string(), tool.to_string());
+        let _ = tokio::task::spawn_blocking(move || {
+            decider.record_trusted_proxy_fakeip_allow(&host, &tool)
+        })
+        .await;
         return Ok(());
     }
 
@@ -2127,16 +2141,18 @@ mod tests {
         assert!(err.to_string().contains("blocked by network policy"));
     }
 
-    #[test]
-    fn fetch_policy_prompt_passes_after_gate_semantics() {
+    #[tokio::test]
+    async fn fetch_policy_prompt_passes_after_gate_semantics() {
         // P1-5: a Prompt decision must not fail at execute time — the inline
         // approval gate owns the ask before the service ever runs. Deny
         // still hard-fails inside the service.
         let prompt = prompt_decider(&[], &[]);
         check_policy(Some(&prompt), "unlisted.example.com", "fetch_url")
+            .await
             .expect("Prompt must not fail at execute time");
         let denied = prompt_decider(&[], &["evil.example.com"]);
         let err = check_policy(Some(&denied), "evil.example.com", "fetch_url")
+            .await
             .expect_err("Deny must hard-fail");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
     }
@@ -2203,10 +2219,11 @@ mod tests {
         assert!(!is_restricted_ip(&"2606:4700::1".parse().unwrap()));
     }
 
-    #[test]
-    fn restricted_dns_result_is_denied_without_proxy_opt_in() {
+    #[tokio::test]
+    async fn restricted_dns_result_is_denied_without_proxy_opt_in() {
         let ip = "198.18.0.1".parse().unwrap();
         let err = validate_dns_resolved_ip("github.com", &ip, None, "fetch_url")
+            .await
             .expect_err("fake-IP DNS result must be denied by default");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
         assert!(
@@ -2215,8 +2232,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn proxy_opt_in_allows_restricted_dns_for_matching_host() {
+    #[tokio::test]
+    async fn proxy_opt_in_allows_restricted_dns_for_matching_host() {
         let policy = codesmith_agent_runtime::network_policy::NetworkPolicy {
             default: Decision::Allow.into(),
             allow: Vec::new(),
@@ -2227,11 +2244,12 @@ mod tests {
         let decider = NetworkPolicyDecider::new(policy, None);
         let ip = "198.18.0.1".parse().unwrap();
         validate_dns_resolved_ip("github.com", &ip, Some(&decider), "fetch_url")
+            .await
             .expect("proxy opt-in should allow fake-IP DNS for matching host");
     }
 
-    #[test]
-    fn proxy_opt_in_does_not_allow_unlisted_host() {
+    #[tokio::test]
+    async fn proxy_opt_in_does_not_allow_unlisted_host() {
         let policy = codesmith_agent_runtime::network_policy::NetworkPolicy {
             default: Decision::Allow.into(),
             allow: Vec::new(),
@@ -2242,6 +2260,7 @@ mod tests {
         let decider = NetworkPolicyDecider::new(policy, None);
         let ip = "198.18.0.1".parse().unwrap();
         let err = validate_dns_resolved_ip("example.com", &ip, Some(&decider), "fetch_url")
+            .await
             .expect_err("proxy opt-in must be scoped to configured hosts");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
     }
@@ -2270,8 +2289,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn proxy_dns_allow_is_audited() {
+    #[tokio::test]
+    async fn proxy_dns_allow_is_audited() {
         use codesmith_agent_runtime::network_policy::NetworkAuditor;
         use tempfile::tempdir;
 
@@ -2288,6 +2307,7 @@ mod tests {
         let ip = "198.18.0.1".parse().unwrap();
 
         validate_dns_resolved_ip("github.com", &ip, Some(&decider), "fetch_url")
+            .await
             .expect("proxy DNS allow");
 
         let body = std::fs::read_to_string(dir.path().join("audit.log")).expect("audit log");
@@ -2872,14 +2892,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prompt_decider_copies_both_lists() {
+    #[tokio::test]
+    async fn prompt_decider_copies_both_lists() {
         // Non-empty allow and deny lists exercise the list-copy closures;
         // the decider must then answer for both sides.
         let decider = prompt_decider(&["allowed.example"], &["denied.example"]);
         check_policy(Some(&decider), "allowed.example", "fetch_url")
+            .await
             .expect("allow-listed host passes");
         let err = check_policy(Some(&decider), "denied.example", "fetch_url")
+            .await
             .expect_err("deny-listed host fails");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
     }

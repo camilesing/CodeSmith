@@ -955,7 +955,7 @@ async fn run_image_search(
     // Step 1: fetch the HTML page to obtain the `vqd` token used by the images API.
     let encoded = url_encode(query);
     let seed_url = format!("https://duckduckgo.com/?q={encoded}&iax=images&ia=images");
-    check_network_policy(&seed_url, context)?;
+    check_network_policy(&seed_url, context).await?;
     let seed_resp = client
         .get(&seed_url)
         .header(
@@ -987,7 +987,7 @@ async fn run_image_search(
 
     // Step 2: query the DuckDuckGo images JSON endpoint.
     let api_url = format!("https://duckduckgo.com/i.js?l=us-en&o=json&q={encoded}&vqd={vqd}&p=1");
-    check_network_policy(&api_url, context)?;
+    check_network_policy(&api_url, context).await?;
     let api_resp = client
         .get(&api_url)
         .header("Accept", "application/json")
@@ -1081,14 +1081,19 @@ fn page_from_search(query: &str, results: &[SearchHit]) -> WebPage {
 
 /// Check network policy for a URL before fetching.
 /// Returns an error if the policy denies access.
-fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolError> {
-    let Some(decider) = context.network_policy.as_ref() else {
+async fn check_network_policy(url: &str, context: &ToolContext) -> Result<(), ToolError> {
+    let Some(decider) = context.network_policy.clone() else {
         return Ok(());
     };
     let Some(host) = host_from_url(url) else {
         return Ok(());
     };
-    match decider.evaluate(&host, "web_run") {
+    // The evaluation appends to the network audit log — a file write — so it
+    // runs on the blocking pool. If it cannot run, the call is refused.
+    let host_for_check = host.clone();
+    let decision =
+        tokio::task::spawn_blocking(move || decider.evaluate(&host_for_check, "web_run")).await;
+    match decision.unwrap_or(Decision::Deny) {
         Decision::Allow => Ok(()),
         Decision::Deny => Err(ToolError::permission_denied(format!(
             "network call to '{host}' blocked by network policy"
@@ -1672,8 +1677,8 @@ mod tests {
         assert!(!looks_like_url("turn0search0"));
     }
 
-    #[test]
-    fn network_policy_denies_direct_open_url() {
+    #[tokio::test]
+    async fn network_policy_denies_direct_open_url() {
         use codesmith_agent_runtime::network_policy::{
             Decision, NetworkPolicy, NetworkPolicyDecider,
         };
@@ -1689,6 +1694,7 @@ mod tests {
         let ctx = ToolContext::new(PathBuf::from(".")).with_network_policy(decider);
 
         let err = check_network_policy("https://example.com/private", &ctx)
+            .await
             .expect_err("blocked host should fail");
         assert!(format!("{err}").contains("blocked by network policy"));
     }

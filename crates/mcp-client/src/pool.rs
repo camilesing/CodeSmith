@@ -1972,10 +1972,17 @@ impl McpConnection {
             // Per-domain network policy gate (#135). Only the HTTP/SSE transport
             // is gated; STDIO MCP servers run as local subprocesses and never
             // touch the network from this code path.
-            if let Some(decider) = network_policy
+            if let Some(decider) = network_policy.cloned()
                 && let Some(host) = host_from_url(url)
             {
-                match decider.evaluate(&host, "mcp") {
+                // The evaluation appends to the network audit log — a file
+                // write — so it runs on the blocking pool. If it cannot run,
+                // the connection is refused.
+                let host_for_check = host.clone();
+                let decision =
+                    tokio::task::spawn_blocking(move || decider.evaluate(&host_for_check, "mcp"))
+                        .await;
+                match decision.unwrap_or(Decision::Deny) {
                     Decision::Allow => {}
                     Decision::Deny => {
                         anyhow::bail!(
