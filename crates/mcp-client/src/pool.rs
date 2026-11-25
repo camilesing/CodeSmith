@@ -2140,7 +2140,16 @@ impl McpConnection {
                 }
             }
             if kind.is_websocket() {
-                Box::new(WebSocketTransport::connect(url.clone(), connect_headers.clone()).await?)
+                // Connect (TCP + TLS + handshake) is bounded like the HTTP
+                // transports: a host that drops SYNs otherwise parks the tool
+                // call until the OS connect timeout.
+                let transport = tokio::time::timeout(
+                    Duration::from_secs(connect_timeout_secs),
+                    WebSocketTransport::connect(url.clone(), connect_headers.clone()),
+                )
+                .await
+                .context("MCP WebSocket connect timed out")??;
+                Box::new(transport)
             } else if kind.is_sse() {
                 // Bound the connect phase (GET + endpoint discovery) at
                 // connect_timeout: the client's read_timeout no longer
