@@ -26,6 +26,12 @@ const MAX_OUTPUT_CHARS: usize = 40_000;
 /// forever. Mirrors the shell-tool timeout clamp (600_000 ms).
 const CARGO_TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How long the output readers may take to reach EOF once cargo has exited.
+/// A test that leaves a child process behind keeps the pipes open; the
+/// leaked process group is killed first, and this bounds the wait for a
+/// descendant that escaped the group.
+const CARGO_PIPE_DRAIN_GRACE: Duration = Duration::from_secs(5);
+
 /// Tool for running `cargo test` in the workspace root.
 pub struct RunTestsTool;
 
@@ -160,12 +166,14 @@ async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Ou
             ToolError::execution_failed(format!("Failed to run cargo: {e}"))
         }
     })?;
+    // Captured before the wait: tokio clears `id()` once the child is reaped.
+    let child_id = child.id();
     let mut stdout = child.stdout.take().expect("stdout piped above");
     let mut stderr = child.stderr.take().expect("stderr piped above");
-    let stdout_task = tokio::spawn(async move {
+    let mut stdout_task = tokio::spawn(async move {
         codesmith_agent_runtime::utils::read_capped_tail(&mut stdout, CARGO_OUTPUT_CAP_BYTES).await
     });
-    let stderr_task = tokio::spawn(async move {
+    let mut stderr_task = tokio::spawn(async move {
         codesmith_agent_runtime::utils::read_capped_tail(&mut stderr, CARGO_OUTPUT_CAP_BYTES).await
     });
     let status = match tokio::time::timeout(CARGO_TEST_TIMEOUT, child.wait()).await {
@@ -173,15 +181,35 @@ async fn run_cargo(workspace: &Path, args: &[String]) -> Result<std::process::Ou
             result.map_err(|e| ToolError::execution_failed(format!("Failed to run cargo: {e}")))?
         }
         Err(_) => {
-            codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+            codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child_id);
             let _ = child.start_kill();
             return Err(ToolError::Timeout {
                 seconds: CARGO_TEST_TIMEOUT.as_secs(),
             });
         }
     };
-    let (stdout, stdout_dropped) = stdout_task.await.unwrap_or_default();
-    let (stderr, stderr_dropped) = stderr_task.await.unwrap_or_default();
+    // cargo has exited, but a test that leaves a child behind ("start a
+    // helper server in a test") keeps the pipe write-ends open, and the
+    // readers return only on EOF — the drain used to hang past the cap.
+    // What is left in the dedicated process group are leaked descendants:
+    // kill them, so their death closes the pipes. A bounded join backstops
+    // a descendant that escaped the group.
+    codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child_id);
+    let ((stdout, stdout_dropped), (stderr, stderr_dropped)) =
+        match tokio::time::timeout(CARGO_PIPE_DRAIN_GRACE, async {
+            tokio::join!(&mut stdout_task, &mut stderr_task)
+        })
+        .await
+        {
+            Ok((stdout, stderr)) => (stdout.unwrap_or_default(), stderr.unwrap_or_default()),
+            Err(_) => {
+                stdout_task.abort();
+                stderr_task.abort();
+                let note = b"[... output not captured: a process left behind by the test kept \
+                             the output pipes open]\n";
+                ((note.to_vec(), 0), (Vec::new(), 0))
+            }
+        };
     let mut stdout = stdout;
     if stdout_dropped > 0 {
         let note = format!("[… {stdout_dropped} earlier bytes of output not captured]\n");
@@ -391,6 +419,43 @@ mod tests {
         assert!(parsed.success);
         assert_eq!(parsed.exit_code, 0);
         assert!(parsed.command.contains("cargo test"));
+    }
+
+    /// A test that leaves a child process behind keeps the output pipes
+    /// open after cargo exits. The drain used to wait for EOF forever, so
+    /// `run_tests` hung past its own cap; it now reaps the leaked group and
+    /// returns.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_tests_returns_when_a_test_leaks_a_child_process() {
+        if !cargo_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let project_dir = init_cargo_project(tmp.path());
+        let lib_rs = project_dir.join("src/lib.rs");
+        let leaking = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn leaks_a_child() {
+        std::process::Command::new("sleep").arg("300").spawn().unwrap();
+    }
+}
+"#;
+        fs::write(&lib_rs, leaking).expect("write leaking test");
+
+        let ctx = ToolContext::new(&project_dir);
+        let result = tokio::time::timeout(
+            Duration::from_secs(240),
+            RunTestsTool.execute(json!({}), &ctx),
+        )
+        .await
+        .expect("run_tests returns although a grandchild holds the pipes")
+        .expect("execute");
+        let parsed: RunTestsOutput =
+            serde_json::from_str(&result.content).expect("tool result should be json");
+        assert!(parsed.success, "{}", result.content);
     }
 
     #[tokio::test]
