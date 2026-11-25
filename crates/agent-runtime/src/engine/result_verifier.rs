@@ -96,10 +96,11 @@ const BUILD_CLAIM_PHRASES: &[&str] = &[
 ];
 
 /// Command prefixes that make an `exec_shell` call eligible as a *test*
-/// verification command. A command is eligible when any `&&`/`;`-separated
-/// segment (after stripping leading `VAR=value` assignments) starts with one
-/// of these prefixes — so `cd crate && cargo test` qualifies, as does
-/// `cargo test -- --version`.
+/// verification command. A command is eligible when its last segment (after
+/// stripping leading `VAR=value` assignments) starts with one of these
+/// prefixes — so `cd crate && cargo test` qualifies, as does
+/// `cargo test -- --version`. See `command_matches_kind` for why only the
+/// last segment counts.
 const TEST_COMMAND_PREFIXES: &[&str] = &[
     "cargo test",
     "cargo nextest",
@@ -367,25 +368,48 @@ fn reconstruct_run_tests_command(input: &serde_json::Value) -> Option<String> {
     Some(command)
 }
 
-/// Whether any `&&`/`;`-separated segment of `command` starts with a prefix
-/// of the claimed kind, after stripping leading `VAR=value` assignments.
+/// The text after the line's last command separator (`;`, `|`, `||`, `&&`).
+/// An `&` that is part of a file-descriptor redirect (`2>&1`, `&>`) does not
+/// separate.
+fn after_last_separator(command: &str) -> &str {
+    let bytes = command.as_bytes();
+    let mut start = 0;
+    for (index, byte) in bytes.iter().enumerate() {
+        let separates = match byte {
+            b';' | b'|' => true,
+            b'&' => {
+                let redirects = index > 0 && matches!(bytes[index - 1], b'>' | b'<');
+                let bash_both = bytes.get(index + 1) == Some(&b'>');
+                !redirects && !bash_both
+            }
+            _ => false,
+        };
+        if separates {
+            start = index + 1;
+        }
+    }
+    // Every cut lands right after an ASCII byte, i.e. on a char boundary.
+    command[start..].trim_start()
+}
+
+/// Whether the command's exit status is a verification command's own. The
+/// replay runs through `sh -c`, which reports the status of the line's LAST
+/// command — so only that segment counts: `cd crate && cargo test` qualifies,
+/// while `cargo test 2>&1 | tail -40`, `cargo test; echo done` and
+/// `cargo test && cargo clippy` report `tail`'s / `echo`'s / `clippy`'s status
+/// and would grade something the claim is not about.
 fn command_matches_kind(command: &str, kind: ClaimKind) -> bool {
     let prefixes = match kind {
         ClaimKind::Test => TEST_COMMAND_PREFIXES,
         ClaimKind::Build => BUILD_COMMAND_PREFIXES,
     };
     let lower = command.to_lowercase();
-    lower
-        .split("&&")
-        .flat_map(|seg| seg.split(';'))
-        .any(|segment| {
-            let mut segment = segment.trim();
-            // Strip leading env assignments: `RUSTFLAGS="..." cargo test`.
-            while let Some(rest) = strip_env_assignment(segment) {
-                segment = rest;
-            }
-            prefixes.iter().any(|prefix| segment.starts_with(prefix))
-        })
+    let mut segment = after_last_separator(&lower).trim();
+    // Strip leading env assignments: `RUSTFLAGS="..." cargo test`.
+    while let Some(rest) = strip_env_assignment(segment) {
+        segment = rest;
+    }
+    prefixes.iter().any(|prefix| segment.starts_with(prefix))
 }
 
 /// Strip one leading `NAME=value` token (quoted or bare); `None` when the
@@ -867,6 +891,46 @@ mod tests {
         )];
         let cmd = find_verification_command(&msgs, ClaimKind::Test).expect("found");
         assert_eq!(cmd.tool_use_id, "t1");
+    }
+
+    /// The replay reports the status of the line's LAST command, so a
+    /// piped / `;`-chained test command is not eligible — `tail`'s exit code
+    /// graded a failing suite as verified-pass.
+    #[test]
+    fn only_the_last_command_of_a_line_can_be_verified() {
+        for command in [
+            "cargo test 2>&1 | tail -40",
+            "cargo test; echo done",
+            "cargo test || true",
+            "cargo test && cargo clippy -- -D warnings",
+        ] {
+            let msgs = [assistant_tool_use(
+                "t1",
+                "exec_shell",
+                json!({"command": command}),
+            )];
+            assert!(
+                find_verification_command(&msgs, ClaimKind::Test).is_none(),
+                "must not qualify: {command}"
+            );
+        }
+        // The verification command as the line's last command still does.
+        for command in [
+            "cd crates/tui && cargo test",
+            "cargo clippy && cargo test",
+            "cargo test > test.log 2>&1",
+            "cargo test 2>&1",
+        ] {
+            let msgs = [assistant_tool_use(
+                "t1",
+                "exec_shell",
+                json!({"command": command}),
+            )];
+            assert!(
+                find_verification_command(&msgs, ClaimKind::Test).is_some(),
+                "must qualify: {command}"
+            );
+        }
     }
 
     #[test]
