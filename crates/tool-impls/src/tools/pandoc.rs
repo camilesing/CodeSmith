@@ -243,6 +243,13 @@ impl ToolSpec for PandocConvertTool {
             )));
         }
 
+        // pandoc exits 0 with warnings on stderr (an image it could not
+        // fetch is replaced by its description): the document is incomplete,
+        // so the warnings ride along instead of being dropped.
+        let warnings = truncate_chars(
+            String::from_utf8_lossy(&stderr).trim().to_string(),
+            MAX_ERROR_CHARS,
+        );
         let summary = if let (Some(out), Some(tmp)) = (resolved_output_path, tmp_out.as_ref()) {
             tokio::fs::rename(tmp, &out).await.map_err(|e| {
                 ToolError::execution_failed(format!(
@@ -262,9 +269,18 @@ impl ToolSpec for PandocConvertTool {
                 String::from_utf8_lossy(&stdout).to_string(),
                 MAX_INLINE_CHARS,
             );
-            return Ok(ToolResult::success(text));
+            return Ok(ToolResult::success(with_warnings(text, &warnings)));
         };
-        Ok(ToolResult::success(summary))
+        Ok(ToolResult::success(with_warnings(summary, &warnings)))
+    }
+}
+
+/// Append pandoc's (already bounded) stderr to a successful result.
+fn with_warnings(text: String, warnings: &str) -> String {
+    if warnings.is_empty() {
+        text
+    } else {
+        format!("{text}\n\npandoc warnings:\n{warnings}")
     }
 }
 
@@ -451,6 +467,37 @@ mod tests {
         assert!(
             written.contains("Title"),
             "written file must contain converted body; got {written}"
+        );
+    }
+
+    /// pandoc exits 0 with a warning when it cannot fetch an image: the
+    /// document is missing its figure, and the result used to be a clean
+    /// success.
+    #[tokio::test]
+    async fn pandoc_convert_surfaces_warnings_from_a_successful_run() {
+        if !pandoc_present() {
+            eprintln!("skipping: pandoc not installed");
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        fs::write(tmp.path().join("note.md"), "![x](missing.png)\n").unwrap();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let result = PandocConvertTool
+            .execute(
+                json!({
+                    "source_path": "note.md",
+                    "target_format": "docx",
+                    "output_path": "out.docx",
+                }),
+                &ctx,
+            )
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert!(
+            result.content.contains("Could not fetch resource"),
+            "{}",
+            result.content
         );
     }
 
