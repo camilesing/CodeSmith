@@ -376,7 +376,7 @@ impl StateStore {
                         SET parent_entry_id = (
                             SELECT m2.id
                             FROM messages m2
-                            WHERE m2.created_at < messages.created_at AND m2.thread_id = messages.thread_id
+                            WHERE m2.id < messages.id AND m2.thread_id = messages.thread_id
                             ORDER BY m2.id DESC
                             LIMIT 1
                         );
@@ -1581,6 +1581,45 @@ mod tests {
             store
                 .persist_dynamic_tools("t-missing", &[dyn_tool(0, "x")])
                 .is_err()
+        );
+    }
+
+    /// A legacy `messages` table (no `parent_entry_id` yet) is backfilled
+    /// on first open. The predecessor was keyed on second-granularity
+    /// `created_at`, so two messages written in the same second (a tool call
+    /// and its result) got no parent, and the branch was cut there.
+    #[test]
+    fn legacy_backfill_links_same_second_messages() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("legacy.db");
+        {
+            let store = StateStore::open(Some(path.clone())).expect("open");
+            store.upsert_thread(&test_thread("t")).expect("upsert");
+            for text in ["one", "two", "three"] {
+                store
+                    .append_message("t", "user", text, None)
+                    .expect("append");
+            }
+        }
+        {
+            // Back to the legacy shape: no parent column, one shared second,
+            // and the pre-migration schema version (the backfill only runs
+            // at `user_version` 0).
+            let db = rusqlite::Connection::open(&path).expect("open");
+            db.execute_batch(
+                "UPDATE messages SET created_at = 100;
+                 DROP INDEX IF EXISTS idx_messages_parent_entry_id;
+                 ALTER TABLE messages DROP COLUMN parent_entry_id;
+                 PRAGMA user_version = 0;",
+            )
+            .expect("legacy shape");
+        }
+
+        let store = StateStore::open(Some(path)).expect("reopen");
+        let msgs = store.list_messages("t", None).expect("list");
+        assert_eq!(
+            msgs.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+            ["one", "two", "three"]
         );
     }
 
