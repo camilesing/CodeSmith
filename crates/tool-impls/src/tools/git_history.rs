@@ -418,12 +418,10 @@ fn ensure_rev_is_not_an_option(rev: &str) -> Result<(), ToolError> {
 }
 
 fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {
-    let workspace = canonical_or_workspace(&context.workspace);
-    let mut working_dir = workspace.clone();
     // Default to "." so git's upward repository discovery can never report
-    // paths (or patch contents) outside the workspace when the workspace
-    // sits inside a larger repo (the git.rs guard this twin had missed).
-    let mut pathspec = Some(PathBuf::from("."));
+    // paths (or patch contents) outside the session's directory when it
+    // sits inside a larger repo.
+    let (mut working_dir, mut pathspec) = super::git::default_scope(context);
 
     if let Some(raw) = path {
         let resolved = context.resolve_path(raw)?;
@@ -456,12 +454,6 @@ fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitC
         working_dir,
         pathspec,
     })
-}
-
-fn canonical_or_workspace(workspace: &Path) -> PathBuf {
-    workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf())
 }
 
 fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {

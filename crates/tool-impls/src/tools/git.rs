@@ -213,13 +213,31 @@ struct GitContext {
     pathspec: Option<PathBuf>,
 }
 
-fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {
+/// Where a git query with no `path` runs, and what it is scoped to: the
+/// session's effective directory. After `enter_worktree` that is the
+/// worktree — the session's edits are there, and the queries used to report
+/// the main checkout. A worktree is its own repository root (a `.git` file
+/// where a checkout has the directory), so the query is scoped to it even
+/// when it sits inside the workspace (`.worktrees/…`). A plain `cd` into a
+/// subdirectory does not narrow the query: the scope stays the workspace
+/// root, as it would in a terminal.
+pub(super) fn default_scope(context: &ToolContext) -> (PathBuf, Option<PathBuf>) {
     let workspace = canonical_or_workspace(&context.workspace);
-    let mut working_dir = workspace.clone();
+    let cwd = canonical_or_workspace(&context.cwd);
+    let dot = || Some(PathBuf::from("."));
+    if cwd.join(".git").exists() || cwd == workspace || !cwd.starts_with(&workspace) {
+        (cwd, dot())
+    } else {
+        let root = PathBuf::from(format!(":(literal){}", workspace.display()));
+        (cwd, Some(root))
+    }
+}
+
+fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {
     // Default to "." so git's upward repository discovery can never report
-    // paths (or diff contents) outside the workspace when the workspace
-    // sits inside a larger repo; both callers append this after `--`.
-    let mut pathspec = Some(PathBuf::from("."));
+    // paths (or diff contents) outside the session's directory when it sits
+    // inside a larger repo; both callers append this after `--`.
+    let (mut working_dir, mut pathspec) = default_scope(context);
 
     if let Some(raw) = path {
         let resolved = context.resolve_path(raw)?;
@@ -392,6 +410,59 @@ mod tests {
         };
         run(&["add", "."]);
         run(&["commit", "-q", "-m", message]);
+    }
+
+    /// After `enter_worktree` the session's cwd is the worktree: a git
+    /// query with no `path` used to run in `context.workspace` and report
+    /// the main checkout.
+    #[tokio::test]
+    async fn git_status_follows_the_session_cwd_into_a_worktree() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        fs::write(tmp.path().join("file.txt"), "one\n").expect("write");
+        commit_all(tmp.path(), "init");
+        let added = codesmith_agent_runtime::dependencies::Git::status(
+            &["worktree", "add", "-q", "-b", "topic", "wt"],
+            tmp.path(),
+        )
+        .expect("git should spawn");
+        assert!(added.success(), "git worktree add failed");
+        fs::write(tmp.path().join("wt").join("file.txt"), "two\n").expect("modify");
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cwd(tmp.path().join("wt"));
+        let result = GitStatusTool
+            .execute(json!({}), &ctx)
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert!(result.content.contains("topic"), "{}", result.content);
+        assert!(result.content.contains("file.txt"), "{}", result.content);
+    }
+
+    /// A `cd` into a subdirectory does not narrow the query: the workspace
+    /// root stays the scope, as it would in a terminal.
+    #[tokio::test]
+    async fn git_status_from_a_subdirectory_still_covers_the_workspace() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        fs::create_dir_all(tmp.path().join("sub")).expect("mkdir");
+        fs::write(tmp.path().join("file.txt"), "one\n").expect("write");
+        commit_all(tmp.path(), "init");
+        fs::write(tmp.path().join("file.txt"), "two\n").expect("modify");
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cwd(tmp.path().join("sub"));
+        let result = GitStatusTool
+            .execute(json!({}), &ctx)
+            .await
+            .expect("execute");
+        assert!(result.success);
+        assert!(result.content.contains("file.txt"), "{}", result.content);
     }
 
     #[tokio::test]
