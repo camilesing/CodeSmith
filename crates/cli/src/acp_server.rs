@@ -507,17 +507,21 @@ impl AcpServer {
     /// `cwd`'s checkout when given (the REPL's workspace rule).
     async fn list_sessions(&self, params: Value) -> std::result::Result<Value, AcpError> {
         let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from);
-        let sessions = with_store(&self.store, |store| store.list_sessions())
-            .await
-            .map_err(AcpError::internal)?;
-        let sessions: Vec<Value> = sessions
-            .into_iter()
-            .filter(|meta| {
-                cwd.as_deref()
-                    .is_none_or(|cwd| workspace_scope_matches(&meta.workspace, cwd))
+        // The workspace scope canonicalizes and walks up for `.git` once
+        // per session: it runs with the store read, on the blocking pool.
+        let sessions = with_store(&self.store, move |store| {
+            let sessions = store.list_sessions()?;
+            Ok(match cwd.as_deref() {
+                Some(cwd) => sessions
+                    .into_iter()
+                    .filter(|meta| workspace_scope_matches(&meta.workspace, cwd))
+                    .collect(),
+                None => sessions,
             })
-            .map(session_summary)
-            .collect();
+        })
+        .await
+        .map_err(AcpError::internal)?;
+        let sessions: Vec<Value> = sessions.into_iter().map(session_summary).collect();
         Ok(json!({ "sessions": sessions }))
     }
 
