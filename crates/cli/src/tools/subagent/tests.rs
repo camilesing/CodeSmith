@@ -4084,6 +4084,50 @@ async fn background_run_of_a_custom_agent_definition_spawns() {
     assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
 }
 
+/// A failed spawn must not leave a "pending" lease behind. The placeholder
+/// was written before the spawn and stayed until the process ended (a
+/// successful spawn's lease is released when its child ends), so every later
+/// spawn on that file reported a conflict.
+#[tokio::test]
+async fn a_failed_spawn_takes_no_resident_lease() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("mkdir");
+    std::fs::write(workspace.join("lease-leak-probe.txt"), "notes\n").expect("resident");
+    std::fs::write(workspace.join("lease-leak-second.txt"), "notes\n").expect("resident");
+    let (runtime, _dir) = mock_child_runtime("unused");
+    let manager = runtime.manager.clone();
+    let context = ToolContext::new(workspace.clone());
+    let tool = AgentSpawnTool::new(manager, runtime);
+
+    // The first spawn claims the session name…
+    tool.execute(
+        json!({"prompt": "x", "name": "lease-dup", "resident_file": "lease-leak-probe.txt"}),
+        &context,
+    )
+    .await
+    .expect("first spawn");
+    // …and the second fails on it, after its own resident file was read.
+    let err = tool
+        .execute(
+            json!({"prompt": "y", "name": "lease-dup", "resident_file": "lease-leak-second.txt"}),
+            &context,
+        )
+        .await
+        .expect_err("duplicate session name");
+    assert!(err.to_string().contains("already in use"), "{err}");
+
+    assert!(
+        super::resident_lease_owner("lease-leak-second.txt").is_none(),
+        "a failed spawn left a lease behind"
+    );
+    assert_ne!(
+        super::resident_lease_owner("lease-leak-probe.txt").as_deref(),
+        Some("pending"),
+        "a lease is held under an agent id, never as the placeholder"
+    );
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.

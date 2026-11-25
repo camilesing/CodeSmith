@@ -103,6 +103,14 @@ fn release_resident_leases_for(agent_id: &str) {
     }
 }
 
+/// Who holds the resident lease on `file_path`, if anyone.
+fn resident_lease_owner(file_path: &str) -> Option<String> {
+    let leases =
+        RESIDENT_LEASES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let guard = leases.lock().unwrap_or_else(|p| p.into_inner());
+    guard.get(file_path).cloned()
+}
+
 /// Default maximum steps for sub-agent turns. Set to `u32::MAX` to remove the
 /// arbitrary fixed cap (#2034). Sub-agents run until they produce a final text
 /// response (no tool calls), are cancelled by the parent, or hit a configured
@@ -2723,7 +2731,7 @@ impl ToolSpec for AgentSpawnTool {
                 },
                 "resident_file": {
                     "type": "string",
-                    "description": "Optional file path for cache-aware resident mode; must be inside the workspace or a trusted root. When set, the child's system prefix is augmented with the full contents of this file so DeepSeek's prefix cache stays warm across follow-up send_input calls. Only one agent may hold a resident lease on a given file at a time — a second spawn with the same path receives a conflict warning in the result."
+                    "description": "Optional file path for cache-aware resident mode; must be inside the workspace or a trusted root. When set, the child's system prefix is augmented with the full contents of this file so DeepSeek's prefix cache stays warm across follow-up send_input calls. A resident lease does not block: a second spawn on the same file still runs."
                 },
                 "fork_context": {
                     "type": "boolean",
@@ -2917,20 +2925,11 @@ impl ToolSpec for AgentSpawnTool {
                     "<!-- resident_file: {file_path} -->\n```\n{file_contents}\n```\n\n{}",
                     spawn_request.prompt
                 );
-                // Check ownership (best-effort, non-blocking).
-                let conflict = {
-                    let leases = RESIDENT_LEASES
-                        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-                    let mut guard = leases.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(owner) = guard.get(file_path) {
-                        Some(format!(
-                            "Warning: agent {owner} already holds a resident lease on {file_path}"
-                        ))
-                    } else {
-                        guard.insert(file_path.clone(), "pending".to_string());
-                        None
-                    }
-                };
+                // Check ownership (best-effort, non-blocking). The lease
+                // itself is taken only by a spawn that succeeds — see below.
+                let conflict = resident_lease_owner(file_path).map(|owner| {
+                    format!("Warning: agent {owner} already holds a resident lease on {file_path}")
+                });
                 (prefixed, conflict)
             } else {
                 (spawn_request.prompt.clone(), None)
@@ -3015,18 +3014,20 @@ impl ToolSpec for AgentSpawnTool {
                 .await;
         }
 
-        // Replace the "pending" lease placeholder with the real agent id now that
-        // the manager has assigned one. Without this, `release_resident_leases_for`
-        // (which matches by agent id at terminal-state transitions) can never find
-        // the entry — leases would stay stamped as "pending" forever, defeating the
-        // release machinery added in #660.
+        // The lease is taken here and only here, under the agent id that
+        // `release_resident_leases_for` matches at terminal-state transitions.
+        // A placeholder written before the spawn was never released when the
+        // spawn failed or took the team path, and reported a conflict for
+        // the rest of the process.
         if let Some(ref file_path) = spawn_request.resident_file
-            && let Some(lock) = RESIDENT_LEASES.get()
-            && let Ok(mut guard) = lock.lock()
-            && let Some(owner) = guard.get_mut(file_path)
-            && owner == "pending"
+            && resident_conflict.is_none()
         {
-            *owner = result.agent_id.clone();
+            RESIDENT_LEASES
+                .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(file_path.clone())
+                .or_insert_with(|| result.agent_id.clone());
         }
 
         let mut tool_result = if self.name == "spawn_agent" {
