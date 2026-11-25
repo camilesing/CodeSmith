@@ -428,10 +428,12 @@ async fn maybe_refresh_oauth_headers(
     }
 }
 
-/// Mask a URL so any embedded credentials in the userinfo portion (e.g.
-/// `https://user:secret@host`) are replaced with `***`. Failures fall back to
-/// the original string so we don't lose context — we never want masking to
-/// produce an empty error.
+/// Mask a URL so any embedded credentials are removed: the userinfo
+/// portion (`https://user:secret@host`) is replaced with `***`, and the
+/// query and fragment are dropped — hosted MCP servers take their key in
+/// `?token=…` / `?api_key=…`. The masked URL reaches errors the model reads
+/// and the needs-auth cache. Failures fall back to the original string so we
+/// don't lose context — we never want masking to produce an empty error.
 fn mask_url_secrets(url: &str) -> String {
     if let Ok(parsed) = reqwest::Url::parse(url) {
         let mut clone = parsed.clone();
@@ -439,6 +441,8 @@ fn mask_url_secrets(url: &str) -> String {
             let _ = clone.set_username("***");
             let _ = clone.set_password(Some("***"));
         }
+        clone.set_query(None);
+        clone.set_fragment(None);
         return clone.to_string();
     }
     url.to_string()
@@ -6308,6 +6312,20 @@ mod tests {
         assert!(masked.contains("***"), "expected masked userinfo: {masked}");
         assert!(!masked.contains("s3cret"), "secret leaked: {masked}");
         assert!(masked.contains("host.example"), "host preserved: {masked}");
+    }
+
+    #[test]
+    fn mask_url_secrets_drops_the_query_and_fragment() {
+        let masked = mask_url_secrets("https://h.example/mcp?token=s3cret&x=1#frag");
+        assert!(masked.contains("h.example/mcp"), "{masked}");
+        assert!(
+            !masked.contains("s3cret"),
+            "a query credential leaked: {masked}"
+        );
+        assert!(
+            !masked.contains("x=1") && !masked.contains("frag"),
+            "{masked}"
+        );
     }
 
     #[test]
