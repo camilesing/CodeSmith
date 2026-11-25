@@ -630,8 +630,8 @@ impl ToolRegistryBuilder {
     /// implements `ToolSpec`, so the unified `ToolRegistryBuilder` flow
     /// handles them alongside native tools.
     ///
-    /// MCP tools are marked `defer_loading` by default (except discovery
-    /// helpers) to keep the model-visible catalog compact.
+    /// Every MCP tool is marked `defer_loading` to keep the model-visible
+    /// catalog compact.
     #[must_use]
     pub fn with_mcp_tools(
         mut self,
@@ -1009,36 +1009,15 @@ impl ToolSpec for McpToolAdapter {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        // Conservatively treat MCP tools as requiring approval and network
-        // access unless they are exactly one of the built-in discovery
-        // helpers. Exact match, never substring: the tool name is
-        // server-controlled, and `evil_list_mcp_scraper` must not inherit
-        // the read-only (no-approval) classification.
-        if matches!(
-            self.name.as_str(),
-            "list_mcp_resources"
-                | "list_mcp_resource_templates"
-                | "mcp_read_resource"
-                | "read_mcp_resource"
-                | "mcp_get_prompt"
-        ) {
-            vec![ToolCapability::ReadOnly]
-        } else {
-            vec![ToolCapability::Network, ToolCapability::RequiresApproval]
-        }
+        // Conservatively treat every MCP tool as requiring approval and
+        // network access: the server is third-party code. Pool names are
+        // always `mcp__<server>__<tool>`; the discovery helpers are
+        // pseudo-tools the pool serves itself, never entries here.
+        vec![ToolCapability::Network, ToolCapability::RequiresApproval]
     }
 
     fn defer_loading(&self) -> bool {
-        // Discovery helpers stay loaded; everything else is deferred.
-        let keep_loaded = matches!(
-            self.name.as_str(),
-            "list_mcp_resources"
-                | "list_mcp_resource_templates"
-                | "mcp_read_resource"
-                | "read_mcp_resource"
-                | "mcp_get_prompt"
-        );
-        !keep_loaded
+        true
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
