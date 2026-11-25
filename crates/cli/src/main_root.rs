@@ -2945,7 +2945,7 @@ pub(crate) async fn run_doctor(
                         }
                     };
                     println!("{icon}");
-                    if !server.enabled {
+                    if !server.is_enabled() {
                         println!("      (disabled)");
                     }
                 }
