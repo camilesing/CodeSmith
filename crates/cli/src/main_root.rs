@@ -4124,6 +4124,9 @@ pub(crate) fn init_project() -> Result<()> {
                 "✗".truecolor(red_r, red_g, red_b),
                 e
             );
+            // Scripts chain on this exit code: a missing file must not
+            // read as success.
+            return Err(e.into());
         }
     }
 
