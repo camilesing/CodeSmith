@@ -122,10 +122,10 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
             .current_dir(&request.workspace)
             // Exported for a `codesmith` child to enforce; an opaque agent
             // ignores them (see the module's known limitations).
-            .env(
-                "CODESMITH_SUBAGENT_DEPTH",
-                request.spawn_depth.saturating_add(1).to_string(),
-            )
+            // The child's own depth: it turns the pair into a budget of
+            // `max - depth`, so one more here cost a `codesmith` child a
+            // level (the headless twin hands the depth over unchanged).
+            .env("CODESMITH_SUBAGENT_DEPTH", request.spawn_depth.to_string())
             .env(
                 "CODESMITH_MAX_SPAWN_DEPTH",
                 request.max_spawn_depth.to_string(),
@@ -570,6 +570,24 @@ mod tests {
         assert_eq!(outcome.status, SubAgentStatus::Completed);
         assert_eq!(outcome.output, "ACP says hi.");
         assert_eq!(outcome.model.as_deref(), Some("some-model"));
+    }
+
+    /// A `codesmith` child enforces the pair as `max - depth`; the
+    /// provider used to export one more than the child's own depth.
+    #[tokio::test]
+    async fn a_codesmith_child_receives_its_own_depth() {
+        let script = concat!(
+            r#"printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'"#,
+            r#" '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}';"#,
+            r#" printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"depth=%s/%s"}}}}\n' "$CODESMITH_SUBAGENT_DEPTH" "$CODESMITH_MAX_SPAWN_DEPTH";"#,
+            r#" printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'; sleep 10"#
+        );
+        let provider = provider_for(
+            "/bin/sh".to_string(),
+            vec!["-c".to_string(), script.to_string()],
+        );
+        let outcome = provider.run(request()).await.expect("run completes");
+        assert_eq!(outcome.output, "depth=1/3");
     }
 
     #[tokio::test]
