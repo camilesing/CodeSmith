@@ -617,11 +617,18 @@ impl ToolSpec for WriteFileTool {
         // parsing .rs/.toml/.json file before anything touches disk, and
         // re-normalize Rust files that were rustfmt-clean.
         let gated = if context.parse_gate {
-            Some(parse_gate::gate(
-                &file_path,
-                existed_before.then_some(prior_contents.as_str()),
-                file_content,
-            )?)
+            // The gate parses both texts and runs rustfmt twice (up to 10 s
+            // each on a wedged binary): off the async worker, like the write.
+            let gate_path = file_path.clone();
+            let prior = existed_before.then(|| prior_contents.clone());
+            let new_content = file_content.to_owned();
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    parse_gate::gate(&gate_path, prior.as_deref(), &new_content)
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("parse gate failed: {e}")))??,
+            )
         } else {
             None
         };
@@ -979,11 +986,16 @@ impl ToolSpec for EditFileTool {
         // parsing .rs/.toml/.json file before anything touches disk, and
         // re-normalize Rust files that were rustfmt-clean.
         let gated = if context.parse_gate {
-            Some(parse_gate::gate(
-                &file_path,
-                Some(contents.as_str()),
-                &updated,
-            )?)
+            // Off the async worker, like the write (see WriteFileTool).
+            let gate_path = file_path.clone();
+            let (old_content, new_content) = (contents.clone(), updated.clone());
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    parse_gate::gate(&gate_path, Some(old_content.as_str()), &new_content)
+                })
+                .await
+                .map_err(|e| ToolError::execution_failed(format!("parse gate failed: {e}")))??,
+            )
         } else {
             None
         };
