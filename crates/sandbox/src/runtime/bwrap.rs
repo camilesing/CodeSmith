@@ -111,7 +111,12 @@ pub fn build_bwrap_command(
 
         // Re-bind protected control-plane subpaths read-only after the parent
         // bind so bubblewrap's later mount wins for the narrower path.
+        // Protected entries are listed whether or not they exist; a bind
+        // needs a source, so a missing one is skipped.
         for read_only in writable_root.read_only_subpaths {
+            if !read_only.exists() {
+                continue;
+            }
             let path = read_only.to_string_lossy().to_string();
             cmd.push("--ro-bind".to_string());
             cmd.push(path.clone());

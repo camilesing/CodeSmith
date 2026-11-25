@@ -637,6 +637,39 @@ mod tests {
         assert!(ro_param.1.ends_with(".codesmith"));
     }
 
+    /// Protected control-plane entries are listed whether or not they exist
+    /// yet: SBPL `require-not (subpath …)` also denies creating them, which
+    /// closed the hole where a sandboxed command planted the next session's
+    /// `AGENTS.md`.
+    #[test]
+    fn test_missing_protected_entries_are_still_read_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let policy = SandboxPolicy::workspace_with_roots(vec![tmp.path().to_path_buf()], false);
+        let ctx = resolve_profile_context(&policy, tmp.path());
+        let params = generate_params(&ctx);
+        let root_param = params
+            .iter()
+            .find(|(k, _)| k == "WRITABLE_ROOT_0")
+            .expect("root param")
+            .1
+            .clone();
+        for name in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".claude",
+            ".codesmith/config.toml",
+            ".agents/skills",
+        ] {
+            let expected = root_param.join(name);
+            assert!(
+                params
+                    .iter()
+                    .any(|(k, v)| k.starts_with("WRITABLE_ROOT_0_RO_") && v == &expected),
+                "{name} must be read-only before it exists: {params:?}"
+            );
+        }
+    }
+
     /// #558: cargo publish reaches into ~/.cargo/registry; the seatbelt has
     /// to allow read+write inside it. Both the policy text and the param
     /// table must be in sync — emitting one without the other makes

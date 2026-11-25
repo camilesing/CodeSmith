@@ -508,28 +508,28 @@ fn protected_control_plane_subpaths(root: &Path) -> Vec<PathBuf> {
         &[".cursorrules"],
     ];
 
+    // Listed whether or not they exist yet. Seatbelt's
+    // `require-not (subpath …)` also denies creating a missing one — gating
+    // on `exists()` let a sandboxed command plant the next session's
+    // `AGENTS.md`. Backends that must mount the path (bwrap, containers)
+    // skip the ones that do not exist.
     let mut protected = Vec::new();
     for name in PROTECTED_DIRS {
-        let path = root.join(name);
-        if path.exists() {
-            protected.push(path);
-        }
+        protected.push(root.join(name));
     }
     for parts in PROTECTED_NESTED_DIRS {
-        let path = parts
-            .iter()
-            .fold(root.to_path_buf(), |acc, part| acc.join(part));
-        if path.exists() {
-            protected.push(path);
-        }
+        protected.push(
+            parts
+                .iter()
+                .fold(root.to_path_buf(), |acc, part| acc.join(part)),
+        );
     }
     for parts in PROTECTED_FILES {
-        let path = parts
-            .iter()
-            .fold(root.to_path_buf(), |acc, part| acc.join(part));
-        if path.exists() {
-            protected.push(path);
-        }
+        protected.push(
+            parts
+                .iter()
+                .fold(root.to_path_buf(), |acc, part| acc.join(part)),
+        );
     }
     protected
 }
@@ -1396,6 +1396,29 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    /// Protected control-plane entries are listed whether or not they exist
+    /// yet: Seatbelt's `require-not (subpath …)` also denies creating a
+    /// missing one, which closed the hole where a sandboxed command planted
+    /// the next session's `AGENTS.md`.
+    #[test]
+    fn protected_control_plane_entries_are_listed_before_they_exist() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(!tmp.path().join("AGENTS.md").exists());
+        let protected = protected_control_plane_subpaths(tmp.path());
+        for name in [
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".claude",
+            ".codesmith/config.toml",
+            ".agents/skills",
+        ] {
+            assert!(
+                protected.contains(&tmp.path().join(name)),
+                "{name}: {protected:?}"
+            );
+        }
+    }
 
     #[test]
     fn command_exclusion_is_word_anchored() {

@@ -353,7 +353,13 @@ fn build_run_args(
                 let root_display = root.root.to_string_lossy().into_owned();
                 args.push("-v".into());
                 args.push(format!("{root_display}:{root_display}:rw"));
-                for subpath in root.read_only_subpaths {
+                // Protected entries are listed whether or not they
+                // exist; a mount needs a source.
+                for subpath in root
+                    .read_only_subpaths
+                    .iter()
+                    .filter(|subpath| subpath.exists())
+                {
                     let sub_display = subpath.to_string_lossy().into_owned();
                     args.push("-v".into());
                     args.push(format!("{sub_display}:{sub_display}:ro"));
