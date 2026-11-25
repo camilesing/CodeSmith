@@ -4006,6 +4006,30 @@ async fn resident_file_outside_the_workspace_is_refused() {
     }
 }
 
+/// A background `agent_run` emits the fork veto once. `execute` and the
+/// `AgentSpawnTool` it delegates to both emitted it, so a handler that
+/// budgets forks saw two for one spawn.
+#[tokio::test]
+async fn session_before_fork_fires_once_for_a_background_run() {
+    let (runner, seen) = runner_with_fork_handler(false).await;
+    let (runtime, workspace) = mock_child_runtime("bg report text");
+    let tool = SubagentRunTool::new(runtime.manager.clone(), runtime).with_extension_runner(runner);
+    tool.execute(
+        json!({"prompt": "bg line", "run_in_background": true}),
+        &ToolContext::new(workspace.path().to_path_buf()),
+    )
+    .await
+    .expect("background spawn accepted");
+
+    let fired = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|k| k.contains("SessionBeforeFork"))
+        .count();
+    assert_eq!(fired, 1, "{:?}", seen.lock().unwrap());
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.

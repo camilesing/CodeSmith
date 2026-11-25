@@ -4218,6 +4218,14 @@ impl ToolSpec for SubagentRunTool {
             )));
         }
 
+        // A background run delegates to `AgentSpawnTool`, which emits the
+        // `SessionBeforeFork` veto itself: dispatch it before this emit, or
+        // one fork runs the handler twice (a handler that budgets forks
+        // counted two).
+        if request.run_in_background {
+            return self.execute_background(request, context).await;
+        }
+
         // `SessionBeforeFork` — serial (veto) seam before the child forks
         // session state (same idiom as `SessionBeforeCompact`): `Cancel`
         // aborts the spawn with a model-visible error; everything else
@@ -4240,11 +4248,7 @@ impl ToolSpec for SubagentRunTool {
             }
         }
 
-        if request.run_in_background {
-            self.execute_background(request, context).await
-        } else {
-            self.execute_sync(request, context).await
-        }
+        self.execute_sync(request, context).await
     }
 }
 
