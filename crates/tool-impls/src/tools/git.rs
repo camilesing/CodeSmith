@@ -299,7 +299,7 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
 /// runs. Bounds memory; the head of the stream is what display keeps.
 const GIT_OUTPUT_CAP_BYTES: usize = 32 * 1024 * 1024;
 
-async fn run_git_command(
+pub(super) async fn run_git_command(
     working_dir: &Path,
     args: &[String],
 ) -> Result<std::process::Output, ToolError> {

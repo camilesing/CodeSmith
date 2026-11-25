@@ -10,6 +10,7 @@ use std::process::Output;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+#[cfg(test)]
 use codesmith_agent_runtime::dependencies::ExternalTool;
 use codesmith_agent_runtime::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -487,14 +488,12 @@ fn file_arg_from(working_dir: &Path, resolved: &Path) -> PathBuf {
 /// async `execute()` handlers, so a hung `git` pinned a runtime worker.
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The git.rs runner streams both pipes through `read_capped`, so a
+/// pathological patch is not buffered whole before the display truncation
+/// runs; this twin used `output()` and had only the timeout in common with
+/// it.
 async fn run_git_command(working_dir: &Path, args: &[String]) -> Result<Output, ToolError> {
-    let Some(mut cmd) = codesmith_agent_runtime::dependencies::Git::tokio_command() else {
-        return Err(ToolError::not_available(
-            "git is not installed or not in PATH",
-        ));
-    };
-    cmd.args(args).current_dir(working_dir).kill_on_drop(true);
-    tokio::time::timeout(GIT_TIMEOUT, cmd.output())
+    tokio::time::timeout(GIT_TIMEOUT, super::git::run_git_command(working_dir, args))
         .await
         .map_err(|_| {
             ToolError::execution_failed(format!(
@@ -503,13 +502,6 @@ async fn run_git_command(working_dir: &Path, args: &[String]) -> Result<Output, 
                 GIT_TIMEOUT.as_secs()
             ))
         })?
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                ToolError::not_available("git is not installed or not in PATH")
-            } else {
-                ToolError::execution_failed(format!("Failed to run git: {e}"))
-            }
-        })
 }
 
 fn format_command(working_dir: &Path, args: &[String]) -> String {
