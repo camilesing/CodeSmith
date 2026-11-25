@@ -405,8 +405,16 @@ async fn close_github_thread(
         GithubCloseTarget::Pr => vec!["pr", "close", &number_s],
     };
     run_gh_text(context, &close_args).await?;
-    if let Some(comment) = optional_str(&input, "comment") {
-        run_gh_text(context, &[subcmd, "comment", &number_s, "--body", comment]).await?;
+    let mut comment_failure = None;
+    if let Some(comment) = optional_str(&input, "comment")
+        && let Err(err) =
+            run_gh_text(context, &[subcmd, "comment", &number_s, "--body", comment]).await
+    {
+        // The thread is closed (the intended outcome): the close must still
+        // be recorded below, or the task timeline loses it. The model is told
+        // the comment failed; a retry re-posts only the comment.
+        tracing::warn!("close-comment post failed (thread closed): {err}");
+        comment_failure = Some(err.to_string());
     }
     // A failed artifact write after the close+comment must not fail the
     // call (both side effects are live); log it so the audit trail's
@@ -439,10 +447,14 @@ async fn close_github_thread(
         None,
         comment_artifact,
     );
-    Ok(
-        ToolResult::success(format!("Closed {} #{number}.", target.display()))
-            .with_metadata(metadata),
-    )
+    let summary = format!("Closed {} #{number}.", target.display());
+    match comment_failure {
+        None => Ok(ToolResult::success(summary).with_metadata(metadata)),
+        Some(err) => Ok(ToolResult::error(format!(
+            "{summary} The follow-up comment failed: {err}"
+        ))
+        .with_metadata(metadata)),
+    }
 }
 
 /// gh calls are bounded: a hung gh (credential prompt, network stall) must
@@ -1280,6 +1292,43 @@ mod tests {
             "allow_dirty": true,
             "dry_run": dry_run,
         })
+    }
+
+    /// `gh issue close` succeeds and the follow-up comment fails: the call
+    /// used to end in the comment's error, and the close never reached the
+    /// task record.
+    #[tokio::test]
+    async fn a_failed_close_comment_still_records_the_close() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let workspace = std::env::temp_dir().join(format!("gh-close-comment-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("dirs");
+        let script = workspace.join("gh-close-only.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$1 $2\" in\n  \"issue close\") exit 0 ;;\n  *) echo 'comment rejected' >&2; exit 1 ;;\nesac\n",
+        )
+        .expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        let _gh =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_GH_BIN", &script);
+        let ctx = gh_ctx(&workspace);
+
+        let mut input = closing_input(7, false);
+        input["comment"] = json!("done here");
+        let result = GithubCloseIssueTool
+            .execute(input, &ctx)
+            .await
+            .expect("the close is reported, not failed with the comment");
+
+        assert!(!result.success, "the comment failure is visible");
+        assert!(result.content.contains("#7"), "{}", result.content);
+        let metadata = result.metadata.expect("the close event is recorded");
+        assert_eq!(metadata["task_updates"]["github_event"]["action"], "close");
     }
 
     #[tokio::test]
