@@ -35,7 +35,7 @@ use super::tool_setup::{
 };
 use super::{
     Event, Op, TOOL_SEARCH_NAME, apply_tool_selection, build_model_tool_catalog,
-    configure_plugin_tools, progressive_disclosure_active, tool_search_control_tool,
+    configure_plugin_tools_off_thread, progressive_disclosure_active, tool_search_control_tool,
 };
 use crate::app_state::AppMode;
 use crate::background_task::SharedBackgroundTaskRegistry;
@@ -608,7 +608,8 @@ impl HostServices for super::EngineHost {
         let mut plugin_tool_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         if let Some(ref mut tool_registry) = tool_registry {
-            plugin_tool_names = configure_plugin_tools(tool_registry, config.tools.as_ref());
+            plugin_tool_names =
+                configure_plugin_tools_off_thread(tool_registry, config.tools.as_ref()).await;
         }
 
         // §F5d T1 — register extension tools (main-turn-only; not inherited

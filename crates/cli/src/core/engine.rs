@@ -408,19 +408,67 @@ fn plugin_tools_dir(tools_config: Option<&crate::config::ToolsConfig>) -> PathBu
     default_plugin_tools_dir()
 }
 
-/// Register plugin tools from the user's tools directory and apply any
-/// config.toml overrides. Returns every name this call wrote to the
-/// registry — auto-discovered plugins plus explicit config overrides
-/// (which may replace a builtin under the same name; a shadowing
-/// auto-discovered script is refused inside `load_plugins`). The written
-/// set — not a before/after name diff — is what the caller needs to
-/// mirror the registry's later-registration-replaces rule.
+/// Discover the plugin tools in `plugin_dir`. Most installations have no
+/// plugin directory: that case is a quiet no-op.
+fn discover_plugin_tools(
+    plugin_dir: &std::path::Path,
+) -> Vec<std::sync::Arc<dyn crate::tools::spec::ToolSpec>> {
+    if !plugin_dir.exists() {
+        tracing::debug!(
+            "Plugin directory {} does not exist, skipping",
+            plugin_dir.display()
+        );
+        return Vec::new();
+    }
+    crate::tools::plugin::load_plugin_tools(plugin_dir)
+}
+
+#[cfg(test)]
 fn configure_plugin_tools(
     tool_registry: &mut crate::tools::ToolRegistry,
     tools_config: Option<&crate::config::ToolsConfig>,
 ) -> std::collections::HashSet<String> {
     let plugin_dir = plugin_tools_dir(tools_config);
-    let mut written = tool_registry.load_plugins(&plugin_dir);
+    let plugins = discover_plugin_tools(&plugin_dir);
+    apply_plugin_tools(tool_registry, plugin_dir, plugins, tools_config)
+}
+
+/// Register plugin tools from the user's tools directory and apply any
+/// config.toml overrides. Returns every name this call wrote to the
+/// registry — auto-discovered plugins plus explicit config overrides
+/// (which may replace a builtin under the same name; a shadowing
+/// auto-discovered script is refused inside `register_plugins`). The written
+/// set — not a before/after name diff — is what the caller needs to
+/// mirror the registry's later-registration-replaces rule.
+///
+/// Every turn rescans the plugin directory (a `read_dir` plus a small read
+/// per script), so the scan runs on the blocking pool, not the runtime thread.
+async fn configure_plugin_tools_off_thread(
+    tool_registry: &mut crate::tools::ToolRegistry,
+    tools_config: Option<&crate::config::ToolsConfig>,
+) -> std::collections::HashSet<String> {
+    let plugin_dir = plugin_tools_dir(tools_config);
+    let scan_dir = plugin_dir.clone();
+    let plugins = tokio::task::spawn_blocking(move || discover_plugin_tools(&scan_dir))
+        .await
+        .unwrap_or_default();
+    apply_plugin_tools(tool_registry, plugin_dir, plugins, tools_config)
+}
+
+fn apply_plugin_tools(
+    tool_registry: &mut crate::tools::ToolRegistry,
+    plugin_dir: std::path::PathBuf,
+    plugins: Vec<std::sync::Arc<dyn crate::tools::spec::ToolSpec>>,
+    tools_config: Option<&crate::config::ToolsConfig>,
+) -> std::collections::HashSet<String> {
+    let mut written = tool_registry.register_plugins(plugins);
+    if !written.is_empty() {
+        tracing::info!(
+            "Loaded {} plugin tool(s) from {}",
+            written.len(),
+            plugin_dir.display()
+        );
+    }
     if let Some(tools_config) = tools_config
         && let Some(ref overrides) = tools_config.overrides
     {

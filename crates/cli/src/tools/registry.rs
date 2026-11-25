@@ -69,7 +69,7 @@ pub trait ToolRegistryPluginExt {
     ///
     /// Returns the names this call actually registered (a shadowing script
     /// is refused, so its name is absent).
-    fn load_plugins(&mut self, plugin_dir: &Path) -> Vec<String>;
+    fn register_plugins(&mut self, plugins: Vec<Arc<dyn ToolSpec>>) -> Vec<String>;
 }
 
 impl ToolRegistryPluginExt for ToolRegistry {
@@ -124,18 +124,8 @@ impl ToolRegistryPluginExt for ToolRegistry {
         written
     }
 
-    fn load_plugins(&mut self, plugin_dir: &Path) -> Vec<String> {
+    fn register_plugins(&mut self, plugins: Vec<Arc<dyn ToolSpec>>) -> Vec<String> {
         let mut written = Vec::new();
-        if !plugin_dir.exists() {
-            tracing::debug!(
-                "Plugin directory {} does not exist, skipping",
-                plugin_dir.display()
-            );
-            return written;
-        }
-        let plugins = crate::tools::plugin::load_plugin_tools(plugin_dir);
-        let count = plugins.len();
-        let mut loaded = 0;
         for tool in plugins {
             let name = tool.name().to_string();
             if self.contains(&name) {
@@ -155,13 +145,6 @@ impl ToolRegistryPluginExt for ToolRegistry {
             }
             self.register(tool);
             written.push(name);
-            loaded += 1;
-        }
-        if loaded > 0 {
-            tracing::info!(
-                "Loaded {loaded}/{count} plugin tool(s) from {}",
-                plugin_dir.display()
-            );
         }
         written
     }
