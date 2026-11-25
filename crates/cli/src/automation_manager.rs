@@ -995,33 +995,67 @@ pub fn spawn_scheduler(
                 // automation tool call for the tick and could deadlock if
                 // the task-manager path ever re-entered the automation
                 // host.
+                // The manager is fs-backed (directory reads, fsync'd
+                // writes): its sync sections run on the blocking pool, the
+                // lock taken there for the call's duration only.
                 let planned = {
-                    let manager = automations.lock().await;
-                    match manager.plan_due_runs() {
-                        Ok(planned) => planned,
-                        Err(err) => {
-                            tracing::warn!("automation scheduler tick failed: {err}");
-                            Vec::new()
+                    let manager = Arc::clone(&automations);
+                    tokio::task::spawn_blocking(move || {
+                        match manager.blocking_lock().plan_due_runs() {
+                            Ok(planned) => planned,
+                            Err(err) => {
+                                tracing::warn!("automation scheduler tick failed: {err}");
+                                Vec::new()
+                            }
                         }
-                    }
+                    })
+                    .await
+                    .unwrap_or_else(|err| {
+                        tracing::warn!("automation scheduler tick panicked: {err}");
+                        Vec::new()
+                    })
                 };
                 for mut item in planned {
                     let outcome = task_manager.add_task(item.request).await;
-                    let manager = automations.lock().await;
-                    let recorded = match &outcome {
-                        Ok(task) => manager.record_run_enqueued(&mut item.run, task),
-                        Err(err) => {
-                            manager.record_run_enqueue_failed(&mut item.run, &err.to_string())
-                        }
-                    };
+                    let manager = Arc::clone(&automations);
+                    let (run_id, recorded) = tokio::task::spawn_blocking(move || {
+                        let manager = manager.blocking_lock();
+                        let recorded = match &outcome {
+                            Ok(task) => manager.record_run_enqueued(&mut item.run, task),
+                            Err(err) => {
+                                manager.record_run_enqueue_failed(&mut item.run, &err.to_string())
+                            }
+                        };
+                        (item.run.id.clone(), recorded)
+                    })
+                    .await
+                    .unwrap_or_else(|err| {
+                        (
+                            String::new(),
+                            Err(anyhow::anyhow!("commit task failed: {err}")),
+                        )
+                    });
                     if let Err(err) = recorded {
-                        tracing::warn!("automation run {} commit failed: {err}", item.run.id);
+                        tracing::warn!("automation run {run_id} commit failed: {err}");
                     }
                 }
 
+                // The reconcile awaits task-manager lookups between its
+                // reads and writes while holding the lock: it runs whole on
+                // the blocking pool, its awaits driven from there.
                 {
-                    let manager = automations.lock().await;
-                    if let Err(err) = manager.reconcile_run_statuses(&task_manager).await {
+                    let manager = Arc::clone(&automations);
+                    let task_manager = Arc::clone(&task_manager);
+                    let reconciled = tokio::task::spawn_blocking(move || {
+                        tokio::runtime::Handle::current().block_on(
+                            manager
+                                .blocking_lock()
+                                .reconcile_run_statuses(&task_manager),
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|err| Err(anyhow::anyhow!("reconcile task failed: {err}")));
+                    if let Err(err) = reconciled {
                         tracing::warn!("automation reconcile failed: {err}");
                     }
                 }
@@ -1106,11 +1140,20 @@ impl AutomationManagerHost for AutomationManagerHostBridge {
         automation_id: &str,
         task_manager: &Arc<dyn TaskManagerHost>,
     ) -> Result<AutomationRunRecord> {
-        self.0
-            .lock()
-            .await
-            .run_now(automation_id, task_manager)
-            .await
+        // The fs-backed run record is written while the task is enqueued:
+        // the whole call runs on the blocking pool, its await driven there.
+        let manager = Arc::clone(&self.0);
+        let task_manager = Arc::clone(task_manager);
+        let automation_id = automation_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(
+                manager
+                    .blocking_lock()
+                    .run_now(&automation_id, &task_manager),
+            )
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("automation manager call failed: {e}"))?
     }
 }
 
