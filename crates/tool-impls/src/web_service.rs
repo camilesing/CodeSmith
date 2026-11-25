@@ -145,9 +145,11 @@ impl WebService for HttpWebService {
             SearchProvider::Metaso => &["metaso.cn"],
             SearchProvider::Baidu => &["qianfan.baidubce.com"],
             SearchProvider::Volcengine => &["ark.cn-beijing.volces.com"],
-            // The scrape providers can fall through to each other.
+            // The scrape providers can fall through to each other: an
+            // empty or challenged DuckDuckGo result is retried on Bing, so
+            // the gate must see both hosts for either provider.
             SearchProvider::Bing => &[BING_HOST, DUCKDUCKGO_HOST],
-            SearchProvider::DuckDuckGo => &[DUCKDUCKGO_HOST],
+            SearchProvider::DuckDuckGo => &[DUCKDUCKGO_HOST, BING_HOST],
             SearchProvider::ProviderNative => unreachable!("handled above"),
         };
         hosts.iter().map(|h| (*h).to_string()).collect()
@@ -1965,9 +1967,15 @@ mod tests {
                 "html.duckduckgo.com".to_string()
             ]
         );
+        // DuckDuckGo (the default provider) falls through to Bing, so a
+        // policy that allows DuckDuckGo and prompts for the rest must still
+        // prompt — the fallback request used to skip the gate entirely.
         assert_eq!(
             hosts_for(SearchProvider::DuckDuckGo),
-            vec!["html.duckduckgo.com".to_string()]
+            vec![
+                "html.duckduckgo.com".to_string(),
+                "www.bing.com".to_string()
+            ]
         );
     }
 
