@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use codesmith_agent_runtime::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
 };
 
 pub use codesmith_agent_runtime::tools::handle::{
@@ -124,11 +124,10 @@ impl ToolSpec for HandleReadTool {
                 .ok_or_else(|| ToolError::missing_field("handle"))?,
         )?;
         let projection = parse_projection(&input)?;
-        let max_chars = input
-            .get("max_chars")
-            .and_then(Value::as_u64)
-            .map(|n| (n as usize).min(HARD_MAX_CHARS))
-            .unwrap_or(DEFAULT_MAX_CHARS);
+        // Three states, like every optional field: a present wrong-typed
+        // value is refused, not folded into the default.
+        let max_chars = optional_u64(&input, "max_chars", DEFAULT_MAX_CHARS as u64)?
+            .min(HARD_MAX_CHARS as u64) as usize;
 
         // Scope the store guard to the lookup: `get` clones the record, so
         // the digest check and the (potentially large) projection run after
@@ -279,8 +278,12 @@ fn parse_projection(input: &Value) -> Result<Projection, ToolError> {
         return Ok(Projection::JsonPath(path.to_string()));
     }
     if let Some(slice) = input.get("slice") {
-        let start = slice.get("start").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let end = slice.get("end").and_then(Value::as_u64).map(|n| n as usize);
+        let start = optional_u64(slice, "start", 0)? as usize;
+        // `end: null` means "to the end", as an omitted `end` does.
+        let end = match slice.get("end") {
+            Some(Value::Null) => None,
+            _ => Some(optional_u64(slice, "end", 0)? as usize),
+        };
         if let Some(end) = end
             && end < start
         {
@@ -632,6 +635,33 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext::new(".")
+    }
+
+    /// `{"slice": {"start": -1}}`, `"start": "10"` or `"max_chars": "20000"`
+    /// used to read as the default — the head of the payload, with no word
+    /// that the argument had been dropped.
+    #[tokio::test]
+    async fn handle_read_refuses_wrong_typed_numbers() {
+        let ctx = ctx();
+        let handle = {
+            let mut store = ctx.runtime.handle_store.lock().await;
+            store.insert_text("rlm:test", "numbers", "abcdef")
+        };
+        for input in [
+            json!({"handle": handle, "slice": {"start": -1}}),
+            json!({"handle": handle, "slice": {"start": "1"}}),
+            json!({"handle": handle, "max_chars": "20000", "slice": {"start": 0}}),
+        ] {
+            let err = HandleReadTool
+                .execute(input.clone(), &ctx)
+                .await
+                .expect_err("a wrong-typed number is refused")
+                .to_string();
+            assert!(
+                err.contains("must be a non-negative integer"),
+                "{input}: {err}"
+            );
+        }
     }
 
     #[tokio::test]
