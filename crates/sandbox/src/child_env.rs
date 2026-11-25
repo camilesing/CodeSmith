@@ -3,11 +3,9 @@
 //! # `unsafe` rationale
 //!
 //! `std::env::set_var`/`remove_var` are `unsafe` since the 2024 edition because
-//! they mutate process-global state. This module calls them only on the single
-//! controller thread before spawning child processes — the documented pre-spawn
-//! pattern — matching the upstream `codesmith-tui` usage this was extracted
-//! from.
-#![allow(unsafe_code)]
+//! they mutate process-global state. Only this module's tests call them,
+//! serialised by `env_lock()`; the production code reads the environment and
+//! builds the child's environment without mutating it.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -279,6 +277,7 @@ fn normalize_key(key: &OsStr) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unsafe_code)]
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
