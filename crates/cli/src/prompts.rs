@@ -12,6 +12,7 @@
 pub use codesmith_agent_runtime::prompts::{
     Personality, PromptAppendSource, PromptRuntimeContext, PromptSessionContext,
     effective_prompt_bundle_for_mode_with_runtime_context_and_approval,
+    render_append_system_prompt_block,
 };
 // Names consumed only by this file's test module. Gated so the production
 // surface stays limited to what the CLI actually uses; the pinning property

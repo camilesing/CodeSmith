@@ -1170,10 +1170,16 @@ pub(crate) async fn real_main() -> Result<()> {
                         prompt_cache_breaker,
                     )
                     .await
-                } else if args.json {
-                    run_one_shot_json(&config, &model, &prompt, system_prompt_override).await
                 } else {
-                    run_one_shot(&config, &model, &prompt, system_prompt_override).await
+                    // No engine assembles the prompt here: the append
+                    // sources are rendered after the override directly.
+                    let system =
+                        one_shot_system_prompt(system_prompt_override, &append_system_prompts);
+                    if args.json {
+                        run_one_shot_json(&config, &model, &prompt, system).await
+                    } else {
+                        run_one_shot(&config, &model, &prompt, system).await
+                    }
                 }
             }
             Commands::Swebench(args) => {
@@ -5886,6 +5892,20 @@ pub(crate) async fn one_shot_messages(
     Ok(answer)
 }
 
+/// The one-shot system prompt: the override with every append source
+/// rendered after it — the block the engine path assembles — so
+/// `--append-system-prompt` means the same with and without `--auto`.
+pub(crate) fn one_shot_system_prompt(
+    system_prompt_override: Option<String>,
+    append_system_prompts: &[crate::prompts::PromptAppendSource],
+) -> Option<String> {
+    let append_block = crate::prompts::render_append_system_prompt_block(append_system_prompts);
+    match (system_prompt_override, append_block) {
+        (Some(base), Some(block)) => Some(format!("{base}\n\n{block}")),
+        (base, block) => base.or(block),
+    }
+}
+
 pub(crate) async fn run_one_shot(
     config: &Config,
     model: &str,
@@ -5936,7 +5956,7 @@ pub(crate) async fn run_one_shot_json(
     config: &Config,
     model: &str,
     prompt: &str,
-    system_prompt_override: Option<String>,
+    system: Option<String>,
 ) -> Result<()> {
     use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
@@ -5956,9 +5976,9 @@ pub(crate) async fn run_one_shot_json(
             }],
         }],
         max_tokens: 4096,
-        system: Some(SystemPrompt::Text(system_prompt_override.unwrap_or_else(
-            || "You are a coding assistant. Give concise, actionable responses.".to_string(),
-        ))),
+        system: Some(SystemPrompt::Text(system.unwrap_or_else(|| {
+            "You are a coding assistant. Give concise, actionable responses.".to_string()
+        }))),
         tools: None,
         tool_choice: None,
         metadata: None,
