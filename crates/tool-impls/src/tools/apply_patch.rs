@@ -940,21 +940,22 @@ fn build_pending_writes_from_patches(
 
         let base_content = original.clone().unwrap_or_default();
         // `str::lines()` drops the final `\n` and strips `\r`, so the
-        // rebuild below restores the file's own terminator style and its
+        // rebuild below restores the file's own terminators and its
         // trailing newline: bytes the hunks never touched must not change
         // (spurious "No newline at end of file" diffs, CRLF files silently
         // normalized to LF).
-        let eol = if base_content.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        };
         let had_trailing_newline = base_content.ends_with('\n');
         let mut lines: Vec<String> = if base_content.is_empty() {
             Vec::new()
         } else {
             base_content.lines().map(String::from).collect()
         };
+        // Each line's own terminator; the terminator added lines take is
+        // the file's majority. One CRLF line in an otherwise LF file used
+        // to turn the whole file CRLF.
+        let terminators = line_terminators(&base_content, lines.len());
+        let eol = majority_terminator(terminators.as_deref());
+        let base_lines = lines.clone();
 
         let apply_stats =
             apply_hunks_to_lines(&mut lines, &file_patch.hunks, fuzz, &file_patch.path)?;
@@ -983,10 +984,22 @@ fn build_pending_writes_from_patches(
                 original,
             });
         } else {
-            let mut new_content = lines.join(eol);
-            if had_trailing_newline && !new_content.is_empty() {
-                new_content.push_str(eol);
-            }
+            let new_content = match &terminators {
+                Some(terminators) => join_with_own_terminators(
+                    &lines,
+                    &base_lines,
+                    terminators,
+                    eol,
+                    had_trailing_newline,
+                ),
+                None => {
+                    let mut joined = lines.join(eol);
+                    if had_trailing_newline && !joined.is_empty() {
+                        joined.push_str(eol);
+                    }
+                    joined
+                }
+            };
             pending.push(PendingWrite {
                 path: resolved,
                 content: Some(new_content),
@@ -996,6 +1009,99 @@ fn build_pending_writes_from_patches(
     }
 
     Ok((pending, stats))
+}
+
+/// Each line's own terminator, in order: `"\r\n"`, `"\n"`, or `""` for a
+/// final line without one. `None` when the content does not split into
+/// exactly `line_count` pieces on `'\n'` (a lone `'\r'` terminator): there
+/// `str::lines()` and the split disagree, and the caller falls back to one
+/// terminator style.
+fn line_terminators(content: &str, line_count: usize) -> Option<Vec<&'static str>> {
+    if content.is_empty() {
+        return Some(Vec::new());
+    }
+    let pieces: Vec<&str> = content.split('\n').collect();
+    let trailing = content.ends_with('\n');
+    let body = if trailing {
+        &pieces[..pieces.len() - 1]
+    } else {
+        &pieces[..]
+    };
+    if body.len() != line_count {
+        return None;
+    }
+    Some(
+        body.iter()
+            .enumerate()
+            .map(|(index, piece)| {
+                if !trailing && index + 1 == body.len() {
+                    ""
+                } else if piece.ends_with('\r') {
+                    "\r\n"
+                } else {
+                    "\n"
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The terminator added lines take: the file's majority (`"\n"` when even
+/// or unknown).
+fn majority_terminator(terminators: Option<&[&'static str]>) -> &'static str {
+    let Some(terminators) = terminators else {
+        return "\n";
+    };
+    let crlf = terminators.iter().filter(|term| **term == "\r\n").count();
+    let lf = terminators.iter().filter(|term| **term == "\n").count();
+    if crlf > lf { "\r\n" } else { "\n" }
+}
+
+/// Rebuild the file with each surviving line keeping the terminator it had.
+/// `originals` and `terminators` describe the pre-patch file; a line the
+/// patch added takes `default_eol`. The two lists are walked in order: an
+/// equal line pairs up, and a different one is matched against the next
+/// original line that equals it (the lines in between were replaced).
+fn join_with_own_terminators(
+    lines: &[String],
+    originals: &[String],
+    terminators: &[&str],
+    default_eol: &str,
+    had_trailing_newline: bool,
+) -> String {
+    let mut out = String::new();
+    let mut next_original = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        let paired = if originals.get(next_original) == Some(line) {
+            Some(next_original)
+        } else {
+            (next_original..originals.len()).find(|&at| {
+                originals[at] == *line
+                    && lines
+                        .get(index + 1)
+                        .is_none_or(|following| originals.get(at + 1) == Some(following))
+            })
+        };
+        let term = match paired {
+            // A last line that had no terminator keeps none — unless the
+            // patch added lines after it.
+            Some(at) => {
+                next_original = at + 1;
+                if terminators[at].is_empty() && index + 1 < lines.len() {
+                    default_eol
+                } else {
+                    terminators[at]
+                }
+            }
+            None => default_eol,
+        };
+        out.push_str(line);
+        out.push_str(term);
+    }
+    if !lines.is_empty() && had_trailing_newline && !out.ends_with('\n') {
+        out.push_str(default_eol);
+    }
+    out
 }
 
 /// P0-1 parse gate for the whole pending batch: every write is checked
@@ -2287,5 +2393,23 @@ diff --git a/b.txt b/b.txt
                 "{header}"
             );
         }
+    }
+
+    /// A file with both CRLF and LF lines keeps each line's own terminator.
+    /// One CRLF line used to turn the whole file CRLF.
+    #[tokio::test]
+    async fn mixed_line_endings_keep_each_lines_own_terminator() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(tmp.path().join("mixed.txt"), "a\r\nb\nc\n").expect("write");
+        let patch = "@@ -1,3 +1,4 @@\n a\n b\n-c\n+C\n+added\n";
+        ApplyPatchTool
+            .execute(json!({"path": "mixed.txt", "patch": patch}), &ctx)
+            .await
+            .expect("patch");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("mixed.txt")).expect("read"),
+            "a\r\nb\nC\nadded\n"
+        );
     }
 }
