@@ -234,6 +234,10 @@ impl LspManager {
         // first deadline check breaks out immediately).
         if let Err(err) = transport.diagnostics_for(file, &text, Duration::ZERO).await {
             tracing::debug!(?err, file = %file.display(), "lsp: document sync failed");
+            // The transport's writer is gone: it cannot send again. Same
+            // rule as `diagnostics_for` — drop it so the next call lazily
+            // respawns instead of handing out the dead server all session.
+            self.transports.lock().await.remove(&lang);
             return None;
         }
 
@@ -772,6 +776,47 @@ pub(crate) mod tests {
             mgr.navigation_request(&path, LspNavigationMethod::Definition, json!({}))
                 .await
                 .is_none()
+        );
+    }
+
+    /// A transport whose document sync fails cannot send again. The
+    /// navigation path used to answer `None` and keep it cached, so every
+    /// later `lsp_navigate` hit the same dead server until an edit evicted it.
+    #[tokio::test]
+    async fn navigation_request_evicts_a_transport_that_cannot_send() {
+        struct DeadWriter;
+        #[async_trait]
+        impl LspTransport for DeadWriter {
+            async fn diagnostics_for(
+                &self,
+                _path: &Path,
+                _text: &str,
+                _wait: Duration,
+            ) -> anyhow::Result<Vec<Diagnostic>> {
+                Err(anyhow::anyhow!("LSP outbound channel closed"))
+            }
+            async fn request(&self, _method: &str, _params: Value) -> anyhow::Result<Value> {
+                unreachable!("no request is sent after a failed document sync")
+            }
+            async fn shutdown(&self) {}
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::new(LspConfig::default(), dir.path().to_path_buf());
+        let path = dir.path().join("foo.rs");
+        tokio::fs::write(&path, b"fn main() {}").await.unwrap();
+        mgr.transports
+            .lock()
+            .await
+            .insert(Language::Rust, Arc::new(DeadWriter));
+
+        assert!(
+            mgr.navigation_request(&path, LspNavigationMethod::Definition, json!({}))
+                .await
+                .is_none()
+        );
+        assert!(
+            !mgr.transports.lock().await.contains_key(&Language::Rust),
+            "the dead transport is dropped so the next call respawns"
         );
     }
 }
