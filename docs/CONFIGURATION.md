@@ -1513,7 +1513,8 @@ lists one fails at spawn with the `capabilities.toml` attribution.
 Unknown names are no-ops (tool names come and go); a
 malformed file fails startup with the offending field path. The
 `CODESMITH_CAPABILITIES_MANIFEST` env var overrides the file path
-(ops/tests). `/tools` renders the current catalog grouped by origin plus
+(ops/tests); a path set this way must exist — a missing file fails startup
+instead of loading an empty manifest that re-enables every tool. `/tools` renders the current catalog grouped by origin plus
 the disabled names. The file is read once per process — restart after
 edits.
 

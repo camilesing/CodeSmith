@@ -1341,7 +1341,7 @@ disabled = ["edit_file", "apply_patch"]   # 任意来源：内置、插件、mod
 名字，自定义子代理的 `allowed_tools` 显式列出被禁用工具时会在
 spawn 时报错并归因到 `capabilities.toml`。未知名字是无害的
 no-op（工具名有增有减）；文件格式错误会在启动时报出字段路径并失败。
-`CODESMITH_CAPABILITIES_MANIFEST` 环境变量可覆盖文件路径（运维/测试）。
+`CODESMITH_CAPABILITIES_MANIFEST` 环境变量可覆盖文件路径（运维/测试）；以这种方式指定的路径必须存在——文件缺失会在启动时报错，而不是加载一份空清单、把所有工具重新启用。
 `/tools` 按来源分组展示当前目录，并列出被禁用名字。文件每进程读一次
 ——修改后需重启。
 

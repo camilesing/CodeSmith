@@ -104,28 +104,42 @@ impl CapabilityManifest {
     }
 
     /// Load from `path`. A missing file is the normal first run → empty
-    /// manifest; read errors and malformed content propagate (fail loud).
-    pub fn load_from(path: &Path) -> Result<Self, String> {
+    /// manifest when `missing_ok`; a path that was set explicitly and does
+    /// not exist is an error — an empty manifest there would silently
+    /// re-enable every tool it was meant to remove. Read errors and
+    /// malformed content propagate (fail loud).
+    pub fn load_from(path: &Path, missing_ok: bool) -> Result<Self, String> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::from_str(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if missing_ok {
+                    Ok(Self::default())
+                } else {
+                    Err(format!(
+                        "capabilities manifest not found: {}",
+                        path.display()
+                    ))
+                }
+            }
             Err(e) => Err(format!("read {}: {e}", path.display())),
         }
     }
 }
 
-fn manifest_path() -> Result<PathBuf, String> {
+/// The manifest file, and whether its path was set explicitly through
+/// `CODESMITH_CAPABILITIES_MANIFEST`.
+fn manifest_path() -> Result<(PathBuf, bool), String> {
     if let Ok(path) = std::env::var(CAPABILITIES_MANIFEST_ENV)
         && !path.trim().is_empty()
     {
-        return Ok(PathBuf::from(path));
+        return Ok((PathBuf::from(path.trim()), true));
     }
     // Same state dir ModStateStore/ExtensionStateStore use (~/.codesmith).
     // An unresolvable state dir fails loud here — a CWD-relative fallback
     // would silently load (or break on) a stray ./capabilities.toml in
     // whatever directory the binary was launched from.
     codesmith_config::ensure_state_dir(".")
-        .map(|dir| dir.join("capabilities.toml"))
+        .map(|dir| (dir.join("capabilities.toml"), false))
         .map_err(|e| format!("cannot resolve state dir for capabilities.toml: {e:#}"))
 }
 
@@ -139,8 +153,8 @@ fn manifest() -> Result<&'static CapabilityManifest, String> {
     if let Some(loaded) = MANIFEST.get() {
         return Ok(loaded);
     }
-    let path = manifest_path()?;
-    let loaded = CapabilityManifest::load_from(&path).map_err(|e| {
+    let (path, explicit) = manifest_path()?;
+    let loaded = CapabilityManifest::load_from(&path, !explicit).map_err(|e| {
         format!(
             "capabilities manifest invalid ({e}) — fix {}",
             path.display()
@@ -223,13 +237,18 @@ foo = 1
 
     #[test]
     fn missing_file_is_empty_read_error_propagates() {
-        let m = CapabilityManifest::load_from(Path::new("/nonexistent/capabilities.toml"))
-            .expect("missing file = first run");
+        let missing = Path::new("/nonexistent/capabilities.toml");
+        let m = CapabilityManifest::load_from(missing, true).expect("missing file = first run");
         assert!(m.tools_disabled.is_empty());
+        // An explicitly configured path that does not exist is not a first
+        // run: an empty manifest would re-enable every tool it disables.
+        let err =
+            CapabilityManifest::load_from(missing, false).expect_err("an explicit path must exist");
+        assert!(err.contains("/nonexistent/capabilities.toml"), "{err}");
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("capabilities.toml");
         std::fs::write(&path, "[tools]\ndisabled = 3\n").unwrap();
-        assert!(CapabilityManifest::load_from(&path).is_err());
+        assert!(CapabilityManifest::load_from(&path, false).is_err());
     }
 
     #[test]
