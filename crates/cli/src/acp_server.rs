@@ -246,6 +246,12 @@ struct AcpSession {
     /// was reserved and not engine-synthesized) — its `TurnComplete`
     /// resolves the slot. Any other running turn leaves the slot waiting.
     prompt_turn_live: bool,
+    /// A `session/cancel` that arrived while a prompt was pending but its
+    /// turn had not started: the engine may not exist yet, and an engine
+    /// that does resets its cancel token at turn start. `run_turn` honours
+    /// it at the send point; a turn start clears it, so it can never
+    /// cancel a later prompt.
+    cancel_requested: bool,
     /// Monotonic per-session prompt generation: lets an abandoned turn
     /// clear ITS reservation without clobbering a newer prompt's slot
     /// after a close/resume re-created the same session id.
@@ -496,6 +502,7 @@ impl AcpServer {
                 pump_task: None,
                 pending_prompt: None,
                 prompt_turn_live: false,
+                cancel_requested: false,
                 prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
@@ -591,6 +598,7 @@ impl AcpServer {
                 pump_task: None,
                 pending_prompt: None,
                 prompt_turn_live: false,
+                cancel_requested: false,
                 prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
@@ -661,11 +669,18 @@ impl AcpServer {
     /// the pump resolves the pending prompt as interrupted, and the
     /// cancelled prompt's own task answers its request with `cancelled`.
     fn cancel_session(&mut self, session_id: &str) {
-        let sessions = lock_sessions(&self.shared.sessions);
-        if let Some(session) = sessions.get(session_id)
-            && let Some(engine) = session.engine.as_ref()
-        {
+        let mut sessions = lock_sessions(&self.shared.sessions);
+        let Some(session) = sessions.get_mut(session_id) else {
+            return;
+        };
+        if let Some(engine) = session.engine.as_ref() {
             engine.cancel();
+        }
+        // The prompt's turn has not started: there may be no engine yet,
+        // and an engine that exists resets its cancel token at turn start.
+        // Latch the cancel; `run_turn` honours it at the send point.
+        if session.pending_prompt.is_some() && !session.prompt_turn_live {
+            session.cancel_requested = true;
         }
     }
 
@@ -752,6 +767,22 @@ where
             return Err(err);
         }
     };
+    // A cancel that arrived before this turn could start (no engine yet, or
+    // before the engine's turn-start token reset): the turn is not sent.
+    let cancelled = {
+        let mut sessions = lock_sessions(&shared.sessions);
+        sessions
+            .get_mut(&session_id)
+            .is_some_and(|session| std::mem::take(&mut session.cancel_requested))
+    };
+    if cancelled {
+        release_slot(shared);
+        return Ok(PromptOutcome {
+            status: TurnOutcomeStatus::Interrupted,
+            error: None,
+            tokens: 0,
+        });
+    }
     if let Err(err) = engine
         .send(Op::SendMessage {
             content: prompt,
@@ -1158,6 +1189,11 @@ async fn pump_events<W>(
                 let mut sessions = lock_sessions(&shared.sessions);
                 if let Some(session) = sessions.get_mut(&session_id) {
                     session.prompt_turn_live = !synthesized && session.pending_prompt.is_some();
+                    if !synthesized {
+                        // The turn started: a latch set from here on belongs
+                        // to a later prompt, not to this one.
+                        session.cancel_requested = false;
+                    }
                 }
             }
             Event::TurnComplete {
@@ -1649,6 +1685,7 @@ mod tests {
                 pump_task: None,
                 pending_prompt: None,
                 prompt_turn_live: false,
+                cancel_requested: false,
                 prompt_generation: 0,
                 approved_keys: HashSet::new(),
             },
@@ -2566,6 +2603,59 @@ mod tests {
         );
     }
 
+    /// `session/cancel` that arrives before the prompt's turn can start —
+    /// the engine is created lazily at the first prompt — used to be a
+    /// no-op answered with success, and the cancelled turn ran to the end.
+    #[tokio::test]
+    async fn a_cancel_before_the_turn_starts_is_honoured_at_the_send_point() {
+        let (tmp, store) = temp_store();
+        let mut server = server_over(store);
+        open_session(&mut server, "acp-early", &tmp.path().join("proj"));
+        let mut mock = crate::core::engine::mock_engine_handle();
+        let (_tx, rx) = oneshot::channel::<PromptOutcome>();
+        let generation = {
+            let mut sessions = lock_sessions(&server.shared.sessions);
+            let session = sessions.get_mut("acp-early").expect("session");
+            session.engine = Some(mock.handle.clone());
+            session.pending_prompt = Some(oneshot::channel().0);
+            session.prompt_generation += 1;
+            session.prompt_generation
+        };
+
+        server.cancel_session("acp-early");
+
+        let outcome = run_turn(
+            TurnRequest {
+                config: Config::default(),
+                settings: Settings::default(),
+                model: "test-model".to_string(),
+                store: server.store.clone(),
+                session_id: "acp-early".to_string(),
+                prompt: "hello".to_string(),
+                generation,
+            },
+            rx,
+            &server.shared,
+            sink(),
+        )
+        .await
+        .expect("the cancelled prompt resolves");
+        assert_eq!(outcome.status, TurnOutcomeStatus::Interrupted);
+        assert!(
+            matches!(
+                mock.rx_op.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "the cancelled turn must not reach the engine"
+        );
+        assert!(
+            lock_sessions(&server.shared.sessions)["acp-early"]
+                .pending_prompt
+                .is_none(),
+            "the slot is released"
+        );
+    }
+
     /// A prompt against a session that is not live fails loud (and frees its
     /// slot) instead of hanging on the completion channel.
     #[tokio::test]
@@ -2834,6 +2924,7 @@ mod tests {
             pump_task: None,
             pending_prompt: None,
             prompt_turn_live: false,
+            cancel_requested: false,
             prompt_generation: 0,
             approved_keys: HashSet::new(),
         }
