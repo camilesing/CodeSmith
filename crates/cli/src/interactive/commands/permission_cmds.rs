@@ -61,10 +61,14 @@ pub fn shell_grant_key(command: &str) -> String {
     if tokens.is_empty() {
         return "shell:<empty>".to_string();
     }
-    format!(
-        "shell:{}",
-        codesmith_agent_runtime::command_safety::classify_command(&tokens)
-    )
+    use codesmith_agent_runtime::command_safety::{classify_command, classify_segment};
+    // Same reading as the approval key: a wrapper or a prefix assignment
+    // does not name the family. An assignment that selects the program gets
+    // the plain classifier's answer, which no key the engine builds matches.
+    let family = classify_segment(command)
+        .filter(|family| !family.is_empty())
+        .unwrap_or_else(|| classify_command(&tokens));
+    format!("shell:{family}")
 }
 
 /// The workspace key grants are filed under.
@@ -334,6 +338,9 @@ mod tests {
         // Extra whitespace and quoting do not change the key.
         assert_eq!(shell_grant_key("  git   status  "), "shell:git status");
         assert_eq!(shell_grant_key(""), "shell:<empty>");
+        // A wrapper does not name the family — the approval key reads the
+        // command behind it.
+        assert_eq!(shell_grant_key("env K=1 bash x.sh"), "shell:bash");
     }
 
     use crate::approval_grants::ApprovalGrants;

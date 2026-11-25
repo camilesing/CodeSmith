@@ -322,6 +322,38 @@ pub fn classify_command(tokens: &[&str]) -> String {
     positional[0].clone()
 }
 
+/// Shell words that only wrap the command written after them, as a prefix
+/// assignment and `env` do. Bare only: `time -p` or `command -v` name
+/// themselves.
+const WRAPPER_WORDS: &[&str] = &["time", "nohup", "nice", "command", "exec", "builtin"];
+
+/// The family of one command segment, read from the command that runs —
+/// what [`classify_command`] sees past a prefix assignment, a leading `env`
+/// (with its flags and assignments) and a bare wrapper word. `env K=1 bash
+/// x.sh` is `bash`, not `env`: a family named after the wrapper covered
+/// every other command behind it.
+///
+/// `None` when an assignment ahead of the command selects which program
+/// runs: that call has no family to reuse.
+#[must_use]
+pub fn classify_segment(segment: &str) -> Option<String> {
+    let tokens: Vec<String> = segment.split_whitespace().map(str::to_owned).collect();
+    let wrapped = tokens
+        .first()
+        .is_some_and(|first| WRAPPER_WORDS.contains(&first.as_str()))
+        && tokens.get(1).is_some_and(|next| !next.starts_with('-'));
+    let start = usize::from(wrapped);
+    let primary = primary_token_index(&tokens[start..])? + start;
+    if tokens[..primary]
+        .iter()
+        .any(|token| crate::bash_ast::facts::token_selects_executor(token))
+    {
+        return None;
+    }
+    let tokens: Vec<&str> = tokens.iter().map(String::as_str).collect();
+    Some(classify_command(&tokens[primary..]))
+}
+
 /// Return `true` when an allow-rule `pattern` (a command-prefix string such
 /// as `"git status"`) matches the concrete `command` string using the
 /// arity-aware prefix classification from [`classify_command`].
@@ -2327,6 +2359,34 @@ mod tests {
             analyze_command("FOO=bar ls").level,
             SafetyLevel::Safe
         ));
+    }
+
+    #[test]
+    fn classify_segment_reads_the_command_behind_a_wrapper() {
+        assert_eq!(
+            classify_segment("env K=1 bash x.sh").as_deref(),
+            Some("bash")
+        );
+        assert_eq!(
+            classify_segment("time cargo clippy").as_deref(),
+            Some("cargo clippy")
+        );
+        assert_eq!(
+            classify_segment("CI=true cargo clippy").as_deref(),
+            Some("cargo clippy")
+        );
+        // Bare wrappers only: `command -v` names itself.
+        assert_eq!(
+            classify_segment("command -v foo").as_deref(),
+            Some("command")
+        );
+        // An assignment that selects the program leaves nothing to reuse.
+        assert_eq!(classify_segment("env PATH=/tmp/evil git status"), None);
+        assert_eq!(classify_segment("time PATH=/tmp/evil git status"), None);
+        assert_eq!(
+            classify_segment("git status").as_deref(),
+            Some("git status")
+        );
     }
 
     /// `env PATH=… git status` selects the program the way a prefix

@@ -50,7 +50,7 @@ use std::time::Instant;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use codesmith_sandbox::command_safety::{SafetyLevel, analyze_command, classify_command};
+use codesmith_sandbox::command_safety::{SafetyLevel, analyze_command, classify_segment};
 use codesmith_sandbox::execpolicy::matcher::split_command_segments;
 
 /// The fingerprint of a tool call — stable enough to match repeated
@@ -269,14 +269,19 @@ fn shell_grouping_key(input: &serde_json::Value) -> String {
     if !codesmith_sandbox::bash_ast::BashFacts::top_level_is_represented(command) {
         return format!("{EXACT_CALL_KEY_PREFIX}{}", hash_json_value(input));
     }
-    let mut families: Vec<String> = split_command_segments(command)
-        .iter()
-        .map(|segment| {
-            let tokens: Vec<&str> = segment.split_whitespace().collect();
-            classify_command(&tokens)
-        })
-        .filter(|family| !family.is_empty())
-        .collect();
+    let mut families: Vec<String> = Vec::new();
+    for segment in split_command_segments(command) {
+        // The family is the command that runs: a wrapper (`env K=1 bash
+        // x.sh`) or a prefix assignment does not name it, and an assignment
+        // that selects the program leaves no family at all.
+        match classify_segment(&segment) {
+            Some(family) if !family.is_empty() => families.push(family),
+            Some(_) => {}
+            None => {
+                return format!("{EXACT_CALL_KEY_PREFIX}{}", hash_json_value(input));
+            }
+        }
+    }
     families.sort();
     families.dedup();
     if families.is_empty() {
@@ -626,6 +631,27 @@ mod tests {
             &json!({"command": "git status --porcelain && git diff"}),
         );
         assert_eq!(key.0, "shell:git diff + git status");
+    }
+
+    /// `env K=1 bash x.sh` keyed as `shell:env`, so `[a]` on any other
+    /// `env` call — `env FOO=1 cargo test` — approved it.
+    #[test]
+    fn a_wrapper_does_not_name_the_family() {
+        let wrapped =
+            build_approval_grouping_key("exec_shell", &json!({"command": "env K=1 bash x.sh"}));
+        assert_eq!(wrapped.0, "shell:bash");
+        assert_eq!(
+            wrapped,
+            build_approval_grouping_key("exec_shell", &json!({"command": "bash x.sh"}))
+        );
+        assert_ne!(
+            wrapped,
+            build_approval_grouping_key("exec_shell", &json!({"command": "env FOO=1 cargo test"}))
+        );
+        assert_eq!(
+            build_approval_grouping_key("exec_shell", &json!({"command": "time cargo clippy"})).0,
+            "shell:cargo clippy"
+        );
     }
 
     #[test]
