@@ -547,12 +547,18 @@ impl AutomationManager {
                     continue;
                 }
             };
+            // Same posture as the unparseable record above and as
+            // `list_automations`: a record from a newer build is skipped, not
+            // fatal — one such file used to abort every scheduler tick for
+            // every automation after it.
             if run.schema_version > CURRENT_RUN_SCHEMA_VERSION {
-                bail!(
-                    "Automation run schema v{} is newer than supported v{}",
+                tracing::warn!(
+                    "skipping automation run record {} with schema v{} (newer than supported v{})",
+                    path.display(),
                     run.schema_version,
                     CURRENT_RUN_SCHEMA_VERSION
                 );
+                continue;
             }
             // Same posture as list_automations: a record-carried unsafe id
             // (run.id / run.automation_id reach Path::join in save_run)
@@ -1211,6 +1217,54 @@ mod tests {
                 .expect("runs dir")
                 .exists()
         );
+    }
+
+    /// A run record written by a newer build used to fail the whole
+    /// listing, and with it every scheduler tick for every automation
+    /// sorted after the affected one.
+    #[test]
+    fn list_runs_skips_a_record_from_a_newer_schema() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let manager = AutomationManager::open(tempdir.path().to_path_buf()).expect("manager");
+        let created = manager
+            .create_automation(CreateAutomationRequest {
+                name: "Runs".to_string(),
+                prompt: "prompt".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
+                cwds: Vec::new(),
+                status: Some(AutomationStatus::Active),
+            })
+            .expect("create");
+        let run = AutomationRunRecord {
+            schema_version: CURRENT_RUN_SCHEMA_VERSION,
+            id: Uuid::new_v4().to_string(),
+            automation_id: created.id.clone(),
+            scheduled_for: Utc::now(),
+            status: AutomationRunStatus::Queued,
+            created_at: Utc::now(),
+            started_at: None,
+            ended_at: None,
+            task_id: None,
+            thread_id: None,
+            turn_id: None,
+            error: None,
+        };
+        manager.save_run(&run).expect("save run");
+        let mut newer = serde_json::to_value(&run).expect("record as json");
+        newer["schema_version"] = serde_json::json!(999);
+        std::fs::write(
+            manager
+                .run_path(&created.id, "run_from_the_future")
+                .expect("path"),
+            newer.to_string(),
+        )
+        .expect("write the newer record");
+
+        let runs = manager
+            .list_runs(&created.id, None)
+            .expect("the readable record is still listed");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run.id);
     }
 
     #[test]
