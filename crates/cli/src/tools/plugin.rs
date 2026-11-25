@@ -21,6 +21,7 @@
 //! (an exit-0 script's prose is its result).
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,6 +37,11 @@ use crate::config::ToolOverride;
 
 /// Timeout for plugin script execution (120 seconds).
 const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Grace the stdin writer and the pipe readers get once the script has
+/// exited. A background child that inherited a pipe (`watcher &`) never
+/// EOFs; the runner used to wait here for as long as it lived.
+const PLUGIN_PIPE_GRACE: Duration = Duration::from_secs(2);
 
 /// Cap on plugin child output per stream: stdout is expected to be a
 /// parseable `ToolResult` JSON (KBs in practice); anything past this is a
@@ -293,7 +299,10 @@ async fn run_plugin_child_raw(
         .spawn()
         .map_err(|e| ToolError::execution_failed(format!("failed to spawn {label}: {e}")))?;
 
-    let stdin_writer = child.stdin.take().map(|mut stdin| {
+    // Captured before the wait: once the child is reaped `child.id()` is
+    // `None`, and the group could no longer be signalled.
+    let child_pid = child.id();
+    let mut stdin_writer = child.stdin.take().map(|mut stdin| {
         tokio::spawn(async move {
             if stdin.write_all(&input_bytes).await.is_ok() {
                 let _ = stdin.shutdown().await;
@@ -305,10 +314,10 @@ async fn run_plugin_child_raw(
     // memory stays bounded no matter how much the script prints.
     let mut stdout = child.stdout.take().expect("stdout piped above");
     let mut stderr = child.stderr.take().expect("stderr piped above");
-    let stdout_task = tokio::spawn(async move {
+    let mut stdout_task = tokio::spawn(async move {
         codesmith_agent_runtime::utils::read_capped(&mut stdout, PLUGIN_OUTPUT_CAP_BYTES).await
     });
-    let stderr_task = tokio::spawn(async move {
+    let mut stderr_task = tokio::spawn(async move {
         codesmith_agent_runtime::utils::read_capped(&mut stderr, PLUGIN_OUTPUT_CAP_BYTES).await
     });
 
@@ -325,11 +334,51 @@ async fn run_plugin_child_raw(
         }
     };
 
-    if let Some(stdin_writer) = stdin_writer {
-        let _ = stdin_writer.await;
-    }
-    let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
-    let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
+    // The script has exited. A background child that inherited one of the
+    // pipes, or one holding stdin it never reads, keeps these joins from
+    // finishing. Give them a short grace, then take the process group down —
+    // that closes the pipes — and collect what was read.
+    let stdout_abort = stdout_task.abort_handle();
+    let stderr_abort = stderr_task.abort_handle();
+    let drained = {
+        let drain = {
+            let stdin_writer = &mut stdin_writer;
+            let stdout_task = &mut stdout_task;
+            let stderr_task = &mut stderr_task;
+            async move {
+                if let Some(stdin_writer) = stdin_writer.as_mut() {
+                    let _ = Pin::new(&mut *stdin_writer).as_mut().await;
+                }
+                (
+                    Pin::new(&mut *stdout_task)
+                        .as_mut()
+                        .await
+                        .unwrap_or_default(),
+                    Pin::new(&mut *stderr_task)
+                        .as_mut()
+                        .await
+                        .unwrap_or_default(),
+                )
+            }
+        };
+        tokio::pin!(drain);
+        match tokio::time::timeout(PLUGIN_PIPE_GRACE, drain.as_mut()).await {
+            Ok(drained) => Some(drained),
+            Err(_) => {
+                codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child_pid);
+                tokio::time::timeout(PLUGIN_PIPE_GRACE, drain.as_mut())
+                    .await
+                    .ok()
+            }
+        }
+    };
+    let Some(((stdout_kept, stdout_dropped), (stderr_kept, stderr_dropped))) = drained else {
+        stdout_abort.abort();
+        stderr_abort.abort();
+        return Err(ToolError::execution_failed(format!(
+            "{label}: the script exited but its output pipes never closed"
+        )));
+    };
     let dropped = stdout_dropped + stderr_dropped;
 
     if status.success() {
@@ -771,6 +820,29 @@ echo hello
         )
         .unwrap();
         std::process::exit(0);
+    }
+
+    /// A script that leaves a background child holding stdout (a watcher
+    /// started with `&`): the runner used to wait for its EOF until the
+    /// user cancelled the turn.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_background_child_holding_the_pipes_does_not_hang_the_runner() {
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "sleep 30 & printf '%s\\n' '{\"content\":\"started\",\"success\":true}'",
+        ]);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            run_plugin_child_raw(&mut cmd, "watcher", serde_json::json!({})),
+        )
+        .await
+        .expect("the runner must not wait for the background child's EOF")
+        .expect("the script's own output is returned");
+
+        assert_eq!(result.content, "started");
     }
 
     #[test]
