@@ -4898,6 +4898,9 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
             let secrets = codesmith_agent_runtime::mcp_oauth::default_secrets();
             codesmith_agent_runtime::mcp_oauth::run_device_flow(&client, &secrets, &server, oauth)
                 .await?;
+            // A 401 recorded before this lingers in the needs-auth cache for
+            // its whole TTL; the reconnect below must reach the server.
+            codesmith_agent_runtime::mcp::forget_needs_auth(&server);
             println!("Reconnect with `codesmith mcp connect {server}` to use it.");
             Ok(())
         }

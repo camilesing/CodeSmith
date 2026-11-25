@@ -2767,14 +2767,21 @@ impl McpAuthCache {
         err: anyhow::Error,
     ) -> anyhow::Error {
         Self::mark_off_thread(server, config, format!("{err:#}")).await;
-        match Self::load_off_thread().await.fresh_entry(server) {
+        match Self::load_off_thread().await.fresh_entry(server, config) {
             Some(entry) => needs_auth_error(server, entry),
             None => err,
         }
     }
 
-    fn fresh_entry(&self, server: &str) -> Option<&McpAuthCacheEntry> {
+    /// The server's cached failure when it is fresh AND still describes
+    /// this server: the entry records the URL and transport that failed, so
+    /// a config that changed either is not the one that was refused.
+    fn fresh_entry(&self, server: &str, config: &McpServerConfig) -> Option<&McpAuthCacheEntry> {
         let entry = self.servers.get(server)?;
+        let current_url = config.url.as_deref().map(mask_url_secrets);
+        if entry.url != current_url || entry.transport != config.transport {
+            return None;
+        }
         let age = Duration::from_millis(now_millis().saturating_sub(entry.marked_at_ms));
         (age < MCP_AUTH_CACHE_TTL).then_some(entry)
     }
@@ -2793,26 +2800,49 @@ impl McpAuthCache {
                 reason: reason.to_string(),
             },
         );
+        cache.write(&path);
+    }
+
+    /// Forget `server`'s entry: a fresh token was just stored
+    /// (`codesmith mcp auth`), or its URL or headers were fixed. Without
+    /// this the cached refusal kept the server blocked for the whole TTL.
+    fn clear(server: &str) {
+        let Some(path) = default_mcp_auth_cache_path() else {
+            return;
+        };
+        let mut cache = Self::load();
+        if cache.servers.remove(server).is_none() {
+            return;
+        }
+        cache.write(&path);
+    }
+
+    fn write(&self, path: &Path) {
         if let Some(parent) = path.parent()
             && let Err(err) = fs::create_dir_all(parent)
         {
             tracing::warn!(target: "mcp", ?err, path = %parent.display(), "failed to create MCP auth cache directory");
             return;
         }
-        match serde_json::to_string_pretty(&cache) {
+        match serde_json::to_string_pretty(self) {
             Ok(contents) => {
-                if let Err(err) = write_atomic(&path, contents.as_bytes()) {
+                if let Err(err) = write_atomic(path, contents.as_bytes()) {
                     tracing::warn!(target: "mcp", ?err, path = %path.display(), "failed to write MCP auth cache");
                 }
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+                    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
                 }
             }
             Err(err) => tracing::warn!(target: "mcp", ?err, "failed to serialize MCP auth cache"),
         }
     }
+}
+
+/// Forget a server's cached needs-auth refusal (see [`McpAuthCache::clear`]).
+pub fn forget_needs_auth(server: &str) {
+    McpAuthCache::clear(server);
 }
 
 fn needs_auth_error(server: &str, entry: &McpAuthCacheEntry) -> anyhow::Error {
@@ -2939,7 +2969,7 @@ async fn connect_task(
     let result = if task.config.url.is_some()
         && let Some(entry) = McpAuthCache::load_off_thread()
             .await
-            .fresh_entry(&task.name)
+            .fresh_entry(&task.name, &task.config)
     {
         Err(needs_auth_error(&task.name, entry))
     } else {
@@ -3120,7 +3150,7 @@ impl McpPool {
         if server_config.url.is_some()
             && let Some(entry) = McpAuthCache::load_off_thread()
                 .await
-                .fresh_entry(server_name)
+                .fresh_entry(server_name, &server_config)
         {
             return Err(needs_auth_error(server_name, entry));
         }
@@ -3790,7 +3820,7 @@ impl McpPool {
         if server_config_for_auth.url.is_some()
             && let Some(entry) = McpAuthCache::load_off_thread()
                 .await
-                .fresh_entry(server_name)
+                .fresh_entry(server_name, &server_config_for_auth)
         {
             return Err(needs_auth_error(server_name, entry));
         }
@@ -5379,7 +5409,7 @@ mod tests {
         let mut entry = None;
         for _ in 0..20 {
             let cache = McpAuthCache::load();
-            if let Some(found) = cache.fresh_entry("remote") {
+            if let Some(found) = cache.fresh_entry("remote", &config) {
                 entry = Some(found.clone());
                 break;
             }
@@ -5487,6 +5517,65 @@ mod tests {
             }
         }
         server.await.unwrap();
+    }
+
+    /// A stored token (`mcp auth`) or a fixed URL must lift the cached
+    /// refusal; nothing ever removed the entry, so the server stayed
+    /// "needs-auth" for the whole TTL.
+    #[test]
+    fn a_cleared_or_mismatched_auth_entry_no_longer_applies() {
+        let _guard = env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("USERPROFILE", home.path());
+        }
+
+        let mut config = test_server_config();
+        config.url = Some("https://user:secret@example.invalid/mcp".to_string());
+        config.transport = Some("ws".to_string());
+        McpAuthCache::mark("remote", &config, "401 Unauthorized");
+        assert!(
+            McpAuthCache::load()
+                .fresh_entry("remote", &config)
+                .is_some()
+        );
+
+        // Another URL or transport: not the server that was refused.
+        let mut moved = config.clone();
+        moved.url = Some("https://user:secret@example.invalid/other".to_string());
+        assert!(
+            McpAuthCache::load().fresh_entry("remote", &moved).is_none(),
+            "an entry for another URL must not apply"
+        );
+        let mut retuned = config.clone();
+        retuned.transport = Some("sse".to_string());
+        assert!(
+            McpAuthCache::load()
+                .fresh_entry("remote", &retuned)
+                .is_none()
+        );
+
+        forget_needs_auth("remote");
+        assert!(
+            McpAuthCache::load()
+                .fresh_entry("remote", &config)
+                .is_none(),
+            "a cleared entry is gone"
+        );
+
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
     }
 
     #[test]
