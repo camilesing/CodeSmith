@@ -409,7 +409,13 @@ fn command_matches_kind(command: &str, kind: ClaimKind) -> bool {
     while let Some(rest) = strip_env_assignment(segment) {
         segment = rest;
     }
-    prefixes.iter().any(|prefix| segment.starts_with(prefix))
+    // A prefix ends at a word boundary: `cargo t` is the `cargo test` alias,
+    // so `cargo tree -i serde` is not a test run.
+    prefixes.iter().any(|prefix| {
+        segment
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    })
 }
 
 /// Strip one leading `NAME=value` token (quoted or bare); `None` when the
@@ -941,6 +947,30 @@ mod tests {
             json!({"command": "RUSTFLAGS=\"-D warnings\" cargo test"}),
         )];
         assert!(find_verification_command(&msgs, ClaimKind::Test).is_some());
+    }
+
+    #[test]
+    fn prefixes_end_at_a_word_boundary() {
+        for command in ["cargo t", "cargo t --lib", "cargo test"] {
+            let msgs = [assistant_tool_use(
+                "t1",
+                "exec_shell",
+                json!({"command": command}),
+            )];
+            assert!(
+                find_verification_command(&msgs, ClaimKind::Test).is_some(),
+                "must qualify: {command}"
+            );
+        }
+        let msgs = [assistant_tool_use(
+            "t1",
+            "exec_shell",
+            json!({"command": "cargo tree -i serde"}),
+        )];
+        assert!(
+            find_verification_command(&msgs, ClaimKind::Test).is_none(),
+            "`cargo t` matched `cargo tree`"
+        );
     }
 
     #[test]
