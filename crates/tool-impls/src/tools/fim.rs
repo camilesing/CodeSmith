@@ -194,11 +194,19 @@ impl ToolSpec for FimEditTool {
         // parsing .rs/.toml/.json file before anything touches disk, and
         // re-normalize Rust files that were rustfmt-clean.
         let gated = if context.parse_gate {
-            Some(parse_gate::gate(
-                &resolved,
-                Some(content.as_str()),
-                &new_content,
-            )?)
+            // The gate is a rustfmt subprocess and a syn parse: on the
+            // blocking pool, off the runtime thread.
+            let (gate_path, previous, candidate) =
+                (resolved.clone(), content.clone(), new_content.clone());
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    parse_gate::gate(&gate_path, Some(previous.as_str()), &candidate)
+                })
+                .await
+                .map_err(|err| {
+                    ToolError::execution_failed(format!("parse gate task failed: {err}"))
+                })??,
+            )
         } else {
             None
         };

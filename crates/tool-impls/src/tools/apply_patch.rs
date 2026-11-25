@@ -252,8 +252,18 @@ impl ToolSpec for ApplyPatchTool {
         let preflight = preflight_apply_patch_plan(&input)?;
 
         if let Some(changes_value) = input.get("changes") {
-            let (mut pending, stats) = build_pending_writes_from_changes(changes_value, context)?;
-            let gate_notes = gate_pending_writes(&mut pending, context)?;
+            // Reading each target and running the parse gate (a rustfmt
+            // subprocess, a syn parse) is blocking work: like the write
+            // below, it runs on the blocking pool.
+            let changes = changes_value.clone();
+            let (mut pending, stats) = offload_patch_work(context, move |context| {
+                build_pending_writes_from_changes(&changes, context)
+            })
+            .await?;
+            let (pending, gate_notes) = offload_patch_work(context, move |context| {
+                gate_pending_writes(&mut pending, context).map(|notes| (pending, notes))
+            })
+            .await?;
             apply_pending_writes(&pending).await?;
             // Resolve absolute paths for LSP diagnostics query.
             let abs_paths: Vec<PathBuf> = pending.iter().map(|p| p.path.clone()).collect();
@@ -299,10 +309,15 @@ impl ToolSpec for ApplyPatchTool {
             ApplyPatchPreflightKind::FilePatches(file_patches) => file_patches,
         };
 
-        let (mut pending, mut stats) =
-            build_pending_writes_from_patches(file_patches, context, fuzz)?;
+        let (mut pending, mut stats) = offload_patch_work(context, move |context| {
+            build_pending_writes_from_patches(file_patches, context, fuzz)
+        })
+        .await?;
         stats.header_path_mismatch = preflight.summary.header_path_mismatch.clone();
-        let gate_notes = gate_pending_writes(&mut pending, context)?;
+        let (pending, gate_notes) = offload_patch_work(context, move |context| {
+            gate_pending_writes(&mut pending, context).map(|notes| (pending, notes))
+        })
+        .await?;
         apply_pending_writes(&pending).await?;
         // Resolve absolute paths for LSP diagnostics query.
         let abs_paths: Vec<PathBuf> = pending
@@ -1104,7 +1119,19 @@ fn join_with_own_terminators(
     out
 }
 
-/// P0-1 parse gate for the whole pending batch: every write is checked
+/// Run one blocking step of the patch preparation on the blocking pool.
+async fn offload_patch_work<T, F>(context: &ToolContext, call: F) -> Result<T, ToolError>
+where
+    F: FnOnce(&ToolContext) -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
+{
+    let context = context.clone();
+    tokio::task::spawn_blocking(move || call(&context))
+        .await
+        .map_err(|err| ToolError::execution_failed(format!("apply-patch task failed: {err}")))?
+}
+
+/// Each line's own terminator, in order:
 /// before any file is touched, so a rejected patch leaves the workspace
 /// unmodified. Rust files that were rustfmt-clean are re-normalized in
 /// place (`entry.content` is replaced with the formatted output). Returns
