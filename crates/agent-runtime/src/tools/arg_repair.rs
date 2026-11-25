@@ -5,6 +5,11 @@
 //! reassembly leaves a trailing comma or unclosed brace; (b) some local
 //! backends emit literal control characters inside JSON string values.
 //!
+//! No in-tree caller: the dispatch salvage ladder that used it was removed
+//! as dead security code (2026-10-22), so a malformed
+//! `tool_calls.function.arguments` never reaches this ladder. Kept as a
+//! standalone utility with its tests.
+//!
 //! The repair ladder runs five stages before falling back to an empty object:
 //!
 //!  1. Strict parse — done if it parses.
@@ -28,7 +33,8 @@ pub enum ArgRepairError {
 /// Repair a raw JSON argument string into a valid `serde_json::Value`.
 ///
 /// Runs the deterministic ladder; on success returns the parsed value.
-/// The final fallback is an empty object `{}` so dispatch always proceeds.
+/// The final fallback is an empty object `{}`, so a caller's dispatch can
+/// proceed — no in-tree caller does (see the module doc).
 ///
 /// Every MUTATING stage that succeeds logs a warning naming the stage (the
 /// raw arguments themselves are never logged — they may be sensitive): a
@@ -391,8 +397,8 @@ mod tests {
     #[test]
     fn handles_double_encoded_json() {
         // This is a valid JSON string containing a JSON object literal.
-        // repair parses it as a string; the engine's existing fallback
-        // (parse_tool_input) will unwrap the string and re-parse.
+        // repair parses it as a string; a caller wanting the object must
+        // unwrap and re-parse it itself.
         let v = repair(r#""{\"path\": \"hello.txt\"}""#).unwrap();
         assert_eq!(v, Value::String(r#"{"path": "hello.txt"}"#.to_string()));
     }
