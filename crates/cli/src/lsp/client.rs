@@ -627,6 +627,12 @@ async fn dispatcher_task(
             }
         }
     }
+    // The reader is gone (the server exited or closed stdout): no reply can
+    // arrive any more. Dropping the slots fails the `initialize` handshake
+    // and every in-flight request now instead of at their timeouts on a
+    // transport that will never answer. A slot registered after this point
+    // still waits for its own timeout (bounded by `REQUEST_TIMEOUT`).
+    pending.lock().await.clear();
 }
 
 /// Decode a `textDocument/publishDiagnostics` notification. A malformed
@@ -978,6 +984,28 @@ mod tests {
                 strip_windows_verbatim(&canonical.to_string_lossy()).replace('\\', "/");
             assert_eq!(path_from_uri(&uri), Some(PathBuf::from(spec_shape)));
         }
+    }
+
+    /// A server that exits before answering `initialize` must fail the
+    /// spawn at once. The dispatcher used to drop only its own handle on
+    /// exit, so the handshake waited out the whole 30 s timeout — and then
+    /// cached a dead transport: a 30 s stall after every edit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_fails_fast_when_the_server_exits_before_initialize() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let args = ["-c".to_string(), "exit 1".to_string()];
+        let spawn = StdioLspTransport::spawn("sh", &args, Language::Rust, tmp.path().to_path_buf());
+        let err = match timeout(Duration::from_secs(5), spawn).await {
+            Ok(Err(err)) => err,
+            Ok(Ok(_transport)) => panic!("a dead server is not a transport"),
+            Err(_) => panic!("a dead server fails long before the 30 s init timeout"),
+        };
+        assert!(
+            err.to_string()
+                .contains("exited before responding to initialize"),
+            "{err:#}"
+        );
     }
 
     #[tokio::test]
