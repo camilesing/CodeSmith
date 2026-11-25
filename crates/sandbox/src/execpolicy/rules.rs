@@ -19,13 +19,17 @@ pub enum ExecPolicyDecision {
     AskUser(String),
 }
 
+// `deny_unknown_fields`: a typo'd or misplaced `allow` / `deny` key used
+// to parse into an empty rule set — a deny list that silently matched nothing.
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ExecPolicyConfig {
     #[serde(default)]
     pub rules: BTreeMap<String, RuleSet>,
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuleSet {
     #[serde(default)]
     pub allow: Vec<String>,
@@ -541,5 +545,21 @@ mod tests {
             config.evaluate("ls -la && git status > out.txt"),
             ExecPolicyDecision::AskUser(_)
         ));
+    }
+
+    #[test]
+    fn unknown_keys_fail_loud() {
+        let err = ExecPolicyConfig::from_str("[rules.danger]\ndney = [\"rm -rf /\"]\n")
+            .expect_err("a typo'd key must not parse");
+        assert!(format!("{err:#}").contains("dney"), "{err:#}");
+        assert!(
+            ExecPolicyConfig::from_str("deny = [\"rm -rf /\"]\n").is_err(),
+            "a top-level list has no rule group"
+        );
+        // The documented shape still parses.
+        ExecPolicyConfig::from_str(
+            "[rules.git]\nallow = [\"git status\"]\ndeny = [\"git push\"]\n",
+        )
+        .expect("documented shape");
     }
 }
