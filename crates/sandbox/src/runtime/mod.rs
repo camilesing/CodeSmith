@@ -1095,8 +1095,8 @@ impl SandboxManager {
 
     /// Create a new `SandboxManager` with bwrap preference (#2184).
     ///
-    /// When `prefer_bwrap` is true and `/usr/bin/bwrap` is present on Linux,
-    /// exec_shell commands will be routed through bubblewrap.
+    /// `prefer_bwrap` is deprecated and ignored: bwrap is selected whenever
+    /// it is installed (`select_sandbox`).
     pub fn with_bwrap_preference(prefer_bwrap: bool) -> Self {
         Self {
             prefer_bwrap,

@@ -6,9 +6,9 @@
 //!
 //! # How it works
 //!
-//! When `/usr/bin/bwrap` is present and either the legacy `prefer_bwrap = true`
-//! key or `[sandbox] prefer_bwrap = true` is set, exec_shell commands are routed
-//! through bwrap instead of relying solely on Landlock. The bwrap invocation
+//! Whenever `/usr/bin/bwrap` is present, exec_shell commands are routed
+//! through bwrap instead of Landlock; the `prefer_bwrap` key is deprecated
+//! and ignored. The bwrap invocation
 //! looks like:
 //!
 //! ```text
