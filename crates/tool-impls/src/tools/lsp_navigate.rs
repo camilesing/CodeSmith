@@ -307,7 +307,15 @@ fn hover_text(contents: &Value) -> Option<String> {
     match contents {
         Value::String(s) => Some(s.clone()),
         Value::Array(items) => {
-            let parts: Vec<String> = items.iter().filter_map(marked_string_text).collect();
+            // A plain `MarkedString` in the array is text in its own right;
+            // only the fenced objects carry a `value` key.
+            let parts: Vec<String> = items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::String(s) => Some(s.clone()),
+                    other => marked_string_text(other),
+                })
+                .collect();
             if parts.is_empty() {
                 None
             } else {
@@ -561,6 +569,34 @@ mod tests {
         );
         assert!(content.contains("Doubles."));
         assert_eq!(body["truncated"], false);
+    }
+
+    /// The legacy `MarkedString[]` shape mixes fenced objects with plain
+    /// strings; the plain ones used to be dropped, or to read as "no hover".
+    #[test]
+    fn hover_keeps_plain_strings_of_a_marked_string_array() {
+        let manager = FakeNavManager::responding(json!({
+            "contents": [{"language": "rust", "value": "fn foo()"}, "Docs."]
+        }));
+        let result = run_tool(
+            json!({"path": "src/a.rs", "line": 1, "column": 5, "operation": "hover"}),
+            Some(manager),
+        )
+        .unwrap();
+        let body = payload(&result);
+        let content = body["content"].as_str().unwrap();
+        assert!(
+            content.contains("fn foo()") && content.contains("Docs."),
+            "{content}"
+        );
+
+        let manager = FakeNavManager::responding(json!({"contents": ["plain"]}));
+        let result = run_tool(
+            json!({"path": "src/a.rs", "line": 1, "column": 5, "operation": "hover"}),
+            Some(manager),
+        )
+        .unwrap();
+        assert_eq!(payload(&result)["content"], "plain");
     }
 
     #[test]
