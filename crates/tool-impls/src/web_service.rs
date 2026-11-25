@@ -1367,8 +1367,11 @@ fn extract_json_block(text: &str) -> Option<&str> {
             return Some(inner[..end].trim());
         }
     }
+    // `end > start`: model text can carry a `}` ahead of its first `{`
+    // (`"} was opened as {"`), and that slice used to panic.
     if let Some(start) = text.find('{')
         && let Some(end) = text.rfind('}')
+        && end > start
     {
         return Some(&text[start..=end]);
     }
@@ -2863,6 +2866,8 @@ mod tests {
         // An unterminated fence falls through to the brace scan.
         assert_eq!(extract_json_block("```json {\"a\":1}"), Some("{\"a\":1}"));
         assert_eq!(extract_json_block("no json here"), None);
+        // A `}` ahead of the first `{` used to panic on the slice.
+        assert_eq!(extract_json_block("} then {"), None);
     }
 
     #[test]
