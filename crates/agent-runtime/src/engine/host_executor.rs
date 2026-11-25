@@ -13103,15 +13103,21 @@ mod tests {
         let note = messages.last().expect("note pushed");
         assert_eq!(note.role, "user");
         let block = note.content.last().expect("note has a block");
-        let note_content = match block {
+        let pushed_note = match block {
             ContentBlock::Text { text, .. } => {
-                // A plain user Text block, NOT a second ToolResult keyed by
-                // the original call's id — that shipped two results for one
-                // tool call on every subsequent request (the strict-provider
-                // 400 shape `kept_verify_and_replan_messages` repairs).
-                assert!(text.contains("[verification replay]"));
-                assert!(text.contains("tool=echo"));
-                assert!(text.contains("pass=true"));
+                // A runtime-event frame in a user Text block, NOT a second
+                // ToolResult keyed by the original call's id — that shipped
+                // two results for one tool call on every subsequent request
+                // (the strict-provider 400 shape `kept_verify_and_replan_messages`
+                // repairs). Framed, so the "last human message" filters skip
+                // it: a bare note became the canonical goal and the replan
+                // anchor.
+                assert!(
+                    text.starts_with(crate::engine::RUNTIME_EVENT_PREFIX),
+                    "the note is a runtime event, got: {text}"
+                );
+                assert!(text.contains(r#"kind="capacity_replay""#));
+                assert!(text.contains("[verification replay] tool=echo pass=true"));
                 text.clone()
             }
             other => panic!("expected Text note, got {other:?}"),
@@ -13124,7 +13130,13 @@ mod tests {
         assert!(outcome.pass);
         assert_eq!(outcome.replay_outcome, "pass");
         assert_eq!(outcome.diff_summary, "output_match");
-        assert_eq!(outcome.verification_note, note_content);
+        // The carried note is the inner line, without the frame.
+        assert_eq!(
+            outcome.verification_note,
+            "[verification replay] tool=echo pass=true details=output_match"
+        );
+        assert!(pushed_note.contains(&outcome.verification_note));
+        assert!(pushed_note.ends_with("</codesmith:runtime_event>"));
     }
 
     /// §E slice 3b: a disabled `CapacityGateProbe` (`enabled: false`) never

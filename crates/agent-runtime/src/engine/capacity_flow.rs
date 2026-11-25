@@ -579,16 +579,21 @@ pub(crate) async fn replay_and_push_verification_note(
         "[verification replay] tool={} pass={} details={}",
         candidate.name, pass, diff_summary
     );
-    // Push as a plain user Text block, NOT a ToolResult keyed by the
-    // original call's tool_use_id: the original result for that id is
-    // still in the transcript, so a second one would ship two results for
-    // one call on every subsequent request — the strict-provider 400 shape
-    // (GLM "messages 参数非法") that `kept_verify_and_replan_messages`
-    // exists to repair.
+    // Push as a runtime-event frame — a user Text block, NOT a ToolResult
+    // keyed by the original call's tool_use_id: the original result for that
+    // id is still in the transcript, so a second one would ship two results
+    // for one call on every subsequent request (the strict-provider 400 shape
+    // (GLM "messages 参数非法") that `kept_verify_and_replan_messages` exists
+    // to repair). Framed like every other engine note: the filters that look
+    // for the human's last message skip the `RUNTIME_EVENT_PREFIX`, so a bare
+    // note here became the canonical "goal" and the replan anchor.
     history.push(Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
-            text: verification_note.clone(),
+            text: super::runtime_event::runtime_event_frame(
+                super::runtime_event::RuntimeEventKind::CapacityReplay,
+                &format!("\n\n{verification_note}"),
+            ),
             cache_control: None,
         }],
     });

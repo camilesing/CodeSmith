@@ -57,6 +57,9 @@ pub(crate) enum RuntimeEventKind {
     /// The coordinator-mode Router board digest: open tickets, once per
     /// turn's first request.
     TicketBoard,
+    /// The capacity guardrail re-ran a read-only tool to verify its result;
+    /// the payload carries the verdict.
+    CapacityReplay,
 }
 
 impl RuntimeEventKind {
@@ -71,6 +74,7 @@ impl RuntimeEventKind {
             Self::DeliverablesCheck => "deliverables_check",
             Self::IdleWake => "idle_wake",
             Self::TicketBoard => "ticket_board",
+            Self::CapacityReplay => "capacity_replay",
         }
     }
 }
@@ -110,6 +114,7 @@ mod tests {
                 RuntimeEventKind::DeliverablesCheck => "deliverables_check",
                 RuntimeEventKind::IdleWake => "idle_wake",
                 RuntimeEventKind::TicketBoard => "ticket_board",
+                RuntimeEventKind::CapacityReplay => "capacity_replay",
             }
         }
         let all = [
@@ -121,6 +126,7 @@ mod tests {
             RuntimeEventKind::DeliverablesCheck,
             RuntimeEventKind::IdleWake,
             RuntimeEventKind::TicketBoard,
+            RuntimeEventKind::CapacityReplay,
         ];
         for kind in all {
             let frame = runtime_event_frame(kind, " Prose.\n\nPayload");
