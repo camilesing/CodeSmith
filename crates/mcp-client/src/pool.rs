@@ -4050,10 +4050,37 @@ pub fn load_config(path: &Path) -> Result<McpConfig> {
 /// for byte-identical input.
 fn hash_mcp_config(config: &McpConfig) -> u64 {
     use std::hash::{Hash, Hasher};
-    let bytes = serde_json::to_vec(config).unwrap_or_default();
+    // Through a canonical JSON value — every object in sorted key order.
+    // Serializing the config directly iterates its `HashMap`s, so two
+    // separately deserialized copies of one file hashed differently about
+    // half the time, which read as a content change and dropped every live
+    // connection.
+    let bytes = serde_json::to_vec(&canonical_json(
+        &serde_json::to_value(config).unwrap_or_default(),
+    ))
+    .unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut hasher);
     hasher.finish()
+}
+
+/// The same JSON value with every object rebuilt in sorted key order.
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), canonical_json(&map[key])))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonical_json).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// Best-effort fetch of the MCP config file's last-modified time. Returns
@@ -5133,6 +5160,17 @@ mod tests {
             hash_mcp_config(&c),
             "hash must change when servers map changes"
         );
+    }
+
+    /// Two separately deserialized copies of one file iterate their maps in
+    /// different orders; the content is one, so the hash must be too.
+    #[test]
+    fn hash_mcp_config_is_order_independent() {
+        let text = r#"{"servers":{"b":{"command":"echo"},"a":{"command":"echo","env":{"K":"1","J":"2"}}}}"#;
+        let hashes: std::collections::HashSet<u64> = (0..40)
+            .map(|_| hash_mcp_config(&serde_json::from_str::<McpConfig>(text).unwrap()))
+            .collect();
+        assert_eq!(hashes.len(), 1, "one file, one hash");
     }
 
     /// #1319: discovered tools must be sorted by name so the prompt prefix
