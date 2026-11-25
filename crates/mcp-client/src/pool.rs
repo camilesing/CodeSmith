@@ -653,8 +653,8 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub disabled_tools: Vec<String>,
     /// Extra HTTP headers sent with every request to this MCP server.
-    /// Only the HTTP transports (streamable HTTP today; SSE in a
-    /// follow-up) honor this — `command`-based stdio servers ignore it.
+    /// Every URL transport honors this — streamable HTTP, SSE and WebSocket;
+    /// `command`-based stdio servers ignore it.
     ///
     /// Mirrors the `headers` field that Claude Code, Codex, and
     /// OpenCode already accept in their MCP config formats. Use it to
