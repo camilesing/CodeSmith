@@ -189,7 +189,6 @@ impl ToolSpec for ReadFileTool {
         let zero_based_start = start_line - 1;
         let zero_based_end = std::cmp::min(zero_based_start + max_lines, total_lines);
         let shown_first = start_line;
-        let shown_last = zero_based_end; // 1-based inclusive line number of the last shown line
 
         let mut numbered = String::new();
         for (offset, line) in lines[zero_based_start..zero_based_end].iter().enumerate() {
@@ -209,9 +208,22 @@ impl ToolSpec for ReadFileTool {
             &numbered
         };
 
-        let truncated_by_lines = zero_based_end < total_lines;
+        // A byte cut ends inside a line: the continuation must start at the
+        // first line that was not fully shown, or every line cut off is
+        // skipped. A first line longer than the whole budget can never be
+        // shown in full — the cut resumes after it.
+        let (shown_last, next_start, truncated_by_lines) = if truncated_by_bytes {
+            let shown = shown_content.matches('\n').count().max(1);
+            let last = start_line + shown - 1;
+            (last, last + 1, last < total_lines)
+        } else {
+            (
+                zero_based_end,
+                zero_based_end + 1,
+                zero_based_end < total_lines,
+            )
+        };
         let truncated = truncated_by_lines || truncated_by_bytes;
-        let next_start = zero_based_end + 1;
 
         let mut attrs = format!(
             "path=\"{path_str}\" total_lines=\"{total_lines}\" shown_lines=\"{shown_first}-{shown_last}\" truncated=\"{truncated}\""
@@ -1909,6 +1921,37 @@ mod tests {
         assert!(
             !result.content.contains("   201│ row 201"),
             "default max_lines=200 must hold"
+        );
+    }
+
+    /// A window whose lines are long enough to hit the byte budget used
+    /// to advertise the whole line window: `next_start_line="201"` skipped
+    /// every line the byte cut removed.
+    #[tokio::test]
+    async fn read_file_byte_cut_continues_at_the_first_line_not_shown() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let file = tmp.path().join("wide.txt");
+        // 100-byte lines: 110 rendered bytes each, 148 to the 16 KiB budget.
+        let body: String = (1..=250)
+            .map(|n| format!("{n:04} {}\n", "x".repeat(94)))
+            .collect();
+        fs::write(&file, &body).expect("write");
+
+        let result = ReadFileTool
+            .execute(json!({ "path": "wide.txt" }), &ctx)
+            .await
+            .expect("execute");
+
+        assert!(
+            result.content.contains("shown_lines=\"1-148\""),
+            "{}",
+            result.content
+        );
+        assert!(result.content.contains("next_start_line=\"149\""));
+        assert!(
+            !result.content.contains("   200│ 0200"),
+            "a line the cut removed is not claimed as shown"
         );
     }
 
