@@ -5879,12 +5879,6 @@ fn read_only_refusal_message(agent_type: &SubAgentType, refused: &[String]) -> S
     )
 }
 
-/// Run one in-process child: assemble its opening transcript, its narrowed
-/// tool surface and its route, then hand the turn to the shared loop
-/// (`run_child_turn` — the configured `turn_executor`, streaming, the
-/// child's agent-type dispatch scope). Spawn-time refusals (unavailable or
-/// refused tools) fail before any model call; the turn's outcome is shaped
-/// into the manager's [`SubAgentResult`] and the full transcript handle.
 /// Close a child session that failed before its turn could start (an
 /// unavailable or refused tool). The spawn still gets a durable identity and
 /// a terminal status, so a catalog reader never sees a dangling child.
@@ -5904,6 +5898,12 @@ async fn close_child_journal_with_failure(
     }
 }
 
+/// Run one in-process child: assemble its opening transcript, its narrowed
+/// tool surface and its route, then hand the turn to the shared loop
+/// (`run_child_turn` — the configured `turn_executor`, streaming, the
+/// child's agent-type dispatch scope). Spawn-time refusals (unavailable or
+/// refused tools) fail before any model call; the turn's outcome is shaped
+/// into the manager's [`SubAgentResult`] and the full transcript handle.
 #[allow(clippy::too_many_arguments)]
 async fn run_subagent(
     runtime: &SubAgentRuntime,
