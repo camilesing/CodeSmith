@@ -526,6 +526,25 @@ mod tests {
         ));
     }
 
+    /// A redirect with no command body still truncates the file; it used
+    /// to be dropped before the redirect guard could see it.
+    #[test]
+    fn a_bodiless_redirect_never_rides_an_allow_rule() {
+        let config = ExecPolicyConfig {
+            rules: BTreeMap::from([(
+                "dev".to_string(),
+                RuleSet {
+                    allow: vec!["git status".to_string()],
+                    deny: vec![],
+                },
+            )]),
+        };
+        assert!(matches!(
+            config.evaluate("> ~/.zshrc && git status"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+    }
+
     /// A wildcard-free allow rule is written for the command it names. An
     /// output redirect makes the invocation a file write, and the arity-aware
     /// prefix match read `>` and its target as ordinary arguments — so

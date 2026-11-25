@@ -267,6 +267,21 @@ impl<'a> Walker<'a> {
             segment.expansion_in_redirect_target |= expansion_in_target;
             segment.has_command_substitution |= subst_in_redirect;
             segment.has_process_substitution |= proc_subst_in_redirect;
+        } else if !redirects.is_empty() || has_heredoc {
+            // No segment came of the body (`> ~/.zshrc`, `X=1 > file`): bash
+            // still performs the redirection, so it gets a segment of its own
+            // instead of being dropped — invisible to the redirect screen,
+            // the grant key and the execpolicy redirect guard.
+            self.segments.push(CommandSegment {
+                join,
+                is_nested: self.nested_depth > 0,
+                redirects,
+                has_heredoc,
+                expansion_in_redirect_target: expansion_in_target,
+                has_command_substitution: subst_in_redirect,
+                has_process_substitution: proc_subst_in_redirect,
+                ..CommandSegment::default()
+            });
         }
     }
 

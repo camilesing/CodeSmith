@@ -908,6 +908,40 @@ fn analyze_single_segment(
 /// Fail-closed path for commands the bash grammar cannot parse (unclosed
 /// quotes, broken syntax). The string-based destructive scan still runs so
 /// hidden `rm`/pipe-to-shell shapes block, then the command escalates.
+/// Literal redirect screen for input the AST cannot parse: every `>` /
+/// `>>` outside quotes takes the next shell word as its target.
+/// Descriptor duplication (`2>&1`) writes to no file.
+fn unparseable_redirect_targets_outside(command: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, ch) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '\\' => escaped = true,
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == '>' => {
+                let rest = command[index + 1..].trim_start_matches('>');
+                let Some(target) = shell_words(rest).into_iter().next() else {
+                    continue;
+                };
+                if target.starts_with('&') {
+                    continue;
+                }
+                if redirect_target_outside_workspace(&target) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn analyze_unparseable(command: &str) -> SafetyAnalysis {
     if let Some(analysis) = analyze_destructive_patterns_legacy(command) {
         return analysis;
@@ -917,6 +951,16 @@ fn analyze_unparseable(command: &str) -> SafetyAnalysis {
             command,
             vec![reason.to_string()],
             vec!["Review the command carefully before execution".to_string()],
+        );
+    }
+    // The redirect screen runs on AST facts, which an unparseable command
+    // has none of: `X=1 > /etc/hosts` (a shape the grammar rejects) must not
+    // downgrade to a prompt that auto-approve flows grant.
+    if unparseable_redirect_targets_outside(command) {
+        return SafetyAnalysis::dangerous(
+            command,
+            vec!["Output redirection targets a path outside the workspace".to_string()],
+            vec!["Redirect to a relative path inside the workspace".to_string()],
         );
     }
     SafetyAnalysis {
@@ -2297,6 +2341,24 @@ mod tests {
 
         let home_var = analyze_command("echo x > $HOME/.zshrc");
         assert!(matches!(home_var.level, SafetyLevel::Dangerous));
+    }
+
+    /// A redirect on a statement with no command body still creates or
+    /// truncates the file. The walker used to drop it, so the line
+    /// classified as its other command.
+    #[test]
+    fn redirect_without_a_command_body_is_still_screened() {
+        for command in [
+            "> ~/.zshrc && git status",
+            "X=1 > /etc/hosts",
+            "> ~/.ssh/authorized_keys",
+        ] {
+            let analysis = analyze_command(command);
+            assert!(
+                matches!(analysis.level, SafetyLevel::Dangerous),
+                "{command}: {analysis:?}"
+            );
+        }
     }
 
     // ---- argument-mutation and operand-destination screening (OCR 2026-11-03) ----
