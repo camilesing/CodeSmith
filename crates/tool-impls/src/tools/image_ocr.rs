@@ -75,7 +75,11 @@ impl ToolSpec for ImageOcrTool {
             )));
         }
 
-        let text = ocr_image_path(&image_path)?;
+        // Native Vision and the tesseract subprocess are both synchronous
+        // and slow (seconds): off the async worker, like `read_file`'s call.
+        let text = tokio::task::spawn_blocking(move || ocr_image_path(&image_path))
+            .await
+            .map_err(|e| ToolError::execution_failed(format!("ocr task failed: {e}")))??;
         Ok(ToolResult::success(text))
     }
 }
