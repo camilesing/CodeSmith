@@ -2500,7 +2500,12 @@ pub(crate) async fn run_doctor(
     // Version info
     println!("{}", "Version Information:".bold());
     println!("  codesmith: {}", env!("CODESMITH_BUILD_VERSION"));
-    println!("  rust: {}", rustc_version());
+    // Each probe spawns and waits on a child process: on the blocking
+    // pool, because `/doctor` also runs inside the live REPL.
+    let rust_version = tokio::task::spawn_blocking(rustc_version)
+        .await
+        .expect("the rustc version probe does not panic");
+    println!("  rust: {rust_version}");
     println!();
 
     println!("{}", "Updates:".bold());
@@ -3177,7 +3182,19 @@ pub(crate) async fn run_doctor(
     println!();
     println!("{}", "Tool Dependencies:".bold());
 
-    match codesmith_agent_runtime::dependencies::resolve_python_interpreter() {
+    let (python, node, pandoc, tesseract, pdftotext) = tokio::task::spawn_blocking(|| {
+        (
+            codesmith_agent_runtime::dependencies::resolve_python_interpreter(),
+            codesmith_agent_runtime::dependencies::resolve_node(),
+            codesmith_agent_runtime::dependencies::resolve_pandoc(),
+            codesmith_agent_runtime::dependencies::resolve_tesseract(),
+            codesmith_agent_runtime::dependencies::resolve_pdftotext(),
+        )
+    })
+    .await
+    .expect("the tool dependency probes do not panic");
+
+    match python {
         Some(name) => println!(
             "  {} Python: {} → code_execution tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3213,7 +3230,7 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    match codesmith_agent_runtime::dependencies::resolve_node() {
+    match node {
         Some(_) => println!(
             "  {} Node.js: present → js_execution tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3242,7 +3259,7 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    match codesmith_agent_runtime::dependencies::resolve_pandoc() {
+    match pandoc {
         Some(_) => println!(
             "  {} pandoc: present → pandoc_convert tool registered",
             "✓".truecolor(aqua_r, aqua_g, aqua_b),
@@ -3265,7 +3282,7 @@ pub(crate) async fn run_doctor(
         }
     }
 
-    match codesmith_agent_runtime::dependencies::resolve_tesseract() {
+    match tesseract {
         Some(_) => {
             if cfg!(target_os = "macos") {
                 println!(
@@ -3316,7 +3333,7 @@ pub(crate) async fn run_doctor(
     let prefer_external = crate::settings::Settings::load()
         .map(|s| s.prefer_external_pdftotext)
         .unwrap_or(false);
-    match codesmith_agent_runtime::dependencies::resolve_pdftotext() {
+    match pdftotext {
         Some(_) => {
             if prefer_external {
                 println!(
