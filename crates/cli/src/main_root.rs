@@ -3421,6 +3421,37 @@ pub(crate) async fn run_doctor(
     }
 }
 
+/// Memory feature state for `doctor --json` (#489): operators ask "is
+/// memory on?" and "where does it live?". `enabled` is the switch a
+/// session really honours — `Config::memory_enabled()`, on by default — not
+/// the `CODESMITH_MEMORY` variable on its own.
+fn memory_summary(config: &Config) -> serde_json::Value {
+    let memory_path = config.memory_path();
+    serde_json::json!({
+        "enabled": config.memory_enabled(),
+        "path": memory_path.display().to_string(),
+        "file_present": memory_path.exists(),
+    })
+}
+
+#[cfg(test)]
+mod doctor_memory_tests {
+    use super::*;
+
+    #[test]
+    fn memory_summary_reports_the_switch_a_session_honours() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        unsafe { std::env::remove_var("CODESMITH_DISABLE_AUTO_MEMORY") };
+        let enabled_by_default = memory_summary(&Config::default())["enabled"].clone();
+        unsafe { std::env::set_var("CODESMITH_DISABLE_AUTO_MEMORY", "1") };
+        let disabled = memory_summary(&Config::default())["enabled"].clone();
+        unsafe { std::env::remove_var("CODESMITH_DISABLE_AUTO_MEMORY") };
+
+        assert_eq!(enabled_by_default, serde_json::json!(true));
+        assert_eq!(disabled, serde_json::json!(false));
+    }
+}
+
 /// Machine-readable counterpart to `run_doctor`. Skips the live API call so it
 /// is safe to run in CI and from non-interactive scripts.
 pub(crate) fn run_doctor_json(
@@ -3524,28 +3555,7 @@ pub(crate) fn run_doctor_json(
     let tools_dir = default_tools_dir();
     let plugins_dir = default_plugins_dir();
 
-    // Memory feature state (#489). Operators ask "is memory on?" and
-    // "where does it live?" — surface both here so the question can be
-    // answered without booting the REPL. Both inputs are checked: the
-    // config flag and the env-var override that the runtime would
-    // honour. (The dedicated `Config::memory_enabled()` accessor lives
-    // on the memory-MVP branch (#518); this duplicates the same logic
-    // until the two PRs land and it can be replaced with a single
-    // method call.)
-    let memory_path = config.memory_path();
-    let memory_enabled_env = codesmith_config::codesmith_env("MEMORY").is_some_and(|raw| {
-        matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "on" | "true" | "yes" | "y" | "enabled"
-        )
-    });
-    let memory_summary = json!({
-        // The MVP feature is opt-in by default; this defaults to false
-        // on branches without the [memory] section in `Config`.
-        "enabled": memory_enabled_env,
-        "path": memory_path.display().to_string(),
-        "file_present": memory_path.exists(),
-    });
+    let memory_summary = memory_summary(config);
     let api_target = doctor_api_target(config);
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
 
