@@ -180,7 +180,10 @@ impl HttpWebService {
             // Per-hop validation: network policy, then SSRF checks with DNS
             // pinning (a denied host must not be reachable by redirect from
             // an allowed one).
-            let dns_pinning = validate_fetch_target(&current_url, req).await?;
+            // The first hop's host is what the dispatch gate asked about;
+            // every later one is a redirect target it never saw.
+            let dns_pinning =
+                validate_fetch_target(&current_url, req, redirects_followed > 0).await?;
 
             let mut client_builder = reqwest::Client::builder()
                 .timeout(req.timeout)
@@ -858,14 +861,27 @@ impl HttpWebService {
 /// Returns `Ok(())` if the policy allows the call. Falls through silently
 /// when no policy is attached (back-compat). A `Prompt` decision passes —
 /// the inline approval gate at tool-dispatch time owns the ask (P1-5).
-///
-/// The evaluation appends to the network audit log — a file write — so it
-/// runs on the blocking pool, never on the caller's runtime thread. If it
-/// cannot run at all, the call is refused.
 async fn check_policy(
     decider: Option<&NetworkPolicyDecider>,
     host: &str,
     tool: &str,
+) -> Result<(), WebError> {
+    check_policy_for_hop(decider, host, tool, false).await
+}
+
+/// [`check_policy`] with the hop made explicit. `redirect_hop` marks a host
+/// the dispatch gate never saw — a redirect target is known only at execute
+/// time — so a `Prompt` there has no owner and fails closed, naming the
+/// target; a direct `fetch_url` on that URL goes through the gate.
+///
+/// The evaluation appends to the network audit log — a file write — so it
+/// runs on the blocking pool, never on the caller's runtime thread. If it
+/// cannot run at all, the call is refused.
+async fn check_policy_for_hop(
+    decider: Option<&NetworkPolicyDecider>,
+    host: &str,
+    tool: &str,
+    redirect_hop: bool,
 ) -> Result<(), WebError> {
     let Some(decider) = decider.cloned() else {
         return Ok(());
@@ -880,6 +896,10 @@ async fn check_policy(
         Decision::Deny => Err(WebError::new(
             WebErrorKind::PolicyDenied,
             format!("network call to '{host}' blocked by network policy"),
+        )),
+        Decision::Prompt if redirect_hop => Err(WebError::new(
+            WebErrorKind::PolicyDenied,
+            format!("redirect to '{host}' needs network approval; fetch that URL directly"),
         )),
         Decision::Prompt => Ok(()),
     }
@@ -1037,6 +1057,7 @@ fn is_restricted_ip(ip: &IpAddr) -> bool {
 async fn validate_fetch_target(
     url: &reqwest::Url,
     req: &FetchRequest,
+    redirect_hop: bool,
 ) -> Result<Option<(String, IpAddr)>, WebError> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(WebError::new(
@@ -1050,7 +1071,7 @@ async fn validate_fetch_target(
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| WebError::new(WebErrorKind::InvalidUrl, "URL must include a host"))?;
 
-    check_policy(req.policy.as_ref(), &host, req.tool).await?;
+    check_policy_for_hop(req.policy.as_ref(), &host, req.tool, redirect_hop).await?;
 
     // SSRF protection: reject loopback names and private/link-local/loopback
     // IPs. Prevents LLM-prompted requests to cloud metadata
@@ -2358,6 +2379,27 @@ mod tests {
             .expect_err("redirect target on the deny list must be blocked");
         assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
         assert!(err.to_string().contains("denied.example"));
+    }
+
+    /// The dispatch gate only ever sees the URL in the tool input. A
+    /// redirect target it never approved has no owner for a `Prompt`, so a
+    /// later hop fails closed and names the target — the request used to go
+    /// out unasked. The check runs before any DNS lookup or connection.
+    #[tokio::test]
+    async fn redirect_hop_with_a_prompt_decision_fails_closed() {
+        let url = reqwest::Url::parse("https://unlisted.example/landing").unwrap();
+        let req = FetchRequest::new(url.as_str())
+            .with_policy(Some(prompt_decider(&["first.example"], &[])))
+            .for_tool("fetch_url");
+        let err = validate_fetch_target(&url, &req, true)
+            .await
+            .expect_err("a redirect to an unapproved host is refused");
+        assert_eq!(err.kind(), WebErrorKind::PolicyDenied);
+        let message = err.to_string();
+        assert!(
+            message.contains("unlisted.example") && message.contains("fetch that URL directly"),
+            "{message}"
+        );
     }
 
     // === SERP parsing (ported from the pre-seam web_search tool) ==========
