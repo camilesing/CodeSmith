@@ -4417,8 +4417,12 @@ pub(crate) fn pick_session_id() -> Result<String> {
     let idx: usize = input
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid input"))?;
+    // The list is 1-based: `0` is out of range, not the first entry.
     let session = sessions
-        .get(idx.saturating_sub(1))
+        .get(
+            idx.checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("Selection out of range"))?,
+        )
         .ok_or_else(|| anyhow::anyhow!("Selection out of range"))?;
     Ok(session.id.clone())
 }
