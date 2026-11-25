@@ -673,13 +673,16 @@ fn verdict_from_tool_result(
 
     let kind = if sandbox_denied {
         ResultVerdict::VerifyError
-    } else if status == "timedout" || status == "killed" {
+    } else if matches!(status.as_str(), "timedout" | "killed" | "running") {
         // `{:?}` of `ShellStatus`, lowercased: "timedout" does not contain
         // "timeout" — an exact match. Checked BEFORE the exit-code arms:
         // killed/timed-out re-runs often still carry an exit code (SIGKILL
         // → 137, SIGTERM → 143, GNU timeout → 124), which would otherwise
         // masquerade as `VerifiedFail` ("claim mismatch") instead of
-        // `VerifyError`.
+        // `VerifyError`. A `Running` status (Ctrl+B moved the re-run to the
+        // background) carries `exit_code: null` and `success: true` — the
+        // fallbacks below would grade a run that has not finished as
+        // `VerifiedPass`.
         ResultVerdict::VerifyError
     } else if exit_code == Some(0) {
         ResultVerdict::VerifiedPass
@@ -696,7 +699,9 @@ fn verdict_from_tool_result(
         ResultVerdict::VerifyError if sandbox_denied => {
             Some("sandbox denied the replayed command".to_string())
         }
-        ResultVerdict::VerifyError if status == "timedout" || status == "killed" => {
+        ResultVerdict::VerifyError
+            if matches!(status.as_str(), "timedout" | "killed" | "running") =>
+        {
             Some(format!("re-run did not complete (status: {status})"))
         }
         _ => None,
@@ -1215,6 +1220,35 @@ mod tests {
             assert_eq!(block.kind, ResultVerdict::VerifyError, "status {status}");
             assert!(block.error_reason.is_some(), "status {status}");
         }
+    }
+
+    /// A replay moved to the background (`status: Running`, null exit
+    /// code, `success: true`) has not finished: never a pass.
+    #[test]
+    fn running_replay_is_an_error_never_a_pass() {
+        let claim = DetectedClaim {
+            kind: ClaimKind::Test,
+            phrase: "tests pass".to_string(),
+        };
+        let command = VerificationCommand {
+            replay_input: json!({"command": "cargo test"}),
+            display_command: "cargo test".to_string(),
+            tool_name: "exec_shell".to_string(),
+            tool_use_id: "t-running".to_string(),
+            source_duration_ms: None,
+        };
+        let block = verdict_from_tool_result(
+            claim,
+            &command,
+            ToolResult {
+                canonical: None,
+                content: "Command moved to background".to_string(),
+                success: true,
+                metadata: Some(json!({"status": "Running", "exit_code": null})),
+            },
+        );
+        assert_eq!(block.kind, ResultVerdict::VerifyError);
+        assert!(block.error_reason.is_some());
     }
 
     #[test]
