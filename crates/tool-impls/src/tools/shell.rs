@@ -457,6 +457,34 @@ impl<'a> ShellProgress<'a> {
     }
 }
 
+/// Run one synchronous shell-manager call on the blocking pool. For a
+/// task-plane backend `spawn` / `poll` / `kill` are child processes
+/// (`docker run`, `docker inspect`), not the microsecond fork of the local
+/// backends.
+async fn offload_manager_call<T, F>(manager: &Arc<dyn ShellManagerApi>, call: F) -> Result<T>
+where
+    F: FnOnce(Arc<dyn ShellManagerApi>) -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let manager = Arc::clone(manager);
+    tokio::task::spawn_blocking(move || call(manager))
+        .await
+        .map_err(|err| anyhow!("shell manager task failed: {err}"))?
+}
+
+/// One `get_output_delta` on the blocking pool.
+async fn output_delta_offloaded(
+    manager: &Arc<dyn ShellManagerApi>,
+    task_id: &str,
+    timeout_ms: u64,
+) -> Result<ShellDeltaResult> {
+    let task_id = task_id.to_string();
+    offload_manager_call(manager, move |manager| {
+        manager.get_output_delta(&task_id, false, timeout_ms)
+    })
+    .await
+}
+
 /// The last `max` bytes of `text`, moved forward to a char boundary.
 fn tail_capped(text: &str, max: usize) -> &str {
     if text.len() <= max {
@@ -482,28 +510,39 @@ async fn execute_foreground_via_background(
     sandbox_runtime: SandboxRuntimeConfig,
 ) -> Result<ShellResult> {
     let timeout_ms = timeout_ms.clamp(1000, 600_000);
-    let spawned = {
-        let manager = &context.shell_manager;
-        manager.clear_foreground_background_request();
-        manager.set_sandbox_runtime(sandbox_runtime);
+    // Owned: the manager calls run on the blocking pool.
+    let (command, working_dir, stdin_data) = (
+        command.to_string(),
+        working_dir.map(str::to_string),
+        stdin_data.map(str::to_string),
+    );
+    let close_stdin = stdin_data.is_some();
+    let manager = &context.shell_manager;
+    manager.clear_foreground_background_request();
+    manager.set_sandbox_runtime(sandbox_runtime);
+    let spawned = offload_manager_call(manager, move |manager| {
         manager.execute_with_options_env(
-            command,
-            working_dir,
+            &command,
+            working_dir.as_deref(),
             timeout_ms,
             true,
-            stdin_data,
+            stdin_data.as_deref(),
             tty,
             policy_override,
             extra_env,
-        )?
-    };
+        )
+    })
+    .await?;
     let task_id = spawned
         .task_id
         .ok_or_else(|| anyhow!("foreground shell did not return a process id"))?;
 
-    if stdin_data.is_some() {
-        let manager = &context.shell_manager;
-        manager.write_stdin(&task_id, "", true)?;
+    if close_stdin {
+        let task_for_call = task_id.clone();
+        offload_manager_call(manager, move |manager| {
+            manager.write_stdin(&task_for_call, "", true)
+        })
+        .await?;
     }
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -514,16 +553,22 @@ async fn execute_foreground_via_background(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
-            let manager = &context.shell_manager;
-            return manager.kill(&task_id);
+            let task_for_call = task_id.clone();
+            return offload_manager_call(manager, move |manager| manager.kill(&task_for_call))
+                .await;
         }
 
         let snapshot = {
-            let manager = &context.shell_manager;
-            if manager.take_foreground_background_request() {
-                return manager.get_output(&task_id, false, 0);
+            let final_snapshot = manager.take_foreground_background_request();
+            let task_for_call = task_id.clone();
+            let snapshot = offload_manager_call(manager, move |manager| {
+                manager.get_output(&task_for_call, false, 0)
+            })
+            .await;
+            if final_snapshot {
+                return snapshot;
             }
-            manager.get_output(&task_id, false, 0)?
+            snapshot?
         };
 
         if snapshot.status != ShellStatus::Running {
@@ -542,8 +587,9 @@ async fn execute_foreground_via_background(
             .await;
 
         if Instant::now() >= deadline {
-            let manager = &context.shell_manager;
-            let mut result = manager.kill(&task_id)?;
+            let task_for_call = task_id.clone();
+            let mut result =
+                offload_manager_call(manager, move |manager| manager.kill(&task_for_call)).await?;
             result.status = ShellStatus::TimedOut;
             return Ok(result);
         }
@@ -806,15 +852,21 @@ impl ToolSpec for ExecShellTool {
             None => None,
         };
 
-        // #456 — collect env from any configured `shell_env` hooks. Runs
-        // synchronously, captures stdout, parses `KEY=VAL` lines, audit-logs
-        // the keys (never the values). Empty / no-op when no hook is
-        // configured.
-        let extra_env = if let Some(hook_executor) = &context.runtime.hook_executor {
+        // #456 — collect env from any configured `shell_env` hooks. Runs on
+        // the blocking pool, captures stdout, parses `KEY=VAL` lines,
+        // audit-logs the keys (never the values). Empty / no-op when no hook
+        // is configured.
+        let extra_env = if let Some(hook_executor) = context.runtime.hook_executor.clone() {
             let hook_ctx = codesmith_agent_runtime::hooks::HookContext::new()
                 .with_tool_name("exec_shell")
                 .with_tool_args(&input);
-            hook_executor.collect_shell_env(&hook_ctx)
+            // The hook is a child process that may run for seconds: off the
+            // runtime thread, like every other subprocess here.
+            tokio::task::spawn_blocking(move || hook_executor.collect_shell_env(&hook_ctx))
+                .await
+                .map_err(|err| {
+                    ToolError::execution_failed(format!("shell_env hook task failed: {err}"))
+                })?
         } else {
             std::collections::HashMap::new()
         };
@@ -1064,18 +1116,24 @@ impl ToolSpec for ExecShellTool {
                 Err(e) => Err(anyhow!("interactive shell task failed: {e}")),
             }
         } else if background {
-            let manager = &context.shell_manager;
+            let manager = context.shell_manager.clone();
             manager.set_sandbox_runtime(effective_runtime.clone());
-            manager.execute_with_options_env(
-                command,
-                working_dir.as_deref(),
-                timeout_ms,
-                true,
-                stdin_data.as_deref(),
-                tty,
-                policy_override,
-                extra_env,
-            )
+            let command_text = command.to_string();
+            let spawned = tokio::task::spawn_blocking(move || {
+                manager.execute_with_options_env(
+                    &command_text,
+                    working_dir.as_deref(),
+                    timeout_ms,
+                    true,
+                    stdin_data.as_deref(),
+                    tty,
+                    policy_override,
+                    extra_env,
+                )
+            });
+            spawned.await.map_err(|err| {
+                ToolError::execution_failed(format!("background shell task failed: {err}"))
+            })?
         } else {
             // P2-6 session-aware cwd: an explicit `cwd` param wins; else the
             // session slot (a `cd` from an earlier call this session); else
@@ -1512,9 +1570,8 @@ async fn wait_for_shell_delta_cancellable(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         {
-            let manager = &context.shell_manager;
-            let delta = manager
-                .get_output_delta(task_id, false, 0)
+            let delta = output_delta_offloaded(&context.shell_manager, task_id, 0)
+                .await
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
             append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
             return Ok((
@@ -1530,12 +1587,9 @@ async fn wait_for_shell_delta_cancellable(
             ));
         }
 
-        let delta = {
-            let manager = &context.shell_manager;
-            manager
-                .get_output_delta(task_id, false, 0)
-                .map_err(|err| ToolError::execution_failed(err.to_string()))?
-        };
+        let delta = output_delta_offloaded(&context.shell_manager, task_id, 0)
+            .await
+            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
 
         let stdout_total_len = delta.stdout_total_len;
         let stderr_total_len = delta.stderr_total_len;
@@ -1833,9 +1887,8 @@ impl ToolSpec for ShellWaitTool {
         let (delta, wait_canceled) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms, self.name).await?
         } else {
-            let manager = &context.shell_manager;
-            let delta = manager
-                .get_output_delta(task_id, false, timeout_ms)
+            let delta = output_delta_offloaded(&context.shell_manager, task_id, timeout_ms)
+                .await
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
             (delta, false)
         };
@@ -1942,9 +1995,8 @@ impl ToolSpec for ShellInteractTool {
                 .as_ref()
                 .is_some_and(|token| token.is_cancelled())
             {
-                let manager = &context.shell_manager;
-                let delta = manager
-                    .get_output_delta(task_id, false, 0)
+                let delta = output_delta_offloaded(&context.shell_manager, task_id, 0)
+                    .await
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?;
                 let mut result = build_shell_delta_tool_result(delta, context).await;
                 if let Some(metadata) = result.metadata.as_mut()
@@ -1955,12 +2007,9 @@ impl ToolSpec for ShellInteractTool {
                 return Ok(result);
             }
 
-            let delta = {
-                let manager = &context.shell_manager;
-                manager
-                    .get_output_delta(task_id, false, 0)
-                    .map_err(|err| ToolError::execution_failed(err.to_string()))?
-            };
+            let delta = output_delta_offloaded(&context.shell_manager, task_id, 0)
+                .await
+                .map_err(|err| ToolError::execution_failed(err.to_string()))?;
 
             if !delta.result.stdout.is_empty()
                 || !delta.result.stderr.is_empty()
