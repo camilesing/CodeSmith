@@ -1869,6 +1869,26 @@ impl Config {
 
     /// Validate that critical config fields are present.
     pub fn validate(&self) -> Result<()> {
+        // A misspelled platform (`mac`, `darwin`) matched nothing, the
+        // sandbox was silently disabled for the current platform, and every
+        // command ran unconfined.
+        if let Some(platforms) = self
+            .sandbox
+            .as_ref()
+            .and_then(|sandbox| sandbox.enabled_platforms.as_ref())
+        {
+            for platform in platforms {
+                if !SANDBOX_PLATFORMS
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(platform.trim()))
+                {
+                    anyhow::bail!(
+                        "[sandbox] enabled_platforms: unknown platform {platform:?}; \
+                         use macos, linux or windows"
+                    );
+                }
+            }
+        }
         // Kernel composition — turn-executor selection is NOT validated
         // here: an id contributed by a dylib extension resolves only at
         // turn assembly (its contribution queues at load, the engine
@@ -3694,6 +3714,10 @@ fn env_flag_truthy_any(names: &[&str]) -> bool {
             .unwrap_or(false)
     })
 }
+
+/// The platforms `[sandbox] enabled_platforms` accepts — the vocabulary of
+/// `codesmith_sandbox::runtime::current_platform`.
+const SANDBOX_PLATFORMS: [&str; 3] = ["macos", "linux", "windows"];
 
 fn parse_env_list(value: &str) -> Vec<String> {
     value
@@ -11181,6 +11205,42 @@ context_window = 200000
         let default = Config::default();
         assert_eq!(default.memory_dir_override(), None);
         assert!(default.memory_excludes().is_empty());
+    }
+
+    /// A misspelled platform in `[sandbox] enabled_platforms` matched
+    /// nothing, so the sandbox was silently disabled and every command ran
+    /// unconfined. It fails validation, naming the entry.
+    #[test]
+    fn misspelled_sandbox_platform_fails_validation() {
+        let config: Config = toml::from_str(
+            r#"
+            [sandbox]
+            enabled_platforms = ["mac"]
+            "#,
+        )
+        .expect("config");
+        let err = config
+            .validate()
+            .expect_err("an unknown platform must fail loud");
+        let err = format!("{err:#}");
+        assert!(err.contains(r#""mac""#), "{err}");
+        assert!(err.contains("macos, linux or windows"), "{err}");
+
+        // Case and surrounding space are forgiven.
+        let config: Config = toml::from_str(
+            r#"
+            [sandbox]
+            enabled_platforms = ["MacOS", " linux ", "WINDOWS"]
+            "#,
+        )
+        .expect("config");
+        assert!(
+            !config
+                .validate()
+                .err()
+                .is_some_and(|err| err.to_string().contains("enabled_platforms")),
+            "a correctly spelled platform list is not rejected"
+        );
     }
 
     #[test]
