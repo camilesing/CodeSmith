@@ -39,6 +39,10 @@ pub struct ApprovalGrants {
     /// [`ApprovalGrants::save`] so the union merge can never resurrect a
     /// grant the user explicitly removed.
     removed: BTreeMap<String, BTreeSet<String>>,
+    /// Grants added this session: the only thing [`ApprovalGrants::save`]
+    /// merges onto the on-disk state. Re-inserting the whole in-memory view
+    /// wrote back a grant another open session had just revoked.
+    added: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -100,6 +104,7 @@ impl ApprovalGrants {
                 .map(|(key, project)| (key, project.grants))
                 .collect(),
             removed: BTreeMap::new(),
+            added: BTreeMap::new(),
         }
     }
 
@@ -131,6 +136,10 @@ impl ApprovalGrants {
             .entry(workspace_key.to_string())
             .or_default()
             .insert(grouping_key.to_string());
+        self.added
+            .entry(workspace_key.to_string())
+            .or_default()
+            .insert(grouping_key.to_string());
         // A re-granted key must not stay in the removed set, or the union
         // merge in `save` would drop it again.
         if let Some(removed) = self.removed.get_mut(workspace_key) {
@@ -149,13 +158,18 @@ impl ApprovalGrants {
             .entry(workspace_key.to_string())
             .or_default()
             .insert(grouping_key.to_string());
+        if let Some(added) = self.added.get_mut(workspace_key) {
+            added.remove(grouping_key);
+        }
         had
     }
 
-    /// Write the store back, union-merging with what is on disk minus
-    /// anything [`Self::revoke`] removed this session — so a second
-    /// codesmith running in the same workspace cannot lose its grants to
-    /// this process's snapshot.
+    /// Write the store back: this session's additions merged onto what is
+    /// on disk, minus anything [`Self::revoke`] removed this session — so a
+    /// second codesmith running in the same workspace cannot lose its
+    /// grants to this process's snapshot, and a grant that session revoked
+    /// is not written back from this one's stale view. The delta is cleared
+    /// only after a successful write.
     ///
     /// The whole load-merge-write cycle runs under the runtime's shared
     /// fd-lock helper (sibling `approvals.toml.lock`): without it, two
@@ -164,7 +178,7 @@ impl ApprovalGrants {
     /// helps when both processes read before either writes. Callers are
     /// sync REPL handlers on an async dispatch chain (pre-existing
     /// posture); the lock waits at most 10 s under contention.
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+    pub fn save(&mut self, path: &Path) -> std::io::Result<()> {
         codesmith_agent_runtime::settings_file::with_settings_lock(
             path,
             || -> anyhow::Result<()> {
@@ -172,7 +186,7 @@ impl ApprovalGrants {
                 // empty view would rewrite it with only this session's
                 // grants and destroy every other workspace's history.
                 let mut doc = load_doc(path)?;
-                for (key, grants) in &self.projects {
+                for (key, grants) in &self.added {
                     let project = doc.projects.entry(key.clone()).or_default();
                     for grant in grants {
                         project.grants.insert(grant.clone());
@@ -187,7 +201,7 @@ impl ApprovalGrants {
                 }
                 doc.projects.retain(|_, project| !project.grants.is_empty());
                 for (key, project) in doc.projects.iter_mut() {
-                    if self.projects.contains_key(key) {
+                    if self.added.contains_key(key) || self.removed.contains_key(key) {
                         project.updated_at = Some(chrono::Utc::now().to_rfc3339());
                     }
                 }
@@ -205,7 +219,12 @@ impl ApprovalGrants {
                 )?)
             },
         )
-        .map_err(|err| std::io::Error::other(format!("grants save under lock failed: {err:#}")))
+        .map_err(|err| std::io::Error::other(format!("grants save under lock failed: {err:#}")))?;
+        // The delta is on disk now. A failed save leaves it, so the next
+        // one retries it.
+        self.added.clear();
+        self.removed.clear();
+        Ok(())
     }
 }
 
@@ -270,7 +289,7 @@ mod tests {
         std::fs::write(&path, "[projects]\n").unwrap();
         let original = std::fs::metadata(&path).unwrap().permissions();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
-        let grants = ApprovalGrants::default();
+        let mut grants = ApprovalGrants::default();
         let res = grants.save(&path);
         std::fs::set_permissions(&path, original).unwrap();
         assert!(res.is_err(), "save must refuse when the file is unreadable");
@@ -284,6 +303,31 @@ mod tests {
         std::fs::write(&path, "not [ valid toml {{{{").expect("write");
         let grants = ApprovalGrants::load(&path);
         assert_eq!(grants, ApprovalGrants::default());
+    }
+
+    /// Session A loaded the store with grant X, session B revoked X and
+    /// saved, then A saved a new grant: A's save wrote its whole in-memory
+    /// view back and resurrected the grant the user had removed.
+    #[test]
+    fn a_stale_session_saves_only_its_own_delta() {
+        let path = temp_path("stale-delta.toml");
+        let mut seed = ApprovalGrants::default();
+        seed.grant("/w/a", "shell:cargo test");
+        seed.save(&path).expect("seed saves");
+
+        let mut a = ApprovalGrants::load(&path);
+        let mut b = ApprovalGrants::load(&path);
+        b.revoke("/w/a", "shell:cargo test");
+        b.save(&path).expect("B saves the removal");
+        a.grant("/w/a", "shell:npm test");
+        a.save(&path).expect("A saves with a pre-removal snapshot");
+
+        let reloaded = ApprovalGrants::load(&path);
+        assert!(
+            !reloaded.is_granted("/w/a", "shell:cargo test"),
+            "a revoked grant came back"
+        );
+        assert!(reloaded.is_granted("/w/a", "shell:npm test"));
     }
 
     #[test]
