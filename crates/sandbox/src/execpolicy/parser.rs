@@ -227,7 +227,8 @@ fn policy_builtins(builder: &mut GlobalsBuilder) {
             // fail-open is the wrong direction for a security policy.
             None => {
                 return Err(Error::InvalidRule(
-                    "prefix_rule requires an explicit `decision` (allow|deny|ask)".to_string(),
+                    "prefix_rule requires an explicit `decision` (allow|prompt|forbidden)"
+                        .to_string(),
                 )
                 .into());
             }
@@ -283,8 +284,14 @@ mod tests {
     fn prefix_rule_without_decision_is_a_parse_error() {
         // A missing `decision` used to default to Allow — fail-open for a
         // security policy; it must be an explicit parse-time error.
-        let err = PolicyParser::new().parse("test-no-decision", r#"prefix_rule(pattern=["ls"])"#);
-        assert!(err.is_err(), "omitting decision must not default to allow");
+        let err = PolicyParser::new()
+            .parse("test-no-decision", r#"prefix_rule(pattern=["ls"])"#)
+            .expect_err("omitting decision must not default to allow");
+        // The remedy it names must be one the parser accepts.
+        assert!(
+            err.to_string().contains("allow|prompt|forbidden"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]
