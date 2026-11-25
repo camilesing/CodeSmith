@@ -959,6 +959,9 @@ pub struct SseTransport {
 enum SseInbound {
     Endpoint(String),
     Message(Vec<u8>),
+    /// The loop failed before the endpoint was found: carried to `connect`'s
+    /// caller, which otherwise only saw the channel close.
+    Failed(anyhow::Error),
 }
 
 struct HttpTransport {
@@ -1078,6 +1081,7 @@ impl SseTransport {
         oauth: Option<OAuthState>,
     ) -> Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let failure_tx = tx.clone();
         let client_clone = client.clone();
         let url_clone = url.clone();
         let headers_clone = headers.clone();
@@ -1101,6 +1105,7 @@ impl SseTransport {
                 Ok(res) => {
                     if let Err(e) = res {
                         tracing::error!("SSE loop error: {}", e);
+                        let _ = failure_tx.send(SseInbound::Failed(e));
                     }
                 }
                 Err(panic_err) => {
@@ -1233,6 +1238,7 @@ impl SseTransport {
                     return Ok(());
                 }
                 SseInbound::Message(msg) => self.pending_messages.push_back(msg),
+                SseInbound::Failed(err) => return Err(err),
             }
         }
     }
@@ -1969,6 +1975,7 @@ impl McpTransport for SseTransport {
                     self.store_endpoint(&endpoint)?;
                 }
                 SseInbound::Message(msg) => return Ok(msg),
+                SseInbound::Failed(err) => return Err(err),
             }
         }
     }
@@ -6371,6 +6378,56 @@ mod tests {
 
         cancel_token.cancel();
         server.abort();
+    }
+
+    /// A legacy-SSE server that rejects the discovery GET (expired token,
+    /// wrong path) used to surface as "transport closed before endpoint was
+    /// discovered": the status and body stopped in a log line.
+    #[tokio::test]
+    async fn sse_connect_surfaces_a_rejected_discovery_get() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nbad token..\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let err = SseTransport::connect(
+            loopback_client(),
+            format!("http://{addr}/sse"),
+            HashMap::new(),
+            tokio_util::sync::CancellationToken::new(),
+            Duration::from_secs(2),
+            None,
+        )
+        .await
+        .err()
+        .expect("a rejected GET fails the connect");
+        let err = format!("{err:#}");
+        assert!(err.contains("status=401"), "{err}");
+        assert!(err.contains("bad token"), "{err}");
+        server.await.unwrap();
     }
 
     #[tokio::test]
