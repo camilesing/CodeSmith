@@ -5435,6 +5435,11 @@ fn build_initial_subagent_messages(
 
 /// Build forked messages that maximize prefix cache reuse.
 ///
+/// Not reached in production: both constructors of `SubAgentForkContext`
+/// leave `current_assistant_text` and `current_turn_tool_calls` unset, so
+/// the gate at the call site never opens and a forked child gets the plain
+/// message copy. Only its own unit test exercises it.
+///
 /// Strategy (matching Claude Code's forkSubagent.ts):
 /// 1. Clone all parent messages (including fork_state and subagent_context)
 /// 2. If the parent has a partial assistant message with tool calls, construct
