@@ -5838,6 +5838,25 @@ async fn run_external_subagent(
     })
 }
 
+/// Why a read-only child cannot have `refused`. Plan mode makes every
+/// type read-only: there the `explore` text ("spawn a write-capable type
+/// instead") sent the caller to reproduce the error.
+fn read_only_refusal_message(agent_type: &SubAgentType, refused: &[String]) -> String {
+    if matches!(agent_type, SubAgentType::Explore) {
+        return format!(
+            "Sub-agent type 'explore' is read-only and cannot use: {}. Drop them from \
+             allowed_tools, or spawn a write-capable type instead (general, implementer, custom).",
+            refused.join(", ")
+        );
+    }
+    format!(
+        "Children are read-only in this session (plan mode): sub-agent type '{}' cannot use: {}. \
+         Drop them from allowed_tools.",
+        agent_type.as_str(),
+        refused.join(", ")
+    )
+}
+
 /// Run one in-process child: assemble its opening transcript, its narrowed
 /// tool surface and its route, then hand the turn to the shared loop
 /// (`run_child_turn` — the configured `turn_executor`, streaming, the
@@ -5966,11 +5985,7 @@ async fn run_subagent(
     }
     let refused = tool_registry.refused_non_read_only_tools();
     if !refused.is_empty() {
-        let message = format!(
-            "Sub-agent type 'explore' is read-only and cannot use: {}. Drop them from \
-             allowed_tools, or spawn a write-capable type instead (general, implementer, custom).",
-            refused.join(", ")
-        );
+        let message = read_only_refusal_message(&agent_type, refused);
         close_child_journal_with_failure(&journal, &message).await;
         return Err(anyhow!(message));
     }

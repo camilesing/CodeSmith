@@ -4192,6 +4192,19 @@ fn a_type_with_a_separator_stays_inside_the_definition_roots() {
     }
 }
 
+/// Plan mode refused a `general` child's `write_file` with the `explore`
+/// text — and advised spawning "a write-capable type instead", which is what
+/// the caller had just done.
+#[test]
+fn a_read_only_session_names_the_real_cause_of_the_refusal() {
+    let refused = ["write_file".to_string()];
+    let message = read_only_refusal_message(&SubAgentType::General, &refused);
+    assert!(message.contains("read-only in this session"), "{message}");
+    assert!(message.contains("sub-agent type 'general'"), "{message}");
+    assert!(!message.contains("'explore'"), "{message}");
+    assert!(read_only_refusal_message(&SubAgentType::Explore, &refused).contains("'explore'"));
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.
