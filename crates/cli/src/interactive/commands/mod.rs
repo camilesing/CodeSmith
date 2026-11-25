@@ -438,7 +438,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Copy => {
-            crate::interactive::copy_command(state, &arg_str);
+            crate::interactive::copy_command(state, &arg_str).await;
             false
         }
         Command::Import => {

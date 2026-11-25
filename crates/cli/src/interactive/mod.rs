@@ -798,7 +798,7 @@ pub(crate) fn assistant_replies(messages: &[crate::models::Message]) -> Vec<(usi
 /// clipboard here takes the whole reply (the picker needs a fullscreen
 /// renderer). `w`-to-file, one of its options, has no equivalent — `/export`
 /// writes the transcript instead.
-pub(crate) fn copy_command(state: &ReplState, arg: &str) {
+pub(crate) async fn copy_command(state: &ReplState, arg: &str) {
     let index: usize = match arg.trim() {
         "" => 1,
         other => match other.parse() {
@@ -818,12 +818,16 @@ pub(crate) fn copy_command(state: &ReplState, arg: &str) {
         );
         return;
     };
-    match crate::clipboard::copy_text(text) {
-        Ok(()) => println!(
+    // The clipboard helper is a child process the caller waits on: off
+    // the runtime, like `copy_draft_text`.
+    let payload = text.to_string();
+    match tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&payload)).await {
+        Ok(Ok(())) => println!(
             "{}",
             format!("copied answer #{index} ({} chars)", text.chars().count()).dimmed()
         ),
-        Err(err) => println!("{} {err}", "✗".red()),
+        Ok(Err(err)) => println!("{} {err}", "✗".red()),
+        Err(err) => println!("{} clipboard worker failed: {err}", "✗".red()),
     }
 }
 
