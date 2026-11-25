@@ -13139,6 +13139,178 @@ mod tests {
         assert!(pushed_note.ends_with("</codesmith:runtime_event>"));
     }
 
+    /// A stand-in for a network tool on the replay path: read-only metadata
+    /// (`[ReadOnly, Network]`), a fixed raw body on every execution, and a
+    /// log of whether it ran.
+    struct FetchDispatcher {
+        approval: Option<ApprovalRequirement>,
+        body: &'static str,
+        runs: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl ToolDispatcher for FetchDispatcher {
+        fn resolve(&self, _requested: &str) -> Option<String> {
+            Some("fetch_url".to_string())
+        }
+        fn metadata(&self, _name: &str) -> Option<crate::tool_dispatch::ToolMetadata> {
+            Some(crate::tool_dispatch::ToolMetadata {
+                name: "fetch_url".to_string(),
+                description: "Fetches a page (test stand-in).".to_string(),
+                capabilities: vec![ToolCapability::ReadOnly, ToolCapability::Network],
+                approval_requirement: ApprovalRequirement::Auto,
+                supports_parallel: true,
+                defer_loading: false,
+            })
+        }
+        fn is_destructive(&self, _name: &str, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn is_interactive(&self, _name: &str, _input: &serde_json::Value) -> bool {
+            false
+        }
+        fn approval_requirement_for(
+            &self,
+            _name: &str,
+            _input: &serde_json::Value,
+        ) -> Option<ApprovalRequirement> {
+            self.approval
+        }
+        fn validate_input(&self, _name: &str, _input: &serde_json::Value) -> Result<(), ToolError> {
+            Ok(())
+        }
+        fn to_api_tools(&self) -> Vec<crate::models::Tool> {
+            Vec::new()
+        }
+        fn to_api_tools_with_cache(&self, _enable_cache: bool) -> Vec<crate::models::Tool> {
+            Vec::new()
+        }
+        async fn execute(
+            &self,
+            _name: &str,
+            _input: serde_json::Value,
+            _sandbox_override: Option<serde_json::Value>,
+        ) -> Result<ToolResult, ToolError> {
+            *self.runs.lock().expect("runs poisoned") += 1;
+            Ok(ToolResult {
+                canonical: None,
+                content: self.body.to_string(),
+                success: true,
+                metadata: None,
+            })
+        }
+        fn hook_host(&self) -> Option<Arc<dyn HookHost>> {
+            None
+        }
+    }
+
+    fn fetch_input() -> serde_json::Value {
+        serde_json::json!({ "url": "https://example.invalid/page" })
+    }
+
+    /// `user "hello"` → assistant `fetch_url` call → its stored result.
+    fn fetch_session(stored_result: &str) -> Session {
+        let mut sess = fresh_session();
+        sess.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        });
+        sess.messages.push(Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: "f1".to_string(),
+                name: "fetch_url".to_string(),
+                input: fetch_input(),
+                caller: None,
+            }],
+        });
+        sess.messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "f1".to_string(),
+                content: stored_result.to_string(),
+                is_error: Some(false),
+                content_blocks: None,
+            }],
+        });
+        sess
+    }
+
+    /// The loop stores a network tool's result inside its provenance
+    /// envelope. Comparing that with a raw re-execution made every fetch
+    /// "conflict", and quoted the raw page into a user-role note.
+    #[tokio::test]
+    async fn replay_compares_a_network_result_in_its_transcript_form() {
+        let runs = Arc::new(Mutex::new(0));
+        let wrapped = codesmith_sandbox::sanitization::wrap_external_tool_content(
+            "fetch_url",
+            &fetch_input(),
+            "<p>first fetch</p>",
+        );
+        assert_ne!(
+            wrapped.trim(),
+            "<p>first fetch</p>".trim(),
+            "precondition: the stored form differs from the raw body"
+        );
+        let mut sess = fetch_session(&wrapped);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let same = FetchDispatcher {
+            approval: None,
+            body: "<p>first fetch</p>",
+            runs: Arc::clone(&runs),
+        };
+        let outcome = replay_and_push_verification_note(&mut history, Some(&same), None)
+            .await
+            .expect("replay found a candidate");
+        assert!(outcome.pass, "{}", outcome.diff_summary);
+        assert_eq!(outcome.diff_summary, "output_match");
+
+        // A page that changed: both sides of the mismatch are quoted in
+        // their transcript form — never the raw body outside the envelope.
+        let mut sess = fetch_session(&wrapped);
+        let mut history = SessionChatHistory::new(&mut sess);
+        let changed = FetchDispatcher {
+            approval: None,
+            body: "<p>second fetch</p>",
+            runs: Arc::clone(&runs),
+        };
+        let outcome = replay_and_push_verification_note(&mut history, Some(&changed), None)
+            .await
+            .expect("replay found a candidate");
+        assert!(!outcome.pass);
+        assert!(
+            outcome
+                .diff_summary
+                .contains("replay='<external_content source="),
+            "{}",
+            outcome.diff_summary
+        );
+        assert_eq!(*runs.lock().unwrap(), 2);
+    }
+
+    /// A spilled result is a reference block in the transcript, never equal
+    /// to a re-execution: it is not a replay candidate.
+    #[tokio::test]
+    async fn a_spilled_result_is_not_replayed() {
+        let runs = Arc::new(Mutex::new(0));
+        let mut sess = fetch_session("[spilled — retrieve_tool_result ref=f1 mode=tail]");
+        let mut history = SessionChatHistory::new(&mut sess);
+        let dispatcher = FetchDispatcher {
+            approval: None,
+            body: "irrelevant",
+            runs: Arc::clone(&runs),
+        };
+        assert!(
+            replay_and_push_verification_note(&mut history, Some(&dispatcher), None)
+                .await
+                .is_none()
+        );
+        assert_eq!(*runs.lock().unwrap(), 0);
+    }
+
     /// §E slice 3b: a disabled `CapacityGateProbe` (`enabled: false`) never
     /// observes → seam-4 never fires → no `[verification replay]` note and the
     /// replay-outcome slot stays `None` (no spurious state work post-`run`).

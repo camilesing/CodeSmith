@@ -487,6 +487,9 @@ pub(crate) fn select_replay_candidate_from_messages(
             } = block
                 && let Some((content, is_error)) = results.get(id.as_str())
                 && *is_error != Some(true)
+                // A spilled result is a reference block in the transcript,
+                // never byte-equal to a re-execution: not comparable.
+                && !content.contains("retrieve_tool_result ref=")
                 && is_replayable_read_only(name, tool_registry)
                 // MCP tools are deliberately excluded on THIS transcript-
                 // based path: it re-executes through `registry.execute`
@@ -547,7 +550,16 @@ pub(crate) async fn replay_and_push_verification_note(
     let (pass, replay_outcome, diff_summary) = match replay_result {
         Ok(output) => {
             let original = candidate.original_result.as_str();
-            let replay = output.content.as_str();
+            // The transcript's form: the loop wraps a network tool's result
+            // in its provenance envelope, so a raw replay differed from a
+            // byte-identical fetch by construction — and quoted the raw
+            // external body into the note, outside the envelope.
+            let wrapped = codesmith_sandbox::sanitization::wrap_external_tool_content(
+                &candidate.name,
+                &candidate.input,
+                output.content.as_str(),
+            );
+            let replay = wrapped.as_str();
             let equal = original.trim() == replay.trim();
             let diff = if equal {
                 "output_match".to_string()
