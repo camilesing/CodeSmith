@@ -524,7 +524,8 @@ fn read_script_metadata(path: &Path) -> Option<PluginMetadata> {
 /// Scan a directory for plugin script files with frontmatter headers.
 ///
 /// Files are considered eligible when:
-/// - They are regular files (not directories, not symlinks)
+/// - They are not directories (a symlink to a script is loaded: a
+///   user-owned link is a legitimate way to expose one)
 /// - They don't start with `.` (hidden files)
 /// - They are not `README.md`
 /// - Their first 20 lines contain `# name:` frontmatter
