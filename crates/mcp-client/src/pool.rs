@@ -2744,6 +2744,35 @@ impl McpAuthCache {
             .unwrap_or_default()
     }
 
+    /// [`Self::load`] off the runtime thread: it reads the cache file.
+    async fn load_off_thread() -> Self {
+        tokio::task::spawn_blocking(Self::load)
+            .await
+            .unwrap_or_default()
+    }
+
+    /// [`Self::mark`] off the runtime thread: it writes the cache file.
+    async fn mark_off_thread(server: &str, config: &McpServerConfig, reason: String) {
+        let (server, config) = (server.to_string(), config.clone());
+        let _ = tokio::task::spawn_blocking(move || Self::mark(&server, &config, &reason)).await;
+    }
+
+    /// Record an auth failure and build the error the caller returns: the
+    /// cached entry's when the cache holds it, the failure itself otherwise.
+    /// The write can fail (an unwritable home directory) — the entry then
+    /// does not exist, and the old `expect` on it panicked inside the call.
+    async fn mark_auth_failure(
+        server: &str,
+        config: &McpServerConfig,
+        err: anyhow::Error,
+    ) -> anyhow::Error {
+        Self::mark_off_thread(server, config, format!("{err:#}")).await;
+        match Self::load_off_thread().await.fresh_entry(server) {
+            Some(entry) => needs_auth_error(server, entry),
+            None => err,
+        }
+    }
+
     fn fresh_entry(&self, server: &str) -> Option<&McpAuthCacheEntry> {
         let entry = self.servers.get(server)?;
         let age = Duration::from_millis(now_millis().saturating_sub(entry.marked_at_ms));
@@ -2908,7 +2937,9 @@ async fn connect_task(
     policy: Option<NetworkPolicyDecider>,
 ) -> (String, Result<McpConnection>) {
     let result = if task.config.url.is_some()
-        && let Some(entry) = McpAuthCache::load().fresh_entry(&task.name)
+        && let Some(entry) = McpAuthCache::load_off_thread()
+            .await
+            .fresh_entry(&task.name)
     {
         Err(needs_auth_error(&task.name, entry))
     } else {
@@ -2922,13 +2953,7 @@ async fn connect_task(
         match connected {
             Ok(conn) => Ok(conn),
             Err(err) if task.config.url.is_some() && is_mcp_auth_error(&err) => {
-                McpAuthCache::mark(&task.name, &task.config, &format!("{err:#}"));
-                Err(needs_auth_error(
-                    &task.name,
-                    McpAuthCache::load()
-                        .fresh_entry(&task.name)
-                        .expect("auth cache entry just written"),
-                ))
+                Err(McpAuthCache::mark_auth_failure(&task.name, &task.config, err).await)
             }
             Err(err) => Err(err),
         }
@@ -3093,7 +3118,9 @@ impl McpPool {
         }
 
         if server_config.url.is_some()
-            && let Some(entry) = McpAuthCache::load().fresh_entry(server_name)
+            && let Some(entry) = McpAuthCache::load_off_thread()
+                .await
+                .fresh_entry(server_name)
         {
             return Err(needs_auth_error(server_name, entry));
         }
@@ -3108,13 +3135,7 @@ impl McpPool {
         {
             Ok(connection) => Ok(connection),
             Err(err) if server_config.url.is_some() && is_mcp_auth_error(&err) => {
-                McpAuthCache::mark(server_name, &server_config, &format!("{err:#}"));
-                Err(needs_auth_error(
-                    server_name,
-                    McpAuthCache::load()
-                        .fresh_entry(server_name)
-                        .expect("auth cache entry just written"),
-                ))
+                Err(McpAuthCache::mark_auth_failure(server_name, &server_config, err).await)
             }
             Err(err) => Err(err),
         }
@@ -3767,7 +3788,9 @@ impl McpPool {
             .server_config_snapshot(server_name)
             .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?;
         if server_config_for_auth.url.is_some()
-            && let Some(entry) = McpAuthCache::load().fresh_entry(server_name)
+            && let Some(entry) = McpAuthCache::load_off_thread()
+                .await
+                .fresh_entry(server_name)
         {
             return Err(needs_auth_error(server_name, entry));
         }
@@ -3803,15 +3826,9 @@ impl McpPool {
                 let timeout = conn.config().effective_execute_timeout(&global_timeouts);
                 conn.call_tool(tool_name, arguments, timeout).await
             }
-            Err(err) if is_mcp_auth_error(&err) && server_config_for_auth.url.is_some() => {
-                McpAuthCache::mark(server_name, &server_config_for_auth, &format!("{err:#}"));
-                Err(needs_auth_error(
-                    server_name,
-                    McpAuthCache::load()
-                        .fresh_entry(server_name)
-                        .expect("auth cache entry just written"),
-                ))
-            }
+            Err(err) if is_mcp_auth_error(&err) && server_config_for_auth.url.is_some() => Err(
+                McpAuthCache::mark_auth_failure(server_name, &server_config_for_auth, err).await,
+            ),
             Err(err) => Err(err),
         }
     }
@@ -5398,6 +5415,78 @@ mod tests {
                 None => std::env::remove_var("USERPROFILE"),
             }
         }
+    }
+
+    /// The cache write can fail — a home directory that cannot be
+    /// written. The connect error then used to be replaced by a panic on
+    /// the entry that was never written.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn an_auth_failure_survives_an_unwritable_cache() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _guard = env_lock();
+        let home = tempfile::tempdir().unwrap();
+        // `codesmith_home()` is `<HOME>/.codesmith`: its parent is a file,
+        // so the cache directory cannot be created.
+        let blocker = home.path().join("not-a-directory");
+        std::fs::write(&blocker, "x").unwrap();
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        unsafe {
+            std::env::set_var("HOME", &blocker);
+            std::env::set_var("USERPROFILE", &blocker);
+        }
+        let _lock = lock_mcp_loopback_tests().await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let pool = McpPool::new(McpConfig::default());
+        let mut config = test_server_config();
+        config.url = Some(format!("http://{addr}/sse"));
+        config.transport = Some("sse".to_string());
+        pool.add_server_for_test("remote", config);
+        let err = match pool.get_or_connect("remote").await {
+            Err(err) => err,
+            Ok(_) => panic!("the server refuses the connection"),
+        };
+        let err = format!("{err:#}");
+        assert!(err.contains("401"), "the connect error is returned: {err}");
+
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match previous_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+        server.await.unwrap();
     }
 
     #[test]
