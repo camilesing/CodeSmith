@@ -119,7 +119,8 @@ pub enum ChildSessionEvent {
         input: serde_json::Value,
     },
     /// A tool call returned. The provider matches the most recent open call
-    /// of `name` (parallel calls of the same name settle in start order).
+    /// of `name` (the executor ends a parallel batch's tools in reverse
+    /// start order, and the seam carries no call id).
     ToolFinished {
         name: String,
         ok: bool,

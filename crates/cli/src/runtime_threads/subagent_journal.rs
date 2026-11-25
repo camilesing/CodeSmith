@@ -17,8 +17,9 @@
 //!   delta; a reconnect mid-step sees the last completed step.
 //! - Forked children record their assignment as the first user message, not
 //!   the inherited parent prefix.
-//! - Parallel calls of the same tool name settle their results in start order
-//!   (the `Callback` seam carries no call id into `on_tool_end`).
+//! - Parallel calls of the same tool name are paired LIFO: the executor
+//!   delivers `on_tool_end` in reverse start order for a batch, and the
+//!   `Callback` seam carries no call id into `on_tool_end`.
 //! - The thread store is the authoritative record; there is no snapshot file
 //!   cache for child threads (the snapshot cache is for saved sessions).
 
@@ -379,7 +380,11 @@ impl RuntimeChildJournal {
         let Some(turn_id) = state.turn_id.as_deref() else {
             return;
         };
-        let item_id = state.open_tools.get_mut(name).and_then(VecDeque::pop_front);
+        // The executor ends a parallel batch's tools in reverse start
+        // order, so the most recent open call of `name` is the one that
+        // ended. FIFO pairing gave every same-name pair the other call's
+        // result.
+        let item_id = state.open_tools.get_mut(name).and_then(VecDeque::pop_back);
         let Some(item_id) = item_id else {
             // A tool result without a recorded start (an alternate loop that
             // skips `on_llm_end`): keep the result on its own item rather

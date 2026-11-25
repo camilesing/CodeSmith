@@ -9271,6 +9271,71 @@ mod tests {
             .expect("child journal")
     }
 
+    /// Two calls of the same tool in one parallel batch: the executor ends
+    /// them in reverse start order. FIFO pairing swapped every such pair's
+    /// arguments and results in the persisted transcript.
+    #[tokio::test]
+    async fn child_journal_pairs_parallel_same_name_results_with_their_calls() {
+        let data_dir = test_runtime_dir();
+        let manager = test_manager(data_dir).expect("manager");
+        manager
+            .store
+            .save_thread(&sample_thread("thr_parent"))
+            .expect("parent thread");
+        let journal = open_child_journal(
+            &manager,
+            "agent_pair",
+            "thr_parent",
+            ChildSessionMode::OneShot,
+        )
+        .await;
+        journal.record(ChildSessionEvent::Started).await;
+        journal
+            .record(ChildSessionEvent::UserMessage {
+                text: "read both".to_string(),
+            })
+            .await;
+        for (id, path) in [("call_a", "a.rs"), ("call_b", "b.rs")] {
+            journal
+                .record(ChildSessionEvent::ToolStarted {
+                    id: id.to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({ "path": path }),
+                })
+                .await;
+        }
+        // Engine order: the last started call ends first.
+        for content in ["RESULT_B", "RESULT_A"] {
+            journal
+                .record(ChildSessionEvent::ToolFinished {
+                    name: "read_file".to_string(),
+                    ok: true,
+                    content: content.to_string(),
+                })
+                .await;
+        }
+
+        let detail = manager
+            .get_thread_detail("agent_pair")
+            .await
+            .expect("child detail");
+        let detail_for = |path: &str| {
+            detail
+                .items
+                .iter()
+                .find(|item| {
+                    item.metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.pointer("/arguments/path"))
+                        .and_then(Value::as_str)
+                        == Some(path)
+                })
+                .and_then(|item| item.detail.clone())
+        };
+        assert_eq!(detail_for("a.rs").as_deref(), Some("RESULT_A"));
+        assert_eq!(detail_for("b.rs").as_deref(), Some("RESULT_B"));
+    }
+
     /// A child session is a durable thread/turn/item record: its transcript
     /// replays through the same store the desktop bridge reads, the parent
     /// catalog finds it by lineage, and the parent transcript stays empty.
