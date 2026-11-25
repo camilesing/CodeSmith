@@ -10,8 +10,39 @@ use crate::automation_manager::{
 };
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
-    optional_str, optional_u64, required_str,
+    optional_bool, optional_str, optional_u64, required_str,
 };
+
+/// The status a create call asks for. A wrong-typed `paused` ("true", 1)
+/// used to fold into `false` and schedule the automation Active — the
+/// opposite of the request.
+fn status_from_create_input(input: &Value) -> Result<AutomationStatus, ToolError> {
+    Ok(if optional_bool(input, "paused", false)? {
+        AutomationStatus::Paused
+    } else {
+        AutomationStatus::Active
+    })
+}
+
+/// The status an update call sets, if any. A present `status` that is not one
+/// of the two names — wrong type or a typo — is refused: a non-string used to
+/// read as "unset", and the patch reported success with it unchanged.
+fn status_from_update_input(input: &Value) -> Result<Option<AutomationStatus>, ToolError> {
+    let refused = |text: String| {
+        Err(ToolError::invalid_input(format!(
+            "field 'status' must be \"active\" or \"paused\", got: {text}"
+        )))
+    };
+    match input.get("status") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(status)) => match status.as_str() {
+            "paused" => Ok(Some(AutomationStatus::Paused)),
+            "active" => Ok(Some(AutomationStatus::Active)),
+            _ => refused(status.clone()),
+        },
+        Some(other) => refused(other.to_string()),
+    }
+}
 
 pub struct AutomationCreateTool;
 pub struct AutomationListTool;
@@ -77,17 +108,7 @@ impl ToolSpec for AutomationCreateTool {
             prompt: required_str(&input, "prompt")?.to_string(),
             rrule: required_str(&input, "rrule")?.to_string(),
             cwds: cwds_from_input(&input)?,
-            status: Some(
-                if input
-                    .get("paused")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    AutomationStatus::Paused
-                } else {
-                    AutomationStatus::Active
-                },
-            ),
+            status: Some(status_from_create_input(&input)?),
         };
         let automation = manager
             .create_automation(req)
@@ -230,19 +251,7 @@ impl ToolSpec for AutomationUpdateTool {
             .automations
             .as_ref()
             .ok_or_else(|| ToolError::not_available("AutomationManager is not attached"))?;
-        let status = match optional_str(&input, "status") {
-            None => None,
-            Some("paused") => Some(AutomationStatus::Paused),
-            Some("active") => Some(AutomationStatus::Active),
-            // The schema's enum is model-facing only — a typo like
-            // "Paused" or "activ" used to silently resume unattended
-            // scheduled runs instead of failing loudly.
-            Some(other) => {
-                return Err(ToolError::invalid_input(format!(
-                    "field 'status' must be \"active\" or \"paused\", got: {other}"
-                )));
-            }
-        };
+        let status = status_from_update_input(&input)?;
         let req = UpdateAutomationRequest {
             name: optional_str(&input, "name").map(ToString::to_string),
             prompt: optional_str(&input, "prompt").map(ToString::to_string),
@@ -446,6 +455,39 @@ fn cwds_from_input(input: &Value) -> Result<Vec<PathBuf>, ToolError> {
 mod tests {
     use super::*;
     use crate::tools::spec::ToolSpec;
+
+    /// `"paused": "true"` folded into `false` and created the automation
+    /// Active — scheduled for unattended runs; a non-string `status` on an
+    /// update read as "unset" and the patch reported success.
+    #[test]
+    fn a_wrong_typed_status_is_refused_not_folded() {
+        for bad in [json!("true"), json!(1)] {
+            assert!(
+                status_from_create_input(&json!({"paused": bad})).is_err(),
+                "{bad}: paused must be a boolean"
+            );
+        }
+        assert!(matches!(
+            status_from_create_input(&json!({"paused": true})),
+            Ok(AutomationStatus::Paused)
+        ));
+        assert!(matches!(
+            status_from_create_input(&json!({})),
+            Ok(AutomationStatus::Active)
+        ));
+
+        assert!(status_from_update_input(&json!({"status": 1})).is_err());
+        assert!(status_from_update_input(&json!({"status": "Paused"})).is_err());
+        assert!(
+            status_from_update_input(&json!({"status": null}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            status_from_update_input(&json!({"status": "active"})),
+            Ok(Some(AutomationStatus::Active))
+        ));
+    }
 
     #[test]
     fn create_schema_exposes_rrule() {

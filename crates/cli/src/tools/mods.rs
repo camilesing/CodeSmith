@@ -24,6 +24,7 @@ use crate::mod_ops::{self, ModReloadCtx};
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    optional_bool,
 };
 
 pub struct ManageModsTool {
@@ -198,10 +199,9 @@ impl ToolSpec for ManageModsTool {
             }
             "write" => {
                 require_id()?;
-                let global = input
-                    .get("global")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                // `"global": "true"` used to read as false and install the
+                // mod under the project root.
+                let global = optional_bool(&input, "global", false)?;
                 let files = parse_files(input.get("files"))?;
                 let ws = workspace.clone();
                 let id_in = id.clone();
