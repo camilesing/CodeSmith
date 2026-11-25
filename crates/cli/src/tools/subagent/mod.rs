@@ -5662,8 +5662,9 @@ async fn run_subagent_task(task: SubAgentTask) {
     }
 
     // subagent_complete hooks (observer-only), fired after the manager has
-    // recorded the terminal state. Cancelled/aborted agents never reach
-    // this epilogue and fire nothing.
+    // recorded the terminal state. A cancelled run arrives here too:
+    // `cancel` only fires the run's token, and a turn that ends as
+    // Cancelled is still a terminal state.
     if let Some(host) = task.runtime.context.runtime.hook_executor.clone() {
         let context = HookContext::new()
             .with_agent_id(&agent_id)
