@@ -7603,15 +7603,19 @@ impl SubAgentToolRegistry {
         self.capability_disabled.contains(name)
     }
 
-    /// Names this spawn asked for that the `explore` type cannot have. Empty
-    /// for every other type. Reported at spawn entry so an unenforceable
+    /// Names this spawn asked for that the `explore` type cannot have — or
+    /// that any type cannot have under a read-only runtime (plan mode). Empty
+    /// for every other case. Reported at spawn entry so an unenforceable
     /// request fails loudly instead of running with a narrowed toolset.
     fn refused_non_read_only_tools(&self) -> &[String] {
         &self.refused_non_read_only
     }
 
-    fn tools_for_model(&self, agent_type: &SubAgentType) -> Vec<Tool> {
-        let disallowed = match agent_type {
+    /// The tools a spawn type never gets — left out of its catalog, and
+    /// refused at dispatch when the model calls one anyway (a forked child
+    /// sees the parent's calls and can imitate them).
+    fn excluded_spawn_tools(agent_type: &SubAgentType) -> &'static [&'static str] {
+        match agent_type {
             // Review and tool-executor agents should not spawn or manage
             // sub-agents recursively (#1489, fast-lane executor).
             SubAgentType::Review => &[
@@ -7620,7 +7624,7 @@ impl SubAgentToolRegistry {
                 "agent_run",
                 "agent_eval",
                 "agent_close",
-            ][..],
+            ],
             SubAgentType::ToolAgent => &[
                 "agent_spawn",
                 "agent_open",
@@ -7632,10 +7636,14 @@ impl SubAgentToolRegistry {
                 "rlm_eval",
                 "rlm_configure",
                 "rlm_close",
-            ][..],
+            ],
             SubAgentType::CoordinatorWorker => WORKER_EXCLUDED_TOOLS,
-            _ => &[][..],
-        };
+            _ => &[],
+        }
+    }
+
+    fn tools_for_model(&self, agent_type: &SubAgentType) -> Vec<Tool> {
+        let disallowed = Self::excluded_spawn_tools(agent_type);
         let api_tools = self.registry.to_api_tools();
         let filtered = match &self.allowed_tools {
             None => api_tools,
@@ -7734,9 +7742,10 @@ impl DelegationPolicy {
     /// Whether a given tool name is permitted under this child's filter.
     /// `None` filter = everything permitted.
     fn is_tool_allowed(&self, name: &str) -> bool {
-        if matches!(self.agent_type, SubAgentType::CoordinatorWorker)
-            && WORKER_EXCLUDED_TOOLS.contains(&name)
-        {
+        // One list for the catalog and the gate: an excluded tool the
+        // model calls anyway (a forked child saw it in the parent's
+        // transcript) must not run.
+        if SubAgentToolRegistry::excluded_spawn_tools(&self.agent_type).contains(&name) {
             return false;
         }
         match &self.allowed_tools {

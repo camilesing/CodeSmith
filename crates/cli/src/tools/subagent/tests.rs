@@ -4128,6 +4128,39 @@ async fn a_failed_spawn_takes_no_resident_lease() {
     );
 }
 
+/// A `review` or `tool_agent` child is shown no spawn tools, but the
+/// dispatcher wraps every registered tool: a call to `agent_open` it imitated
+/// from the parent's transcript used to run — the recursion the exclusion
+/// exists to prevent.
+#[test]
+fn an_excluded_tool_is_refused_at_dispatch_too() {
+    for agent_type in [SubAgentType::Review, SubAgentType::ToolAgent] {
+        let policy = DelegationPolicy {
+            agent_id: "agent-child".to_string(),
+            agent_type: agent_type.clone(),
+            allowed_tools: None,
+            auto_approve: true,
+            path_ask: None,
+            asks: Default::default(),
+            ticket: None,
+        };
+        assert!(
+            !policy.is_tool_allowed("agent_open"),
+            "{agent_type:?}: the catalog hides agent_open"
+        );
+    }
+    let general = DelegationPolicy {
+        agent_id: "agent-child".to_string(),
+        agent_type: SubAgentType::General,
+        allowed_tools: None,
+        auto_approve: true,
+        path_ask: None,
+        asks: Default::default(),
+        ticket: None,
+    };
+    assert!(general.is_tool_allowed("agent_open"));
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.
