@@ -5640,6 +5640,40 @@ fn parse_definition_document_supports_json_markdown_and_frontmatter() {
     );
     assert_eq!(def.model.as_deref(), Some("deepseek-v4-pro"));
 
+    // The `.claude/agents` shape: `description` is the listing's one
+    // line, the body is the prompt, and `tools:` is a string.
+    let claude_path = dir.path().join("reviewer.md");
+    std::fs::write(
+        &claude_path,
+        "---\nname: reviewer\ndescription: Reviews code for quality\ntools: Read, Grep\n---\nYou are a senior code reviewer.\n",
+    )
+    .expect("write claude-style def");
+    let def = parse_definition_document(&claude_path, "fallback").expect("frontmatter parses");
+    assert_eq!(def.name, "reviewer");
+    assert!(
+        def.prompt
+            .as_deref()
+            .is_some_and(|p| p.contains("senior code reviewer") && !p.contains("Reviews code")),
+        "the body is the prompt: {:?}",
+        def.prompt
+    );
+    assert_eq!(
+        def.allowed_tools,
+        Some(vec!["Read".to_string(), "Grep".to_string()])
+    );
+    // A YAML block list is not a tool list this format can read: loud, not
+    // a child with the full surface.
+    let block_path = dir.path().join("blocky.md");
+    std::fs::write(
+        &block_path,
+        "---\nname: blocky\ntools:\n  - Read\n  - Grep\n---\nDo things.\n",
+    )
+    .expect("write block-list def");
+    let err = parse_definition_document(&block_path, "fallback")
+        .expect_err("a block list names no tools")
+        .to_string();
+    assert!(err.contains("lists no usable tools"), "{err}");
+
     // Plain markdown: whole file is the prompt; the direct call keeps the
     // caller's fallback name, while the loader derives it from the stem.
     let plain_path = dir.path().join("plain.md");

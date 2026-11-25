@@ -6414,17 +6414,42 @@ fn parse_definition_map(
             })
         })
         .transpose()?;
+    // A `.md` definition's body is its prompt; `description` is the
+    // one-line summary a listing shows, read only when there is no body.
     let prompt = map
         .get("prompt")
-        .or_else(|| map.get("description"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| body.map(str::to_string));
-    let allowed_tools = map
-        .get("allowed_tools")
-        .or_else(|| map.get("tools"))
-        .and_then(Value::as_array)
-        .map(|items| parse_tool_array(items));
+        .or_else(|| body.filter(|body| !body.is_empty()).map(str::to_string))
+        .or_else(|| {
+            map.get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let allowed_tools = match map.get("allowed_tools").or_else(|| map.get("tools")) {
+        None => None,
+        Some(Value::Array(items)) => Some(parse_tool_array(items)),
+        // The `.claude/agents` frontmatter writes a comma-separated string.
+        // Anything else (a YAML block list parses to an empty string here)
+        // names no tool and must not silently widen the child's surface.
+        Some(value) => {
+            let items: Vec<String> = value
+                .as_str()
+                .map(|list| {
+                    list.split(',')
+                        .map(unquote_frontmatter_scalar)
+                        .filter(|item| !item.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if items.is_empty() {
+                return Err(ToolError::invalid_input(format!(
+                    "agent definition '{name}' lists no usable tools: write `tools: Read, Grep`"
+                )));
+            }
+            Some(items)
+        }
+    };
     let model = map
         .get("model")
         .and_then(Value::as_str)
