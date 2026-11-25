@@ -654,6 +654,19 @@ impl ToolContext {
             }
         }
 
+        // A dangling symlink is "not yet existing" to `exists()` (it follows
+        // the link), so the walk below filed it as a fresh name and a later
+        // write followed it — to a target this check never saw, possibly
+        // outside the workspace. Refuse it; the target can be written itself.
+        if !candidate.exists() && std::fs::symlink_metadata(&candidate).is_ok() {
+            let target = std::fs::read_link(&candidate).unwrap_or_default();
+            return Err(ToolError::invalid_input(format!(
+                "'{}' is a dangling symlink to '{}': write the target itself",
+                candidate.display(),
+                target.display()
+            )));
+        }
+
         // For existing paths, use canonicalize directly
         if candidate.exists() {
             let canonical = candidate.canonicalize().map_err(|e| {
@@ -1143,6 +1156,23 @@ mod tests {
         // Try to escape workspace
         let result = ctx.resolve_path("/etc/passwd");
         assert!(result.is_err());
+    }
+
+    /// `link -> <outside>/new.sh`, a target that does not exist yet. The
+    /// resolver used to return `<ws>/link` as a fresh name, and a write
+    /// through it created the file outside the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn test_tool_context_resolve_path_refuses_a_dangling_symlink() {
+        let tmp = tempdir().expect("tempdir");
+        let outside = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        std::os::unix::fs::symlink(outside.path().join("new.sh"), tmp.path().join("link"))
+            .expect("symlink");
+        let err = ctx
+            .resolve_path("link")
+            .expect_err("a dangling symlink must not resolve");
+        assert!(format!("{err}").contains("dangling symlink"), "{err}");
     }
 
     #[test]
