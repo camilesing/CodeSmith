@@ -204,6 +204,18 @@ impl CommandSegment {
 }
 
 impl BashFacts {
+    /// Whether the whole command is visible in its top-level segments —
+    /// `false` when the walker bailed (subshell and compound bodies,
+    /// assignments that run a substitution or select what executes), `true`
+    /// for input the AST cannot parse (the legacy path handles that).
+    #[must_use]
+    pub fn top_level_is_represented(command: &str) -> bool {
+        match Self::parse(command) {
+            Ok(facts) => facts.top_level_segment_strings().is_some(),
+            Err(_) => true,
+        }
+    }
+
     /// Whether any segment carries an executor-selecting assignment.
     #[must_use]
     pub fn any_assignment_selects_executor(&self) -> bool {
