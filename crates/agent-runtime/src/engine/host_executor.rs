@@ -1247,6 +1247,9 @@ pub struct HostAgentExecutor {
     /// and pushes it as a `<codesmith:runtime_event kind="ticket_board">`
     /// user message — append-only history, never the frozen prefix.
     pub(crate) open_tickets_note: Option<Arc<dyn OpenTicketsNote>>,
+    /// Delivery announcement for a pushed steer — see
+    /// [`TurnDeps::steer_delivered`](super::executor_composition::TurnDeps::steer_delivered).
+    pub(crate) steer_delivered: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional steer input receiver (§E). `None` ⇒ steer drain is a no-op.
     ///
     /// Interior-mutable because [`AgentExecutor::run`] takes `&self` while
@@ -1704,6 +1707,7 @@ impl HostAgentExecutor {
             progressive_disclosure: false,
             deliverables: None,
             open_tickets_note: None,
+            steer_delivered: None,
         }
     }
 
@@ -1789,6 +1793,16 @@ impl HostAgentExecutor {
     #[must_use]
     pub(crate) fn with_open_tickets_note(mut self, note: Option<Arc<dyn OpenTicketsNote>>) -> Self {
         self.open_tickets_note = note;
+        self
+    }
+
+    /// Announce each pushed steer to `hook` — see
+    /// [`TurnDeps::steer_delivered`](super::executor_composition::TurnDeps::steer_delivered).
+    pub(crate) fn with_steer_delivered(
+        mut self,
+        hook: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    ) -> Self {
+        self.steer_delivered = hook;
         self
     }
 

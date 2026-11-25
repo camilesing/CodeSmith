@@ -202,6 +202,11 @@ pub struct TurnDeps {
     /// for child turns — the board is the Router's, and a worker never sees
     /// its siblings' tickets.
     pub open_tickets_note: Option<std::sync::Arc<dyn OpenTicketsNote>>,
+    /// Called with the text of each steer the loop pushes to the transcript —
+    /// delivery, not queueing. The child journal keys on it, so an input the
+    /// loop never drains is never recorded as a message the model saw.
+    /// `None` for the main turn.
+    pub steer_delivered: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
     /// `[rhai_loop]` settings for the script-driven executor (`None` in
     /// embeds/tests that never select it; the factory applies defaults).
     pub rhai_loop: Option<crate::engine::rhai_executor::RhaiLoopSettings>,
@@ -772,7 +777,8 @@ pub(crate) fn build_host_executor(deps: TurnDeps) -> Arc<HostAgentExecutor> {
         .with_tool_durations(deps.tool_durations)
         .with_session_id(deps.session_id)
         .with_deliverables(deps.deliverables)
-        .with_open_tickets_note(deps.open_tickets_note),
+        .with_open_tickets_note(deps.open_tickets_note)
+        .with_steer_delivered(deps.steer_delivered),
     )
 }
 

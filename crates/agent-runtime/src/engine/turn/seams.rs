@@ -127,6 +127,7 @@ impl HostAgentExecutor {
         if text.is_empty() && image_paths.is_empty() {
             return false;
         }
+        let delivered_text = (!text.is_empty()).then(|| text.clone());
         let text = if text.is_empty() {
             "[image]".to_string()
         } else {
@@ -149,6 +150,11 @@ impl HostAgentExecutor {
         // image…].
         crate::engine::append_image_blocks(&mut message, &image_paths);
         history.push(message);
+        // Delivery, not queueing: this is the one point a steer reaches the
+        // transcript, so a host that journals follow-up input keys on it.
+        if let (Some(text), Some(delivered)) = (delivered_text, &self.steer_delivered) {
+            delivered(text);
+        }
         true
     }
 

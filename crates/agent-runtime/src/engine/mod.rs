@@ -1855,6 +1855,9 @@ impl Engine {
             reinject: Some(reinject_probe),
             deliverables: self.deliverables_probe.clone(),
             open_tickets_note: self.config.open_tickets_note.clone(),
+            // The main turn persists delivered steers with its transcript;
+            // only the child journal needs the announcement.
+            steer_delivered: None,
             context: Some(executor_composition::TurnContextSources {
                 compaction: self.config.compaction.clone(),
                 workspace: self.session.workspace.clone(),

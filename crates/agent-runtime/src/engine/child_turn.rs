@@ -266,49 +266,14 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     if let Some(journal) = journal.as_ref() {
         journal.record(ChildSessionEvent::Started).await;
     }
-    // Record follow-up input on the child's own journal before handing it to
-    // the loop. The forwarder is not a second turn loop: it applies the same
-    // steer seam and forwards every message unchanged.
-    let (rx_steer, forward_task, forward_cancel) = match journal.clone() {
-        Some(journal) => {
-            let (forward_tx, forward_rx) = mpsc::channel(4);
-            let forward_cancel = CancellationToken::new();
-            let task_cancel = forward_cancel.clone();
-            let task = tokio::spawn(async move {
-                let mut input = input;
-                loop {
-                    tokio::select! {
-                        _ = task_cancel.cancelled() => break,
-                        message = input.recv() => match message {
-                            Some(steer) => {
-                                // Forward first, journal after: a steer the
-                                // loop never drains must not be recorded as
-                                // a user message the child's model saw. The
-                                // send is cancel-selectable so teardown is
-                                // never held hostage by a full channel.
-                                let text = steer.text.clone();
-                                let delivered = tokio::select! {
-                                    sent = forward_tx.send(steer) => sent.is_ok(),
-                                    _ = task_cancel.cancelled() => false,
-                                };
-                                if !delivered {
-                                    break;
-                                }
-                                if !text.trim().is_empty() {
-                                    journal
-                                        .record(ChildSessionEvent::UserMessage { text })
-                                        .await;
-                                }
-                            }
-                            None => break,
-                        },
-                    }
-                }
-            });
-            (forward_rx, Some(task), Some(forward_cancel))
-        }
-        None => (input, None, None),
-    };
+    // Follow-up input is journaled on delivery. The loop announces each
+    // steer it actually pushes to the transcript (`TurnDeps::steer_delivered`);
+    // the announcement queues here and is written ahead of the next settled
+    // record. So an input the loop never drains — it arrives after the last
+    // drain before a `MaxSteps` exit, or the run is interrupted — is never
+    // recorded as a user message the child's model did not see, and a
+    // delivered one never lands after the reply that answered it.
+    let delivered_steers: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
 
     let callback = Arc::new(ChildTurnCallback {
         agent_id: agent_id.clone(),
@@ -316,6 +281,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         steps: AtomicU32::new(0),
         events: events.clone(),
         journal: journal.clone(),
+        delivered_steers: Arc::clone(&delivered_steers),
         stream_observer: extension_runner.clone().map(|runner| StreamObserver {
             runner,
             scope: child_scope.clone(),
@@ -349,7 +315,7 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         request_model: Some(model.clone()).filter(|m| !m.trim().is_empty()),
         reasoning_effort,
         tx_event: None,
-        rx_steer: Arc::new(AsyncMutex::new(rx_steer)),
+        rx_steer: Arc::new(AsyncMutex::new(input)),
         rx_approval: None,
         rx_user_input: None,
         rx_subagent_completion: None,
@@ -361,6 +327,15 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
         // The Router's board is the coordinator's; a worker never sees its
         // siblings' tickets.
         open_tickets_note: None,
+        steer_delivered: Some({
+            let delivered_steers = Arc::clone(&delivered_steers);
+            Arc::new(move |text| {
+                delivered_steers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(text);
+            })
+        }),
         context: None,
         mode: AppMode::Agent,
         max_subagents: 0,
@@ -425,19 +400,13 @@ pub async fn run_child_turn(spec: ChildTurnSpec) -> ChildTurnOutcome {
     let final_text = (status == ChildTurnStatus::Completed)
         .then(|| last_assistant_text(&messages[opening.min(messages.len())..]))
         .flatten();
-    // Tear the forwarder down before the terminal record: a steer racing
-    // the run's end is either forwarded (and journaled) or dropped here —
-    // never journaled after `Finished`.
-    if let Some(cancel) = forward_cancel {
-        cancel.cancel();
-    }
-    if let Some(task) = forward_task {
-        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
-    }
     // The child's terminal record lands before the lease is released: a
     // reload/eviction drain that waits for the lease to drop can then rely
-    // on the journal already naming a terminal status.
+    // on the journal already naming a terminal status. Input delivered
+    // since the last settled record is written first — never after
+    // `Finished`.
     if let Some(journal) = journal.as_ref() {
+        journal_delivered_steers(&delivered_steers, journal.as_ref()).await;
         journal
             .record(ChildSessionEvent::Usage(usage.clone()))
             .await;
@@ -483,6 +452,25 @@ fn last_assistant_text(messages: &[Message]) -> Option<String> {
 /// The child's observation callback: the executor's lifecycle hooks,
 /// rendered as the parent-facing progress feed (`step N/M: …`) and the
 /// mailbox's per-tool envelopes.
+/// Write the follow-up input the loop has delivered since the last call,
+/// oldest first. Called before every other settled record, so a steer is
+/// never journaled after the reply that answered it.
+async fn journal_delivered_steers(
+    delivered: &std::sync::Mutex<Vec<String>>,
+    journal: &dyn ChildSessionJournal,
+) {
+    let pending = std::mem::take(
+        &mut *delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for text in pending {
+        journal
+            .record(ChildSessionEvent::UserMessage { text })
+            .await;
+    }
+}
+
 struct ChildTurnCallback {
     agent_id: String,
     max_steps: u32,
@@ -490,6 +478,8 @@ struct ChildTurnCallback {
     events: ChildEventSink,
     /// The child's own durable journal; `None` when the host keeps none.
     journal: Option<Arc<dyn ChildSessionJournal>>,
+    /// Steers the loop has delivered and not yet journaled.
+    delivered_steers: Arc<std::sync::Mutex<Vec<String>>>,
     /// `assistant-stream` observation at the child's scope; `None` without
     /// an extension runtime.
     stream_observer: Option<StreamObserver>,
@@ -537,9 +527,11 @@ impl Callback for ChildTurnCallback {
             self.step_progress(format!("executing {calls} tool call(s)"));
         }
         let journal = self.journal.clone();
+        let delivered = Arc::clone(&self.delivered_steers);
         let content = content.to_vec();
         Box::pin(async move {
             if let Some(journal) = journal {
+                journal_delivered_steers(&delivered, journal.as_ref()).await;
                 journal
                     .record(ChildSessionEvent::AssistantMessage { content })
                     .await;
@@ -563,8 +555,10 @@ impl Callback for ChildTurnCallback {
         let id = id.to_string();
         let name = name.to_string();
         let input = input.clone();
+        let delivered = Arc::clone(&self.delivered_steers);
         Box::pin(async move {
             if let Some(journal) = journal {
+                journal_delivered_steers(&delivered, journal.as_ref()).await;
                 journal
                     .record(ChildSessionEvent::ToolStarted { id, name, input })
                     .await;
@@ -590,8 +584,10 @@ impl Callback for ChildTurnCallback {
             Ok(result) => (result.success, result.content.clone()),
             Err(err) => (false, err.to_string()),
         };
+        let delivered = Arc::clone(&self.delivered_steers);
         Box::pin(async move {
             if let Some(journal) = journal {
+                journal_delivered_steers(&delivered, journal.as_ref()).await;
                 journal
                     .record(ChildSessionEvent::ToolFinished { name, ok, content })
                     .await;
@@ -869,6 +865,164 @@ mod tests {
                 })
             ),
             "the terminal record is last: {events:?}"
+        );
+    }
+
+    /// A tool that waits until the test releases it, so follow-up input can
+    /// be queued while it runs.
+    struct GatedTool {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::spec::ToolSpec for GatedTool {
+        fn name(&self) -> &str {
+            "gated"
+        }
+        fn description(&self) -> &str {
+            "Waits for the test to release it."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object", "properties": {} })
+        }
+        fn capabilities(&self) -> Vec<codesmith_agent::tools::ToolCapability> {
+            vec![codesmith_agent::tools::ToolCapability::ReadOnly]
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _context: &ToolContext,
+        ) -> Result<ToolResult, ToolError> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(ToolResult::success("released"))
+        }
+    }
+
+    /// A child whose first step is a gated tool call, with a journal.
+    fn gated_child(
+        max_steps: u32,
+        mock: Arc<MockLlmClient>,
+        tool: Arc<dyn crate::tools::spec::ToolSpec>,
+        journal: Arc<dyn ChildSessionJournal>,
+        workspace: &std::path::Path,
+    ) -> (ChildTurnSpec, mpsc::Sender<SteerInput>) {
+        let mut registry = ToolRegistry::new(ToolContext::new(workspace.to_path_buf()));
+        registry.register(tool);
+        let (input_tx, input_rx) = mpsc::channel(4);
+        let mut child = spec(mock, crate::engine::BUILTIN_TURN_EXECUTOR_ID, workspace);
+        child.tools = ChildToolSurface {
+            tool_set: Arc::new(registry.to_framework_tool_set()),
+            catalog: registry.to_api_tools(),
+            dispatcher: Arc::new(registry),
+        };
+        child.journal = Some(journal);
+        child.max_steps = max_steps;
+        child.input = input_rx;
+        (child, input_tx)
+    }
+
+    /// Input that arrives after the loop's last drain — here while the only
+    /// step's tool runs, before a `MaxSteps` exit — is never delivered. It
+    /// used to be journaled anyway (when forwarded), leaving the child's
+    /// durable record with a user message its model never saw.
+    #[tokio::test]
+    async fn undelivered_follow_up_input_is_not_journaled() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = Arc::new(GatedTool {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let journal = Arc::new(RecordingJournal::default());
+        let mock = Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+            "call_gated",
+            "gated",
+            "{}",
+        )]));
+        let (child, input_tx) =
+            gated_child(1, mock, tool.clone(), journal.clone(), workspace.path());
+
+        let turn = tokio::spawn(run_child_turn(child));
+        tool.started.notified().await;
+        input_tx
+            .send("too late".into())
+            .await
+            .expect("queue the follow-up");
+        tool.release.notify_one();
+        let outcome = turn.await.expect("child task");
+
+        assert_eq!(outcome.status, ChildTurnStatus::Completed, "{outcome:?}");
+        let events = journal.events.lock().await;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ChildSessionEvent::UserMessage { .. })),
+            "undelivered input was journaled: {events:?}"
+        );
+    }
+
+    /// Delivered input is journaled exactly once — after the tool call it
+    /// followed and before the reply that answered it.
+    #[tokio::test]
+    async fn delivered_follow_up_input_is_journaled_before_its_reply() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let tool = Arc::new(GatedTool {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let journal = Arc::new(RecordingJournal::default());
+        let mock = Arc::new(MockLlmClient::new(vec![
+            canned::tool_call_turn("call_gated", "gated", "{}"),
+            canned::simple_text_turn("noted"),
+        ]));
+        let (child, input_tx) = gated_child(
+            8,
+            mock.clone(),
+            tool.clone(),
+            journal.clone(),
+            workspace.path(),
+        );
+
+        let turn = tokio::spawn(run_child_turn(child));
+        tool.started.notified().await;
+        input_tx
+            .send("follow-up".into())
+            .await
+            .expect("queue the follow-up");
+        tool.release.notify_one();
+        let outcome = turn.await.expect("child task");
+
+        assert_eq!(outcome.status, ChildTurnStatus::Completed, "{outcome:?}");
+        let sent = serde_json::to_string(&mock.captured_requests()[1].messages).unwrap();
+        assert!(sent.contains("follow-up"), "the model saw it: {sent}");
+
+        let events = journal.events.lock().await;
+        let is_user = |event: &ChildSessionEvent| matches!(event, ChildSessionEvent::UserMessage { text } if text == "follow-up");
+        let replies_before = |end: usize| {
+            events[..end]
+                .iter()
+                .filter(|event| matches!(event, ChildSessionEvent::AssistantMessage { .. }))
+                .count()
+        };
+        let at = events
+            .iter()
+            .position(is_user)
+            .expect("delivered input is journaled");
+        assert_eq!(
+            events.iter().filter(|event| is_user(event)).count(),
+            1,
+            "journaled once: {events:?}"
+        );
+        assert_eq!(
+            replies_before(at),
+            1,
+            "the steer lands after the tool-call reply: {events:?}"
+        );
+        assert_eq!(
+            replies_before(events.len()),
+            2,
+            "and before the reply that answered it: {events:?}"
         );
     }
 
