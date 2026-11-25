@@ -130,6 +130,10 @@ pub struct ShellJobSnapshot {
     pub stdin_available: bool,
     pub stale: bool,
     pub linked_task_id: Option<String>,
+    /// A foreground wait owns this job: its outcome is delivered as the
+    /// calling tool's own result, so the engine's shell-job watcher does not
+    /// bridge its completion as a background job.
+    pub foreground: bool,
 }
 
 /// Full output view used by `/jobs show <id>`.

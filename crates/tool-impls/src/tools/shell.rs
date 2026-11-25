@@ -521,7 +521,7 @@ async fn execute_foreground_via_background(
     manager.clear_foreground_background_request();
     manager.set_sandbox_runtime(sandbox_runtime);
     let spawned = offload_manager_call(manager, move |manager| {
-        manager.execute_with_options_env(
+        let spawned = manager.execute_with_options_env(
             &command,
             working_dir.as_deref(),
             timeout_ms,
@@ -530,7 +530,14 @@ async fn execute_foreground_via_background(
             tty,
             policy_override,
             extra_env,
-        )
+        )?;
+        // This wait delivers the job's outcome as its own tool result. Mark
+        // the job in the same manager hop, so the engine's shell-job watcher
+        // never bridges that outcome a second time as a background job.
+        if let Some(task_id) = spawned.task_id.as_deref() {
+            manager.set_foreground_wait(task_id, true);
+        }
+        Ok(spawned)
     })
     .await?;
     let task_id = spawned
@@ -566,6 +573,14 @@ async fn execute_foreground_via_background(
             })
             .await;
             if final_snapshot {
+                // Detached (Ctrl+B): the job runs on as a real background
+                // job, so its completion bridges like any other's.
+                let task_for_call = task_id.clone();
+                let _ = offload_manager_call(manager, move |manager| {
+                    manager.set_foreground_wait(&task_for_call, false);
+                    Ok(())
+                })
+                .await;
                 return snapshot;
             }
             snapshot?

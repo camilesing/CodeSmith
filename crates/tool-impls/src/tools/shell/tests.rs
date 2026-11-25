@@ -1002,6 +1002,46 @@ fn tail_capped_respects_char_boundaries() {
     assert_eq!(tail_capped(text, 5), "€cd");
 }
 
+/// A foreground `exec_shell` run is a shell-manager job too (the tool polls a
+/// background spawn). It must carry the foreground mark — the engine's
+/// shell-job watcher does not bridge its outcome a second time — while a
+/// `background: true` run must not.
+#[tokio::test]
+async fn foreground_run_is_marked_and_background_run_is_not() {
+    let tmp = tempdir().expect("tempdir");
+    let shell_manager = make_shared_shell_manager(tmp.path().to_path_buf());
+    let ctx =
+        ToolContext::new(tmp.path()).with_shell_manager(wrap_shell_manager(shell_manager.clone()));
+
+    ExecShellTool
+        .execute(json!({"command": echo_command("fg-marker")}), &ctx)
+        .await
+        .expect("foreground run");
+    ExecShellTool
+        .execute(
+            json!({"command": echo_command("bg-marker"), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("background run");
+
+    let jobs = shell_manager
+        .lock()
+        .expect("shell manager lock")
+        .list_jobs();
+    assert_eq!(jobs.len(), 2, "one job per run");
+    let foreground = jobs.iter().find(|job| job.command.contains("fg-marker"));
+    let background = jobs.iter().find(|job| job.command.contains("bg-marker"));
+    assert!(
+        foreground.is_some_and(|job| job.foreground),
+        "the foreground run is marked: {jobs:?}"
+    );
+    assert!(
+        background.is_some_and(|job| !job.foreground),
+        "the background run is not marked: {jobs:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_exec_shell_foreground_cancel_kills_process() {
     let tmp = tempdir().expect("tempdir");
@@ -1072,6 +1112,17 @@ async fn test_exec_shell_foreground_can_move_to_background() {
 
     assert!(result.success);
     assert!(result.content.contains("Command moved to background"));
+    // A detached job is a background job again: no foreground mark remains,
+    // so the engine's shell-job watcher may bridge its completion.
+    assert!(
+        !shell_manager
+            .lock()
+            .expect("shell manager lock")
+            .list_jobs()
+            .iter()
+            .any(|job| job.foreground),
+        "no job stays marked as foreground-owned after the detach"
+    );
     assert!(result.content.contains("exec_shell_cancel"));
 
     let meta = result.metadata.expect("metadata");
@@ -1911,6 +1962,9 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
     fn list_jobs(&self) -> Vec<ShellJobSnapshot> {
         unimplemented!("spill test only")
     }
+    fn set_foreground_wait(&self, _task_id: &str, _foreground: bool) {
+        unimplemented!("spill test only")
+    }
     fn inspect_job(&self, _task_id: &str) -> anyhow::Result<ShellJobDetail> {
         Ok(ShellJobDetail {
             snapshot: ShellJobSnapshot {
@@ -1930,6 +1984,7 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for StaleInspectMan
                 stdin_available: false,
                 stale: true,
                 linked_task_id: None,
+                foreground: false,
             },
             stdout: "…last lines only…".to_string(),
             stderr: String::new(),
@@ -2162,6 +2217,7 @@ impl codesmith_agent_runtime::host_services::ShellManagerApi for ScriptedManager
     ) -> anyhow::Result<ShellDeltaResult> {
         panic!("poll_delta not scripted")
     }
+    fn set_foreground_wait(&self, _task_id: &str, _foreground: bool) {}
     fn request_foreground_background(&self) {}
 }
 

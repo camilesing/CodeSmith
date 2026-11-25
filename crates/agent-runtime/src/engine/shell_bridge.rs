@@ -24,6 +24,10 @@
 //!   a resumed session does not replay old completions.
 //! - Output carried is the shell manager's snapshot tails (bounded); the
 //!   model reads more via `task_shell_output`.
+//! - Foreground `exec_shell` runs are shell-manager jobs too (the tool polls
+//!   a background spawn). They carry the foreground mark and are never
+//!   bridged — their outcome is the tool result itself — until a Ctrl+B
+//!   detach unmarks the job, whose completion then bridges like any other's.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -99,6 +103,11 @@ fn diff_poll(
     let mut completions = Vec::new();
     let mut next = HashMap::new();
     for job in jobs {
+        // A foreground wait owns this job: its outcome is the calling tool's
+        // result, not a background event.
+        if job.foreground {
+            continue;
+        }
         let running = matches!(job.status, ShellStatus::Running);
         let previously = known.and_then(|known| known.get(&job.id).copied());
         match previously {
@@ -170,6 +179,7 @@ mod tests {
             stdin_available: false,
             stale: false,
             linked_task_id: None,
+            foreground: false,
         }
     }
 
@@ -227,5 +237,29 @@ mod tests {
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].agent_id, "fast");
         assert!(done[0].payload.contains("failed (exit 2)"));
+    }
+
+    #[test]
+    fn foreground_owned_jobs_are_not_bridged() {
+        // A foreground exec_shell is a shell-manager job too: its outcome is
+        // the tool result itself, so Running → terminal must not bridge.
+        let mut owned = job("fg", ShellStatus::Running, None);
+        owned.foreground = true;
+        let (_, known) = diff_poll(None, &[owned.clone()]);
+        owned.status = ShellStatus::Completed;
+        owned.exit_code = Some(0);
+        let (done, known) = diff_poll(Some(&known), &[owned.clone()]);
+        assert!(done.is_empty(), "a foreground-owned job bridges nothing");
+        // Still marked and terminal on the next poll: nothing either.
+        let (done, known) = diff_poll(Some(&known), &[owned.clone()]);
+        assert!(done.is_empty());
+        // Detached while running (Ctrl+B unmarks the job): from here on it
+        // is a background job and its completion bridges.
+        owned.status = ShellStatus::Running;
+        owned.foreground = false;
+        let (_, known) = diff_poll(Some(&known), &[owned.clone()]);
+        owned.status = ShellStatus::Completed;
+        let (done, _) = diff_poll(Some(&known), &[owned]);
+        assert_eq!(done.len(), 1, "the detached job's completion bridges");
     }
 }

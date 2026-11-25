@@ -469,6 +469,8 @@ pub struct BackgroundShell {
     pub sandbox_type: SandboxType,
     pub sandbox_decision: SandboxDecision,
     pub linked_task_id: Option<String>,
+    /// Set while a foreground wait owns the job (`set_foreground_wait`).
+    foreground_wait: bool,
     stdout_buffer: Arc<Mutex<Vec<u8>>>,
     stderr_buffer: Option<Arc<Mutex<Vec<u8>>>>,
     stdout_cursor: usize,
@@ -818,6 +820,7 @@ impl BackgroundShell {
             stdin_available: self.stdin.is_some() && self.status == ShellStatus::Running,
             stale: false,
             linked_task_id: self.linked_task_id.clone(),
+            foreground: self.foreground_wait,
         }
     }
 
@@ -1575,6 +1578,7 @@ impl ShellManager {
                 task: spawned.task,
             }),
             backend_denial: None,
+            foreground_wait: false,
         };
         self.processes.insert(task_id.clone(), bg_shell);
 
@@ -2192,6 +2196,7 @@ impl ShellManager {
             stderr_thread,
             backend_task: None,
             backend_denial: None,
+            foreground_wait: false,
         };
 
         if let Some(input) = stdin_data {
@@ -2423,6 +2428,17 @@ impl ShellManager {
         Ok(())
     }
 
+    /// Mark (or unmark) a job as owned by a foreground wait. The engine's
+    /// shell-job watcher skips such a job: its completion is the calling
+    /// tool's result, not a background event. Unmarking — a foreground wait
+    /// that detached with Ctrl+B — lets the real background completion
+    /// bridge. An unknown id is a no-op (the job was already evicted).
+    pub fn set_foreground_wait(&mut self, task_id: &str, foreground: bool) {
+        if let Some(shell) = self.processes.get_mut(task_id) {
+            shell.foreground_wait = foreground;
+        }
+    }
+
     /// Inspect full output for a live or stale job.
     pub fn inspect_job(&mut self, task_id: &str) -> Result<ShellJobDetail> {
         if let Some(shell) = self.processes.get_mut(task_id) {
@@ -2488,6 +2504,7 @@ impl ShellManager {
                 stdin_available: false,
                 stale: true,
                 linked_task_id,
+                foreground: false,
             },
         );
     }
@@ -2707,6 +2724,11 @@ impl ShellManagerApi for ShellManagerHost {
     fn tag_linked_task(&self, task_id: &str, linked_task_id: Option<String>) -> anyhow::Result<()> {
         let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
         guard.tag_linked_task(task_id, linked_task_id)
+    }
+
+    fn set_foreground_wait(&self, task_id: &str, foreground: bool) {
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.set_foreground_wait(task_id, foreground)
     }
 
     fn list_jobs(&self) -> Vec<ShellJobSnapshot> {

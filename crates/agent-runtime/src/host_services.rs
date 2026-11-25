@@ -349,6 +349,10 @@ pub trait ShellManagerApi: Send + Sync {
     ) -> anyhow::Result<ShellDeltaResult>;
     /// Attach durable task context to a live shell job.
     fn tag_linked_task(&self, task_id: &str, linked_task_id: Option<String>) -> anyhow::Result<()>;
+    /// Mark (or unmark) a spawned job as owned by a foreground wait, so the
+    /// engine's shell-job watcher does not bridge its completion as a
+    /// background job. Mirrors `ShellManager::set_foreground_wait`.
+    fn set_foreground_wait(&self, task_id: &str, foreground: bool);
     /// List all live and known-stale background shell jobs (for the host's
     /// command center). Mirrors `ShellManager::list_jobs`.
     fn list_jobs(&self) -> Vec<ShellJobSnapshot>;
