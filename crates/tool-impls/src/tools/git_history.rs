@@ -409,7 +409,10 @@ fn ensure_rev_is_not_an_option(rev: &str) -> Result<(), ToolError> {
 fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {
     let workspace = canonical_or_workspace(&context.workspace);
     let mut working_dir = workspace.clone();
-    let mut pathspec = None;
+    // Default to "." so git's upward repository discovery can never report
+    // paths (or patch contents) outside the workspace when the workspace
+    // sits inside a larger repo (the git.rs guard this twin had missed).
+    let mut pathspec = Some(PathBuf::from("."));
 
     if let Some(raw) = path {
         let resolved = context.resolve_path(raw)?;
@@ -571,6 +574,35 @@ mod tests {
     fn commit_all(root: &Path, message: &str) {
         run_git(root, &["add", "."]);
         run_git(root, &["commit", "-q", "-m", message]);
+    }
+
+    /// The workspace is a subdirectory of a larger repository: `git_show`
+    /// of a commit used to return the whole commit, files outside the
+    /// workspace included.
+    #[tokio::test]
+    async fn git_show_is_scoped_to_the_workspace() {
+        if !git_available() {
+            return;
+        }
+
+        let tmp = tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        fs::create_dir_all(tmp.path().join("sub")).expect("mkdir");
+        fs::write(tmp.path().join("sub").join("inside.txt"), "a\n").expect("write");
+        commit_all(tmp.path(), "init");
+        fs::write(tmp.path().join("outside-secret.txt"), "token\n").expect("write");
+        commit_all(tmp.path(), "second");
+
+        let ctx = ToolContext::new(tmp.path().join("sub"));
+        let result = GitShowTool
+            .execute(json!({"rev": "HEAD"}), &ctx)
+            .await
+            .expect("execute");
+        assert!(
+            !result.content.contains("outside-secret.txt"),
+            "{}",
+            result.content
+        );
     }
 
     #[tokio::test]
