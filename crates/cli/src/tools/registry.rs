@@ -64,8 +64,9 @@ pub trait ToolRegistryPluginExt {
     /// Load and register plugin tools from a directory.
     ///
     /// Each script with valid frontmatter (`# name:`, `# description:`, etc.)
-    /// becomes a registered `ScriptPluginTool`. Tools whose name matches an
-    /// already-registered tool will overwrite it.
+    /// becomes a registered `ScriptPluginTool`. A script whose name matches
+    /// an already-registered tool is refused with a warning (explicit config
+    /// overrides are the sanctioned way to replace a built-in).
     ///
     /// Returns the names this call actually registered (a shadowing script
     /// is refused, so its name is absent).
