@@ -759,25 +759,25 @@ where
 /// incumbent first (the no-residue path). On success the exact
 /// `(id, source)` is recorded as approved — an identical re-write skips
 /// re-approval.
-pub fn session_write_mod(ctx: &ModReloadCtx, id: &str, source: &str) -> String {
+pub fn session_write_mod(ctx: &ModReloadCtx, id: &str, source: &str) -> Result<String, String> {
     if !ctx.mods_enabled {
-        return "Mod layer disabled ([mods] enabled = false) — session mods are user-class code; only the builtin tier is exempt.".to_string();
+        return Err("Mod layer disabled ([mods] enabled = false) — session mods are user-class code; only the builtin tier is exempt.".to_string());
     }
     if !id.starts_with("session-") || !codesmith_agent_runtime::utils::is_safe_path_component(id) {
-        return format!(
+        return Err(format!(
             "Session mod id {id:?} must start with 'session-' and use [a-zA-Z0-9._-] only."
-        );
+        ));
     }
     if source.trim().is_empty() {
-        return "Session mod source is empty — nothing to bind.".to_string();
+        return Err("Session mod source is empty — nothing to bind.".to_string());
     }
     if discover_workspace_mods(&ctx.workspace)
         .iter()
         .any(|m| m.id == id)
     {
-        return format!(
+        return Err(format!(
             "Id '{id}' collides with a discovered disk mod — session ids must not shadow disk mods."
-        );
+        ));
     }
     let rhai_mod = match RhaiMod::load_source(
         id,
@@ -788,7 +788,7 @@ pub fn session_write_mod(ctx: &ModReloadCtx, id: &str, source: &str) -> String {
         ctx.runner.message_projection_hub(),
     ) {
         Ok(m) => Arc::new(m),
-        Err(e) => return format!("Compile '{id}' failed, nothing bound: {e}"),
+        Err(e) => return Err(format!("Compile '{id}' failed, nothing bound: {e}")),
     };
     let replaced = ctx.session_mods.contains_id(id);
     let runner = Arc::clone(&ctx.runner);
@@ -822,21 +822,23 @@ pub fn session_write_mod(ctx: &ModReloadCtx, id: &str, source: &str) -> String {
         // registry entry goes with it, the experiment is dead either way.
         Err(e) => {
             ctx.session_mods.drop_id(id);
-            return format!("Bind '{id}' failed, nothing live: {e}");
+            return Err(format!("Bind '{id}' failed, nothing live: {e}"));
         }
     };
     for e in unload_out.errors {
         msg.push_str(&format!(" Survivor re-registration error: {e}"));
     }
-    msg
+    Ok(msg)
 }
 
 /// Unload one session mod (the `session_remove` action): the no-residue
 /// unload plus the registry drop. The approved-content record survives,
 /// so re-writing the identical source skips re-approval.
-pub fn session_remove_mod(ctx: &ModReloadCtx, id: &str) -> String {
+pub fn session_remove_mod(ctx: &ModReloadCtx, id: &str) -> Result<String, String> {
     if !ctx.session_mods.contains_id(id) {
-        return format!("No session mod with id '{id}' — manage_mods list shows what is live.");
+        return Err(format!(
+            "No session mod with id '{id}' — manage_mods list shows what is live."
+        ));
     }
     let runner = Arc::clone(&ctx.runner);
     let id_owned = id.to_string();
@@ -849,7 +851,7 @@ pub fn session_remove_mod(ctx: &ModReloadCtx, id: &str) -> String {
     for e in outcome.errors {
         msg.push_str(&format!(" Survivor re-registration error: {e}"));
     }
-    msg
+    Ok(msg)
 }
 
 /// Load one activated mod live — the single-mod counterpart of
@@ -992,6 +994,27 @@ pub fn unload_mod(runner: &Arc<ExtensionRunner>, id: &str) -> Result<String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `both_ways` reads the message of either outcome, whichever way the
+    /// helper reports it (the older assertions were written against a bare
+    /// `String`).
+    trait IntoNote {
+        fn into_note(self) -> String;
+    }
+    impl IntoNote for String {
+        fn into_note(self) -> String {
+            self
+        }
+    }
+    impl IntoNote for Result<String, String> {
+        fn into_note(self) -> String {
+            match self {
+                Ok(note) | Err(note) => note,
+            }
+        }
+    }
+    fn both_ways(result: impl IntoNote) -> String {
+        result.into_note()
+    }
     use tempfile::TempDir;
 
     /// HOME-scoped env guard (the engine-tests `ScopedHome` pattern): the
@@ -1463,7 +1486,7 @@ trust_level = "trusted"
         let ctx = session_ctx(&runner, &ws);
         let src = r#"register_policy("shell-output", #{ max_output_size: 7000 });"#;
 
-        let note = session_write_mod(&ctx, "session-exp", src);
+        let note = both_ways(session_write_mod(&ctx, "session-exp", src));
         assert!(
             note.contains("Loaded session mod 'session-exp' live"),
             "{note}"
@@ -1484,11 +1507,11 @@ trust_level = "trusted"
 
         // Same-id rewrite with different content: no-residue replace,
         // one listing entry, the new value wins.
-        let note = session_write_mod(
+        let note = both_ways(session_write_mod(
             &ctx,
             "session-exp",
             r#"register_policy("shell-output", #{ max_output_size: 8000 });"#,
-        );
+        ));
         assert!(note.contains("replaced the previous binding"), "{note}");
         {
             let _guard = mod_state_lock();
@@ -1504,7 +1527,7 @@ trust_level = "trusted"
         // Removal: the listing falls back to the builtin id + default, no
         // disk residue ever, and the approved-content memo survives (an
         // identical re-write skips re-approval).
-        let note = session_remove_mod(&ctx, "session-exp");
+        let note = both_ways(session_remove_mod(&ctx, "session-exp"));
         assert!(note.contains("Removed session mod 'session-exp'"), "{note}");
         assert!(ctx.session_mods.is_approved("session-exp", src));
         assert!(
@@ -1538,11 +1561,11 @@ trust_level = "trusted"
                 .expect("bind builtin");
         }
         let ctx = session_ctx(&runner, &ws);
-        let note = session_write_mod(
+        let note = both_ways(session_write_mod(
             &ctx,
             "session-keep",
             r#"register_policy("output-diff", #{ context_radius: 9 });"#,
-        );
+        ));
         assert!(
             note.contains("Loaded session mod 'session-keep' live"),
             "{note}"
@@ -1577,7 +1600,7 @@ trust_level = "trusted"
         );
 
         // And the replayed experiment is still removable.
-        let note = session_remove_mod(&ctx, "session-keep");
+        let note = both_ways(session_remove_mod(&ctx, "session-keep"));
         assert!(
             note.contains("Removed session mod 'session-keep'"),
             "{note}"
@@ -1595,24 +1618,61 @@ trust_level = "trusted"
         let runner = bound_runner(&ws);
         let ctx = session_ctx(&runner, &ws);
 
-        let note = session_write_mod(&ctx, "no-prefix", r#"mod_log("x");"#);
+        let note = both_ways(session_write_mod(&ctx, "no-prefix", r#"mod_log("x");"#));
         assert!(note.contains("must start with 'session-'"), "{note}");
-        let note = session_write_mod(&ctx, "session-empty", "   ");
+        let note = both_ways(session_write_mod(&ctx, "session-empty", "   "));
         assert!(note.contains("source is empty"), "{note}");
-        let note = session_write_mod(&ctx, "session-dup", r#"mod_log("x");"#);
+        let note = both_ways(session_write_mod(&ctx, "session-dup", r#"mod_log("x");"#));
         assert!(
             note.contains("collides with a discovered disk mod"),
             "{note}"
         );
-        let note = session_remove_mod(&ctx, "session-ghost");
+        let note = both_ways(session_remove_mod(&ctx, "session-ghost"));
         assert!(
             note.contains("No session mod with id 'session-ghost'"),
             "{note}"
         );
         let mut disabled = session_ctx(&runner, &ws);
         disabled.mods_enabled = false;
-        let note = session_write_mod(&disabled, "session-x", r#"mod_log("x");"#);
+        let note = both_ways(session_write_mod(
+            &disabled,
+            "session-x",
+            r#"mod_log("x");"#,
+        ));
         assert!(note.contains("Mod layer disabled"), "{note}");
+    }
+
+    /// A refused session write came back as a succeeded call whose text
+    /// was the reason — every sibling action of the same tool fails loudly.
+    #[test]
+    fn a_refused_session_write_is_a_failed_call() {
+        use codesmith_agent_runtime::tools::spec::ToolSpec as _;
+        let _env = codesmith_agent_runtime::test_support::lock_test_env();
+        let dir = TempDir::new().unwrap();
+        let _home = ScopedHome::set_trusted(&dir, &dir.path().join("ws"));
+        let ws = workspace_in(&dir);
+        let runner = bound_runner(&ws);
+        let ctx = session_ctx(&runner, &ws);
+        let tool = crate::tools::mods::ManageModsTool {
+            reload: Some(ctx.clone()),
+        };
+
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(tool.execute(
+                serde_json::json!({"action": "session_write", "id": "no-prefix", "source": "mod_log(1);"}),
+                &crate::tools::spec::ToolContext::new(ws.clone()),
+            ))
+            .expect("the action returns a result");
+
+        assert!(!result.success, "a refused write is a failed call");
+        assert!(
+            result.content.contains("must start with 'session-'"),
+            "{}",
+            result.content
+        );
     }
 
     /// The tool's approval classifier is content-aware for session writes:
@@ -1644,7 +1704,11 @@ trust_level = "trusted"
         );
         // …an identical approved re-write doesn't (the memo is recorded
         // by the successful bind, driven through the real write path)…
-        let note = session_write_mod(&ctx, "session-approval", "mod_log(\"probe\");");
+        let note = both_ways(session_write_mod(
+            &ctx,
+            "session-approval",
+            "mod_log(\"probe\");",
+        ));
         assert!(
             note.contains("Loaded session mod 'session-approval' live"),
             "{note}"

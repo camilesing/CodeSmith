@@ -340,7 +340,13 @@ impl ToolSpec for ManageModsTool {
                 })
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("join: {e}")))?;
-                Ok(ToolResult::success(note))
+                // A refused id, a failed compile or a failed bind comes back
+                // in-band: the model still reads the reason, but the call is
+                // recorded as failed, like every other action.
+                Ok(match note {
+                    Ok(note) => ToolResult::success(note),
+                    Err(note) => ToolResult::error(note),
+                })
             }
             "session_remove" => {
                 require_id()?;
@@ -355,7 +361,10 @@ impl ToolSpec for ManageModsTool {
                     tokio::task::spawn_blocking(move || mod_ops::session_remove_mod(&ctx, &id_in))
                         .await
                         .map_err(|e| ToolError::execution_failed(format!("join: {e}")))?;
-                Ok(ToolResult::success(note))
+                Ok(match note {
+                    Ok(note) => ToolResult::success(note),
+                    Err(note) => ToolResult::error(note),
+                })
             }
             "reload" => Ok(ToolResult::success(self.reload_note().await)),
             other => Err(ToolError::invalid_input(format!(
