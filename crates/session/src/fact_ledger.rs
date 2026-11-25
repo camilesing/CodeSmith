@@ -562,7 +562,12 @@ fn scrub_credentials(text: &str) -> String {
         const URL_USERINFO: &str =
             r#"([a-z][a-z0-9+.\-]*://)[^\s:/@"']+:[^\s@"']+(@[a-z0-9.\-])"#;
         const AUTH_TOKEN: &str = r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{8,}";
-        const SECRET_ASSIGNMENT: &str = r#"(?i)\b(api[_-]?key|apikey|secret|password|passwd|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?(\s*[=:]\s*)['"]?[^\s'"]{8,}"#;
+        // Segment-aware: `_` is a word character, so a `\b` before the
+        // keyword never matched `POSTGRES_PASSWORD=` / `GITHUB_TOKEN=` /
+        // `AWS_SECRET_ACCESS_KEY=`. The keyword is a `_`/`-`-separated
+        // segment of the name (`max_tokens=4096` stays: "tokens" is not
+        // "token"), and the name may continue after it (`…_SECRET_KEY`).
+        const SECRET_ASSIGNMENT: &str = r#"(?i)(\b(?:[a-z0-9_-]*[_-])?(?:api[_-]?key|access[_-]?key|secret|password|passwd|token)(?:[_-][a-z0-9_-]*)?['"]?)(\s*[=:]\s*)['"]?[^\s'"]{8,}"#;
         const AWS_KEY: &str = r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b";
         const SK_KEY: &str = r"\bsk-[A-Za-z0-9_\-]{16,}";
         [
@@ -879,6 +884,35 @@ mod tests {
         assert_eq!(
             scrub_credentials("key AKIAIOSFODNN7EXAMPLE"),
             "key [REDACTED]"
+        );
+        // Prefixed names — the ordinary `.env` spellings — used to pass
+        // through: `_` is a word character, so `\b` never matched before
+        // the keyword.
+        let env = scrub_credentials(
+            "POSTGRES_PASSWORD=s3cretpassw0rd GITHUB_TOKEN=ghp_abcdefghijklmnop \
+             AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENG MY_APP_PRIVATE_TOKEN=ghp_qrstuvwxyz012345",
+        );
+        for secret in [
+            "s3cretpassw0rd",
+            "ghp_abcdefghijklmnop",
+            "wJalrXUtnFEMIK7MDENG",
+            "ghp_qrstuvwxyz012345",
+        ] {
+            assert!(!env.contains(secret), "{secret} survived: {env}");
+        }
+        // The name stays, as with the bare spellings.
+        for name in [
+            "POSTGRES_PASSWORD=",
+            "GITHUB_TOKEN=",
+            "AWS_SECRET_ACCESS_KEY=",
+            "MY_APP_PRIVATE_TOKEN=",
+        ] {
+            assert!(env.contains(name), "{name} was dropped: {env}");
+        }
+        // A name that merely contains the word is not a secret.
+        assert_eq!(
+            scrub_credentials("max_tokens=4096 context_window=200000"),
+            "max_tokens=4096 context_window=200000"
         );
         // Benign text passes through untouched.
         assert_eq!(
