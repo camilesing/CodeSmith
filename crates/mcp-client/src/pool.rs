@@ -1183,6 +1183,10 @@ impl SseTransport {
                     tracing::debug!("SSE loop shutting down");
                     break;
                 }
+                // The receiver is gone — the connect failed or timed out and
+                // dropped the transport. Without this the loop, and the open
+                // connection it reads, lived on for the rest of the process.
+                _ = tx.closed() => break,
                 item = stream.next() => {
                     match item {
                         Some(i) => i,
@@ -6427,6 +6431,65 @@ mod tests {
         let err = format!("{err:#}");
         assert!(err.contains("status=401"), "{err}");
         assert!(err.contains("bad token"), "{err}");
+        server.await.unwrap();
+    }
+
+    /// A connect that gives up waiting for the endpoint (timeout, cancel)
+    /// used to leave the loop task — and its open connection — running for
+    /// the rest of the process.
+    #[tokio::test]
+    async fn a_failed_sse_connect_closes_its_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (closed_tx, mut closed_rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+                .await
+                .unwrap();
+            // An event stream that never names its endpoint.
+            loop {
+                if socket.write_all(b": keepalive\n\n").await.is_err() {
+                    closed_tx.send(true).ok();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+
+        SseTransport::connect(
+            loopback_client(),
+            format!("http://{addr}/sse"),
+            HashMap::new(),
+            tokio_util::sync::CancellationToken::new(),
+            Duration::from_millis(200),
+            None,
+        )
+        .await
+        .err()
+        .expect("no endpoint arrives");
+
+        tokio::time::timeout(Duration::from_secs(3), closed_rx.wait_for(|closed| *closed))
+            .await
+            .expect("the server must see the connection close once the connect is abandoned")
+            .unwrap();
         server.await.unwrap();
     }
 
