@@ -27,14 +27,17 @@ use std::sync::Mutex;
 
 static LOG_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Mask credential-shaped runs (`API_KEY=…`, `--token …`, `Bearer …`) before
-/// a command line reaches the dispatcher log. Over-masking is the safe
-/// direction; a false negative persists for the file's lifetime.
+/// Mask credential-shaped runs (`API_KEY=…`, `GITHUB_TOKEN=…`, `--token …`,
+/// `Bearer …`) before a command line reaches the dispatcher log. The keyword
+/// is a `_`/`-`-separated segment of the name (a `\b` before it never
+/// matched `OPENAI_API_KEY=`), and the value may follow after `=`/`:` or a
+/// space. Over-masking is the safe direction; a false negative persists for
+/// the file's lifetime.
 fn redact_command_credentials(command: &str) -> String {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
         regex::Regex::new(
-            r#"(?i)\b(?:api[\s_-]?keys?|access[\s_-]?tokens?|refresh[\s_-]?tokens?|client[\s_-]?secrets?|auth|tokens?|secrets?|passwords?|passwd|pwd)["']?\s*[=:]\s*\S+|\bbearer\s+\S+"#,
+            r#"(?i)\b(?:[a-z0-9_-]*[_-])?(?:api[\s_-]?keys?|access[\s_-]?keys?|tokens?|secrets?|passwords?|passwd|pwd|auth)(?:[_-][a-z0-9_-]*)?["']?\s*(?:[=:]\s*|\s)\S+|\bbearer\s+\S+"#,
         )
         .expect("credential redaction regex compiles")
     });
@@ -451,6 +454,15 @@ mod tests {
             redact_command_credentials("cargo build --release"),
             "cargo build --release"
         );
+        // Prefixed names and a space-separated flag: a `\b` before the
+        // keyword never matched `OPENAI_API_KEY=`, and `--token abc` had no
+        // `=`/`:` at all.
+        let exports = redact_command_credentials(
+            "export OPENAI_API_KEY=sk-abc123 GITHUB_TOKEN=ghp_abc123; curl --token abc123 https://x",
+        );
+        for secret in ["sk-abc123", "ghp_abc123", "abc123"] {
+            assert!(!exports.contains(secret), "{secret} survived: {exports}");
+        }
     }
 
     #[test]
