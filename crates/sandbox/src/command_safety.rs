@@ -592,19 +592,10 @@ const WORKSPACE_SAFE_COMMANDS: &[&str] = &[
 /// docker rm, chown, etc. have been removed because they generate
 /// unnecessary approval prompts for routine operations the user can
 /// still veto via the approval dialog.
-pub const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
-    ("rm -rf /", "Attempts to recursively delete root filesystem"),
-    (
-        "rm -rf /*",
-        "Attempts to recursively delete all root directories",
-    ),
-    ("rm -rf ~", "Attempts to recursively delete home directory"),
-    (
-        "rm -rf $HOME",
-        "Attempts to recursively delete home directory",
-    ),
-    (":(){ :|:& };:", "Fork bomb — will crash the system"),
-];
+// The `rm -rf /…` rows moved to [`literal_rm_root_delete_reason`]: as
+// substrings they also hard-blocked `rm -rf /tmp/x`.
+pub const DANGEROUS_PATTERNS: &[(&str, &str)] =
+    &[(":(){ :|:& };:", "Fork bomb — will crash the system")];
 
 /// Returns the reason if `command` literally matches one of the
 /// catastrophic [`DANGEROUS_PATTERNS`] (case-insensitive substring).
@@ -614,11 +605,58 @@ pub const DANGEROUS_PATTERNS: &[(&str, &str)] = &[
 /// are still flagged `Dangerous` even when `analyze_command` would
 /// short-circuit them to `RequiresApproval` via the chaining branch.
 pub fn literal_dangerous_pattern_reason(command: &str) -> Option<&'static str> {
+    if let Some(reason) = literal_rm_root_delete_reason(command) {
+        return Some(reason);
+    }
     let lower = command.to_lowercase();
     DANGEROUS_PATTERNS
         .iter()
         .find(|(pat, _)| lower.contains(&pat.to_lowercase()))
         .map(|(_, reason)| *reason)
+}
+
+/// Word-aware form of the `rm -rf <root | home>` patterns: `rm`, flags that
+/// recurse and force, then a target that is the root or the home directory —
+/// at any position, so `sudo rm -rf /` and `bash -c "rm -rf /"` are caught.
+/// The substring form also hard-blocked `rm -rf /tmp/x`.
+fn literal_rm_root_delete_reason(command: &str) -> Option<&'static str> {
+    let words: Vec<String> = shell_words(command)
+        .into_iter()
+        .flat_map(|word| {
+            word.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (index, word) in words.iter().enumerate() {
+        if word != "rm" {
+            continue;
+        }
+        let (mut recursive, mut force, mut index) = (false, false, index + 1);
+        while let Some(flag) = words.get(index).map(String::as_str) {
+            if flag == "--" {
+                index += 1;
+                break;
+            }
+            if !flag.starts_with('-') {
+                break;
+            }
+            let flag = flag.to_ascii_lowercase();
+            recursive |= flag.contains('r');
+            force |= flag.contains('f');
+            index += 1;
+        }
+        if !(recursive && force) {
+            continue;
+        }
+        let reason = match words.get(index).map(String::as_str) {
+            Some("/" | "/*") => "Attempts to recursively delete root filesystem",
+            Some("~" | "$HOME" | "${HOME}") => "Attempts to recursively delete home directory",
+            _ => continue,
+        };
+        return Some(reason);
+    }
+    None
 }
 
 /// Network-related commands
@@ -682,9 +720,9 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
         return analysis;
     }
 
-    // Catastrophic literal patterns (`rm -rf /`, fork bomb, …) must be
-    // flagged Dangerous even when chained with `;` / `&&`, so check them
-    // before the chaining branch short-circuits to RequiresApproval.
+    // Catastrophic literal patterns (`rm -rf /`, fork bomb) must be flagged
+    // Dangerous even when chained with `;` / `&&`, so check them before
+    // the chaining branch short-circuits to RequiresApproval.
     if let Some(reason) = literal_dangerous_pattern_reason(command) {
         return SafetyAnalysis::dangerous(
             command,
@@ -2284,6 +2322,40 @@ mod tests {
         ] {
             let level = analyze_command(command).level;
             assert!(!matches!(level, SafetyLevel::Safe), "{command}: {level:?}");
+        }
+    }
+
+    /// `rm -rf /tmp/scratch` is not a root deletion. The literal scan
+    /// matched the `rm -rf /` substring and hard-blocked it, while
+    /// `rm -fr /tmp/scratch` merely asked.
+    #[test]
+    fn rm_rf_under_root_is_not_a_root_deletion() {
+        for command in [
+            "rm -rf /tmp/scratch",
+            "rm -rf /Users/me/proj/target",
+            "sudo rm -rf /tmp/scratch",
+        ] {
+            let analysis = analyze_command(command);
+            assert!(
+                !matches!(analysis.level, SafetyLevel::Dangerous),
+                "{command}: {analysis:?}"
+            );
+        }
+        // Root and home targets stay hard-blocked in every spelling — the
+        // wrapped ones through the literal scan alone.
+        for command in [
+            "rm -rf /",
+            "rm -rf /*",
+            "rm -rf ~",
+            "rm -rf $HOME",
+            "sudo rm -rf $HOME",
+            "sudo -u root rm -rf ~",
+            "bash -c 'rm -rf /'",
+        ] {
+            assert!(
+                matches!(analyze_command(command).level, SafetyLevel::Dangerous),
+                "{command}"
+            );
         }
     }
 
