@@ -1241,7 +1241,12 @@ fn apply_hunk(
 
     // Try to find the location with fuzzy matching
     // Apply cumulative offset from previous hunks
-    let base_idx = if hunk.old_start > 0 {
+    // A zero-length old range names the line AFTER which the new lines go
+    // (`@@ -2,0 +3 @@` inserts after line 2): it is anchored on that line,
+    // not on the one before it.
+    let base_idx = if hunk.old_count == 0 {
+        hunk.old_start
+    } else if hunk.old_start > 0 {
         hunk.old_start - 1
     } else {
         0
@@ -2257,5 +2262,30 @@ diff --git a/b.txt b/b.txt
             fs::read_to_string(tmp.path().join("q.sql")).expect("read"),
             "select 1;\n-- new comment\nselect 2;\n"
         );
+    }
+
+    /// A context-less insertion hunk (what `diff -U0` emits) names the old
+    /// line after which the new lines go. It used to land one line early.
+    #[tokio::test]
+    async fn pure_insertion_hunk_lands_after_the_named_line() {
+        for (header, expected) in [
+            ("@@ -0,0 +1 @@", "X\na\nb\nc\n"),
+            ("@@ -2,0 +3 @@", "a\nb\nX\nc\n"),
+            ("@@ -3,0 +4 @@", "a\nb\nc\nX\n"),
+        ] {
+            let tmp = tempdir().expect("tempdir");
+            let ctx = ToolContext::new(tmp.path().to_path_buf());
+            fs::write(tmp.path().join("f.txt"), "a\nb\nc\n").expect("write");
+            let patch = format!("{header}\n+X\n");
+            ApplyPatchTool
+                .execute(json!({"path": "f.txt", "patch": patch}), &ctx)
+                .await
+                .expect("patch");
+            assert_eq!(
+                fs::read_to_string(tmp.path().join("f.txt")).expect("read"),
+                expected,
+                "{header}"
+            );
+        }
     }
 }
