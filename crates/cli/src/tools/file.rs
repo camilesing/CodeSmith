@@ -761,7 +761,14 @@ impl ToolSpec for EditFileTool {
             }
             String::new() // unused in anchor mode; equality check below uses anchors
         } else {
-            required_str(&input, "search")?.to_string()
+            // An empty needle matches at every boundary: `replace_all` splices
+            // `replace` between every character, and `occurrence` inserts at a
+            // raw byte offset (a panic off a char boundary).
+            let search = required_str(&input, "search")?;
+            if search.is_empty() {
+                return Err(ToolError::invalid_input("search must not be empty"));
+            }
+            search.to_string()
         };
 
         if !anchor_mode && search == replace {
@@ -2777,6 +2784,27 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    /// An empty `search` matches at every boundary: `replace_all` spliced
+    /// `replace` between every character of the file.
+    #[tokio::test]
+    async fn test_edit_file_rejects_empty_search() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let test_file = tmp.path().join("empty.txt");
+        fs::write(&test_file, "a b c\n").expect("write");
+
+        let result = EditFileTool
+            .execute(
+                json!({"path": "empty.txt", "search": "", "replace": "X", "replace_all": true}),
+                &ctx,
+            )
+            .await;
+
+        let err = result.expect_err("an empty search is refused").to_string();
+        assert!(err.contains("search must not be empty"), "{err}");
+        assert_eq!(fs::read_to_string(&test_file).expect("read"), "a b c\n");
     }
 
     #[tokio::test]
