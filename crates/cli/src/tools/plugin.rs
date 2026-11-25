@@ -67,8 +67,10 @@ struct ScriptPluginTool {
     metadata: PluginMetadata,
     /// Absolute path to the script.
     script_path: PathBuf,
-    /// Optional static arguments passed before the JSON input.
-    args: Vec<String>,
+    /// Interpreter and its arguments, resolved from the shebang when the
+    /// tool was built: reading the script on every call blocked the runtime
+    /// thread. The per-call input rides stdin.
+    command: (String, Vec<String>),
 }
 
 impl std::fmt::Debug for ScriptPluginTool {
@@ -112,9 +114,8 @@ impl ToolSpec for ScriptPluginTool {
     }
 
     async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let (interpreter, script_args) = script_command_parts(&self.script_path, &self.args);
         let label = self.script_path.display().to_string();
-        run_plugin_child(&interpreter, &script_args, &label, input).await
+        run_plugin_child(&self.command.0, &self.command.1, &label, input).await
     }
 }
 
@@ -577,8 +578,8 @@ pub fn load_plugin_tools(plugin_dir: &Path) -> Vec<Arc<dyn ToolSpec>> {
         );
         tools.push(Arc::new(ScriptPluginTool {
             metadata: meta,
-            script_path: path,
-            args: Vec::new(),
+            script_path: path.clone(),
+            command: script_command_parts(&path, &[]),
         }));
     }
 
@@ -624,10 +625,11 @@ pub fn tool_from_override(
             // tool instead of replacing the intended built-in.
             meta.name = tool_name.to_string();
 
+            let command = script_command_parts(&script_path, &args.clone().unwrap_or_default());
             Some(Arc::new(ScriptPluginTool {
                 metadata: meta,
                 script_path,
-                args: args.clone().unwrap_or_default(),
+                command,
             }) as Arc<dyn ToolSpec>)
         }
         ToolOverride::Command { command, args } => {
@@ -1030,7 +1032,7 @@ echo hello
         let tool = ScriptPluginTool {
             metadata: meta,
             script_path: PathBuf::from("/nonexistent/x.sh"),
-            args: Vec::new(),
+            command: (String::new(), Vec::new()),
         };
         assert_eq!(tool.approval_requirement(), ApprovalRequirement::Required);
     }
