@@ -1705,7 +1705,9 @@ impl SubAgentManager {
             .agents
             .get(agent_id)
             .ok_or_else(|| anyhow!("Agent {agent_id} not found"))?;
-        Ok(agent.snapshot())
+        // Same tag as the listings: `agent_eval` / `agent_result` used to
+        // hand a restored agent back as a current-session one.
+        Ok(self.snapshot_for_listing(agent))
     }
 
     /// Resolve either a durable agent id or a model-facing session name.

@@ -3217,6 +3217,13 @@ fn persist_round_trip_preserves_session_boot_id() {
         .find(|s| s.agent_id == "agent_persist")
         .unwrap();
     assert!(snap.from_prior_session);
+
+    // `agent_eval` / `agent_result` read through `get_result`, which used
+    // to return the bare snapshot: the same agent, reported as current.
+    let fetched = reader
+        .get_result("agent_persist")
+        .expect("the reload keeps the record");
+    assert!(fetched.from_prior_session);
 }
 
 // === Issue #756: parent-completion wakeup ===
