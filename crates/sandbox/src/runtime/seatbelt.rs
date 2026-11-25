@@ -395,8 +395,14 @@ fn generate_params(ctx: &ProfileContext) -> Vec<(String, PathBuf)> {
             // read-only rather than the protected area losing protection.
             let canonical_subpath = match subpath.canonicalize() {
                 Ok(p) if p.starts_with(&canonical) => p,
-                Ok(_) => canonical.clone(),
-                Err(_) => {
+                // A link that resolves outside the root: a write through it
+                // is evaluated against the target, which lies in no writable
+                // root and is already denied. Pinning the exception to the
+                // root itself made the whole workspace read-only for one
+                // symlinked `CLAUDE.md`.
+                // Not resolvable (not created yet, deleted, dangling link):
+                // the lexical path under the canonical root.
+                Ok(_) | Err(_) => {
                     let derived =
                         canonical.join(subpath.strip_prefix(&root.root).unwrap_or(subpath));
                     if derived.starts_with(&canonical) {
@@ -635,6 +641,46 @@ mod tests {
             root_param.1.display()
         );
         assert!(ro_param.1.ends_with(".codesmith"));
+    }
+
+    /// A protected entry that is a symlink to somewhere outside the root
+    /// used to pin the read-only exception to the root itself: the whole
+    /// workspace read-only for one symlinked `CLAUDE.md`.
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_protected_entry_does_not_pin_the_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("elsewhere");
+        std::fs::write(elsewhere.path().join("CLAUDE.md"), "instructions").expect("target");
+        std::os::unix::fs::symlink(
+            elsewhere.path().join("CLAUDE.md"),
+            tmp.path().join("CLAUDE.md"),
+        )
+        .expect("symlink");
+
+        let policy = SandboxPolicy::workspace_with_roots(vec![tmp.path().to_path_buf()], false);
+        let ctx = resolve_profile_context(&policy, tmp.path());
+        let params = generate_params(&ctx);
+        let root_param = params
+            .iter()
+            .find(|(k, _)| k == "WRITABLE_ROOT_0")
+            .expect("root param")
+            .1
+            .clone();
+        let read_only: Vec<_> = params
+            .iter()
+            .filter(|(k, _)| k.starts_with("WRITABLE_ROOT_0_RO_"))
+            .collect();
+        assert!(
+            read_only.iter().all(|(_, v)| v != &root_param),
+            "no exception may pin the whole root: {read_only:?}"
+        );
+        assert!(
+            read_only
+                .iter()
+                .any(|(_, v)| v == &root_param.join("CLAUDE.md")),
+            "the exception is the lexical link path: {read_only:?}"
+        );
     }
 
     /// Protected control-plane entries are listed whether or not they exist
