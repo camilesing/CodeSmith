@@ -301,6 +301,10 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
 
     let mut paths: Vec<&str> = Vec::new();
 
+    // Hunks with a `path` override name no file in their text.
+    if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+        paths.push(path);
+    }
     if let Some(changes) = input.get("changes").and_then(|v| v.as_array()) {
         for change in changes {
             if let Some(path) = change.get("path").and_then(|v| v.as_str()) {
@@ -309,8 +313,8 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
         }
     } else if let Some(patch_text) = input.get("patch").and_then(|v| v.as_str()) {
         for line in patch_text.lines() {
-            if let Some(rest) = line.strip_prefix("+++ b/") {
-                paths.push(rest.trim());
+            if let Some(target) = patch_header_target(line) {
+                paths.push(target);
             }
         }
     }
@@ -327,6 +331,26 @@ fn hash_patch_paths(input: &serde_json::Value) -> String {
         path.hash(&mut hasher);
     }
     format!("{:x}", hasher.finish())
+}
+
+/// The file a `---` / `+++` header names, as `apply_patch` reads it: an
+/// optional `a/`/`b/` prefix, then the text up to a tab (`diff -u` writes a
+/// timestamp there). `/dev/null` names no file — a deletion is named by its
+/// `---` line.
+fn patch_header_target(line: &str) -> Option<&str> {
+    let rest = line
+        .strip_prefix("+++ ")
+        .or_else(|| line.strip_prefix("--- "))?;
+    let target = rest.split('\t').next()?.trim().trim_matches('"');
+    if target == "/dev/null" {
+        return None;
+    }
+    Some(
+        target
+            .strip_prefix("b/")
+            .or_else(|| target.strip_prefix("a/"))
+            .unwrap_or(target),
+    )
 }
 
 /// Parse the scheme-qualified host from a URL input. `None` when the
@@ -707,6 +731,33 @@ mod tests {
             &json!({"changes": [{"path": "a.rs", "content": "y"}]}),
         );
         assert_ne!(key_a, key_b);
+    }
+
+    /// Hunks with a `path` override, and headers without the `b/` prefix
+    /// or with a `diff -u` timestamp, all hashed as `no_files`: one grant
+    /// covered every such patch, to any file.
+    #[test]
+    fn patch_family_key_follows_the_path_override_and_header_targets() {
+        let key = |input: &serde_json::Value| build_approval_grouping_key("apply_patch", input).0;
+        let override_a = key(&json!({"path": "a.rs", "patch": "@@ -1 +1 @@\n-x\n+y\n"}));
+        let override_b = key(&json!({"path": "b.rs", "patch": "@@ -1 +1 @@\n-x\n+y\n"}));
+        assert_ne!(override_a, override_b);
+        assert_eq!(
+            override_a,
+            key(&json!({"path": "a.rs", "patch": "@@ -9 +9 @@\n-p\n+q\n"}))
+        );
+        // No `b/` prefix and a timestamp; a deletion named by its `---` line.
+        let stamped = key(
+            &json!({"patch": "--- a/src/a.rs\t2026-10-22 10:00:00\n+++ b/src/a.rs\t2026-10-22 10:00:00\n@@ -1 +1 @@\n-x\n+y\n"}),
+        );
+        assert_eq!(
+            stamped,
+            key(&json!({"patch": "--- src/a.rs\n+++ src/a.rs\n@@ -2 +2 @@\n-x\n+y\n"}))
+        );
+        assert_eq!(
+            stamped,
+            key(&json!({"patch": "--- a/src/a.rs\n+++ /dev/null\n@@ -1 +0 @@\n-x\n"}))
+        );
     }
 
     #[test]
