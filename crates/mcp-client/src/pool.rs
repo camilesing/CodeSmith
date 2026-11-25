@@ -2298,7 +2298,13 @@ impl McpConnection {
         }))
         .await?;
 
-        self.recv(init_id).await?;
+        let init_response = self.recv(init_id).await?;
+        // A server that answers `initialize` with an error (its own upstream
+        // login missing, say) used to be published Ready with no tools and no
+        // diagnostic anywhere.
+        if let Some(error) = init_response.get("error") {
+            anyhow::bail!("MCP server '{}' rejected initialize: {error}", self.name);
+        }
 
         // Send initialized notification (no id, no response expected)
         self.send(serde_json::json!({
@@ -2339,6 +2345,16 @@ impl McpConnection {
             .await?;
 
             let response = self.recv(list_id).await?;
+            if let Some(error) = response.get("error") {
+                // Not fatal (an older server may refuse the page), but the
+                // catalog is incomplete and the server should say why.
+                tracing::warn!(
+                    target: "mcp",
+                    server = %self.name,
+                    error = %error,
+                    "MCP tools/list returned an error; the catalog is incomplete"
+                );
+            }
             let Some(result) = response.get("result") else {
                 break;
             };
@@ -5629,6 +5645,29 @@ mod tests {
                 None => std::env::remove_var("USERPROFILE"),
             }
         }
+    }
+
+    /// A server that answers `initialize` with a JSON-RPC error used to
+    /// connect "successfully" with an empty catalog.
+    #[tokio::test]
+    async fn an_initialize_error_fails_the_handshake() {
+        let transport = ScriptedValueTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+            responses: VecDeque::from([json_frame(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": { "code": -32603, "message": "Internal error: upstream login missing" }
+            }))]),
+        };
+        let mut conn = test_connection(Box::new(transport));
+        let err = conn
+            .initialize()
+            .await
+            .expect_err("an error response fails initialize");
+        assert!(
+            err.to_string().contains("upstream login missing"),
+            "{err:#}"
+        );
     }
 
     #[test]
