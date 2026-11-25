@@ -295,9 +295,12 @@ async fn run_plugin_child_raw(
     // child.
     codesmith_agent_runtime::shell_manager::tokio_own_process_group(cmd);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| ToolError::execution_failed(format!("failed to spawn {label}: {e}")))?;
+    // Name the program that failed to start: for a script plugin `label`
+    // is the script, and the thing that is missing is its interpreter.
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    let mut child = cmd.spawn().map_err(|e| {
+        ToolError::execution_failed(format!("failed to spawn `{program}` ({label}): {e}"))
+    })?;
 
     // Captured before the wait: once the child is reaped `child.id()` is
     // `None`, and the group could no longer be signalled.
@@ -843,6 +846,22 @@ echo hello
         .expect("the script's own output is returned");
 
         assert_eq!(result.content, "started");
+    }
+
+    /// A `.py` plugin on a machine without `python` used to report the
+    /// script path as the thing that could not be spawned.
+    #[tokio::test]
+    async fn a_failed_spawn_names_the_program() {
+        let err = run_plugin_child(
+            "codesmith-no-such-binary-xyz",
+            &[],
+            "label",
+            serde_json::json!({}),
+        )
+        .await
+        .expect_err("the binary does not exist")
+        .to_string();
+        assert!(err.contains("codesmith-no-such-binary-xyz"), "{err}");
     }
 
     #[test]
