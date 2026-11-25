@@ -23,8 +23,9 @@
 //!   prompt is folded into the prompt text as a leading block; the child
 //!   agent treats it as ordinary context.
 //! - No model negotiation: `request.model` is not forwarded (the child
-//!   uses its own default); `steps_taken` is unobservable and reported
-//!   as 0.
+//!   uses its own default); the outcome reports the model the child
+//!   announces in `session/new` (`models.currentModelId`), else nothing.
+//!   `steps_taken` is unobservable and reported as 0.
 //! - `session/request_permission` is auto-answered from the parent's
 //!   posture: `request.auto_approve` (the ceiling the headless provider's
 //!   `--auto` rule set) selects an allow option, anything else selects a
@@ -190,6 +191,12 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
             if let Ok(mut slot) = session_slot.lock() {
                 *slot = session_id.clone();
             }
+            // Newer agents announce the model they settled on. The request's
+            // model is not forwarded, so it is never the answer.
+            let child_model = new_session
+                .pointer("/result/models/currentModelId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
 
             // --- session/prompt (collect agent_message_chunk updates) ---
             let mut prompt_text = String::new();
@@ -285,7 +292,7 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
                 status,
                 output,
                 steps_taken: 0,
-                model: request.model.clone(),
+                model: child_model,
             })
         };
 
@@ -310,7 +317,7 @@ impl ExternalSubagentProvider for AcpSubagentProvider {
                     )),
                     output: String::new(),
                     steps_taken: 0,
-                    model: request.model.clone(),
+                    model: None,
                 })
             }
         }
@@ -569,7 +576,21 @@ mod tests {
         let outcome = provider.run(request()).await.expect("run completes");
         assert_eq!(outcome.status, SubAgentStatus::Completed);
         assert_eq!(outcome.output, "ACP says hi.");
-        assert_eq!(outcome.model.as_deref(), Some("some-model"));
+        // The request's model is the parent's; an agent that announces
+        // nothing left it reported as the child's.
+        assert_eq!(outcome.model, None);
+    }
+
+    #[tokio::test]
+    async fn the_model_the_child_announces_is_the_one_reported() {
+        let (command, args) = scripted_acp_child(&[
+            json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}),
+            json!({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s1", "models": {"currentModelId": "vendor/default"}}}),
+            json!({"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}}),
+        ]);
+        let provider = provider_for(command, args);
+        let outcome = provider.run(request()).await.expect("run completes");
+        assert_eq!(outcome.model.as_deref(), Some("vendor/default"));
     }
 
     /// A `codesmith` child enforces the pair as `max - depth`; the
