@@ -403,6 +403,17 @@ fn ensure_rev_is_not_an_option(rev: &str) -> Result<(), ToolError> {
             "rev must be a revision expression, not an option: {rev}"
         )));
     }
+    // `HEAD:lib/keys.env` names a blob anywhere in the repository — a read no
+    // pathspec can scope. `:/text` (the commit-search form) is the other
+    // colon spelling and stays.
+    if let Some((_, rest)) = rev.split_once(':')
+        && !rest.is_empty()
+        && !rest.starts_with('/')
+    {
+        return Err(ToolError::invalid_input(format!(
+            "rev must not name a path (use read_file for file contents): {rev}"
+        )));
+    }
     Ok(())
 }
 
@@ -602,6 +613,26 @@ mod tests {
             !result.content.contains("outside-secret.txt"),
             "{}",
             result.content
+        );
+    }
+
+    /// `rev: "HEAD:<path>"` returned any blob in the repository, from any
+    /// revision — a read outside the workspace no pathspec scopes.
+    #[tokio::test]
+    async fn git_show_refuses_a_rev_that_names_a_path() {
+        let ctx = ToolContext::new(std::env::temp_dir());
+        for rev in ["HEAD:lib/keys.env", "HEAD:../outside.txt", ":staged.txt"] {
+            let err = GitShowTool
+                .execute(json!({"rev": rev}), &ctx)
+                .await
+                .expect_err("a path is not a revision")
+                .to_string();
+            assert!(err.contains("must not name a path"), "{rev}: {err}");
+        }
+        // The commit-search spelling is still a revision expression.
+        assert!(
+            ensure_rev_is_not_an_option(":/fix the bug").is_ok(),
+            ":/text is the search form"
         );
     }
 
