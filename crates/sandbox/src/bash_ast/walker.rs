@@ -195,7 +195,11 @@ impl<'a> Walker<'a> {
                 // A standalone assignment (`x=$(cmd)`) emits no segment of
                 // its own; record that it runs a substitution so the safety
                 // gate can still see it.
-                if self.subtree_has_kind(node, "command_substitution") {
+                // A process substitution in the value (`X=<(curl …)`) runs
+                // its body the same way.
+                if self.subtree_has_kind(node, "command_substitution")
+                    || self.subtree_has_kind(node, "process_substitution")
+                {
                     self.substitution_outside_segments = true;
                 }
                 self.walk_nested(node, join);
@@ -306,6 +310,10 @@ impl<'a> Walker<'a> {
                 "variable_assignment" => {
                     segment.has_command_substitution |=
                         self.subtree_has_kind(child, "command_substitution");
+                    // `FOO=<(cmd) cmd`: the process substitution's body runs,
+                    // and nothing else would carry the flag.
+                    segment.has_process_substitution |=
+                        self.subtree_has_kind(child, "process_substitution");
                     if assignments_are_argv {
                         segment.argv.push(self.raw_text(child));
                         // `export X=$(cmd)` executes the value like a prefix
