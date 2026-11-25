@@ -4053,6 +4053,37 @@ async fn session_before_fork_cancel_vetoes_a_tool_agent_spawn() {
     assert!(err.to_string().contains("vetoed"), "{err}");
 }
 
+/// A custom-agent definition names the assignment role. A background
+/// `agent_run` forwarded that name to the spawn tool, whose parser rejects
+/// any role that is not an alias — the foreground run of the same call
+/// worked.
+#[tokio::test]
+async fn background_run_of_a_custom_agent_definition_spawns() {
+    let (runtime, workspace) = mock_child_runtime("definition done");
+    let agents = workspace.path().join(".codesmith").join("agents");
+    std::fs::create_dir_all(&agents).expect("agents dir");
+    std::fs::write(
+        agents.join("plain.json"),
+        r#"{"name": "plain", "type": "general", "prompt": "just a prompt"}"#,
+    )
+    .expect("definition");
+
+    let manager = runtime.manager.clone();
+    let tool = SubagentRunTool::new(manager.clone(), runtime);
+    let result = tool
+        .execute(
+            json!({"prompt": "x", "type": "plain", "run_in_background": true}),
+            &ToolContext::new(workspace.path().to_path_buf()),
+        )
+        .await
+        .expect("a background run of a definition spawns");
+    let spawned: Value =
+        serde_json::from_str(&result.content).expect("background result is snapshot json");
+    let agent_id = spawned["agent_id"].as_str().expect("agent_id").to_string();
+    let terminal = wait_until_terminal(&manager, &agent_id).await;
+    assert_eq!(terminal.status, SubAgentStatus::Completed, "{terminal:?}");
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.

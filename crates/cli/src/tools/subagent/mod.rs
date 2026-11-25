@@ -3781,7 +3781,14 @@ impl SubagentRunTool {
             "model": request.model,
             "cwd": request.cwd.map(|p| p.display().to_string()),
             "max_depth": request.max_depth,
-            "role": request.assignment.role,
+            // Only a real role alias: for a custom-agent definition the
+            // assignment role is the definition's name, which the spawn
+            // tool's own parser rejects ("Invalid role alias") — it reads
+            // the definition itself from `type`.
+            "role": request
+                .assignment
+                .role
+                .filter(|role| normalize_role_alias(role).is_some()),
             "memory": request.memory,
         });
         let mut spawn_tool = AgentSpawnTool::new(self.manager.clone(), self.runtime.clone());
