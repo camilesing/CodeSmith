@@ -34,7 +34,7 @@ use codesmith_agent_runtime::skills::{
 };
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
 
 pub struct LoadSkillTool;
@@ -77,11 +77,7 @@ impl ToolSpec for LoadSkillTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let name = input
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::missing_field("name"))?
-            .trim();
+        let name = required_str(&input, "name")?.trim();
         if name.is_empty() {
             return Err(ToolError::invalid_input(
                 "`name` must be a non-empty string",
@@ -340,6 +336,23 @@ mod tests {
             body: body.to_string(),
             when_to_use: None,
         }
+    }
+
+    /// `{"name": 5}` used to answer "missing required field 'name'" — the
+    /// model was told to add the field it had just sent.
+    #[tokio::test]
+    async fn load_skill_names_a_wrong_typed_name() {
+        let tmp = tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let err = LoadSkillTool
+            .execute(json!({"name": 5}), &ctx)
+            .await
+            .expect_err("a non-string name is refused")
+            .to_string();
+
+        assert!(err.contains("must be a string"), "{err}");
+        assert!(!err.contains("missing required field"), "{err}");
     }
 
     #[tokio::test]
