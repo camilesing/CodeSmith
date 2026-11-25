@@ -2809,7 +2809,7 @@ impl ToolSpec for AgentSpawnTool {
         // aborts the spawn with a model-visible error; everything else
         // proceeds. The runner rides the sub-agent runtime, so this fires
         // at every generation — grandchildren forks are vetoable too.
-        if let Some(runner) = &self.extension_runner {
+        if let Some(runner) = fork_veto_runner(self.extension_runner.as_ref(), &self.runtime) {
             let out = emit_fork_veto(
                 runner,
                 self.runtime.spawn_depth,
@@ -3567,6 +3567,17 @@ async fn emit_fork_veto(
     }
 }
 
+/// The runner a fork veto is emitted through: the one the registry builder
+/// attached to the tool, else the one riding the runtime — so a spawn tool
+/// built without a builder (`tool_agent`, a teammate prompt) is vetoed on
+/// every path, as the seam documents.
+fn fork_veto_runner<'a>(
+    attached: Option<&'a Arc<codesmith_extensions::ExtensionRunner>>,
+    runtime: &'a SubAgentRuntime,
+) -> Option<&'a Arc<codesmith_extensions::ExtensionRunner>> {
+    attached.or(runtime.extension_runner.as_ref())
+}
+
 /// Run a sub-agent synchronously (foreground) or asynchronously (background).
 ///
 /// Sync mode: the parent turn blocks until the child finishes and returns
@@ -4231,7 +4242,7 @@ impl ToolSpec for SubagentRunTool {
         // aborts the spawn with a model-visible error; everything else
         // proceeds. The runner rides the sub-agent runtime, so this fires
         // at every generation — grandchildren forks are vetoable too.
-        if let Some(runner) = &self.extension_runner {
+        if let Some(runner) = fork_veto_runner(self.extension_runner.as_ref(), &self.runtime) {
             let out = emit_fork_veto(
                 runner,
                 self.runtime.spawn_depth,

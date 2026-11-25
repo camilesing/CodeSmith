@@ -4030,6 +4030,29 @@ async fn session_before_fork_fires_once_for_a_background_run() {
     assert_eq!(fired, 1, "{:?}", seen.lock().unwrap());
 }
 
+/// `tool_agent` builds its own `agent_open` with no runner attached, so
+/// the `SessionBeforeFork` veto never fired on that spawn path — a mod that
+/// forbids forks in a repository was not asked.
+#[tokio::test]
+async fn session_before_fork_cancel_vetoes_a_tool_agent_spawn() {
+    let (runner, _seen) = runner_with_fork_handler(true).await;
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime().with_extension_runner(Some(runner));
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let manager = Arc::new(tokio::sync::RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        4,
+    )));
+    let err = ToolAgentTool::new(manager, runtime)
+        .execute(
+            json!({"prompt": "ocr the chart"}),
+            &ToolContext::new(tmp.path().to_path_buf()),
+        )
+        .await
+        .expect_err("Cancel must abort the spawn");
+    assert!(err.to_string().contains("vetoed"), "{err}");
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.
