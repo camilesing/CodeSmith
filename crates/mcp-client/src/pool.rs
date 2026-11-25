@@ -1166,7 +1166,7 @@ impl SseTransport {
 
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
-        let mut buffer = String::new();
+        let mut buffer = Utf8SseBuffer::default();
 
         loop {
             if cancel_token.is_cancelled() {
@@ -1186,10 +1186,9 @@ impl SseTransport {
                 }
             };
             let chunk = item?;
-            let s = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&s);
+            buffer.push(&chunk);
 
-            for (event_type, data) in take_complete_sse_blocks(&mut buffer) {
+            for (event_type, data) in buffer.take_complete_blocks() {
                 match event_type.as_str() {
                     "endpoint" => {
                         let _ = tx.send(SseInbound::Endpoint(data));
@@ -1627,6 +1626,55 @@ impl StreamableHttpTransport {
     }
 }
 
+/// The text an SSE decoder reads, fed by network chunks: only the valid
+/// UTF-8 prefix of each chunk is appended, and the leading bytes of a
+/// character split across chunks wait for the next one. Decoding each chunk
+/// on its own turned every such boundary into U+FFFD.
+#[derive(Default)]
+struct Utf8SseBuffer {
+    text: String,
+    pending: Vec<u8>,
+}
+
+impl Utf8SseBuffer {
+    fn push(&mut self, chunk: &[u8]) {
+        self.pending.extend_from_slice(chunk);
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    self.text.push_str(text);
+                    self.pending.clear();
+                    return;
+                }
+                Err(err) => {
+                    // `valid_up_to` is always a char boundary.
+                    let valid = err.valid_up_to();
+                    self.text
+                        .push_str(std::str::from_utf8(&self.pending[..valid]).unwrap());
+                    match err.error_len() {
+                        // Cut at the end of the chunk: the rest of the
+                        // character arrives with the next one.
+                        None => {
+                            self.pending.drain(..valid);
+                            return;
+                        }
+                        // A genuinely invalid sequence: replaced, as a
+                        // lossy decode would.
+                        Some(bad) => {
+                            self.text.push('\u{FFFD}');
+                            self.pending.drain(..valid + bad);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn take_complete_blocks(&mut self) -> Vec<(String, String)> {
+        take_complete_sse_blocks(&mut self.text)
+    }
+}
+
 /// Incrementally decode a `text/event-stream` POST response, forwarding
 /// complete `message` events to `tx` as chunks arrive. Half-packets and
 /// coalesced chunks are reassembled by the shared SSE block decoder. When
@@ -1641,12 +1689,12 @@ async fn read_sse_response_stream(
 ) {
     let display_url = mask_url_secrets(response.url().as_str());
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer = Utf8SseBuffer::default();
     loop {
         match stream.next().await {
             Some(Ok(chunk)) => {
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                for (event_type, data) in take_complete_sse_blocks(&mut buffer) {
+                buffer.push(&chunk);
+                for (event_type, data) in buffer.take_complete_blocks() {
                     if event_type == "message"
                         && !data.trim().is_empty()
                         && tx.send(Ok(data.into_bytes())).is_err()
@@ -1662,8 +1710,8 @@ async fn read_sse_response_stream(
                 return;
             }
             None => {
-                if !buffer.trim().is_empty() {
-                    let (event_type, data) = parse_sse_block(&buffer);
+                if !buffer.text.trim().is_empty() {
+                    let (event_type, data) = parse_sse_block(&buffer.text);
                     if event_type == "message" && !data.trim().is_empty() {
                         let _ = tx.send(Ok(data.into_bytes()));
                     }
@@ -5584,6 +5632,28 @@ mod tests {
             }
         }
         assert_eq!(got, expected);
+    }
+
+    /// A character split across two network chunks used to decode as two
+    /// U+FFFD replacement characters: each chunk was decoded on its own.
+    #[test]
+    fn sse_feed_carries_a_character_split_across_chunks() {
+        let body = b"event: message\r\ndata: {\"t\":\"\xe4\xb8\xad\xe6\x96\x87\"}\r\n\r\n";
+        // One byte into 中.
+        let split = body
+            .windows(4)
+            .position(|w| w == b"\xe4\xb8\xad\xe6")
+            .unwrap()
+            + 1;
+        let (head, tail) = body.split_at(split);
+        let mut buffer = Utf8SseBuffer::default();
+        buffer.push(head);
+        assert!(buffer.take_complete_blocks().is_empty());
+        buffer.push(tail);
+        assert_eq!(
+            buffer.take_complete_blocks(),
+            vec![("message".to_string(), "{\"t\":\"中文\"}".to_string())]
+        );
     }
 
     #[test]
