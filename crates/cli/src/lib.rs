@@ -431,7 +431,9 @@ pub fn run_cli() -> std::process::ExitCode {
 }
 
 pub(crate) fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
-    run_login_command_with_secrets(store, args, &Secrets::auto_detect())
+    let secrets = Secrets::auto_detect();
+    report_secret_backend_notice(&secrets);
+    run_login_command_with_secrets(store, args, &secrets)
 }
 
 fn run_login_command_with_secrets(
@@ -805,8 +807,20 @@ fn last4_label(value: &str) -> String {
     format!("...{last4}")
 }
 
+/// The secret store only warns through `tracing` when it refuses the
+/// configured backend and falls back to the file store — and the CLI
+/// installs no `tracing` subscriber, so the user was told nothing and found
+/// the key in a plaintext file.
+fn report_secret_backend_notice(secrets: &Secrets) {
+    if let Some(notice) = secrets.backend_notice() {
+        eprintln!("warning: {notice}");
+    }
+}
+
 pub(crate) fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
-    run_auth_command_with_secrets(store, command, &Secrets::auto_detect())
+    let secrets = Secrets::auto_detect();
+    report_secret_backend_notice(&secrets);
+    run_auth_command_with_secrets(store, command, &secrets)
 }
 
 fn run_auth_command_with_secrets(

@@ -588,6 +588,9 @@ pub struct Secrets {
     /// forwarded to the store as-is, while environment variables are
     /// looked up by canonical provider name via [`env_for`].
     service: String,
+    /// Why the configured backend was not used, when it was not. The store
+    /// only warns through `tracing`; a host with no subscriber reads it here.
+    backend_notice: Option<String>,
 }
 
 /// Identifies which layer in the resolution chain supplied a secret.
@@ -620,7 +623,20 @@ impl Secrets {
         Self {
             store,
             service: DEFAULT_SERVICE.to_string(),
+            backend_notice: None,
         }
+    }
+
+    /// The warning the store logged when it fell back from the configured
+    /// backend, for hosts that install no `tracing` subscriber.
+    #[must_use]
+    pub fn backend_notice(&self) -> Option<&str> {
+        self.backend_notice.as_deref()
+    }
+
+    fn with_backend_notice(mut self, notice: String) -> Self {
+        self.backend_notice = Some(notice);
+        self
     }
 
     /// Auto-detect the best available backend based on the environment.
@@ -631,26 +647,29 @@ impl Secrets {
     ///    fall back to the file-based store with a warning.
     /// 2. If the env var is unset, empty, or `file`/`local`/`json`, use
     ///    the file-based store directly.
-    /// 3. If the env var is set to an unrecognised value, log a warning
-    ///    and use the file-based store.
+    /// 3. If the env var is set to an unrecognised value, report it
+    ///    ([`Self::backend_notice`]) and use the file-based store.
     pub fn auto_detect() -> Self {
         match secret_backend_selection(configured_secret_backend().as_deref()) {
             SecretBackendSelection::File => Self::file_backed_default(),
             SecretBackendSelection::Unknown => {
-                tracing::warn!(
-                    "{SECRET_BACKEND_ENV} has an unsupported value; using file-backed secret store"
+                let notice = format!(
+                    "{SECRET_BACKEND_ENV} has an unsupported value ({}); using the file-backed secret store",
+                    configured_secret_backend().unwrap_or_default()
                 );
-                Self::file_backed_default()
+                tracing::warn!("{notice}");
+                Self::file_backed_default().with_backend_notice(notice)
             }
             SecretBackendSelection::System => {
                 let default_store = DefaultKeyringStore::default();
                 match default_store.probe() {
                     Ok(()) => Self::new(Arc::new(default_store)),
                     Err(err) => {
-                        tracing::warn!(
-                            "OS keyring unavailable ({err}); falling back to file-backed secret store"
+                        let notice = format!(
+                            "OS keyring unavailable ({err}); falling back to the file-backed secret store"
                         );
-                        Self::file_backed_default()
+                        tracing::warn!("{notice}");
+                        Self::file_backed_default().with_backend_notice(notice)
                     }
                 }
             }
@@ -1505,6 +1524,11 @@ mod tests {
 
         let secrets = Secrets::auto_detect();
         assert_eq!(secrets.backend_name(), FILE_BACKEND_LABEL);
+        // The fallback used to be visible only as a `tracing` warning.
+        let notice = secrets
+            .backend_notice()
+            .expect("the refused backend is reported");
+        assert!(notice.contains("carrier-pigeon"), "{notice}");
     }
 
     // ── DefaultKeyringStore (OS keyring) ──────────────────────────────
