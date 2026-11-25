@@ -249,7 +249,10 @@ fn is_allowed_mcp_env_key(key: &OsStr) -> bool {
     if normalized.starts_with("NPM_CONFIG_") || normalized.starts_with("UV_") {
         // Index-URL keys frequently carry `user:token@host` in the value
         // even though the key name carries no credential marker.
-        if matches!(normalized.as_str(), "UV_INDEX_URL" | "UV_EXTRA_INDEX_URL") {
+        if matches!(
+            normalized.as_str(),
+            "UV_INDEX_URL" | "UV_EXTRA_INDEX_URL" | "UV_DEFAULT_INDEX" | "UV_FIND_LINKS"
+        ) {
             return false;
         }
         const SECRET_MARKERS: [&str; 6] = ["AUTH", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "_KEY"];
@@ -349,6 +352,8 @@ mod tests {
             "NPM_CONFIG_//REGISTRY.EXAMPLE.COM/:_AUTHTOKEN",
             "UV_INDEX_URL",
             "UV_EXTRA_INDEX_URL",
+            "UV_DEFAULT_INDEX",
+            "UV_FIND_LINKS",
             "NPM_CONFIG_REGISTRY_TOKEN",
             "UV_API_KEY",
         ] {
