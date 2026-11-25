@@ -6485,7 +6485,9 @@ fn agent_definition_candidates(workspace: &Path, name: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     for root in roots {
         for stem in [name.trim(), safe_name.as_str()] {
-            if stem.is_empty() {
+            // A separator in the raw stem walks out of the definition roots
+            // (`../../notes/x`), and an absolute one replaces the root.
+            if stem.is_empty() || stem.contains(['/', '\\']) {
                 continue;
             }
             candidates.push(root.join(format!("{stem}.json")));

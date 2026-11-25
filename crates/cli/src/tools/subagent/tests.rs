@@ -4161,6 +4161,30 @@ fn an_excluded_tool_is_refused_at_dispatch_too() {
     assert!(general.is_tool_allowed("agent_open"));
 }
 
+/// `type: "../../notes/scratch"` used to probe
+/// `<workspace>/.codesmith/agents/../../notes/scratch.md` — a file outside
+/// every definition root, read into the child's prompt.
+#[test]
+fn a_type_with_a_separator_stays_inside_the_definition_roots() {
+    use std::path::Component;
+
+    let candidates = agent_definition_candidates(Path::new("/ws/agents-probe"), "../../etc/x");
+    assert!(!candidates.is_empty());
+    for candidate in &candidates {
+        assert!(
+            !candidate
+                .components()
+                .any(|part| part == Component::ParentDir),
+            "{candidate:?} escapes its root"
+        );
+        assert!(
+            candidate.to_string_lossy().ends_with("agents/etc-x.json")
+                || candidate.to_string_lossy().ends_with("agents/etc-x.md"),
+            "{candidate:?} is not the sanitized stem under a root"
+        );
+    }
+}
+
 /// The veto reaches every generation: a CHILD runtime (depth 1) derived
 /// through `child_runtime()` carries the runner, so the spawn tool inside
 /// the child's OWN registry — the grandchild fork — is vetoable too.
