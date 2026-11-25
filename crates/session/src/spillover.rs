@@ -170,7 +170,14 @@ pub fn write_sha_spillover(sha: &str, content: &str) -> io::Result<PathBuf> {
             "sha must be a 64-char lowercase hex digest",
         )
     })?;
+    // An existing file is reused, but its lifetime starts over: the prune
+    // drops files unused for `SPILLOVER_MAX_AGE`, and a ref emitted today
+    // must not inherit the age of the first spill. Best-effort — a filesystem
+    // that refuses the mtime change leaves it as it was.
     if path.exists() {
+        if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
+            let _ = file.set_modified(std::time::SystemTime::now());
+        }
         return Ok(path);
     }
     if let Some(parent) = path.parent() {
@@ -940,6 +947,30 @@ mod tests {
                     .and_then(serde_json::Value::as_str),
                 Some("session-123")
             );
+        });
+    }
+
+    /// A SHA ref emitted today must not inherit the first spill's age: a
+    /// reused file used to keep the mtime of its first write, so the next
+    /// prune (files unused for `SPILLOVER_MAX_AGE`) deleted it.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_sha_spill_is_refreshed_on_reuse() {
+        let _g = setup();
+        let tmp = tempdir().unwrap();
+        with_test_home(tmp.path(), || {
+            let sha = "ab".repeat(32);
+            let path = write_sha_spillover(&sha, &"x".repeat(300)).unwrap();
+            assert!(path.exists());
+            let stale = std::time::SystemTime::now()
+                - SPILLOVER_MAX_AGE
+                - std::time::Duration::from_secs(60);
+            filetime_set_modified(&path, stale);
+
+            let again = write_sha_spillover(&sha, &"x".repeat(300)).unwrap();
+            assert_eq!(again, path);
+            assert_eq!(prune_older_than(SPILLOVER_MAX_AGE).unwrap(), 0);
+            assert!(path.exists(), "a ref emitted today outlives the prune");
         });
     }
 
