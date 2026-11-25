@@ -2624,21 +2624,27 @@ mod tests {
 
         server.cancel_session("acp-early");
 
-        let outcome = run_turn(
-            TurnRequest {
-                config: Config::default(),
-                settings: Settings::default(),
-                model: "test-model".to_string(),
-                store: server.store.clone(),
-                session_id: "acp-early".to_string(),
-                prompt: "hello".to_string(),
-                generation,
-            },
-            rx,
-            &server.shared,
-            sink(),
+        // Without the latch the turn was sent and ran to completion: bound
+        // the wait, so that shape fails instead of hanging for the deadline.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_turn(
+                TurnRequest {
+                    config: Config::default(),
+                    settings: Settings::default(),
+                    model: "test-model".to_string(),
+                    store: server.store.clone(),
+                    session_id: "acp-early".to_string(),
+                    prompt: "hello".to_string(),
+                    generation,
+                },
+                rx,
+                &server.shared,
+                sink(),
+            ),
         )
         .await
+        .expect("the cancelled prompt resolves without running the turn")
         .expect("the cancelled prompt resolves");
         assert_eq!(outcome.status, TurnOutcomeStatus::Interrupted);
         assert!(
