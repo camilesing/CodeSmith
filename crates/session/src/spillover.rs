@@ -414,11 +414,19 @@ fn apply_spillover_inner(
             &original_content,
         ) {
             Ok((absolute_path, relative_path)) => {
-                let record = crate::artifacts::record_tool_output_artifact(
+                // The record keeps the session-relative path; its size comes
+                // from the file that was written. The generic recorder stats
+                // `storage_path`, which is relative to the session directory,
+                // not to the process cwd.
+                let byte_size = std::fs::metadata(&absolute_path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(original_content.len() as u64);
+                let record = crate::artifacts::record_tool_output_artifact_with_size(
                     context.session_id,
                     tool_id,
                     context.tool_name,
                     relative_path.clone(),
+                    byte_size,
                     &original_content,
                 );
                 let transcript_ref = crate::artifacts::TranscriptArtifactRef::from(&record);
