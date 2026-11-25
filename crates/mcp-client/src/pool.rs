@@ -2742,6 +2742,30 @@ enum PoolSlot {
     Connecting(Arc<TokioMutex<()>>),
 }
 
+/// A `get_or_connect` claim while it connects. `Drop` removes the
+/// `Connecting` slot when this claim still owns it, so a dropped future or a
+/// failed connect never leaves one behind: a stale slot made every later call
+/// for that server wait on a mutex nobody holds, spinning until cancelled.
+struct ConnectClaim<'a> {
+    state: &'a std::sync::Mutex<PoolState>,
+    server_name: &'a str,
+    wait: Arc<TokioMutex<()>>,
+    /// The claim mutex, released after `Drop` removed the slot: a waiter
+    /// re-checks the table only once the slot is gone.
+    _held: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl Drop for ConnectClaim<'_> {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(PoolSlot::Connecting(claimed)) = state.connections.get(self.server_name)
+            && Arc::ptr_eq(claimed, &self.wait)
+        {
+            state.connections.remove(self.server_name);
+        }
+    }
+}
+
 struct ReadySlot {
     conn: Arc<TokioMutex<McpConnection>>,
     catalog: Arc<McpCatalog>,
@@ -3105,7 +3129,7 @@ impl McpPool {
             // unfinished claim. It is never taken while holding the table
             // lock.
             let wait = Arc::new(TokioMutex::new(()));
-            let _claim_guard = wait.lock().await;
+            let held = wait.lock().await;
             let lost_claim = {
                 let mut state = self.state.lock().unwrap();
                 match state.connections.get(server_name) {
@@ -3120,33 +3144,27 @@ impl McpPool {
                 }
             };
             if let Some(other) = lost_claim {
-                drop(_claim_guard);
+                drop(held);
                 // The claimant releases when it publishes or removes the
                 // slot; then we re-check the table.
                 let _ = other.lock().await;
                 continue;
             }
 
+            // From here the claim guard owns the slot: it removes the
+            // `Connecting` entry on every exit that leaves it in place —
+            // the connect failing, the future dropped (turn cancelled, early
+            // task aborted), a panic — unless `publish_ready` replaced it.
+            let _claim = ConnectClaim {
+                state: &self.state,
+                server_name,
+                wait: Arc::clone(&wait),
+                _held: held,
+            };
             let built_hash = self.current_config_hash();
             match self.connect_one(server_name).await {
-                Ok(conn) => {
-                    let live = self.publish_ready(server_name, conn, built_hash);
-                    drop(_claim_guard);
-                    return Ok(live);
-                }
-                Err(err) => {
-                    {
-                        let mut state = self.state.lock().unwrap();
-                        if let Some(PoolSlot::Connecting(claimed)) =
-                            state.connections.get(server_name)
-                            && Arc::ptr_eq(claimed, &wait)
-                        {
-                            state.connections.remove(server_name);
-                        }
-                    }
-                    drop(_claim_guard);
-                    return Err(err);
-                }
+                Ok(conn) => return Ok(self.publish_ready(server_name, conn, built_hash)),
+                Err(err) => return Err(err),
             }
         }
     }
@@ -8178,6 +8196,78 @@ mod tests {
     }
 
     // === Coverage: pool lifecycle and pseudo-tools =====================
+
+    /// A connect dropped mid-flight (turn cancelled, early task aborted)
+    /// used to leave its `Connecting` slot in the table: every later call
+    /// for that server waited on a mutex nobody holds.
+    #[tokio::test]
+    async fn a_dropped_connect_leaves_no_connecting_slot() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _lock = lock_mcp_loopback_tests().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // First connection: hold it open and never answer. Second: refuse.
+        let server = tokio::spawn(async move {
+            let (mut held, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = [0; 1024];
+                let _ = held.read(&mut buf).await;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            });
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let pool = Arc::new(McpPool::new(McpConfig::default()));
+        let mut config = test_server_config();
+        config.url = Some(format!("http://{addr}/sse"));
+        config.transport = Some("sse".to_string());
+        pool.add_server_for_test("stuck", config);
+
+        let first = tokio::spawn({
+            let pool = Arc::clone(&pool);
+            async move { pool.get_or_connect("stuck").await }
+        });
+        let mut connecting = false;
+        for _ in 0..300 {
+            connecting = matches!(
+                pool.state.lock().unwrap().connections.get("stuck"),
+                Some(PoolSlot::Connecting(_))
+            );
+            if connecting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(connecting, "the first call claims the slot");
+        first.abort();
+        let _ = first.await;
+
+        let second = tokio::time::timeout(Duration::from_secs(5), pool.get_or_connect("stuck"))
+            .await
+            .expect("the abandoned claim must not block the next call");
+        assert!(second.is_err(), "the second connection is refused");
+        server.abort();
+    }
 
     #[tokio::test]
     async fn get_or_connect_rejects_unknown_and_disabled_servers() {
