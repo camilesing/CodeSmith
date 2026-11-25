@@ -2781,8 +2781,12 @@ impl ToolSpec for AgentSpawnTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let mut spawn_request =
-            parse_spawn_request_with_workspace(&input, &self.runtime.context.cwd)?;
+        let mut spawn_request = parse_off_thread(
+            input,
+            &self.runtime.context.cwd,
+            parse_spawn_request_with_workspace,
+        )
+        .await?;
 
         // Coordinator lineage fixes the default worker type: a DIRECT spawn
         // from coordinator mode without an explicit type (or a plain
@@ -3540,6 +3544,19 @@ fn parse_run_request(input: &Value) -> Result<AgentRunRequest, ToolError> {
     parse_run_request_with_workspace(input, Path::new("."))
 }
 
+/// Parse a spawn or run request off the async worker: a custom-agent
+/// definition lookup probes and reads files from disk.
+async fn parse_off_thread<T: Send + 'static>(
+    input: Value,
+    cwd: &Path,
+    parse: fn(&Value, &Path) -> Result<T, ToolError>,
+) -> Result<T, ToolError> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || parse(&input, &cwd))
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("request parse failed: {e}")))?
+}
+
 /// Dispatch the `SessionBeforeFork` veto (serial seam). Depth 0 (the main
 /// turn) uses the Global emit: the main executor keeps every dylib
 /// `Library` alive through the turn (`drop_pending` fires only at the
@@ -4229,7 +4246,12 @@ impl ToolSpec for SubagentRunTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let request = parse_run_request_with_workspace(&input, &self.runtime.context.cwd)?;
+        let request = parse_off_thread(
+            input,
+            &self.runtime.context.cwd,
+            parse_run_request_with_workspace,
+        )
+        .await?;
 
         if self.runtime.would_exceed_depth() {
             return Err(ToolError::execution_failed(format!(
