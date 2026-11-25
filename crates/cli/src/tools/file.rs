@@ -2689,20 +2689,26 @@ mod tests {
 
     /// A fuzzy `search` whose last line ends in a newline used to swallow
     /// the next line's indentation: the span ended at the next kept
-    /// character instead of right after the matched text.
+    /// character instead of right after the matched text. The search is
+    /// indented deeper than the file: a shallower spelling is still an
+    /// exact substring match and never takes the fuzzy path.
     #[tokio::test]
     async fn test_edit_file_fuzzy_trailing_newline_keeps_the_next_line_indent() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let test_file = tmp.path().join("trail.txt");
-        fs::write(&test_file, "fn main() {\n    foo();\n    bar();\n}\n").expect("write");
+        fs::write(
+            &test_file,
+            "fn main() {\n    if x {\n        foo();\n    }\n}\n",
+        )
+        .expect("write");
 
         let result = EditFileTool
             .execute(
                 json!({
                     "path": "trail.txt",
-                    "search": "foo();\n",
-                    "replace": "baz();\n",
+                    "search": "          foo();\n",
+                    "replace": "          baz();\n",
                     "fuzz": true
                 }),
                 &ctx,
@@ -2711,9 +2717,11 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
+        // The replaced line keeps the file's indentation and the closing
+        // brace keeps its own.
         assert_eq!(
             fs::read_to_string(&test_file).expect("read"),
-            "fn main() {\n    baz();\n    bar();\n}\n"
+            "fn main() {\n    if x {\n        baz();\n    }\n}\n"
         );
     }
 
