@@ -72,7 +72,7 @@ fn join_of_operator(kind: &str) -> Option<SegmentJoin> {
     match kind {
         "&&" => Some(SegmentJoin::And),
         "||" => Some(SegmentJoin::Or),
-        "|" => Some(SegmentJoin::Pipe),
+        "|" | "|&" => Some(SegmentJoin::Pipe),
         ";" | "\n" => Some(SegmentJoin::Sequence),
         _ => None,
     }
@@ -135,7 +135,7 @@ impl<'a> Walker<'a> {
             if !child.is_named() {
                 // Anonymous operator tokens between statements.
                 match kind {
-                    "&&" | "||" | "|" | ";" | "\n" => pending = join_of_operator(kind),
+                    "&&" | "||" | "|" | "|&" | ";" | "\n" => pending = join_of_operator(kind),
                     "&" => {
                         if let Some(last) = self.segments.last_mut() {
                             last.is_background = true;

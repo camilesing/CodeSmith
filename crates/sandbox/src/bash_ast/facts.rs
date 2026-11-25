@@ -664,6 +664,16 @@ mod tests {
         assert!(f.any_command_substitution(), "standalone form");
     }
 
+    #[test]
+    fn amp_pipe_is_a_pipe() {
+        // `|&` (stdout and stderr) used to leave the right side joined as a
+        // plain sequence, so `curl … |& sh` lost its pipe-to-shell verdict.
+        assert_eq!(
+            joins(&ok("cat a |& wc -l")),
+            vec![None, Some(SegmentJoin::Pipe)]
+        );
+    }
+
     // ── top-level statement coverage + redirect visibility (OCR 2026-11-03) ──
 
     #[test]
