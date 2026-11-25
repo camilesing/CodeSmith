@@ -759,7 +759,23 @@ impl HttpWebService {
             bing_was_empty = true;
         }
 
-        check_policy(req.policy.as_ref(), DUCKDUCKGO_HOST, req.tool).await?;
+        // For the Bing provider DuckDuckGo is the fallback host: a deny
+        // on it degrades to a warning, as documented, instead of failing a
+        // search Bing already answered (with nothing).
+        if self.provider == SearchProvider::Bing {
+            if let Err(policy_err) =
+                check_policy(req.policy.as_ref(), DUCKDUCKGO_HOST, req.tool).await
+            {
+                warnings.push(format!("DuckDuckGo fallback skipped: {policy_err}"));
+                return Ok(SearchOutcome {
+                    results: Vec::new(),
+                    source: "bing".to_string(),
+                    warnings,
+                });
+            }
+        } else {
+            check_policy(req.policy.as_ref(), DUCKDUCKGO_HOST, req.tool).await?;
+        }
 
         let encoded = url_encode(&req.query);
         let ddg_url = format!("https://html.duckduckgo.com/html/?q={encoded}");
