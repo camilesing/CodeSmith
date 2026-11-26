@@ -4101,6 +4101,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
     // config.toml the var had no effect and nothing said so.
     if matches!(config.api_provider(), ApiProvider::Sglang)
         && let Ok(value) = std::env::var("SGLANG_MODEL")
+        && !value.trim().is_empty()
     {
         config
             .providers
@@ -4110,6 +4111,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
     }
     if matches!(config.api_provider(), ApiProvider::Vllm)
         && let Ok(value) = std::env::var("VLLM_MODEL")
+        && !value.trim().is_empty()
     {
         config
             .providers
@@ -4119,6 +4121,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
     }
     if matches!(config.api_provider(), ApiProvider::Ollama)
         && let Ok(value) = std::env::var("OLLAMA_MODEL")
+        && !value.trim().is_empty()
     {
         config
             .providers
@@ -4128,6 +4131,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
     }
     if matches!(config.api_provider(), ApiProvider::Openai)
         && let Ok(value) = std::env::var("OPENAI_MODEL")
+        && !value.trim().is_empty()
     {
         config
             .providers
@@ -4147,6 +4151,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
     }
     if matches!(config.api_provider(), ApiProvider::Atlascloud)
         && let Ok(value) = std::env::var("ATLASCLOUD_MODEL")
+        && !value.trim().is_empty()
     {
         config
             .providers
@@ -4201,6 +4206,7 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
     // now, and an explicit `--model` wins over the provider-specific var.
     if matches!(config.api_provider(), ApiProvider::NvidiaNim)
         && let Ok(value) = std::env::var("NVIDIA_NIM_MODEL")
+        && !value.trim().is_empty()
     {
         config
             .providers
@@ -7528,6 +7534,56 @@ modle = "x"
 
         assert_eq!(config.api_key.as_deref(), Some("from-config-file"));
         config.validate()?;
+        Ok(())
+    }
+
+    /// Found in the review: an `OPENAI_MODEL=` left unfilled in a copied
+    /// `.env` became `Some("")` and every request went out with an empty
+    /// model id.
+    #[test]
+    fn an_empty_provider_model_env_keeps_the_configured_model() -> Result<()> {
+        let _lock = lock_test_env();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codesmith-cli-empty-model-env-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root)?;
+        let _guard = EnvGuard::new(&temp_root);
+
+        // Safety: test-only environment mutation guarded by a global mutex.
+        unsafe {
+            env::set_var("OPENAI_MODEL", "");
+            env::set_var("VLLM_MODEL", "");
+        }
+        let mut config = Config {
+            provider: Some("openai".to_string()),
+            providers: Some(ProvidersConfig {
+                openai: ProviderConfig {
+                    model: Some("file-model".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_env_overrides(&mut config).expect("env overrides apply");
+        assert_eq!(config.default_model(), "file-model");
+
+        config.provider = Some("vllm".to_string());
+        apply_env_overrides(&mut config).expect("env overrides apply");
+        assert!(
+            config
+                .providers
+                .as_ref()
+                .and_then(|providers| providers.vllm.model.as_ref())
+                .is_none(),
+            "a blank VLLM_MODEL writes nothing"
+        );
         Ok(())
     }
 
