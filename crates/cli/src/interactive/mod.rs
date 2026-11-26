@@ -1297,7 +1297,11 @@ async fn paste_clipboard_image(state: &mut ReplState) {
     use codesmith_agent_runtime::attachments::{AttachmentStore, MAX_ATTACHMENTS_PER_MESSAGE};
     use codesmith_session::store::ContextReferenceSource;
     let next_message = state.api_messages.len();
-    match AttachmentStore::precheck(&path) {
+    // The same per-message cap `/attach` applies: the paste skipped it and
+    // queued a ninth image, reporting "9/8 queued".
+    match AttachmentStore::check_message_count(state.pending_attachments.len() + 1)
+        .and_then(|()| AttachmentStore::precheck(&path))
+    {
         Ok((_, bytes)) => {
             state.pending_attachments.push(path.clone());
             println!(
