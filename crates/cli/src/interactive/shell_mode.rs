@@ -20,6 +20,10 @@
 //! - Both streams are merged (`2>&1` semantics) and the tail is capped at
 //!   [`MAX_OUTPUT_CHARS`]; a command that prints more says so rather than
 //!   flooding the model's context.
+//! - A command's output is captured, so an interactive program (an editor, a
+//!   `[y/N]` prompt) is unsupported: it reads the terminal blind. Past
+//!   [`RUN_TIMEOUT`] it is asked to leave (TERM), then killed after
+//!   [`TERM_GRACE`].
 //! - Pasting text that starts with `!` enters shell mode too (the prefix is
 //!   read from the line, not from the keystroke). Tab completes paths and
 //!   earlier `!` commands; `Up` still recalls the whole prompt line rather
@@ -57,6 +61,17 @@ fn shell() -> String {
 /// Only when the shell itself cannot be started; a non-zero exit is a
 /// result, not an error — the caller prints the status and the output.
 pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String), String> {
+    run_bounded(command, cwd, RUN_TIMEOUT, TERM_GRACE).await
+}
+
+/// [`run`] with its bounds made explicit: `run_timeout` is how long the
+/// command may run, `term_grace` how long it has to leave once asked.
+async fn run_bounded(
+    command: &str,
+    cwd: &std::path::Path,
+    run_timeout: std::time::Duration,
+    term_grace: std::time::Duration,
+) -> Result<(String, String), String> {
     let shell = shell();
     let mut cmd = tokio::process::Command::new(&shell);
     // Windows: cmd.exe does not follow MSVCRT quoting rules, so `.arg()`
@@ -104,16 +119,25 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
     // Bound the wait: a command that never exits on its own (`!tail -f`,
     // `!npm run dev`) used to wedge the interactive session forever with
     // zero feedback. A timeout is a normal result, like a non-zero exit.
-    let status = match tokio::time::timeout(RUN_TIMEOUT, child.wait()).await {
+    let status = match tokio::time::timeout(run_timeout, child.wait()).await {
         Ok(status) => {
             status.map_err(|err| format!("{shell} failed to report its exit status: {err}"))?
         }
         Err(_) => {
-            // The whole group, not the shell alone.
-            codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+            // Asked to leave before it is made to: TERM to the whole group
+            // lets a program that waits on the user (`!git commit` in its
+            // editor) release what it holds — git's index.lock, an editor
+            // session. A bare kill left the lock behind for good.
+            codesmith_agent_runtime::shell_manager::terminate_process_group_of_opt(child.id());
             #[cfg(not(unix))]
             let _ = child.kill().await;
-            let _ = child.wait().await;
+            if tokio::time::timeout(term_grace, child.wait())
+                .await
+                .is_err()
+            {
+                codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(child.id());
+                let _ = child.wait().await;
+            }
             let _ = exited_tx.send(Some(tokio::time::Instant::now() + DRAIN_TIMEOUT));
             let (stdout_kept, stdout_dropped) = stdout_task.await.unwrap_or_default();
             let (stderr_kept, stderr_dropped) = stderr_task.await.unwrap_or_default();
@@ -132,7 +156,7 @@ pub async fn run(command: &str, cwd: &std::path::Path) -> Result<(String, String
                 ));
             }
             return Ok((
-                format!("timed out after {} s", RUN_TIMEOUT.as_secs()),
+                format!("timed out after {} s", run_timeout.as_secs()),
                 cap(combined, MAX_OUTPUT_CHARS),
             ));
         }
@@ -171,6 +195,10 @@ const MAX_OUTPUT_BYTES: usize = MAX_OUTPUT_CHARS * 4;
 /// Wall-clock bound for a shell-mode command: long-running servers are a
 /// timeout result, not an interactive-session wedge.
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long a command that outlived `RUN_TIMEOUT` has to leave once asked
+/// (TERM) before it is killed.
+const TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How long the output readers keep waiting once the command itself has
 /// exited.
@@ -263,6 +291,48 @@ pub fn transcript_message(command: &str, status: &str, output: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Found in the review: the bound was a bare kill, so a program waiting
+    /// on the user (`!git commit` in its editor) never released what it held
+    /// — git's `index.lock` stayed behind. It is asked to leave first.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timed_out_command_is_asked_to_leave_before_it_is_killed() {
+        let cwd = std::env::temp_dir();
+        let (status, output) = run_bounded(
+            "trap 'echo cleaned; exit 0' TERM; sleep 30",
+            &cwd,
+            std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .expect("the command runs");
+        assert!(status.contains("timed out"), "{status}");
+        assert!(
+            output.contains("cleaned"),
+            "TERM reached the command before KILL: {output:?}"
+        );
+    }
+
+    /// One that ignores TERM is still killed once the grace passes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_that_ignores_term_is_killed_after_the_grace() {
+        let cwd = std::env::temp_dir();
+        let (status, _output) = tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            run_bounded(
+                r#"trap '' TERM; sh -c "trap '' TERM; exec sleep 30""#,
+                &cwd,
+                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(300),
+            ),
+        )
+        .await
+        .expect("the grace ends the wait")
+        .expect("the command runs");
+        assert!(status.contains("timed out"), "{status}");
+    }
+
     /// Found in the review: a command that backgrounds a job left the orphan
     /// holding the pipes, and the reader joins waited for its EOF — the
     /// prompt never came back.

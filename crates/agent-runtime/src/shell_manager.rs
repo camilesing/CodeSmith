@@ -114,17 +114,16 @@ pub enum ShellChild {
     Pty(Box<dyn portable_pty::Child + Send>),
 }
 
-/// Kill the process group led by `pid` (the child must have been spawned
-/// with `process_group(0)`). ESRCH is tolerated — the group may already
-/// be gone. Unlike [`kill_child_process_group`] there is no child handle
-/// to fall back to, so other errors propagate to the caller.
+/// Send `signal` to the process group led by `pid` (the child must have
+/// been spawned with `process_group(0)`). ESRCH is tolerated — the group
+/// may already be gone; other errors propagate to the caller.
 #[cfg(unix)]
-pub fn kill_process_group_of(pid: u32) -> std::io::Result<()> {
+pub fn signal_process_group_of(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
     let pgid = pid as libc::pid_t;
     if pgid <= 0 {
         return Ok(());
     }
-    let result = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    let result = unsafe { libc::kill(-pgid, signal) };
     if result == 0 {
         Ok(())
     } else {
@@ -135,6 +134,29 @@ pub fn kill_process_group_of(pid: u32) -> std::io::Result<()> {
             Err(err)
         }
     }
+}
+
+/// Kill the process group led by `pid` (the child must have been spawned
+/// with `process_group(0)`). ESRCH is tolerated — the group may already
+/// be gone. Unlike [`kill_child_process_group`] there is no child handle
+/// to fall back to, so other errors propagate to the caller.
+#[cfg(unix)]
+pub fn kill_process_group_of(pid: u32) -> std::io::Result<()> {
+    signal_process_group_of(pid, libc::SIGKILL)
+}
+
+/// Ask the process group led by `pid` to terminate (`SIGTERM`): what a
+/// program waiting on the user needs in order to release what it holds — a
+/// lock file, an editor session — before a kill is escalated to. ESRCH is
+/// tolerated and errors ignored (best effort). Non-unix no-op: only the
+/// direct child can be signalled there.
+pub fn terminate_process_group_of_opt(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        let _ = signal_process_group_of(pid, libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 /// Grace period a sync reader thread gets to finish after the child has
