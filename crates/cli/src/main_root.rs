@@ -5482,7 +5482,17 @@ pub(crate) fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path)
         // sessions`, then clear it so the next launch in this folder doesn't
         // re-trip the nag. Print a one-line notice pointing at the explicit
         // resume command — but DO NOT auto-load the session here.
-        let _ = manager.save_session(&session);
+        // Clear only once the session is on disk: the save is the largest
+        // write the store makes (a full disk is the ordinary failure) and
+        // deleting the checkpoint needs no space — cleared first, the
+        // transcript was lost and the note below advertised a session that
+        // was never written.
+        if let Err(err) = manager.save_session(&session) {
+            eprintln!(
+                "warning: could not preserve the interrupted session snapshot; it stays available for `codesmith --continue` (from its workspace): {err}"
+            );
+            return None;
+        }
         let _ = manager.clear_checkpoint();
         eprintln!(
             "Note: an interrupted session from another workspace ({}) is \
@@ -5523,7 +5533,17 @@ pub(crate) fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspa
     };
 
     let session_workspace = session.metadata.workspace.clone();
-    let _ = manager.save_session(&session);
+    // Clear only once the session is on disk: the save is the largest
+    // write the store makes (a full disk is the ordinary failure) and
+    // deleting the checkpoint needs no space — cleared first, the
+    // transcript was lost and the advertised `codesmith --continue` had
+    // nothing to resume.
+    if let Err(err) = manager.save_session(&session) {
+        eprintln!(
+            "warning: could not preserve the interrupted session snapshot; it stays available for `codesmith --continue`: {err}"
+        );
+        return;
+    }
     let _ = manager.clear_checkpoint();
 
     let age_str = checkpoint_age_label(age);
@@ -8352,6 +8372,46 @@ mod setup_helper_tests {
             assert!(
                 manager.load_session(&session_id).is_ok(),
                 "normal launch should keep an explicit resume target"
+            );
+        });
+    }
+
+    /// Found in the review: the checkpoint was cleared whether or not the
+    /// session save succeeded — and the save is the largest write the store
+    /// makes, so a full disk is the ordinary failure. The transcript was
+    /// lost and the advertised `codesmith --continue` had nothing to resume.
+    #[test]
+    fn plain_launch_keeps_the_checkpoint_when_the_session_cannot_be_saved() {
+        let _guard = codesmith_agent_runtime::test_support::lock_test_env();
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        with_home(tmp.path(), || {
+            let manager = FileSessionStore::default_location().expect("manager");
+            let messages = vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "in flight".to_string(),
+                    cache_control: None,
+                }],
+            }];
+            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
+            let session_id = session.metadata.id.clone();
+            manager.save_checkpoint(&session).expect("save checkpoint");
+            // A directory where the session file goes: the save's atomic
+            // rename onto it fails.
+            std::fs::create_dir_all(manager.sessions_dir().join(format!("{session_id}.json")))
+                .unwrap();
+
+            preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
+
+            assert!(
+                manager
+                    .load_checkpoint()
+                    .expect("load checkpoint")
+                    .is_some(),
+                "the checkpoint must survive a failed save — it is the only copy"
             );
         });
     }
