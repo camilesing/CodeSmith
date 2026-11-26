@@ -66,16 +66,30 @@ fn build_saved_session(state: &ReplState) -> codesmith_session::store::SavedSess
 
 /// `/save [path]` — save the session to a file (managed dir by default).
 pub fn save(state: &mut ReplState, path: Option<&str>) {
+    let session = build_saved_session(state);
     let save_path = match path {
         Some(p) => std::path::PathBuf::from(p),
+        // The managed store, the way the turn-boundary autosave writes it
+        // (`<id>.json`, stamped with the journal size). `/save` used to
+        // write `session_<timestamp>.json` beside it: two files for one
+        // id — listed twice, resumed ambiguously — and every later autosave
+        // updated only one of them.
         None => {
-            let dir = codesmith_session::store::default_sessions_dir()
-                .unwrap_or_else(|_| state.workspace.clone());
-            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            dir.join(format!("session_{timestamp}.json"))
+            let saved = codesmith_session::store::FileSessionStore::default_location()
+                .and_then(|manager| manager.save_session(&session));
+            return match saved {
+                Ok(saved_path) => {
+                    state.current_session_id = Some(session.metadata.id.clone());
+                    println!(
+                        "session saved to {} (ID: {})",
+                        saved_path.display(),
+                        truncate_id(&session.metadata.id)
+                    );
+                }
+                Err(e) => println!("{} failed to save session: {e}", "✗".red()),
+            };
         }
     };
-    let session = build_saved_session(state);
     let sessions_dir = save_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -94,13 +108,10 @@ pub fn save(state: &mut ReplState, path: Option<&str>) {
     };
     match codesmith_agent_runtime::utils::write_atomic(&save_path, json.as_bytes()) {
         Ok(()) => {
-            // Only a save into the managed store produces a resolvable id:
-            // `load_session` resolves ids inside the sessions dir, so
-            // adopting the fresh UUID for a caller-supplied path left
-            // `/rename`, `/sessions`, and prefix resume pointing at nothing.
-            if path.is_none() {
-                state.current_session_id = Some(session.metadata.id.clone());
-            }
+            // No id adoption for a caller-supplied path: `load_session`
+            // resolves ids inside the sessions dir, so adopting the fresh
+            // UUID left `/rename`, `/sessions`, and prefix resume pointing
+            // at nothing.
             println!(
                 "session saved to {} (ID: {})",
                 save_path.display(),
@@ -1031,6 +1042,37 @@ mod tests {
         assert_eq!(saved.metadata.cost.subagent_cost_cny, 0.5);
         assert_eq!(saved.metadata.cumulative_turn_secs, 9);
         assert_eq!(saved.failed_attempts.len(), 1, "failed attempts persist");
+    }
+
+    /// Found in the review: `/save` wrote `session_<timestamp>.json` and
+    /// adopted the id; every later turn-boundary autosave then wrote
+    /// `<id>.json` — two files for one session.
+    #[test]
+    fn save_without_a_path_leaves_one_file_after_the_next_autosave() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        state.api_messages = Arc::new(vec![user_message("hello save")]);
+
+        save(&mut state, None);
+        let manager = FileSessionStore::default_location().expect("session store");
+        // What the next turn boundary writes: the same session id, through
+        // the store.
+        let id = state
+            .current_session_id
+            .clone()
+            .expect("a managed save adopts the id");
+        let saved = manager
+            .load_session(&id)
+            .expect("the id resolves to a file");
+        manager.save_session(&saved).expect("autosave");
+
+        let files: Vec<_> = std::fs::read_dir(manager.sessions_dir())
+            .expect("sessions dir")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        assert_eq!(files.len(), 1, "one session, one file: {files:?}");
     }
 
     /// A caller-supplied path is honored (parents created) and deliberately
