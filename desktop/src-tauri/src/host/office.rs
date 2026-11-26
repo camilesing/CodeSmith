@@ -143,7 +143,12 @@ async fn render_inner(host: &HostState, args: &Value) -> Result<(Value, Vec<u8>)
             format!("render: {path} is over the conversion cap"),
         ));
     }
-    let Some(soffice) = resolve_soffice() else {
+    // Resolving stats the PATH and the bundle: blocking work, kept off the
+    // async worker the way the conversion below is.
+    let Some(soffice) = tokio::task::spawn_blocking(resolve_soffice)
+        .await
+        .map_err(|err| RenderFail::new("failed", format!("render join: {err}")))?
+    else {
         return Err(RenderFail::new(
             "unavailable",
             "render: no LibreOffice (soffice) on this host",
