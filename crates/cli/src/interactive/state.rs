@@ -70,9 +70,7 @@ use codesmith_session::store::FileSessionStore;
 ///   the queue, not past inputs) and no completion: Tab is `complete` only
 ///   at the prompt. A message typed mid-turn reaches the model when the tool
 ///   call it waited on finishes, or as the next turn if the turn ends first.
-/// - The composer's cursor sits on one terminal row: a message long enough to
-///   wrap is edited blind past the first row, and the mid-turn kill keys have
-///   no kill ring (no Ctrl+Y mid-turn).
+/// - The mid-turn kill keys have no kill ring (no Ctrl+Y mid-turn).
 pub struct ReplState {
     pub mode: AppMode,
     /// Session cost/token telemetry (mirrors the retired `App.session`).
