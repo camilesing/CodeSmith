@@ -112,11 +112,10 @@ pub fn timing_to_rrule(timing: &Value) -> Result<String> {
 /// The rule's clock fields, accepted only in the machine's own zone (the
 /// scheduler evaluates BYHOUR/BYMINUTE locally; a foreign zone would drift
 /// with its DST). Seconds truncate to the minute — the grammar has none.
-fn local_time(timing: &Value, pointer: &str) -> Result<(u32, u32)> {
-    let time = timing
-        .pointer(&format!("{pointer}/time"))
-        .and_then(Value::as_str)
-        .unwrap_or("00:00");
+/// A timing's named zone must keep the machine's clock (the scheduler
+/// evaluates BYHOUR/BYMINUTE locally; a foreign zone would drift with its
+/// DST). An absent or empty zone is the machine's own.
+fn check_zone(timing: &Value, pointer: &str) -> Result<()> {
     let zone = timing
         .pointer(&format!("{pointer}/time_zone"))
         .and_then(Value::as_str)
@@ -132,6 +131,15 @@ fn local_time(timing: &Value, pointer: &str) -> Result<(u32, u32)> {
             );
         }
     }
+    Ok(())
+}
+
+fn local_time(timing: &Value, pointer: &str) -> Result<(u32, u32)> {
+    let time = timing
+        .pointer(&format!("{pointer}/time"))
+        .and_then(Value::as_str)
+        .unwrap_or("00:00");
+    check_zone(timing, pointer)?;
     let (hour, minute, second) = parse_hms(time)?;
     if second != 0 {
         // Truncate rather than shift: 09:30:30 fires at 09:30.
@@ -324,6 +332,11 @@ fn check_dtstart_zone(rule: &str) -> Result<()> {
 /// fixed clock on chosen weekdays becomes WEEKLY, a whole-hour cadence
 /// becomes HOURLY, anything else fails loud.
 fn cron_to_rule(timing: &Value) -> Result<String> {
+    // The page shows a zone row for a custom cron expression; the compile
+    // reads the machine's clock, so a named zone must keep it (found in the
+    // desktop: it was ignored, and the task ran at its wall clock in the
+    // machine's zone instead — hours off — with a success reply).
+    check_zone(timing, "/cron")?;
     let expression = timing
         .pointer("/cron/expression")
         .and_then(Value::as_str)
@@ -932,6 +945,31 @@ mod tests {
             "kind": "cron", "cron": { "expression": "@daily" }
         }));
         assert!(named.is_err(), "named cron expressions fail loud");
+    }
+
+    /// Found in the desktop: a cron picked with a foreign zone compiled into
+    /// a machine-local clock — hours off the requested one — with a success
+    /// reply, while every other timing kind refused it.
+    #[test]
+    fn cron_timing_refuses_a_foreign_zone() {
+        let cron = |zone: &str| {
+            timing_to_rrule(&json!({
+                "kind": "cron",
+                "cron": { "expression": "0 9 * * 1-5", "time_zone": zone },
+            }))
+        };
+        let refused =
+            cron(&zone_offset_apart_from_local()).expect_err("a foreign clock must fail loud");
+        assert!(refused.to_string().contains("local zone"), "{refused:#}");
+        assert!(
+            cron("Mars/Olympus").is_err(),
+            "an unknown zone must fail loud"
+        );
+        assert_eq!(
+            cron("").unwrap(),
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0",
+            "the machine's own zone still compiles"
+        );
     }
 
     #[test]
