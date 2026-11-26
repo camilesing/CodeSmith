@@ -19,7 +19,10 @@ replace_tool(#{ name: "grep_files" }, |input, ctx| {
     }
     // Normalize include globs: comma-separated entries split; brace
     // groups pass through verbatim so `{ts,tsx}` stays one glob.
-    if "include" in input {
+    // Only an array is normalized. A string or null there is off-schema
+    // and the incumbent parses it defensively (`as_array`); raising on it
+    // turned a call the incumbent absorbed into a tool error.
+    if input.include.type_of() == "array" {
         let normalized = [];
         for glob in input.include {
             if glob.contains("{") {

@@ -5268,6 +5268,23 @@ mod tests {
             }
             other => panic!("expected Delegate(Some), got {other:?}"),
         }
+
+        // Off-schema `include` (a string, null) passes through unchanged:
+        // the incumbent parses it defensively, so the guard must not raise.
+        for include in [serde_json::json!("*.rs"), serde_json::json!(null)] {
+            let out = rt
+                .block_on(repl.1.execute(
+                    serde_json::json!({"pattern": "TODO", "include": include.clone()}),
+                    &*ctx,
+                ))
+                .unwrap_or_else(|err| panic!("include={include} must not raise: {err}"));
+            match out {
+                codesmith_agent::extension::ReplacementOutcome::Delegate(Some(v)) => {
+                    assert_eq!(v["include"], include);
+                }
+                other => panic!("expected Delegate(Some) for include={include}, got {other:?}"),
+            }
+        }
     }
 
     /// edit-input-guard: identical search/replace and a disproportionate
