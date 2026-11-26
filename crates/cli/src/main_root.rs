@@ -7042,7 +7042,9 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         args.name,
         turn_status.as_deref().unwrap_or("unknown"),
     );
-    let _ = write_to_mailbox(
+    // A lost completion must not pass silently: the member is still
+    // marked inactive below, but the pane is told the lead heard nothing.
+    if let Err(err) = write_to_mailbox(
         lead,
         &args.team,
         TeammateMessage {
@@ -7053,7 +7055,9 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             color: member.color.clone(),
             summary: Some(format!("teammate {} complete", args.name)),
         },
-    );
+    ) {
+        eprintln!("warning: could not deliver the completion to the lead's mailbox: {err:#}");
+    }
     // One locked read-modify-write: an unguarded read→set_inactive→write
     // could erase a concurrent roster change from another agent process.
     if let Err(err) = with_team_file(&args.team, |tf| set_member_inactive(tf, &args.name)) {
