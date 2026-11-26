@@ -1664,6 +1664,25 @@ fn saved_session_from_state(state: &ReplState) -> Option<codesmith_session::stor
         state.system_prompt.as_ref(),
         Some(state.mode.label()),
     );
+    // Keep what only the stored record knows. The constructor derives the
+    // title from the first user message and stamps "now": saved under the
+    // existing id after every turn, that overwrote a `/rename` title, the
+    // creation time, a branch's lineage and the cost high-water marks (the
+    // `/rename` and `/branch` paths load, then update, for the same reason).
+    if let Some(session_id) = state.current_session_id.as_deref()
+        && let Ok(manager) = codesmith_session::store::FileSessionStore::default_location()
+        && let Ok(stored) = manager.load_session(session_id)
+    {
+        let metadata = &mut session.metadata;
+        metadata.title = stored.metadata.title;
+        metadata.created_at = stored.metadata.created_at;
+        metadata.parent_session_id = stored.metadata.parent_session_id;
+        metadata.forked_from_message_count = stored.metadata.forked_from_message_count;
+        metadata.cost.displayed_cost_high_water_usd =
+            stored.metadata.cost.displayed_cost_high_water_usd;
+        metadata.cost.displayed_cost_high_water_cny =
+            stored.metadata.cost.displayed_cost_high_water_cny;
+    }
     session.metadata.cost.session_cost_usd = state.session.session_cost;
     session.metadata.cost.session_cost_cny = state.session.session_cost_cny;
     session.metadata.cost.subagent_cost_usd = state.session.subagent_cost;
@@ -2403,6 +2422,61 @@ mod tests {
             }
         }
         result
+    }
+
+    /// Found in the review: the turn-boundary autosave rebuilt the record
+    /// from state, so after every turn a `/rename` title, the creation time, a
+    /// branch's lineage and the cost high-water marks were overwritten.
+    #[test]
+    fn turn_boundary_persist_keeps_what_only_the_stored_record_knows() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        with_home(&home, || {
+            let manager =
+                codesmith_session::store::FileSessionStore::default_location().expect("manager");
+            let mut state = test_repl_state();
+            state.api_messages = Arc::new(vec![crate::models::Message {
+                role: "user".to_string(),
+                content: vec![crate::models::ContentBlock::Text {
+                    text: "hello".to_string(),
+                    cache_control: None,
+                }],
+            }]);
+            state.current_session_id = Some("sess-kept".to_string());
+            persist_session_turn_boundary(&mut state);
+            let created_at = manager
+                .load_session("sess-kept")
+                .expect("saved")
+                .metadata
+                .created_at;
+
+            // What `/rename` and `/branch` leave in the stored record.
+            let mut stored = manager.load_session("sess-kept").expect("saved");
+            stored.metadata.title = "fix-login".to_string();
+            stored.metadata.parent_session_id = Some("sess-parent".to_string());
+            stored.metadata.forked_from_message_count = Some(3);
+            stored.metadata.cost.displayed_cost_high_water_usd = 2.5;
+            manager.save_session(&stored).expect("renamed");
+
+            persist_session_turn_boundary(&mut state);
+            let saved = manager.load_session("sess-kept").expect("saved again");
+            assert_eq!(
+                saved.metadata.title, "fix-login",
+                "a /rename title survives"
+            );
+            assert_eq!(
+                saved.metadata.created_at, created_at,
+                "creation time stands still"
+            );
+            assert_eq!(
+                saved.metadata.parent_session_id.as_deref(),
+                Some("sess-parent")
+            );
+            assert_eq!(saved.metadata.forked_from_message_count, Some(3));
+            assert_eq!(saved.metadata.cost.displayed_cost_high_water_usd, 2.5);
+        });
     }
 
     /// Round-7 TODO-48 — the turn-boundary persist re-mirrors the inbox
