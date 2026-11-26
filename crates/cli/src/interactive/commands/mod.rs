@@ -1663,6 +1663,37 @@ mod tests {
         }
     }
 
+    /// Found in the review: leaving Yolo hardcoded `Suggest`, so a user with
+    /// `approval_policy = "auto"` prompted on every gated call after one hop
+    /// through `/yolo` — the coordinator branch had been fixed for exactly
+    /// this, the Yolo branch not.
+    #[test]
+    fn leaving_yolo_restores_the_configured_approval_posture() {
+        let mut config = crate::config::Config::default();
+        config.approval_policy = Some("auto".to_string());
+        let mut state = ReplState::new(test_options(), &config);
+        assert_eq!(
+            state.approval_mode,
+            codesmith_agent_runtime::mode::ApprovalMode::Auto,
+            "startup derives the posture from config"
+        );
+        state.set_mode(AppMode::Yolo);
+        state.set_mode(AppMode::Agent);
+        assert_eq!(
+            state.approval_mode,
+            codesmith_agent_runtime::mode::ApprovalMode::Auto,
+            "the configured posture returns with the mode"
+        );
+        // Unset in config: the default posture, as at startup.
+        let mut plain = ReplState::new(test_options(), &crate::config::Config::default());
+        plain.set_mode(AppMode::Yolo);
+        plain.set_mode(AppMode::Agent);
+        assert_eq!(
+            plain.approval_mode,
+            codesmith_agent_runtime::mode::ApprovalMode::default()
+        );
+    }
+
     /// Dispatch-level integration for the builtin-disable seam: a disabled
     /// builtin refuses to run (the same seam `/help` and completion filter
     /// on) while an enabled one still dispatches. `/yolo` is the probe

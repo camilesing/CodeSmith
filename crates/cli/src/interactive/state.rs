@@ -512,6 +512,16 @@ impl ReplState {
         self.set_mode(next);
     }
 
+    /// The approval posture `approval_policy` selects in config (the
+    /// default when it is unset or unknown) — what a mode change restores.
+    fn configured_approval_mode(&self) -> ApprovalMode {
+        self.config
+            .approval_policy
+            .as_deref()
+            .and_then(ApprovalMode::from_config_value)
+            .unwrap_or_default()
+    }
+
     pub fn set_mode(&mut self, mode: AppMode) {
         if self.mode == mode {
             return;
@@ -549,12 +559,7 @@ impl ReplState {
             // kept losing it on every hop through coordinator mode.
             // `allow_shell` returns to its opted-out default, matching the
             // leaving_yolo convention.
-            self.approval_mode = self
-                .config
-                .approval_policy
-                .as_deref()
-                .and_then(ApprovalMode::from_config_value)
-                .unwrap_or_default();
+            self.approval_mode = self.configured_approval_mode();
             self.allow_shell = false;
         }
 
@@ -565,7 +570,10 @@ impl ReplState {
         } else if leaving_yolo {
             self.allow_shell = false;
             self.trust_mode = false;
-            self.approval_mode = ApprovalMode::Suggest;
+            // The config-derived posture again, as after coordinator mode:
+            // hardcoded `Suggest` made a user with `approval_policy = "auto"`
+            // prompt on every gated call after one hop through `/yolo`.
+            self.approval_mode = self.configured_approval_mode();
         }
 
         // `/status` prints this field, so it tracks the mode rather than the
