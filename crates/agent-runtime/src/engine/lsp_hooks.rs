@@ -47,10 +47,12 @@ pub fn edited_paths_for_tool(
 impl Engine {
     /// #136: post-edit hook. Inspects the tool name + input, derives the
     /// edited file path, and asks the LSP manager for diagnostics. The
-    /// rendered block is queued in `pending_lsp_blocks` and flushed to the
-    /// session message stream just before the next API request. Failure is
-    /// silent by design — a missing/crashing LSP server must never block
-    /// the agent.
+    /// rendered block is queued in `pending_lsp_blocks`, drained by
+    /// [`Self::flush_pending_lsp_diagnostics`]. Engine-level tests drive
+    /// this pair; inside a turn the live post-edit flush is the executor's
+    /// `LspProbe` (`engine/turn/postprocess.rs`), which mirrors this logic
+    /// and reaches the model before the next request. Failure is silent by
+    /// design — a missing/crashing LSP server must never block the agent.
     pub async fn run_post_edit_lsp_hook(
         &mut self,
         tool_name: &str,
@@ -88,7 +90,8 @@ impl Engine {
 
     /// Drain `pending_lsp_blocks` into a single synthetic user message so the
     /// model sees the diagnostics on its next request. Skips when nothing is
-    /// pending. The message uses the standard `text` content block shape
+    /// pending. Test-facing: a turn's own diagnostics never queue here (the
+    /// executor's `LspProbe` flushes them itself). The message uses the standard `text` content block shape
     /// (the same shape as the post-tool steer messages) so we don't need to
     /// invent a new envelope.
     pub async fn flush_pending_lsp_diagnostics(&mut self) {

@@ -293,8 +293,10 @@ pub struct Engine {
     /// another turn (queued behind a synthesized one) is already running.
     /// Surfaced through `EngineHandle::turn_in_flight`.
     pub(crate) turn_in_flight: Arc<AtomicBool>,
-    /// Diagnostics collected during the current step's tool calls. Drained
-    /// and forwarded as a synthetic user message before the next API call.
+    /// Diagnostics collected by [`Engine::run_post_edit_lsp_hook`] (engine-
+    /// level tests only: a turn's live flush is the executor's `LspProbe`).
+    /// Drained by `flush_pending_lsp_diagnostics` into one synthetic user
+    /// message.
     pub pending_lsp_blocks: Vec<crate::lsp_diagnostics::DiagnosticBlock>,
     /// P3-8 result claim verifier: verdicts produced by the post-turn
     /// background check ("model claimed tests pass — re-run says exit 1").
