@@ -1109,7 +1109,7 @@ pub async fn resume_session(
 /// Known limitation: every rebuild is an O(transcript) full fold; incremental
 /// projection checkpoints are deliberately not built (round-3 plan §2.1) —
 /// revisit only if long-session resume cost is observed as a problem.
-async fn restore_engine_backed_session_state(
+pub(super) async fn restore_engine_backed_session_state(
     state: &mut ReplState,
     session: &codesmith_session::store::SavedSession,
 ) {

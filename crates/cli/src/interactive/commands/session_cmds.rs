@@ -395,6 +395,10 @@ async fn adopt_loaded_session(
     session: codesmith_session::store::SavedSession,
 ) {
     state.api_messages = Arc::new(session.messages.clone());
+    // The todo/plan projections and the engine's fact ledger are rebuilt
+    // from the loaded transcript. Skipped, the previous conversation's list
+    // and plan rode along into this one — the tools share these Arcs.
+    super::super::state::restore_engine_backed_session_state(state, &session).await;
     state.set_model_selection(session.metadata.model.clone());
     // A session file is user-named input (shared, shipped in a repo,
     // hand-edited): its stored workspace must exist AND pass the gate `/cd`
@@ -1396,6 +1400,64 @@ mod tests {
             state.current_session_id.as_deref(),
             Some("byname-9"),
             "the title match wins when no id prefix matches"
+        );
+    }
+
+    /// Found in the review: `/load other.json` switched the transcript but
+    /// left `state.todos` as the previous conversation's — the todo and plan
+    /// tools share those Arcs, so the next turn saw the old list.
+    #[tokio::test]
+    async fn load_rebuilds_the_todo_projection_from_the_loaded_transcript() {
+        use crate::models::ContentBlock;
+        let tool_result = |id: &str| Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "ok".to_string(),
+                is_error: Some(false),
+                content_blocks: None,
+            }],
+        };
+        let todo_write = |id: &str, content: &str| Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: "todo_write".to_string(),
+                input: serde_json::json!({
+                    "todos": [{"content": content, "status": "pending"}]
+                }),
+                caller: None,
+            }],
+        };
+        let ws = tempfile::tempdir().expect("tempdir");
+        let mut loaded = saved_with_failed_attempt();
+        loaded.metadata.id = "todos-1".to_string();
+        loaded.metadata.workspace = ws.path().to_path_buf();
+        loaded.messages = vec![todo_write("t1", "loaded item"), tool_result("t1")];
+        let mut state = test_repl_state();
+        state.workspace = ws.path().to_path_buf();
+        // The previous conversation's list.
+        *state.todos.lock().await =
+            codesmith_agent_runtime::tool_state::todo::TodoList::rebuild_from_messages(&[
+                todo_write("old", "stale item"),
+                tool_result("old"),
+            ]);
+
+        adopt_loaded_session(&mut state, loaded).await;
+
+        let contents: Vec<String> = state
+            .todos
+            .lock()
+            .await
+            .snapshot()
+            .items
+            .into_iter()
+            .map(|item| item.content)
+            .collect();
+        assert_eq!(
+            contents,
+            ["loaded item"],
+            "rebuilt from the loaded transcript"
         );
     }
 
