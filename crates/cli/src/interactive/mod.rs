@@ -273,7 +273,7 @@ pub async fn run_repl(
     // Round-7 TODO-48 — harvest orphan inbox journals: queued input from a
     // session that crashed before its first persist is offered into this
     // session's queue; journals whose session file is long gone are dropped.
-    let harvested = inbox_journal::harvest_orphans_at_default_location(&mut state);
+    let harvested = inbox_journal::harvest_orphans_at_default_location(&mut state).await;
     if harvested > 0 {
         println!(
             "{}",

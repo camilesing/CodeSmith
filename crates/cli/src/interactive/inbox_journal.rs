@@ -203,7 +203,7 @@ impl InboxJournal {
 /// Returns whether the entry is durably journaled — callers that delete
 /// another durable copy (the orphan sweep) must only do so when this is
 /// true for every entry.
-pub(crate) fn journal_enqueue(state: &mut super::state::ReplState, text: &str) -> bool {
+pub(crate) async fn journal_enqueue(state: &mut super::state::ReplState, text: &str) -> bool {
     let id = state
         .current_session_id
         .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
@@ -211,7 +211,14 @@ pub(crate) fn journal_enqueue(state: &mut super::state::ReplState, text: &str) -
     let Some(journal) = default_journal(&id) else {
         return false;
     };
-    if let Err(err) = journal.append(text) {
+    // The append is a write + fsync (and a directory fsync on first
+    // creation). On the runtime it held the event loop — key taps, the
+    // status ticker and Ctrl+C — for as long as the disk took: a visible
+    // stall per queued message on a network-backed home directory.
+    let text = text.to_string();
+    let appended = tokio::task::spawn_blocking(move || journal.append(&text)).await;
+    let appended = appended.unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    if let Err(err) = appended {
         println!(
             "{}",
             format!("warning: could not persist the queued message to the inbox journal: {err}")
@@ -251,7 +258,7 @@ pub(crate) fn mirror_after_persist(state: &super::state::ReplState, sessions_dir
 
 /// Seed the queue from a resumed session's journal. Returns the number of
 /// restored entries.
-pub(crate) fn adopt_for_resume(
+pub(crate) async fn adopt_for_resume(
     state: &mut super::state::ReplState,
     sessions_dir: &Path,
     session_id: &str,
@@ -259,7 +266,24 @@ pub(crate) fn adopt_for_resume(
     let Some(journal) = InboxJournal::for_session(sessions_dir, session_id) else {
         return 0;
     };
-    let contents = journal.load();
+    // The read runs on the blocking pool: a resume read the whole journal
+    // inline on the runtime.
+    let contents = tokio::task::spawn_blocking(move || journal.load()).await;
+    let contents = contents.unwrap_or_else(|err| {
+        println!(
+            "{}",
+            format!(
+                "warning: could not read the inbox journal for session {}: {err}",
+                codesmith_session::store::truncate_id(session_id)
+            )
+            .yellow()
+        );
+        JournalContents {
+            entries: Vec::new(),
+            corrupt: 0,
+            unreadable: true,
+        }
+    });
     if contents.corrupt > 0 {
         println!(
             "{}",
@@ -435,7 +459,9 @@ pub(crate) fn sweep_orphans(sessions_dir: &Path) -> Vec<OrphanHarvest> {
 /// Startup sweep at the default location: harvest recent orphan entries into
 /// the live session's queue, re-journaled under the current id so they keep
 /// the same crash-durability contract. Returns the harvested count.
-pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::ReplState) -> usize {
+pub(crate) async fn harvest_orphans_at_default_location(
+    state: &mut super::state::ReplState,
+) -> usize {
     let manager = match codesmith_session::store::FileSessionStore::default_location() {
         Ok(manager) => manager,
         Err(err) => {
@@ -447,7 +473,12 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
             return 0;
         }
     };
-    let harvested = sweep_orphans(manager.sessions_dir());
+    // The sweep lists the sessions directory and reads every orphan journal:
+    // on the blocking pool. Each harvested entry is then re-journaled
+    // through `journal_enqueue`, which offloads its own fsync.
+    let sessions_dir = manager.sessions_dir().to_path_buf();
+    let swept = tokio::task::spawn_blocking(move || sweep_orphans(&sessions_dir)).await;
+    let harvested = swept.unwrap_or_default();
     let count = harvested
         .iter()
         .map(|orphan| orphan.entries.len())
@@ -455,7 +486,7 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
     for orphan in harvested {
         let mut all_durable = true;
         for text in orphan.entries {
-            if !journal_enqueue(state, &text) {
+            if !journal_enqueue(state, &text).await {
                 all_durable = false;
             }
             state.queued_messages.push(text);
@@ -463,7 +494,7 @@ pub(crate) fn harvest_orphans_at_default_location(state: &mut super::state::Repl
         // The orphan file is the sole durable copy until every entry is
         // re-journaled under the current id ("duplicates, never loss") —
         // a partial failure keeps it for the next sweep to retry.
-        if all_durable && let Err(err) = std::fs::remove_file(&orphan.path) {
+        if all_durable && let Err(err) = tokio::fs::remove_file(&orphan.path).await {
             tracing::warn!(target: "codesmith::inbox", %err, "orphan inbox journal cleanup failed");
         }
     }

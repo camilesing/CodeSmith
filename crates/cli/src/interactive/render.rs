@@ -1353,7 +1353,7 @@ async fn handle_turn_key(
             // Round-7 TODO-48 — queue text is durable the moment it is
             // queued (after clear_live, so the failure warning can never
             // share a row with the live region).
-            super::inbox_journal::journal_enqueue(state, &text);
+            super::inbox_journal::journal_enqueue(state, &text).await;
         }
         TurnKey::SendNow => {
             let text = view.composer.take();
@@ -1364,7 +1364,7 @@ async fn handle_turn_key(
                 // deliver it: the entry outlives the steer attempt (a
                 // failed steer re-queues the text) and is dropped only when
                 // the turn that consumed it persists.
-                super::inbox_journal::journal_enqueue(state, &text);
+                super::inbox_journal::journal_enqueue(state, &text).await;
             }
             flush_queue_into_turn(state, view, engine).await;
         }
@@ -2561,13 +2561,13 @@ mod tests {
     /// session crashed before the first persist) seeds the fresh queue and
     /// is re-journaled under the live session id; a stale orphan is just
     /// deleted.
-    #[test]
-    fn harvest_orphans_seeds_queue_and_rejournals() {
+    #[tokio::test]
+    async fn harvest_orphans_seeds_queue_and_rejournals() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
-        with_home(&home, || {
+        with_home_async(&home, async {
             let manager =
                 codesmith_session::store::FileSessionStore::default_location().expect("manager");
             let sessions_dir = manager.sessions_dir().to_path_buf();
@@ -2596,7 +2596,8 @@ mod tests {
 
             let mut state = test_repl_state();
             let harvested =
-                crate::interactive::inbox_journal::harvest_orphans_at_default_location(&mut state);
+                crate::interactive::inbox_journal::harvest_orphans_at_default_location(&mut state)
+                    .await;
             assert_eq!(harvested, 1, "only the fresh orphan is harvested");
             assert_eq!(
                 state.queued_messages,
@@ -2613,7 +2614,8 @@ mod tests {
                 vec!["typed during the crash".to_string()],
                 "harvested text is re-journaled under the live session id"
             );
-        });
+        })
+        .await;
     }
 
     /// Round-3 TODO-42 — the turn-boundary persist copies the session's

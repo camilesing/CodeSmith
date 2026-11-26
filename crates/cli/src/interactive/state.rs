@@ -1059,7 +1059,8 @@ pub async fn resume_session(
         state,
         manager.sessions_dir(),
         &saved_id,
-    );
+    )
+    .await;
     if restored > 0 {
         println!("⏸ restored {restored} queued message(s) from the inbox journal");
     }
@@ -1154,8 +1155,8 @@ mod restore_tests {
     /// queued mid-turn before a crash reappears in the queue. Baseline
     /// (pre-fix) the journal file existed but nothing read it, so the queue
     /// resumed empty.
-    #[test]
-    fn adopt_for_resume_seeds_the_queue_from_the_journal() {
+    #[tokio::test]
+    async fn adopt_for_resume_seeds_the_queue_from_the_journal() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let journal =
@@ -1187,7 +1188,8 @@ mod restore_tests {
             &mut state,
             tmp.path(),
             "sess-inbox",
-        );
+        )
+        .await;
         assert_eq!(restored, 2, "both journal entries are adopted");
         assert_eq!(
             state.queued_messages,
