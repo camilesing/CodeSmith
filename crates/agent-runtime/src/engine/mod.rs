@@ -3575,7 +3575,8 @@ impl Engine {
     /// Produce the model-curated `<carry_forward>` briefing for a cycle
     /// handoff. Prefers the Flash seam manager (#159) for cost and speed; falls
     /// back to the main model (legacy [`produce_briefing`]) when the seam
-    /// manager isn't available or its call fails.
+    /// manager isn't available, holds no seam (nothing of the conversation
+    /// would reach the briefing), or its call fails.
     async fn produce_cycle_briefing(
         &self,
         client: &LlmClientHandle,
@@ -3584,38 +3585,46 @@ impl Engine {
     ) -> Result<String> {
         if let Some(seam_mgr) = self.host.seam() {
             let seams = seam_mgr.collect_seam_texts(&self.session.messages).await;
-            let state_text = {
-                // Snapshot the working set out of the lock —
-                // `capture_structured_state` is async and a `std::sync::Mutex`
-                // guard isn't `Send`, so it can't cross the `.await`. The clone
-                // is a correct point-in-time snapshot (this is the cycle-restart
-                // path, rare).
-                let ws_snapshot = self
-                    .session
-                    .working_set
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                self.host
-                    .capture_structured_state(StructuredStateRequest {
-                        mode_label: mode.label(),
-                        workspace: self.config.workspace.clone(),
-                        // Session cwd, not the process launch directory —
-                        // the briefing text is model-visible state.
-                        cwd: Some(self.session.cwd.clone()),
-                        working_set: &ws_snapshot,
-                        todos: &self.config.todos,
-                        plan_state: &self.config.plan_state,
-                    })
+            // The Flash path briefs from the archived seams plus the
+            // structured state. With no seam there is nothing of the
+            // conversation in it — and the only seam producer
+            // (`layered_context_checkpoint`) has no caller — so the
+            // legacy main-model briefing, which reads the transcript,
+            // stays the path.
+            if !seams.is_empty() {
+                let state_text = {
+                    // Snapshot the working set out of the lock —
+                    // `capture_structured_state` is async and a `std::sync::Mutex`
+                    // guard isn't `Send`, so it can't cross the `.await`. The clone
+                    // is a correct point-in-time snapshot (this is the cycle-restart
+                    // path, rare).
+                    let ws_snapshot = self
+                        .session
+                        .working_set
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    self.host
+                        .capture_structured_state(StructuredStateRequest {
+                            mode_label: mode.label(),
+                            workspace: self.config.workspace.clone(),
+                            // Session cwd, not the process launch directory —
+                            // the briefing text is model-visible state.
+                            cwd: Some(self.session.cwd.clone()),
+                            working_set: &ws_snapshot,
+                            todos: &self.config.todos,
+                            plan_state: &self.config.plan_state,
+                        })
+                        .await
+                };
+                match seam_mgr
+                    .produce_flash_briefing(&seams, state_text.as_deref())
                     .await
-            };
-            match seam_mgr
-                .produce_flash_briefing(&seams, state_text.as_deref())
-                .await
-            {
-                Ok(text) => return Ok(text),
-                Err(err) => {
-                    tracing::warn!("Flash briefing failed, falling back to main model: {err}");
+                {
+                    Ok(text) => return Ok(text),
+                    Err(err) => {
+                        tracing::warn!("Flash briefing failed, falling back to main model: {err}");
+                    }
                 }
             }
         }

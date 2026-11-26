@@ -6052,6 +6052,83 @@ async fn sync_session_without_a_prompt_keeps_the_assembled_system_prompt() {
     );
 }
 
+/// A session with no archived seam — every session today, since the only
+/// seam producer has no caller — gets the conversation-aware briefing. The
+/// Flash path briefs from seams plus structured state and used to be taken
+/// anyway, so the briefing never saw the conversation.
+#[tokio::test]
+async fn cycle_briefing_of_a_seamless_session_reads_the_conversation() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let main = Arc::new(MockLlmClient::new(vec![
+        canned::simple_text_turn("the answer mentions a warp core breach"),
+        canned::simple_text_turn("briefing: the warp core breach is contained"),
+    ]));
+    let flash = Arc::new(MockLlmClient::new(Vec::new()));
+    // A canned Flash answer, so a Flash call would succeed and be counted.
+    flash.push_message_response(codesmith_agent::models::MessageResponse {
+        id: "flash".to_string(),
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "FLASH BRIEFING".to_string(),
+            cache_control: None,
+        }],
+        model: "mock-model".to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: codesmith_agent::models::Usage::default(),
+    });
+    let mut config = test_engine_config(tmp.path());
+    config.cycle.enabled = true;
+    config.cycle.threshold_tokens = 1;
+    let host = crate::core::engine::EngineHost {
+        seam_manager: Some(crate::seam_manager::SeamManager::new(
+            flash.clone(),
+            crate::seam_manager::SeamConfig::default(),
+        )),
+        ..Default::default()
+    };
+    let client: LlmClientHandle = main.clone();
+    let (engine, handle) =
+        crate::core::engine::build_engine(config, &Config::default(), Some(client), host);
+    tokio::spawn(async move { engine.run().await });
+
+    handle.send(make_send_op("status?")).await.expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+    let advanced = events
+        .iter()
+        .any(|e| matches!(e, Event::CycleAdvanced { .. }))
+        || {
+            // The handoff may trail TurnComplete.
+            let mut rx = handle.rx_event.write().await;
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while let Some(event) = rx.recv().await {
+                    if matches!(event, Event::CycleAdvanced { .. }) {
+                        return true;
+                    }
+                }
+                false
+            })
+            .await
+            .unwrap_or(false)
+        };
+    assert!(advanced, "the cycle handoff ran");
+
+    assert_eq!(
+        flash.call_count(),
+        0,
+        "a seam-less session does not brief from the structured state alone"
+    );
+    assert_eq!(main.call_count(), 2, "the turn, then one briefing request");
+    let requests = main.captured_requests();
+    assert!(
+        format!("{:?}", requests[1].messages).contains("warp core breach"),
+        "the briefing request carries the conversation"
+    );
+}
+
 // === Cycle-trigger regression: window smaller than the flat reserve ========
 
 /// A model whose context window is smaller than the flat turn-response
