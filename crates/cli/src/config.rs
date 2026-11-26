@@ -4836,7 +4836,13 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn apply_requirements(config: &mut Config) -> Result<()> {
+/// The host's requirements allowlists, on the values the config holds now.
+/// `Config::load` runs them once over user + env + managed values; every
+/// later startup fold that can set the approval policy or the sandbox mode —
+/// the `--approval-policy` / `--sandbox-mode` flags, the project overlay, a
+/// preset tier — runs them again, so the allowlists always see the final
+/// result (CONFIGURATION.md: "can reject the final result at startup").
+pub(crate) fn apply_requirements(config: &mut Config) -> Result<()> {
     let path = config
         .requirements_path
         .as_deref()

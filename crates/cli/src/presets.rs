@@ -252,10 +252,14 @@ pub struct AppliedPreset {
 /// catalog's workspace layer — `<workspace>/.codesmith/presets/` — is then
 /// skipped, exactly like the project config and `.env`, because a repository
 /// must not pick this session's mode, approval posture or tool surface.
+///
+/// `Err` when the tier's approval policy or sandbox mode is not allowed by
+/// the host's requirements: the allowlists get the last word on the folded
+/// result, as they do over the CLI flags and the project overlay.
 pub fn apply_config_preset(
     config: &mut Config,
     workspace: Option<&std::path::Path>,
-) -> Option<AppliedPreset> {
+) -> anyhow::Result<Option<AppliedPreset>> {
     let selection = match config.preset_selection().map(str::to_string) {
         Some(raw) => match canonicalize_preset_name(&raw) {
             Ok((name, Some(warning))) => {
@@ -291,25 +295,33 @@ pub fn apply_config_preset(
                 "preset not found; falling back to the default tier"
             );
             // `middle` is compiled in, so this only fails if the catalog
-            // itself is broken; bail out with no preset layer in that case.
-            catalog.get_ci("middle").cloned()?
+            // itself is broken; that case carries no preset layer.
+            let Some(loaded) = catalog.get_ci("middle").cloned() else {
+                return Ok(None);
+            };
+            loaded
         }
     };
-    Some(fold(config, loaded))
+    fold(config, loaded).map(Some)
 }
 
-fn fold(config: &mut Config, loaded: codesmith_config::presets::LoadedPreset) -> AppliedPreset {
+fn fold(
+    config: &mut Config,
+    loaded: codesmith_config::presets::LoadedPreset,
+) -> anyhow::Result<AppliedPreset> {
     let definition = loaded.definition.clone();
     let deviated = apply_to_config(config, &definition);
     config.preset_deviated |= deviated;
     config.preset = Some(loaded.name.clone());
     // The deprecated alias is consumed: the canonical selection replaces it.
     config.mode = None;
-    AppliedPreset {
+    // A preset may set the approval policy or the sandbox mode.
+    crate::config::apply_requirements(config)?;
+    Ok(AppliedPreset {
         name: loaded.name,
         definition,
         deviated,
-    }
+    })
 }
 
 /// The preset persisted by the last `/preset <name>` command (if any),

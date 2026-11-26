@@ -1080,7 +1080,7 @@ pub(crate) async fn real_main() -> Result<()> {
                     &mut config,
                     should_load_project_config(cli.no_project_config, &boundary)
                         .then_some(workspace.as_path()),
-                );
+                )?;
                 if args.json {
                     run_doctor_json(&config, &workspace, cli.config.as_deref())
                 } else {
@@ -1279,7 +1279,7 @@ pub(crate) async fn real_main() -> Result<()> {
                     &mut config,
                     should_load_project_config(cli.no_project_config, &boundary)
                         .then_some(workspace.as_path()),
-                );
+                )?;
                 run_preset_command(&config, command)
             }
             Commands::Sandbox(args) => match args.command {
@@ -4298,6 +4298,7 @@ fn dump_effective_config(cli: &Cli) -> Result<()> {
     }
     if should_load_project_config(cli.no_project_config, &boundary) {
         merge_project_config(&mut config, &workspace);
+        crate::config::apply_requirements(&mut config)?;
     }
     if config.preset_selection().is_none()
         && let Some(persisted) = crate::presets::persisted_selection()
@@ -4307,7 +4308,7 @@ fn dump_effective_config(cli: &Cli) -> Result<()> {
     crate::presets::apply_config_preset(
         &mut config,
         should_load_project_config(cli.no_project_config, &boundary).then_some(workspace.as_path()),
-    );
+    )?;
     println!(
         "# Effective configuration for {} (secrets redacted)",
         workspace.display()
@@ -4389,6 +4390,10 @@ pub(crate) fn load_config_from_cli_with_exec_model(
     if cli.approval_policy.is_some() || cli.sandbox_mode.is_some() {
         // Re-validate so a bad value fails loud here.
         config.validate()?;
+        // The allowlists ran inside `Config::load`, before these flags
+        // landed: a host allowing only `never` must still refuse
+        // `--approval-policy on-request`.
+        crate::config::apply_requirements(&mut config)?;
     }
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
@@ -5722,6 +5727,7 @@ pub(crate) async fn run_interactive(
     let mut merged_config = config.clone();
     if should_load_project_config(cli.no_project_config, &boundary) {
         merge_project_config(&mut merged_config, &workspace);
+        crate::config::apply_requirements(&mut merged_config)?;
     }
     // Configuration preset: CLI --preset (or the deprecated --mode) wins
     // over `preset = "..."` in config.toml, which wins over the preset
@@ -5742,7 +5748,7 @@ pub(crate) async fn run_interactive(
     let applied_preset = crate::presets::apply_config_preset(
         &mut merged_config,
         load_project_presets.then_some(workspace.as_path()),
-    );
+    )?;
     let config = &merged_config;
     match applied_preset.as_ref() {
         Some(applied) if applied.deviated => logging::info(format!(
@@ -7653,6 +7659,105 @@ mod project_config_tests {
         });
     }
 
+    /// Found by the test review: the requirements allowlists ran inside
+    /// `Config::load`, before `--approval-policy` / `--sandbox-mode` landed,
+    /// so a host allowing only `never` / `read-only` accepted
+    /// `--approval-policy on-request --sandbox-mode danger-full-access`.
+    #[test]
+    fn cli_posture_flags_cannot_bypass_the_requirements_allowlists() {
+        let tmp = tempdir().expect("tempdir");
+        let requirements = tmp.path().join("requirements.toml");
+        fs::write(
+            &requirements,
+            "allowed_approval_policies = [\"never\"]\nallowed_sandbox_modes = [\"read-only\"]\n",
+        )
+        .expect("write requirements");
+        let config = tmp.path().join("config.toml");
+        fs::write(
+            &config,
+            format!("requirements_path = \"{}\"\n", requirements.display()),
+        )
+        .expect("write config");
+        let config = config.display().to_string();
+        let load = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).expect("flags parse");
+            load_config_from_cli_with_exec_model(&cli, None).map(|_| ())
+        };
+        let policy = load(&[
+            "codesmith",
+            "--config",
+            &config,
+            "--approval-policy",
+            "on-request",
+        ])
+        .expect_err("the allowlist must refuse the flag");
+        assert!(
+            policy
+                .to_string()
+                .contains("approval_policy 'on-request' is not allowed by requirements"),
+            "{policy:#}"
+        );
+        let mode = load(&[
+            "codesmith",
+            "--config",
+            &config,
+            "--sandbox-mode",
+            "danger-full-access",
+        ])
+        .expect_err("the allowlist must refuse the flag");
+        assert!(
+            mode.to_string()
+                .contains("sandbox_mode 'danger-full-access' is not allowed by requirements"),
+            "{mode:#}"
+        );
+        // An allowed flag still passes.
+        load(&[
+            "codesmith",
+            "--config",
+            &config,
+            "--approval-policy",
+            "never",
+            "--sandbox-mode",
+            "read-only",
+        ])
+        .expect("an allowed flag passes");
+    }
+
+    /// The same last word over a preset tier: a preset may set the approval
+    /// policy, and the allowlists ran before the tier was folded in.
+    #[test]
+    fn a_preset_cannot_set_a_posture_the_requirements_forbid() {
+        let tmp = tempdir().expect("tempdir");
+        let requirements = tmp.path().join("requirements.toml");
+        fs::write(&requirements, "allowed_approval_policies = [\"never\"]\n")
+            .expect("write requirements");
+        let project_presets = tmp.path().join(".codesmith").join("presets");
+        fs::create_dir_all(&project_presets).expect("mkdir presets");
+        fs::write(
+            project_presets.join("loose.toml"),
+            "description = \"asks before it acts\"\napproval_policy = \"on-request\"\n",
+        )
+        .expect("write preset");
+        with_home_dir(tmp.path(), || {
+            let mut config = Config::default();
+            config.requirements_path = Some(requirements.display().to_string());
+            config.preset = Some("loose".to_string());
+            let err = crate::presets::apply_config_preset(&mut config, Some(tmp.path()))
+                .expect_err("the allowlist must refuse the tier's posture");
+            assert!(
+                err.to_string()
+                    .contains("approval_policy 'on-request' is not allowed by requirements"),
+                "{err:#}"
+            );
+            // A tier that sets no posture still applies (on a fresh config:
+            // the refused fold leaves the tier's value on the one it refused).
+            let mut fresh = Config::default();
+            fresh.requirements_path = Some(requirements.display().to_string());
+            fresh.preset = Some("middle".to_string());
+            crate::presets::apply_config_preset(&mut fresh, Some(tmp.path()))
+                .expect("a tier without a posture passes");
+        });
+    }
     #[test]
     fn startup_boundary_blocks_workspace_initialization_until_trusted() {
         let tmp = tempdir().expect("tempdir");
