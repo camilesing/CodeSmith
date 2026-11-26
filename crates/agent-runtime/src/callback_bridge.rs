@@ -543,15 +543,26 @@ impl Callback for CallbackBridge {
             if let Some(hooks) = hooks.as_ref()
                 && hooks.has_hooks_for_event(HookEvent::ToolCallAfter)
             {
-                let (text, success) = match result {
-                    Ok(r) => (r.content.clone(), r.success),
-                    Err(e) => (e.to_string(), false),
+                let (text, success, exit_code) = match result {
+                    Ok(r) => {
+                        // Shell-family tools record their exit status in
+                        // `metadata["exit_code"]` — the only source the
+                        // documented `CODESMITH_TOOL_EXIT_CODE` hook variable has.
+                        let exit_code = r
+                            .metadata
+                            .as_ref()
+                            .and_then(|m| m.get("exit_code"))
+                            .and_then(serde_json::Value::as_i64)
+                            .and_then(|code| i32::try_from(code).ok());
+                        (r.content.clone(), r.success, exit_code)
+                    }
+                    Err(e) => (e.to_string(), false, None),
                 };
                 let ctx = template
                     .clone()
                     .with_tool_name(name)
                     .with_tool_args(&input)
-                    .with_tool_result(&text, success, None);
+                    .with_tool_result(&text, success, exit_code);
                 // Same blocking-pool handoff as `on_tool_start`: the hook
                 // executor waits on the hook process.
                 let hooks = std::sync::Arc::clone(hooks);
@@ -1411,6 +1422,40 @@ mod tests {
         assert_eq!(calls[1].1.tool_success, Some(true));
         // Turn-level template field flowed through to both hook contexts.
         assert_eq!(calls[0].1.session_id.as_deref(), Some("test"));
+    }
+
+    /// `tool_call_after` hooks receive the exit status the shell-family tools
+    /// record in `metadata["exit_code"]` — the documented
+    /// `CODESMITH_TOOL_EXIT_CODE` variable used to have no producer.
+    #[tokio::test]
+    async fn tool_call_after_hook_receives_the_tool_exit_code() {
+        let hooks = Arc::new(RecordingHookHost::default());
+        let bridge = CallbackBridge::new(None, Some(hooks.clone()), test_template());
+        let input = serde_json::json!({"command": "sh -c 'exit 3'"});
+        bridge.on_tool_start("t-exit", "exec_shell", &input).await;
+        bridge
+            .on_tool_end(
+                "exec_shell",
+                &Ok(ToolResult {
+                    canonical: None,
+                    content: "Command failed (exit code: Some(3))".to_string(),
+                    success: false,
+                    metadata: Some(serde_json::json!({"exit_code": 3})),
+                }),
+            )
+            .await;
+
+        let calls = hooks.calls();
+        let (_, after) = calls
+            .iter()
+            .rev()
+            .find(|(event, _)| *event == HookEvent::ToolCallAfter)
+            .expect("ToolCallAfter ran");
+        assert_eq!(
+            after.to_env_vars().get("CODESMITH_TOOL_EXIT_CODE"),
+            Some(&"3".to_string())
+        );
+        assert_eq!(after.tool_success, Some(false));
     }
 }
 
