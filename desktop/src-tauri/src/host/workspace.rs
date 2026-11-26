@@ -6,9 +6,8 @@
 //! directory, `rename`/`delete` maintain the registration, and `insertBefore`
 //! orders the registry. Sessions are grouped by the runtime thread's own
 //! `workspace` path, so a session left in another directory still lands in
-//! its directory's row; a thread whose directory has no registration is
-//! projected as a recovered workspace (no write) and becomes durable the
-//! first time a mutation names it.
+//! its directory's row; a thread whose directory has no registration appears
+//! in no row and trails under the client's Ungrouped bucket.
 //!
 //! A pinned session leads its section, most recently pinned first (the
 //! upstream registry contract); the manual order is the workspace view's
