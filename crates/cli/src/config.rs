@@ -2697,6 +2697,19 @@ impl Config {
             return Ok(configured);
         }
 
+        // 1b. The legacy `[providers.deepseek_cn]` table a config from
+        // before the alias was folded onto `deepseek` still carries — the
+        // same fallback `has_api_key_for` applies, so a key the probes
+        // report is one this resolver returns (it did not: onboarding
+        // skipped the key prompt, the first request failed).
+        if matches!(provider, ApiProvider::Deepseek)
+            && let Some(configured) = self.legacy_deepseek_cn_api_key()
+            && !configured.trim().is_empty()
+            && configured != API_KEYRING_SENTINEL
+        {
+            return Ok(configured.to_string());
+        }
+
         // 2. Environment variables.
         if let Some(value) = codesmith_secrets::env_for(slot)
             && !value.trim().is_empty()
@@ -9529,6 +9542,9 @@ api_key = "moonshot-platform-key"
         // provider is `Deepseek`, and the legacy `[providers.deepseek_cn]`
         // table is surfaced via the read-side fallback in `has_api_key_for`.
         assert!(has_api_key_for(&config, ApiProvider::Deepseek));
+        // …and the resolver returns the key the probe reports (found in the
+        // review: it did not).
+        assert_eq!(config.provider_api_key()?, "cn-file-key");
         Ok(())
     }
 
