@@ -244,8 +244,17 @@ fn normalize_host_arg(input: &str) -> anyhow::Result<String> {
     let host = if lower.starts_with("http://") || lower.starts_with("https://") {
         host_from_url(trimmed).context("URL must include a host")?
     } else {
-        if trimmed.contains("://") || trimmed.contains('/') {
-            bail!("Pass a host like `github.com`, not a URL path");
+        // An authority is not a host: with the port (or userinfo) kept in
+        // the entry it never matched a request — the decider is consulted
+        // with the URL's host alone.
+        if trimmed.contains("://")
+            || trimmed.contains('/')
+            || trimmed.contains(':')
+            || trimmed.contains('@')
+        {
+            bail!(
+                "Pass a host like `github.com` (no scheme, port, path or userinfo), not {trimmed:?}"
+            );
         }
         trimmed.to_string()
     };
@@ -392,6 +401,12 @@ mod tests {
             network_inner(Some("allow https://")).is_err(),
             "a URL without a host is refused"
         );
+        // Found in the review: an authority passed as a host kept its port
+        // (or userinfo) in the entry and never matched a request.
+        for arg in ["allow registry.internal:8443", "allow user@host"] {
+            let err = network_inner(Some(arg)).expect_err("an authority is not a host");
+            assert!(err.to_string().contains("host like"), "{arg}: {err}");
+        }
     }
 
     #[test]
