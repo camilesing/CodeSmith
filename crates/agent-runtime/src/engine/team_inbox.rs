@@ -43,7 +43,7 @@ impl Engine {
                     }],
                 };
                 self.session.messages.push(msg);
-                self.session.rebuild_working_set();
+                self.session.rebuild_working_set().await;
                 let _ = self.emit_session_updated().await;
             }
             InboxDispatch::ShutdownApprovalAction {

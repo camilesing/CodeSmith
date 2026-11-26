@@ -995,7 +995,7 @@ impl Engine {
                     } else {
                         None
                     };
-                    self.session.rebuild_working_set();
+                    self.session.rebuild_working_set().await;
                     self.rehydrate_latest_canonical_state_offloaded().await;
                     self.emit_session_updated().await;
                     let _ = self

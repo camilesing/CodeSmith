@@ -338,14 +338,23 @@ impl Session {
         self.messages.rebuild(reason, messages);
     }
 
-    /// Rebuild the working set from current messages (best effort).
-    pub fn rebuild_working_set(&mut self) {
-        self.working_set
-            .lock()
-            // Poison-tolerant: the guarded state is plain data; a panic in
-            // another thread must not cascade into every session accessor.
-            .unwrap_or_else(|e| e.into_inner())
-            .rebuild_from_messages(&self.messages, &self.workspace);
+    /// Rebuild the working set from current messages (best effort), with
+    /// the walk on the blocking pool: it stats every path-like token of the
+    /// transcript, which stalled the engine op loop on slow mounts.
+    pub async fn rebuild_working_set(&mut self) {
+        let messages = self.messages.to_vec();
+        let workspace = self.workspace.clone();
+        let working_set = Arc::clone(&self.working_set);
+        tokio::task::spawn_blocking(move || {
+            working_set
+                .lock()
+                // Poison-tolerant: the guarded state is plain data; a panic in
+                // another thread must not cascade into every session accessor.
+                .unwrap_or_else(|e| e.into_inner())
+                .rebuild_from_messages(&messages, &workspace);
+        })
+        .await
+        .expect("the working-set rebuild does not panic");
     }
 
     /// Record a successful `read_file` output for post-compaction reminders.
