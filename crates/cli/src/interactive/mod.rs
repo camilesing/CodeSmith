@@ -1551,9 +1551,15 @@ fn save_history(editor: &mut ReplEditor, history: Option<&std::path::Path>) -> R
 /// attached.
 fn extract_attachments(input: &str, workspace: &std::path::Path) -> (String, Vec<String>) {
     let mut image_paths = Vec::new();
-    let mut words = Vec::new();
-    for token in input.split_whitespace() {
-        if let Some(path) = token.strip_prefix('@') {
+    // The text is kept verbatim: line breaks, indentation and runs of spaces
+    // are the user's (a pasted function, a diff, a shell continuation), and
+    // only the attached `@image` tokens are removed. Rebuilding the message
+    // from whitespace-split words flattened every multi-line prompt to one
+    // line before the model saw it.
+    let mut text = String::with_capacity(input.len());
+    for token in input.split_inclusive(char::is_whitespace) {
+        let word = token.trim_end();
+        if let Some(path) = word.strip_prefix('@') {
             let resolved = if std::path::Path::new(path).is_absolute() {
                 std::path::PathBuf::from(path)
             } else {
@@ -1569,9 +1575,9 @@ fn extract_attachments(input: &str, workspace: &std::path::Path) -> (String, Vec
                 continue;
             }
         }
-        words.push(token);
+        text.push_str(token);
     }
-    (words.join(" "), image_paths)
+    (text, image_paths)
 }
 
 /// Append one `#`-prefixed line to the session's memory file (KoD
@@ -1797,6 +1803,23 @@ mod coverage_tests {
             initial_input: None,
         };
         ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Found in the review: every multi-line prompt was rebuilt from
+    /// whitespace-split words, so line breaks, indentation and runs of spaces
+    /// reached the model as single spaces.
+    #[test]
+    fn extract_attachments_keeps_the_text_verbatim() {
+        let workspace = std::env::temp_dir();
+        let (text, images) = extract_attachments("a\n  b   c\td", &workspace);
+        assert_eq!(text, "a\n  b   c\td");
+        assert!(images.is_empty());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, b"\x89PNG\r\n").expect("png");
+        let (text, images) = extract_attachments("see this:\n    @shot.png", dir.path());
+        assert_eq!(text, "see this:\n    ");
+        assert_eq!(images, vec![png.display().to_string()]);
     }
 
     /// Redirect HOME, CODESMITH_HOME, and CODESMITH_CONFIG_PATH (settings
