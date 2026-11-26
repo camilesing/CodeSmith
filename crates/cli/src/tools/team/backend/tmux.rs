@@ -210,7 +210,20 @@ mod tests {
         assert!(cmd.contains("--prompt-file '/tmp/prompt.txt'"));
         assert!(cmd.contains("--agent-type 'team'"));
         assert!(cmd.contains("--permission-mode 'auto'"));
+        assert!(
+            !cmd.contains("--trust-mode"),
+            "trust is opt-in per teammate"
+        );
         assert!(cmd.contains("--model 'deepseek-v3'"));
+        let trusted = build_team_teammate_command(
+            &crate::tools::team::backend::TeammateSpawnSpec {
+                trust_mode: true,
+                ..spec
+            },
+            prompt_file,
+            None,
+        );
+        assert!(trusted.contains("--trust-mode"));
         assert!(cmd.contains("--cwd '/repo/worktrees/worker-1'"));
         assert!(cmd.contains("--allowed-tools 'read,bash'"));
     }

@@ -412,6 +412,10 @@ pub(crate) struct TeamTeammateArgs {
     /// Permission mode: `auto` (auto-approve tools) or `ask`.
     #[arg(long = "permission-mode", default_value = "ask")]
     permission_mode: String,
+    /// Carry the lead's YOLO trust (the sandbox bypass) into the teammate.
+    /// Off by default: an auto-approved lead's teammate keeps the sandbox.
+    #[arg(long = "trust-mode")]
+    trust_mode: bool,
     /// Optional comma-separated tool allowlist.
     #[arg(long = "allowed-tools", value_name = "CSV")]
     allowed_tools: Option<String>,
@@ -472,6 +476,26 @@ pub(crate) struct SwebenchExportArgs {
 /// of letting the pump cancel the turn (a second press quits). `130` is
 /// the Ctrl+C exit code on every platform [`wait_for_terminating_signal`]
 /// serves.
+/// `(auto_approve, trust_mode)` for a headless run. `--auto` (and the YOLO
+/// opt-in) automate approvals; only the YOLO opt-in buys what `trust_mode`
+/// means — the unsandboxed shell and unconfined paths. Passing `--auto` as
+/// both ran the whole turn as YOLO.
+#[must_use]
+pub(crate) fn headless_posture(auto: bool, yolo: bool) -> (bool, bool) {
+    (auto || yolo, yolo)
+}
+
+/// The app mode of a headless run, from its trust: YOLO only under the
+/// YOLO opt-in.
+#[must_use]
+pub(crate) fn headless_mode(trust_mode: bool) -> crate::app_state::AppMode {
+    if trust_mode {
+        crate::app_state::AppMode::Yolo
+    } else {
+        crate::app_state::AppMode::Agent
+    }
+}
+
 fn signal_ends_process(exit_code: i32, turn_pump_holds_sigint: bool) -> bool {
     exit_code != 130 || !turn_pump_holds_sigint
 }
@@ -1164,15 +1188,15 @@ pub(crate) async fn real_main() -> Result<()> {
                         || config.max_subagents(),
                         |value| value.clamp(1, MAX_SUBAGENTS),
                     );
-                    let auto_mode = args.auto || yolo;
+                    let (auto_approve, trust_mode) = headless_posture(args.auto, yolo);
                     run_exec_agent(
                         &config,
                         &model,
                         &prompt,
                         workspace,
                         max_subagents,
-                        auto_mode,
-                        auto_mode,
+                        auto_approve,
+                        trust_mode,
                         args.json,
                         resume_session_id,
                         args.output_format,
@@ -6222,7 +6246,6 @@ pub(crate) async fn run_exec_agent(
     append_system_prompts: Vec<crate::prompts::PromptAppendSource>,
     prompt_cache_breaker: Option<String>,
 ) -> Result<()> {
-    use crate::app_state::AppMode;
     use crate::core::engine::{HeadlessEngineOptions, headless_engine_config, spawn_engine};
     use crate::core::events::Event;
     use codesmith_agent_runtime::ops::Op;
@@ -6258,11 +6281,7 @@ pub(crate) async fn run_exec_agent(
         config,
         crate::core::engine::EngineHost::default(),
     );
-    let mode = if auto_approve {
-        AppMode::Yolo
-    } else {
-        AppMode::Agent
-    };
+    let mode = headless_mode(trust_mode);
 
     let mut loaded_session_id = None;
     if let Some(session_id) = resume_session_id.as_deref() {
@@ -6663,7 +6682,6 @@ pub(crate) async fn run_exec_agent(
 /// inbox polling, shutdown protocol) unifies with the exec path under
 /// Phase 6's execution-core extraction.
 pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -> Result<()> {
-    use crate::app_state::AppMode;
     use crate::core::engine::{HeadlessEngineOptions, headless_engine_config, spawn_engine};
     use crate::core::events::Event;
     use crate::tools::task_v2::new_shared_task_v2_manager;
@@ -6765,6 +6783,7 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     runtime_services.team_sender = Some(args.name.clone());
     runtime_services.task_v2_manager = Some(task_v2_manager);
 
+    let trust_mode = args.trust_mode;
     let engine_config = headless_engine_config(
         config,
         &settings,
@@ -6772,7 +6791,7 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             model: effective_model.clone(),
             workspace: cwd.clone(),
             auto_approve,
-            trust_mode: auto_approve,
+            trust_mode,
             max_subagents: config.max_subagents(),
             override_system_prompt: None,
             append_system_prompts: vec![],
@@ -6788,11 +6807,7 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
         ..Default::default()
     };
     let engine_handle = spawn_engine(engine_config, config, engine_host);
-    let mode = if auto_approve {
-        AppMode::Yolo
-    } else {
-        AppMode::Agent
-    };
+    let mode = headless_mode(trust_mode);
 
     engine_handle
         .send(Op::SendMessage {
@@ -6807,7 +6822,7 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
             reasoning_effort_auto: route.auto_model,
             auto_model: route.auto_model,
             allow_shell: auto_approve || config.allow_shell(),
-            trust_mode: auto_approve,
+            trust_mode,
             auto_approve,
             translation_enabled: false,
             show_thinking: settings.show_thinking,
@@ -8710,6 +8725,17 @@ mod dispatch_helper_tests {
 
     fn parse_cli(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("CLI args should parse")
+    }
+
+    /// `--auto` automates approvals; only `--yolo` buys the sandbox bypass.
+    #[test]
+    fn headless_posture_separates_auto_approve_from_trust() {
+        use crate::app_state::AppMode;
+        assert_eq!(headless_posture(true, false), (true, false));
+        assert_eq!(headless_posture(false, true), (true, true));
+        assert_eq!(headless_posture(false, false), (false, false));
+        assert_eq!(headless_mode(false), AppMode::Agent);
+        assert_eq!(headless_mode(true), AppMode::Yolo);
     }
 
     fn exec_args(args: &[&str]) -> ExecArgs {

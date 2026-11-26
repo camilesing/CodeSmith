@@ -88,6 +88,9 @@ pub struct TeammateSpawnSpec {
     pub allowed_tools: Option<Vec<String>>,
     /// Permission mode for the teammate.
     pub permission_mode: PermissionMode,
+    /// Whether the teammate inherits the lead's YOLO trust (the sandbox
+    /// bypass). Defaults to off.
+    pub trust_mode: bool,
     /// Extra environment variables to set in a spawned pane process.
     pub env: HashMap<String, String>,
     /// Binary to invoke for pane backends (defaults to `current_exe()`).
@@ -113,6 +116,7 @@ impl TeammateSpawnSpec {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             allowed_tools: None,
             permission_mode: PermissionMode::Ask,
+            trust_mode: false,
             env: HashMap::new(),
             // An unresolvable exe leaves the path EMPTY on purpose: the old
             // fallback to a bare `codesmith` resolved the command word via
@@ -350,6 +354,9 @@ pub(crate) fn build_team_teammate_command(
         "--permission-mode".to_string(),
         shell_quote(spec.permission_mode.as_str()),
     ];
+    if spec.trust_mode {
+        parts.push("--trust-mode".to_string());
+    }
     if let Some(model) = spec.model.as_ref() {
         parts.push("--model".to_string());
         parts.push(shell_quote(model));

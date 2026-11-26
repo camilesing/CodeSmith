@@ -3406,6 +3406,9 @@ async fn spawn_team_teammate_in_pane(
     } else {
         PermissionMode::Ask
     };
+    // Auto-approving the teammate is not trusting it with the sandbox
+    // bypass: only a lead that is itself trusted passes that on.
+    spec.trust_mode = runtime.context.trust_mode;
 
     let backend: Box<dyn TeammateBackend> = match kind {
         crate::tools::team::backend::BackendKind::Tmux => Box::new(TmuxBackend::new()),
