@@ -276,7 +276,12 @@ pub fn plan_reminder_due(
         };
         return exit_owed.then_some(PlanReminder::Exited);
     }
-    let Some(last_plan) = family.last_plan else {
+    // Re-entering plan after an exit note binds again: otherwise the newest
+    // member of the family stays "you can now make edits" for a whole cadence
+    // window, and plan.md tells the model to follow the newest reminder.
+    let reentered =
+        matches!((family.last_plan, family.last_exit), (Some(plan), Some(exit)) if exit > plan);
+    let Some(last_plan) = family.last_plan.filter(|_| !reentered) else {
         // Entering plan (either route): bind immediately.
         return Some(PlanReminder::Full);
     };
@@ -560,6 +565,24 @@ mod tests {
         assert_eq!(
             plan_reminder_due(&[user("hello")], AppMode::Agent, false),
             None
+        );
+    }
+
+    /// Re-entering plan mode binds again: after the exit note ("you can now
+    /// make edits") a plan turn must not run on that note as the newest member
+    /// of the family, cadence window or not.
+    #[test]
+    fn reentering_plan_binds_again_after_the_exit_note() {
+        let transcript = vec![
+            user("plan this"),
+            plan_reminder_runtime_message(PlanReminder::Full, Some(TEST_CAP)),
+            wrapped_user("approved"),
+            plan_reminder_runtime_message(PlanReminder::Exited, None),
+            wrapped_user("back to planning"),
+        ];
+        assert_eq!(
+            plan_reminder_due(&transcript, AppMode::Plan, false),
+            Some(PlanReminder::Full)
         );
     }
 
