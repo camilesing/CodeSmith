@@ -416,24 +416,9 @@ async fn adopt_loaded_session(
     } else {
         state.workspace = stored.clone();
     }
-    state.session.total_tokens = session.metadata.total_tokens;
-    state.session.total_conversation_tokens = state.session.total_tokens;
-    // Accumulated token breakdown is per-runtime-session; zero on load.
-    state.session.total_input_tokens = 0;
-    state.session.total_cache_hit_tokens = 0;
-    state.session.total_cache_miss_tokens = 0;
-    state.session.total_output_tokens = 0;
-    state.session.session_cost = 0.0;
-    state.session.session_cost_cny = 0.0;
-    state.session.subagent_cost = 0.0;
-    state.session.subagent_cost_cny = 0.0;
-    state.session.displayed_cost_high_water = 0.0;
-    state.session.displayed_cost_high_water_cny = 0.0;
-    state.session.last_prompt_tokens = None;
-    state.session.last_completion_tokens = None;
-    state.session.last_prompt_cache_hit_tokens = None;
-    state.session.last_prompt_cache_miss_tokens = None;
-    state.session.last_reasoning_replay_tokens = None;
+    // The stored token total is the session's; the per-runtime accrual and
+    // the turn clock start over (`/resume` adopts the same way).
+    state.adopt_session_counters(&session.metadata);
     state.current_session_id = Some(session.metadata.id.clone());
     state.system_prompt = session.system_prompt.map(SystemPrompt::Text);
     // The same per-session runtime state `/new` resets: after `/load`, the

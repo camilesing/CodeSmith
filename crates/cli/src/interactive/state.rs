@@ -810,6 +810,32 @@ impl ReplState {
         self.set_model_selection(model);
         self.current_session_id = Some(session_id.to_string());
     }
+
+    /// Adopt a loaded session's counters: the stored token total is the
+    /// session's; everything accrued per runtime — the token breakdown, the
+    /// cost and its high-water marks, the last-prompt readings — and the turn
+    /// clock start over, so the previous session's numbers are never written
+    /// into the adopted one. `/load` and `/resume` both go through here.
+    pub fn adopt_session_counters(&mut self, metadata: &codesmith_session::store::SessionMetadata) {
+        self.session.total_tokens = metadata.total_tokens;
+        self.session.total_conversation_tokens = metadata.total_tokens;
+        self.session.total_input_tokens = 0;
+        self.session.total_cache_hit_tokens = 0;
+        self.session.total_cache_miss_tokens = 0;
+        self.session.total_output_tokens = 0;
+        self.session.session_cost = 0.0;
+        self.session.session_cost_cny = 0.0;
+        self.session.subagent_cost = 0.0;
+        self.session.subagent_cost_cny = 0.0;
+        self.session.displayed_cost_high_water = 0.0;
+        self.session.displayed_cost_high_water_cny = 0.0;
+        self.session.last_prompt_tokens = None;
+        self.session.last_completion_tokens = None;
+        self.session.last_prompt_cache_hit_tokens = None;
+        self.session.last_prompt_cache_miss_tokens = None;
+        self.session.last_reasoning_replay_tokens = None;
+        self.cumulative_turn_duration = Default::default();
+    }
 }
 
 /// Mirror of the retired `App`-scoped `resolve_skills_dir` (tui/app.rs).
@@ -1017,6 +1043,11 @@ pub async fn resume_session(
     state.approvals = saved.approvals.clone();
     // TODO-50 — the media attachment record survives resume the same way.
     state.context_references = saved.context_references.clone();
+    // The counters follow the adopted session, as with `/load`. Left alone,
+    // the previous session's cost and tokens were written into the resumed
+    // session's record by the next save — or, from a fresh start, its stored
+    // total shrank to the post-resume turns.
+    state.adopt_session_counters(&saved.metadata);
     restore_engine_backed_session_state(state, &saved).await;
     // Round-7 TODO-48 — undelivered queued input rides the resume: the
     // journal was written the moment each message was queued and survives
@@ -1345,6 +1376,97 @@ mod restore_tests {
             2,
             "resume must rebuild the plan state from the transcript"
         );
+    }
+
+    /// Found in the review: `/resume` adopted a session without touching the
+    /// counters, so the previous session's cost and tokens were written into
+    /// the resumed session's record by the next save. `/load` already reset
+    /// them; both go through `adopt_session_counters` now.
+    #[tokio::test]
+    async fn resume_takes_the_adopted_sessions_counters() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home =
+            codesmith_agent_runtime::test_support::EnvVarGuard::set("CODESMITH_HOME", home.path());
+        let manager =
+            codesmith_session::store::FileSessionStore::default_location().expect("manager");
+        let messages = vec![codesmith_agent::models::Message {
+            role: "user".to_string(),
+            content: vec![codesmith_agent::models::ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        }];
+        manager
+            .save_session(&codesmith_session::store::SavedSession {
+                schema_version: 1,
+                metadata: codesmith_session::store::SessionMetadata {
+                    id: "sess-counters".to_string(),
+                    title: "counters".to_string(),
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                    message_count: messages.len(),
+                    total_tokens: 42,
+                    model: "test-model".to_string(),
+                    reported_model: None,
+                    workspace: std::env::temp_dir(),
+                    mode: None,
+                    cost: Default::default(),
+                    parent_session_id: None,
+                    forked_from_message_count: None,
+                    cumulative_turn_secs: 0,
+                },
+                messages,
+                system_prompt: None,
+                last_tool_catalog: None,
+                last_base_url: None,
+                fact_ledger: None,
+                context_references: Vec::new(),
+                artifacts: Vec::new(),
+                failed_attempts: Vec::new(),
+                approvals: Vec::new(),
+                journal_bytes: None,
+            })
+            .expect("saved");
+
+        // The previous session's numbers.
+        let options = crate::app_state::InteractiveOptions {
+            load_project_presets: false,
+            model: "test-model".to_string(),
+            workspace: std::env::temp_dir(),
+            config_path: None,
+            config_profile: None,
+            allow_shell: false,
+            max_subagents: 2,
+            skills_dir: std::env::temp_dir(),
+            memory_path: std::env::temp_dir().join("memory.md"),
+            mcp_config_path: std::env::temp_dir().join("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None,
+        };
+        let mut state = ReplState::new(options, &crate::config::Config::default());
+        state.session.total_tokens = 10;
+        state.session.total_input_tokens = 8;
+        state.session.session_cost = 1.0;
+        state.cumulative_turn_duration = std::time::Duration::from_secs(90);
+
+        // Engine-less, the resume stops at its engine step; the counters are
+        // adopted before it.
+        let _ = resume_session(&mut state, "sess-counters").await;
+        assert_eq!(state.current_session_id.as_deref(), Some("sess-counters"));
+        assert_eq!(
+            state.session.total_tokens, 42,
+            "the stored total is the session's"
+        );
+        assert_eq!(
+            state.session.total_input_tokens, 0,
+            "the breakdown starts over"
+        );
+        assert_eq!(state.session.session_cost, 0.0, "cost accrues per runtime");
+        assert_eq!(state.cumulative_turn_duration, std::time::Duration::ZERO);
     }
 }
 
