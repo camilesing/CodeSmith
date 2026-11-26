@@ -5150,7 +5150,7 @@ pub(crate) async fn run_mcp_command(config: &Config, command: McpCommand) -> Res
             );
             save_mcp_config(&config_path, &cfg)?;
             println!(
-                "Registered DeepSeek as MCP server '{name}' in {}",
+                "Registered CodeSmith as MCP server '{name}' in {}",
                 config_path.display()
             );
             println!("  command: {exe_str}");
