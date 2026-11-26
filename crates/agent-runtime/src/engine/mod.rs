@@ -280,10 +280,11 @@ pub struct Engine {
     /// silently re-dispatch with the full Agent surface.
     pub(crate) last_dispatched_mode: Option<AppMode>,
     /// Snapshot of the most recent real `Op::SendMessage` (round 10
-    /// TODO-69). An idle-wake turn reuses its parameters (mode, model,
-    /// approval posture, …) so a synthesized turn runs under exactly the
-    /// session's current settings; only the content is replaced with the
-    /// wake notice. `None` until the first user-driven turn.
+    /// TODO-69). A synthesized turn reuses its parameters (mode, approval
+    /// posture, tool lists, …) with the session's current model; only the
+    /// content is replaced with the wake notice. `None` until the first
+    /// user-driven turn. A host-side switch made without sending a turn
+    /// does not reach it (see `idle_wake`'s known limitations).
     pub(crate) last_send_op: Option<Op>,
     /// The next `Op::SendMessage` the op loop runs is engine-synthesized
     /// (idle wake / goal round). Set on the op-loop task immediately before

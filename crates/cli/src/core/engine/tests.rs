@@ -5070,6 +5070,60 @@ async fn goal_round_driver_pauses_on_exhausted_budget() {
     assert_eq!(goal_state.lock().unwrap().snapshot().status, "paused");
 }
 
+/// A synthesized turn takes the session's current model: `/model` between
+/// turns moves `session.model`, and the idle-wake turn used to re-send the
+/// snapshot's model — running on the old model and reverting the switch.
+#[tokio::test]
+async fn idle_wake_turn_keeps_the_model_set_between_turns() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::simple_text_turn("first turn done"),
+        canned::simple_text_turn("coordinated"),
+    ]);
+    let mut config = test_engine_config(tmp.path());
+    config.idle_wake = true;
+    let (handle, mock_arc) = spawn_engine_with_mock(config, mock);
+
+    handle.send(make_send_op("hello")).await.expect("send op");
+    let _ = collect_until_turn_complete(&handle).await;
+
+    // `/model other-model`: the engine's session model moves.
+    handle
+        .send(Op::SetModel {
+            model: "other-model".to_string(),
+        })
+        .await
+        .expect("set model");
+
+    handle
+        .tx_subagent_completion
+        .send(parked_completion("agent_a", "Built the widget"));
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        collect_until_turn_complete(&handle),
+    )
+    .await
+    .expect("idle wake synthesizes the next turn");
+
+    assert_eq!(
+        mock_arc.captured_requests().len(),
+        2,
+        "exactly two model requests"
+    );
+    // The session record is what the hosts read (and what a gateway would
+    // be asked for): the synthesized turn must not revert the switch.
+    let reported = second.iter().find_map(|e| match e {
+        Event::SessionUpdated { model, .. } => Some(model.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        reported.as_deref(),
+        Some("other-model"),
+        "the switch is not reverted by the synthesized turn"
+    );
+}
+
 /// Idle wake off (the default): the same completion stays parked — no
 /// synthesized turn — and the NEXT user turn's pre-request drain delivers
 /// it. Pins the old behavior for hosts that leave the flag off.

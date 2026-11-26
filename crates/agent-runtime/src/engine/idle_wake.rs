@@ -24,8 +24,9 @@
 //!   pre-request drain delivers the completions anyway), a client exists,
 //!   and a followup-class entry is actually parked
 //!   ([`inbox::followup_wake_pending`]). Parameters come from the last
-//!   real `Op::SendMessage` snapshot, so a synthesized turn runs under the
-//!   session's current mode / model / approval posture.
+//!   real `Op::SendMessage` snapshot — its mode, approval posture and tool
+//!   lists — with the session's current model (`Op::SetModel` and
+//!   `Op::SyncSession` move it between turns).
 //! - **delivery** — the synthesized op goes through the *same*
 //!   `Op::SendMessage` arm as a user message; the executor's pre-request
 //!   drain (`HostAgentExecutor::drain_subagent_completions`, seam 1)
@@ -48,6 +49,10 @@
 //! - The synthesized turn's wake notice is a real user-role message (it
 //!   enters the transcript and the session journal, per "model-visible
 //!   means logged"); it is NOT prefix-cache-frozen content.
+//! - A mode or approval-posture switch the host made WITHOUT sending a turn
+//!   does not reach a synthesized turn: the engine learns those only from an
+//!   `Op::SendMessage` (no host sends `Op::ChangeMode`). The next real turn
+//!   carries them.
 
 use super::inbox::followup_wake_pending;
 use super::runtime_event::{RuntimeEventKind, runtime_event_frame};
@@ -74,6 +79,7 @@ impl Engine {
             return None;
         }
         let mut op = self.last_send_op.clone()?;
+        rebind_to_session_model(&mut op, &self.session);
         if let Op::SendMessage { content, .. } = &mut op {
             *content = idle_wake_message(parked);
         }
@@ -110,6 +116,7 @@ impl Engine {
             return None;
         }
         let mut op = self.last_send_op.clone()?;
+        rebind_to_session_model(&mut op, &self.session);
         let decision = {
             let mut goal = self
                 .config
@@ -150,6 +157,20 @@ impl Engine {
                 None
             }
         }
+    }
+}
+
+/// Re-bind a synthesized turn's model to the session's. `Op::SetModel`
+/// and `Op::SyncSession` move `session.model` between turns while the
+/// snapshot still carries the last real turn's — a synthesized turn re-sent
+/// it and reverted a `/model` switch until the next user message.
+fn rebind_to_session_model(op: &mut Op, session: &crate::session::Session) {
+    if let Op::SendMessage {
+        model, auto_model, ..
+    } = op
+    {
+        model.clone_from(&session.model);
+        *auto_model = session.auto_model;
     }
 }
 
