@@ -97,33 +97,45 @@ def load_pair(snapshot: Path, journal: Path) -> dict:
 
 
 def fold_journal(path: Path) -> dict:
-    """Fold a journal into a transcript; unknown kinds fail loud."""
+    """Fold a journal into a transcript; unknown kinds fail loud.
+
+    A torn tail is read the way `read_journal` (crates/session/src/journal.rs)
+    reads it: the bytes decode lossily (a crash mid-write can cut the last
+    line inside a multi-byte character) and a final line that does not parse
+    is dropped when the file does not end in a newline. Any other unreadable
+    line still fails loud."""
     transcript: list[dict] = []
     session_id, requests, failed_rounds = path.stem, 0, 0
-    with open(path, encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
+    torn_tail_allowed = not path.read_bytes().endswith(b"\n")
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        lines = [(lineno, line) for lineno, line in enumerate(fh, 1) if line.strip()]
+    for index, (lineno, raw) in enumerate(lines):
+        line = raw.strip()
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if torn_tail_allowed and index + 1 == len(lines):
+                print(
+                    f"journal_metrics: {path}:{lineno}: dropping a torn final journal line ({exc})",
+                    file=sys.stderr,
+                )
                 continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{lineno}: malformed JSON ({exc})") from exc
-            kind = rec.get("kind")
-            if kind == "header":
-                session_id = rec.get("session_id", session_id)
-            elif kind == "append":
-                transcript.extend(rec.get("messages", []))
-            elif kind == "rebuild":
-                transcript = rec.get("messages", [])
-            elif kind == "resume":
-                pass  # transcript already equals the journal's fold
-            elif kind == "request":
-                requests += 1
-            elif kind == "attempt":
-                failed_rounds += 1
-            else:
-                raise ValueError(f"{path}:{lineno}: unknown journal kind {kind!r}")
+            raise ValueError(f"{path}:{lineno}: malformed JSON ({exc})") from exc
+        kind = rec.get("kind")
+        if kind == "header":
+            session_id = rec.get("session_id", session_id)
+        elif kind == "append":
+            transcript.extend(rec.get("messages", []))
+        elif kind == "rebuild":
+            transcript = rec.get("messages", [])
+        elif kind == "resume":
+            pass  # transcript already equals the journal's fold
+        elif kind == "request":
+            requests += 1
+        elif kind == "attempt":
+            failed_rounds += 1
+        else:
+            raise ValueError(f"{path}:{lineno}: unknown journal kind {kind!r}")
     return {
         "id": session_id,
         "messages": transcript,
