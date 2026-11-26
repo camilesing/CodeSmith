@@ -1564,7 +1564,10 @@ fn push_tool_record(
     error: Option<String>,
 ) {
     state.tool_log.push(crate::tool_summary::ToolCallRecord {
-        seq: state.tool_log.len() + 1,
+        // From the surviving tail, not the length: records are only
+        // appended here and drained from the front, so past the cap the
+        // length froze and every new record repeated the same number.
+        seq: state.tool_log.last().map_or(1, |last| last.seq + 1),
         turn: state.tool_log_turn,
         name: name.to_string(),
         args_summary,
@@ -3777,6 +3780,17 @@ mod tests {
             state.tool_log.len(),
             crate::tool_summary::TOOL_LOG_CAP,
             "the oldest records are drained past the cap"
+        );
+        // Sequence numbers keep counting past the cap: the length froze at
+        // it and every later record repeated `#201`.
+        let last = state.tool_log.len() - 1;
+        assert_eq!(
+            state.tool_log[last].seq,
+            crate::tool_summary::TOOL_LOG_CAP + 2
+        );
+        assert_eq!(
+            state.tool_log[last - 1].seq,
+            crate::tool_summary::TOOL_LOG_CAP + 1
         );
         // The surviving records all belong to the current turn.
         assert!(state.tool_log.iter().all(|record| record.turn == 3));
