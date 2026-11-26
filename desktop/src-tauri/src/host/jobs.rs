@@ -38,18 +38,25 @@ async fn task(host: &HostState, id: &str) -> Result<Value> {
         .with_context(|| format!("task {id}"))
 }
 
-/// All runtime tasks; the roster filters by owning thread.
+/// All runtime tasks; the roster filters by owning thread. `GET /v1/tasks`
+/// answers a `{tasks, counts}` envelope — decoded as a bare array it was a
+/// serde error, and the roster was empty for every session.
 async fn tasks(host: &HostState) -> Vec<Value> {
     host.backend
-        .get::<Vec<Value>>("/v1/tasks")
+        .get::<Value>("/v1/tasks")
         .await
+        .ok()
+        .and_then(|body| body.get("tasks").and_then(Value::as_array).cloned())
         .unwrap_or_default()
 }
 
-/// The task's first line, as the row's one-line label.
+/// The task's first line, as the row's one-line label. The roster's
+/// `TaskSummary` carries `prompt_summary`; the record a follow reads keeps
+/// `prompt`.
 fn task_label(task: &Value) -> String {
     let prompt = task
         .get("prompt")
+        .or_else(|| task.get("prompt_summary"))
         .and_then(Value::as_str)
         .unwrap_or_default();
     let line = prompt.lines().next().unwrap_or_default().trim();

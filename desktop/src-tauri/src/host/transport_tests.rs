@@ -281,7 +281,11 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         .route(
             "/v1/tasks",
             get(|State(fake): State<FakeRuntime>| async move {
-                Json(Value::Array(fake.tasks.lock().unwrap().clone()))
+                // The runtime's real envelope (`runtime_api::TasksResponse`).
+                Json(json!({
+                    "tasks": fake.tasks.lock().unwrap().clone(),
+                    "counts": {},
+                }))
             }),
         )
         .route(
@@ -1095,7 +1099,7 @@ async fn jobs_roster_follow_and_kill_map_onto_runtime_tasks() {
     }));
     fake.add_task(json!({
         "id": "task_done", "thread_id": "thr_a", "status": "completed",
-        "prompt": "quick job", "created_at": "2026-11-15T08:01:00Z",
+        "prompt_summary": "quick job", "created_at": "2026-11-15T08:01:00Z",
         "ended_at": "2026-11-15T08:01:05Z", "result_summary": "done",
         "timeline": [{ "kind": "message", "summary": "hello" }],
     }));
@@ -1121,6 +1125,7 @@ async fn jobs_roster_follow_and_kill_map_onto_runtime_tasks() {
     assert_eq!(running["progress"], json!("bash: ls"));
     let done = jobs.iter().find(|j| j["id"] == json!("task_done")).unwrap();
     assert_eq!(done["status"], json!("completed"));
+    assert_eq!(done["label"], json!("quick job"), "a summary's label field");
     assert_eq!(done["detail"], json!("done"));
     assert!(done["finishedAt"].as_i64().unwrap() > 0);
 
