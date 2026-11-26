@@ -367,7 +367,7 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Diff => {
-            debug_cmds::diff(state);
+            debug_cmds::diff(state).await;
             false
         }
         Command::Edit => {

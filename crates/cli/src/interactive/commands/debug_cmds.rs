@@ -297,23 +297,27 @@ pub fn cache(state: &ReplState, arg: Option<&str>) {
 
 /// `/diff` — working-tree changes via `git diff` (worktree vs index; no
 /// session-start baseline is captured).
-pub fn diff(state: &ReplState) {
-    let Some(mut name_only_cmd) = Git::command() else {
+pub async fn diff(state: &ReplState) {
+    // `git diff` on a large worktree or a slow mount takes seconds: the two
+    // children are awaited, not run inline on the REPL's runtime worker.
+    let Some(mut name_only_cmd) = Git::tokio_command() else {
         println!("{} git not found on PATH", "✗".red());
         return;
     };
-    let Some(mut stat_cmd) = Git::command() else {
+    let Some(mut stat_cmd) = Git::tokio_command() else {
         println!("{} git not found on PATH", "✗".red());
         return;
     };
-    let name_only = name_only_cmd
-        .args(["diff", "--name-only"])
-        .current_dir(&state.workspace)
-        .output();
-    let stat = stat_cmd
-        .args(["diff", "--stat"])
-        .current_dir(&state.workspace)
-        .output();
+    let (name_only, stat) = tokio::join!(
+        name_only_cmd
+            .args(["diff", "--name-only"])
+            .current_dir(&state.workspace)
+            .output(),
+        stat_cmd
+            .args(["diff", "--stat"])
+            .current_dir(&state.workspace)
+            .output()
+    );
     match (name_only, stat) {
         (Ok(name), Ok(stat_output)) => {
             // `.output()` only errors on spawn failure — a non-git
@@ -665,18 +669,18 @@ mod tests {
         cache(&state, None);
     }
 
-    #[test]
-    fn diff_reports_failure_outside_a_git_repository() {
+    #[tokio::test]
+    async fn diff_reports_failure_outside_a_git_repository() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut state = test_repl_state();
         state.workspace = tmp.path().to_path_buf();
         // A plain tempdir is not a git worktree: both git invocations exit
         // non-zero and the handler must say so instead of "no changes".
-        diff(&state);
+        diff(&state).await;
     }
 
-    #[test]
-    fn diff_reports_clean_tree_inside_an_empty_repository() {
+    #[tokio::test]
+    async fn diff_reports_clean_tree_inside_an_empty_repository() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let git_ok = std::process::Command::new("git")
             .arg("init")
@@ -690,7 +694,7 @@ mod tests {
         }
         let mut state = test_repl_state();
         state.workspace = tmp.path().to_path_buf();
-        diff(&state);
+        diff(&state).await;
     }
 
     #[test]
