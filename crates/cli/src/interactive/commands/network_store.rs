@@ -130,7 +130,7 @@ fn update_host(edit: NetworkEdit, host: &str) -> anyhow::Result<String> {
             NetworkEdit::Remove => "removed",
         };
         Ok(format!(
-            "Network host {action}: {host}\nSaved to {}. Retry the command now.",
+            "Network host {action}: {host}\nSaved to {}. The running session keeps the policy it loaded; the change applies at the next session start.",
             path.display()
         ))
     })
@@ -294,7 +294,13 @@ mod tests {
                     allow = [\"registry.npmjs.org\"]\n";
         let (_guard, _dir, path) = scoped_config(seed);
 
-        network_inner(Some("allow api.example.com")).expect("edit succeeds");
+        let out = network_inner(Some("allow api.example.com")).expect("edit succeeds");
+
+        // Found in the review: it said "Retry the command now" — every tool
+        // context holds the decider built at engine spawn, so the retry hit
+        // the same prompt.
+        assert!(out.contains("next session start"), "{out}");
+        assert!(!out.contains("Retry the command now"), "{out}");
 
         let body = fs::read_to_string(&path).expect("reread config");
         // Comments, key order, and unrelated sections survive the edit.
