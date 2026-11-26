@@ -799,9 +799,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function withRetry(label, fn, context = "runtime") {
+// `attemptLimit` lets a caller buy a shorter budget than the context's
+// default: the per-launch integrity probe asks for a single attempt.
+async function withRetry(label, fn, context = "runtime", attemptLimit = maxAttempts(context)) {
   let lastErr;
-  const attemptLimit = maxAttempts(context);
   for (let attempt = 1; attempt <= attemptLimit; attempt++) {
     try {
       return await fn(attempt);
@@ -936,12 +937,13 @@ async function download(url, destination, options = {}) {
 async function downloadText(url, options = {}) {
   const context =
     options.context === undefined || options.context === null ? "runtime" : options.context;
+  // (No nullish coalescing or optional chaining in this file: it must parse
+  // before the Node support guard runs — `install.test.js` pins that.)
+  const totalTimeoutMs =
+    options.totalTimeoutMs === undefined ? downloadTimeoutMs(context) : options.totalTimeoutMs;
+  const stallMs = options.stallMs === undefined ? downloadStallMs(context) : options.stallMs;
   return withRetry(`fetch ${url}`, async () => {
-    const result = await followRedirects(url, {
-      context,
-      totalTimeoutMs: downloadTimeoutMs(context),
-      stallMs: downloadStallMs(context),
-    });
+    const result = await followRedirects(url, { context, totalTimeoutMs, stallMs });
     const response = result.response;
     response.setEncoding("utf8");
     // NOTE: do NOT use `for await (const chunk of response)` here.
@@ -964,7 +966,7 @@ async function downloadText(url, options = {}) {
       response.on("error", reject);
       response.resume();
     });
-  }, context);
+  }, context, options.attempts);
 }
 
 async function readLocalVersion(file) {
@@ -1076,7 +1078,8 @@ async function adoptExistingBinaryIfValid(targetPath, assetName, version, getChe
 async function markedBinaryIsIntact(targetPath, assetName, getChecksums) {
   let checksums;
   try {
-    checksums = await getChecksums();
+    // A probe, not a download: one short attempt.
+    checksums = await getChecksums({ probe: true });
   } catch {
     return true;
   }
@@ -1157,14 +1160,31 @@ async function run(options = {}) {
   const releaseDir = releaseBinaryDirectory();
   await mkdir(releaseDir, { recursive: true });
 
-  let checksumsPromise;
-  const getChecksums = () => {
-    if (!checksumsPromise) {
+  // The per-launch integrity probe and a real download's fetch get their own
+  // cache slots and budgets. The probe runs on every launch of an installed
+  // binary: under the download's five attempts it made every offline launch
+  // stall about 15 s — minutes, when packets are dropped — before starting.
+  const checksumFetches = {};
+  const getChecksums = ({ probe = false } = {}) => {
+    const slot = probe ? "probe" : "full";
+    if (!checksumFetches[slot]) {
       // The manifest is fetched from the same source as the binary so a
       // mirrored download is verified against the mirror's own checksums.
-      checksumsPromise = loadChecksums(version, repo, paths.codesmith.asset, { context });
+      checksumFetches[slot] = loadChecksums(
+        version,
+        repo,
+        paths.codesmith.asset,
+        probe
+          ? {
+              context,
+              attempts: 1,
+              totalTimeoutMs: OPTIONAL_TIMEOUT_MS,
+              stallMs: OPTIONAL_STALL_MS,
+            }
+          : { context },
+      );
     }
-    return checksumsPromise;
+    return checksumFetches[slot];
   };
 
   await ensureBinary(paths.codesmith.target, paths.codesmith.asset, version, repo, getChecksums, { context });

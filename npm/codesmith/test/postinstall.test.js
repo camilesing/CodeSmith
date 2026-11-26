@@ -154,3 +154,29 @@ test("withRetry prints install hint on first retryable failure", async () => {
     global.setTimeout = previousSetTimeout;
   }
 });
+
+test("withRetry stops at an explicit attempt limit", async () => {
+  const previousSetTimeout = global.setTimeout;
+  global.setTimeout = (callback) => {
+    callback();
+    return 0;
+  };
+  let attempts = 0;
+  try {
+    await assert.rejects(
+      _internal.withRetry(
+        "probe",
+        async () => {
+          attempts += 1;
+          throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
+        },
+        "runtime",
+        1,
+      ),
+      /failed after 1 attempt\(s\)/,
+    );
+  } finally {
+    global.setTimeout = previousSetTimeout;
+  }
+  assert.equal(attempts, 1);
+});

@@ -137,6 +137,30 @@ test("ensureBinary adopts a manually placed target binary after checksum validat
   }
 });
 
+test("an installed binary's integrity probe asks the manifest for one attempt", async (t) => {
+  const dir = await makeTempDir(t);
+  const target = path.join(dir, process.platform === "win32" ? "codesmith.exe" : "codesmith");
+  const assetName = process.platform === "win32" ? "codesmith-windows-x64.exe" : "codesmith-linux-x64";
+  await fs.promises.writeFile(target, Buffer.from("installed"), { mode: 0o600 });
+  await fs.promises.writeFile(`${target}.version`, "0.8.25", "utf8");
+  const seen = [];
+
+  const result = await withoutForcedDownload(() =>
+    _internal.ensureBinary(target, assetName, "0.8.25", "camilesing/CodeSmith", async (options) => {
+      seen.push(options);
+      throw Object.assign(new Error("getaddrinfo ENOTFOUND github.com"), {
+        code: "ENOTFOUND",
+      });
+    }),
+  );
+
+  // The manifest is unreachable: the installed binary keeps the historical
+  // trust — and the launcher knows the fetch was a probe, so it gives it
+  // one short attempt instead of the download's five.
+  assert.equal(result, target);
+  assert.deepEqual(seen, [{ probe: true }]);
+});
+
 test("ensureBinary adopts an official release-named binary placed in downloads", async (t) => {
   const dir = await makeTempDir(t);
   const target = path.join(dir, process.platform === "win32" ? "codesmith.exe" : "codesmith");
