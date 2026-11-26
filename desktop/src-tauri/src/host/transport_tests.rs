@@ -1860,6 +1860,14 @@ async fn open_in_app_open_fences_paths_outside_every_workspace() {
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["code"], json!("bad-request"), "{body}");
+    // The fence's own arm, not the unknown-app refusal that answers the same
+    // 400/`bad-request` (the app id here resolves on no host).
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("outside every session workspace")),
+        "the fence must refuse before the app resolves: {body}"
+    );
     // A missing body member is a loud 400, not a launch attempt.
     let response = client
         .post(format!("{base}/open-in-app/open"))
