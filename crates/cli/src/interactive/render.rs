@@ -735,7 +735,12 @@ async fn plan_approval_block(state: &ReplState) -> String {
     };
     match body.as_deref().map(str::trim) {
         Some(plan) if !plan.is_empty() => {
-            let rendered = super::plan_view::render_plan(plan);
+            // Reflowed to the width its rows print at: the full terminal
+            // width plus the indent below overflowed every full-width row.
+            let rendered = super::plan_view::render_plan_at_width(
+                plan,
+                super::plan_view::columns().saturating_sub(PLAN_BLOCK_INDENT),
+            );
             let mut block = String::from("\n  已定稿的计划（plan mode）:\n\n");
             for line in rendered {
                 block.push_str(" ".repeat(PLAN_BLOCK_INDENT).as_str());
@@ -3524,10 +3529,9 @@ mod tests {
             "markdown markers are consumed: {plain}"
         );
         assert!(plain.contains('▸') && plain.contains('•'), "{plain}");
-        // Every plan line inside the block stays within the width budget.
-        // The render runs at the full terminal width and the block indent is
-        // added afterwards, so the printed row budget is width + indent.
-        let budget = super::super::plan_view::columns() + PLAN_BLOCK_INDENT;
+        // Every plan line inside the block stays within the printed width:
+        // the render runs at the terminal width less the block indent.
+        let budget = super::super::plan_view::columns();
         for line in plain.lines().filter(|line| {
             line.contains("合并")
                 || line.contains("状态筛选")
@@ -3537,6 +3541,51 @@ mod tests {
             assert!(
                 line.width() <= budget,
                 "plan line over budget ({budget}): {line:?}"
+            );
+        }
+    }
+
+    /// Found in the review: the plan block was reflowed to the full terminal
+    /// width and then indented by four columns, so every full-width row
+    /// overflowed by the indent.
+    #[tokio::test]
+    // Same env-lock justification as the plan-body test above.
+    #[allow(clippy::await_holding_lock)]
+    async fn plan_approval_block_reflows_to_the_width_its_rows_print_at() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let slug = "plan_printwidth";
+        let paragraph = std::iter::repeat_n("abcdefghij", 60)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let block = with_home_async(&home, async {
+            codesmith_tool_impls::tools::plan_file::write_plan_file(slug, &paragraph)
+                .await
+                .expect("write plan file");
+            let state = test_repl_state();
+            *state.plan_mode_state.lock().await =
+                codesmith_agent_runtime::tool_state::plan_mode::PlanModeState {
+                    active: true,
+                    current_slug: Some(slug.to_string()),
+                };
+            plan_approval_block(&state).await
+        })
+        .await;
+
+        let plain = strip_ansi_for_test(&block);
+        let width = super::super::plan_view::columns();
+        let rows: Vec<&str> = plain
+            .lines()
+            .filter(|line| line.contains("abcdefghij"))
+            .collect();
+        assert!(rows.len() >= 2, "the paragraph wraps: {rows:?}");
+        for line in rows {
+            assert!(
+                line.width() <= width,
+                "plan line over the printed width ({width}): {line:?}"
             );
         }
     }
