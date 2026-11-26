@@ -30,7 +30,7 @@ pub async fn extension_command(state: &ReplState, arg: &str) {
             None => println!("{} usage: /extension info <id>", "✗".red()),
         },
         "enable" | "disable" => match rest.first() {
-            Some(id) => set_enabled(id, sub == "enable").await,
+            Some(id) => set_enabled(state, id, sub == "enable").await,
             None => println!("{} usage: /extension {sub} <id>", "✗".red()),
         },
         "reload" => match super::mods_cmds::reload_note(state).await {
@@ -114,6 +114,20 @@ fn enabled_label(store: &crate::extension_state::ExtensionStateStore, id: &str) 
     } else {
         "disabled"
     }
+}
+
+/// Whether `id` names an extension discovery can see: compiled-in, or a
+/// dylib under either root.
+fn extension_exists(workspace: &std::path::Path, id: &str) -> bool {
+    codesmith_extensions::discover_static()
+        .iter()
+        .any(|reg| reg.metadata.id == id)
+        || {
+            let (global_roots, project_root) = extension_roots(workspace);
+            codesmith_extensions::discover_dylib(&global_roots, &[project_root])
+                .iter()
+                .any(|dylib| dylib.id == id)
+        }
 }
 
 async fn info(state: &ReplState, id: &str) {
@@ -215,10 +229,18 @@ fn in_flight_summary(slot: &codesmith_agent_runtime::engine::TurnExecutorSlot) -
     format!("in flight: {}", parts.join(", "))
 }
 
-async fn set_enabled(id: &str, enabled: bool) {
+async fn set_enabled(state: &ReplState, id: &str, enabled: bool) {
     let id = id.to_string();
     let worker_id = id.clone();
+    let workspace = state.workspace.clone();
     let result = match tokio::task::spawn_blocking(move || {
+        // An id nothing provides would be stored and reported as done while
+        // the extension it was meant for stays as it was.
+        if !extension_exists(&workspace, &worker_id) {
+            return Err(anyhow::anyhow!(
+                "no extension '{worker_id}' — /extension list shows what exists"
+            ));
+        }
         crate::extension_state::ExtensionStateStore::load_default()
             .and_then(|mut store| store.set_enabled(&worker_id, enabled))
     })
@@ -482,6 +504,34 @@ mod tests {
         extension_command(&state, "uninstall").await; // usage
         extension_command(&state, "uninstall ghost-extension").await;
         extension_command(&state, "explode").await; // unknown subcommand
+    }
+
+    /// `/extension disable <id>` for an id nothing provides is refused and
+    /// writes nothing: it used to store the name and report success while
+    /// the extension it was meant for stayed as it was.
+    #[tokio::test]
+    async fn enabling_or_disabling_an_unknown_extension_id_is_refused() {
+        #![allow(clippy::await_holding_lock)]
+        let (home, _lock, _home_guard, _config_guard) = scratch_env();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = test_state_in(tmp.path());
+        let state_file = home.path().join(".codesmith").join("extensions_state.toml");
+
+        extension_command(&state, "disable no-such-extension").await;
+
+        let raw = std::fs::read_to_string(&state_file).unwrap_or_default();
+        assert!(
+            !raw.contains("no-such-extension"),
+            "an unknown id must not be stored: {raw}"
+        );
+
+        // An id that does exist is still stored.
+        if let Some(reg) = codesmith_extensions::discover_static().first() {
+            let id = reg.metadata.id.to_string();
+            extension_command(&state, &format!("disable {id}")).await;
+            let raw = std::fs::read_to_string(&state_file).unwrap_or_default();
+            assert!(raw.contains(&id), "a real id is still stored: {raw}");
+        }
     }
 
     #[test]
