@@ -12,9 +12,11 @@ permissions:
   contents: read
 
 # Superseded runs on the same ref are cancelled; scheduled runs keep their
-# own group so a Monday sweep cannot cancel in-flight PR lanes.
+# own group so a Monday sweep cannot cancel in-flight PR lanes — or be
+# cancelled by a push to main (a schedule event's ref is the default branch,
+# the same value a push produces).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
