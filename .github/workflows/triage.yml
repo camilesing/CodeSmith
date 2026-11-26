@@ -28,7 +28,9 @@ jobs:
             // "feature request" as a phrase (or "request:") — a bare
             // "request" also matches "pull request" / "request timed out"
             // and stamps bug reports with the conflicting label.
-            if (/\b(feat(?:ure)?(?: request|:)|request:|enhancement|wishlist|proposal|please add|would be nice|support for)\b/.test(text)) labels.add('enhancement');
+            // (A `\b` cannot sit between `:` and the space after it, so the
+            // colon alternatives carry no trailing boundary.)
+            if (/\b(feat(?:ure)?(?: request\b|:)|request:|enhancement\b|wishlist\b|proposal\b|please add\b|would be nice\b|support for\b)/.test(text)) labels.add('enhancement');
             if (/\b(docs?|readme|documentation|typo|grammar|wording|spelling)\b/.test(text)) labels.add('documentation');
             // "how to reproduce/trigger/…" appears in virtually every bug
             // report template; only genuine asks ("how do/can I …") count.
