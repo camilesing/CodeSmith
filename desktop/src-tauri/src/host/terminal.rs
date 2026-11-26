@@ -708,7 +708,12 @@ pub async fn shells(_host: &HostState, args: &Value) -> Value {
     if str_arg(args, "agentId").is_none() {
         return rpc_error("gateway/arguments-invalid", "terminal/shells: no session");
     }
-    rpc_ok(json!(discover_shells()
+    // Resolving the shells stats the PATH: blocking work, kept off the
+    // async worker the way the spawn path does.
+    let shells = tokio::task::spawn_blocking(discover_shells)
+        .await
+        .unwrap_or_default();
+    rpc_ok(json!(shells
         .iter()
         .map(ShellProfile::json)
         .collect::<Vec<_>>()))
