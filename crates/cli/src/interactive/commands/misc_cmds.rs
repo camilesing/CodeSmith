@@ -970,20 +970,28 @@ const CHANGELOG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../..
 ///
 /// The summary is capped at [`RECAP_MAX_CHARS`], as Claude Code caps it: a
 /// recap that needs scrolling is a compaction, and `/compact` is that.
-pub async fn recap(state: &ReplState) {
+/// `/recap`'s prompt over the recent exchange: `None` below one exchange
+/// (one message is not a conversation), so nothing is asked of the model.
+fn recap_prompt(state: &ReplState) -> Option<String> {
     if state.api_messages.len() < 2 {
+        return None;
+    }
+    let digest = recent_digest(state, RECAP_SOURCE_MESSAGES);
+    Some(format!(
+        "Summarize this coding session in at most {RECAP_MAX_CHARS} characters, one or two \
+         sentences, for the person who was away: what was worked on, what state it is in now, \
+         and the next step if one is pending. No preamble, no bullet points.\n\n{digest}"
+    ))
+}
+
+pub async fn recap(state: &ReplState) {
+    let Some(prompt) = recap_prompt(state) else {
         println!(
             "{}",
             "nothing to recap yet — the session needs at least one exchange".dimmed()
         );
         return;
-    }
-    let digest = recent_digest(state, RECAP_SOURCE_MESSAGES);
-    let prompt = format!(
-        "Summarize this coding session in at most {RECAP_MAX_CHARS} characters, one or two \
-         sentences, for the person who was away: what was worked on, what state it is in now, \
-         and the next step if one is pending. No preamble, no bullet points.\n\n{digest}"
-    );
+    };
     let messages = vec![crate::models::Message {
         role: "user".to_string(),
         content: vec![crate::models::ContentBlock::Text {
@@ -1992,12 +2000,29 @@ mod tests {
         share(&mut state, Some("preview only")).await;
     }
 
-    #[tokio::test]
-    async fn recap_needs_two_messages() {
+    /// The guard itself, on the decision. The test used to run the one-shot,
+    /// which reaches a provider on any host holding a key, and asserted
+    /// nothing.
+    #[test]
+    fn recap_needs_two_messages() {
         let _env = scratch_env();
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut state = state_in(tmp.path());
-        recap(&state).await; // nothing to recap
+        assert!(
+            recap_prompt(&state).is_none(),
+            "an empty session has nothing to recap"
+        );
+        state.api_messages = std::sync::Arc::new(vec![crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        }]);
+        assert!(
+            recap_prompt(&state).is_none(),
+            "one message is not an exchange"
+        );
         state.api_messages = std::sync::Arc::new(vec![
             crate::models::Message {
                 role: "user".to_string(),
@@ -2014,6 +2039,10 @@ mod tests {
                 }],
             },
         ]);
-        recap(&state).await; // attempts a one-shot; fails cleanly engine-less
+        let prompt = recap_prompt(&state).expect("one exchange is enough");
+        assert!(
+            prompt.contains("hi there"),
+            "the digest carries the recent messages: {prompt}"
+        );
     }
 }
