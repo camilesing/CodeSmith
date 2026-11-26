@@ -40,9 +40,16 @@
 //!   runtimes — `prepare()` fails loud there).
 //! - `bash` must exist in the image (`bash -lc` runs the command); the
 //!   default image is chosen for it.
+//! - a read-only re-mount of a protected control-plane file protects one
+//!   exact spelling of its name. On a case-folding host filesystem (APFS,
+//!   NTFS and exFAT defaults) a variant such as `agents.md` reaches the same
+//!   host file through the writable workspace mount, so a `WorkspaceWrite`
+//!   run with a protected file is REFUSED there
+//!   ([`refuse_case_variant_escape`]) rather than reported as enforced.
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -299,6 +306,45 @@ const RUNTIME_INSTALL_HINT: &str = "gVisor (runsc) and Kata (kata-fc) need a Lin
 /// protected control-plane subpaths are re-mounted `:ro` AFTER their root
 /// — docker applies binds in order, a later deeper mount shadows (the
 /// bwrap lesson: hardened mounts after the writable binds).
+/// Whether the filesystem holding `dir` folds file-name case, probed from
+/// the host (the bind mount exposes the host's semantics). `None` when the
+/// probe itself could not run.
+fn directory_folds_case(dir: &Path) -> Option<bool> {
+    let probe = dir.join(format!("__codesmith_case_probe_{}", std::process::id()));
+    std::fs::write(&probe, b"").ok()?;
+    let folded = dir
+        .join(format!("__CODESMITH_CASE_PROBE_{}", std::process::id()))
+        .exists();
+    let _ = std::fs::remove_file(&probe);
+    Some(folded)
+}
+
+/// Refuse a `WorkspaceWrite` run that re-mounts a protected entry on a
+/// case-folding filesystem: the `:ro` mount point is one spelling of the
+/// name, and `echo PWNED > agents.md` reaches the same host file as
+/// `AGENTS.md` through the writable workspace mount. The mount table cannot
+/// express "this file, any spelling" — fail closed instead of claiming a
+/// protection the container does not deliver.
+fn refuse_case_variant_escape(policy: &SandboxPolicy, cwd: &Path) -> Result<()> {
+    let SandboxPolicy::WorkspaceWrite { .. } = policy else {
+        return Ok(());
+    };
+    let protected = policy
+        .get_writable_roots(cwd)
+        .iter()
+        .flat_map(|root| root.read_only_subpaths.iter())
+        .any(|subpath| subpath.exists());
+    if protected && directory_folds_case(cwd) == Some(true) {
+        bail!(
+            "SANDBOX_UNAVAILABLE: the container backend cannot keep read-only control-plane files \
+             read-only on a case-insensitive host filesystem (a case variant of a protected name \
+             reaches the same file through the workspace mount); use the local sandbox backend, \
+             or run from a case-sensitive volume"
+        );
+    }
+    Ok(())
+}
+
 fn build_run_args(
     runtime: Option<&'static str>,
     image: &str,
@@ -524,6 +570,7 @@ impl SandboxTaskPlane for ContainerEngine {
                 "the container backend cannot feed stdin to a detached task; pipe input inside the command instead"
             );
         }
+        refuse_case_variant_escape(&request.policy, &request.cwd)?;
         let name = format!("codesmith-shell-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let args = build_run_args(
             self.runtime,
@@ -675,6 +722,28 @@ mod tests {
             .filter(|w| w[0] == "-v")
             .map(|w| w[1].as_str())
             .collect()
+    }
+
+    /// A read-only re-mount protects one spelling of a name: on a
+    /// case-folding filesystem (probed, not assumed) a `WorkspaceWrite` run
+    /// with a protected file is refused; nothing else changes.
+    #[test]
+    fn protected_file_on_a_case_folding_filesystem_is_refused() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("AGENTS.md"), "guidance").expect("write");
+        let folded = directory_folds_case(tmp.path()).expect("the probe runs");
+
+        assert!(refuse_case_variant_escape(&SandboxPolicy::ReadOnly, tmp.path()).is_ok());
+        assert_eq!(
+            refuse_case_variant_escape(&workspace_write(), tmp.path()).is_err(),
+            folded,
+            "refused exactly where a case variant would reach the file"
+        );
+        std::fs::remove_file(tmp.path().join("AGENTS.md")).expect("remove");
+        assert!(
+            refuse_case_variant_escape(&workspace_write(), tmp.path()).is_ok(),
+            "no protected file, nothing to lose"
+        );
     }
 
     #[test]
