@@ -293,35 +293,42 @@ async function reattachActiveTurns() {
   for (const [chatId, state] of threadStore.listChats()) {
     if (!state?.threadId || !state.activeTurnId) continue;
 
-    const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
-    const runningTurn = latestRunningTurn(detail);
-    if (!runningTurn) {
-      await threadStore.patchChat(chatId, {
-        activeTurnId: null,
-        lastSeq: Number(detail.latest_seq || state.lastSeq || 0),
-        updatedAt: new Date().toISOString()
-      });
-      await sendText(chatId, `Bridge restarted. No active turn remains for ${state.threadId}.`);
-      continue;
-    }
-
-    const turnId = runningTurn.id || state.activeTurnId;
-    const sinceSeq = Number(state.lastSeq || 0);
-    await threadStore.patchChat(chatId, {
-      activeTurnId: turnId,
-      updatedAt: new Date().toISOString()
-    });
-    await sendText(
-      chatId,
-      `Bridge restarted. Reattaching to active turn ${turnId} from seq ${sinceSeq}.`
-    );
+    // Each chat's reattach is independent: one failing lookup (the runtime
+    // not listening yet, a thread that is gone) used to throw out of the
+    // whole loop, and every later chat kept a stale turn and lost its reply.
     try {
-      await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq);
-    } finally {
+      const detail = await runtimeJson(`/v1/threads/${encodeURIComponent(state.threadId)}`);
+      const runningTurn = latestRunningTurn(detail);
+      if (!runningTurn) {
+        await threadStore.patchChat(chatId, {
+          activeTurnId: null,
+          lastSeq: Number(detail.latest_seq || state.lastSeq || 0),
+          updatedAt: new Date().toISOString()
+        });
+        await sendText(chatId, `Bridge restarted. No active turn remains for ${state.threadId}.`);
+        continue;
+      }
+
+      const turnId = runningTurn.id || state.activeTurnId;
+      const sinceSeq = Number(state.lastSeq || 0);
       await threadStore.patchChat(chatId, {
-        activeTurnId: null,
+        activeTurnId: turnId,
         updatedAt: new Date().toISOString()
       });
+      await sendText(
+        chatId,
+        `Bridge restarted. Reattaching to active turn ${turnId} from seq ${sinceSeq}.`
+      );
+      try {
+        await streamTurnEvents(chatId, state.threadId, turnId, sinceSeq);
+      } finally {
+        await threadStore.patchChat(chatId, {
+          activeTurnId: null,
+          updatedAt: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error(`failed to reattach Feishu bridge chat ${chatId}`, error);
     }
   }
 }
