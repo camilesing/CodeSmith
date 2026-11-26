@@ -541,10 +541,6 @@ impl RhaiTurnExecutor {
                         break result.map_err(|e| anyhow::anyhow!("{e}"));
                     }
                     Some(LoopMsg::Call { call, reply }) => {
-                        if aborted.load(Ordering::Relaxed) {
-                            let _ = reply.send(LoopReply::Err("turn cancelled".into()));
-                            continue;
-                        }
                         let answered = self
                             .serve_one(
                                 call,
@@ -568,8 +564,15 @@ impl RhaiTurnExecutor {
                 },
             }
         };
-        // Let a CPU-bound script observe the abort flag via on_progress;
-        // bound the join so a wedged script cannot hang the turn forever.
+        // Close the call channel BEFORE the join: a capability call that
+        // raced into the queue just before the loop broke would otherwise
+        // wait forever for a reply nobody gives. Dropped, its reply sender
+        // closes and the script's `recv()` fails ("loop host dropped the
+        // reply"); later sends fail the same way — that is how a cancelled
+        // turn makes every further capability call return an error. The
+        // script then ends at its next operation or blocked call, which is
+        // what bounds the join.
+        drop(rx);
         let _ = tokio::task::spawn_blocking(move || {
             let _ = script.join();
         })
