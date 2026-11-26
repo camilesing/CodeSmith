@@ -42,7 +42,7 @@ crate_version_status() {
   # 403 (which the status branching would then report as "unknown" for
   # every crate).
   status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
-    -H 'User-Agent: codesmith-release-checks (https://github.com/codesmith)' \
+    -H 'User-Agent: codesmith-release-checks (https://github.com/camilesing/CodeSmith)' \
     "https://crates.io/api/v1/crates/${crate_name}/${crate_version}")" || {
     echo "unknown"
     return 0
