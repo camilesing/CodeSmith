@@ -99,6 +99,12 @@ pub fn run() {
                         });
                         if let Err(err) = serve_bridge(host, port).await {
                             eprintln!("codesmith desktop: bridge failed: {err:#}");
+                            // Nothing is left to serve: a window that stayed
+                            // open would silently drive whichever process owns
+                            // the port (a second instance), or fall into the
+                            // offline stubs.
+                            eprintln!("codesmith desktop: exiting (bridge unavailable)");
+                            std::process::exit(1);
                         }
                     }
                     Err(err) => {
