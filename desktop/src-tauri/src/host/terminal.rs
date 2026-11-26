@@ -508,19 +508,6 @@ impl Terminal {
     }
 }
 
-/// Split the longest valid UTF-8 prefix of a PTY chunk — multibyte sequences
-/// can split across reads (upstream decodes with a streaming TextDecoder).
-fn split_utf8_prefix(buf: &[u8]) -> (&str, &[u8]) {
-    match std::str::from_utf8(buf) {
-        Ok(text) => (text, &[]),
-        Err(err) => {
-            let valid = err.valid_up_to();
-            let text = std::str::from_utf8(&buf[..valid]).unwrap_or("");
-            (text, &buf[valid..])
-        }
-    }
-}
-
 /// The reader thread: pumps the PTY into the mirrored screen until EOF, then
 /// waits on the child (it owns the `Child`) and publishes the exit state.
 /// A read error (EIO once the child dies) is the EOF.
@@ -537,10 +524,8 @@ fn reader_loop(
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
-                    carry.extend_from_slice(&buf[..read]);
-                    let (text, rest) = split_utf8_prefix(&carry);
-                    terminal.emit_output(text);
-                    carry = rest.to_vec();
+                    // The trailing incomplete sequence stays in the carry.
+                    terminal.emit_output(&super::decode_utf8_prefix(&mut carry, &buf[..read]));
                 }
             }
         }
@@ -1314,15 +1299,18 @@ mod tests {
     fn utf8_prefix_split_survives_multibyte_boundaries() {
         let bytes = "héllo".as_bytes(); // é is two bytes
         let split = 2; // 'h' plus the incomplete lead byte of é
-        let (text, rest) = split_utf8_prefix(&bytes[..split]);
-        assert_eq!(text, "h");
+        let mut carry = Vec::new();
+        assert_eq!(
+            crate::host::decode_utf8_prefix(&mut carry, &bytes[..split]),
+            "h"
+        );
         // The carry retains the incomplete lead byte for the next chunk.
-        assert_eq!(rest, &bytes[split - 1..split]);
-        let mut carry = rest.to_vec();
-        carry.extend_from_slice(&bytes[split..]);
-        let (text, rest) = split_utf8_prefix(&carry);
-        assert_eq!(text, "éllo");
-        assert!(rest.is_empty());
+        assert_eq!(carry, bytes[split - 1..split]);
+        assert_eq!(
+            crate::host::decode_utf8_prefix(&mut carry, &bytes[split..]),
+            "éllo"
+        );
+        assert!(carry.is_empty());
     }
 
     /// Upstream's `profile()` derives the interactive flags from the shell

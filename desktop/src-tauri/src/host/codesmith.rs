@@ -358,12 +358,16 @@ impl CodesmithProcess {
         if !resp.status().is_success() {
             bail!("GET {path}: {}", resp.status());
         }
+        // Decoded across chunk boundaries: a multi-byte character straddling
+        // two reads stays whole.
+        let mut carry = Vec::new();
         Ok(resp
             .bytes_stream()
-            .map(|chunk| {
+            .map(move |chunk| {
+                let err = |err: reqwest::Error| anyhow::anyhow!("sse body: {err}");
                 chunk
-                    .map_err(|err| anyhow::anyhow!("sse body: {err}"))
-                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .map(|bytes| super::decode_utf8_prefix(&mut carry, &bytes))
+                    .map_err(err)
             })
             .boxed())
     }

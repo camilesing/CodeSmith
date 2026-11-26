@@ -727,6 +727,47 @@ async fn stream_baseline(host: &HostState, endpoint: &str) -> Result<Vec<Value>>
     }
 }
 
+/// Decode one chunk of a byte stream into text, keeping a trailing
+/// incomplete UTF-8 sequence in `carry` for the next chunk (a multi-byte
+/// character can straddle two reads); an invalid sequence becomes one
+/// replacement character and decoding continues. The SSE line stream and the
+/// terminal's PTY reader share it.
+pub(super) fn decode_utf8_prefix(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
+    carry.extend_from_slice(bytes);
+    let mut out = String::new();
+    let mut rest = carry.as_slice();
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(text) => {
+                out.push_str(text);
+                rest = &[];
+                break;
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                out.push_str(std::str::from_utf8(&rest[..valid]).unwrap_or(""));
+                match err.error_len() {
+                    // Truncated at the end of the buffer: it may complete
+                    // with the next chunk, which starts from it.
+                    None => {
+                        rest = &rest[valid..];
+                        break;
+                    }
+                    // An invalid sequence: one replacement character, then on.
+                    Some(bad) => {
+                        out.push('\u{FFFD}');
+                        rest = &rest[valid + bad..];
+                    }
+                }
+            }
+        }
+    }
+    let tail = rest.to_vec();
+    carry.clear();
+    carry.extend_from_slice(&tail);
+    out
+}
+
 #[derive(serde::Deserialize)]
 struct ThreadSummary {
     id: String,
@@ -1664,6 +1705,23 @@ mod tests {
             path,
             previous,
         }
+    }
+
+    /// Found in the desktop: each SSE chunk was decoded lossily on its own,
+    /// so a multi-byte character straddling two reads became two replacement
+    /// characters in the live transcript.
+    #[test]
+    fn a_character_split_across_chunks_survives_the_decode() {
+        let mut carry = Vec::new();
+        assert_eq!(decode_utf8_prefix(&mut carry, &[b'a', 0xE4]), "a");
+        assert_eq!(
+            decode_utf8_prefix(&mut carry, &[0xB8, 0xAD, b'b']),
+            "\u{4E2D}b"
+        );
+        assert!(carry.is_empty());
+        // An invalid byte is one replacement character and never stalls the stream.
+        assert_eq!(decode_utf8_prefix(&mut carry, &[0xFF, b'c']), "\u{FFFD}c");
+        assert!(carry.is_empty());
     }
 
     fn test_host(base_url: String, cwd: std::path::PathBuf) -> SharedHost {
