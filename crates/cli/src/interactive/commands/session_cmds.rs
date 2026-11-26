@@ -349,7 +349,14 @@ pub async fn resume(state: &mut ReplState, arg: Option<&str>) {
             }
         },
     };
-    let _ = super::super::state::resume_session(state, &id).await;
+    // Every sibling here reports a dropped sync: the REPL has switched
+    // while the engine keeps serving the previous session.
+    if let Err(err) = super::super::state::resume_session(state, &id).await {
+        println!(
+            "{} warning: the engine did not accept the session sync: {err:#}",
+            "✗".red()
+        );
+    }
 }
 
 /// `Ok(true)`: a unique id match. `Ok(false)`: no session carries the
