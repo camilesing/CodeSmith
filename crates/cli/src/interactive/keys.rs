@@ -569,6 +569,9 @@ mod imp {
                 let _ = thread.join();
             }
             if let Some(orig) = self.orig.take() {
+                // Bracketed paste off again before the cooked mode returns:
+                // the prompt owns that mode while it reads.
+                let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[?2004l");
                 // SAFETY: restoring the fd-0 state `arm` captured earlier.
                 // A failed restore leaves the terminal non-canonical with
                 // echo off — the user's shell looks broken after exit — so
@@ -604,7 +607,11 @@ mod imp {
             // spelling (bare Ctrl+S / Ctrl+X Ctrl+S) would reach `read`,
             // and output would freeze until Ctrl+Q — the app looks hung.
             // Restored with the saved `orig` on drop.
-            noncanonical.c_iflag &= !libc::IXON;
+            // ICRNL is on by default (the pty and the shell leave it for
+            // children): it mapped Enter's CR to LF before `read` saw it, so
+            // the decoder took Enter for "newline" and never for "queue". The
+            // CR mappings go with IXON; INLCR and IGNCR go too so LF stays LF.
+            noncanonical.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
             // VMIN=0 / VTIME=1: read(2) returns after 0.1s with no data,
             // giving the thread a chance to observe the stop flag.
             noncanonical.c_cc[libc::VMIN] = 0;
@@ -613,6 +620,11 @@ mod imp {
                 self.disabled = true;
                 return;
             }
+            // Bracketed paste for as long as the tap reads: the prompt turns
+            // it off when it returns, and with CR no longer mapped a pasted
+            // multi-line block would queue once per Enter. The decoder reads
+            // what sits between the markers as text.
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[?2004h");
             self.stop = Arc::new(AtomicBool::new(false));
             self.orig = Some(orig);
             self.thread = Some(spawn_reader(self.tx.clone(), self.stop.clone()));
