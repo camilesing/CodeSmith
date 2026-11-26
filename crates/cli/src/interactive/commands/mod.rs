@@ -1340,15 +1340,18 @@ fn cmd_preset(state: &mut ReplState, arg: &str) {
     }
     let name = arg.to_string();
     state.apply_preset_at_startup(&name);
+    // Compare case-insensitively — the catalog resolves `/preset Simple`
+    // like `/preset simple` — and persist the canonical name. Compared to
+    // the typed one, the command reported "not found" and never saved.
     match state.active_preset.as_deref() {
-        Some(applied) if applied == name => {
+        Some(applied) if applied.eq_ignore_ascii_case(&name) => {
             println!("preset: {applied} (live dials applied)");
             // Persist the selection so the next start picks it up (mirrors
             // the retired /preset command, which wrote
             // `settings.active_preset`).
             match crate::settings::Settings::load() {
                 Ok(mut settings) => {
-                    settings.active_preset = Some(name);
+                    settings.active_preset = Some(applied.to_string());
                     if let Err(err) = settings.save() {
                         println!(
                             "{}",
@@ -1693,6 +1696,54 @@ mod tests {
         assert_eq!(
             plain.approval_mode,
             codesmith_agent_runtime::mode::ApprovalMode::default()
+        );
+    }
+
+    struct PresetScratch {
+        _dir: tempfile::TempDir,
+        _home: codesmith_agent_runtime::test_support::EnvVarGuard,
+        _smith_home: codesmith_agent_runtime::test_support::EnvVarGuard,
+        state: ReplState,
+    }
+
+    impl PresetScratch {
+        /// A scratch home with one exported user preset, `exporter`. The
+        /// caller holds the env lock.
+        fn with_exported_preset() -> Self {
+            use codesmith_agent_runtime::test_support::EnvVarGuard;
+            let dir = tempfile::TempDir::new().expect("tempdir");
+            let home = EnvVarGuard::set("HOME", dir.path());
+            let smith_home = EnvVarGuard::set("CODESMITH_HOME", dir.path().join(".codesmith"));
+            let mut state = ReplState::new(test_options(), &crate::config::Config::default());
+            export_preset(&mut state, "exporter");
+            Self {
+                _dir: dir,
+                _home: home,
+                _smith_home: smith_home,
+                state,
+            }
+        }
+    }
+
+    /// Found in the review: `/preset Middle` applies the preset (the
+    /// catalog resolves names case-insensitively) but the typed name was
+    /// compared to the canonical one case-sensitively — the command
+    /// reported "not found" and never persisted the selection.
+    #[test]
+    fn preset_compares_case_insensitively_and_persists_the_canonical_name() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let mut scratch = PresetScratch::with_exported_preset();
+
+        cmd_preset(&mut scratch.state, "EXPORTER");
+
+        assert_eq!(scratch.state.active_preset.as_deref(), Some("exporter"));
+        assert_eq!(
+            crate::settings::Settings::load()
+                .expect("settings")
+                .active_preset
+                .as_deref(),
+            Some("exporter"),
+            "the canonical name is what gets persisted"
         );
     }
 
