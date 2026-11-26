@@ -487,6 +487,25 @@ fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -
             keyring_failure = Some(err);
         }
     }
+    // A `[[providers.custom]]` entry carries its own key, and the
+    // credential store keeps it under the entry id: left alone,
+    // `custom_provider = "acme"` kept authenticating after "logged out",
+    // and `auth status` / `auth list` never showed it.
+    for entry in &mut store.config.providers.custom {
+        entry.api_key = None;
+        let deleted = secrets.delete(&entry.id).with_context(|| {
+            format!(
+                "could not delete the custom provider '{}' key from {}",
+                entry.id,
+                secrets.backend_name()
+            )
+        });
+        if let Err(err) = deleted
+            && keyring_failure.is_none()
+        {
+            keyring_failure = Some(err);
+        }
+    }
     store.config.auth_mode = None;
     // The config is saved before any keyring failure is returned: the file
     // IS cleared, and keys that are still live in the store must not be
@@ -2072,6 +2091,18 @@ mod tests {
         store.config.api_key = Some("sk-stale".to_string());
         store.config.providers.deepseek.api_key = Some("sk-stale".to_string());
         store.config.providers.fireworks.api_key = Some("fw-stale".to_string());
+        // Found in the review: a custom provider's key is a credential too
+        // — `logout` used to leave it, so `custom_provider = "acme"` kept
+        // authenticating.
+        store
+            .config
+            .providers
+            .custom
+            .push(codesmith_config::CustomProviderToml {
+                id: "acme".to_string(),
+                api_key: Some("sk-acme".to_string()),
+                ..Default::default()
+            });
         store.save().unwrap();
 
         let secrets = no_keyring_secrets();
@@ -2081,6 +2112,10 @@ mod tests {
         assert!(store.config.api_key.is_none());
         assert!(store.config.providers.deepseek.api_key.is_none());
         assert!(store.config.providers.fireworks.api_key.is_none());
+        assert_eq!(
+            store.config.providers.custom[0].api_key, None,
+            "a custom provider's key goes too"
+        );
 
         let _ = std::fs::remove_file(path);
     }
