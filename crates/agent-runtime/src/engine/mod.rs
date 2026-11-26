@@ -1598,11 +1598,21 @@ impl Engine {
             content,
         )
         .await;
-        self.session
-            .working_set
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .observe_user_message(&content, &self.session.workspace);
+        {
+            // The probe stats every path-like token of the message: keep it
+            // off the op loop (it stalls on slow mounts).
+            let working_set = std::sync::Arc::clone(&self.session.working_set);
+            let workspace = self.session.workspace.clone();
+            let observed = content.clone();
+            tokio::task::spawn_blocking(move || {
+                working_set
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .observe_user_message(&observed, &workspace);
+            })
+            .await
+            .expect("the working-set probe does not panic");
+        }
         let _force_update_plan_first = should_force_update_plan_first(mode, &content);
 
         // Three-zone contract (#2264 Phase 2): stage this turn's composition
@@ -3214,7 +3224,14 @@ impl Engine {
         if let Some(pool) = self.mcp_pool.as_ref() {
             return Ok(Arc::clone(pool));
         }
-        let mut pool = McpPool::from_config_path(&self.session.mcp_config_path)
+        // The load reads and stats the config file: keep it off the op
+        // loop (it stalls on slow mounts).
+        let config_path = self.session.mcp_config_path.clone();
+        let mut pool = tokio::task::spawn_blocking(move || McpPool::from_config_path(&config_path))
+            .await
+            .map_err(|join| {
+                ToolError::execution_failed(format!("MCP config load task failed: {join}"))
+            })?
             .map_err(|e| ToolError::execution_failed(format!("Failed to load MCP config: {e}")))?;
         if let Some(decider) = self.config.network_policy.as_ref() {
             pool = pool.with_network_policy(decider.clone());
