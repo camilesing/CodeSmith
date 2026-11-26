@@ -205,6 +205,8 @@ fn list_directory(root: &Path, query: &str) -> Result<Vec<Candidate>, RefError> 
         return Ok(Vec::new());
     }
     let absolute = files::resolve_target(root, display_directory)?;
+    // The path form follows a link on the way: fence on where it leads.
+    files::fence_canonical(&absolute, root, display_directory)?;
     let entries = read_directory(&absolute)?;
     let mut candidates = Vec::new();
     for entry in entries {

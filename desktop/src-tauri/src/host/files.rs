@@ -100,9 +100,9 @@ pub(super) fn resolve_target(root: &Path, path: &str) -> Result<PathBuf, FileErr
     } else {
         root.join(path)
     };
-    // Lexical containment: the tree never escapes the root through `..`
-    // (a symlink that escapes is a runtime fact only a canonicalize would
-    // catch; the read path's no-follow gate keeps content reads inside).
+    // Lexical containment: the tree never escapes the root through `..`.
+    // A link on the way is a filesystem fact only a canonicalize catches —
+    // `fence_canonical` is the second gate, on the paths that get opened.
     let normalized = normalize(&candidate);
     if !normalized.starts_with(root) {
         return Err(FileError::new(
@@ -111,6 +111,28 @@ pub(super) fn resolve_target(root: &Path, path: &str) -> Result<PathBuf, FileErr
         ));
     }
     Ok(normalized)
+}
+
+/// The workspace fence on the real path. `resolve_target` is lexical; a
+/// directory symlink inside the workspace (shipped in a cloned repository,
+/// or made by a tool) led `list`, `read` and the `@` directory query to
+/// files outside it, because every route follows the link on the way. This
+/// resolves every link and answers `workspace-file/outside-workspace` unless
+/// the target's real path lies under the root's. A target that cannot be
+/// resolved is left to the caller's own not-found answer.
+pub(super) fn fence_canonical(target: &Path, root: &Path, path: &str) -> Result<(), FileError> {
+    let (Ok(canonical), Ok(canonical_root)) =
+        (std::fs::canonicalize(target), std::fs::canonicalize(root))
+    else {
+        return Ok(());
+    };
+    if canonical.starts_with(&canonical_root) {
+        return Ok(());
+    }
+    Err(FileError::new(
+        "workspace-file/outside-workspace",
+        format!("{path} resolves outside the workspace"),
+    ))
 }
 
 /// Resolve one `readBytes` target against its base file's directory
@@ -221,6 +243,8 @@ async fn list_inner(host: &HostState, args: &Value) -> Result<Value, FileError> 
         let metadata = std::fs::metadata(&target).map_err(|_| {
             FileError::new("workspace-file/not-found", format!("{path_cl} not found"))
         })?;
+        // `metadata` follows a link on the way: fence on where it leads.
+        fence_canonical(&target, &root_cl, &path_cl)?;
         if !metadata.is_dir() {
             return Err(FileError::new(
                 "workspace-file/not-directory",
@@ -492,17 +516,25 @@ pub(super) async fn locate(
     let root = workspace_root(host, session_id).await?;
     let target = resolve_target(Path::new(&root), path)?;
     let stat_target = target.clone();
-    let metadata = tokio::task::spawn_blocking(move || std::fs::symlink_metadata(&stat_target))
-        .await
-        .map_err(|err| FileError::new("gateway/internal", format!("stat join: {err}")))?
-        .map_err(|_| FileError::new("workspace-file/not-found", format!("{path} not found")))?;
-    // The read gate: no following the final component's symlink.
-    if metadata.file_type().is_symlink() {
-        return Err(FileError::new(
-            "workspace-file/not-found",
-            format!("{path} is a symlink"),
-        ));
-    }
+    let stat_root = root.clone();
+    let stat_path = path.to_string();
+    let metadata = tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::symlink_metadata(&stat_target).map_err(|_| {
+            FileError::new("workspace-file/not-found", format!("{stat_path} not found"))
+        })?;
+        // The read gate: no following the final component's symlink.
+        if metadata.file_type().is_symlink() {
+            return Err(FileError::new(
+                "workspace-file/not-found",
+                format!("{stat_path} is a symlink"),
+            ));
+        }
+        // … and no following a link on the way out of the workspace.
+        fence_canonical(&stat_target, Path::new(&stat_root), &stat_path)?;
+        Ok::<std::fs::Metadata, FileError>(metadata)
+    })
+    .await
+    .map_err(|err| FileError::new("gateway/internal", format!("stat join: {err}")))??;
     Ok((target, metadata))
 }
 

@@ -1724,6 +1724,68 @@ mod tests {
         assert!(carry.is_empty());
     }
 
+    /// Found by the test review: the workspace fence was lexical, so a
+    /// directory symlink inside the workspace (shipped in a cloned
+    /// repository, or made by a tool) let `list`, `read` and the `@`
+    /// directory query reach files outside the session workspace.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_directory_symlink_cannot_lead_the_file_routes_outside_the_workspace() {
+        let home = test_home("files-symlink-fence");
+        let outside = home.path.join("outside");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        std::fs::write(outside.join("secret.txt"), b"outside").expect("secret");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        std::os::unix::fs::symlink(&outside, cwd.join("link")).expect("symlink");
+        let host = test_host(fake_runtime(cwd.clone()).await, cwd.clone());
+
+        let read = dispatch(
+            &host,
+            "workspaceFiles/read",
+            &json!({ "args": { "workspaceFileScopeId": "thr_a", "path": "link/secret.txt" } }),
+        )
+        .await;
+        assert_eq!(
+            read["error"]["code"],
+            json!("workspace-file/outside-workspace"),
+            "{read}"
+        );
+        let list = dispatch(
+            &host,
+            "workspaceFiles/list",
+            &json!({ "args": { "workspaceFileScopeId": "thr_a", "path": "link" } }),
+        )
+        .await;
+        assert_eq!(
+            list["error"]["code"],
+            json!("workspace-file/outside-workspace"),
+            "{list}"
+        );
+        let references = dispatch(
+            &host,
+            "fileReferences/list",
+            &json!({ "request": { "sessionId": "thr_a", "query": "link/" } }),
+        )
+        .await;
+        assert!(
+            !references.to_string().contains("secret"),
+            "the `@` directory query must not list the outside directory: {references}"
+        );
+
+        // A link that stays inside the workspace is still followed.
+        std::fs::create_dir_all(cwd.join("real")).expect("real dir");
+        std::fs::write(cwd.join("real").join("inner.txt"), b"inner").expect("inner");
+        std::os::unix::fs::symlink("real", cwd.join("inside")).expect("inside link");
+        let inside = dispatch(
+            &host,
+            "workspaceFiles/read",
+            &json!({ "args": { "workspaceFileScopeId": "thr_a", "path": "inside/inner.txt" } }),
+        )
+        .await;
+        assert_eq!(inside["value"]["text"], json!("inner"), "{inside}");
+    }
+
     fn test_host(base_url: String, cwd: std::path::PathBuf) -> SharedHost {
         Arc::new(HostState {
             backend: codesmith::CodesmithProcess::for_test(base_url, "test-token".into()),
