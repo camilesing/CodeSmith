@@ -4367,6 +4367,29 @@ pub(crate) fn load_config_from_cli_with_exec_model(
         config.custom_provider = Some(id.to_string());
         config.validate()?;
     }
+    // Top-level `--approval-policy` / `--sandbox-mode`: parsed and listed in
+    // `--help` since the flags landed, but never read — the session ran on
+    // the config/default posture. An explicit flag wins over config.toml.
+    if let Some(policy) = cli
+        .approval_policy
+        .as_deref()
+        .map(str::trim)
+        .filter(|policy| !policy.is_empty())
+    {
+        config.approval_policy = Some(policy.to_string());
+    }
+    if let Some(mode) = cli
+        .sandbox_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+    {
+        config.sandbox_mode = Some(mode.to_string());
+    }
+    if cli.approval_policy.is_some() || cli.sandbox_mode.is_some() {
+        // Re-validate so a bad value fails loud here.
+        config.validate()?;
+    }
     config.require_explicit_model_on_custom_gateway(exec_model)?;
     cli.feature_toggles.apply(&mut config)?;
     // Fold the CLI preset selection in so every subcommand (doctor,
@@ -7608,6 +7631,26 @@ mod project_config_tests {
             }
         }
         result
+    }
+
+    /// `--approval-policy` / `--sandbox-mode` were parsed and advertised but
+    /// never applied: the session ran on the config/default posture.
+    #[test]
+    fn cli_approval_and_sandbox_flags_reach_the_config() {
+        let tmp = tempdir().expect("tempdir");
+        with_home_dir(tmp.path(), || {
+            let cli = Cli::try_parse_from([
+                "codesmith",
+                "--approval-policy",
+                "never",
+                "--sandbox-mode",
+                "read-only",
+            ])
+            .expect("flags parse");
+            let config = load_config_from_cli_with_exec_model(&cli, None).expect("config loads");
+            assert_eq!(config.approval_policy.as_deref(), Some("never"));
+            assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+        });
     }
 
     #[test]
