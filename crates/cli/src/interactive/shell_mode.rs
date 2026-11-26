@@ -21,9 +21,9 @@
 //!   [`MAX_OUTPUT_CHARS`]; a command that prints more says so rather than
 //!   flooding the model's context.
 //! - Pasting text that starts with `!` enters shell mode too (the prefix is
-//!   read from the line, not from the keystroke), but there is no
-//!   shell-history completion yet — `Up` recalls the prompt line, not the
-//!   `!` command history.
+//!   read from the line, not from the keystroke). Tab completes paths and
+//!   earlier `!` commands; `Up` still recalls the whole prompt line rather
+//!   than `!` history on its own.
 
 /// Cap on the output carried into the conversation.
 pub const MAX_OUTPUT_CHARS: usize = 20_000;
