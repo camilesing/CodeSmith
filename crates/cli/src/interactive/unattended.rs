@@ -159,7 +159,12 @@ async fn run(
                         return;
                     }
                     if *owned_rx.borrow_and_update() {
-                        // Main loop takes over: publish "parked" and park.
+                        // Main loop takes over. An assistant message that
+                        // is mid-flight has only been buffered so far, and
+                        // the main loop's pump prints the deltas still to
+                        // come: without this flush the answer appears on
+                        // screen without its beginning.
+                        flush_partial(&mut assistant_buffer);
                         let _ = parked_tx.send(true);
                         break;
                     }
@@ -181,18 +186,22 @@ async fn run(
     }
 }
 
+/// Print an assistant message this pump will not see completed, and hand
+/// the buffer back empty.
+fn flush_partial(assistant: &mut String) {
+    let text = std::mem::take(assistant);
+    if !text.trim().is_empty() {
+        println!("\n{text}");
+    }
+}
+
 /// Answer interactive requests and print a minimal view of everything else.
 async fn handle_unattended(engine: &EngineHandle, event: Event, assistant: &mut String) {
     match event {
         Event::MessageDelta { content, .. } => {
             assistant.push_str(&content);
         }
-        Event::MessageComplete { .. } => {
-            let text = std::mem::take(assistant);
-            if !text.trim().is_empty() {
-                println!("\n{text}");
-            }
-        }
+        Event::MessageComplete { .. } => flush_partial(assistant),
         Event::ToolCallStarted { name, input, .. } => {
             let args = crate::tool_summary::summarize_tool_args(&input)
                 .map(|summary| format!(" {summary}"))
@@ -274,6 +283,20 @@ mod tests {
     /// nothing special-cases (or drops) `synthesized` turns at the prompt.
     /// The ACP side of the invariant (a synthesized turn never completes a
     /// pending client prompt) is pinned in `acp_server`'s tests.
+    /// Found in the review: a message buffered by the unattended pump was
+    /// dropped when the pump parked mid-message — the first half of the
+    /// answer never printed. The flush hands the buffer over (empty
+    /// afterwards); whitespace-only text prints nothing.
+    #[test]
+    fn flushing_a_partial_message_empties_the_buffer() {
+        let mut assistant = String::from("the first half of an answer");
+        flush_partial(&mut assistant);
+        assert!(assistant.is_empty(), "the buffered text is handed over");
+        let mut assistant = String::from("  \n ");
+        flush_partial(&mut assistant);
+        assert!(assistant.is_empty());
+    }
+
     #[tokio::test]
     async fn synthesized_turn_sequence_flows_through_the_unattended_handler() {
         use crate::config::Config;
