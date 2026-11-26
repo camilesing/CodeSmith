@@ -1190,7 +1190,7 @@ async fn events_result_for_unknown_event_is_an_idempotent_noop() {
 
 #[tokio::test]
 async fn pending_waterfall_is_redelivered_to_a_late_stream_and_settled_by_the_runtime() {
-    let (home, client, base, fake, _host, _ws) = spawn_stack("redeliver").await;
+    let (home, client, base, fake, host, _ws) = spawn_stack("redeliver").await;
     let value = rpc(
         &client,
         &base,
@@ -1206,8 +1206,19 @@ async fn pending_waterfall_is_redelivered_to_a_late_stream_and_settled_by_the_ru
         "event": "approval.required",
         "payload": { "id": "appr_late", "tool_name": "bash", "description": "ls" },
     }));
-    // Give the watcher a beat to register the pending input.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The watcher registers the pending input before the stream opens:
+    // wait for that state, not a timer (a slow watcher used to let the live
+    // push satisfy this test without any re-delivery).
+    for _ in 0..250 {
+        if host.pending_inputs.lock().await.contains_key("appr_late") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        host.pending_inputs.lock().await.contains_key("appr_late"),
+        "the waterfall must be pending before the stream opens"
+    );
     // A stream connecting afterwards still sees it (upstream re-delivers
     // pending waterfalls to every connecting client).
     let mut ws = open_mux_stream(&base, "ev", "$events", json!({ "args": {} })).await;
