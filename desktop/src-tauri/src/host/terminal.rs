@@ -27,7 +27,8 @@
 //! scrolled-off history as plain text (vt100's viewport cannot walk its
 //! scrollback, so the host keeps its own stripped-text ring — no colors past
 //! the visible screen, and the ring may duplicate lines still visible);
-//! close signals the shell's process group with TERM then KILL but a
+//! close signals the shell itself with TERM then KILL — never a tab whose
+//! shell already exited: that pid may be an unrelated process by now — but a
 //! grandchild that holds the PTY open only loses its output stream, not its
 //! life; `shellPath` accepts any existing executable path, not only
 //! discovered shells (this host has no sandboxed subprocess provider to
@@ -1009,11 +1010,20 @@ async fn close_terminal(id: &str, terminal: &Terminal) -> anyhow::Result<()> {
         shared.closing = true;
         terminal.broadcast_state(id, &mut shared);
     }
-    // TERM to the process group, then KILL; the reader thread publishes the
-    // exit state and drains whatever the shell printed while dying.
+    // A shell that already left the running state was reaped by the reader
+    // thread: its pid number is free and may be an unrelated process by now,
+    // so it is never signalled (found in the desktop: closing a long-exited
+    // tab sent TERM to a recycled pid).
+    if terminal.exited() {
+        terminal.finish_followers();
+        return Ok(());
+    }
+    // TERM to the shell, then KILL; the reader thread publishes the exit
+    // state and drains whatever the shell printed while dying.
     #[cfg(unix)]
     if let Some(pgid) = terminal.process_group {
-        // SAFETY: a plain kill(2) to the shell's own process group.
+        // SAFETY: a plain kill(2) to the shell itself (a positive id
+        // addresses that one process, not its group).
         unsafe { libc::kill(pgid, libc::SIGTERM) };
     }
     let exited = tokio::time::timeout(CLOSE_GRACE, async {
