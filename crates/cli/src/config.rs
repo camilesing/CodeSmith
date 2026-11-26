@@ -3035,12 +3035,26 @@ impl Config {
         )
     }
 
-    /// Return the configured vision model config, inheriting api_key from main config.
+    /// Return the configured vision model config. A table without its own
+    /// `api_key` inherits the active provider's resolved key when it targets
+    /// the same endpoint — the root `api_key` is DeepSeek's legacy slot, and
+    /// with any other main provider every image request went out with an
+    /// empty bearer.
     #[must_use]
     pub fn vision_model_config(&self) -> Option<VisionModelConfig> {
         let mut config = self.vision_model.clone()?;
         if config.api_key.is_none() {
-            config.api_key = self.api_key.clone();
+            let same_endpoint = config
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|base| !base.is_empty())
+                .is_none_or(|base| normalize_base_url(base) == self.provider_base_url());
+            config.api_key = self.api_key.clone().or_else(|| {
+                same_endpoint
+                    .then(|| self.provider_api_key().ok())
+                    .flatten()
+            });
         }
         Some(config)
     }
@@ -9973,6 +9987,47 @@ model = "deepseek-ai/deepseek-v4-pro"
             provider_capability(ApiProvider::XiaomiMimo, DEFAULT_XIAOMI_MIMO_MODEL)
                 .vision_supported
         );
+    }
+
+    /// Found in the review: the vision table inherited only the root
+    /// `api_key` — DeepSeek's legacy slot — so with any other main provider
+    /// every image request went out with an empty bearer.
+    #[test]
+    fn vision_model_inherits_the_active_providers_key() {
+        let vision = VisionModelConfig {
+            model: "gpt-4o-mini".to_string(),
+            api_key: None,
+            base_url: None,
+        };
+        let config = Config {
+            provider: Some("openai".to_string()),
+            providers: Some(ProvidersConfig {
+                openai: ProviderConfig {
+                    api_key: Some("sk-openai".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            vision_model: Some(vision.clone()),
+            ..Default::default()
+        };
+        let key = |config: &Config| {
+            config
+                .vision_model_config()
+                .and_then(|vision| vision.api_key)
+        };
+        assert_eq!(key(&config).as_deref(), Some("sk-openai"));
+
+        // Its own key still wins.
+        let own = VisionModelConfig {
+            api_key: Some("sk-vision".to_string()),
+            ..vision
+        };
+        let config = Config {
+            vision_model: Some(own),
+            ..config
+        };
+        assert_eq!(key(&config).as_deref(), Some("sk-vision"));
     }
 
     #[test]
