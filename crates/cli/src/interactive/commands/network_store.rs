@@ -226,7 +226,15 @@ fn add_host(table: &mut Table, key: &str, host: &str) -> anyhow::Result<()> {
 }
 
 fn remove_host(table: &mut Table, key: &str, host: &str) -> anyhow::Result<()> {
-    let list = string_array_mut(table, key)?;
+    // Nothing to remove from an absent list — and creating an empty one
+    // here wrote `allow = []` / `deny = []` into a config that had no
+    // `[network]` lists at all.
+    let Some(item) = table.get_mut(key) else {
+        return Ok(());
+    };
+    let list = item
+        .as_array_mut()
+        .with_context(|| format!("`network.{key}` must be an array of strings"))?;
     list.retain(|value| {
         value
             .as_str()
@@ -407,6 +415,21 @@ mod tests {
             let err = network_inner(Some(arg)).expect_err("an authority is not a host");
             assert!(err.to_string().contains("host like"), "{arg}: {err}");
         }
+    }
+
+    /// Found in the review: `remove` on a config with no `[network]`
+    /// lists created them — `allow = []` and `deny = []` — and reported a
+    /// removal although nothing was there.
+    #[test]
+    fn remove_on_a_config_without_lists_writes_no_empty_arrays() {
+        let _env = lock_test_env();
+        let (_guard, _dir, path) = scoped_config("");
+        network_inner(Some("remove x.com")).expect("remove succeeds");
+        let body = fs::read_to_string(&path).expect("reread config");
+        assert!(
+            !body.contains("allow = []") && !body.contains("deny = []"),
+            "{body}"
+        );
     }
 
     #[test]
