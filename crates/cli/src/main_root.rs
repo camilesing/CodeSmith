@@ -6298,12 +6298,17 @@ pub(crate) fn persist_exec_session(
         FileSessionStore::default_location().context("could not open session manager for save")?;
     let saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
         match manager.load_session(id) {
-            Ok(existing) => codesmith_session::store::update_session(
-                existing,
-                messages,
-                total_tokens,
-                system_prompt.as_ref(),
-            ),
+            // The stored count is cumulative; the argument is this run's
+            // own usage (the ACP path adds the same way).
+            Ok(existing) => {
+                let cumulative = existing.metadata.total_tokens.saturating_add(total_tokens);
+                codesmith_session::store::update_session(
+                    existing,
+                    messages,
+                    cumulative,
+                    system_prompt.as_ref(),
+                )
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 codesmith_session::store::create_saved_session_with_id_and_mode(
                     id.to_string(),
@@ -10005,6 +10010,15 @@ mod setup_session_tests {
             )
             .expect("persist update");
             assert_eq!(again, id);
+            // Found in the review: the stored count was REPLACED by the
+            // resumed turn's own usage, so `codesmith metrics`, `/cost` and
+            // `/status` under-reported every session that went through an
+            // exec resume.
+            let stored = FileSessionStore::default_location()
+                .unwrap()
+                .load_session(&id)
+                .expect("load");
+            assert_eq!(stored.metadata.total_tokens, 14, "the count is cumulative");
 
             // Explicit new id is honored (create-with-id branch), and a
             // second persist with that id updates it.
