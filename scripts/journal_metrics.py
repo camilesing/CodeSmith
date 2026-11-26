@@ -258,7 +258,6 @@ def json_meta_field(path: Path, field: str) -> str:
 
 def analyze(session: dict) -> dict:
     calls: list[str] = []  # tool names in call order
-    call_ids: list[str] = []
     results: list[tuple[str, bool]] = []  # (tool name, is_error) in result order
     id_to_name: dict[str, str] = {}
     assistant_text = 0
@@ -270,7 +269,6 @@ def analyze(session: dict) -> dict:
             btype = block.get("type")
             if role == "assistant" and btype == "tool_use":
                 calls.append(block.get("name", "?"))
-                call_ids.append(block.get("id", ""))
                 id_to_name[block.get("id", "")] = block.get("name", "?")
             elif btype == "tool_result":
                 results.append(
@@ -335,7 +333,6 @@ def metric(num: int, den: int) -> dict:
 
 def aggregate(rows: list[dict]) -> dict:
     tool_sessions = [r for r in rows if r["tool_calls"]]
-    with_text = [r for r in rows if r["assistant_text_messages"]]
     return {
         "loop_rate": metric(
             sum(1 for r in tool_sessions if "loop" in r["fired"]), len(tool_sessions)
