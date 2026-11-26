@@ -574,11 +574,14 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::Network => {
-            misc_cmds::network(if arg_str.is_empty() {
-                None
-            } else {
-                Some(&arg_str)
-            });
+            misc_cmds::network(
+                state,
+                if arg_str.is_empty() {
+                    None
+                } else {
+                    Some(&arg_str)
+                },
+            );
             false
         }
         Command::Goal => {

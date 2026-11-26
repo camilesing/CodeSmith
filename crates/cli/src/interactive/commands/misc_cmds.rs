@@ -200,8 +200,10 @@ fn is_known_transport(word: &str) -> bool {
 }
 
 /// `/network [list|allow|host>|deny <host>|remove <host>|default <policy>]`
-pub fn network(arg: Option<&str>) {
-    match super::network_store::network_inner(arg) {
+/// `/network …` edits the session's own config file (the one `--config`
+/// selected), so the rule lands where this configuration reads it.
+pub fn network(state: &ReplState, arg: Option<&str>) {
+    match super::network_store::network_inner(arg, state.config_path.as_deref()) {
         Ok(message) => println!("{message}"),
         Err(err) => println!("{} {err}", "✗".red()),
     }
@@ -1709,10 +1711,11 @@ mod tests {
     #[test]
     fn network_command_reports_and_validates() {
         let _env = scratch_env();
-        network(None);
-        network(Some("list"));
-        network(Some("deny"));
-        network(Some("bogus subcommand"));
+        let state = state_in(&std::env::temp_dir());
+        network(&state, None);
+        network(&state, Some("list"));
+        network(&state, Some("deny"));
+        network(&state, Some("bogus subcommand"));
     }
 
     #[test]

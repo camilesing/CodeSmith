@@ -23,15 +23,18 @@ use codesmith_agent_runtime::network_policy::{host_from_url, normalize_host};
 // pattern this store needs, derived from a sibling `<file>.toml.lock`.
 use codesmith_agent_runtime::settings_file::with_settings_lock;
 
-pub(crate) fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
+pub(crate) fn network_inner(
+    arg: Option<&str>,
+    config_path: Option<&Path>,
+) -> anyhow::Result<String> {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.is_empty() || raw.eq_ignore_ascii_case("list") {
-        return list_policy();
+        return list_policy(config_path);
     }
 
     let mut parts = raw.split_whitespace();
     let Some(command) = parts.next() else {
-        return list_policy();
+        return list_policy(config_path);
     };
     let command = command.to_ascii_lowercase();
 
@@ -49,7 +52,7 @@ pub(crate) fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
                 "deny" => NetworkEdit::Deny,
                 _ => NetworkEdit::Remove,
             };
-            update_host(edit, &host)
+            update_host(edit, &host, config_path)
         }
         "default" => {
             let Some(value) = parts.next() else {
@@ -58,7 +61,7 @@ pub(crate) fn network_inner(arg: Option<&str>) -> anyhow::Result<String> {
             if parts.next().is_some() {
                 bail!("Usage: /network default <allow|deny|prompt>");
             }
-            update_default(value)
+            update_default(value, config_path)
         }
         _ => bail!(usage()),
     }
@@ -75,8 +78,8 @@ enum NetworkEdit {
     Remove,
 }
 
-fn list_policy() -> anyhow::Result<String> {
-    let path = super::auto_route::config_toml_path(None)?;
+fn list_policy(config_path: Option<&Path>) -> anyhow::Result<String> {
+    let path = super::auto_route::config_toml_path(config_path)?;
     let doc = load_config_doc(&path)?;
     let network = doc.get("network").and_then(Item::as_table);
     let default = network
@@ -102,8 +105,12 @@ fn list_policy() -> anyhow::Result<String> {
     ))
 }
 
-fn update_host(edit: NetworkEdit, host: &str) -> anyhow::Result<String> {
-    let path = super::auto_route::config_toml_path(None)?;
+fn update_host(
+    edit: NetworkEdit,
+    host: &str,
+    config_path: Option<&Path>,
+) -> anyhow::Result<String> {
+    let path = super::auto_route::config_toml_path(config_path)?;
     with_settings_lock(&path, || {
         let mut doc = load_config_doc(&path)?;
         let network = network_table_mut(&mut doc)?;
@@ -136,7 +143,7 @@ fn update_host(edit: NetworkEdit, host: &str) -> anyhow::Result<String> {
     })
 }
 
-fn update_default(value: &str) -> anyhow::Result<String> {
+fn update_default(value: &str, config_path: Option<&Path>) -> anyhow::Result<String> {
     let normalized = match value.trim().to_ascii_lowercase().as_str() {
         "allow" => "allow",
         "deny" | "block" => "deny",
@@ -144,7 +151,7 @@ fn update_default(value: &str) -> anyhow::Result<String> {
         _ => bail!("Usage: /network default <allow|deny|prompt>"),
     };
 
-    let path = super::auto_route::config_toml_path(None)?;
+    let path = super::auto_route::config_toml_path(config_path)?;
     with_settings_lock(&path, || {
         let mut doc = load_config_doc(&path)?;
         let network = network_table_mut(&mut doc)?;
@@ -311,7 +318,7 @@ mod tests {
                     allow = [\"registry.npmjs.org\"]\n";
         let (_guard, _dir, path) = scoped_config(seed);
 
-        let out = network_inner(Some("allow api.example.com")).expect("edit succeeds");
+        let out = network_inner(Some("allow api.example.com"), None).expect("edit succeeds");
 
         // Found in the review: it said "Retry the command now" — every tool
         // context holds the decider built at engine spawn, so the retry hit
@@ -340,7 +347,7 @@ mod tests {
         let seed = "";
         let (_guard, _dir, path) = scoped_config(seed);
 
-        network_inner(Some("default deny")).expect("edit succeeds");
+        network_inner(Some("default deny"), None).expect("edit succeeds");
 
         let body = fs::read_to_string(&path).expect("reread config");
         assert!(body.contains("default = \"deny\""));
@@ -357,7 +364,7 @@ mod tests {
         let seed = "[network]\nallow = [\"api.example.com\"]\ndefault = \"deny\"\n";
         let (_guard, _dir, _path) = scoped_config(seed);
 
-        let out = network_inner(Some("list")).expect("list succeeds");
+        let out = network_inner(Some("list"), None).expect("list succeeds");
         assert!(out.contains("api.example.com"));
         assert!(out.contains("default = deny"));
     }
@@ -367,13 +374,13 @@ mod tests {
         let _env = lock_test_env();
         let (_guard, _dir, _path) = scoped_config("[network]\nallow = [\"api.example.com\"]\n");
 
-        network_inner(Some("deny api.example.com")).expect("deny");
-        let out = network_inner(Some("list")).expect("list");
+        network_inner(Some("deny api.example.com"), None).expect("deny");
+        let out = network_inner(Some("list"), None).expect("list");
         assert!(out.contains("deny = [api.example.com]"), "{out}");
         assert!(out.contains("allow = []"), "deny removes from allow: {out}");
 
-        network_inner(Some("remove api.example.com")).expect("remove");
-        let out = network_inner(Some("list")).expect("list");
+        network_inner(Some("remove api.example.com"), None).expect("remove");
+        let out = network_inner(Some("list"), None).expect("list");
         assert!(out.contains("allow = []"), "{out}");
         assert!(out.contains("deny = []"), "{out}");
     }
@@ -384,11 +391,11 @@ mod tests {
         let (_guard, _dir, _path) = scoped_config("");
 
         // A URL argument contributes its host (scheme and host case folded).
-        network_inner(Some("allow https://GitHub.COM/owner/repo")).expect("url allow");
+        network_inner(Some("allow https://GitHub.COM/owner/repo"), None).expect("url allow");
         // The bare host and the FQDN form normalize onto the same entry.
-        network_inner(Some("ALLOW GitHub.com.")).expect("bare allow");
+        network_inner(Some("ALLOW GitHub.com."), None).expect("bare allow");
 
-        let out = network_inner(Some("list")).expect("list");
+        let out = network_inner(Some("list"), None).expect("list");
         assert!(
             out.matches("github.com").count() == 1,
             "one normalized entry, not one per spelling: {out}"
@@ -399,20 +406,21 @@ mod tests {
     fn host_arguments_that_are_not_hosts_are_refused() {
         let _env = lock_test_env();
         let (_guard, _dir, _path) = scoped_config("");
-        let err = network_inner(Some("allow repo/repo")).expect_err("a URL path is not a host");
+        let err =
+            network_inner(Some("allow repo/repo"), None).expect_err("a URL path is not a host");
         assert!(err.to_string().contains("host like"), "{err}");
         assert!(
-            network_inner(Some("allow ftp://mirror")).is_err(),
+            network_inner(Some("allow ftp://mirror"), None).is_err(),
             "a non-http URL is refused as a path too"
         );
         assert!(
-            network_inner(Some("allow https://")).is_err(),
+            network_inner(Some("allow https://"), None).is_err(),
             "a URL without a host is refused"
         );
         // Found in the review: an authority passed as a host kept its port
         // (or userinfo) in the entry and never matched a request.
         for arg in ["allow registry.internal:8443", "allow user@host"] {
-            let err = network_inner(Some(arg)).expect_err("an authority is not a host");
+            let err = network_inner(Some(arg), None).expect_err("an authority is not a host");
             assert!(err.to_string().contains("host like"), "{arg}: {err}");
         }
     }
@@ -424,11 +432,36 @@ mod tests {
     fn remove_on_a_config_without_lists_writes_no_empty_arrays() {
         let _env = lock_test_env();
         let (_guard, _dir, path) = scoped_config("");
-        network_inner(Some("remove x.com")).expect("remove succeeds");
+        network_inner(Some("remove x.com"), None).expect("remove succeeds");
         let body = fs::read_to_string(&path).expect("reread config");
         assert!(
             !body.contains("allow = []") && !body.contains("deny = []"),
             "{body}"
+        );
+    }
+
+    /// Found in the review: `/network` always edited the default config
+    /// file — a session started with `--config ~/work.toml` had its rules
+    /// written elsewhere, where this configuration never reads them.
+    #[test]
+    fn the_session_config_path_wins_over_the_environment() {
+        let _env = lock_test_env();
+        let (_guard, _dir, env_path) = scoped_config("[network]\nallow = []\n");
+        let other = tempfile::tempdir().expect("tempdir");
+        let session_path = other.path().join("work.toml");
+        std::fs::write(&session_path, "[network]\n").expect("seed");
+
+        network_inner(Some("allow api.example.com"), Some(&session_path)).expect("edit succeeds");
+
+        let edited = fs::read_to_string(&session_path).expect("reread");
+        assert!(
+            edited.contains("api.example.com"),
+            "the session's file: {edited}"
+        );
+        let untouched = fs::read_to_string(&env_path).expect("reread env config");
+        assert!(
+            !untouched.contains("api.example.com"),
+            "the default file is not touched: {untouched}"
         );
     }
 
@@ -446,23 +479,26 @@ mod tests {
             "default maybe",      // not a policy
             "teleport host",      // unknown subcommand
         ] {
-            assert!(network_inner(Some(arg)).is_err(), "{arg:?} must be refused");
+            assert!(
+                network_inner(Some(arg), None).is_err(),
+                "{arg:?} must be refused"
+            );
         }
         // Unadvertised aliases still normalize to the canonical policy.
-        network_inner(Some("default block")).expect("block → deny");
-        let out = network_inner(Some("list")).expect("list");
+        network_inner(Some("default block"), None).expect("block → deny");
+        let out = network_inner(Some("list"), None).expect("list");
         assert!(out.contains("default = deny"), "{out}");
-        network_inner(Some("default ask")).expect("ask → prompt");
-        let out = network_inner(Some("list")).expect("list");
+        network_inner(Some("default ask"), None).expect("ask → prompt");
+        let out = network_inner(Some("list"), None).expect("list");
         assert!(out.contains("default = prompt"), "{out}");
         // Bare and case-insensitive list forms.
         assert!(
-            network_inner(None)
+            network_inner(None, None)
                 .expect("bare list")
                 .contains("Network policy")
         );
         assert!(
-            network_inner(Some("LIST"))
+            network_inner(Some("LIST"), None)
                 .expect("case-insensitive list")
                 .contains("Network policy")
         );
@@ -472,7 +508,7 @@ mod tests {
     fn a_config_that_does_not_parse_is_an_error_not_a_silent_reset() {
         let _env = lock_test_env();
         let (_guard, _dir, _path) = scoped_config("this is not [ valid toml");
-        assert!(network_inner(Some("list")).is_err());
-        assert!(network_inner(Some("allow x.com")).is_err());
+        assert!(network_inner(Some("list"), None).is_err());
+        assert!(network_inner(Some("allow x.com"), None).is_err());
     }
 }
