@@ -5194,10 +5194,19 @@ pub(crate) fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoct
 
     // URL-based server — report the configured transport and URL.
     if let Some(ref url) = server.url {
-        let label =
-            codesmith_agent_runtime::mcp::mcp_transport_label(server.transport.as_deref(), true)
-                .unwrap_or("invalid");
-        return McpServerDoctorStatus::Ok(format!("{label} server at {url}"));
+        return match codesmith_agent_runtime::mcp::mcp_transport_label(
+            server.transport.as_deref(),
+            true,
+        ) {
+            Ok(label) => McpServerDoctorStatus::Ok(format!("{label} server at {url}")),
+            // The pool refuses this server at connect time, and doctor is
+            // the command that failure points at — it performs no connection
+            // probe, so this check is the only place the mistake shows.
+            Err(err) => McpServerDoctorStatus::Error(format!(
+                "invalid transport {:?} for {url}: {err:#}",
+                server.transport
+            )),
+        };
     }
 
     // Command-based: validate command path exists.
@@ -8366,6 +8375,22 @@ mod doctor_mcp_tests {
                 ),
                 other => panic!("Expected Ok, got {other:?}"),
             }
+        }
+    }
+
+    /// Found in the review: a hand-edited transport outside the accepted
+    /// set read `✓ myserver: invalid server at …` and `"ok"` in `--json`,
+    /// while the pool refuses that server at connect time.
+    #[test]
+    fn test_url_server_with_an_unknown_transport_is_an_error() {
+        let mut server = make_server(None, &[], Some("http://localhost:3000/mcp"));
+        server.transport = Some("streamable-htt".into());
+        match doctor_check_mcp_server(&server) {
+            McpServerDoctorStatus::Error(detail) => {
+                assert!(detail.contains("invalid transport"), "{detail}");
+                assert!(detail.contains("streamable-htt"), "{detail}");
+            }
+            other => panic!("Expected Error, got {other:?}"),
         }
     }
 
