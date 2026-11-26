@@ -1559,7 +1559,10 @@ fn print_agent_tool_catalog_metrics() {
         manager.clone(),
     );
     let registry = crate::tools::ToolRegistryBuilder::new()
-        .with_agent_tools(true)
+        .with_agent_tools(
+            true,
+            &codesmith_agent_runtime::features::Features::with_defaults(),
+        )
         .with_todo_tool(new_shared_todo_list())
         .with_plan_tool(new_shared_plan_state())
         .with_review_tool(None, DEFAULT_TEXT_MODEL.to_string())
@@ -2056,6 +2059,87 @@ fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
             registry.contains("recall_archive"),
             "parent {mode:?} registry should expose recall_archive"
         );
+    }
+}
+
+#[test]
+fn agent_and_yolo_registries_follow_the_web_search_apply_patch_and_shell_tool_flags() {
+    let _env = HermeticEnv::new();
+    let mut features = codesmith_agent_runtime::features::Features::with_defaults();
+    features.disable(Feature::WebSearch);
+    features.disable(Feature::ApplyPatch);
+    features.disable(Feature::ShellTool);
+    let build = |config: EngineConfig, mode: AppMode| {
+        let (engine, _handle) = Engine::new(config, &Config::default());
+        engine
+            .build_turn_tool_registry_builder(
+                mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .build(engine.build_tool_context(mode, false))
+    };
+
+    // `[features] web_search = false` keeps the model off the network;
+    // `apply_patch = false` and `shell_tool = false` remove those families —
+    // the shell one despite the session's `allow_shell`.
+    for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+        let registry = build(
+            EngineConfig {
+                features: features.clone(),
+                allow_shell: true,
+                ..EngineConfig::default()
+            },
+            mode,
+        );
+        for tool in [
+            "web_search",
+            "fetch_url",
+            "web.run",
+            "finance",
+            "apply_patch",
+        ] {
+            assert!(
+                !registry.contains(tool),
+                "{mode:?} registry should drop {tool} when its [features] switch is off"
+            );
+        }
+        if mode != AppMode::Plan {
+            assert!(
+                !registry.contains("exec_shell"),
+                "{mode:?} registry should drop exec_shell when shell_tool is off"
+            );
+        }
+        assert!(
+            registry.contains("read_file"),
+            "{mode:?} keeps its other tools"
+        );
+    }
+
+    // All three default to on: a default session keeps every family, and
+    // Plan's web tools ride the same switch.
+    for mode in [AppMode::Agent, AppMode::Yolo, AppMode::Plan] {
+        let registry = build(
+            EngineConfig {
+                allow_shell: true,
+                ..EngineConfig::default()
+            },
+            mode,
+        );
+        assert!(
+            registry.contains("web_search"),
+            "{mode:?} keeps web_search by default"
+        );
+        if mode != AppMode::Plan {
+            assert!(
+                registry.contains("exec_shell"),
+                "{mode:?} keeps the shell by default"
+            );
+            assert!(
+                registry.contains("apply_patch"),
+                "{mode:?} keeps apply_patch by default"
+            );
+        }
     }
 }
 

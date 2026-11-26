@@ -272,7 +272,7 @@ pub(super) fn build_turn_tool_registry_builder_for(
         ToolRegistryBuilder::new()
     } else {
         ToolRegistryBuilder::new()
-            .with_agent_tools(session.allow_shell)
+            .with_agent_tools(session.allow_shell, &config.features)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_plan_mode_tools(config.plan_mode_state.clone(), config.plan_state.clone())
@@ -321,18 +321,13 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_fim_tool(llm_client.clone(), session.model.clone());
     }
 
-    if config.features.enabled(Feature::ApplyPatch)
-        && mode != AppMode::Plan
-        && mode != AppMode::Coordinator
-    {
-        builder = builder.with_patch_tools();
-    }
-    if config.features.enabled(Feature::WebSearch) && mode != AppMode::Coordinator {
+    // Plan's registry is assembled from the read-only families above, so
+    // the web tools are the one family it adds here. Agent and Yolo get web,
+    // patch and shell from `with_agent_tools`, which reads the same
+    // `[features]` switches.
+    if mode == AppMode::Plan && config.features.enabled(Feature::WebSearch) {
         builder = builder.with_web_tools();
     }
-    // Shell tools (exec_shell, task_shell_start, etc.) are already gated
-    // behind `allow_shell` inside `with_agent_tools`. No separate
-    // feature-flag gate here to avoid double-registration.
 
     // Register the `remember` tool only when the user has opted in to
     // user-memory (#489). Without that opt-in the tool would always

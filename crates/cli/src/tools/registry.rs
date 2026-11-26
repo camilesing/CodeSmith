@@ -21,6 +21,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::llm_client::LlmClientHandle;
+use codesmith_agent_runtime::features::{Feature, Features};
 
 use super::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec};
 
@@ -654,17 +655,32 @@ impl ToolRegistryBuilder {
     }
 
     /// Include all agent tools (file tools + shell + note + search + patch).
+    ///
+    /// `allow_shell` is the session's shell permission and `features` its
+    /// `[features]` set. The web (`web_search`), patch (`apply_patch`) and
+    /// shell (`shell_tool`) families follow their switches, so Agent and Yolo
+    /// honour `[features]` and `--disable` the way Plan does.
     #[must_use]
-    pub fn with_agent_tools(self, allow_shell: bool) -> Self {
+    pub fn with_agent_tools(self, allow_shell: bool, features: &Features) -> Self {
         let builder = self
             .with_file_tools()
             .with_agent_memory_tools()
             .with_note_tool()
-            .with_search_tools()
-            .with_web_tools()
-            .with_user_input_tool()
-            .with_parallel_tool()
-            .with_patch_tools()
+            .with_search_tools();
+        // Each family keeps the position it had before it followed a switch,
+        // so a default session's catalog is byte-identical.
+        let builder = if features.enabled(Feature::WebSearch) {
+            builder.with_web_tools()
+        } else {
+            builder
+        };
+        let builder = builder.with_user_input_tool().with_parallel_tool();
+        let builder = if features.enabled(Feature::ApplyPatch) {
+            builder.with_patch_tools()
+        } else {
+            builder
+        };
+        let builder = builder
             .with_git_tools()
             .with_git_history_tools()
             .with_diagnostics_tool()
@@ -679,7 +695,7 @@ impl ToolRegistryBuilder {
             .with_pandoc_tools()
             .with_image_ocr_tools();
 
-        if allow_shell {
+        if allow_shell && features.enabled(Feature::ShellTool) {
             builder.with_shell_tools().with_runtime_task_shell_tools()
         } else {
             builder
@@ -692,9 +708,12 @@ impl ToolRegistryBuilder {
     /// registry build (`core/engine.rs`) and by every sub-agent
     /// (`subagent::SubAgentToolRegistry`) — keeping them in lockstep.
     ///
-    /// `allow_shell` mirrors the session's shell permission. `manager` and
-    /// `runtime` are the sub-agent runtime — children pass through their own
-    /// runtime so grandchildren can spawn within the same depth/cancellation
+    /// `allow_shell` mirrors the session's shell permission. The web, patch
+    /// and shell families follow the feature set on `runtime`'s context —
+    /// the parent's, cloned at dispatch — so a child never regains a family
+    /// the session's `[features]` switches removed. `manager` and `runtime`
+    /// are the sub-agent runtime — children pass through their own runtime
+    /// so grandchildren can spawn within the same depth/cancellation
     /// envelope.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
@@ -709,7 +728,7 @@ impl ToolRegistryBuilder {
         plan_state: super::plan::SharedPlanState,
         extension_runner: Option<std::sync::Arc<codesmith_extensions::ExtensionRunner>>,
     ) -> Self {
-        self.with_agent_tools(allow_shell)
+        self.with_agent_tools(allow_shell, &runtime.context.features)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_review_tool(client.clone(), model.clone())
@@ -1046,6 +1065,7 @@ mod tests {
     use crate::tools::spec::{
         ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
     };
+    use codesmith_agent_runtime::features::Features;
 
     use super::{
         MAX_TOOL_NAME_LEN, ToolRegistry, ToolRegistryPluginExt, is_valid_tool_name,
@@ -1496,7 +1516,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let registry = ToolRegistryBuilder::new()
-            .with_agent_tools(false)
+            .with_agent_tools(false, &Features::with_defaults())
             .build(ctx);
 
         assert!(registry.contains("finance"));
@@ -1508,7 +1528,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let registry = ToolRegistryBuilder::new()
-            .with_agent_tools(false)
+            .with_agent_tools(false, &Features::with_defaults())
             .build(ctx);
 
         assert!(
@@ -1530,7 +1550,9 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
-        let registry = ToolRegistryBuilder::new().with_agent_tools(true).build(ctx);
+        let registry = ToolRegistryBuilder::new()
+            .with_agent_tools(true, &Features::with_defaults())
+            .build(ctx);
 
         assert!(
             registry.contains("exec_shell"),

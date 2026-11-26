@@ -1321,6 +1321,41 @@ fn subagent_scoped_ext_tool_resolves_per_agent_type() {
     );
 }
 
+// `[features] web_search = false` / `apply_patch = false` / `shell_tool =
+// false` reach the children: the full surface a child builds reads the
+// session's feature set off the runtime's context — the parent's, cloned at
+// dispatch — so a family the parent dropped is not resurrected below it.
+
+#[test]
+fn subagent_registry_follows_the_web_search_apply_patch_and_shell_tool_switches() {
+    use codesmith_agent_runtime::features::{Feature, Features};
+
+    let tmp = tempdir().expect("tempdir");
+    let mut features = Features::with_defaults();
+    features.disable(Feature::WebSearch);
+    features.disable(Feature::ApplyPatch);
+    features.disable(Feature::ShellTool);
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf()).with_features(features);
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        None,
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+    for tool in ["web_search", "apply_patch", "exec_shell"] {
+        assert!(
+            !registry.registry.contains(tool),
+            "{tool} follows the session's [features] switch in a sub-agent"
+        );
+    }
+    assert!(
+        registry.registry.contains("read_file"),
+        "the rest stays registered"
+    );
+}
+
 // === Capability manifest on the sub-agent path (slice 2b) =================
 //
 // `capabilities.toml [tools] disabled` is a session-level baseline. The
