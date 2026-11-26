@@ -331,21 +331,38 @@ pub async fn resume(state: &mut ReplState, arg: Option<&str>) {
     // that happens to look like a title still wins.
     let id = match requested {
         None => "latest".to_string(),
-        Some(value) => match FileSessionStore::default_location()
-            .ok()
-            .and_then(|manager| manager.load_session_by_prefix(value).ok())
-        {
-            Some(_) => value.to_string(),
-            None => match find_session_by_name(value) {
+        Some(value) => match load_by_prefix(value) {
+            Ok(true) => value.to_string(),
+            // Only "no such session" falls through to a title match. An
+            // ambiguity the store reported was read as "no id match" here,
+            // and the title fallback resumed a different conversation.
+            Ok(false) => match find_session_by_name(value) {
                 Some(id) => {
                     println!("{}", format!("resuming {id} (matched by name)").dimmed());
                     id
                 }
                 None => value.to_string(),
             },
+            Err(err) => {
+                println!("{} failed to load session: {err}", "✗".red());
+                return;
+            }
         },
     };
     let _ = super::super::state::resume_session(state, &id).await;
+}
+
+/// `Ok(true)`: a unique id match. `Ok(false)`: no session carries the
+/// prefix — the one case a title match may answer. `Err`: the store could
+/// not be opened, or the prefix is ambiguous (two sessions share it).
+fn load_by_prefix(value: &str) -> anyhow::Result<bool> {
+    let manager = FileSessionStore::default_location()
+        .map_err(|err| anyhow::anyhow!("could not open the session store: {err}"))?;
+    match manager.load_session_by_prefix(value) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(anyhow::anyhow!(err)),
+    }
 }
 
 /// The newest session whose title contains `needle`, if any.
@@ -1458,6 +1475,33 @@ mod tests {
             contents,
             ["loaded item"],
             "rebuilt from the loaded transcript"
+        );
+    }
+
+    /// Found in the review: two sessions whose ids share a prefix made the
+    /// store's "ambiguous prefix" error read as "no id match", and the
+    /// title fallback resumed a different conversation.
+    #[tokio::test]
+    async fn an_ambiguous_id_prefix_is_reported_not_matched_by_name() {
+        let _env = scratch_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+        let manager = FileSessionStore::default_location().expect("store");
+        for (id, title) in [("ab-first", "about first"), ("ab-second", "about second")] {
+            let mut session = saved_with_failed_attempt();
+            session.metadata.id = id.to_string();
+            session.metadata.title = title.to_string();
+            session.metadata.workspace = ws.path().to_path_buf();
+            manager.save_session(&session).expect("save");
+        }
+        let mut state = test_repl_state();
+        state.workspace = ws.path().to_path_buf();
+
+        resume(&mut state, Some("ab")).await;
+
+        assert!(
+            state.current_session_id.is_none(),
+            "an ambiguous prefix resumes nothing: {:?}",
+            state.current_session_id
         );
     }
 
