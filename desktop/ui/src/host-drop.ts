@@ -40,7 +40,11 @@ type HostDropHandler = (payload: HostDropPayload) => void
 /** Every delivered File's host path; the bridge answers from here. */
 const pathByFile = new WeakMap<File, string>()
 
-/** Every element under `root`, piercing closed shadow roots. */
+/**
+ * Every element under `root`, piercing OPEN shadow roots. A closed root is
+ * `null` on `Element.shadowRoot`, so a composer mounted in one is skipped
+ * and a drop on it is ignored.
+ */
 function deepElements(root: ParentNode): HTMLElement[] {
   const out: HTMLElement[] = []
   const walk = (scope: ParentNode): void => {
