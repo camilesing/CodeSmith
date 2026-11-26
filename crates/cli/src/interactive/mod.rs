@@ -1163,11 +1163,23 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
 /// knows and points at `/model` when there is nothing to toggle to.
 async fn cycle_model(state: &mut ReplState) {
     let current = state.model_selection_for_persistence();
-    let configured = state
+    let default = state
         .config
         .default_text_model
         .clone()
-        .filter(|name| !name.trim().is_empty() && *name != current);
+        .filter(|name| !name.trim().is_empty());
+    // To the configured default, and back to the selection the cycle left.
+    // Nothing remembered it, so the second press only found "one id".
+    let configured = match default {
+        Some(default) if default != current => {
+            state.model_before_cycle = Some(state.model.clone());
+            Some(default)
+        }
+        _ => state
+            .model_before_cycle
+            .clone()
+            .filter(|previous| *previous != current),
+    };
     match configured {
         Some(next) => {
             state.set_model_selection(next.clone());
@@ -1853,6 +1865,20 @@ mod coverage_tests {
             initial_input: None,
         };
         ReplState::new(options, &crate::config::Config::default())
+    }
+
+    /// Found in the review: `Alt+P` is a two-way toggle in its docs, but
+    /// nothing remembered the selection the cycle left, so the second press
+    /// only found "one id configured".
+    #[tokio::test]
+    async fn alt_p_returns_to_the_model_the_cycle_left() {
+        let mut state = test_repl_state();
+        state.config.default_text_model = Some("a".to_string());
+        state.set_model_selection("b".to_string());
+        cycle_model(&mut state).await;
+        assert_eq!(state.model, "a");
+        cycle_model(&mut state).await;
+        assert_eq!(state.model, "b", "the second press comes back");
     }
 
     /// Found in the review: `run_repl` pumped for a turn after paths that

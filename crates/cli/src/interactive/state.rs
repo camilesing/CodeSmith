@@ -247,6 +247,8 @@ pub struct ReplState {
     pub pending_attachments: Vec<PathBuf>,
     pub turn_started_at: Option<Instant>,
     pub cumulative_turn_duration: std::time::Duration,
+    /// The model `Alt+P` switched away from, so a second press comes back.
+    pub model_before_cycle: Option<String>,
     pub mcp_configured_count: usize,
     pub lsp_enabled: bool,
     /// Effective merged config (user + project + preset layer). Slash
@@ -479,6 +481,7 @@ impl ReplState {
             pending_attachments: Vec::new(),
             turn_started_at: None,
             cumulative_turn_duration: std::time::Duration::ZERO,
+            model_before_cycle: None,
             mcp_configured_count: mcp::load_config(&mcp_config_path)
                 .map(|cfg| cfg.servers.len())
                 .unwrap_or(0),
