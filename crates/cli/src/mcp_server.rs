@@ -476,11 +476,11 @@ impl McpServer {
             ))
             .map_err(|_| RpcError {
                 code: -32000,
-                message: "DeepSeek API call timed out after 300 s".to_string(),
+                message: "Model request timed out after 300 s".to_string(),
             })?
             .map_err(|e| RpcError {
                 code: -32000,
-                message: format!("DeepSeek API call failed: {e}"),
+                message: format!("Model request failed: {e}"),
             })?;
 
         // Extract response text from content blocks
