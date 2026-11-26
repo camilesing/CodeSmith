@@ -382,8 +382,12 @@ recompile.
     (`max_steps`, `fail_streak_limit`) ride the `goal-loop-policy` kind
     (needs
     `turn_executor = "rhai"` + `[rhai_loop] mod = "goal-loop"`).
-  - `verify-loop` — omp's diagnosticsOnWrite as a loop script: an edit
-    batch is immediately followed by a `diagnostics` batch (same
+  - `verify-loop` — the diagnostics-on-write loop shape, as a plain
+    llm → tools cycle with **no write-time verification**: a script loop
+    does not inherit the builtin loop's LSP flush, and a script-authored
+    `run_tools` call cannot put a result in front of the model (no
+    `tool_use` precedes it, so the wire sanitizer drops the orphan
+    result). Write-time feedback lives in the builtin executor (same
     three-key enablement as `goal-loop`).
   - `elide-uneventful` — omp's per-turn elision as a compiled sweep rule:
     uneventful results in completed rounds collapse on their presence

@@ -1,9 +1,14 @@
-// Opt-in builtin loop — write-time verification (omp-style
-// diagnostics-on-write as a loop shape). Ported from a comparative study
-// of popular coding agents: after any batch that edited
-// files (edit_file / write_file / apply_patch), the loop immediately
-// runs the workspace `diagnostics` tool so millisecond-level feedback
-// rides the same turn instead of waiting for the next model round.
+// Opt-in builtin loop — the diagnostics-on-write loop shape (omp's
+// diagnosticsOnWrite), as a plain llm → tools cycle.
+// Known limitation: it carries NO write-time verification. A script loop
+// does not inherit the builtin loop's LSP flush, and a script-authored
+// `run_tools` call cannot put a result in front of the model — no
+// `tool_use` precedes it, so the wire sanitizer drops the orphan result.
+// (The first version polled the `diagnostics` tool after every edit batch:
+// an environment probe the model never saw, left unpaired in the
+// transcript, and blocked by the loop guard from the third batch.)
+// Write-time feedback lives in the builtin executor (`turn_executor =
+// "builtin"`), whose LSP hook rides the turn.
 // Enable (all three keys): [mods] builtin = ["verify-loop"],
 // turn_executor = "rhai", [rhai_loop] mod = "verify-loop".
 
@@ -23,29 +28,9 @@ fn main() {
         if round.tool_uses.len() == 0 {
             return;
         }
-        const EDIT_TOOLS = ["edit_file", "write_file", "apply_patch"];
-        let edited = false;
-        for c in round.tool_uses {
-            if EDIT_TOOLS.contains(c.name) {
-                edited = true;
-            }
-        }
         let out = run_tools(round.tool_uses);
         if out.halt != () {
             return;
-        }
-        if edited {
-            // Write-time feedback: one diagnostics batch right after the
-            // edit batch, before the next model round.
-            let verify_call = #{
-                id: "verify-after-edit",
-                name: "diagnostics",
-                input: #{},
-            };
-            let verify = run_tools([verify_call]);
-            if verify.halt != () {
-                return;
-            }
         }
         step += 1;
     }

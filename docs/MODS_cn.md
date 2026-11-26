@@ -338,8 +338,11 @@ register_policy("shell-output", #{
     `compact_now()`、连败熔断；预算（`max_steps`、`fail_streak_limit`）
     走 `goal-loop-policy` 种类（需 `turn_executor = "rhai"` +
     `[rhai_loop] mod = "goal-loop"`）。
-  - `verify-loop`——omp diagnosticsOnWrite 的 loop 脚本形态：编辑批次
-    后立即跑一批 `diagnostics`（与 `goal-loop` 同三键启用）。
+  - `verify-loop`——写时诊断的 loop 形态，实际只是 llm → tools 的朴素
+    循环，**没有写时校验**：脚本 loop 不继承内建 loop 的 LSP flush，脚本
+    自行发起的 `run_tools` 调用也无法把结果送到模型面前（前面没有对应的
+    `tool_use`，孤儿结果会被 wire sanitizer 丢弃）。写时反馈在内建
+    executor 里（与 `goal-loop` 同三键启用）。
   - `elide-uneventful`——omp 逐轮淘汰的编译清扫规则形态：已完结轮次的
     无事件结果凭存在即折叠；活动轮次逐字保留（见"清扫规则"）。
 

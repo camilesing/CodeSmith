@@ -1879,11 +1879,15 @@ mod tests {
         assert!(rev >= 2, "active → complete bumps the counter: {rev}");
     }
 
-    /// The opt-in `verify-loop` builtin (omp diagnosticsOnWrite): a batch
-    /// that edits files is immediately followed by a `diagnostics` batch
-    /// — same turn, before the next model round.
+    /// The opt-in `verify-loop` builtin: an edit batch is a plain tool
+    /// batch, NOT followed by a script-authored `diagnostics` call. That
+    /// call's result never reached the model (no `tool_use` precedes it, so
+    /// the wire sanitizer drops the orphan `tool_result`) while it left the
+    /// transcript unpaired and tripped the loop guard from the third batch.
+    /// The `diagnostics` tool stays registered here to prove it does not
+    /// run.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn verify_loop_runs_diagnostics_after_an_edit_batch() {
+    async fn verify_loop_leaves_an_edit_batch_paired() {
         let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let kv = codesmith_extensions::script::kv::ModKvStore::new(std::env::temp_dir().join(
             format!("codesmith-verify-loop-test-{}.json", std::process::id()),
@@ -1944,7 +1948,12 @@ mod tests {
             .expect("the scripted turn runs");
         assert_eq!(reason, StopReason::NoToolCalls);
         let ran = calls.lock().unwrap().clone();
-        assert_eq!(ran, vec!["edit_file", "diagnostics"]);
+        assert_eq!(ran, vec!["edit_file"], "no diagnostics batch after an edit");
+        assert!(
+            codesmith_session::transcript::tool_call_pairs_balanced(&history.messages()),
+            "every tool result answers a tool call: {:?}",
+            history.messages()
+        );
     }
 
     struct NoSubAgents;
