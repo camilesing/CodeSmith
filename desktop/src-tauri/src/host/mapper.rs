@@ -732,14 +732,16 @@ impl SessionMapper {
                 // transient row instead of waiting for a settlement that never
                 // comes. Tool nodes keep their last state; the turn's own
                 // interrupted end follows.
+                // `index` is the attempt's own chunk counter: the client reads
+                // any other value as a gap and rebaselines (restarts the follow
+                // stream with a full snapshot) instead of retiring the row.
                 if let Some(attempt) = self.attempts.remove(&item_id) {
                     self.revision += 1;
-                    let _ = attempt;
                     frames.push(Frame::Stream(json!({
                         "type": "end",
                         "attemptId": item_id,
                         "revision": self.revision,
-                        "index": 0,
+                        "index": attempt.chunk_index,
                         "outcome": { "kind": "abandoned" },
                     })));
                 }
@@ -775,12 +777,11 @@ impl SessionMapper {
         let mut frames = Vec::new();
         for (item_id, attempt) in std::mem::take(&mut self.attempts) {
             self.revision += 1;
-            let _ = attempt;
             frames.push(Frame::Stream(json!({
                 "type": "end",
                 "attemptId": item_id,
                 "revision": self.revision,
-                "index": 0,
+                "index": attempt.chunk_index,
                 "outcome": { "kind": "abandoned" },
             })));
         }
@@ -1719,6 +1720,7 @@ mod tests {
         assert_eq!(end["outcome"]["kind"], "abandoned");
         // start (1), block-start (2), delta (3), interrupt end (4) stay dense.
         assert_eq!(end["revision"], 4);
+        assert_eq!(end["index"], json!(2), "block-start + one delta were sent");
     }
 
     #[test]
@@ -2110,6 +2112,7 @@ mod tests {
         assert_eq!(end["outcome"]["kind"], "abandoned");
         // start (1), block-start (2), delta (3), abandon end (4).
         assert_eq!(end["revision"], 4, "abandon keeps revisions contiguous");
+        assert_eq!(end["index"], json!(2), "block-start + one delta were sent");
         assert!(
             mapper.abandon_open_attempts().is_empty(),
             "second abandon is a no-op"
