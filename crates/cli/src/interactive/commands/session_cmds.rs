@@ -59,6 +59,8 @@ fn build_saved_session(state: &ReplState) -> codesmith_session::store::SavedSess
     // Round-3 TODO-42 — failed-attempt bookkeeping rides the explicit save
     // too, so `/save` and the turn-boundary autosave persist the same record.
     session.failed_attempts = state.failed_attempts.clone();
+    session.approvals = state.approvals.clone();
+    session.context_references = state.context_references.clone();
     session
 }
 
@@ -265,6 +267,9 @@ pub async fn new_session(state: &mut ReplState, arg: Option<&str>) {
     // into the fresh session's record: failed-attempt history and the
     // accumulated turn duration belong to the session that earned them.
     state.failed_attempts.clear();
+    // …and so are the approval log and the attachment record.
+    state.approvals.clear();
+    state.context_references.clear();
     state.cumulative_turn_duration = Default::default();
     state.current_session_id = Some(new_id.clone());
     send_session_op(
@@ -432,6 +437,10 @@ async fn adopt_loaded_session(
     // Round-3 TODO-42 — adopted sessions keep their failed-attempt records,
     // so a `/load` + save cycle does not silently drop them.
     state.failed_attempts = session.failed_attempts.clone();
+    // The same holds for the approval log and the attachment record: left
+    // as the previous session's, the next save wrote them into this one.
+    state.approvals = session.approvals.clone();
+    state.context_references = session.context_references.clone();
     send_session_op(
         state,
         Op::SyncSession {
@@ -831,6 +840,35 @@ mod tests {
         }
     }
 
+    fn sample_approval(tool_call_id: &str) -> codesmith_session::store::ApprovalRecord {
+        codesmith_session::store::ApprovalRecord {
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: "exec_shell".to_string(),
+            approval_key: "shell:ls".to_string(),
+            grouping_key: "shell:ls".to_string(),
+            decision: "auto-mode".to_string(),
+            feedback: None,
+            workspace: "/ws".to_string(),
+            at: chrono::Utc::now(),
+        }
+    }
+
+    fn sample_reference(label: &str) -> codesmith_session::store::SessionContextReference {
+        codesmith_session::store::SessionContextReference {
+            message_index: 0,
+            reference: codesmith_session::store::ContextReference {
+                kind: codesmith_session::store::ContextReferenceKind::MediaAttachment,
+                source: codesmith_session::store::ContextReferenceSource::Attachment,
+                badge: "image".to_string(),
+                label: label.to_string(),
+                target: format!("/tmp/{label}"),
+                included: true,
+                expanded: false,
+                detail: None,
+            },
+        }
+    }
+
     fn saved_with_failed_attempt() -> codesmith_session::store::SavedSession {
         let mut session = codesmith_session::store::SavedSession {
             schema_version: 1,
@@ -1103,6 +1141,8 @@ mod tests {
         state.api_messages = Arc::new(vec![user_message("stale turn")]);
         state.session.session_cost = 2.5;
         state.failed_attempts = saved_with_failed_attempt().failed_attempts.clone();
+        state.approvals.push(sample_approval("stale-1"));
+        state.context_references.push(sample_reference("stale.png"));
         state.cumulative_turn_duration = std::time::Duration::from_secs(11);
         state.current_session_id = Some("old-id".to_string());
         state
@@ -1124,6 +1164,10 @@ mod tests {
         assert!(state.api_messages.is_empty());
         assert_eq!(state.session.session_cost, 0.0);
         assert!(state.failed_attempts.is_empty());
+        assert!(
+            state.approvals.is_empty() && state.context_references.is_empty(),
+            "found in the review: /new kept the previous session's approval log and attachment record"
+        );
         assert_eq!(state.cumulative_turn_duration, std::time::Duration::ZERO);
         assert!(state.agent_progress.is_empty());
         assert!(state.tool_log.is_empty());
@@ -1132,6 +1176,35 @@ mod tests {
             Some("old-id"),
             "a fresh id replaces the old session"
         );
+    }
+
+    /// Found in the review: `/load` never adopted the loaded session's
+    /// approval log and attachment record, and `/save` wrote neither — the
+    /// next turn-boundary autosave then persisted one session's records
+    /// into another's file.
+    #[tokio::test]
+    async fn save_and_load_carry_the_per_session_records() {
+        let _env = scratch_env();
+        let mut state = test_repl_state();
+        state.approvals.push(sample_approval("stale-1"));
+        state.context_references.push(sample_reference("stale.png"));
+
+        // The explicit save writes what the turn boundary writes.
+        let saved = build_saved_session(&state);
+        assert_eq!(saved.approvals.len(), 1, "/save persists the approval log");
+        assert_eq!(
+            saved.context_references.len(),
+            1,
+            "/save persists the attachment record"
+        );
+
+        // `/load` adopts the loaded session's records, not the previous one's.
+        let mut loaded = saved_with_failed_attempt();
+        loaded.approvals = vec![sample_approval("loaded-1")];
+        loaded.context_references = vec![sample_reference("loaded.png")];
+        adopt_loaded_session(&mut state, loaded).await;
+        assert_eq!(state.approvals[0].tool_call_id, "loaded-1");
+        assert_eq!(state.context_references[0].reference.label, "loaded.png");
     }
 
     /// Without `--force` in-flight work blocks `/new`, and an unknown
