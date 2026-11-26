@@ -47,6 +47,14 @@ pub fn is_due() -> bool {
     due
 }
 
+/// Take the whole process tree down and reap the shell. On Unix the child
+/// runs in its own process group (see [`run`]), so its children go with it.
+fn kill_tree(child: &mut std::process::Child) {
+    codesmith_agent_runtime::shell_manager::kill_process_group_of_opt(Some(child.id()));
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Run the command and return the status segment.
 ///
 /// # Errors
@@ -64,6 +72,11 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
     }
     #[cfg(not(windows))]
     {
+        use std::os::unix::process::CommandExt as _;
+        // Own process group: a compound command (`curl … || echo "?"`)
+        // forks children, and the timeout has to take the whole tree down.
+        // Killing `sh` alone left the child alive and holding the pipes.
+        cmd.process_group(0);
         cmd.arg("-c").arg(command);
     }
     let mut child = cmd
@@ -93,12 +106,11 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
             Ok(Some(_)) => break,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    // Join so the reader threads (and their buffers) are
-                    // gone before we report the timeout.
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
+                    kill_tree(&mut child);
+                    // The buffers are not needed once the run is abandoned.
+                    // The reader threads end on their own when the pipes
+                    // close; joining them here waited for a descendant that
+                    // outlived the shell it was spawned from.
                     return Err("statusline command timed out".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(25));
@@ -108,10 +120,7 @@ pub fn run(command: &str, timeout: Duration) -> Result<String, String> {
                 // `std::process::Child` neither kills nor reaps it — the
                 // process kept running and lingered as a zombie until the
                 // parent exited.
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
+                kill_tree(&mut child);
                 return Err(format!("statusline command failed: {err}"));
             }
         }
@@ -198,6 +207,25 @@ mod tests {
     fn a_hanging_command_times_out_and_is_killed() {
         let err = run("sleep 30", Duration::from_millis(150)).expect_err("hangs are errors");
         assert!(err.contains("timed out"), "{err}");
+    }
+
+    /// Found in the review: a compound command forks. Killing only `sh`
+    /// left the child alive and holding the pipes, and the reader-thread
+    /// joins on the timeout arm then blocked until it exited — the REPL
+    /// loop, which awaits this before drawing the prompt, was parked for
+    /// the grandchild's whole life.
+    #[test]
+    #[cfg(unix)]
+    fn a_hanging_compound_command_times_out_at_its_deadline() {
+        let started = Instant::now();
+        let err =
+            run("sleep 5 && echo done", Duration::from_millis(150)).expect_err("hangs are errors");
+        assert!(err.contains("timed out"), "{err}");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the run returned after {elapsed:?}: it waited for the grandchild"
+        );
     }
 
     #[test]
