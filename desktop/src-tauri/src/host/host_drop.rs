@@ -24,9 +24,8 @@
 //!   budget, carries no bytes and degrades to a path citation (the composer
 //!   never sees it as an image);
 //! - drops need an open, idle composer: the page ignores the payload when no
-//!   visible `[data-composer-input]` accepts it, and there is no drag-hover
-//!   highlight (upstream renders one from DOM drag events, which never fire
-//!   here);
+//!   visible `[data-composer-input]` accepts it (the drag-hover overlay is
+//!   announced by [`hover_script`], not by DOM drag events);
 //! - the paperclip picker and a real paste stay path-less (no host path
 //!   exists for them); they upload as before.
 
