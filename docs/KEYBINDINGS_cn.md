@@ -50,7 +50,7 @@ id、无法解析的和弦、同一层里一个和弦被两个动作争用 —�
 | `app.retry` | `F5`、`Alt+R` | 提示符 | 重试上一条请求（同 `/retry`） |
 | `app.draft.stash` | `Ctrl+S` | 提示符 | 暂存草稿；空提示符下再按一次恢复 |
 | `app.prompt.newline` | `Ctrl+J`、`Alt+Enter` | 提示符 | 插入换行（多行提示词） |
-| `app.prompt.recall` | `Up` | 提示符 | 取回被清空的草稿，再取回排队消息，最后是历史 |
+| `app.prompt.recall` | `Up` | 提示符 | 取回被清空的草稿，然后是历史 |
 | `app.queue.sendNow` | `Ctrl+S`、`Ctrl+Enter`、`Ctrl+X Ctrl+S` | 回合中 | 立即把排队内容发给正在运行的回合 |
 | `app.queue.background` | `Ctrl+B` | 回合中 | 把正在运行的 shell 转后台 |
 

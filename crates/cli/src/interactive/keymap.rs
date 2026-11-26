@@ -251,7 +251,7 @@ const ACTIONS: &[ActionSpec] = &[
         name: "app.prompt.recall",
         default: &["Up"],
         scope: Scope::Prompt,
-        help: "recall the cleared draft, then queued messages, then history",
+        help: "recall the cleared draft, then history",
     },
     ActionSpec {
         id: ActionId::QueueSendNow,

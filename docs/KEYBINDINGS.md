@@ -54,7 +54,7 @@ The rebindable actions and their defaults:
 | `app.retry` | `F5`, `Alt+R` | prompt | Retry the last request (same as `/retry`) |
 | `app.draft.stash` | `Ctrl+S` | prompt | Stash the draft; press again on an empty prompt to restore |
 | `app.prompt.newline` | `Ctrl+J`, `Alt+Enter` | prompt | Insert a newline (multiline prompt) |
-| `app.prompt.recall` | `Up` | prompt | Recall the cleared draft, then queued messages, then history |
+| `app.prompt.recall` | `Up` | prompt | Recall the cleared draft, then history |
 | `app.queue.sendNow` | `Ctrl+S`, `Ctrl+Enter`, `Ctrl+X Ctrl+S` | turn | Send what is queued to the running turn now |
 | `app.queue.background` | `Ctrl+B` | turn | Send the running shell to the background |
 

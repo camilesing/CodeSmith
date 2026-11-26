@@ -479,11 +479,7 @@ pub async fn run_repl(
             cell.padded_prompt_row()
         };
         // The hint reports these without holding `ReplState`.
-        Bindings::lock(&bindings).set_display(
-            state.tool_detail,
-            state.show_tasks,
-            state.queued_messages.len(),
-        );
+        Bindings::lock(&bindings).set_display(state.tool_detail, state.show_tasks);
         // Whatever was typed mid-turn comes back as this prompt's text.
         if let Some(draft) = state.turn_end_draft.take() {
             prefill = Some(draft);
@@ -513,17 +509,6 @@ pub async fn run_repl(
         let had_actions = !actions.is_empty();
         let mut next_prompt: Option<String> = None;
         for action in actions {
-            if action == Action::TakeBackQueue {
-                let queued: Vec<String> = state.queued_messages.drain(..).collect();
-                if !queued.is_empty() {
-                    next_prompt = Some(queued.join("\n"));
-                    println!(
-                        "{}",
-                        format!("↑ took back {} queued message(s)", queued.len()).dimmed()
-                    );
-                }
-                continue;
-            }
             if action == Action::EditInEditor {
                 let draft = Bindings::lock(&bindings).snapshot().to_string();
                 // A missing editor binary is a printed notice, not a lost
@@ -537,14 +522,7 @@ pub async fn run_repl(
                         draft
                     }
                 };
-                // Compose, never overwrite: a TakeBackQueue earlier in this
-                // drained batch already moved the queued messages into
-                // `next_prompt` — replacing them destroyed messages that
-                // were removed from the queue and never restored.
-                next_prompt = Some(match next_prompt {
-                    Some(queued) if !queued.is_empty() => format!("{queued}\n{edited}"),
-                    _ => edited,
-                });
+                next_prompt = Some(edited);
                 continue;
             }
             // The copy pair needs the editor's mirrors, which `apply_action`
@@ -1160,7 +1138,6 @@ async fn apply_action(state: &mut ReplState, action: Action) -> Result<()> {
             println!("{}", "keyboard shortcuts:".bold());
             println!("{}", bindings::help_panel().dimmed());
         }
-        Action::TakeBackQueue => println!("{}", "— nothing queued".dimmed()),
         // Handled by the caller, which has the prompt to restore.
         Action::EditInEditor => {}
         // Handled by the caller, which owns the editor's mirrors.
