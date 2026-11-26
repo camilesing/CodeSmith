@@ -1322,8 +1322,13 @@ fn cmd_permission(state: &mut ReplState, arg: &str) {
 
 fn cmd_preset(state: &mut ReplState, arg: &str) {
     let arg = arg.trim();
-    if let Some(name) = arg.strip_prefix("export").map(str::trim) {
-        export_preset(state, name);
+    // `export` as a whole word. Stripped as a bare prefix, `/preset
+    // exporter` read as `/preset export er`, and `/preset exportmy-preset`
+    // (a dropped space) overwrote `my-preset.toml` with the session's dials.
+    if let Some((word, rest)) = arg.split_once(char::is_whitespace)
+        && word == "export"
+    {
+        export_preset(state, rest.trim());
         return;
     }
     if arg == "off" {
@@ -1744,6 +1749,28 @@ mod tests {
                 .as_deref(),
             Some("exporter"),
             "the canonical name is what gets persisted"
+        );
+    }
+
+    /// Found in the review: `strip_prefix("export")` had no word boundary —
+    /// `/preset exporter` exported a preset named `er` instead of applying
+    /// `exporter`, and `/preset exportmy-preset` overwrote an existing file.
+    #[test]
+    fn preset_export_needs_the_keyword_as_a_whole_word() {
+        let _lock = codesmith_agent_runtime::test_support::lock_test_env();
+        let mut scratch = PresetScratch::with_exported_preset();
+        let home = scratch._dir.path().join(".codesmith");
+
+        cmd_preset(&mut scratch.state, "exporter");
+
+        assert_eq!(
+            scratch.state.active_preset.as_deref(),
+            Some("exporter"),
+            "/preset exporter applies the preset"
+        );
+        assert!(
+            !home.join("presets").join("er.toml").exists(),
+            "nothing named `er` was exported"
         );
     }
 
