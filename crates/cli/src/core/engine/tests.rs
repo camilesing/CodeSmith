@@ -3190,6 +3190,56 @@ fn compaction_summary_stays_in_stable_system_prompt() {
     assert!(!prompt.contains(WORKING_SET_SUMMARY_MARKER));
 }
 
+/// The SlopLedger completion gate survives a compaction summary: merging
+/// the summary turns the `Text` prompt into `Blocks`, and a gate appended
+/// after the merge was dropped from the first compaction on.
+#[test]
+fn slop_gate_survives_a_compaction_summary() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    use codesmith_agent_runtime::slop_ledger::{
+        SlopBucket, SlopConfidence, SlopEntry, SlopLedger, SlopSeverity,
+    };
+    let mut ledger = SlopLedger::load().expect("ledger at the default path");
+    ledger.append(vec![SlopEntry::new(
+        SlopBucket::StaleDocs,
+        SlopSeverity::Low,
+        SlopConfidence::Certain,
+        "stale pair".to_string(),
+        "docs/CLI.md drifted from its cn twin".to_string(),
+    )]);
+    ledger.save().expect("save ledger");
+
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    // A summary left by an earlier compaction.
+    engine.session.compaction_summary_prompt = Some(SystemPrompt::Blocks(vec![SystemBlock {
+        block_type: "text".to_string(),
+        text: format!("{COMPACTION_SUMMARY_MARKER}\nsummary"),
+        cache_control: None,
+    }]));
+    engine.session.last_system_prompt_hash = None;
+    engine.refresh_system_prompt(AppMode::Agent);
+
+    let prompt = match &engine.session.system_prompt {
+        Some(SystemPrompt::Text(text)) => text.clone(),
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => panic!("expected system prompt"),
+    };
+    assert!(prompt.contains(COMPACTION_SUMMARY_MARKER));
+    assert!(
+        prompt.contains("stale pair"),
+        "the gate is still in the prompt after a compaction"
+    );
+}
+
 /// A folded summary REPLACES the carrier: after two folded merges the
 /// carrier holds exactly one block (the newest) and the system prompt no
 /// longer carries the older text — repeated compactions cannot grow the

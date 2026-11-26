@@ -3792,19 +3792,22 @@ impl Engine {
             self.session.approval_mode,
         )
         .render_system_prompt();
-        let mut stable_prompt =
-            merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
-
         // SlopLedger completion-gate: inject unresolved slop entries into the
         // system prompt so the agent can autonomously review them before
         // claiming the task is done (#2127). The block itself was gathered
-        // with the other fs inputs.
+        // with the other fs inputs. Appended to the BASE prompt, before the
+        // compaction summary is merged: the merge turns a `Text` prompt into
+        // `Blocks`, and a gate appended after it was dropped at the first
+        // compaction — for the rest of the session.
+        let mut base = base;
         if let Some(ref block) = gate_block
-            && let Some(SystemPrompt::Text(prompt_text)) = &mut stable_prompt
+            && let SystemPrompt::Text(prompt_text) = &mut base
         {
             prompt_text.push_str("\n\n");
             prompt_text.push_str(block);
         }
+        let stable_prompt =
+            merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
 
         let stable_hash = system_prompt_hash(stable_prompt.as_ref());
         if self.session.system_prompt_override {
