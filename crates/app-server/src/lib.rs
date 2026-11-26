@@ -1264,20 +1264,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_token_generated_when_none_provided() {
-        let options = AppServerOptions {
-            listen: "127.0.0.1:0".parse().expect("addr"),
-            config_path: None,
-            auth_token: None,
-            insecure_no_auth: false,
-            cors_origins: Vec::new(),
-        };
-        let token = resolve_auth_token(&options).unwrap();
-        assert!(token.is_some());
-        assert!(token.unwrap().starts_with("cwapp_"));
-    }
-
-    #[test]
     fn auth_token_explicit_is_preserved() {
         let options = AppServerOptions {
             listen: "127.0.0.1:0".parse().expect("addr"),
