@@ -273,7 +273,7 @@
       "default": null
     },
     "sandbox_backend": {
-      "description": "External sandbox backend: `\"none\"` or `\"opensandbox\"`.\nWhen set, exec_shell routes commands through the backend's HTTP API\ninstead of spawning a local process.",
+      "description": "External sandbox backend: `\"none\"`, `\"docker\"`, `\"gvisor\"`,\n`\"firecracker\"` (alias `\"kata-fc\"`), `\"gondolin\"` or `\"opensandbox\"`.\nWhen set, exec_shell routes commands through the backend's HTTP API\ninstead of spawning a local process.",
       "type": [
         "string",
         "null"
@@ -489,7 +489,7 @@
       "default": null
     },
     "search": {
-      "description": "Web search provider configuration. When absent, defaults to DuckDuckGo.\nSet `provider` to `bing`, `tavily`, or `bocha` to use those services\ninstead; Tavily and Bocha also require an `api_key`.",
+      "description": "Web search provider configuration. When absent, defaults to DuckDuckGo.\n`provider` is one of `bing`, `duckduckgo`, `tavily`, `bocha`, `metaso`,\n`baidu`, `volcengine`, `provider_native` (see `SearchConfig`); every\none but Bing and DuckDuckGo requires an `api_key`.",
       "anyOf": [
         {
           "$ref": "#/$defs/SearchConfig"
@@ -513,7 +513,7 @@
       "default": null
     },
     "memory": {
-      "description": "User-level memory file (#489). Default behaviour is **opt-in**:\nloading + injection happens only when `[memory] enabled = true` or\n`CODESMITH_MEMORY=on` is set.",
+      "description": "User-level memory file (#489). On by default: the cascade in\n`Config::memory_enabled` turns it off for bare/simple sessions and\nfor sessions without a persistent memory directory, and\n`[memory] enabled = false` / `CODESMITH_MEMORY=off` disable it\nexplicitly.",
       "anyOf": [
         {
           "$ref": "#/$defs/MemoryConfig"
@@ -2112,7 +2112,7 @@
           "default": null
         },
         "api_key": {
-          "description": "API key for Tavily, Bocha, Metaso, Baidu, or Volcengine. Not required for Bing or DuckDuckGo.\nMetaso also falls back to `METASO_API_KEY` env var, then a built-in default.\nBaidu also falls back to `BAIDU_SEARCH_API_KEY` env var.\nVolcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.",
+          "description": "API key for Tavily, Bocha, Metaso, Baidu, or Volcengine. Not required for Bing or DuckDuckGo.\nMetaso also falls back to `METASO_API_KEY` env var (no built-in default key exists).\nBaidu also falls back to `BAIDU_SEARCH_API_KEY` env var.\nVolcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.",
           "type": [
             "string",
             "null"
@@ -3222,7 +3222,7 @@
           "default": null
         },
         "sandbox_backend": {
-          "description": "External sandbox backend: `\"none\"` or `\"opensandbox\"`.\nWhen set, exec_shell routes commands through the backend's HTTP API\ninstead of spawning a local process.",
+          "description": "External sandbox backend: `\"none\"`, `\"docker\"`, `\"gvisor\"`,\n`\"firecracker\"` (alias `\"kata-fc\"`), `\"gondolin\"` or `\"opensandbox\"`.\nWhen set, exec_shell routes commands through the backend's HTTP API\ninstead of spawning a local process.",
           "type": [
             "string",
             "null"
@@ -3438,7 +3438,7 @@
           "default": null
         },
         "search": {
-          "description": "Web search provider configuration. When absent, defaults to DuckDuckGo.\nSet `provider` to `bing`, `tavily`, or `bocha` to use those services\ninstead; Tavily and Bocha also require an `api_key`.",
+          "description": "Web search provider configuration. When absent, defaults to DuckDuckGo.\n`provider` is one of `bing`, `duckduckgo`, `tavily`, `bocha`, `metaso`,\n`baidu`, `volcengine`, `provider_native` (see `SearchConfig`); every\none but Bing and DuckDuckGo requires an `api_key`.",
           "anyOf": [
             {
               "$ref": "#/$defs/SearchConfig"
@@ -3462,7 +3462,7 @@
           "default": null
         },
         "memory": {
-          "description": "User-level memory file (#489). Default behaviour is **opt-in**:\nloading + injection happens only when `[memory] enabled = true` or\n`CODESMITH_MEMORY=on` is set.",
+          "description": "User-level memory file (#489). On by default: the cascade in\n`Config::memory_enabled` turns it off for bare/simple sessions and\nfor sessions without a persistent memory directory, and\n`[memory] enabled = false` / `CODESMITH_MEMORY=off` disable it\nexplicitly.",
           "anyOf": [
             {
               "$ref": "#/$defs/MemoryConfig"

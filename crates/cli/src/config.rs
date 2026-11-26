@@ -102,10 +102,10 @@ pub const DEFAULT_OLLAMA_MODEL: &str = "deepseek-coder:1.3b";
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-5";
 pub const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
-/// Legacy `deepseek-cn` provider alias.
-///
-/// DeepSeek's official API host is the same worldwide. Keep this alias for
-/// old configs, but route it through the normal beta-enabled DeepSeek default.
+/// What a hand-edited `api_key` carries when the real key lives in the
+/// credential store: never a bearer, so every reader skips it. (The legacy
+/// `deepseek-cn` alias this comment used to describe lives in
+/// `codesmith_agent_runtime::config_types`.)
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
 
 // Provider-capability cluster (`ApiProvider`, `ProviderCapability`,
@@ -465,7 +465,7 @@ pub struct SearchConfig {
     #[serde(default)]
     pub provider: Option<SearchProvider>,
     /// API key for Tavily, Bocha, Metaso, Baidu, or Volcengine. Not required for Bing or DuckDuckGo.
-    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in default.
+    /// Metaso also falls back to `METASO_API_KEY` env var (no built-in default key exists).
     /// Baidu also falls back to `BAIDU_SEARCH_API_KEY` env var.
     /// Volcengine also falls back to `VOLCENGINE_API_KEY` / `VOLCENGINE_ARK_API_KEY` / `ARK_API_KEY` env vars.
     #[serde(default)]
@@ -897,7 +897,8 @@ pub struct Config {
     /// [`AutomationsConfig`].
     #[serde(default)]
     pub automations: Option<AutomationsConfig>,
-    /// External sandbox backend: `"none"` or `"opensandbox"`.
+    /// External sandbox backend: `"none"`, `"docker"`, `"gvisor"`,
+    /// `"firecracker"` (alias `"kata-fc"`), `"gondolin"` or `"opensandbox"`.
     /// When set, exec_shell routes commands through the backend's HTTP API
     /// instead of spawning a local process.
     pub sandbox_backend: Option<String>,
@@ -981,8 +982,9 @@ pub struct Config {
     pub edit: Option<EditConfig>,
 
     /// Web search provider configuration. When absent, defaults to DuckDuckGo.
-    /// Set `provider` to `bing`, `tavily`, or `bocha` to use those services
-    /// instead; Tavily and Bocha also require an `api_key`.
+    /// `provider` is one of `bing`, `duckduckgo`, `tavily`, `bocha`, `metaso`,
+    /// `baidu`, `volcengine`, `provider_native` (see `SearchConfig`); every
+    /// one but Bing and DuckDuckGo requires an `api_key`.
     #[serde(default)]
     pub search: Option<SearchConfig>,
 
@@ -992,9 +994,11 @@ pub struct Config {
     #[serde(default)]
     pub index: Option<codesmith_index::IndexConfig>,
 
-    /// User-level memory file (#489). Default behaviour is **opt-in**:
-    /// loading + injection happens only when `[memory] enabled = true` or
-    /// `CODESMITH_MEMORY=on` is set.
+    /// User-level memory file (#489). On by default: the cascade in
+    /// `Config::memory_enabled` turns it off for bare/simple sessions and
+    /// for sessions without a persistent memory directory, and
+    /// `[memory] enabled = false` / `CODESMITH_MEMORY=off` disable it
+    /// explicitly.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
 
@@ -2216,8 +2220,9 @@ impl Config {
 
     /// Selected main-turn executor id (kernel composition,
     /// `engine::executor_composition`); defaults to the builtin production
-    /// loop. Validated against the process-shared registry at startup by
-    /// [`validate`](Self::validate).
+    /// loop. An unknown id fails loud at the first turn's assembly, not in
+    /// `validate` — which deliberately lets it through (the registry is
+    /// process-shared and may grow after the config loads).
     pub fn turn_executor_id(&self) -> String {
         self.turn_executor
             .as_deref()
@@ -2228,9 +2233,9 @@ impl Config {
     }
 
     /// The `[[providers.custom]]` entry matching [`custom_provider`](Self::custom_provider),
-    /// if any. Resolution is by exact `id` match; a duplicate id resolves to the
-    /// first declared entry (matches the registry's last-wins behavior only at
-    /// build time — here we pick deterministically).
+    /// if any. Resolution is by exact `id` match; a duplicate id resolves to
+    /// the first declared entry — deterministic, and unlike the registry's
+    /// last-wins build, which keeps the last one.
     #[must_use]
     pub fn custom_provider_entry(&self) -> Option<&CustomProviderConfig> {
         let id = self.custom_provider()?;
@@ -3718,9 +3723,6 @@ fn default_memory_path() -> Option<PathBuf> {
 
 // === Environment Overrides ===
 
-/// Read an app-level env var by name suffix: `app_env("SANDBOX_MODE")` reads
-/// `CODESMITH_SANDBOX_MODE`. Empty values are skipped so a blank shell export
-/// does not erase configured settings.
 fn index_parse_bool(raw: &str) -> std::result::Result<bool, ()> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
@@ -3729,6 +3731,8 @@ fn index_parse_bool(raw: &str) -> std::result::Result<bool, ()> {
     }
 }
 
+/// Read an app-level env var by name suffix: `app_env("SANDBOX_MODE")` reads
+/// `CODESMITH_SANDBOX_MODE`.
 fn app_env(suffix: &str) -> Result<String, std::env::VarError> {
     codesmith_config::codesmith_env(suffix).ok_or(std::env::VarError::NotPresent)
 }
