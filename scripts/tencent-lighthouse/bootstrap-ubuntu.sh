@@ -137,10 +137,9 @@ Base server setup complete.
 
 Next:
 1. Install Rust 1.88+ for ${CODESMITH_USER}; rustup is the usual path.
-2. Build/install both binaries:
+2. Build/install the binary (installs `codesmith` and the `codes` alias):
    sudo -iu ${CODESMITH_USER}
    cd ${WORKSPACE_ROOT}/codesmith
-   cargo install --path crates/cli --locked --force
    cargo install --path crates/cli --locked --force
 3. Copy integrations/feishu-bridge to ${CODESMITH_ROOT}/bridge and run npm install.
 4. Edit /etc/codesmith/runtime.env and /etc/codesmith/feishu-bridge.env.
