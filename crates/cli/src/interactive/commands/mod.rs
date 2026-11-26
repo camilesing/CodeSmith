@@ -1669,8 +1669,10 @@ mod tests {
     /// this, the Yolo branch not.
     #[test]
     fn leaving_yolo_restores_the_configured_approval_posture() {
-        let mut config = crate::config::Config::default();
-        config.approval_policy = Some("auto".to_string());
+        let config = crate::config::Config {
+            approval_policy: Some("auto".to_string()),
+            ..Default::default()
+        };
         let mut state = ReplState::new(test_options(), &config);
         assert_eq!(
             state.approval_mode,
