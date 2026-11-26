@@ -94,6 +94,15 @@ impl Composer {
     }
 
     fn insert(&mut self, c: char) {
+        // A tab becomes four spaces at intake, so the buffer, the wire and
+        // the measurement agree: kept as a tab it counted as zero columns,
+        // the caret was parked short and wrapped rows were left behind.
+        if c == '\t' {
+            for _ in 0..4 {
+                self.insert(' ');
+            }
+            return;
+        }
         self.buffer.insert(self.cursor, c);
         self.cursor += c.len_utf8();
     }
@@ -2425,6 +2434,23 @@ mod tests {
             }
         }
         result
+    }
+
+    /// Found in the review: a tab in the mid-turn composer counted as zero
+    /// columns, so the caret was parked short and wrapped rows were left
+    /// behind. It becomes spaces at intake.
+    #[test]
+    fn a_pasted_tab_becomes_spaces_in_the_mid_turn_composer() {
+        let mut composer = Composer::default();
+        for c in "a\tb".chars() {
+            composer.insert(c);
+        }
+        assert_eq!(composer.buffer, "a    b");
+        assert_eq!(
+            composer.cursor,
+            composer.buffer.len(),
+            "the caret follows the expanded spaces, not a one-byte tab"
+        );
     }
 
     /// Found in the review: the turn-boundary autosave rebuilt the record
