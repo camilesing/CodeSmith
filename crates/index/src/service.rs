@@ -9,7 +9,7 @@
 //! chunks until the index is fresh, so the agent turn is never blocked by
 //! a full build.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +55,9 @@ struct Shared {
     files_enabled: bool,
     stats: std::sync::Mutex<IndexStats>,
     background_running: AtomicBool,
+    /// Symbol names first defined since the last sweep (see
+    /// `restale_files_mentioning_new_names`).
+    new_names: std::sync::Mutex<HashSet<String>>,
 }
 
 /// The concrete [`IndexServiceApi`]: one instance per workspace root.
@@ -82,6 +85,7 @@ impl IndexService {
                 files_enabled,
                 stats: std::sync::Mutex::new(IndexStats::default()),
                 background_running: AtomicBool::new(false),
+                new_names: std::sync::Mutex::new(HashSet::new()),
             }),
             default_budget,
         })
@@ -193,15 +197,26 @@ fn refresh_blocking(shared: &Shared, budget: RefreshBudget) -> Result<RefreshRep
 
     let deadline = started + budget.max_duration;
     let mut refreshed = 0;
+    // Every name the index defines plus the ones this pass defines: a
+    // reference is an identifier whose text is a known name, wherever it
+    // lives.
+    let mut known = shared.store.symbol_names()?;
     for entry in &dirty {
         if refreshed >= budget.max_files || Instant::now() >= deadline {
             break;
         }
-        index_one(shared, entry)?;
+        index_one(shared, entry, &mut known)?;
         refreshed += 1;
     }
 
-    let stale = total_dirty - refreshed;
+    let mut stale = total_dirty - refreshed;
+    // Names first defined in this pass were unknown while every other
+    // indexed file was extracted, and reference matching is name-based. Once
+    // the index is otherwise fresh, the files whose text mentions one are
+    // re-extracted (once) so their occurrences record it.
+    if stale == 0 {
+        stale = restale_files_mentioning_new_names(shared)?;
+    }
     let (files, symbols) = shared.store.counts()?;
     let backend_id = shared
         .backend
@@ -226,7 +241,25 @@ fn refresh_blocking(shared: &Shared, budget: RefreshBudget) -> Result<RefreshRep
 /// Index one file: inventory row always; symbols when a backend supports
 /// the language and the file is within the extraction size cap. Extraction
 /// failures degrade to inventory-only rows (never fail the whole refresh).
-fn index_one(shared: &Shared, entry: &WalkEntry) -> Result<()> {
+/// Re-extract every indexed file whose text mentions a name first defined
+/// since the last sweep: its occurrences predate the name. Returns how many
+/// files were marked stale.
+fn restale_files_mentioning_new_names(shared: &Shared) -> Result<usize> {
+    let names = std::mem::take(&mut *shared.new_names.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut marked = 0;
+    for record in shared.store.all_files()? {
+        let Ok(source) = std::fs::read_to_string(shared.root.join(&record.entry.path)) else {
+            continue;
+        };
+        if names.iter().any(|name| source.contains(name)) {
+            shared.store.mark_stale(&record.entry.path)?;
+            marked += 1;
+        }
+    }
+    Ok(marked)
+}
+
+fn index_one(shared: &Shared, entry: &WalkEntry, known: &mut HashSet<String>) -> Result<()> {
     let abs = shared.root.join(&entry.rel_path);
     let mut extraction = Extraction::default();
     if let (Some(backend), Some(lang)) = (shared.backend.as_ref(), entry.language)
@@ -234,7 +267,7 @@ fn index_one(shared: &Shared, entry: &WalkEntry) -> Result<()> {
         && entry.size <= MAX_EXTRACT_BYTES
     {
         match std::fs::read_to_string(&abs) {
-            Ok(source) => match backend.extract(&abs, &source, lang) {
+            Ok(source) => match backend.extract(&abs, &source, lang, known) {
                 Ok(ex) => extraction = ex,
                 Err(err) => {
                     tracing::warn!(path = %entry.rel_path, %err, "index extraction failed; inventory-only row");
@@ -243,6 +276,15 @@ fn index_one(shared: &Shared, entry: &WalkEntry) -> Result<()> {
             Err(err) => {
                 tracing::debug!(path = %entry.rel_path, %err, "index read failed (binary?); inventory-only row");
             }
+        }
+    }
+    for symbol in &extraction.symbols {
+        if known.insert(symbol.name.clone()) {
+            shared
+                .new_names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(symbol.name.clone());
         }
     }
     shared.store.replace_file(
@@ -417,7 +459,13 @@ mod tests {
         fn supported_languages(&self) -> &[Language] {
             Language::all()
         }
-        fn extract(&self, file: &Path, _source: &str, _lang: Language) -> Result<Extraction> {
+        fn extract(
+            &self,
+            file: &Path,
+            _source: &str,
+            _lang: Language,
+            _known_names: &std::collections::HashSet<String>,
+        ) -> Result<Extraction> {
             self.extracts.fetch_add(1, Ordering::SeqCst);
             let symbol = self.symbol_for(file);
             let name = symbol.name.clone();

@@ -109,6 +109,7 @@ mod tests {
             _file: &std::path::Path,
             _source: &str,
             _lang: Language,
+            _known_names: &std::collections::HashSet<String>,
         ) -> Result<Extraction> {
             Ok(Extraction::default())
         }

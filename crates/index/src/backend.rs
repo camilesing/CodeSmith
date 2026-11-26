@@ -76,7 +76,18 @@ pub trait IndexBackend: Send + Sync {
     fn supported_languages(&self) -> &[Language];
 
     /// Parse `source` (the contents of `file`) into symbols + occurrences.
-    fn extract(&self, file: &Path, source: &str, lang: Language) -> Result<Extraction>;
+    ///
+    /// `known_names` holds every symbol name the workspace's index defines.
+    /// A reference is an identifier whose text is one of them — in this file
+    /// or in any other: matching only the names this file defines never
+    /// recorded a call site that lives elsewhere.
+    fn extract(
+        &self,
+        file: &Path,
+        source: &str,
+        lang: Language,
+        known_names: &std::collections::HashSet<String>,
+    ) -> Result<Extraction>;
 }
 
 /// Builds [`IndexBackend`]s for a registry id. The plugin seam — implement

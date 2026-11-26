@@ -280,6 +280,23 @@ impl IndexStore {
     }
 
     /// Snapshot of every inventory row (used by the freshness diff).
+    /// Every distinct symbol name the index defines.
+    pub fn symbol_names(&self) -> Result<HashSet<String>> {
+        let conn = self.conn.lock().expect("index store mutex poisoned");
+        let mut stmt = conn.prepare("SELECT DISTINCT name FROM symbols")?;
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<HashSet<String>, _>>()?;
+        Ok(names)
+    }
+
+    /// Make a file look changed, so the next refresh re-extracts it.
+    pub fn mark_stale(&self, path: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("index store mutex poisoned");
+        conn.execute("UPDATE files SET mtime_ms = -1 WHERE path = ?1", [path])?;
+        Ok(())
+    }
+
     pub fn all_files(&self) -> Result<Vec<FileRecord>> {
         let conn = self.conn.lock().expect("index store mutex poisoned");
         let mut stmt = conn.prepare("SELECT id, path, mtime_ms, size, language FROM files")?;

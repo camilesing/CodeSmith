@@ -30,6 +30,13 @@ async fn fixture_repo_symbol_navigation_end_to_end() {
         "src/client.py",
         "class Client:\n    def connect(self):\n        pass\n",
     );
+    // A file that only USES a name defined elsewhere: its call site is a
+    // reference too.
+    write(
+        tmp.path(),
+        "src/main.rs",
+        "fn main() {\n    let _ = ToolRegistry::build();\n}\n",
+    );
     write(tmp.path(), ".gitignore", "ignored.rs\n");
     write(tmp.path(), "ignored.rs", "fn hidden() {}\n");
 
@@ -95,12 +102,18 @@ async fn fixture_repo_symbol_navigation_end_to_end() {
     assert_eq!(defs[0].kind, SymbolKind::Class);
     assert_eq!(defs[0].path, "src/client.py");
 
-    // Lexical references: the `impl ToolRegistry` header is a reference site.
+    // Lexical references: the `impl ToolRegistry` header is a reference site,
+    // and so is the call in the file that only uses the name.
     let refs = service.find_references("ToolRegistry").await.expect("refs");
     assert!(
         refs.iter()
             .any(|r| r.role == OccurrenceRole::Reference && r.path == "src/lib.rs" && r.line == 2),
         "{refs:?}"
+    );
+    assert!(
+        refs.iter()
+            .any(|r| r.role == OccurrenceRole::Reference && r.path == "src/main.rs"),
+        "a call site in a file that only uses the name is a reference: {refs:?}"
     );
 
     // .gitignore respected: the ignored file never enters the index.
@@ -130,7 +143,7 @@ async fn fixture_repo_symbol_navigation_end_to_end() {
     assert!(files.iter().any(|f| f.path == "src/lib.rs"), "{files:?}");
     let stats = service.stats();
     assert_eq!(stats.backend, "tree-sitter");
-    assert_eq!(stats.files, 2, "gitignore/hide semantics: {stats:?}");
+    assert_eq!(stats.files, 3, "gitignore/hide semantics: {stats:?}");
     assert!(
         stats.stale_files == 0,
         "refresh should have caught up: {stats:?}"

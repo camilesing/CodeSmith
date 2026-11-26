@@ -63,11 +63,17 @@ impl IndexBackend for TreeSitterBackend {
         &self.languages
     }
 
-    fn extract(&self, file: &Path, source: &str, lang: Language) -> Result<Extraction> {
+    fn extract(
+        &self,
+        file: &Path,
+        source: &str,
+        lang: Language,
+        known_names: &HashSet<String>,
+    ) -> Result<Extraction> {
         if !self.languages.contains(&lang) {
             anyhow::bail!("language {lang:?} not enabled for this backend");
         }
-        extract_symbols(file, source, lang)
+        extract_symbols(file, source, lang, known_names)
     }
 }
 
@@ -171,6 +177,8 @@ struct Ctx<'a> {
     occurrences: Vec<Occurrence>,
     def_name_node_ids: HashSet<usize>,
     def_names: HashSet<String>,
+    /// Every name the workspace's index defines (not only this file's).
+    known_names: &'a HashSet<String>,
     container: Vec<Scope>,
     line_starts: Vec<usize>,
 }
@@ -220,8 +228,14 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// Extract symbols + lexical occurrences from `source`.
-pub fn extract_symbols(file: &Path, source: &str, lang: Language) -> Result<Extraction> {
+/// Extract symbols + lexical occurrences from `source`. A reference is an
+/// identifier whose text is in `known_names` ∪ the names this file defines.
+pub fn extract_symbols(
+    file: &Path,
+    source: &str,
+    lang: Language,
+    known_names: &HashSet<String>,
+) -> Result<Extraction> {
     let tree = parse_source(file, source, lang)?;
     let rel_path = file.to_string_lossy().replace('\\', "/");
     let line_starts: Vec<usize> = std::iter::once(0)
@@ -235,6 +249,7 @@ pub fn extract_symbols(file: &Path, source: &str, lang: Language) -> Result<Extr
         occurrences: Vec::new(),
         def_name_node_ids: HashSet::new(),
         def_names: HashSet::new(),
+        known_names,
         container: Vec::new(),
         line_starts,
     };
@@ -414,7 +429,7 @@ fn collect_references(node: Node<'_>, ctx: &mut Ctx<'_>) {
     if idents.contains(&node.kind())
         && node.child_count() == 0
         && let Some(name) = ctx.text_of(node)
-        && ctx.def_names.contains(name)
+        && (ctx.def_names.contains(name) || ctx.known_names.contains(name))
         && !ctx.def_name_node_ids.contains(&node.id())
         // A Go struct-field name (`field_identifier` under a
         // `field_declaration`) is a declaration site, not a reference to a
@@ -506,6 +521,7 @@ mod tests {
             Path::new(file),
             source,
             Language::from_path(Path::new(file)).unwrap(),
+            &HashSet::new(),
         )
         .expect("extract")
     }

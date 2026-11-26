@@ -32,10 +32,11 @@
 //! impl IndexBackend for CtagsBackend {
 //!     fn id(&self) -> &str { "ctags" }
 //!     fn supported_languages(&self) -> &[Language] { &self.languages }
-//!     fn extract(&self, _file: &Path, source: &str, lang: Language)
+//!     fn extract(&self, _file: &Path, source: &str, lang: Language,
+//!         _known_names: &std::collections::HashSet<String>)
 //!         -> anyhow::Result<Extraction> {
 //!         // parse `source` into symbols + occurrences …
-//! #       let _ = (source, lang);
+//! #       let _ = (source, lang, _known_names);
 //! #       Ok(Extraction::default())
 //!     }
 //! }
