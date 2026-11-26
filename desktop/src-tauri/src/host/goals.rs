@@ -326,8 +326,16 @@ fn edited_command(
 
 /// Load the persisted overlays once per Host generation. A corrupt file logs
 /// loud and degrades to the in-memory state; it is never silently rewritten.
-async fn hydrate(host: &HostState) {
-    if host.goal_overlays_loaded.swap(true, Ordering::SeqCst) {
+///
+/// A reader that arrives while the first load is still reading waits for it:
+/// the restore burst (follow snapshot, projections, control baseline,
+/// `goals/get`) converges on this at once, and a reader that returned early
+/// read an empty map — a desktop-paused goal projected as running, a
+/// `/goal`-created one dropped, until the next push.
+pub(super) async fn hydrate(host: &HostState) {
+    static LOADING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _load = LOADING.lock().await;
+    if host.goal_overlays_loaded.load(Ordering::SeqCst) {
         return;
     }
     let path = overlay_path(host);
@@ -346,6 +354,7 @@ async fn hydrate(host: &HostState) {
             eprintln!("codesmith desktop: goal overlay load join failed: {err}");
         }
     }
+    host.goal_overlays_loaded.store(true, Ordering::SeqCst);
 }
 
 async fn overlay_for(host: &HostState, session_id: &str) -> Overlay {

@@ -2198,6 +2198,36 @@ mod tests {
         assert_eq!(read["value"]["objective"], "ship it", "{read}");
     }
 
+    /// The restore burst (follow snapshot, projections, control baseline,
+    /// `goals/get`) reaches the first overlay load together: a reader that
+    /// arrives while the file is still being read must wait for it, not
+    /// project from an empty map — a paused goal read as running, a
+    /// `/goal`-created one dropped, until the next push.
+    #[tokio::test]
+    async fn a_first_goal_overlay_load_is_shared_by_concurrent_readers() {
+        let home = test_home("goals-hydrate-race");
+        let cwd = home.path.join("cwd");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let host = test_host(fake_runtime(cwd.clone()).await, cwd);
+        let store = host.settings_home().join("desktop").join("goals.json");
+        std::fs::create_dir_all(store.parent().expect("desktop dir")).expect("desktop dir");
+        std::fs::write(
+            &store,
+            json!({ "sessions": { "thr_a": { "paused": true, "pausedGoalId": "goal_item" } } })
+                .to_string(),
+        )
+        .expect("overlay store");
+        let late = async {
+            goals::hydrate(&host).await;
+            host.goal_overlays.lock().await.contains_key("thr_a")
+        };
+        let ((), visible) = tokio::join!(goals::hydrate(&host), late);
+        assert!(
+            visible,
+            "a concurrent first hydrate must see the persisted overlays"
+        );
+    }
+
     /// A bridge restart rehydrates `goals.json`: the command goal keeps its
     /// id and revision, so the ref a bar held before the restart still passes
     /// the compare-and-set while an older one is refused.
