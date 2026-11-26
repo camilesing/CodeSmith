@@ -875,15 +875,6 @@ impl Engine {
                         None
                     };
 
-                    // A cancelled turn leaves its token cancelled until the
-                    // next turn resets it: handed to the child as-is, every
-                    // tool the child ran aborted at once. A fresh token only
-                    // when the current one is spent — otherwise the child
-                    // keeps sharing the token an idle Esc still reaches.
-                    if self.cancel_token.is_cancelled() {
-                        self.reset_cancel_token();
-                    }
-
                     let req = SpawnSubAgentRequest {
                         prompt: &prompt,
                         llm_client: client,

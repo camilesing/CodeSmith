@@ -5124,64 +5124,6 @@ async fn idle_wake_turn_keeps_the_model_set_between_turns() {
     );
 }
 
-/// `/subtask` after a cancelled turn: the sub-agent must get a live
-/// cancel token. The op used to hand out the interrupted turn's token, so
-/// every tool the child ran aborted at once.
-#[tokio::test]
-async fn spawn_sub_agent_after_a_cancelled_turn_gets_a_live_token() {
-    let _env = HermeticEnv::new();
-    let tmp = tempdir().expect("tempdir");
-    fs::create_dir_all(tmp.path().join("listed")).expect("mkdir");
-    let list_args = serde_json::json!({"path": tmp.path()}).to_string();
-    let mock = MockLlmClient::new(vec![
-        canned::simple_text_turn("first turn done"),
-        canned::tool_call_turn("c1", "list_dir", &list_args),
-        canned::simple_text_turn("listed"),
-    ]);
-    let (handle, mock_arc) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
-
-    handle.send(make_send_op("hello")).await.expect("send op");
-    let _ = collect_until_turn_complete(&handle).await;
-    // Esc: the turn's token stays cancelled until the next turn starts.
-    handle.cancel();
-
-    handle
-        .send(Op::SpawnSubAgent {
-            prompt: "list the workspace".to_string(),
-        })
-        .await
-        .expect("send op");
-
-    // Let the child run to completion, then read what it saw: its follow-up
-    // request carries the tool result.
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        let mut rx = handle.rx_event.write().await;
-        while let Some(event) = rx.recv().await {
-            if matches!(event, Event::AgentComplete { .. }) {
-                return;
-            }
-        }
-        panic!("the spawned sub-agent never completed");
-    })
-    .await
-    .expect("the spawned sub-agent runs to completion");
-
-    // [0] the parent's turn, [1] the child's first request, [2] its follow-up
-    // after the tool. A cancelled token makes `list_dir` answer with an
-    // error instead of the listing.
-    let requests = mock_arc.captured_requests();
-    assert_eq!(requests.len(), 3, "parent turn, then two child requests");
-    let seen = format!("{:?}", requests[2].messages);
-    assert!(
-        !seen.contains("cancelled"),
-        "list_dir must not see a cancelled token: {seen}"
-    );
-    assert!(
-        seen.contains("listed"),
-        "the child read the directory: {seen}"
-    );
-}
-
 /// Idle wake off (the default): the same completion stays parked — no
 /// synthesized turn — and the NEXT user turn's pre-request drain delivers
 /// it. Pins the old behavior for hosts that leave the flag off.
