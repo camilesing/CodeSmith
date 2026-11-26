@@ -331,23 +331,43 @@ pub async fn resume(state: &mut ReplState, arg: Option<&str>) {
     // that happens to look like a title still wins.
     let id = match requested {
         None => "latest".to_string(),
-        Some(value) => match load_by_prefix(value) {
-            Ok(true) => value.to_string(),
-            // Only "no such session" falls through to a title match. An
-            // ambiguity the store reported was read as "no id match" here,
-            // and the title fallback resumed a different conversation.
-            Ok(false) => match find_session_by_name(value) {
-                Some(id) => {
-                    println!("{}", format!("resuming {id} (matched by name)").dimmed());
-                    id
+        // Both lookups scan the sessions directory: off the runtime, like
+        // every other directory-wide read in the loop.
+        Some(value) => {
+            let value = value.to_string();
+            let prefix = tokio::task::spawn_blocking({
+                let value = value.clone();
+                move || load_by_prefix(&value)
+            })
+            .await
+            .unwrap_or_else(|err| Err(anyhow::anyhow!("session lookup task failed: {err}")));
+            match prefix {
+                Ok(true) => value,
+                // Only "no such session" falls through to a title match. An
+                // ambiguity the store reported was read as "no id match"
+                // here, and the title fallback resumed a different
+                // conversation.
+                Ok(false) => {
+                    let named = tokio::task::spawn_blocking({
+                        let value = value.clone();
+                        move || find_session_by_name(&value)
+                    })
+                    .await
+                    .unwrap_or(None);
+                    match named {
+                        Some(id) => {
+                            println!("{}", format!("resuming {id} (matched by name)").dimmed());
+                            id
+                        }
+                        None => value,
+                    }
                 }
-                None => value.to_string(),
-            },
-            Err(err) => {
-                println!("{} failed to load session: {err}", "✗".red());
-                return;
+                Err(err) => {
+                    println!("{} failed to load session: {err}", "✗".red());
+                    return;
+                }
             }
-        },
+        }
     };
     // Every sibling here reports a dropped sync: the REPL has switched
     // while the engine keeps serving the previous session.
@@ -612,19 +632,34 @@ fn render_message_text(message: &Message) -> String {
     out
 }
 
-/// `/sessions [prune <days>]` — list sessions (line-based) or prune.
-pub fn sessions(state: &ReplState, arg: Option<&str>) {
+/// `/sessions [prune <days>]` — list sessions (line-based) or prune. The
+/// store scans are directory-wide (writes, for a confirmed prune): they run
+/// on the blocking pool, the dispatch runs on the runtime.
+pub async fn sessions(state: &ReplState, arg: Option<&str>) {
     let trimmed = arg.unwrap_or("").trim();
     if trimmed.is_empty() || matches!(trimmed, "show" | "list") {
-        let Ok(manager) = FileSessionStore::default_location() else {
-            println!("{} could not open the session store", "✗".red());
-            return;
+        let listed = tokio::task::spawn_blocking(|| {
+            FileSessionStore::default_location()
+                .map_err(|err| format!("could not open the session store: {err}"))
+                .and_then(|manager| {
+                    manager
+                        .list_sessions()
+                        .map(|mut sessions| {
+                            sessions.truncate(20);
+                            sessions
+                        })
+                        .map_err(|err| format!("could not list sessions: {err}"))
+                })
+        })
+        .await
+        .unwrap_or_else(|err| Err(format!("could not list sessions: {err}")));
+        let sessions = match listed {
+            Ok(sessions) => sessions,
+            Err(message) => {
+                println!("{} {message}", "✗".red());
+                return;
+            }
         };
-        let Ok(mut sessions) = manager.list_sessions() else {
-            println!("{} could not list sessions", "✗".red());
-            return;
-        };
-        sessions.truncate(20);
         if sessions.is_empty() {
             println!("no saved sessions");
             return;
@@ -664,7 +699,7 @@ pub fn sessions(state: &ReplState, arg: Option<&str>) {
         "prune" => {
             let rest: Vec<&str> = parts.collect();
             let rest = rest.join(" ");
-            prune(if rest.is_empty() { None } else { Some(&rest) });
+            prune(if rest.is_empty() { None } else { Some(&rest) }).await;
         }
         other => println!(
             "{} unknown subcommand `{other}` — usage: /sessions [prune <days>]",
@@ -673,7 +708,7 @@ pub fn sessions(state: &ReplState, arg: Option<&str>) {
     }
 }
 
-fn prune(days_arg: Option<&str>) {
+async fn prune(days_arg: Option<&str>) {
     let mut words = days_arg
         .map(str::split_whitespace)
         .map_or_else(Vec::new, Iterator::collect::<Vec<&str>>);
@@ -709,37 +744,41 @@ fn prune(days_arg: Option<&str>) {
     // Pruning is a permanent delete driven by age alone, so it previews
     // first: without `--yes` the command counts what the age window matches
     // (a typo'd large `days` would otherwise wipe the whole store) and the
-    // user re-runs it to delete.
-    if !confirmed {
-        let candidates = manager
-            .list_sessions()
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter(|meta| {
-                        meta.updated_at
-                            < chrono::Utc::now()
-                                - chrono::Duration::from_std(max_age)
-                                    .unwrap_or(chrono::Duration::days(365 * 10))
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
-        println!(
-            "{}",
-            format!(
+    // user re-runs it to delete. The preview counts the whole store and the
+    // delete walks it: on the blocking pool.
+    let preview = !confirmed;
+    let report = tokio::task::spawn_blocking(move || {
+        if preview {
+            let candidates = manager
+                .list_sessions()
+                .map(|sessions| {
+                    sessions
+                        .into_iter()
+                        .filter(|meta| {
+                            meta.updated_at
+                                < chrono::Utc::now()
+                                    - chrono::Duration::from_std(max_age)
+                                        .unwrap_or(chrono::Duration::days(365 * 10))
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            return format!(
                 "dry run: {candidates} session(s) older than {days}d would be pruned — \
                  re-run `/sessions prune {days} --yes` to delete them"
             )
             .dimmed()
-        );
-        return;
-    }
-    match manager.prune_sessions_older_than(max_age) {
-        Ok(0) => println!("no sessions older than {days}d to prune"),
-        Ok(n) => println!("pruned {n} session(s) older than {days}d"),
-        Err(err) => println!("{} prune failed: {err}", "✗".red()),
-    }
+            .to_string();
+        }
+        match manager.prune_sessions_older_than(max_age) {
+            Ok(0) => format!("no sessions older than {days}d to prune"),
+            Ok(n) => format!("pruned {n} session(s) older than {days}d"),
+            Err(err) => format!("{} prune failed: {err}", "✗".red()),
+        }
+    })
+    .await
+    .unwrap_or_else(|err| format!("{} prune failed: {err}", "✗".red()));
+    println!("{report}");
 }
 
 /// `/rename <title>`
@@ -1712,8 +1751,8 @@ mod tests {
     /// subcommands, and the prune argument surface rejects everything but
     /// one positive integer. Every form here is a preview or a refusal —
     /// nothing is deleted.
-    #[test]
-    fn sessions_lists_and_validates_the_prune_arguments() {
+    #[tokio::test]
+    async fn sessions_lists_and_validates_the_prune_arguments() {
         let _env = scratch_env();
         let manager = FileSessionStore::default_location().expect("store");
         for id in ["prune-old-1", "prune-new-1"] {
@@ -1724,15 +1763,15 @@ mod tests {
         }
         let state = test_repl_state();
 
-        sessions(&state, None);
-        sessions(&state, Some(""));
-        sessions(&state, Some("show"));
-        sessions(&state, Some("list"));
-        sessions(&state, Some("bogus-subcommand"));
-        sessions(&state, Some("prune"));
-        sessions(&state, Some("prune abc"));
-        sessions(&state, Some("prune 0"));
-        sessions(&state, Some("prune 30")); // dry run: preview only
+        sessions(&state, None).await;
+        sessions(&state, Some("")).await;
+        sessions(&state, Some("show")).await;
+        sessions(&state, Some("list")).await;
+        sessions(&state, Some("bogus-subcommand")).await;
+        sessions(&state, Some("prune")).await;
+        sessions(&state, Some("prune abc")).await;
+        sessions(&state, Some("prune 0")).await;
+        sessions(&state, Some("prune 30")).await; // dry run: preview only
         assert_eq!(
             manager.list_sessions().expect("list").len(),
             2,
@@ -1744,8 +1783,8 @@ mod tests {
     /// days word to `prune`, dropping `--yes` — a confirmed prune silently
     /// stayed a dry run. The confirmed form must delete exactly the
     /// expired sessions.
-    #[test]
-    fn sessions_prune_confirmed_deletes_only_expired_sessions() {
+    #[tokio::test]
+    async fn sessions_prune_confirmed_deletes_only_expired_sessions() {
         let _env = scratch_env();
         let manager = FileSessionStore::default_location().expect("store");
         let mut expired = saved_with_failed_attempt();
@@ -1759,7 +1798,7 @@ mod tests {
         manager.save_session(&fresh).expect("save fresh");
 
         let state = test_repl_state();
-        sessions(&state, Some("prune 30 --yes"));
+        sessions(&state, Some("prune 30 --yes")).await;
 
         let ids: Vec<String> = manager
             .list_sessions()

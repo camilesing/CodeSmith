@@ -264,6 +264,27 @@ pub async fn simplify(state: &mut ReplState, target: &str) {
     activate(state, "simplify", target).await;
 }
 
+/// What `/skill-doctor` counts from the session files: up to
+/// `SESSION_LIMIT` files, each read and parsed. Blocking IO — the dispatch
+/// arm runs the scan on the blocking pool.
+#[derive(Default)]
+pub struct SkillUsage {
+    pub activations: std::collections::HashMap<String, u32>,
+    pub sessions_scanned: usize,
+}
+
+pub fn scan_skill_usage() -> SkillUsage {
+    let mut usage = SkillUsage::default();
+    let files = super::usage_scan::session_files(SESSION_LIMIT);
+    for file in &files {
+        for name in super::usage_scan::skill_activations(file) {
+            *usage.activations.entry(name).or_insert(0) += 1;
+        }
+    }
+    usage.sessions_scanned = files.len();
+    usage
+}
+
 /// `/skill-doctor` — what each skill costs in context, and how often it runs.
 ///
 /// Claude Code's `/skill-doctor` answers "which skills should I turn off" with
@@ -282,20 +303,15 @@ pub async fn simplify(state: &mut ReplState, target: &str) {
 ///   directories, and per-skill bytes there are the same bodies.
 /// - Usage counts sessions saved on this machine and nothing else; a skill
 ///   used in a session saved with `/save <path>` reads as unused.
-pub fn skill_doctor(state: &ReplState) {
+///
+/// `usage` is [`scan_skill_usage`]'s table — the dispatch arm runs that
+/// scan off the runtime.
+pub fn skill_doctor(state: &ReplState, usage: &SkillUsage) {
     let registry = discover(state);
     let skills = registry.list();
     if skills.is_empty() {
         println!("{}", "no skills discovered".dimmed());
         return;
-    }
-
-    let mut activations: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let files = super::usage_scan::session_files(SESSION_LIMIT);
-    for file in &files {
-        for name in super::usage_scan::skill_activations(file) {
-            *activations.entry(name).or_insert(0) += 1;
-        }
     }
 
     let mut rows: Vec<(usize, usize, String, u32, String)> = skills
@@ -306,7 +322,7 @@ pub fn skill_doctor(state: &ReplState) {
                 chars,
                 chars / 4,
                 skill.name.clone(),
-                activations.get(&skill.name).copied().unwrap_or(0),
+                usage.activations.get(&skill.name).copied().unwrap_or(0),
                 // Where the definition lives, which is what makes a skill
                 // removable: the source enum alone cannot say it, because the
                 // definitions installed with the app are `Bundled` *and*
@@ -330,7 +346,7 @@ pub fn skill_doctor(state: &ReplState) {
             rows.len(),
             total_chars,
             total_chars / 4,
-            files.len()
+            usage.sessions_scanned
         )
         .bold()
     );
@@ -827,11 +843,11 @@ mod tests {
         std::fs::create_dir_all(&skills).expect("mkdir");
         make_skill(&skills, "alpha-tool", "First skill");
         let state = test_repl_state(skills);
-        skill_doctor(&state);
+        skill_doctor(&state, &scan_skill_usage());
 
         let empty = tempfile::tempdir().expect("tempdir");
         let state = test_repl_state(empty.path().to_path_buf());
-        skill_doctor(&state); // bundled skills still discovered
+        skill_doctor(&state, &scan_skill_usage()); // bundled skills still discovered
     }
 
     #[test]

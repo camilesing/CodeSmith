@@ -179,7 +179,8 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
                 } else {
                     Some(&arg_str)
                 },
-            );
+            )
+            .await;
             false
         }
         Command::Resume => {
@@ -230,7 +231,13 @@ pub async fn dispatch(state: &mut ReplState, line: &str) -> bool {
             false
         }
         Command::SkillDoctor => {
-            skills_cmds::skill_doctor(state);
+            // Usage counts come from up to SESSION_LIMIT session files, each
+            // read and parsed — the same off-runtime scan `/fewer-prompts`
+            // runs. Inline, it parked the runtime for the whole scan.
+            let usage = tokio::task::spawn_blocking(skills_cmds::scan_skill_usage)
+                .await
+                .unwrap_or_default();
+            skills_cmds::skill_doctor(state, &usage);
             false
         }
         Command::RunSkillGenerator => {
