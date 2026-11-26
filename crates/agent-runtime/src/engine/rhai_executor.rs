@@ -638,7 +638,9 @@ impl RhaiTurnExecutor {
                         if round.interrupted {
                             return Some(StopReason::Interrupted);
                         }
-                        stats.tool_calls += u32::try_from(round.tool_uses.len()).unwrap_or(0);
+                        // Not counted here: a call counts once, when the
+                        // script dispatches it (`RunTools`), as the builtin
+                        // loop counts the calls it executes.
                         let _ = reply.send(LoopReply::Llm(round));
                         None
                     }
@@ -1052,6 +1054,34 @@ impl RhaiTurnExecutor {
         };
         callback.on_llm_end(&content).await;
         self.host.accumulate_usage_external(&usage);
+        // §F2b T2 — AfterProviderResponse, the payload the builtin loop
+        // emits after every successful stream (`id` is empty on the
+        // streaming path). Without it a mod handler registered for
+        // `after-provider-response` never fired under a script loop.
+        if let Some(runner) = extension {
+            let response = codesmith_agent::models::MessageResponse {
+                id: String::new(),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: content.clone(),
+                model: request_model.clone(),
+                stop_reason: stop_reason.clone(),
+                stop_sequence: None,
+                container: None,
+                usage: usage.clone(),
+            };
+            let _ = runner
+                .emit_scoped(
+                    self.host.dispatch_scope().clone(),
+                    codesmith_agent::extension::ExtensionEvent::AfterProviderResponse(
+                        codesmith_agent::extension::AfterProviderResponseEvent {
+                            response: serde_json::to_value(&response)
+                                .unwrap_or(serde_json::Value::Null),
+                        },
+                    ),
+                )
+                .await;
+        }
 
         let text: String = content
             .iter()
@@ -2658,6 +2688,154 @@ mod tests {
             landed,
             "the acknowledged steer reaches the transcript: {:?}",
             history.messages()
+        );
+    }
+
+    /// Extension-event parity with the builtin loop: a scripted turn emits
+    /// `AfterProviderResponse` after every successful stream and counts each
+    /// model-issued tool call once in `TurnEnd`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scripted_turn_emits_provider_response_and_counts_tool_calls_once() {
+        use codesmith_agent::extension::{
+            ExtensionApi, ExtensionContext, ExtensionError, ExtensionEvent, ExtensionMetadata,
+            Handler, HandlerOutcome,
+        };
+        use codesmith_extensions::Extension;
+
+        /// Records `AfterProviderResponse` and `TurnEnd.tool_calls`.
+        struct RecHandler {
+            responses: Arc<std::sync::atomic::AtomicUsize>,
+            tool_calls: Arc<Mutex<Vec<u32>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Handler for RecHandler {
+            async fn handle(
+                &self,
+                event: &ExtensionEvent,
+                _ctx: &dyn ExtensionContext,
+            ) -> Result<HandlerOutcome, ExtensionError> {
+                match event {
+                    ExtensionEvent::AfterProviderResponse(_) => {
+                        self.responses.fetch_add(1, Ordering::SeqCst);
+                    }
+                    ExtensionEvent::TurnEnd { tool_calls, .. } => {
+                        self.tool_calls.lock().unwrap().push(*tool_calls);
+                    }
+                    _ => {}
+                }
+                Ok(HandlerOutcome::Continue)
+            }
+        }
+
+        struct RecExt {
+            responses: Arc<std::sync::atomic::AtomicUsize>,
+            tool_calls: Arc<Mutex<Vec<u32>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Extension for RecExt {
+            fn metadata(&self) -> &ExtensionMetadata {
+                static M: ExtensionMetadata = ExtensionMetadata::new("rhai-parity-rec");
+                &M
+            }
+            async fn configure(&self, api: &dyn ExtensionApi) -> Result<(), ExtensionError> {
+                api.on(Arc::new(RecHandler {
+                    responses: Arc::clone(&self.responses),
+                    tool_calls: Arc::clone(&self.tool_calls),
+                }))?;
+                Ok(())
+            }
+        }
+
+        let source = r#"
+            fn main() {
+                let r = llm_request();
+                if r.interrupted { return (); }
+                run_tools(r.tool_uses);
+                llm_request();
+            }
+        "#;
+        // The recorder is loaded BEFORE the core bind: a load takes effect at
+        // the next bind's flush (the order of host_executor's lifecycle test).
+        let runner = Arc::new(codesmith_extensions::ExtensionRunner::new());
+        let responses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool_calls = Arc::new(Mutex::new(Vec::new()));
+        runner
+            .load(&RecExt {
+                responses: Arc::clone(&responses),
+                tool_calls: Arc::clone(&tool_calls),
+            })
+            .await
+            .expect("load the recorder");
+        runner.bind_core(Arc::new(codesmith_extensions::HostExtensionContext::new(
+            std::path::PathBuf::from("/tmp/codesmith-rhai-loop-test"),
+            codesmith_agent::extension::ExtensionMode::Interactive,
+            Arc::new(std::sync::Mutex::new(true)),
+            Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+            runner.generation_arc(),
+        )));
+
+        let mut tools = ToolSet::new();
+        tools.register(Arc::new(EchoTool));
+        // Call 1: text + tool_use(echo). Call 2: text-only → NoToolCalls.
+        let mut call1 = text_block(0, "let me echo");
+        call1.extend(tool_use_block(1, "t1", "echo", r#"{"text":"world"}"#));
+        call1.extend(finish("tool_use"));
+        let mut call2 = text_block(0, "done");
+        call2.extend(finish("end_turn"));
+        let host = Arc::new(
+            HostAgentExecutor::new(
+                Arc::new(MockLlm::new(vec![call1, call2])),
+                Arc::new(tools),
+                Arc::new(codesmith_agent::callback::CallbackSet::new()),
+                AgentExecutorConfig::default(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .with_extension_runner(Some(runner.clone())),
+        );
+        let executor = RhaiTurnExecutor {
+            host,
+            rhai_mod: Arc::new(
+                codesmith_extensions::script::RhaiMod::load_source(
+                    "test-loop-mod",
+                    "Test Loop",
+                    "0.1.0",
+                    format!("register_loop(\"main\");\n{source}"),
+                    codesmith_extensions::script::kv::ModKvStore::ephemeral(),
+                    std::sync::Arc::new(codesmith_agent::extension::MessageProjectionHub::new()),
+                )
+                .expect("loop mod compiles"),
+            ),
+            entry: "main".to_string(),
+            settings: RhaiLoopSettings::default(),
+            spawn: test_spawn_deps(Arc::new(RoutedMockLlm::new(Vec::new())), Some(runner), 3),
+        };
+
+        let mut history = VecChatHistory::new();
+        let reason = executor
+            .run(&mut history, "echo world".to_string())
+            .await
+            .expect("the scripted turn runs");
+        assert_eq!(reason, StopReason::NoToolCalls);
+
+        assert_eq!(
+            responses.load(Ordering::SeqCst),
+            2,
+            "one AfterProviderResponse per successful stream"
+        );
+        assert_eq!(
+            *tool_calls.lock().unwrap(),
+            vec![1],
+            "the model issued one tool call; TurnEnd counts it once"
         );
     }
 }

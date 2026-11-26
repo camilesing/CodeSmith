@@ -17,7 +17,7 @@ vocabularies are not covered.
 
 | Event | Dispatch | Producers | In-tree subscribers |
 |---|---|---|---|
-| `AfterProviderResponse` | Emit | `agent-runtime/engine/host_executor.rs` | — |
+| `AfterProviderResponse` | Emit | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
 | `AgentEnd` | Emit | `agent-runtime/engine/host_executor.rs` ×4, `agent-runtime/engine/rhai_executor.rs` | — |
 | `AgentSettled` | Emit | `agent-runtime/engine/mod.rs` | — |
 | `AgentStart` | Emit | `agent-runtime/engine/host_executor.rs`, `agent-runtime/engine/rhai_executor.rs` | — |
