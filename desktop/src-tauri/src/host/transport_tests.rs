@@ -516,6 +516,52 @@ async fn spawn_stack(
     )
 }
 
+/// A page that resolves its own hostname to `127.0.0.1` sends a same-origin
+/// fetch whose `Host` is that name; a foreign page's POST carries its own
+/// `Origin`. CORS labels responses but never rejects a request — the gate
+/// does, before any route runs.
+#[tokio::test]
+async fn http_routes_refuse_a_foreign_host_and_a_foreign_origin() {
+    let (_home, client, base, _fake, _host, _workspace) = spawn_stack("host-gate").await;
+    let port = base.rsplit(':').next().expect("port").to_string();
+    let args = json!({ "args": { "request": { "sessionId": "thr_a" } } });
+
+    let rebinding = client
+        .post(format!("{base}/api/job/list"))
+        .header("host", format!("attacker.example:{port}"))
+        .json(&args)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(rebinding.status(), reqwest::StatusCode::FORBIDDEN);
+
+    let foreign = client
+        .post(format!("{base}/api/job/list"))
+        .header("origin", "https://attacker.example")
+        .json(&args)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(foreign.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // The page's own origins, and a local client with no origin at all, pass.
+    let mut admitted = 0;
+    for origin in ["tauri://localhost", "http://127.0.0.1:1420", ""] {
+        let mut request = client.post(format!("{base}/api/job/list")).json(&args);
+        if !origin.is_empty() {
+            request = request.header("origin", origin);
+        }
+        let response = request.send().await.expect("request");
+        assert_ne!(
+            response.status(),
+            reqwest::StatusCode::FORBIDDEN,
+            "origin {origin:?}"
+        );
+        admitted += 1;
+    }
+    assert_eq!(admitted, 3);
+}
+
 /// POST one unary bridge RPC and return the full envelope.
 pub(super) async fn rpc(
     client: &reqwest::Client,

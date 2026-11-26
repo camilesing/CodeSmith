@@ -43,7 +43,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -1152,6 +1152,36 @@ async fn drop_bytes_handler(State(host): State<SharedHost>, Path(id): Path<Strin
     }
 }
 
+/// Whether a `Host` header names the loopback interface (with or without a
+/// port).
+fn loopback_host(value: &HeaderValue) -> bool {
+    let Ok(host) = value.to_str() else {
+        return false;
+    };
+    let name = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost")
+}
+
+/// DNS-rebinding gate for every HTTP route. `CorsLayer` labels responses and
+/// answers preflights but never rejects a request: a page that resolves its
+/// own hostname to `127.0.0.1` sends a same-origin fetch whose `Host` is that
+/// name, and the bridge would dispatch it like the page's own call (create a
+/// session anywhere, switch it to `/yolo`, read files). The `Host` must be a
+/// loopback spelling, and an `Origin` — sent by browsers on cross-origin and
+/// POST fetches, absent from local non-browser clients — must be a page
+/// origin (the mux's own check).
+async fn page_gate(
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let host_ok = headers.get(header::HOST).is_some_and(loopback_host);
+    if !host_ok || !mux::origin_allowed(headers.get(header::ORIGIN)) {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(request).await
+}
+
 /// Serve the bridge on `port`: unary calls on `/api/<endpoint>` (CORS admits
 /// the page origins), every stream on the `/api/remote.mux` WebSocket.
 pub async fn serve_bridge(host: SharedHost, port: u16) -> Result<()> {
@@ -1210,6 +1240,8 @@ fn bridge_router(host: SharedHost) -> Router {
         // canonical base64 (the unary `fileUploads/upload` path) are ~13.7MB
         // of JSON — both past axum's 2MB default.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
+        // Outermost: the gate runs before any route sees the request.
+        .layer(axum::middleware::from_fn(page_gate))
         .with_state(host)
 }
 
