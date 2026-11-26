@@ -289,7 +289,11 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
                         type: 'button',
                         className: 'cds-ticket-row',
                         'aria-expanded': isOpen,
-                        'aria-label': isOpen ? t('collapse') : t('expand'),
+                        // No `aria-label`: it would override the content, and
+                        // the content IS the name — the task subject plus the
+                        // visually-hidden status. The show/hide hint rides
+                        // `title` (the description), not the name.
+                        title: isOpen ? t('collapse') : t('expand'),
                         onClick: () => setExpanded(isOpen ? null : task.id),
                       },
                       React.createElement(StateDot, { state: dotState(task), size: 10 }),
