@@ -71,8 +71,9 @@ Field notes:
   that exceeds its timeout is killed and counts as failed (descendant
   processes that inherit the pipes are not waited on, so the timeout holds).
 - `continue_on_error` only affects later hooks and (for `message_submit`)
-  whether a failure blocks the submission; see below. Failures always log a
-  `tracing::warn!` regardless.
+  whether a failure blocks the submission; see below. Failures are always
+  reported, regardless: a `tracing::warn!` and a line on the verbose log
+  (see Troubleshooting).
 - Hooks run serially in config order. A failed hook with
   `continue_on_error = false` stops the remaining hooks for that event.
 - `background = true` spawns the command on a detached thread and returns
@@ -359,9 +360,10 @@ the facts you want to survive summarization.
 - **Timeout:** per-hook `timeout_secs` (default 30) unless the table-level
   `default_timeout_secs` is set, which wins. Timed-out hooks are killed and
   count as failed.
-- **Failure handling:** failures log a `tracing::warn!` under the `hooks`
-  target. With `continue_on_error = true` (the default) later hooks still
-  run; with `false` the remaining hooks for that event are skipped.
+- **Failure handling:** failures emit a `tracing::warn!` under the `hooks`
+  target and a line on the CLI's verbose log. With
+  `continue_on_error = true` (the default) later hooks still run; with
+  `false` the remaining hooks for that event are skipped.
 - **Enablement:** `[hooks].enabled = false` suppresses everything;
   `/hooks list` shows when this is the case.
 
@@ -491,9 +493,12 @@ command = "cat .codesmith/DECISIONS.md 2>/dev/null"
   and the header shows whether `[hooks].enabled = false` is suppressing
   everything. A project-level `[hooks]` table silently replaces your
   user-level one.
-- **Hook fails silently.** Failures log under the `hooks` tracing target —
-  run with `RUST_LOG=hooks=warn` (or `=debug`) to see exit codes, stderr
-  head, and durations.
+- **Hook fails silently.** A failed hook is reported on stderr when verbose
+  logging is on — run with `CODESMITH_LOG_LEVEL=debug` (or `--verbose`) to
+  see each failure's event, name, exit code, duration, error and the first
+  line of stderr. A host that installs a `tracing` subscriber gets the same
+  facts as structured events under the `hooks` target; the `codesmith`
+  binary installs none, so `RUST_LOG` alone shows nothing.
 - **`message_submit` stdout ignored.** The contract is strict: a single JSON
   object with a non-empty `text` field on exit `0`. `{"text": ""}` and
   non-JSON output are ignored with a warning. Background hooks never

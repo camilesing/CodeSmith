@@ -66,8 +66,8 @@ condition = { type = "mode", mode = "agent" }   # 可选；见条件
   钩子会被杀死并计为失败（继承管道的子孙进程不会被等待，因此超时
   得以保持）。
 - `continue_on_error` 只影响后续钩子，以及（对 `message_submit` 而言）
-  失败是否阻断提交；见下文。无论何种情况，失败总会记录一条
-  `tracing::warn!`。
+  失败是否阻断提交；见下文。无论何种情况，失败总会被报告：一条
+  `tracing::warn!`，外加详细日志中的一行（见「故障排查」）。
 - 钩子按配置顺序串行运行。一个 `continue_on_error = false` 的失败钩子
   会停止该事件的其余钩子。
 - `background = true` 在一个分离线程上启动命令并立即返回：stdout
@@ -335,7 +335,7 @@ stdout 上每行一个 `KEY=VALUE`；接受可选的 `export ` 前缀。变量�
   分别门控首个提示符、进程退出与提交本身。
 - **超时：** 每钩子 `timeout_secs`（默认 30），除非设置了表级
   `default_timeout_secs`，后者胜出。超时的钩子被杀死并计为失败。
-- **失败处理：** 失败在 `hooks` target 下记录一条 `tracing::warn!`。
+- **失败处理：** 失败在 `hooks` target 下记录一条 `tracing::warn!`，并在 CLI 详细日志中输出一行。
   当 `continue_on_error = true`（默认）时后续钩子仍会运行；为
   `false` 时该事件的其余钩子被跳过。
 - **启用：** `[hooks].enabled = false` 抑制一切；
@@ -456,9 +456,11 @@ command = "cat .codesmith/DECISIONS.md 2>/dev/null"
 - **什么都不触发。** 先查看 `/hooks list`：钩子必须出现在那里，且
   页眉会显示 `[hooks].enabled = false` 是否正在抑制一切。项目级
   `[hooks]` 表会静默替换你的用户级表。
-- **钩子静默失败。** 失败记录在 `hooks` tracing target 下——以
-  `RUST_LOG=hooks=warn`（或 `=debug`）运行以查看退出码、stderr 开头
-  和耗时。
+- **钩子静默失败。** 开启详细日志后，失败的钩子会报告到 stderr——以
+  `CODESMITH_LOG_LEVEL=debug`（或 `--verbose`）运行，可看到每次失败的
+  事件、名称、退出码、耗时、错误和 stderr 的第一行。安装了 `tracing`
+  subscriber 的宿主还会在 `hooks` target 下收到同样的结构化事件；
+  `codesmith` 二进制不安装 subscriber，所以只设 `RUST_LOG` 什么都看不到。
 - **`message_submit` 的 stdout 被忽略。** 契约很严格：退出 `0` 时
   单个带非空 `text` 字段的 JSON 对象。`{"text": ""}` 和非 JSON 输出
   会被忽略并附警告。后台钩子从不转换。

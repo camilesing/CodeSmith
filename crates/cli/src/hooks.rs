@@ -399,6 +399,15 @@ impl HookExecutor {
                     stderr_head = %result.stderr.lines().next().unwrap_or(""),
                     "message_submit hook failed"
                 );
+                warn_failed_hook(
+                    "message_submit",
+                    if hook.continue_on_error {
+                        "its transform is skipped"
+                    } else {
+                        "the submission is blocked"
+                    },
+                    &result,
+                );
 
                 if hook.continue_on_error {
                     warning = message_submit_continue_warning(&result).or(warning);
@@ -426,6 +435,10 @@ impl HookExecutor {
                         reason = %reason,
                         "ignored invalid message_submit hook stdout"
                     );
+                    crate::logging::warn(format!(
+                        "hook message_submit `{}` stdout ignored: {reason}",
+                        result.name.as_deref().unwrap_or("(unnamed)")
+                    ));
                 }
             }
         }
@@ -490,6 +503,7 @@ impl HookExecutor {
                     stderr_head = %result.stderr.lines().next().unwrap_or(""),
                     "pre_compact hook failed; contributing no preserve context"
                 );
+                warn_failed_hook("pre_compact", "contributing no preserve context", &result);
                 continue;
             }
 
@@ -542,6 +556,7 @@ impl HookExecutor {
                     error = result.error.as_deref().unwrap_or(""),
                     "shell_env hook failed; contributing no env vars"
                 );
+                warn_failed_hook("shell_env", "contributing no env vars", &result);
                 continue;
             }
             let parsed = parse_env_lines(&result.stdout);
@@ -607,10 +622,11 @@ impl HookExecutor {
                 self.execute_sync(hook, &env_vars)
             };
 
-            // Log failures via tracing so operators tailing
-            // `deepseek` with `RUST_LOG=warn` can see hook errors
-            // without instrumenting each call site. Successful runs
-            // log nothing (would be too noisy on per-tool events).
+            // Log failures so a hook that fails on every run stays
+            // diagnosable: a structured `tracing` event (for a host that
+            // installs a subscriber) and, through `warn_failed_hook`, the
+            // CLI's verbose log. Successful runs log nothing (too noisy on
+            // per-tool events).
             if !result.success {
                 let label = result.name.as_deref().unwrap_or("(unnamed)");
                 tracing::warn!(
@@ -622,6 +638,15 @@ impl HookExecutor {
                     error = result.error.as_deref().unwrap_or(""),
                     stderr_head = %result.stderr.lines().next().unwrap_or(""),
                     "hook failed"
+                );
+                warn_failed_hook(
+                    event.as_str(),
+                    if hook.continue_on_error {
+                        "later hooks still run"
+                    } else {
+                        "later hooks for this event are skipped"
+                    },
+                    &result,
                 );
             }
 
@@ -847,6 +872,7 @@ impl HookExecutor {
                         target: "hooks",
                         "background hook '{cmd}' failed to spawn: {err}"
                     );
+                    crate::logging::warn(format!("background hook '{cmd}' failed to spawn: {err}"));
                     return;
                 }
             };
@@ -869,6 +895,7 @@ impl HookExecutor {
                             target: "hooks",
                             "background hook '{cmd}' wait failed: {err}"
                         );
+                        crate::logging::warn(format!("background hook '{cmd}' wait failed: {err}"));
                         kill_hook_child(&mut child);
                         break;
                     }
@@ -887,6 +914,29 @@ impl HookExecutor {
             error: None,
         }
     }
+}
+
+/// Say a failed hook run on the CLI's verbose log, beside the structured
+/// `tracing` event each caller also emits: the `codesmith` binary installs
+/// no `tracing` subscriber, so the event alone printed nowhere and a hook
+/// that failed on every run was invisible.
+fn warn_failed_hook(event: &str, consequence: &str, result: &HookResult) {
+    let exit = match result.exit_code {
+        Some(code) => format!("exit {code}"),
+        None => "no exit".to_string(),
+    };
+    let error = result
+        .error
+        .as_deref()
+        .filter(|error| !error.is_empty())
+        .map_or_else(String::new, |error| format!("; {error}"));
+    crate::logging::warn(format!(
+        "hook {event} `{}` failed ({}, {} ms{error}; stderr: {}) — {consequence}",
+        result.name.as_deref().unwrap_or("(unnamed)"),
+        exit,
+        result.duration.as_millis(),
+        result.stderr.lines().next().unwrap_or(""),
+    ));
 }
 
 /// Recursive condition matcher, free-standing so `All`/`Any` recursion
@@ -954,6 +1004,9 @@ fn spawn_pipe_reader(mut pipe: impl Read + Send + 'static) -> JoinHandle<String>
                 tracing::warn!(
                     target: "hooks",
                     "hook output was not valid UTF-8; invalid bytes were replaced"
+                );
+                crate::logging::warn(
+                    "hook output was not valid UTF-8; invalid bytes were replaced",
                 );
                 String::from_utf8_lossy(err.as_bytes()).into_owned()
             }
