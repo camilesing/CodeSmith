@@ -594,13 +594,15 @@ use codesmith_agent::tools::{ToolResult, ToolSet};
 #[cfg(test)]
 use super::approval::ApprovalDecision;
 use super::capacity_flow::{
-    CapacityGateProbe, enforce_tool_pairs_after_front_trim, replay_and_push_verification_note,
+    CapacityGateProbe, replay_and_push_verification_note,
     reset_history_to_latest_user_and_verified, trim_oldest_messages_to_budget_history,
 };
 #[cfg(test)]
+use super::context::MIN_RECENT_MESSAGES_TO_KEEP;
+#[cfg(test)]
 use super::context::context_input_budget_for_provider;
 use super::context::{
-    MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP, compact_tool_result_for_context,
+    MAX_CONTEXT_RECOVERY_ATTEMPTS, compact_tool_result_for_context,
     context_input_budget_for_window, estimate_input_tokens_anchored,
     estimate_input_tokens_conservative,
 };
@@ -3410,8 +3412,13 @@ impl HostAgentExecutor {
                 // `post_compact_cleanup` fires only on the non-merge arms —
                 // pre-request micro / recovery micro / hard-trim).
                 // `emit_session_updated` remains deferred until the host-side
-                // post-`run` closure (fires alongside the merge).
-                if !result.messages.is_empty() || messages.is_empty() {
+                // post-`run` closure (fires alongside the merge). A
+                // compaction that returned the transcript unchanged (nothing
+                // older than the keep-recent floor) rewrites nothing: an
+                // identical replace would journal a full rebuild for no change.
+                if (!result.messages.is_empty() || messages.is_empty())
+                    && result.messages != messages
+                {
                     crate::engine::tool_catalog::replace_all_keeping_loaded(
                         history,
                         "overflow-recovery: full-compact",
@@ -3435,35 +3442,17 @@ impl HostAgentExecutor {
             }
         }
 
-        // Phase 3 — hard trim oldest messages (mirrors mod.rs:1852 +
-        // trim_oldest_messages_to_budget). `ChatHistory` has no `remove(0)`,
-        // so clone → trim Vec → audited `replace_all` swap.
+        // Phase 3 — hard trim oldest messages, through the helper the mid-loop
+        // front trims use (clone → binary search → drain → orphan cleanup →
+        // one audited replace). A trim that removes nothing — the transcript
+        // is already at the keep-recent floor — leaves the transcript and its
+        // journal untouched; the hand-rolled loop re-wrote a byte-identical
+        // list.
         let after_compact = estimate_input_tokens_conservative(&history.messages(), system);
         if after_compact > target_budget {
-            let mut msgs = history.messages().to_vec();
-            let before_trim = msgs.len();
-            while msgs.len() > MIN_RECENT_MESSAGES_TO_KEEP
-                && estimate_input_tokens_conservative(&msgs, system) > target_budget
-            {
-                msgs.remove(0);
-            }
-            // Front-removing can orphan a kept tool result whose assistant
-            // `ToolUse` was peeled off — the same cleanup the sibling trims
-            // run (engine/mod.rs `trim_oldest_messages_to_budget`,
-            // `trim_oldest_messages_to_budget_history`). Without it the next
-            // request ships a `role=tool` message with no preceding
-            // `tool_calls`, which strict OpenAI-compatible providers (GLM
-            // 1214 "messages 参数非法") reject outright.
-            let orphaned = enforce_tool_pairs_after_front_trim(&mut msgs);
-            // Capture before the replacement consumes `msgs`. Dropping
-            // orphaned results also rewrote the transcript, so it counts for
-            // the post-compaction cleanup signal too.
-            let trimmed = before_trim > msgs.len() || orphaned > 0;
-            crate::engine::tool_catalog::replace_all_keeping_loaded(
-                history,
-                "overflow-recovery: hard-trim",
-                msgs,
-            );
+            let trimmed =
+                trim_oldest_messages_to_budget_history(history, system, target_budget) > 0;
+
             // Slice 25c §E: hard-trim is a non-merge compaction — it changes
             // the transcript (oldest messages removed) without producing a
             // `summary_prompt`, so signal the host to run
@@ -12682,6 +12671,77 @@ mod tests {
         assert_eq!(mock.requests().len(), 2);
         // The transcript was compacted (10 seeded + user → a few messages).
         assert!(history.len() <= 6, "history len = {}", history.len());
+    }
+
+    /// A `ChatHistory` that counts whole-transcript replacements.
+    #[derive(Default)]
+    struct CountingHistory {
+        inner: codesmith_agent::memory::VecChatHistory,
+        replacements: usize,
+    }
+
+    impl ChatHistory for CountingHistory {
+        fn messages(&self) -> Vec<Message> {
+            self.inner.messages()
+        }
+        fn push(&mut self, message: Message) {
+            self.inner.push(message);
+        }
+        fn clear(&mut self) {
+            self.inner.clear();
+        }
+        fn replace_all(&mut self, reason: &'static str, messages: Vec<Message>) {
+            self.replacements += 1;
+            self.inner.replace_all(reason, messages);
+        }
+        fn len(&self) -> usize {
+            self.inner.len()
+        }
+    }
+
+    /// A recovery whose hard trim removes nothing (the transcript is already
+    /// at the keep-recent floor) must not rewrite the transcript: the
+    /// hand-rolled arm replaced it with a byte-identical list, journaling a
+    /// full rebuild and recording a trim that never happened.
+    #[tokio::test]
+    async fn overflow_recovery_that_trims_nothing_leaves_the_transcript_unreplaced() {
+        // No compaction reply: Phase 2 (the forced compaction) fails, so only
+        // the hard trim can act.
+        let mock = Arc::new(MockLlm::new(vec![]));
+        let client: LlmClientHandle = mock.clone();
+        let executor = HostAgentExecutor::new(
+            mock,
+            Arc::new(ToolSet::new()),
+            Arc::new(codesmith_agent::callback::NoopCallback),
+            AgentExecutorConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(capacity_probe(ApiProvider::Ollama, "llama2")),
+            None,
+            None,
+            None,
+        );
+        let mut history = CountingHistory::default();
+        history.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "x".repeat(20_000),
+                cache_control: None,
+            }],
+        });
+
+        let recovered = executor
+            .recover_context_overflow(&client, &mut history, None, 1_000, "test", 0)
+            .await;
+
+        assert!(!recovered, "nothing can be trimmed at the floor");
+        assert_eq!(
+            history.replacements, 0,
+            "a no-op trim must not replace the transcript"
+        );
     }
 
     /// The coordinator's ticket-board digest is pushed once per run. Step 0
