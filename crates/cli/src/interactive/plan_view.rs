@@ -464,10 +464,11 @@ fn take_marked(text: &str) -> Option<(&str, &str, InlineKind, &str)> {
 
 /// Wrap one logical line's spans to `avail` display columns.
 ///
-/// Whitespace is the preferred break point; when the **last** whitespace run
-/// inside the budget sits within `edge_tolerance` columns of the right edge,
-/// the break falls there instead — the next token would have been over-wide
-/// anyway, and an exact-edge break beats a ragged short line.
+/// A word about to be cut at the edge moves whole to the next row when the
+/// row's last whitespace sits within `edge_tolerance` columns of the right
+/// edge: paragraphs pass `usize::MAX` (any gap), bullets a few columns.
+/// A whitespace that would leave a bigger gap keeps the exact-edge break —
+/// a ragged short line is worse than a cut path.
 ///
 /// Graphemes are never split, so combining marks and ZWJ emoji survive.
 fn wrap_spans(
@@ -490,6 +491,8 @@ fn wrap_spans(
     let mut lines: Vec<WrappedLine> = Vec::new();
     let mut current: WrappedLine = Vec::new();
     let mut index = 0usize;
+    // The first unit of the row being built.
+    let mut row_start = 0usize;
 
     while index < units.len() {
         // Leading whitespace never starts a row.
@@ -500,6 +503,9 @@ fn wrap_spans(
             if index >= units.len() {
                 break;
             }
+            // The row starts at this unit, never at the whitespace skipped
+            // before it (a stale start on whitespace looped the fold below).
+            row_start = index;
         }
 
         let continuation = !lines.is_empty();
@@ -521,7 +527,33 @@ fn wrap_spans(
             push_unit(&mut current, (kind, grapheme));
             index += 1;
             lines.push(std::mem::take(&mut current));
+            row_start = index;
             continue;
+        }
+
+        // The word about to be cut starts earlier in this row. When the
+        // row's last whitespace sits within `edge_tolerance` columns of the
+        // right edge, the row ends there and the word opens the next one
+        // whole; a whitespace that would leave a bigger gap keeps the
+        // exact-edge break below.
+        let last_space = (row_start + 1..index)
+            .rev()
+            .find(|&at| units[at].1.trim().is_empty());
+        // The overflowing unit being whitespace itself means the row ended
+        // at a word boundary: nothing is cut and the row simply closes.
+        if let Some(space) = last_space.filter(|_| !units[index].1.trim().is_empty()) {
+            let before: usize = units[row_start..space]
+                .iter()
+                .map(|(_, grapheme)| grapheme.width())
+                .sum();
+            if budget.saturating_sub(before) <= edge_tolerance {
+                current = Vec::new();
+                push_units(&mut current, &units[row_start..space]);
+                lines.push(std::mem::take(&mut current));
+                index = space;
+                row_start = space;
+                continue;
+            }
         }
 
         match find_break(
@@ -537,6 +569,7 @@ fn wrap_spans(
                 push_units(&mut current, &units[index..break_at]);
                 index = break_at;
                 lines.push(std::mem::take(&mut current));
+                row_start = index;
             }
             // The row is full and nothing more fits before the fold: close it
             // and let the overflowing unit open the next one. The unit is not
@@ -545,6 +578,7 @@ fn wrap_spans(
             // no row ever exceeds its budget.
             None => {
                 lines.push(std::mem::take(&mut current));
+                row_start = index;
             }
         }
     }
@@ -652,6 +686,22 @@ mod tests {
             out.push(c);
         }
         out
+    }
+
+    /// Found in the review: the whitespace-preferred fold looked only past
+    /// the row's edge, so a paragraph was cut mid-word at every full row.
+    #[test]
+    fn a_paragraph_folds_at_its_last_space_not_through_a_word() {
+        let rows = render_plan_at_width(
+            "The quick brown fox jumps over the lazy dog and runs away",
+            36,
+        );
+        let plain: Vec<String> = rows.iter().map(|row| strip_ansi(row)).collect();
+        assert!(plain[0].trim_end().ends_with("the"), "{}", plain[0]);
+        assert!(plain[1].trim_start().starts_with("lazy"), "{}", plain[1]);
+        for row in &plain {
+            assert!(row.width() <= 36, "row exceeds 36 columns: {row:?}");
+        }
     }
 
     #[test]
