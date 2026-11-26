@@ -1,24 +1,26 @@
 //! Persistent enable/disable + install provenance state for extensions.
 //!
-//! Backs `/extension enable|disable` + GET/POST runtime API. Mirrors
-//! `SkillStateStore` (`crates/tui/src/skill_state.rs`) verbatim — same
-//! atomic-write, malformed→default, BTreeSet-for-determinism strategy.
+//! Read at engine construction and by the mod operations — a disabled
+//! extension is not loaded — and mutated by `/extension enable|disable` and
+//! `/extension uninstall`. Mirrors `SkillStateStore`
+//! (`crates/cli/src/skill_state.rs`) — same atomic-write, malformed→default,
+//! BTreeSet-for-determinism strategy.
 //!
 //! Storage shape (TOML at `~/.codesmith/extensions_state.toml`):
 //!
 //! ```toml
 //! disabled = ["ext-id-1"]
-//! installed = ["git:github.com/foo/bar@v1"]   # §F5 provenance; slice 1 unused
+//!
+//! [installed]
+//! "ext-id-2" = "git:github.com/foo/bar@v1"   # install-source provenance
 //! ```
 //!
-//! Default state when the file does not exist: empty lists (everything
-//! enabled, nothing installed). A corrupt file is logged and treated as
-//! the default, so upgrades never accidentally disable every extension.
-
-// Slice 1 (§7.2) does not wire `ExtensionStateStore` into `App` —
-// `build_extension_runtime` (Task 9) is its first caller. Suppress dead-code
-// until then; remove this attribute when Task 9 lands.
-#![allow(dead_code)]
+//! Default state when the file does not exist: empty sets (everything
+//! enabled, nothing installed). A corrupt file is treated as the default —
+//! a quarantined copy is kept first — so upgrades never accidentally
+//! disable every extension. Known limit: the whole file is the unit, so one
+//! malformed table (an `installed = […]` array, the shape an earlier version
+//! of this doc showed) also drops the `disabled` list.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -96,19 +98,14 @@ impl ExtensionStateStore {
         })
     }
 
-    pub fn disabled(&self) -> Vec<String> {
+    #[cfg(test)]
+    fn disabled(&self) -> Vec<String> {
         self.disabled.iter().cloned().collect()
     }
 
-    /// Provenance strings for installed extensions (back-compat: returns the
-    /// values). §F5c keys by id internally; use [`installed_ids`](Self::installed_ids)
-    /// for the keys.
-    pub fn installed(&self) -> Vec<String> {
-        self.installed.values().cloned().collect()
-    }
-
     /// Ids of installed extensions (§F5c).
-    pub fn installed_ids(&self) -> Vec<String> {
+    #[cfg(test)]
+    fn installed_ids(&self) -> Vec<String> {
         self.installed.keys().cloned().collect()
     }
 
