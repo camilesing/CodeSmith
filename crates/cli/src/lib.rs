@@ -473,6 +473,7 @@ pub(crate) fn run_logout_command(store: &mut ConfigStore) -> Result<()> {
 
 fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -> Result<()> {
     store.config.api_key = None;
+    let mut keyring_failure = None;
     for provider in PROVIDER_LIST {
         clear_provider_api_key_from_config(store, provider);
         // The keyring entry must go for every provider whose config slot is
@@ -480,10 +481,20 @@ fn run_logout_command_with_secrets(store: &mut ConfigStore, secrets: &Secrets) -
         // platform keyring, and clearing only the active provider's slot
         // left those authenticated while `logout` printed an unqualified
         // "logged out".
-        clear_provider_api_key_from_keyring(secrets, provider);
+        if let Err(err) = clear_provider_api_key_from_keyring(secrets, provider)
+            && keyring_failure.is_none()
+        {
+            keyring_failure = Some(err);
+        }
     }
     store.config.auth_mode = None;
+    // The config is saved before any keyring failure is returned: the file
+    // IS cleared, and keys that are still live in the store must not be
+    // reported as "logged out".
     store.save()?;
+    if let Some(err) = keyring_failure {
+        return Err(err.context("config.toml is cleared, but a key is still in the secret store"));
+    }
     println!("logged out");
     Ok(())
 }
@@ -722,25 +733,52 @@ fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
 }
 
 fn provider_keyring_api_key(secrets: &Secrets, provider: ProviderKind) -> Option<String> {
-    secrets
-        .get(provider_slot(provider))
+    try_provider_keyring_api_key(secrets, provider)
         .ok()
         .flatten()
-        .filter(|v| !v.trim().is_empty())
+}
+
+/// The keyring key, with a store failure kept as `Err` instead of reading
+/// as "no key": a locked keyring or an insecurely-permissioned file is not
+/// the same as "nothing stored".
+fn try_provider_keyring_api_key(
+    secrets: &Secrets,
+    provider: ProviderKind,
+) -> Result<Option<String>> {
+    let slot = provider_slot(provider);
+    let key = secrets.get(slot).with_context(|| {
+        format!(
+            "could not read the {slot} key from {}",
+            secrets.backend_name()
+        )
+    })?;
+    Ok(key.filter(|v| !v.trim().is_empty()))
 }
 
 fn provider_keyring_set(secrets: &Secrets, provider: ProviderKind) -> bool {
     provider_keyring_api_key(secrets, provider).is_some()
 }
 
-fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind) {
-    let _ = secrets.delete(provider_slot(provider));
+/// `Err` when the secret store kept the key (it refuses to touch a file
+/// with insecure permissions, or the OS keyring is locked): a caller must
+/// not report a clean clear while the key is still live in there.
+fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind) -> Result<()> {
+    let slot = provider_slot(provider);
+    secrets.delete(slot).with_context(|| {
+        format!(
+            "could not delete the {slot} key from {}",
+            secrets.backend_name()
+        )
+    })
 }
 
 fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
     let provider = store.config.provider;
     let config_key = provider_config_api_key(store, provider);
-    let keyring_key = provider_keyring_api_key(secrets, provider);
+    let (keyring_key, keyring_error) = match try_provider_keyring_api_key(secrets, provider) {
+        Ok(key) => (key, None),
+        Err(err) => (None, Some(err)),
+    };
     let env_key = provider_env_value(provider);
 
     let active_source = if config_key.is_some() {
@@ -785,7 +823,10 @@ fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
         format!(
             "secret store: {} ({})",
             secrets.backend_name(),
-            source_status(keyring_key.as_deref(), "missing")
+            keyring_error
+                .as_ref()
+                .map(|err| format!("error: {err:#}"))
+                .unwrap_or_else(|| source_status(keyring_key.as_deref(), "missing"))
         ),
         format!("env var: {env_var_label} ({env_status})"),
     ]
@@ -901,8 +942,9 @@ fn run_auth_command_with_secrets(
             let provider: ProviderKind = provider.into();
             let slot = provider_slot(provider);
             clear_provider_api_key_from_config(store, provider);
-            clear_provider_api_key_from_keyring(secrets, provider);
+            let keyring = clear_provider_api_key_from_keyring(secrets, provider);
             store.save()?;
+            keyring?;
             println!("cleared API key for {slot} from config and secret store");
             Ok(())
         }
@@ -1838,6 +1880,69 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Found in the review: every secret-store delete can fail (the file
+    /// store refuses insecure permissions, the OS keyring is locked) and
+    /// the failure was discarded — `logout` and `auth clear` printed
+    /// success while the keys stayed live in the store.
+    #[test]
+    fn a_failing_secret_store_delete_is_reported() {
+        use codesmith_secrets::{KeyringStore, SecretsError};
+
+        /// A store that cannot be touched at all.
+        struct LockedStore;
+        impl KeyringStore for LockedStore {
+            fn get(&self, _key: &str) -> Result<Option<String>, SecretsError> {
+                Err(SecretsError::Keyring("locked".to_string()))
+            }
+            fn set(&self, _key: &str, _value: &str) -> Result<(), SecretsError> {
+                Err(SecretsError::Keyring("locked".to_string()))
+            }
+            fn delete(&self, _key: &str) -> Result<(), SecretsError> {
+                Err(SecretsError::Keyring("locked".to_string()))
+            }
+            fn backend_name(&self) -> &'static str {
+                "system keyring"
+            }
+        }
+
+        let secrets = Secrets::new(std::sync::Arc::new(LockedStore));
+
+        let mut store = ConfigStore::load(Some(temp_store_path("locked-logout"))).expect("store");
+        let err = run_logout_command_with_secrets(&mut store, &secrets)
+            .expect_err("logout must not report success");
+        assert!(
+            format!("{err:#}").contains("still in the secret store"),
+            "{err:#}"
+        );
+        assert!(
+            store.config.api_key.is_none(),
+            "the config is cleared regardless"
+        );
+
+        let mut store = ConfigStore::load(Some(temp_store_path("locked-clear"))).expect("store");
+        let err = run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Clear {
+                provider: ProviderArg::Deepseek,
+            },
+            &secrets,
+        )
+        .expect_err("clear must not report success");
+        assert!(
+            format!("{err:#}").contains("could not delete the deepseek key"),
+            "{err:#}"
+        );
+
+        // `auth status` names the failure instead of reading it as "missing".
+        store.config.provider = ProviderKind::Deepseek;
+        let lines = auth_status_lines(&store, &secrets);
+        assert!(
+            lines.iter().any(|l| l
+                .contains("secret store: system keyring (error: could not read the deepseek key")),
+            "{lines:?}"
+        );
     }
 
     #[test]
