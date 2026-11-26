@@ -939,6 +939,12 @@ mod tests {
             panic!("a non-address id must never reach the filesystem");
         };
         assert_eq!(err.code, "fileUploads/unknown-attachment");
+        assert!(
+            err.message
+                .contains("is not an attachment store content address"),
+            "the id validation must be the arm that refused: {}",
+            err.message
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
