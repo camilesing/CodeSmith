@@ -919,10 +919,16 @@ checks it (see [verification] result_claims in config.example.toml)."
 /// The full transcript (which may contain secrets or PII pasted during the
 /// session) leaves the machine, so a bare `/share` is a preview: the upload
 /// only runs with an explicit `--yes`.
+/// Whether `/share <arg>` carries the explicit confirmation: the transcript
+/// may hold secrets, so a bare `/share` — or one carrying any other word —
+/// only previews.
+fn share_confirmed(arg: Option<&str>) -> bool {
+    arg.map(str::split_whitespace)
+        .is_some_and(|mut words| words.any(|word| word == "--yes" || word == "-y"))
+}
+
 pub async fn share(state: &mut ReplState, arg: Option<&str>) {
-    let confirmed = arg
-        .map(str::split_whitespace)
-        .is_some_and(|mut words| words.any(|word| word == "--yes" || word == "-y"));
+    let confirmed = share_confirmed(arg);
     let history_json = match serde_json::to_string(&state.api_messages) {
         // `unwrap_or_default` here would upload an empty document and still
         // print a share URL — a misleading success.
@@ -1998,6 +2004,21 @@ mod tests {
         let mut state = state_in(tmp.path());
         share(&mut state, None).await; // preview, no upload
         share(&mut state, Some("preview only")).await;
+    }
+
+    /// The guard the test above cannot see (both of its calls take the
+    /// preview branch whether or not `confirmed` is computed right): the
+    /// decision itself.
+    #[test]
+    fn share_uploads_only_with_an_explicit_yes() {
+        assert!(!share_confirmed(None));
+        assert!(!share_confirmed(Some("preview only")));
+        assert!(
+            !share_confirmed(Some("--yesterday")),
+            "a prefix is not the flag"
+        );
+        assert!(share_confirmed(Some("--yes")));
+        assert!(share_confirmed(Some("export -y")));
     }
 
     /// The guard itself, on the decision. The test used to run the one-shot,
