@@ -1341,7 +1341,7 @@ pub async fn search(host: &HostState, request: &Value) -> Result<Value> {
 /// Percent-encode one query component: alphanumerics and `-_.~` stay bare,
 /// everything else (including `&` and `=`) is escaped — the user's own text
 /// must never read as a separator.
-fn urlencode(s: &str) -> String {
+pub(super) fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for byte in s.bytes() {
         match byte {

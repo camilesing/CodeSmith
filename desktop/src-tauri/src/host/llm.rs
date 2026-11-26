@@ -827,15 +827,23 @@ pub async fn discover_models(host: &HostState, args: &Value) -> Value {
                 "llm/discoverModels: a draft with neither a route nor an endpoint has nothing to ask",
             );
         };
-        return match host.backend.get::<Value>("/v1/models").await {
+        // The route is named in the query: the runtime answers only the
+        // active provider's rows on the bare catalog, so every other route's
+        // list was empty (a builtin's models could not be fetched without
+        // switching to it first).
+        return match host
+            .backend
+            .get::<Value>(&format!(
+                "/v1/models?provider={}",
+                super::sessions::urlencode(provider)
+            ))
+            .await
+        {
             Ok(models) => {
                 let rows = models
                     .as_array()
                     .map(|all| {
                         all.iter()
-                            .filter(|row| {
-                                row.get("provider").and_then(Value::as_str) == Some(provider)
-                            })
                             .map(|row| {
                                 let mut discovered = json!({ "id": row["id"] });
                                 if let Some(window) =

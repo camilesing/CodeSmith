@@ -274,13 +274,27 @@ fn fake_runtime_router() -> Router<FakeRuntime> {
         )
         .route(
             "/v1/models",
-            get(|| async move {
-                Json(json!([
-                    { "id": "m1", "provider": "p1", "default": true },
-                    { "id": "m2", "provider": "p1", "default": false },
-                    { "id": "m3", "provider": "p2", "default": false },
-                ]))
-            }),
+            get(
+                |axum::extract::RawQuery(query): axum::extract::RawQuery| async move {
+                    // The runtime's real shape: the active provider's rows, or
+                    // one named route's (`?provider=`), never every route's.
+                    let named = query
+                        .as_deref()
+                        .and_then(|query| query.strip_prefix("provider="))
+                        .unwrap_or("p1");
+                    let all = [
+                        json!({ "id": "m1", "provider": "p1", "default": true, "context_window": 1000 }),
+                        json!({ "id": "m2", "provider": "p1", "default": false, "context_window": 2000 }),
+                        json!({ "id": "m3", "provider": "p2", "default": false, "context_window": 3000 }),
+                    ];
+                    let rows: Vec<Value> = all
+                        .iter()
+                        .filter(|row| row["provider"] == json!(named))
+                        .cloned()
+                        .collect();
+                    Json(Value::Array(rows))
+                },
+            ),
         )
         .route(
             "/v1/presets",
@@ -936,6 +950,29 @@ async fn a_prompt_naming_more_attachments_than_one_message_holds_is_refused() {
     drop(home);
 }
 
+/// Found in the desktop review: `llm/discoverModels` without a `baseURL`
+/// read the bare `/v1/models` and filtered it by the named route — the
+/// runtime answers only the active provider there, so every other route's
+/// list was empty. The bridge now names the route.
+#[tokio::test]
+async fn discover_models_answers_a_route_that_is_not_the_active_one() {
+    let (home, client, base, _fake, _host, _ws) = spawn_stack("discover").await;
+    let found = rpc(
+        &client,
+        &base,
+        "llm/discoverModels",
+        json!({ "settingsNs": "llm-pi-ai", "request": { "provider": "p2" } }),
+    )
+    .await;
+    assert_eq!(found["ok"], json!(true), "{found}");
+    assert_eq!(
+        found["value"],
+        json!([{ "id": "m3", "contextWindow": 3000 }]),
+        "the named route's rows"
+    );
+    drop(home);
+}
+
 #[tokio::test]
 async fn drop_bytes_route_serves_exactly_once() {
     let (home, client, base, _fake, host, _ws) = spawn_stack("drop").await;
@@ -1272,9 +1309,11 @@ async fn model_catalog_groups_by_runtime_provider() {
     let catalog = &value["value"];
     assert_eq!(catalog["default"]["provider"], json!("p1"));
     assert_eq!(catalog["default"]["model"], json!("m1"));
-    assert_eq!(catalog["routableProviders"], json!(["p1", "p2"]));
+    // The runtime's catalog carries the active provider's rows alone (the
+    // fake mirrors that shape since the discover-models fix).
+    assert_eq!(catalog["routableProviders"], json!(["p1"]));
     let groups = catalog["groups"].as_array().unwrap();
-    assert_eq!(groups.len(), 2);
+    assert_eq!(groups.len(), 1);
     assert_eq!(groups[0]["id"], json!("p1"));
     assert_eq!(groups[0]["models"].as_array().unwrap().len(), 2);
     drop(home);

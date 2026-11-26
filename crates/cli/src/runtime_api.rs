@@ -1454,10 +1454,20 @@ async fn preset_apply(
     Ok(Json(snapshot))
 }
 
-/// `GET /v1/models` — the active provider's model catalog with the effective
-/// default flagged, so a GUI can render its model picker (read-only;
-/// selection stays per thread/turn).
-async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntry>> {
+/// `GET /v1/models[?provider=<route>]` — the active provider's model catalog
+/// with the effective default flagged, so a GUI can render its model picker
+/// (read-only; selection stays per thread/turn). A named `provider` answers
+/// that route's registry rows alone, without a default row: the default is
+/// the active provider's.
+#[derive(serde::Deserialize)]
+struct ListModelsQuery {
+    provider: Option<String>,
+}
+
+async fn list_models(
+    State(state): State<RuntimeApiState>,
+    Query(query): Query<ListModelsQuery>,
+) -> Json<Vec<ModelEntry>> {
     let registry = ModelRegistry::default();
     // The default a client should offer is the model a new session actually
     // runs (`Config::default_model`: the active provider's slot model, the
@@ -1465,19 +1475,33 @@ async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntr
     // never names a provider-scoped custom model, so its list would mark the
     // wrong default and carry no row for the configured one — and the
     // desktop bridge's model seat reads exactly this catalog.
-    let default_model = state.config.default_model();
+    let configured_default = state.config.default_model();
     // Only the active provider's rows are routable: every other builtin's
     // models would be offered with no key and no base URL to serve them.
     // Known limitation: the active provider's registry rows are listed even
     // when the user's gateway serves a different set; the configured default
     // row is always present, whatever the registry knows.
-    let active_provider = state.config.api_provider().as_str();
+    // An explicitly named route — the desktop's model settings ask for a
+    // builtin they are not switched to — answers that route's registry rows
+    // alone (found in the desktop review: every other route's list was empty).
+    let (active_provider, default_model) = match query
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+    {
+        Some(provider) => (provider.to_string(), None),
+        None => (
+            state.config.api_provider().as_str().to_string(),
+            Some(configured_default),
+        ),
+    };
     let mut entries: Vec<ModelEntry> = registry
         .list()
         .into_iter()
         .filter(|m| m.provider.as_str() == active_provider)
         .map(|m| ModelEntry {
-            default: m.id == default_model,
+            default: Some(m.id.as_str()) == default_model.as_deref(),
             context_window: codesmith_agent::models::context_window_for_model(&m.id),
             id: m.id,
             provider: m.provider.as_str().to_string(),
@@ -1486,7 +1510,9 @@ async fn list_models(State(state): State<RuntimeApiState>) -> Json<Vec<ModelEntr
             supports_reasoning: m.supports_reasoning,
         })
         .collect();
-    if !entries.iter().any(|entry| entry.default) {
+    if let Some(default_model) = default_model
+        && !entries.iter().any(|entry| entry.default)
+    {
         entries.push(ModelEntry {
             id: default_model.clone(),
             provider: state.config.api_provider().as_str().to_string(),
@@ -4333,6 +4359,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        handle.abort();
+        Ok(())
+    }
+
+    /// Found in the desktop review: `GET /v1/models` answers only the
+    /// active provider's rows, so the desktop's model settings — asking for
+    /// a builtin they are not switched to — got an empty catalog. A named
+    /// `provider` answers that route's registry rows; the unscoped catalog is
+    /// unchanged.
+    #[tokio::test]
+    async fn models_catalog_answers_a_named_provider() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("models-named-provider-{}", Uuid::new_v4()));
+        let sessions_dir = root.join("sessions");
+        let config = Config {
+            provider: Some("anthropic".into()),
+            ..Config::default()
+        };
+        let Some((addr, _runtime_threads, handle)) = spawn_test_server_with_config(
+            root.clone(),
+            sessions_dir.clone(),
+            None,
+            false,
+            Some(config),
+        )
+        .await
+        .unwrap() else {
+            return Ok(());
+        };
+        let client = reqwest::Client::new();
+        let named: Vec<serde_json::Value> = client
+            .get(format!("http://{addr}/v1/models?provider=deepseek"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            !named.is_empty(),
+            "the registry knows DeepSeek rows: {named:?}"
+        );
+        assert!(
+            named
+                .iter()
+                .all(|model| model["provider"] == json!("deepseek")),
+            "{named:?}"
+        );
+        assert!(
+            named.iter().all(|model| model["default"] == json!(false)),
+            "the default row belongs to the active provider: {named:?}"
+        );
+        // The unscoped catalog still answers the active provider alone.
+        let scoped: Vec<serde_json::Value> = client
+            .get(format!("http://{addr}/v1/models"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            scoped
+                .iter()
+                .all(|model| model["provider"] == json!("anthropic")),
+            "{scoped:?}"
+        );
 
         handle.abort();
         Ok(())
