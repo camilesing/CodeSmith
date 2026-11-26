@@ -342,11 +342,16 @@ async fn install(state: &ReplState, arg: &str) {
 /// Per-user under the codesmith home rather than a fixed name in the
 /// sticky, world-shared `/tmp`: a pre-created or symlinked directory there
 /// is a classic tampering target, and the built dylib is loaded as native
-/// code after `/extension reload`.
-fn build_dir() -> PathBuf {
-    codesmith_config::codesmith_home()
-        .map(|home| home.join("extension-builds"))
-        .unwrap_or_else(|_| std::env::temp_dir())
+/// code after `/extension reload`. A home that cannot be resolved is an
+/// error, never a fallback: the shared temp root is exactly what this
+/// avoids.
+fn build_dir(home: Option<PathBuf>) -> Result<PathBuf, codesmith_extensions::ExtensionError> {
+    home.map(|home| home.join("extension-builds"))
+        .ok_or_else(|| {
+            codesmith_extensions::ExtensionError::Config(
+                "no home directory — cannot resolve the extension build directory".to_string(),
+            )
+        })
 }
 
 fn run_install(
@@ -374,7 +379,9 @@ fn run_install(
     };
     let builder: Box<dyn codesmith_extensions::ExtensionBuilder> = match spec.kind {
         SourceKind::Prebuilt => Box::new(IdentityBuilder),
-        _ => Box::new(CargoBuilder::new(build_dir())),
+        _ => Box::new(CargoBuilder::new(build_dir(
+            codesmith_config::codesmith_home().ok(),
+        )?)),
     };
     codesmith_extensions::Installer::new(source.as_ref(), builder.as_ref(), root).install(&spec)
 }
@@ -468,6 +475,18 @@ mod tests {
         assert_eq!(
             in_flight_summary(&busy),
             "in flight: main turn ×1, sub-agents depth 1 ×2, sub-agents depth 2 ×1"
+        );
+    }
+
+    /// No home means no build directory: a source build must never target
+    /// the world-shared temp root the doc above rules out.
+    #[test]
+    fn build_dir_needs_a_home() {
+        let err = build_dir(None).expect_err("no home is an error");
+        assert!(err.to_string().contains("no home directory"), "{err}");
+        assert_eq!(
+            build_dir(Some(PathBuf::from("/home/u/.codesmith"))).expect("home"),
+            PathBuf::from("/home/u/.codesmith/extension-builds")
         );
     }
 
