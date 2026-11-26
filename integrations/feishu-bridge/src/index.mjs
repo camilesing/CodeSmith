@@ -4,6 +4,7 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 
 import {
   activeTurnBlock,
+  assertStartupConfig,
   commandAction,
   compactRuntimeError,
   helpText,
@@ -107,6 +108,11 @@ const config = {
   maxReplyChars: Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500),
   turnTimeoutMs: Number(process.env.CODESMITH_TURN_TIMEOUT_MS || 900000)
 };
+
+// Fail loud at load, the way `requiredEnv` does: the optional validator names
+// these two combinations as blocking errors, but nothing ran it here, and an
+// open bridge started "fine".
+assertStartupConfig(config);
 
 const sdkConfig = {
   appId: config.appId,

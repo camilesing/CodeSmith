@@ -282,6 +282,23 @@ export function activeTurnBlock(detail, state = {}) {
   };
 }
 
+// The two blocking rules the service itself can check without the optional
+// validator (which also demands paths this service has defaults for). Group
+// control with unlisted chats allowed serves every chat the bot is in — with
+// shell access — and a zero or non-numeric turn timeout aborts every turn
+// at once; neither used to stop the bridge from starting.
+export function assertStartupConfig(config) {
+  if (config.allowGroups && config.allowUnlisted) {
+    throw new Error(
+      "Group control cannot be enabled while unlisted chats are allowed (FEISHU_ALLOW_GROUPS=true with CODESMITH_ALLOW_UNLISTED=true)"
+    );
+  }
+  if (!Number.isFinite(config.turnTimeoutMs) || config.turnTimeoutMs < 1000) {
+    throw new Error("CODESMITH_TURN_TIMEOUT_MS must be a number of at least 1000");
+  }
+}
+
+
 export function validateBridgeConfig(env, options = {}) {
   const runtimeEnv = options.runtimeEnv || null;
   const workspaceRoot = options.workspaceRoot || "";

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   activeTurnBlock,
+  assertStartupConfig,
   commandAction,
   isAllowed,
   pairingRefusalText,
@@ -18,6 +19,28 @@ import {
   helpText,
   validateBridgeConfig
 } from "../src/lib.mjs";
+
+test("assertStartupConfig refuses group control while unlisted chats are allowed", () => {
+  assert.throws(
+    () => assertStartupConfig({ allowGroups: true, allowUnlisted: true, turnTimeoutMs: 900000 }),
+    /FEISHU_ALLOW_GROUPS=true with CODESMITH_ALLOW_UNLISTED=true/
+  );
+  assert.doesNotThrow(
+    () => assertStartupConfig({ allowGroups: true, allowUnlisted: false, turnTimeoutMs: 900000 })
+  );
+  assert.doesNotThrow(
+    () => assertStartupConfig({ allowGroups: false, allowUnlisted: true, turnTimeoutMs: 900000 })
+  );
+});
+
+test("assertStartupConfig refuses a zero or non-numeric turn timeout", () => {
+  for (const turnTimeoutMs of [0, Number("abc"), 999]) {
+    assert.throws(
+      () => assertStartupConfig({ allowGroups: false, allowUnlisted: false, turnTimeoutMs }),
+      /CODESMITH_TURN_TIMEOUT_MS must be a number of at least 1000/
+    );
+  }
+});
 
 test("parseList trims empty values", () => {
   assert.deepEqual(parseList(" oc_1, ou_2 ,, "), ["oc_1", "ou_2"]);
