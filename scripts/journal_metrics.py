@@ -23,8 +23,9 @@ journal; sub-agent transcripts are replay-level records and are not read
 here; compaction and utility LLM calls are absent; sessions carry no
 ground-truth success flag, so `clean_session_rate` measures "no observed
 failure pattern", not success. The workspace filter applies to snapshot
-metadata — journal-only sessions (no snapshot) match only when
-`--workspace` is omitted or the id is given explicitly via `--session`.
+metadata — journal-only sessions (no snapshot) match only when the filter is
+disabled (`--workspace ""`) or the id is given explicitly via `--session`;
+it is active by default (`--workspace` defaults to the working directory).
 """
 
 from __future__ import annotations
