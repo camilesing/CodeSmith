@@ -151,16 +151,40 @@ fn local_time(timing: &Value, pointer: &str) -> Result<(u32, u32)> {
     Ok((hour, minute))
 }
 
-/// Whether a zone keeps the machine's wall clock right now — the scheduler
-/// evaluates BYHOUR/BYMINUTE in `Local`, so a zone with the same current
-/// offset fires at the requested time; a different offset would not.
+/// Whether a zone keeps the machine's wall clock — the scheduler evaluates
+/// BYHOUR/BYMINUTE in `Local`, so any other clock would drift.
 fn zone_matches_system(tz: chrono_tz::Tz) -> bool {
-    let now = chrono::Utc::now();
-    now.with_timezone(&chrono::Local)
-        .offset()
-        .fix()
-        .local_minus_utc()
-        == now.with_timezone(&tz).offset().fix().local_minus_utc()
+    let machine = machine_zone().and_then(|zone| zone.parse::<chrono_tz::Tz>().ok());
+    zone_keeps_clock(tz, machine, chrono::Utc::now())
+}
+
+/// The machine's own zone always does. Another one must share the offset now
+/// AND half a year on: a winter-only match (Berlin and Lagos — found in the
+/// desktop: it was accepted in winter and ran an hour off after the March
+/// changeover) or a southern-hemisphere match comes apart at the second
+/// instant, while zones with the same rules keep passing. Two zones whose
+/// rules differ only by a week or two of transition dates are not told
+/// apart. A machine that names no zone has only `Local`'s offset to offer.
+fn zone_keeps_clock(
+    tz: chrono_tz::Tz,
+    machine: Option<chrono_tz::Tz>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if machine == Some(tz) {
+        return true;
+    }
+    [0, 182].into_iter().all(|days| {
+        let at = now + chrono::Duration::days(days);
+        let local = match machine {
+            Some(machine) => at.with_timezone(&machine).offset().fix().local_minus_utc(),
+            None => at
+                .with_timezone(&chrono::Local)
+                .offset()
+                .fix()
+                .local_minus_utc(),
+        };
+        local == at.with_timezone(&tz).offset().fix().local_minus_utc()
+    })
 }
 
 /// Split `HH:mm[:ss]` (optional fractional tail) into its parts.
@@ -1055,6 +1079,27 @@ mod tests {
             rule("DTSTART:20261124T093800").unwrap(),
             "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=38",
             "a floating local stamp passes"
+        );
+    }
+
+    /// Found in the desktop: the check compared only today's offset, so a
+    /// zone that merely shares it this season passed.
+    #[test]
+    fn a_zone_that_only_shares_the_present_offset_is_refused() {
+        let winter = "2027-01-15T12:00:00Z".parse().expect("instant");
+        let zone = |name: &str| name.parse::<chrono_tz::Tz>().expect("zone");
+        let berlin = zone("Europe/Berlin");
+        assert!(
+            zone_keeps_clock(berlin, Some(berlin), winter),
+            "the machine's own zone"
+        );
+        assert!(
+            zone_keeps_clock(zone("Europe/Paris"), Some(berlin), winter),
+            "same rules, another city"
+        );
+        assert!(
+            !zone_keeps_clock(zone("Africa/Lagos"), Some(berlin), winter),
+            "a winter-only match drifts after the changeover"
         );
     }
 
