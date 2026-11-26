@@ -406,7 +406,9 @@ pub(crate) struct TeamTeammateArgs {
     /// Working directory for the teammate run.
     #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
-    /// Sub-agent type (defaults to `team`).
+    /// Sub-agent type. The pane backends pass the lead's choice through;
+    /// only the default `team` is meaningful here — any other value draws a
+    /// warning, since this loop has no role prompt for it yet.
     #[arg(long = "agent-type", default_value = "team")]
     agent_type: String,
     /// Permission mode: `auto` (auto-approve tools) or `ask`.
@@ -6910,6 +6912,17 @@ pub(crate) async fn run_team_teammate(config: &Config, args: TeamTeammateArgs) -
     let mut runtime_services = crate::tools::spec::RuntimeToolServices::default();
     runtime_services.team_sender = Some(args.name.clone());
     runtime_services.task_v2_manager = Some(task_v2_manager);
+
+    // The pane backends put the lead's chosen sub-agent type on this
+    // command line, but this loop builds no role prompt from it (the engine
+    // below runs the default prompt). Say so, instead of letting the flag's
+    // help promise a type that is never applied.
+    if args.agent_type != "team" {
+        eprintln!(
+            "warning: --agent-type '{}' is accepted but not applied — a pane-backed teammate runs the default prompt",
+            args.agent_type
+        );
+    }
 
     let trust_mode = args.trust_mode;
     let engine_config = headless_engine_config(
