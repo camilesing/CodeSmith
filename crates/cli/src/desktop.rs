@@ -236,8 +236,15 @@ pub async fn run_dev_ui(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Spawn `pnpm --dir <ui> dev` (installing first when node_modules is
-/// absent) and wait until :1420 answers or the child dies.
+/// Run the two halves of `desktop/ui`'s `dev` script — `pnpm stage`, then
+/// vite — (installing first when node_modules is absent) and wait until
+/// :1420 answers or the child dies.
+///
+/// vite is this command's own child, not a grandchild behind `pnpm dev`: the
+/// kill handle reaches a wrapper's process only, and killing the wrapper left
+/// vite serving :1420 as an orphan. `node_modules/vite/bin/vite.js` is
+/// vite's entry; it resolves because vite is a direct dependency of
+/// `desktop/ui` (pnpm exposes only direct dependencies at that depth).
 async fn start_vite(ui_dir: &Path) -> Result<tokio::process::Child> {
     if !ui_dir
         .join("node_modules")
@@ -258,16 +265,32 @@ async fn start_vite(ui_dir: &Path) -> Result<tokio::process::Child> {
             bail!("pnpm install failed with {install} — see docs/DESKTOP.md");
         }
     }
-    // kill_on_drop is the secondary cleanup for unusual exit paths; the
-    // normal one is the explicit start_kill after the shell exits.
-    let mut child = tokio::process::Command::new("pnpm")
+    let stage = tokio::process::Command::new("pnpm")
         .arg("--dir")
         .arg(ui_dir)
-        .arg("dev")
+        .arg("stage")
+        .stdin(Stdio::null())
+        .status()
+        .await
+        .with_context(|| format!("pnpm stage in {}", ui_dir.display()))?;
+    if !stage.success() {
+        bail!("pnpm stage failed with {stage} — see docs/DESKTOP.md");
+    }
+    // kill_on_drop is the secondary cleanup for unusual exit paths; the
+    // normal one is the explicit start_kill after the shell exits.
+    let mut child = tokio::process::Command::new("node")
+        .arg(
+            ui_dir
+                .join("node_modules")
+                .join("vite")
+                .join("bin")
+                .join("vite.js"),
+        )
+        .current_dir(ui_dir)
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .with_context(|| format!("spawn pnpm dev in {}", ui_dir.display()))?;
+        .with_context(|| format!("spawn vite in {}", ui_dir.display()))?;
     println!("codesmith ui: vite starting on :{DEV_UI_PORT}");
     for _ in 0..60 {
         if port_serving(DEV_UI_PORT).await {
