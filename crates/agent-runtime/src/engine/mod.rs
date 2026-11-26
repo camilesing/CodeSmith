@@ -2351,9 +2351,10 @@ impl Engine {
                 // The replay must pass the same gates the turn's own
                 // dispatch would: a dedicated callback bridge (hooks +
                 // UI events bracket the re-run — `verify_claim` emits
-                // on_tool_start/on_tool_end through it) and the session
-                // cancel token, so a detached re-run dies with the
-                // session instead of outliving Esc.
+                // on_tool_start/on_tool_end through it) and the cancel
+                // token of the turn that produced the claim (an Esc on it
+                // stops the replay); the engine-lifetime token stops it at
+                // shutdown. An Esc on a LATER turn does not reach it.
                 let hook_host = plan.tool_registry().and_then(|r| r.hook_host());
                 let replay_callback: Arc<dyn Callback> = Arc::new(
                     CallbackBridge::new(
@@ -2366,19 +2367,24 @@ impl Engine {
                     .with_extension_runner_if_some(self.extension_runner.clone()),
                 );
                 let cancel_token = self.cancel_token.clone();
+                let lifetime_cancel = self.lifetime_cancel.clone();
                 let extension_runner = self.extension_runner.clone();
                 spawn_supervised(
                     "result-verifier",
                     std::panic::Location::caller(),
                     async move {
-                        let block = result_verifier::verify_claim(
-                            dispatcher,
-                            Some(replay_callback),
-                            cancel_token,
-                            claim,
-                            command,
-                        )
-                        .await;
+                        // Dropping the replay future kills the process it
+                        // re-ran (the foreground wait's drop guard).
+                        let block = tokio::select! {
+                            block = result_verifier::verify_claim(
+                                dispatcher,
+                                Some(replay_callback),
+                                cancel_token,
+                                claim,
+                                command,
+                            ) => block,
+                            () = lifetime_cancel.cancelled() => return,
+                        };
                         pending
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)

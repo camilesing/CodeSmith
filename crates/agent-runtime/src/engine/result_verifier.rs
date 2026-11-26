@@ -29,7 +29,8 @@
 //!   execution, not a second unattended one); the call is
 //!   bracketed with [`Callback::on_tool_start`](codesmith_agent::callback::Callback::on_tool_start)
 //!   / `on_tool_end` so hooks and the UI observe it, and it aborts on the
-//!   session cancel token. The replay is also duration-bounded: a command
+//!   cancel token of the turn that produced the claim. The replay is also
+//!   duration-bounded: a command
 //!   whose original run exceeded
 //!   [`REPLAY_SOURCE_DURATION_LIMIT_MS`](self::REPLAY_SOURCE_DURATION_LIMIT_MS "const")
 //!   is skipped as a `verify-error` — re-running it would double that
@@ -540,10 +541,12 @@ nothing to re-run\n",
 /// to engine state — the caller decides what to do with the returned block
 /// (push to the pending buffer, emit the event).
 ///
-/// `cancel` aborts an in-flight replay (the session token — a detached
-/// background re-run must die with the session); `callback` brackets the
-/// replay with `on_tool_start`/`on_tool_end` so hooks, extensions, and the
-/// UI observe exactly what the verifier executed.
+/// `cancel` aborts an in-flight replay: the token of the turn that produced
+/// the claim, so an Esc on that turn stops it (a later turn's Esc does not
+/// reach it; the engine's lifetime token covers shutdown at the call site).
+/// Dropping the replay future kills the process it re-ran. `callback`
+/// brackets the replay with `on_tool_start`/`on_tool_end` so hooks,
+/// extensions, and the UI observe exactly what the verifier executed.
 pub(crate) async fn verify_claim(
     dispatcher: Option<Arc<dyn crate::tool_dispatch::ToolDispatcher>>,
     callback: Option<Arc<dyn Callback>>,
