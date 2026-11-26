@@ -135,12 +135,20 @@ fn document_path(home: &std::path::Path) -> PathBuf {
     home.join("desktop").join("settings.json")
 }
 
-fn load_document(home: &std::path::Path) -> Document {
+/// Read the document. A missing file is an empty one; a corrupt or
+/// unreadable file is an error (`parse …` / `read …`) and is never read as
+/// "no preferences" — found in the desktop: the next change made from the UI
+/// then wrote defaults plus that one change over the user's whole document
+/// (the `goals.rs` and `feedback.rs` twins already refused).
+fn load_document(home: &std::path::Path) -> Result<Document> {
     let path = document_path(home);
-    let parsed: Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_else(|| json!({}));
+    let parsed: Value = match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+    };
     let empty_map = serde_json::Map::new();
     let revisions = parsed
         .get("revisions")
@@ -152,11 +160,11 @@ fn load_document(home: &std::path::Path) -> Document {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or(empty_map);
-    Document {
+    Ok(Document {
         revisions,
         sections,
         path,
-    }
+    })
 }
 
 impl Document {
@@ -166,8 +174,13 @@ impl Document {
                 .with_context(|| format!("create {}", parent.display()))?;
         }
         let body = json!({ "revisions": self.revisions, "sections": self.sections });
-        std::fs::write(&self.path, serde_json::to_string_pretty(&body)?)
-            .with_context(|| format!("write {}", self.path.display()))?;
+        // Through a sibling temp file and a rename: a crash mid-write leaves
+        // the previous document, not a truncated one.
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&body)?)
+            .with_context(|| format!("write {}", tmp.display()))?;
+        std::fs::rename(&tmp, &self.path)
+            .with_context(|| format!("rename {}", self.path.display()))?;
         Ok(())
     }
 
@@ -285,7 +298,11 @@ pub fn describe(home: &std::path::Path) -> Result<Value> {
 /// unknown stored value falls back to the workspace-write default (a
 /// hand-edited document must not make session creation fail).
 pub fn default_permission_preset(home: &std::path::Path) -> String {
-    let document = load_document(home);
+    let document = load_document(home).unwrap_or_else(|_| Document {
+        revisions: Default::default(),
+        sections: Default::default(),
+        path: document_path(home),
+    });
     let stored = document
         .sections
         .get("permission")
@@ -296,7 +313,7 @@ pub fn default_permission_preset(home: &std::path::Path) -> String {
 }
 
 fn describe_with(home: &std::path::Path, has_secret: &dyn Fn(&str) -> bool) -> Result<Value> {
-    let document = load_document(home);
+    let document = load_document(home)?;
     let mut namespaces: Vec<Value> = specs().iter().map(|spec| document.view(spec)).collect();
     namespaces.push(
         llm::namespace_view(document.revision_of(llm::NS), has_secret)
@@ -389,7 +406,8 @@ fn provider_fold(
         .and_then(Value::as_array)
         .ok_or_else(|| WriteError::rejected("settings mutate without ops".into()))?
         .clone();
-    let mut document = load_document(home);
+    let mut document =
+        load_document(home).map_err(|err| WriteError::rejected(format!("{err:#}")))?;
     if let Some(expected) = args.get("expectedRevision").and_then(Value::as_u64) {
         let current = document.revision_of(llm::NS);
         if expected != current {
@@ -424,7 +442,7 @@ fn fold(home: &std::path::Path, endpoint: &str, args: &Value) -> Result<Value> {
         .with_context(|| format!("settings namespace {ns} is not owned by the desktop shell"))?;
     let expected = args.get("expectedRevision").and_then(Value::as_u64);
 
-    let mut document = load_document(home);
+    let mut document = load_document(home)?;
     if let Some(expected) = expected {
         let current = document.revision_of(&ns);
         if expected != current {
@@ -497,6 +515,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Found in the desktop: a corrupt or unreadable `settings.json` read as
+    /// "no preferences", and the next change made from the UI then wrote
+    /// defaults plus that one change over the user's whole document.
+    #[test]
+    fn a_corrupt_settings_document_fails_loud_and_is_never_rewritten() {
+        let home = temp_home("corrupt");
+        std::fs::create_dir_all(home.join("desktop")).unwrap();
+        let path = document_path(&home);
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(
+            describe_with(&home, &|_| false).is_err(),
+            "a corrupt document is an error, not a reset"
+        );
+        let written = fold(
+            &home,
+            "settings/update",
+            &json!({ "ns": "ui-theme", "patch": { "preference": "dark" } }),
+        );
+        assert!(
+            written.is_err(),
+            "a write over a corrupt document is refused"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ not json",
+            "the user's file stays as they left it"
+        );
+        // The one reader that must not fail: session creation's default.
+        assert_eq!(
+            default_permission_preset(&home),
+            permissions::DEFAULT_PRESET
+        );
     }
 
     #[test]
