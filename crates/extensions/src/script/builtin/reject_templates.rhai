@@ -14,6 +14,81 @@
 // guard seam instead.
 // Enable: [mods] builtin = ["reject-templates"].
 
+// The text from `at` to the end of that simple command (`;`, `&`, `|` and
+// a newline start the next one).
+fn command_tail(cmd, at) {
+    let rest = cmd.sub_string(at);
+    for sep in [";", "&", "|", "\n"] {
+        rest = rest.split(sep)[0];
+    }
+    rest
+}
+
+// An operand that names the filesystem root: `/` alone, or a slash followed
+// by a character that cannot start a path name (`/*`, `//`, `/.`, `/{*,.}`).
+// A slash followed by a letter, digit or `_` — or by any non-ASCII character
+// — names a path (`/tmp/build-cache`); dot-forms such as `/.cache` stay on
+// the refusing side.
+fn names_root(word) {
+    for quote in ["\"", "'"] {
+        word.replace(quote, "");
+    }
+    if !word.starts_with("/") {
+        return false;
+    }
+    if word.len() == 1 {
+        return true;
+    }
+    let next = word[1];
+    !(
+        next >= 'a' && next <= 'z'
+            || next >= 'A' && next <= 'Z'
+            || next >= '0' && next <= '9'
+            || next == '_'
+            || next > '~'
+    )
+}
+
+// `rm -rf` with the filesystem root as one of its operands. Every operand
+// of the same command counts (`rm -rf /home/me /` deletes the root too); a
+// path that merely starts with a slash does not — the bare substring refused
+// `rm -rf /tmp/build-cache` with a template that said it was the root.
+fn rm_names_root(cmd) {
+    let at = cmd.index_of("rm -rf");
+    while at >= 0 {
+        for word in command_tail(cmd, at + 6).split() {
+            if names_root(word) {
+                return true;
+            }
+        }
+        at = cmd.index_of("rm -rf", at + 1);
+    }
+    false
+}
+
+// A `git push --force` / `-f`, except the lease-checked
+// `--force-with-lease`: the bare substring refused that form as a force
+// push — it is the safe one.
+// A `git push` carrying a plain force flag: an `--force…` other than the
+// lease-checked `--force-with-lease`, or a short `-f` cluster (`-fu`). The
+// bare substring refused `git push --force-with-lease origin topic` as a
+// force push — that is the safe form; a bare `--force` later in the same
+// push still is one.
+fn force_pushes(cmd) {
+    let at = cmd.index_of("git push");
+    while at >= 0 {
+        for word in command_tail(cmd, at + 8).split() {
+            let long = word.starts_with("--force") && !word.starts_with("--force-with-lease");
+            let short = word.starts_with("-f") && !word.starts_with("--");
+            if long || short {
+                return true;
+            }
+        }
+        at = cmd.index_of("git push", at + 1);
+    }
+    false
+}
+
 register_guard(|e| {
     // The tools that carry a command. `exec_shell_wait` takes a `task_id`
     // only — named here once, it read `command` as `()` and raised on every
@@ -28,10 +103,10 @@ register_guard(|e| {
     if cmd.type_of() != "string" {
         return ();
     }
-    if cmd.contains("rm -rf /") || cmd.contains("rm -rf /*") {
+    if rm_names_root(cmd) {
         return "refused: `rm -rf` at the filesystem root. NEVER retry verbatim. List the concrete files (`ls`/`glob`) and delete them individually, or use a trash-preserving command if the user asked for cleanup.";
     }
-    if cmd.contains("git push --force") || cmd.contains("git push -f") {
+    if force_pushes(cmd) {
         return "refused: force-push rewrites published history. NEVER retry verbatim. Confirm with the user first, or push a new commit reverting the change; if the branch is truly yours alone, ask the user to run it.";
     }
     if cmd.contains("git reset --hard") {
