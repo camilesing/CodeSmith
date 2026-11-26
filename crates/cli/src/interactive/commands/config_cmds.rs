@@ -729,24 +729,29 @@ pub(crate) fn persist_section_bool(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut doc: toml::Value = if path.exists() {
-        toml::from_str(&std::fs::read_to_string(&path)?)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
-    } else {
-        toml::Value::Table(toml::value::Table::new())
-    };
-    let root = doc
-        .as_table_mut()
-        .context("config.toml root must be a table")?;
-    let table = root
-        .entry(section.to_string())
-        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
-        .as_table_mut()
-        .with_context(|| format!("[{section}] in config.toml must be a table"))?;
-    table.insert(key.to_string(), toml::Value::Boolean(value));
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    codesmith_agent_runtime::utils::write_atomic(&path, body.as_bytes())
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    // The lock every other config.toml writer takes: without it this
+    // read-modify-write could interleave with a locked one, and the last
+    // rename silently dropped a side's keys.
+    codesmith_agent_runtime::settings_file::with_settings_lock(&path, || {
+        let mut doc: toml::Value = if path.exists() {
+            toml::from_str(&std::fs::read_to_string(&path)?)
+                .with_context(|| format!("failed to parse config at {}", path.display()))?
+        } else {
+            toml::Value::Table(toml::value::Table::new())
+        };
+        let root = doc
+            .as_table_mut()
+            .context("config.toml root must be a table")?;
+        let table = root
+            .entry(section.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+            .as_table_mut()
+            .with_context(|| format!("[{section}] in config.toml must be a table"))?;
+        table.insert(key.to_string(), toml::Value::Boolean(value));
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        codesmith_agent_runtime::utils::write_atomic(&path, body.as_bytes())
+            .with_context(|| format!("failed to write config at {}", path.display()))
+    })?;
     Ok(path)
 }
 
@@ -1004,6 +1009,51 @@ mod tests {
             body.contains("beta = true"),
             "section bool persisted: {body}"
         );
+    }
+
+    /// `persist_section_bool` is one of the `config.toml` writers: it takes
+    /// the lock the others take, so it waits for a writer that holds it
+    /// instead of renaming a stale read over that writer's keys.
+    #[test]
+    fn persist_section_bool_takes_the_shared_config_lock() {
+        use codesmith_agent_runtime::settings_file::with_settings_lock;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[flags]\n").expect("seed");
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                with_settings_lock(&path, || {
+                    held_tx.send(()).ok();
+                    release_rx.recv_timeout(Duration::from_secs(10)).ok();
+                    anyhow::Ok(())
+                })
+            })
+        };
+        held_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("holder took the lock");
+
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || persist_section_bool(Some(&path), "flags", "beta", true))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !writer.is_finished(),
+            "the write must wait for the lock another writer holds"
+        );
+
+        release_tx.send(()).ok();
+        holder.join().expect("holder").expect("holder lock");
+        writer.join().expect("writer").expect("section write");
+        let body = std::fs::read_to_string(&path).expect("reread");
+        assert!(body.contains("beta = true"), "{body}");
     }
 
     #[test]
