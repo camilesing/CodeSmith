@@ -395,9 +395,17 @@ impl Bindings {
         format!("{}{}", self.prompt_row, " ".repeat(self.pad_for(mode)))
     }
 
-    /// Columns this cell pads a row rendered for `mode` with.
+    /// Columns this cell pads a row rendered for `mode` with: to the
+    /// widest label the `Shift+Tab` ring can show, or to the label the row
+    /// was composed for when that one is wider. `/mode coordinator` is
+    /// ungated while the coordinator feature is off by default, so a
+    /// coordinator row (11 columns) cycles to `agent` (5) — padded to the
+    /// ring's widest alone it came back 6 columns narrower than the layout
+    /// rustyline had measured.
     fn pad_for(&self, mode: AppMode) -> usize {
+        let composed_for = self.applied_mode.map_or(0, status::mode_label_columns);
         status::widest_mode_label_columns(self.coordinator_in_ring)
+            .max(composed_for)
             .saturating_sub(status::mode_label_columns(mode))
     }
 
@@ -1106,6 +1114,43 @@ mod tests {
             Edit::Repaint
         );
         assert_eq!(b.take_prompt_mode(), Some(AppMode::Coordinator));
+    }
+
+    /// Found in the review: `/mode coordinator` is deliberately ungated
+    /// while the coordinator feature is off by default, so the ring goes
+    /// Coordinator → Agent. A row composed for `coordinator` was padded to
+    /// 0 (the ring's widest label is the shorter one), and relabelled to
+    /// `agent` it came back 6 columns narrower than the prompt rustyline
+    /// measured — its cursor tracked 6 columns off the input.
+    #[test]
+    fn a_coordinator_row_relabelled_to_agent_keeps_its_width() {
+        let mut b = Bindings::default();
+        b.set_prompt_row(
+            &status_row(AppMode::Coordinator),
+            AppMode::Coordinator,
+            false,
+            &icons().mode,
+        );
+        let prompt = format!("{}\n❯ typed", b.padded_prompt_row());
+        let composed_row = prompt.split_once('\n').unwrap().0.to_string();
+        let composed = visible_columns(&composed_row);
+
+        assert_eq!(
+            decide(Bind::ShiftTab, state("typed"), &mut b, Instant::now()),
+            Edit::Repaint
+        );
+        let repainted = b
+            .repainted_prompt(&prompt)
+            .expect("coordinator → agent repaints");
+        let head = repainted.split_once('\n').unwrap().0;
+        assert_eq!(
+            visible_columns(head),
+            composed,
+            "coordinator → agent changed the row's width\ncomposed:  {}\nrepainted: {}",
+            composed_row.replace(' ', "·"),
+            head.replace(' ', "·")
+        );
+        assert!(head.contains(&status::mode_segment(AppMode::Agent, &icons().mode)));
     }
 
     #[test]
