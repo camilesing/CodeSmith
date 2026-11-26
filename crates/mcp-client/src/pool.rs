@@ -8695,6 +8695,14 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
+        // The fixture's second connection answers 401, which the pool records
+        // in the needs-auth cache under CODESMITH_HOME: scope it, or the test
+        // writes the user's real ~/.codesmith/mcp-needs-auth-cache.json.
+        let _env = crate::test_support::lock_test_env();
+        let scratch = tempfile::tempdir().expect("scratch CODESMITH_HOME");
+        let _guard =
+            crate::test_support::EnvVarGuard::set("CODESMITH_HOME", scratch.path().as_os_str());
+
         let _lock = lock_mcp_loopback_tests().await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
