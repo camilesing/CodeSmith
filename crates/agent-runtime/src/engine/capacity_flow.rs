@@ -152,7 +152,11 @@ pub(crate) fn latest_user_and_verified(messages: &[Message]) -> (Option<Message>
 /// `continue`s and rebuilds the request from `history.messages()`).
 pub(crate) fn reset_history_to_latest_user_and_verified(history: &mut dyn ChatHistory) {
     let kept = kept_verify_and_replan_messages(&history.messages());
-    history.replace_all("verify-and-replan reset", kept);
+    crate::engine::tool_catalog::replace_all_keeping_loaded(
+        history,
+        "verify-and-replan reset",
+        kept,
+    );
 }
 
 /// The kept transcript for a VerifyAndReplan reset: `{latest_user, pairing
@@ -368,7 +372,11 @@ pub(crate) fn trim_oldest_messages_to_budget_history(
     if removed > 0 {
         messages.drain(..removed);
         removed += enforce_tool_pairs_after_front_trim(&mut messages);
-        history.replace_all("front trim to budget", messages);
+        crate::engine::tool_catalog::replace_all_keeping_loaded(
+            history,
+            "front trim to budget",
+            messages,
+        );
     }
     removed
 }

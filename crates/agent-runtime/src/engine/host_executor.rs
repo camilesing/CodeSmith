@@ -2761,7 +2761,11 @@ impl HostAgentExecutor {
                             &msgs,
                         );
                     }
-                    history.replace_all("micro-compact", msgs);
+                    crate::engine::tool_catalog::replace_all_keeping_loaded(
+                        history,
+                        "micro-compact",
+                        msgs,
+                    );
                     tracing::info!(
                         "{cleared} bytes cleared by micro-compaction before the request"
                     );
@@ -2920,7 +2924,11 @@ impl HostAgentExecutor {
                     result.summary_prompt.clone(),
                     result.summary_folded_previous,
                 );
-                history.replace_all("full-compact", result.messages);
+                crate::engine::tool_catalog::replace_all_keeping_loaded(
+                    history,
+                    "full-compact",
+                    result.messages,
+                );
                 // Wholesale transcript replace — the anchor's absolute level
                 // was measured against the pre-compaction request (P2-5).
                 self.invalidate_usage_anchor();
@@ -3102,7 +3110,11 @@ impl HostAgentExecutor {
                         // (the executor's system prompt is a static snapshot, so
                         // folding mid-run is invisible to this turn's requests).
                         self.record_compaction_summary(result.summary_prompt.clone(), false);
-                        history.replace_all("responsive-compact", result.messages);
+                        crate::engine::tool_catalog::replace_all_keeping_loaded(
+                            history,
+                            "responsive-compact",
+                            result.messages,
+                        );
                         // Wholesale transcript replace — the usage anchor's
                         // absolute level was measured against the
                         // pre-compaction request (P2-5).
@@ -3320,7 +3332,11 @@ impl HostAgentExecutor {
                 if let Some(ledger) = probe.fact_ledger() {
                     accumulate_cleared_facts(ledger, &probe.workspace, &history.messages(), &msgs);
                 }
-                history.replace_all("overflow-recovery: micro-compact", msgs);
+                crate::engine::tool_catalog::replace_all_keeping_loaded(
+                    history,
+                    "overflow-recovery: micro-compact",
+                    msgs,
+                );
                 let after_micro = estimate_input_tokens_conservative(&history.messages(), system);
                 if after_micro <= target_budget {
                     self.emit_status(
@@ -3393,7 +3409,11 @@ impl HostAgentExecutor {
                 // `emit_session_updated` remains deferred until the host-side
                 // post-`run` closure (fires alongside the merge).
                 if !result.messages.is_empty() || messages.is_empty() {
-                    history.replace_all("overflow-recovery: full-compact", result.messages);
+                    crate::engine::tool_catalog::replace_all_keeping_loaded(
+                        history,
+                        "overflow-recovery: full-compact",
+                        result.messages,
+                    );
                     // Wholesale transcript replace — the usage anchor's
                     // absolute level was measured against the
                     // pre-compaction request (P2-5).
@@ -3436,7 +3456,11 @@ impl HostAgentExecutor {
             // orphaned results also rewrote the transcript, so it counts for
             // the post-compaction cleanup signal too.
             let trimmed = before_trim > msgs.len() || orphaned > 0;
-            history.replace_all("overflow-recovery: hard-trim", msgs);
+            crate::engine::tool_catalog::replace_all_keeping_loaded(
+                history,
+                "overflow-recovery: hard-trim",
+                msgs,
+            );
             // Slice 25c §E: hard-trim is a non-merge compaction — it changes
             // the transcript (oldest messages removed) without producing a
             // `summary_prompt`, so signal the host to run

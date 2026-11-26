@@ -9,6 +9,8 @@ use std::collections::HashSet;
 
 use serde_json::{Value, json};
 
+use codesmith_agent::memory::ChatHistory;
+
 use crate::mode::AppMode;
 use crate::models::{ContentBlock, Message, Tool};
 use crate::tools::spec::{ToolError, ToolResult, optional_u64, required_str};
@@ -82,7 +84,9 @@ pub fn tool_search_control_tool() -> Tool {
 /// The **transcript is the activation record** — the log of which tools this
 /// session has loaded — so the active set is derived
 /// ([`activated_by_transcript`]) instead of held in executor state: it survives
-/// a resume for free, and the replay shows exactly why a tool was visible.
+/// a resume for free, and the replay shows exactly why a tool was visible. A
+/// compaction would summarize the record away, so every transcript replacement
+/// goes through [`replace_all_keeping_loaded`].
 #[must_use]
 pub fn tool_search_loaded_sentinel(names: &[String]) -> String {
     format!("<codesmith:tool_search loaded=\"{}\" />", names.join(","))
@@ -119,6 +123,36 @@ pub fn activated_by_transcript(messages: &[Message]) -> HashSet<String> {
         }
     }
     names
+}
+
+/// Replace the transcript and keep the activation record intact. A
+/// compaction summarizes away the tool results that carried the
+/// `tool_search` sentinel; without this, every deferred tool loaded before a
+/// compaction dropped out of the tool surface until the model searched again
+/// (one wasted round trip per tool — or a tool simply lost). The names the
+/// new transcript no longer records are re-stated as one engine note.
+pub(crate) fn replace_all_keeping_loaded(
+    history: &mut dyn ChatHistory,
+    reason: &'static str,
+    messages: Vec<Message>,
+) {
+    let loaded = activated_by_transcript(&history.messages());
+    history.replace_all(reason, messages);
+    let mut lost: Vec<String> = loaded
+        .difference(&activated_by_transcript(&history.messages()))
+        .cloned()
+        .collect();
+    if lost.is_empty() {
+        return;
+    }
+    lost.sort();
+    history.push(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: tool_search_loaded_sentinel(&lost),
+            cache_control: None,
+        }],
+    });
 }
 
 /// Whether to withhold declared-deferred tools for this turn.
@@ -810,5 +844,48 @@ mod apply_tool_selection_tests {
             found("diff"),
             serde_json::json!(["git_diff", "apply_patch"])
         );
+    }
+
+    fn text_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    /// A transcript replacement that summarizes away the sentinel-bearing
+    /// tool result re-states the loaded names; nothing lost means no note.
+    #[test]
+    fn replacement_keeps_the_activation_record() {
+        use codesmith_agent::memory::VecChatHistory;
+
+        let mut history = VecChatHistory::new();
+        history.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".to_string(),
+                content: tool_search_loaded_sentinel(&["git_show".to_string()]),
+                is_error: None,
+                content_blocks: None,
+            }],
+        });
+        // The compaction kept only its summary.
+        replace_all_keeping_loaded(
+            &mut history,
+            "test",
+            vec![text_message("user", "summary of the turn")],
+        );
+        assert!(
+            activated_by_transcript(&history.messages()).contains("git_show"),
+            "the loaded tool stays callable"
+        );
+        assert_eq!(history.len(), 2, "summary + one note");
+        // A replacement that loses nothing adds no second note.
+        let kept = history.messages().to_vec();
+        replace_all_keeping_loaded(&mut history, "test", kept);
+        assert_eq!(history.len(), 2);
     }
 }
