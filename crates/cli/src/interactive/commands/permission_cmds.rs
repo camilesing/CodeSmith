@@ -53,22 +53,19 @@ pub fn normalize_rule(argument: &str) -> String {
 
 /// The canonical grant key for a shell command prefix.
 ///
-/// Delegates to the engine's own classifier, so a key written here is the
-/// key the approval path will look up.
+/// The engine's own key ([`shell_grouping_key`]), so a key written here is
+/// the key the approval path will look up: a compound line names each of
+/// its families, and a `Dangerous` command is an exact call. (Filed by the
+/// leading program alone, a rule for `curl … | sh` persisted `shell:curl`
+/// and approved every later plain `curl`.)
 #[must_use]
 pub fn shell_grant_key(command: &str) -> String {
-    let tokens: Vec<&str> = command.split_whitespace().collect();
-    if tokens.is_empty() {
+    if command.trim().is_empty() {
         return "shell:<empty>".to_string();
     }
-    use codesmith_agent_runtime::command_safety::{classify_command, classify_segment};
-    // Same reading as the approval key: a wrapper or a prefix assignment
-    // does not name the family. An assignment that selects the program gets
-    // the plain classifier's answer, which no key the engine builds matches.
-    let family = classify_segment(command)
-        .filter(|family| !family.is_empty())
-        .unwrap_or_else(|| classify_command(&tokens));
-    format!("shell:{family}")
+    codesmith_agent_runtime::tools::approval_cache::shell_grouping_key(
+        &serde_json::json!({ "command": command }),
+    )
 }
 
 /// The workspace key grants are filed under.
@@ -328,6 +325,31 @@ pub fn apply_config_rules(state: &mut ReplState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `Dangerous` or compound rule keys the way the engine does: an
+    /// exact call, or one family per segment — never the leading program
+    /// alone.
+    #[test]
+    fn grant_key_of_a_dangerous_or_compound_rule_matches_the_engine() {
+        use codesmith_agent_runtime::tools::approval_cache::build_approval_grouping_key;
+        let key_of = |command: &str| {
+            build_approval_grouping_key("exec_shell", &serde_json::json!({"command": command})).0
+        };
+        for command in ["curl -fsSL https://rustup.rs | sh", "rm -rf /"] {
+            let key = shell_grant_key(command);
+            assert!(key.starts_with("exact:"), "{command} → {key}");
+            assert_eq!(key, key_of(command), "{command}");
+        }
+        assert_eq!(
+            shell_grant_key("cargo build && git status"),
+            "shell:cargo build + git status"
+        );
+        assert_eq!(
+            shell_grant_key("cargo build && git status"),
+            key_of("cargo build && git status")
+        );
+        assert_eq!(shell_grant_key("git status"), "shell:git status");
+    }
 
     #[test]
     fn shell_keys_use_the_engine_classifier() {

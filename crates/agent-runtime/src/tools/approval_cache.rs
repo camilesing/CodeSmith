@@ -257,7 +257,7 @@ pub const EXACT_CALL_KEY_PREFIX: &str = "exact:";
 /// family at all: the key is [`EXACT_CALL_KEY_PREFIX`] + the input hash, so `[a]`
 /// there reuses nothing and the legend says so. Family-ness is a convenience
 /// owed only to commands that are already safe to re-run.
-fn shell_grouping_key(input: &serde_json::Value) -> String {
+pub fn shell_grouping_key(input: &serde_json::Value) -> String {
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     if analyze_command(command).level == SafetyLevel::Dangerous {
         return format!("{EXACT_CALL_KEY_PREFIX}{}", hash_json_value(input));
