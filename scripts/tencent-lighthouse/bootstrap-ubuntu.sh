@@ -82,7 +82,13 @@ done
 # placeholders had to be manually replaced and kept identical — a skipped
 # edit shipped a publicly known token as the only runtime API auth, and a
 # divergence surfaced later as a cryptic 401.
-runtime_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+# Reuse the token the runtime env already carries: each file is written
+# only when missing, so a fresh draw handed a rewritten bridge env a token
+# the kept runtime env does not share.
+runtime_token="$(sed -n 's/^CODESMITH_RUNTIME_TOKEN=//p' /etc/codesmith/runtime.env 2>/dev/null | tail -n1)"
+if [[ -z "${runtime_token}" ]]; then
+  runtime_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+fi
 
 if [[ ! -f /etc/codesmith/runtime.env ]]; then
   cat >/etc/codesmith/runtime.env <<EOF
