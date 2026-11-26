@@ -4619,11 +4619,11 @@ pub(crate) async fn run_pr(
         );
     }
 
-    let view = run_gh_pr_view(number, repo)?;
-    let diff = run_gh_pr_diff(number, repo)?;
+    let view = run_gh_pr_view(number, repo, None)?;
+    let diff = run_gh_pr_diff(number, repo, None)?;
 
     if checkout {
-        match run_gh_pr_checkout(number, repo) {
+        match run_gh_pr_checkout(number, repo, None) {
             Ok(()) => eprintln!("Checked out PR #{number} into the current workspace."),
             Err(err) => eprintln!(
                 "warning: gh pr checkout #{number} failed ({err}). Continuing without checkout."
@@ -4691,12 +4691,21 @@ pub(crate) struct GhPullRequest {
     pub(crate) url: String,
 }
 
-pub(crate) fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRequest> {
+/// `cwd` is where `gh` resolves the repository from; `None` keeps the
+/// process cwd.
+pub(crate) fn run_gh_pr_view(
+    number: u32,
+    repo: Option<&str>,
+    cwd: Option<&Path>,
+) -> Result<GhPullRequest> {
     let mut cmd = codesmith_agent_runtime::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("view").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
     }
     cmd.arg("--json")
         .arg("title,body,baseRefName,headRefName,url");
@@ -4726,12 +4735,19 @@ pub(crate) fn run_gh_pr_view(number: u32, repo: Option<&str>) -> Result<GhPullRe
     })
 }
 
-pub(crate) fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> {
+pub(crate) fn run_gh_pr_diff(
+    number: u32,
+    repo: Option<&str>,
+    cwd: Option<&Path>,
+) -> Result<String> {
     let mut cmd = codesmith_agent_runtime::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("diff").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
     }
     let output = cmd
         .output()
@@ -4743,12 +4759,19 @@ pub(crate) fn run_gh_pr_diff(number: u32, repo: Option<&str>) -> Result<String> 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub(crate) fn run_gh_pr_checkout(number: u32, repo: Option<&str>) -> Result<()> {
+pub(crate) fn run_gh_pr_checkout(
+    number: u32,
+    repo: Option<&str>,
+    cwd: Option<&Path>,
+) -> Result<()> {
     let mut cmd = codesmith_agent_runtime::dependencies::Gh::command()
         .ok_or_else(|| anyhow::anyhow!("gh not found on PATH"))?;
     cmd.arg("pr").arg("checkout").arg(number.to_string());
     if let Some(r) = repo {
         cmd.arg("--repo").arg(r);
+    }
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
     }
     let output = cmd
         .output()

@@ -158,12 +158,18 @@ pub async fn run(state: &mut ReplState, arg: &str) {
         checkout,
     } = request;
     // `gh` runs as a child process and reads its output to the end — blocking
-    // IO that must not sit on the async runtime.
+    // IO that must not sit on the async runtime. It resolves the repository
+    // from its working directory, so it runs in the session's workspace:
+    // after a re-root `/cd` the process cwd is still the launch directory,
+    // and `/pr 12` fetched that repository's pull request (and checked its
+    // branch out) while reporting "this workspace".
+    let workspace = state.workspace.clone();
     let fetched = tokio::task::spawn_blocking(move || {
-        let view = crate::main_root::run_gh_pr_view(number, repo.as_deref())?;
-        let diff = crate::main_root::run_gh_pr_diff(number, repo.as_deref())?;
+        let cwd = Some(workspace.as_path());
+        let view = crate::main_root::run_gh_pr_view(number, repo.as_deref(), cwd)?;
+        let diff = crate::main_root::run_gh_pr_diff(number, repo.as_deref(), cwd)?;
         let checkout_error = if checkout {
-            crate::main_root::run_gh_pr_checkout(number, repo.as_deref()).err()
+            crate::main_root::run_gh_pr_checkout(number, repo.as_deref(), cwd).err()
         } else {
             None
         };
