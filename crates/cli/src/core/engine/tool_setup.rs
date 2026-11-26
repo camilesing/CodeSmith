@@ -217,6 +217,27 @@ pub(super) fn build_turn_tool_registry_builder_for(
     plan_state: SharedPlanState,
     mod_reload: Option<crate::mod_ops::ModReloadCtx>,
 ) -> ToolRegistryBuilder {
+    // The base prompt tells the model to use the `task_*_v2` tools in agent
+    // and plan mode, but the registry only mounts them behind a manager —
+    // and no production `EngineConfig` ever set one, so every call answered
+    // "not registered". The active team's store is the one teammates claim
+    // from; a session without a team keeps its tasks under its own id.
+    let task_v2_manager = config.task_v2_manager.clone().or_else(|| {
+        config
+            .team_context
+            .as_ref()
+            .and_then(|team| team.try_lock().ok())
+            .and_then(|team| team.as_ref().map(|ctx| ctx.task_v2_manager.clone()))
+            .or_else(|| match crate::tools::task_v2::new_shared_task_v2_manager(&session.id) {
+                Ok(manager) => Some(manager),
+                Err(err) => {
+                    crate::logging::warn(format!(
+                        "task store unavailable; task_create_v2 and friends stay unregistered: {err}"
+                    ));
+                    None
+                }
+            })
+    });
     let mut builder = if mode == AppMode::Plan {
         ToolRegistryBuilder::new()
             .with_read_only_file_tools()
@@ -241,7 +262,7 @@ pub(super) fn build_turn_tool_registry_builder_for(
                     config.plan_state.clone(),
                 ),
             ))
-            .with_task_v2_read_only_tools_if_available(config.task_v2_manager.clone())
+            .with_task_v2_read_only_tools_if_available(task_v2_manager.clone())
             .with_goal_tools(config.goal_state.clone())
     } else if mode == AppMode::Coordinator {
         // Coordinator mode: empty builder. Subagent + send_message tools
@@ -255,7 +276,7 @@ pub(super) fn build_turn_tool_registry_builder_for(
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_plan_mode_tools(config.plan_mode_state.clone(), config.plan_state.clone())
-            .with_task_v2_tools_if_available(config.task_v2_manager.clone())
+            .with_task_v2_tools_if_available(task_v2_manager.clone())
             .with_goal_tools(config.goal_state.clone())
             .with_worktree_tools(config.worktree_state.clone())
             .with_mods_tool(mod_reload)

@@ -6129,6 +6129,43 @@ async fn cycle_briefing_of_a_seamless_session_reads_the_conversation() {
     );
 }
 
+/// The base prompt tells the model to use `task_create_v2`; the registry
+/// only mounted the four tools behind a manager that no production config
+/// set, so the call answered "not registered".
+#[tokio::test]
+async fn task_v2_tools_are_registered_in_a_plain_session() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let mock = MockLlmClient::new(vec![
+        canned::tool_call_turn(
+            "t1",
+            "task_create_v2",
+            r#"{"subject":"ship it","description":"the thing"}"#,
+        ),
+        canned::simple_text_turn("tracked"),
+    ]);
+    let (handle, _m) = spawn_engine_with_mock(test_engine_config(tmp.path()), mock);
+
+    handle
+        .send(make_send_op("track the work"))
+        .await
+        .expect("send op");
+    let events = collect_until_turn_complete(&handle).await;
+    let results: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCallComplete {
+                result: Ok(result), ..
+            } => Some(result.content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        results.iter().any(|r| !r.contains("is not registered")),
+        "task_create_v2 is registered: {results:?}"
+    );
+}
+
 // === Cycle-trigger regression: window smaller than the flat reserve ========
 
 /// A model whose context window is smaller than the flat turn-response
