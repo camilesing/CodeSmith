@@ -43,8 +43,8 @@ codesmith-config = { path = "../../crates/config" }
 codesmith-secrets = { path = "../../crates/secrets" }
 toml_edit = { version = "0.23", features = ["serde"] }
 
-# The terminal host's close path signals the shell's process group with TERM
-# before escalating to KILL (portable-pty's killer only kills).
+# The terminal host's close path signals the shell itself with TERM before
+# escalating to KILL of its own (portable-pty's killer only sends a HUP).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

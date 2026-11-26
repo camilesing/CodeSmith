@@ -1616,6 +1616,66 @@ async fn a_push_during_a_streams_baseline_follows_that_baseline() {
     drop(home);
 }
 
+/// Found in the desktop: the escalation after the TERM grace period was a
+/// HUP — portable-pty's killer — not the KILL the module documents, so a
+/// shell that ignores both outlived its tab with no way left to close it.
+#[cfg(unix)]
+#[tokio::test]
+async fn closing_a_terminal_kills_a_shell_that_ignores_term_and_hup() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (home, client, base, _fake, _host, workspace) = spawn_stack("termkill").await;
+    let pid_file = workspace.join("stubborn.pid");
+    let script = workspace.join("stubborn.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ntrap '' HUP\ntrap '' TERM\necho $$ > '{}'\nwhile :; do sleep 1; done\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let created = rpc(
+        &client,
+        &base,
+        "terminal/create",
+        json!({ "agentId": "thr_a", "request": {
+            "id": "term_stubborn", "cols": 80, "rows": 24, "shellPath": script,
+        } }),
+    )
+    .await;
+    assert_eq!(created["ok"], json!(true), "{created}");
+    // The shell records its own pid once it is up.
+    let mut pid = None;
+    for _ in 0..250 {
+        if let Ok(text) = std::fs::read_to_string(&pid_file) {
+            if let Ok(value) = text.trim().parse::<i32>() {
+                pid = Some(value);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pid = pid.expect("the shell published its pid");
+
+    let closed = rpc(
+        &client,
+        &base,
+        "terminal/close",
+        json!({ "agentId": "thr_a", "id": "term_stubborn" }),
+    )
+    .await;
+    assert_eq!(closed["ok"], json!(true), "{closed}");
+    // SAFETY: signal 0 only probes for the process. The probe runs once the
+    // close answered, i.e. after the reader reaped the shell.
+    let alive = unsafe { libc::kill(pid, 0) == 0 };
+    // Test cleanup: never leave the loop running, whatever the outcome.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    assert!(!alive, "the shell outlived its tab");
+    drop(home);
+}
+
 /// Read mux frames until one is an `emit` frame of `event` (journal-event
 /// frames interleaved with it are skipped, not asserted away).
 async fn wait_emit(ws: &mut Ws, event: &str) -> Value {

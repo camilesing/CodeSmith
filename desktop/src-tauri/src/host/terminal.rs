@@ -1034,6 +1034,18 @@ async fn close_terminal(id: &str, terminal: &Terminal) -> anyhow::Result<()> {
     .await
     .is_ok();
     if !exited {
+        // KILL, as documented: the pty killer's escalation is only a HUP on
+        // unix (portable-pty sends SIGHUP), which a shell started under nohup
+        // ignores — it then outlived its tab with no way left to close it.
+        // Without a known pid only the killer remains.
+        #[cfg(unix)]
+        if let Some(pgid) = terminal.process_group {
+            // SAFETY: a plain kill(2) to the shell itself.
+            unsafe { libc::kill(pgid, libc::SIGKILL) };
+        } else {
+            terminal.killer.lock().unwrap().kill()?;
+        }
+        #[cfg(not(unix))]
         terminal.killer.lock().unwrap().kill()?;
     }
     let _ = tokio::time::timeout(CLOSE_DRAIN_TIMEOUT, terminal.drained.notified()).await;
