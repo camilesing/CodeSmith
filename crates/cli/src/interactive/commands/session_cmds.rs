@@ -391,18 +391,30 @@ async fn adopt_loaded_session(
 ) {
     state.api_messages = Arc::new(session.messages.clone());
     state.set_model_selection(session.metadata.model.clone());
-    // A tampered or hand-edited session file must not silently redirect all
-    // relative-path resolution to an arbitrary directory: adopt the stored
-    // workspace only when it exists.
-    if session.metadata.workspace.is_dir() {
-        state.workspace = session.metadata.workspace.clone();
-    } else {
+    // A session file is user-named input (shared, shipped in a repo,
+    // hand-edited): its stored workspace must exist AND pass the gate `/cd`
+    // applies — the current workspace's own subtree, or a trusted directory.
+    // Existence alone let any file re-root the session, with this
+    // workspace's trust, shell and approval settings, into `$HOME` or `/`.
+    let stored = &session.metadata.workspace;
+    if !stored.is_dir() {
         println!(
             "{} session workspace {} does not exist — keeping the current workspace ({})",
             "✗".red(),
-            session.metadata.workspace.display(),
+            stored.display(),
             state.workspace.display()
         );
+    } else if !super::dir_cmds::cd_allowed(&state.workspace, stored) {
+        println!(
+            "{} session workspace {} is not trusted for this session — keeping the current \
+             workspace ({}); run `/trust add {}` to move there",
+            "✗".red(),
+            stored.display(),
+            state.workspace.display(),
+            stored.display()
+        );
+    } else {
+        state.workspace = stored.clone();
     }
     state.session.total_tokens = session.metadata.total_tokens;
     state.session.total_conversation_tokens = state.session.total_tokens;
@@ -1166,18 +1178,20 @@ mod tests {
 
     /// `/load <relative-name>` resolves against the workspace and adopts
     /// the record: messages, model, tokens, system prompt, and (when it
-    /// exists) the stored workspace.
+    /// exists and passes the `/cd` trust gate — here a directory inside the
+    /// current workspace) the stored workspace.
     #[tokio::test]
     async fn load_adopts_a_session_file_from_the_workspace() {
         let _env = scratch_env();
         let ws = tempfile::tempdir().expect("tempdir");
-        let saved_ws = tempfile::tempdir().expect("tempdir");
+        let saved_ws = ws.path().join("subdir");
+        std::fs::create_dir_all(&saved_ws).expect("mkdir saved workspace");
         let mut session = saved_with_failed_attempt();
         session.messages = vec![user_message("loaded message")];
         session.metadata.message_count = 1;
         session.metadata.total_tokens = 42;
         session.metadata.model = "loaded-model".to_string();
-        session.metadata.workspace = saved_ws.path().to_path_buf();
+        session.metadata.workspace = saved_ws.clone();
         session.system_prompt = Some("custom prompt".to_string());
         std::fs::write(
             ws.path().join("sess.json"),
@@ -1193,7 +1207,7 @@ mod tests {
         assert_eq!(state.api_messages.len(), 1);
         assert_eq!(state.current_session_id.as_deref(), Some("sess-load"));
         assert_eq!(state.model, "loaded-model");
-        assert_eq!(state.workspace, saved_ws.path());
+        assert_eq!(state.workspace, saved_ws);
         assert_eq!(state.session.total_tokens, 42);
         assert_eq!(state.session.total_conversation_tokens, 42);
         assert_eq!(state.session.session_cost, 0.0, "runtime cost resets");
@@ -1220,6 +1234,32 @@ mod tests {
         load(&mut state, Some(file.to_str().unwrap())).await;
 
         assert_eq!(state.workspace, ws.path(), "the bogus workspace is refused");
+        assert_eq!(state.api_messages.len(), 1, "the messages still load");
+    }
+
+    /// A stored workspace that exists but is outside the current workspace
+    /// and not trusted — a session file shared by someone else — must not
+    /// re-root the session with this workspace's trust and shell settings.
+    #[tokio::test]
+    async fn load_keeps_the_workspace_when_the_stored_one_is_untrusted() {
+        let _env = scratch_env();
+        let ws = tempfile::tempdir().expect("tempdir");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let mut session = saved_with_failed_attempt();
+        session.messages = vec![user_message("adopted anyway")];
+        session.metadata.workspace = elsewhere.path().to_path_buf();
+        let file = ws.path().join("shared.json");
+        std::fs::write(&file, serde_json::to_string_pretty(&session).unwrap()).unwrap();
+
+        let mut state = test_repl_state();
+        state.workspace = ws.path().to_path_buf();
+        load(&mut state, Some(file.to_str().unwrap())).await;
+
+        assert_eq!(
+            state.workspace,
+            ws.path(),
+            "an untrusted workspace is refused"
+        );
         assert_eq!(state.api_messages.len(), 1, "the messages still load");
     }
 
