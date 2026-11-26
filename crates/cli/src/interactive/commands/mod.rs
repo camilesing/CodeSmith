@@ -1817,7 +1817,6 @@ mod tests {
             "/load",
             "/purge",
             "/compact",
-            "/logout",
             // Permission and navigation surfaces.
             "/permissions",
             "/fewer-permission-prompts",
