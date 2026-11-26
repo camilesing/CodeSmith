@@ -150,6 +150,7 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
     inject: ['slots', 'locale'],
     apply(ctx) {
       const React = load('react') as any
+      const { createPortal } = load('react-dom') as any
       const primitives = load('@codesmith/client-ui-primitives') as any
       const {
         MenuSurface,
@@ -258,7 +259,7 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
           ),
         )
 
-        const panel = open
+        const surface = open
           ? React.createElement(
               MenuSurface,
               {
@@ -324,6 +325,11 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
               ),
             )
           : null
+        // The panel portals to the document body: the trigger sits in the
+        // session header's title cluster, which clips and masks everything
+        // it paints — an in-place popover is cut off there (the slot's own
+        // contract says overlays must portal).
+        const panel = surface === null ? null : createPortal(surface, document.body)
 
         return React.createElement(React.Fragment, null, trigger, panel)
       }
