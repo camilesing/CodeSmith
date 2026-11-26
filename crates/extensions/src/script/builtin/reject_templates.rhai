@@ -15,10 +15,19 @@
 // Enable: [mods] builtin = ["reject-templates"].
 
 register_guard(|e| {
-    if e.name != "exec_shell" && e.name != "exec_shell_wait" {
+    // The tools that carry a command. `exec_shell_wait` takes a `task_id`
+    // only — named here once, it read `command` as `()` and raised on every
+    // poll (fail-open, with an error-level "never bound" log each time);
+    // `task_shell_start` runs the same shell and was not covered at all.
+    if e.name != "exec_shell" && e.name != "task_shell_start" {
         return ();
     }
     let cmd = e.input.get("command");
+    // Nothing to inspect: abstain. A missing or non-string `command` is the
+    // tool's error to raise, not a guard failure.
+    if cmd.type_of() != "string" {
+        return ();
+    }
     if cmd.contains("rm -rf /") || cmd.contains("rm -rf /*") {
         return "refused: `rm -rf` at the filesystem root. NEVER retry verbatim. List the concrete files (`ls`/`glob`) and delete them individually, or use a trash-preserving command if the user asked for cleanup.";
     }

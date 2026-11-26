@@ -5383,6 +5383,65 @@ mod tests {
             );
         }
     }
+    /// reject-templates covers `task_shell_start` (the same shell under
+    /// another name) and abstains cleanly when there is no command to
+    /// inspect: `exec_shell_wait` carries a `task_id` only — reading its
+    /// `command` as `()` raised on every poll (fail-open, with an
+    /// error-level "mod guard never bound" log).
+    #[test]
+    fn reject_templates_covers_task_shell_start_and_abstains_without_a_command() {
+        let m = opt_in_mod("reject-templates");
+        let runner = crate::ExtensionRunner::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(runner.load(&m)).expect("configure");
+        runner.bind_core(Arc::new(PerModCtx));
+
+        let out = rt.block_on(runner.emit(ExtensionEvent::ToolCall(ToolCallEvent {
+            id: "t".into(),
+            name: "task_shell_start".into(),
+            input: serde_json::json!({"command": "git reset --hard HEAD~3"}),
+        })));
+        assert!(
+            matches!(
+                out.outcome,
+                codesmith_agent::extension::HandlerOutcome::Block { .. }
+            ),
+            "task_shell_start must deny `git reset --hard`: {:?}",
+            out.outcome
+        );
+
+        // The guard closure itself: a call without a command returns a
+        // value. A raise is fail-open too, but it logs an error on every
+        // such call and points the user at the wrong cause.
+        let callback = m
+            .registrations()
+            .iter()
+            .find_map(|reg| match reg {
+                ScriptRegistration::Guard { callback } => Some(callback),
+                _ => None,
+            })
+            .expect("reject-templates registers a guard");
+        let engine = m.engine_for_loop(|_| {});
+        let ast = m.loop_ast();
+        for (name, input) in [
+            (
+                "exec_shell_wait",
+                serde_json::json!({"task_id": "t1", "timeout_ms": 1000}),
+            ),
+            ("exec_shell", serde_json::json!({})),
+        ] {
+            let payload = event_to_dynamic(&ExtensionEvent::ToolCall(ToolCallEvent {
+                id: "t".into(),
+                name: name.into(),
+                input,
+            }));
+            let ret = callback
+                .call::<rhai::Dynamic>(&engine, &ast, (payload,))
+                .unwrap_or_else(|err| panic!("`{name}` without a command must not raise: {err}"));
+            assert!(ret.is_unit(), "`{name}` without a command abstains: {ret}");
+        }
+    }
+
     // === coverage: reason payloads, transform seams, native error arms =======
 
     /// `SessionStart` / `ProjectTrust` payloads stamp their reason field
