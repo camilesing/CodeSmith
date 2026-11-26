@@ -46,12 +46,9 @@ const HEADING_MARKER: &str = "▸";
 /// line (`- item` rows are usually file paths).
 const BULLET_EDGE_TOLERANCE: usize = 4;
 
-/// Render a plan file body for the terminal at the current width.
-pub fn render_plan(markdown: &str) -> Vec<String> {
-    render_plan_at_width(markdown, columns())
-}
-
-/// [`render_plan`] with an explicit width — the testable core.
+/// Render a plan file body `columns` wide — the width the caller prints the
+/// rows at (the approval block reflows to the terminal width less its
+/// indent).
 pub fn render_plan_at_width(markdown: &str, columns: usize) -> Vec<String> {
     render_markdown(markdown, columns.clamp(20, MAX_COLUMNS))
 }
