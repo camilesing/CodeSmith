@@ -37,10 +37,11 @@
 //! - a queued prompt's bytes already live in the runtime's store when its
 //!   receipts retire, so a later queue edit/remove has nothing staged left
 //!   to retire (upstream retires on remove because it stages until then);
-//! - the staging caps mirror the runtime store's (10MB per file, 8 per
-//!   message) so refusals surface at attach time, not at send time; a body
-//!   past the bridge's 16MB request limit is refused by the transport (413)
-//!   before any business check runs.
+//! - the per-file cap mirrors the runtime store's so a too-large upload
+//!   fails at attach time; the per-message cap is checked when a message
+//!   resolves its attachments (send time), because staging outlives the
+//!   drafts that drop receipts — a receipt the page never cites is not
+//!   released, only evicted once it is among a session's oldest.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,8 +59,15 @@ use super::workspace::OpError;
 pub const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 
 /// The runtime store's per-message attachment cap
-/// (`MAX_ATTACHMENTS_PER_MESSAGE`), applied per session to staged receipts.
-const MAX_STAGED_PER_SESSION: usize = 8;
+/// (`MAX_ATTACHMENTS_PER_MESSAGE`), enforced on the attachments one message
+/// resolves.
+pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
+
+/// Staged receipts kept per session: a bound on the bridge's memory. The
+/// newest stay and the oldest are evicted; refusing the upload instead (the
+/// first design — eight per session for the process life) locked a session's
+/// uploads for good once eight attachments had been staged and never sent.
+const MAX_STAGED_PER_SESSION: usize = 16;
 
 const IMAGE_MEDIA_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
@@ -70,12 +78,17 @@ pub type Staging = Mutex<HashMap<String, StagedUpload>>;
 #[derive(Debug, Clone)]
 pub struct StagedUpload {
     pub session_id: String,
+    /// Staging order, oldest first (the eviction bound).
+    pub staged_seq: u64,
     pub name: String,
     pub media_type: Option<String>,
     pub bytes: Vec<u8>,
     pub width: Option<u64>,
     pub height: Option<u64>,
 }
+
+/// Orders staged receipts, oldest first.
+static STAGE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The content-addressed id of some bytes: the form the runtime's store files
 /// them under (`sha256:<hex>`).
@@ -165,26 +178,26 @@ async fn stage(
             (reference, None, None)
         }
     };
-    // Count and insert under one lock: two concurrent uploads must not both
-    // pass the cap.
     let mut staged = staging.lock().await;
-    let held = staged
-        .values()
-        .filter(|upload| upload.session_id == session_id)
-        .count();
-    if held >= MAX_STAGED_PER_SESSION {
-        return Err(op_error(
-            "fileUploads/too-many-staged",
-            format!(
-                "this conversation already holds {held} staged attachments (the per-message limit); send or remove some first"
-            ),
-        ));
+    // A receipt the page dropped is never released (a removed attachment, a
+    // workspace switch, a `/command`'s images), so beyond the bound the
+    // oldest of the session makes room instead of the upload being refused.
+    let mut held: Vec<(u64, String)> = staged
+        .iter()
+        .filter(|(_, upload)| upload.session_id == session_id)
+        .map(|(id, upload)| (upload.staged_seq, id.clone()))
+        .collect();
+    held.sort_unstable();
+    let overflow = held.len().saturating_sub(MAX_STAGED_PER_SESSION - 1);
+    for (_, oldest) in held.iter().take(overflow) {
+        staged.remove(oldest);
     }
     let receipt_id = uuid::Uuid::new_v4().to_string();
     staged.insert(
         receipt_id.clone(),
         StagedUpload {
             session_id: session_id.to_string(),
+            staged_seq: STAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             name,
             media_type: media_type.map(str::to_string),
             bytes,
@@ -279,6 +292,27 @@ pub async fn resolve_prompt_attachments(
             )),
         })
         .collect()
+}
+
+/// Refuse a message that cannot travel as one turn request: more
+/// attachments than the runtime store admits for one message (found in the
+/// desktop: that cap was counted over the session's whole life at attach
+/// time instead).
+pub fn check_message_attachments(attachments: &[Value]) -> Result<(), OpError> {
+    check_message_budget(attachments.len())
+}
+
+/// The per-message limits on what one turn request carries.
+fn check_message_budget(count: usize) -> Result<(), OpError> {
+    if count > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(op_error(
+            "fileUploads/too-many-attachments",
+            format!(
+                "one message carries at most {MAX_ATTACHMENTS_PER_MESSAGE} attachments; this one names {count}"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Retire the receipts an accepted prompt consumed (upstream retires a
@@ -700,21 +734,66 @@ mod tests {
         assert!(staging.lock().await.is_empty());
     }
 
+    /// Found in the desktop: the staging cap was the per-message limit
+    /// counted over the session's whole life, and only an accepted prompt
+    /// ever retired a receipt — eight attachments staged and never sent
+    /// (removed from the draft, re-uploaded on a workspace switch) locked the
+    /// session's uploads until a restart.
     #[tokio::test]
-    async fn staging_is_capped_per_session() {
+    async fn staging_is_bounded_without_locking_the_session() {
         let staging = Staging::default();
-        for i in 0..MAX_STAGED_PER_SESSION {
+        let mut first = None;
+        for i in 0..(MAX_STAGED_PER_SESSION * 2) {
             let answer = upload_binary(&staging, "sessionId=s1", format!("{i}").as_bytes()).await;
             assert_eq!(answer["ok"], json!(true), "staging {i} fits");
+            if i == 0 {
+                first = answer["value"]["receiptId"].as_str().map(str::to_string);
+            }
         }
-        let over = upload_binary(&staging, "sessionId=s1", b"one too many").await;
-        assert_eq!(over["error"]["code"], json!("fileUploads/too-many-staged"));
+        let held = staging
+            .lock()
+            .await
+            .values()
+            .filter(|upload| upload.session_id == "s1")
+            .count();
+        assert_eq!(held, MAX_STAGED_PER_SESSION, "the bound holds");
+        // The oldest made room; a draft still citing it fails loudly at send.
+        let Err(err) =
+            resolve_prompt_attachments(&staging, "s1", &[first.expect("first receipt")]).await
+        else {
+            panic!("an evicted receipt must not resolve");
+        };
+        assert_eq!(err.code, "session/file-not-staged");
         let other = upload_binary(&staging, "sessionId=s2", b"fine").await;
         assert_eq!(
             other["ok"],
             json!(true),
-            "another session keeps its own cap"
+            "another session keeps its own bound"
         );
+    }
+
+    /// The per-message cap is the runtime store's own, checked on the
+    /// attachments a message resolves — never at staging.
+    #[tokio::test]
+    async fn a_message_names_at_most_the_per_message_cap() {
+        let staging = Staging::default();
+        let mut receipts = Vec::new();
+        for i in 0..(MAX_ATTACHMENTS_PER_MESSAGE + 1) {
+            let answer = upload_binary(&staging, "sessionId=s1", format!("{i}").as_bytes()).await;
+            receipts.push(answer["value"]["receiptId"].as_str().unwrap().to_string());
+        }
+        let within =
+            resolve_prompt_attachments(&staging, "s1", &receipts[..MAX_ATTACHMENTS_PER_MESSAGE])
+                .await
+                .unwrap_or_else(|err| panic!("{}", err.message));
+        assert!(check_message_attachments(&within).is_ok());
+        let attachments = resolve_prompt_attachments(&staging, "s1", &receipts)
+            .await
+            .unwrap_or_else(|err| panic!("{}", err.message));
+        let Err(err) = check_message_attachments(&attachments) else {
+            panic!("nine attachments must be refused before the runtime is asked");
+        };
+        assert_eq!(err.code, "fileUploads/too-many-attachments");
     }
 
     #[tokio::test]

@@ -874,6 +874,68 @@ async fn upload_route_stages_image_bytes_and_prompt_consumes_them() {
     drop(home);
 }
 
+/// Found in the desktop: the per-message cap was counted over the session's
+/// whole life at attach time. It now applies when a message resolves its
+/// attachments: nine files stage, and a prompt naming nine is refused with a
+/// business error before the runtime is asked.
+#[tokio::test]
+async fn a_prompt_naming_more_attachments_than_one_message_holds_is_refused() {
+    let (home, client, base, fake, _host, _ws) = spawn_stack("attach-cap").await;
+    let mut receipts = Vec::new();
+    for i in 0..9 {
+        let staged: Value = client
+            .post(format!(
+                "{base}/api/session/uploadFileBinary?sessionId=thr_a&name=f{i}.txt"
+            ))
+            .body(format!("file {i}").into_bytes())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(staged["ok"], json!(true), "staging {i} fits: {staged}");
+        receipts.push(staged["value"]["receiptId"].as_str().unwrap().to_string());
+    }
+    let parts = |receipts: &[String]| -> Vec<Value> {
+        receipts
+            .iter()
+            .map(|receipt| json!({ "type": "file", "receiptId": receipt }))
+            .collect()
+    };
+    let refused = rpc(
+        &client,
+        &base,
+        "session/prompt",
+        json!({ "request": { "sessionId": "thr_a", "content": parts(&receipts) } }),
+    )
+    .await;
+    // The prompt path answers its refusals as `gateway/internal` with the
+    // reason in the message (the same shape a missing receipt takes).
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("at most 8 attachments")),
+        "{refused}"
+    );
+    assert!(
+        fake.queue_posts.lock().unwrap().is_empty(),
+        "the runtime was never asked"
+    );
+    // Eight of them still travel as one message.
+    let sent = rpc(
+        &client,
+        &base,
+        "session/prompt",
+        json!({ "request": { "sessionId": "thr_a", "content": parts(&receipts[..8]) } }),
+    )
+    .await;
+    assert_eq!(sent["ok"], json!(true), "{sent}");
+    assert_eq!(fake.queue_posts.lock().unwrap().len(), 1);
+    drop(home);
+}
+
 #[tokio::test]
 async fn drop_bytes_route_serves_exactly_once() {
     let (home, client, base, _fake, host, _ws) = spawn_stack("drop").await;

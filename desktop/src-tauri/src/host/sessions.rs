@@ -828,6 +828,8 @@ async fn prompt_attachments(
             .map_err(|err| anyhow!("{}", err.message))?,
         );
     }
+    super::uploads::check_message_attachments(&attachments)
+        .map_err(|err| anyhow!("{}", err.message))?;
     Ok(attachments)
 }
 

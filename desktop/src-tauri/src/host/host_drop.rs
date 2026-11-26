@@ -44,9 +44,9 @@ use super::uploads::MAX_UPLOAD_BYTES;
 /// consumer), which live before/under different owners in `lib.rs`.
 pub type DropStaging = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
-/// Total bytes one drop may stage: the composer's per-message upload cap
-/// (`MAX_STAGED_PER_SESSION` files of `MAX_UPLOAD_BYTES` each) — a bigger
-/// drop would only error at attach time, so its later members cite by path.
+/// Total bytes one drop may stage: the composer's per-message attachment
+/// cap (eight files of `MAX_UPLOAD_BYTES` each) — a bigger drop would only
+/// error at send time, so its later members cite by path.
 const MAX_DROP_STAGED_BYTES: usize = 8 * MAX_UPLOAD_BYTES;
 
 /// Describe a dropped batch to the page. Directories and files carry their

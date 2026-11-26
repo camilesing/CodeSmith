@@ -580,6 +580,7 @@ async fn command_attachments(
             }
         }
     }
+    super::uploads::check_message_attachments(&resolved).map_err(|err| err.message)?;
     Ok(resolved)
 }
 
