@@ -1007,15 +1007,25 @@ pub async fn resume_session(
             return Ok(false);
         }
     };
-    let load_result = if resume_session_id == "latest" {
-        match manager.get_latest_session_for_workspace(&state.workspace) {
-            Ok(Some(meta)) => manager.load_session(&meta.id).map(Some),
-            Ok(None) => Ok(None),
-            Err(e) => Err(e),
+    // The lookup scans the sessions directory and the load reads the
+    // whole transcript: on the blocking pool, not on the runtime thread
+    // that drives the pump.
+    let loader = manager.clone();
+    let workspace = state.workspace.clone();
+    let wanted = resume_session_id.to_string();
+    let load_result = tokio::task::spawn_blocking(move || {
+        if wanted == "latest" {
+            match loader.get_latest_session_for_workspace(&workspace) {
+                Ok(Some(meta)) => loader.load_session(&meta.id).map(Some),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            }
+        } else {
+            loader.load_session_by_prefix(&wanted).map(Some)
         }
-    } else {
-        manager.load_session_by_prefix(resume_session_id).map(Some)
-    };
+    })
+    .await
+    .unwrap_or_else(|err| Err(std::io::Error::other(err)));
     let saved = match load_result {
         Ok(Some(saved)) => saved,
         Ok(None) => {

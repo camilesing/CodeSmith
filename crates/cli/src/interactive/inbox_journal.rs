@@ -232,28 +232,39 @@ pub(crate) async fn journal_enqueue(state: &mut super::state::ReplState, text: &
 /// Mirror the live queue into the journal after a successful session
 /// persist: entries the finished turn consumed are now durable in the
 /// session file, so only what is still queued keeps its journal line.
-pub(crate) fn mirror_after_persist(state: &super::state::ReplState, sessions_dir: &Path) {
-    let Some(id) = state.current_session_id.as_deref() else {
+pub(crate) async fn mirror_after_persist(
+    session_id: Option<&str>,
+    queued: Vec<String>,
+    sessions_dir: &Path,
+) {
+    let Some(journal) = session_id.and_then(|id| InboxJournal::for_session(sessions_dir, id))
+    else {
         return;
     };
-    let Some(journal) = InboxJournal::for_session(sessions_dir, id) else {
-        return;
-    };
-    if !journal.exists() && state.queued_messages.is_empty() {
-        return;
-    }
-    // An unreadable journal survives untouched: rewriting it (or removing
-    // it for an empty queue) would destroy the user's only copy for manual
-    // recovery.
-    if journal.load().unreadable {
-        return;
-    }
-    if let Err(err) = journal.rewrite(&state.queued_messages) {
+    // The load and the rewrite (temp file + fsync + rename) run on the
+    // blocking pool: on the runtime they held the event loop at every turn
+    // boundary.
+    let outcome = tokio::task::spawn_blocking(move || mirror(&journal, &queued)).await;
+    let outcome = outcome.unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    if let Err(err) = outcome {
         println!(
             "{}",
             format!("warning: could not update the inbox journal: {err}").yellow()
         );
     }
+}
+
+fn mirror(journal: &InboxJournal, queued: &[String]) -> io::Result<()> {
+    if !journal.exists() && queued.is_empty() {
+        return Ok(());
+    }
+    // An unreadable journal survives untouched: rewriting it (or removing
+    // it for an empty queue) would destroy the user's only copy for manual
+    // recovery.
+    if journal.load().unreadable {
+        return Ok(());
+    }
+    journal.rewrite(queued)
 }
 
 /// Seed the queue from a resumed session's journal. Returns the number of

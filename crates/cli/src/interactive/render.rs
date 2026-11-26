@@ -895,7 +895,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 state.is_loading = true;
                 state.turn_started_at = Some(Instant::now());
                 state.tool_log_turn += 1;
-                save_crash_recovery_checkpoint(state);
+                save_crash_recovery_checkpoint(state).await;
             }
             Event::MessageStarted { .. } => {
                 view.clear_live();
@@ -1166,11 +1166,15 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                     && let Ok(manager) =
                         codesmith_session::store::FileSessionStore::default_location()
                 {
-                    super::inbox_journal::rekey(
-                        manager.sessions_dir(),
-                        previous_session_id.as_deref().unwrap_or_default(),
-                        &session_id,
-                    );
+                    // A rename, with a durable copy-append as the fallback:
+                    // off the runtime like every other write on this path.
+                    let sessions_dir = manager.sessions_dir().to_path_buf();
+                    let previous = previous_session_id.clone().unwrap_or_default();
+                    let target = session_id.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        super::inbox_journal::rekey(&sessions_dir, &previous, &target)
+                    })
+                    .await;
                 }
                 if state.auto_model && model != "auto" {
                     state.last_effective_model = Some(model.clone());
@@ -1231,7 +1235,7 @@ pub async fn pump_turn(state: &mut ReplState) -> anyhow::Result<PumpExit> {
                 }
                 state.is_loading = false;
                 state.turn_started_at = None;
-                persist_session_turn_boundary(state);
+                persist_session_turn_boundary(state).await;
                 emit_turn_end_hooks(
                     state,
                     status,
@@ -1621,14 +1625,25 @@ pub(super) fn replay_turn_tool_detail(state: &mut ReplState) {
 /// Auto-save the session at each turn boundary (the retired TUI's
 /// persistence-actor contract, reduced to the turn boundary). Failures are
 /// silent-by-print: a save miss never interrupts the conversation.
-fn persist_session_turn_boundary(state: &mut ReplState) {
+///
+/// The save is a whole-session write (temp file + fsync + rename), and the
+/// journal mirror and the checkpoint removal below sync too. On the runtime
+/// they held the worker that drives the pump, and every engine task parked
+/// on it (a background shell, a streaming sub-agent) stalled with them —
+/// tens to hundreds of milliseconds per turn end on a slow home. Each runs
+/// on the blocking pool.
+async fn persist_session_turn_boundary(state: &mut ReplState) {
     let Some(session) = saved_session_from_state(state) else {
         return;
     };
     let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() else {
         return;
     };
-    if let Err(err) = manager.save_session(&session) {
+    let saved_id = session.metadata.id.clone();
+    let saver = manager.clone();
+    let saved = tokio::task::spawn_blocking(move || saver.save_session(&session)).await;
+    let saved = saved.unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    if let Err(err) = saved {
         println!(
             "{}",
             format!("warning: could not auto-save session: {err}").yellow()
@@ -1637,27 +1652,33 @@ fn persist_session_turn_boundary(state: &mut ReplState) {
     }
     // Adopt the id so subsequent turns update the same session file
     // instead of minting a new one per turn.
-    state.current_session_id = Some(session.metadata.id.clone());
+    state.current_session_id = Some(saved_id);
     // Round-7 TODO-48 — the finished turn is now the durable record, so the
     // inbox journal mirrors the live queue again: entries the turn consumed
     // are dropped, anything still queued survives the next crash.
-    super::inbox_journal::mirror_after_persist(state, manager.sessions_dir());
+    super::inbox_journal::mirror_after_persist(
+        state.current_session_id.as_deref(),
+        state.queued_messages.clone(),
+        manager.sessions_dir(),
+    )
+    .await;
     // The turn is over and the regular session file is now the durable
     // record, so the in-flight crash-recovery checkpoint is redundant.
-    let _ = manager.clear_checkpoint();
+    let _ = tokio::task::spawn_blocking(move || manager.clear_checkpoint()).await;
 }
 
 /// Snapshot the session as it stands at turn start, so a crash mid-turn is
 /// recoverable on the next launch (`load_checkpoint` path). Best-effort and
 /// silent: a checkpoint miss must never interrupt a running turn.
-fn save_crash_recovery_checkpoint(state: &ReplState) {
+async fn save_crash_recovery_checkpoint(state: &ReplState) {
     let Some(session) = saved_session_from_state(state) else {
         return;
     };
     let Ok(manager) = codesmith_session::store::FileSessionStore::default_location() else {
         return;
     };
-    let _ = manager.save_checkpoint(&session);
+    // Another whole-session write with an fsync: off the runtime.
+    let _ = tokio::task::spawn_blocking(move || manager.save_checkpoint(&session)).await;
 }
 
 /// Build the persistable session record from REPL state, or `None` when
@@ -2256,7 +2277,15 @@ async fn handle_path_access(
         PathAccessAnswer::AllowAndRemember => {
             // Persist first: the engine's in-process grant covers this turn,
             // and a failure to write must not silently look like "remembered".
-            match crate::workspace_trust::add(&state.workspace, &path) {
+            // The grant write takes a file lock and rewrites
+            // workspace-trust.json: off the runtime.
+            let (workspace, granted) = (state.workspace.clone(), path.clone());
+            let stored = tokio::task::spawn_blocking(move || {
+                crate::workspace_trust::add(&workspace, &granted)
+            })
+            .await
+            .unwrap_or_else(|err| Err(anyhow::anyhow!("save task failed: {err}")));
+            match stored {
                 Ok(stored) => println!(
                     "{}",
                     format!(
@@ -2418,29 +2447,6 @@ mod tests {
         ReplState::new(options, &crate::config::Config::default())
     }
 
-    /// Redirect HOME (and USERPROFILE) for tests that go through
-    /// `FileSessionStore::default_location()`; the env lock serializes them.
-    fn with_home<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
-        let prev_home = std::env::var_os("HOME");
-        let prev_userprofile = std::env::var_os("USERPROFILE");
-        unsafe {
-            std::env::set_var("HOME", home);
-            std::env::set_var("USERPROFILE", home);
-        }
-        let result = f();
-        unsafe {
-            match prev_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match prev_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
-        result
-    }
-
     /// Found in the review: a tab in the mid-turn composer counted as zero
     /// columns, so the caret was parked short and wrapped rows were left
     /// behind. It becomes spaces at intake.
@@ -2461,13 +2467,13 @@ mod tests {
     /// Found in the review: the turn-boundary autosave rebuilt the record
     /// from state, so after every turn a `/rename` title, the creation time, a
     /// branch's lineage and the cost high-water marks were overwritten.
-    #[test]
-    fn turn_boundary_persist_keeps_what_only_the_stored_record_knows() {
+    #[tokio::test]
+    async fn turn_boundary_persist_keeps_what_only_the_stored_record_knows() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
-        with_home(&home, || {
+        with_home_async(&home, async {
             let manager =
                 codesmith_session::store::FileSessionStore::default_location().expect("manager");
             let mut state = test_repl_state();
@@ -2479,7 +2485,7 @@ mod tests {
                 }],
             }]);
             state.current_session_id = Some("sess-kept".to_string());
-            persist_session_turn_boundary(&mut state);
+            persist_session_turn_boundary(&mut state).await;
             let created_at = manager
                 .load_session("sess-kept")
                 .expect("saved")
@@ -2494,7 +2500,7 @@ mod tests {
             stored.metadata.cost.displayed_cost_high_water_usd = 2.5;
             manager.save_session(&stored).expect("renamed");
 
-            persist_session_turn_boundary(&mut state);
+            persist_session_turn_boundary(&mut state).await;
             let saved = manager.load_session("sess-kept").expect("saved again");
             assert_eq!(
                 saved.metadata.title, "fix-login",
@@ -2509,21 +2515,22 @@ mod tests {
                 Some("sess-parent")
             );
             assert_eq!(saved.metadata.forked_from_message_count, Some(3));
-            assert_eq!(saved.metadata.cost.displayed_cost_high_water_usd, 2.5);
-        });
+            assert_eq!(stored.metadata.cost.displayed_cost_high_water_usd, 2.5);
+        })
+        .await;
     }
 
     /// Round-7 TODO-48 — the turn-boundary persist re-mirrors the inbox
     /// journal: entries the finished turn consumed are dropped (they are now
     /// durable in the session file), anything still queued survives the next
     /// crash.
-    #[test]
-    fn turn_boundary_persist_mirrors_inbox_journal() {
+    #[tokio::test]
+    async fn turn_boundary_persist_mirrors_inbox_journal() {
         let _lock = codesmith_agent_runtime::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
-        with_home(&home, || {
+        with_home_async(&home, async {
             let manager =
                 codesmith_session::store::FileSessionStore::default_location().expect("manager");
             let sessions_dir = manager.sessions_dir().to_path_buf();
@@ -2545,7 +2552,7 @@ mod tests {
             journal.append("consumed by the finished turn").unwrap();
             state.queued_messages = vec!["still queued".to_string()];
 
-            persist_session_turn_boundary(&mut state);
+            persist_session_turn_boundary(&mut state).await;
 
             let contents = journal.load();
             assert_eq!(
@@ -2554,7 +2561,8 @@ mod tests {
                 "the persist must drop consumed entries and keep queued ones"
             );
             assert_eq!(contents.corrupt, 0);
-        });
+        })
+        .await;
     }
 
     /// Round-7 TODO-48 — startup harvest: a recent orphan journal (its
