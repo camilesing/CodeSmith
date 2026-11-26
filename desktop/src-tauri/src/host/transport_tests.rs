@@ -1075,7 +1075,7 @@ async fn approval_round(
     client: &reqwest::Client,
     base: &str,
     fake: &FakeRuntime,
-    outcome: &str,
+    outcome: Value,
     want_decision: &str,
 ) {
     // Arm the watcher via a prompt, then raise the approval on the feed.
@@ -1115,7 +1115,7 @@ async fn approval_round(
         json!({
             "clientId": client_id,
             "eventId": "appr_1",
-            "outcome": { "kind": "result", "value": outcome },
+            "outcome": outcome,
         }),
     )
     .await;
@@ -1138,9 +1138,25 @@ async fn approval_round(
 #[tokio::test]
 async fn approval_roundtrip_allow_deny_and_unclaimed_reach_the_runtime() {
     let (home, client, base, fake, _host, _ws) = spawn_stack("approve").await;
-    approval_round(&client, &base, &fake, "allowed-once", "allow").await;
-    approval_round(&client, &base, &fake, "rejected", "deny").await;
-    approval_round(&client, &base, &fake, "next", "deny").await;
+    approval_round(
+        &client,
+        &base,
+        &fake,
+        json!({ "kind": "result", "value": "allowed-once" }),
+        "allow",
+    )
+    .await;
+    approval_round(
+        &client,
+        &base,
+        &fake,
+        json!({ "kind": "result", "value": "rejected" }),
+        "deny",
+    )
+    .await;
+    // The client's unclaimed shape: `{ kind: 'next' }` — exact keys, no
+    // `value` (a result whose value is the string "next" is another frame).
+    approval_round(&client, &base, &fake, json!({ "kind": "next" }), "deny").await;
     drop(home);
 }
 
