@@ -467,6 +467,16 @@ mod tests {
         assert!(!dsh.call_trigger(&snap(134_464, 200_000, 160_000)).unwrap());
         assert!(dsh.call_trigger(&snap(134_465, 200_000, 160_000)).unwrap());
 
+        // dsh at a 64k window: the headroom leaves nothing, so the trigger
+        // is the plain 0.8 × window (52,428) — not 0, which fired on every
+        // step until the rapid-refill detector paused compaction.
+        assert!(
+            !dsh.call_trigger(&snap(1_000, 65_536, 60_000)).unwrap(),
+            "a 64k window must not fire at 1k tokens"
+        );
+        assert!(!dsh.call_trigger(&snap(52_428, 65_536, 60_000)).unwrap());
+        assert!(dsh.call_trigger(&snap(52_429, 65_536, 60_000)).unwrap());
+
         // Unknown window (0) — every port falls back to the configured
         // builtin threshold instead of firing early.
         for (_, s) in &all {
