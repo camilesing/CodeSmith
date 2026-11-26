@@ -128,6 +128,7 @@ const EN: Record<string, string> = {
   secretClear: 'Clear',
   listHint: 'one entry per line',
   mapHint: 'one key = value per line',
+  mapInvalid: 'Invalid line — use key = value',
   fileTreeTitle: 'config.toml (read-only)',
   fileTreeHint: 'Everything else in the file, including keys this page does not catalog. Secrets are masked.',
   refused: 'Change refused',
@@ -167,6 +168,7 @@ const ZH: Record<string, string> = {
   secretClear: '清除',
   listHint: '每行一项',
   mapHint: '每行一个 key = value',
+  mapInvalid: '格式无效——每行一个 key = value',
   fileTreeTitle: 'config.toml（只读）',
   fileTreeHint: '文件中的其余内容，包括本页未收录的键。密钥已脱敏。',
   refused: '更改被拒绝',
@@ -501,7 +503,7 @@ export function create(load: Load): { inject: string[]; apply: (ctx: PluginConte
               return React.createElement(LinesControl, {
                 value: entry.value,
                 hint: t('mapHint'),
-                invalid: t('mapHint'),
+                invalid: t('mapInvalid'),
                 parse: (text: string) => textToMap(text),
                 commit: (value: unknown) => {
                   if (Object.keys(value as Record<string, string>).length === 0) props.onUnset(entry.path)
