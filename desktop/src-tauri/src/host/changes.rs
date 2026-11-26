@@ -73,6 +73,8 @@ struct ChangedFile {
 fn parse_unified_diff(text: &str) -> Option<FileDiff> {
     let mut diff = FileDiff::default();
     let mut current: Option<Hunk> = None;
+    // What the current header still owes its body: `(old, new)` lines.
+    let mut owed = (0, 0);
     for line in text.lines() {
         if let Some(header) = line.strip_prefix("@@") {
             let header = header.split("@@").next().unwrap_or_default();
@@ -92,6 +94,7 @@ fn parse_unified_diff(text: &str) -> Option<FileDiff> {
             if let Some(hunk) = current.take() {
                 diff.hunks.push(hunk);
             }
+            owed = (old_lines, new_lines);
             current = Some(Hunk {
                 old_start,
                 old_lines,
@@ -108,9 +111,14 @@ fn parse_unified_diff(text: &str) -> Option<FileDiff> {
             if line.starts_with('\\') {
                 continue;
             }
-            // A diff body line is prefixed ' ', '+', or '-'; the tool's
-            // trailing summary line after the last hunk ends the region.
-            if !matches!(line.chars().next(), Some(' ') | Some('+') | Some('-')) {
+            let prefixed = matches!(line.chars().next(), Some(' ') | Some('+') | Some('-'));
+            // While the header still owes lines, an empty line or one missing
+            // its leading space is context — the tool's own reading of a shape
+            // open-weight models emit constantly (found in the desktop: the
+            // parser stopped there and the rest of the call vanished from the
+            // review tab). Past the budget only a prefixed line is body: the
+            // first other line is the tool's trailing summary.
+            if !prefixed && owed == (0, 0) {
                 break;
             }
             if line.starts_with('+') {
@@ -118,13 +126,41 @@ fn parse_unified_diff(text: &str) -> Option<FileDiff> {
             } else if line.starts_with('-') {
                 diff.deleted += 1;
             }
-            hunk.lines.push(line.to_string());
+            owed = owed_after(line, owed);
+            hunk.lines.push(if prefixed {
+                line.to_string()
+            } else {
+                format!(" {line}")
+            });
         }
     }
     if let Some(hunk) = current.take() {
         diff.hunks.push(hunk);
     }
     (!diff.hunks.is_empty()).then_some(diff)
+}
+
+/// How one hunk-body line pays down what its header owes: `(old, new)`.
+fn owed_after(line: &str, owed: (u64, u64)) -> (u64, u64) {
+    match line.chars().next() {
+        Some('+') => (owed.0, owed.1.saturating_sub(1)),
+        Some('-') => (owed.0.saturating_sub(1), owed.1),
+        _ => (owed.0.saturating_sub(1), owed.1.saturating_sub(1)),
+    }
+}
+
+/// What the `@@ -old,count +new,count @@` header owes its body: `(old, new)`.
+fn hunk_owed(header: &str) -> (u64, u64) {
+    let count = |token: &str| {
+        token
+            .rsplit_once(',')
+            .and_then(|(_, count)| count.parse().ok())
+            .unwrap_or(1)
+    };
+    let mut tokens = header.split_whitespace();
+    let old = tokens.next().map(count).unwrap_or(0);
+    let new = tokens.next().map(count).unwrap_or(0);
+    (old, new)
 }
 
 /// A workspace-relative, slash-separated display path.
@@ -159,15 +195,29 @@ fn patch_header_path(raw: &str) -> Option<String> {
 fn patch_file_diffs(patch: &str) -> Vec<(String, FileDiff)> {
     let mut sections: Vec<(String, String)> = Vec::new();
     let mut old_path: Option<String> = None;
+    // What the current hunk's header still owes. A `--- `/`+++ ` line inside
+    // that budget is a removed or added body line — `-- ` is a top-level
+    // comment in SQL, Lua, Haskell and Elm — not the next file's header.
+    let mut owed = (0, 0);
     for line in patch.lines() {
-        if let Some(raw) = line.strip_prefix("--- ") {
-            old_path = patch_header_path(raw);
-        } else if let Some(raw) = line.strip_prefix("+++ ") {
-            // A deletion's `+++ /dev/null` names the old side.
-            if let Some(path) = patch_header_path(raw).or_else(|| old_path.clone()) {
-                sections.push((path, String::new()));
+        let header = line.starts_with("--- ") || line.starts_with("+++ ");
+        if header && owed == (0, 0) {
+            if let Some(raw) = line.strip_prefix("--- ") {
+                old_path = patch_header_path(raw);
+            } else if let Some(raw) = line.strip_prefix("+++ ") {
+                // A deletion's `+++ /dev/null` names the old side.
+                if let Some(path) = patch_header_path(raw).or_else(|| old_path.clone()) {
+                    sections.push((path, String::new()));
+                }
             }
-        } else if let Some((_, body)) = sections.last_mut() {
+            continue;
+        }
+        if let Some(range) = line.strip_prefix("@@") {
+            owed = hunk_owed(range);
+        } else {
+            owed = owed_after(line, owed);
+        }
+        if let Some((_, body)) = sections.last_mut() {
             body.push_str(line);
             body.push('\n');
         }
@@ -720,6 +770,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Found in the desktop: `apply_patch` accepts an empty context line
+    /// written as a bare empty line, and a context line missing its leading
+    /// space — a shape open-weight models emit constantly — but the review
+    /// parser stopped there, so the rest of the call vanished from the
+    /// review tab.
+    #[test]
+    fn an_apply_patch_hunk_keeps_its_unprefixed_context_lines() {
+        let blank = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,4 @@\n head\n\n+added\n tail\n";
+        let files = patch_file_diffs(blank);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let (_, diff) = &files[0];
+        assert_eq!((diff.added, diff.deleted), (1, 0));
+        assert_eq!(diff.hunks.len(), 1, "one hunk, read to its end");
+        assert_eq!(diff.hunks[0].lines, [" head", " ", "+added", " tail"]);
+
+        // A removed SQL comment at column 0 reads like the next file's
+        // header while the hunk still owes lines: it stays a removed line.
+        let comment = "--- a/q.sql\n+++ b/q.sql\n@@ -1,2 +1,1 @@\n select 1\n--- all rows\n";
+        let files = patch_file_diffs(comment);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let (_, diff) = &files[0];
+        assert_eq!((diff.added, diff.deleted), (0, 1));
+        assert_eq!(diff.hunks[0].lines, [" select 1", "--- all rows"]);
+
+        // The tool's trailing summary after the last hunk still ends the region.
+        let trailing =
+            "--- a/w.txt\n+++ b/w.txt\n@@ -1,1 +1,1 @@\n-before\n+after\nWrote 6 bytes to w.txt\n";
+        let (_, diff) = &patch_file_diffs(trailing)[0];
+        assert_eq!(diff.hunks[0].lines, ["-before", "+after"]);
     }
 
     #[test]
