@@ -470,6 +470,35 @@ enum OpenOutcome {
     Failed(String),
 }
 
+/// The command line `cmd /C start` receives on Windows. The target is
+/// quoted for cmd.exe itself: `std` quotes an argument only when it holds a
+/// space, so a path with `&` (and none) arrived bare and cmd.exe split the
+/// command there — the file did not open, and the text after `&` ran as a
+/// command.
+#[cfg(any(windows, test))]
+fn windows_open_command_line(target: &str) -> String {
+    format!("/C start \"\" \"{target}\"")
+}
+
+/// Open with the default application.
+#[cfg(windows)]
+fn open_with_default_app(target: &Path) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::windows::process::CommandExt as _;
+    std::process::Command::new("cmd")
+        .raw_arg(windows_open_command_line(&target.display().to_string()))
+        .status()
+}
+
+#[cfg(target_os = "macos")]
+fn open_with_default_app(target: &Path) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new("open").arg(target).status()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn open_with_default_app(target: &Path) -> std::io::Result<std::process::ExitStatus> {
+    std::process::Command::new("xdg-open").arg(target).status()
+}
+
 /// Open or reveal one changed file in the OS (`action` = `open` | `reveal`).
 /// Blocking (stat + process spawn); the axum handler runs it on
 /// `spawn_blocking`.
@@ -478,11 +507,7 @@ pub fn open_changed_file(action: &str, target: &Path) -> Result<(), String> {
         return Err(format!("{} is not an absolute path", target.display()));
     }
     let status = match (action, std::env::consts::OS) {
-        ("open", "macos") => std::process::Command::new("open").arg(target).status(),
-        ("open", "windows") => std::process::Command::new("cmd")
-            .args(["/C", "start", "", &target.display().to_string()])
-            .status(),
-        ("open", _) => std::process::Command::new("xdg-open").arg(target).status(),
+        ("open", _) => open_with_default_app(target),
         (_, "macos") => std::process::Command::new("open")
             .arg("-R")
             .arg(target)
@@ -831,6 +856,17 @@ mod tests {
         assert_eq!(summary["added"], 0);
         // Upstream keeps the working directory on the Host, not on the wire.
         assert!(!summary.as_object().unwrap().contains_key("cwd"));
+    }
+
+    /// Found in the desktop (Windows): the path reached `cmd /C start`
+    /// through `std`'s quoting, which leaves a space-free path bare — cmd.exe
+    /// then split the command at a `&` in it.
+    #[test]
+    fn the_windows_opener_quotes_the_target_for_cmd() {
+        assert_eq!(
+            windows_open_command_line(r"C:\dev\demo\Q&A.md"),
+            r#"/C start "" "C:\dev\demo\Q&A.md""#
+        );
     }
 
     #[test]
