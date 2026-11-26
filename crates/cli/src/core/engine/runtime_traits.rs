@@ -328,28 +328,7 @@ impl HostServices for super::EngineHost {
         );
 
         let fork_context_for_runtime = if config.features.enabled(Feature::Subagents) {
-            let ws_snapshot = session
-                .working_set
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            let state = StructuredState::capture(
-                mode.label(),
-                config.workspace.clone(),
-                std::env::current_dir().ok(),
-                &ws_snapshot,
-                &config.todos,
-                &config.plan_state,
-                Some(&self.subagent_manager),
-            )
-            .await;
-            Some(SubAgentForkContext {
-                system: session.system_prompt.clone(),
-                messages: session.messages.to_vec(),
-                structured_state_block: state.to_system_block(),
-                current_assistant_text: None,
-                current_turn_tool_calls: None,
-            })
+            Some(fork_context(self, session, config, mode).await)
         } else {
             None
         };
@@ -865,6 +844,43 @@ pub(super) fn subagent_sandbox_policy(mode: AppMode, workspace: &Path) -> Sandbo
     match mode {
         AppMode::Coordinator => sandbox_policy_for_mode(AppMode::Agent, workspace),
         other => sandbox_policy_for_mode(other, workspace),
+    }
+}
+
+/// The fork context a child opened with `fork_context: true` inherits: the
+/// parent's system prompt and transcript plus the structured state block.
+///
+/// The block's `cwd` is the session's effective cwd — the value the engine's
+/// own cycle capture passes — because the block is model-visible and must
+/// match where the child's tools resolve relative paths (its context is the
+/// parent's).
+pub(super) async fn fork_context(
+    host: &super::EngineHost,
+    session: &crate::core::session::Session,
+    config: &super::EngineConfig,
+    mode: AppMode,
+) -> SubAgentForkContext {
+    let ws_snapshot = session
+        .working_set
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let state = StructuredState::capture(
+        mode.label(),
+        config.workspace.clone(),
+        Some(session.cwd.clone()),
+        &ws_snapshot,
+        &config.todos,
+        &config.plan_state,
+        Some(&host.subagent_manager),
+    )
+    .await;
+    SubAgentForkContext {
+        system: session.system_prompt.clone(),
+        messages: session.messages.to_vec(),
+        structured_state_block: state.to_system_block(),
+        current_assistant_text: None,
+        current_turn_tool_calls: None,
     }
 }
 

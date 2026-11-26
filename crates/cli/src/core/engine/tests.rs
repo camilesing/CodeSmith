@@ -2041,6 +2041,37 @@ fn coordinator_workers_get_agent_sandbox_not_the_router_readonly() {
     ));
 }
 
+#[tokio::test]
+async fn fork_state_block_states_the_session_cwd_not_the_process_cwd() {
+    let _env = HermeticEnv::new();
+    let tmp = tempdir().expect("tempdir");
+    let host = EngineHost::default();
+    let session = Session::new(
+        DEFAULT_TEXT_MODEL.to_string(),
+        tmp.path().to_path_buf(),
+        false,
+        false,
+        PathBuf::from("notes.md"),
+        PathBuf::from("mcp.json"),
+    );
+
+    let fork = super::runtime_traits::fork_context(
+        &host,
+        &session,
+        &EngineConfig::default(),
+        AppMode::Agent,
+    )
+    .await;
+
+    let block = fork
+        .structured_state_block
+        .expect("the block always names the workspace");
+    assert!(
+        block.contains(&format!("- Cwd: `{}`", tmp.path().display())),
+        "a forked child is told where the session's tools resolve relative paths: {block}"
+    );
+}
+
 #[test]
 fn parent_turn_registry_includes_recall_archive_for_investigative_modes() {
     let _env = HermeticEnv::new();
