@@ -127,7 +127,7 @@ jobs:
               processed_prs[${key}]=1
 
               # Idempotency: skip if the PR is already closed.
-              state="$(gh pr view "${pr}" --json state --jq .state 2>/dev/null)"
+              state="$(gh pr view "${pr}" --json state --jq .state 2>/dev/null || true)"
               if [[ -z "${state}" ]]; then
                 # Distinguish a genuinely absent PR from a transient API
                 # failure: rate limits / 5xx must fail the run so it can be
